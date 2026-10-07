@@ -15,7 +15,6 @@
 
 use runtime_core::recipe;
 
-
 recipe!(
     DeepLink,
     /// Show the most recent inbound deep link.

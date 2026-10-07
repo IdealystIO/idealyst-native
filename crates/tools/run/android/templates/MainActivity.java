@@ -100,16 +100,6 @@ public class MainActivity extends FragmentActivity {
         return super.onOptionsItemSelected(item);
     }
 
-    /**
-     * Fired when the device rotates, multi-window resizes, the
-     * keyboard shows/hides, dark mode toggles, density changes, etc.
-     * — any of the axes listed under `configChanges` in the manifest.
-     * Because of that manifest declaration the Activity is *not*
-     * recreated, so we just nudge the framework to re-run its layout
-     * pass against the host root's new dimensions. The framework
-     * already has a retry loop that waits for the host to be measured
-     * before applying frames, so a single notify is enough.
-     */
     /// A link while running. The Activity is `singleTask`, so Android
     /// re-delivers a VIEW intent to this instance instead of stacking a
     /// second Activity (a second `attach` would mount a second app).
@@ -132,6 +122,16 @@ public class MainActivity extends FragmentActivity {
         return data == null ? null : data.toString();
     }
 
+    /**
+     * Fired when the device rotates, multi-window resizes, the
+     * keyboard shows/hides, dark mode toggles, density changes, etc.
+     * — any of the axes listed under `configChanges` in the manifest.
+     * Because of that manifest declaration the Activity is *not*
+     * recreated, so we just nudge the framework to re-run its layout
+     * pass against the host root's new dimensions. The framework
+     * already has a retry loop that waits for the host to be measured
+     * before applying frames, so a single notify is enough.
+     */
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);

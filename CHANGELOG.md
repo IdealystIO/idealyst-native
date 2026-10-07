@@ -22,6 +22,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   between the bars is unchanged. *Migration:* wrap the app root in
   `keyboard_avoiding_view { … }`, and wrap the content of any portal with
   text fields (idea-ui's `Modal` already does). `docs/keyboard.md`.
+- **The framework routes inbound links itself** (`deep-link` 2.0). A
+  link arriving while the app runs now moves the navigators on its own
+  (and a launch link opens its screen on the first mount), and
+  `feed_link` routes the link as well as notifying observers (it now
+  returns whether the link landed). An app that navigated from inside
+  `on_link(|link| …)` — the pattern the SDK used to recommend — will now
+  navigate twice. *Migration:* delete your own routing from `on_link`;
+  keep `on_link` for observing (analytics, a toast), use `intercept` to
+  hold or rewrite a link before the navigators see it, and don't feed
+  `popstate` / in-app navigations through `feed_link`.
+  `docs/deep-links.md`.
 - **Remote bundles must be rebuilt again** (`runtime-vocabulary`,
   `remote::CODEC_VERSION` 3). `Node::View` carries the new
   `keyboard_avoid` field; an older bundle is refused with

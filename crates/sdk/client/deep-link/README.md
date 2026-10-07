@@ -149,3 +149,11 @@ filters and the web build's `.well-known` verification files. See
   in …?" first), and universal links on a device.
 - [ ] Android: `adb shell am start -a android.intent.action.VIEW -d "<url>"`,
   cold and warm.
+
+## Upgrading from 1.x
+
+The framework now routes inbound links itself: a link arriving while the
+app runs moves the navigators, and `feed_link` routes as well as notifying
+observers. If your app navigated from inside `on_link(|link| …)`, delete
+that routing — it would now navigate twice. Keep `on_link` for observing,
+and use `intercept` to hold or rewrite a link before the navigators see it.

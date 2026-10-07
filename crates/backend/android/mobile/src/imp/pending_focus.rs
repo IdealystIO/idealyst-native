@@ -45,14 +45,26 @@ pub(crate) fn request_focus(node: &GlobalRef, focus_now: fn(&GlobalRef)) {
     match req {
         FocusRequest::Now(node) => focus_now(&node),
         FocusRequest::Deferred => with_env(|env| {
-            let Ok(class) = env.find_class("io/idealyst/runtime/RustAttachFocus") else { return };
-            let Ok(listener) = env.new_object(&class, "()V", &[]) else { return };
+            // Every failure clears the pending JNI exception before
+            // returning: a staged Kotlin runtime without `RustAttachFocus`
+            // (CLI not reinstalled) throws `NoClassDefFoundError` from
+            // `find_class`, and a pending exception would crash the NEXT,
+            // unrelated JNI call. Same discipline as `keyboard.rs`.
+            let Ok(class) = env.find_class("io/idealyst/runtime/RustAttachFocus") else {
+                let _ = env.exception_clear();
+                return;
+            };
+            let Ok(listener) = env.new_object(&class, "()V", &[]) else {
+                let _ = env.exception_clear();
+                return;
+            };
             let _ = env.call_method(
                 node.as_obj(),
                 "addOnAttachStateChangeListener",
                 "(Landroid/view/View$OnAttachStateChangeListener;)V",
                 &[JValue::Object(&listener)],
             );
+            let _ = env.exception_clear();
         }),
     }
 }

@@ -3,9 +3,9 @@
 //! On the web there is no OS "open URL" event for a custom scheme — the
 //! app's entry URL *is* the deep link, available synchronously as
 //! `window.location.href`. We read it on bootstrap to seed
-//! [`crate::initial_link`]. Subsequent in-app navigations / `popstate`
-//! events are fed back through [`crate::feed_link`] by the host (the same
-//! place the navigator SDK hooks `popstate`).
+//! [`crate::initial_link`]. In-app navigations and `popstate` are NOT
+//! links: the navigators' own URL sync handles them, and feeding them
+//! through [`crate::feed_link`] would route them a second time.
 //!
 //! The browser calls are web-glue bindings declared here (own-web-bindings
 //! phase 3), each one JS expression.

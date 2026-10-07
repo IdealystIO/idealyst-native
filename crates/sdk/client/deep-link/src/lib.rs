@@ -60,10 +60,11 @@
 #![deny(missing_docs)]
 
 // Exactly one platform helper compiles per target; only `web` does real
-// work today (reads `window.location.href`). The native launch-URL reads
-// are wired host-side by the orchestrator (see crate docs), so there is no
-// native module here to mislead — `initial_link()` is seeded by whoever
-// calls `feed_link` first, on every target.
+// work today (reads `window.location.href`). The native launch URL is
+// recorded host-side before attach (`runtime_shared::inbound_link::
+// record_launch`), so there is no native module here — `initial_link()`
+// reads that record on every target. `feed_link` does NOT seed it: it
+// delivers (and routes) a link arriving while the app runs.
 #[cfg(target_arch = "wasm32")]
 mod web;
 
