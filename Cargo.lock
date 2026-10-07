@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "backend-apple-core",
  "backend-ios-core",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "gtk4",
  "inventory",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.4.0"
+version = "2.5.0"
 dependencies = [
  "css",
  "dev-client",
@@ -3229,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "deep-link"
-version = "1.7.1"
+version = "2.0.0"
 dependencies = [
  "runtime-core",
  "runtime-shared",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -5537,7 +5537,7 @@ dependencies = [
 
 [[package]]
 name = "host-appkit"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "backend-apple-core",
  "backend-macos",
@@ -5609,7 +5609,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6156,7 +6156,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6174,7 +6174,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6255,7 +6255,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -7395,7 +7395,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10389,7 +10389,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10398,7 +10398,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10406,7 +10406,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.15.0"
+version = "1.16.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10419,7 +10419,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-parse"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10437,7 +10437,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-server-shell-native"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "dev-client",
  "runtime-shared",
@@ -10449,7 +10449,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10478,7 +10478,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.23.0"
+version = "1.24.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -15011,7 +15011,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "dev-client",
  "dev-server",
