@@ -7,7 +7,7 @@ description = "Release builds of remote-component bundles (`idealyst build --rem
 
 [dependencies]
 anyhow = "1"
-remote-bundle = { path = "../../../streaming/bundle-format" }
+remote-bundle = { path = "../../../streaming/bundle-format", version = "1.2.0", registry = "idealyst" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"

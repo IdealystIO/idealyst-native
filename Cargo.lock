@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.10.2"
+version = "1.10.3"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "backend-apple-core"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "backend-image-source",
  "block2 0.5.1",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cpu"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "parity-goldens",
  "pico-args",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.14.0"
+version = "1.15.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-tv"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "backend-ios-core",
  "block2 0.5.1",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "gtk4",
  "inventory",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.12.0"
+version = "1.12.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "backend-terminal"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "parity-goldens",
  "runtime-layout",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "css",
  "dev-client",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "raw-window-handle",
  "runtime-layout",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "runtime-shared",
 ]
@@ -3411,7 +3411,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -6169,7 +6169,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6187,7 +6187,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -7413,7 +7413,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.17.0"
+version = "1.17.1"
 dependencies = [
  "inventory",
  "runtime-core",
@@ -10105,7 +10105,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -10416,7 +10416,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10424,7 +10424,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10467,7 +10467,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.18.0"
+version = "1.19.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10496,7 +10496,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.24.0"
+version = "1.25.0"
 dependencies = [
  "dev-hot",
  "host-mock",
