@@ -528,6 +528,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             value: val(p.value),
             on_change: handler(move |v: &bool| f(*v)),
+            disabled: p.disabled.map(val),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<SliderPrim>>() {
@@ -541,6 +542,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             min: p.min,
             max: p.max,
             step: p.step,
+            disabled: p.disabled.map(val),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ActivityIndicatorPrim>>() {
@@ -561,6 +563,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             on_focus: p.on_focus.map(|f| handler(move |v: &bool| f(*v))),
             placeholder: val(p.placeholder),
             secure: val(p.secure),
+            disabled: p.disabled.map(val),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<TextAreaPrim>>() {
@@ -576,6 +579,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             wrap: p.wrap,
             min_rows: p.min_rows,
             max_rows: p.max_rows,
+            disabled: p.disabled.map(val),
         };
     }
     if let Some(cell) = data.downcast_ref::<PrimCell<ScrollViewPrim>>() {

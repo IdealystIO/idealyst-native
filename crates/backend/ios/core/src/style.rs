@@ -93,20 +93,9 @@ pub fn animate(transition: &runtime_shared::Transition, changes: Rc<dyn Fn()>) {
         // boundary. catch_unwind + abort (crash-loud, mirroring
         // `render_loop.rs`) so the panic surfaces at its real site
         // instead of corrupting the UIKit animation machinery.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend_apple_core::crash::abort_on_panic("UIView animation block", || {
             changes();
-        }));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-ios-core] panic in UIView animation block: {msg}");
-            std::process::abort();
-        }
+        });
     });
     let block = block.copy();
     let nil: *const NSObject = std::ptr::null();

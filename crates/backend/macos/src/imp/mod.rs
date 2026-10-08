@@ -218,15 +218,6 @@ pub struct MacosBackend {
     /// their content is placed by the container's flex style. Mirrors the
     /// anchored half of iOS's `portal_instances`.
     pub(crate) portal_instances: portal::PortalInstances,
-    /// View-pointer keys of every `create_presence_placeholder` view. A
-    /// placeholder is created in-flow (sizing to its child, so a stack of
-    /// presences — e.g. toasts — lays out like web) and only upgraded to
-    /// fill its parent (`position: absolute; inset: 0`) when its inserted
-    /// child is itself absolute (a floating FAB / popover whose
-    /// out-of-flow content would otherwise collapse the placeholder to
-    /// 0×0 and break AppKit hit-test / cursor / hover geometry). `insert`
-    /// reads this to know a parent is a placeholder and apply the upgrade.
-    pub(crate) presence_placeholders: std::collections::HashSet<usize>,
     /// Layout node of the top-of-tree root, stashed by `finish` so a
     /// post-mount `schedule_layout_pass()` can recompute from it without
     /// the `root: Node` argument `finish` receives. `finish` runs exactly
@@ -585,7 +576,7 @@ fn run_pending_layout_pass(origin: &str) {
             .map(|s| s.as_str())
             .or_else(|| payload.downcast_ref::<&'static str>().copied())
             .unwrap_or("<non-string panic payload>");
-        eprintln!("[backend-macos] layout-pass {origin} panic: {msg}");
+        backend_apple_core::apple_log(&format!("RUST PANIC crossing macOS layout-pass {origin}: {msg} — aborting"));
         std::process::abort();
     }
 }
@@ -621,7 +612,6 @@ impl MacosBackend {
             detached_window_roots: HashMap::new(),
             portal_roots: std::collections::HashSet::new(),
             portal_instances: HashMap::new(),
-            presence_placeholders: std::collections::HashSet::new(),
             root_layout: None,
         };
         backend
@@ -3084,47 +3074,39 @@ impl MacosBackend {
         node
     }
 
-    /// A `Presence` placeholder is a `PresencePlaceholderView` (not the plain
-    /// `FlippedView` `create_view` mints) so its `hitTest:` descends into its
-    /// subviews (a transparent passthrough) regardless of its own frame.
+    /// A `Presence` placeholder: layout-transparent like a reactive anchor
+    /// (`create_anchor_impl`) — a `runtime_layout` contents node, so the
+    /// presence child lays out as the direct child of presence's parent —
+    /// but minted as a `PresencePlaceholderView` instead of a
+    /// `FlippedView`, whose `hitTest:` descends geometrically through
+    /// collapsed wrappers INSIDE the child as well (see
+    /// `presence_deep_hit`).
     ///
-    /// The placeholder is created **in-flow** (default style — `position:
-    /// relative`, no insets), so it sizes to its child and a *stack* of
-    /// presences — the toast host's column of `presence`-wrapped cards — lays
-    /// out one-below-another exactly as on web (web's placeholder is a plain,
-    /// in-flow `<div>`). The previous unconditional `position: absolute; inset:
-    /// 0` fill took every card out of flow, so they all overlapped at the
-    /// stack's origin and the stack collapsed to 0 height (no bottom gap, no
-    /// stacking — the reported macOS toast bug).
+    /// Contents, not in-flow: an in-flow placeholder is a real flex item,
+    /// and Taffy resolves an absolute child's insets against its DIRECT
+    /// layout parent — a `position: absolute; bottom: md` alert was placed
+    /// against a full-width, zero-height box and landed above its
+    /// positioned ancestor (the iOS "presence alert never appears" bug;
+    /// the PresenceOps default had it). macOS used to patch the absolute
+    /// case by upgrading the placeholder to `absolute; inset: 0` in
+    /// `insert`, which still left a box in the way (padding, `flex_grow`).
+    /// A contents node also keeps the toast stack stacking with its gap —
+    /// the cards are the column's own flex items. The view itself is
+    /// framed to the real ancestor's box (`frame_of` on a contents node),
+    /// so AppKit's visibleRect / tracking-area clipping never sees a
+    /// collapsed ancestor.
     ///
-    /// The fill is still needed when the presence *child* is itself `position:
-    /// absolute` (a floating FAB / popover): an out-of-flow child contributes
-    /// no in-flow size, so an in-flow placeholder would collapse to 0×0, and a
-    /// collapsed NSView ancestor breaks AppKit hit-test / cursor-rect /
-    /// `InVisibleRect` hover geometry — the child paints but is dead to clicks,
-    /// shows no cursor, never hovers. So `insert` upgrades the placeholder to
-    /// fill its parent when (and only when) the inserted child is absolute;
-    /// here we register the key and leave the in-flow default.
+    /// No a11y here: the presence handler applies a non-default bag through
+    /// `update_accessibility` (the `PresenceOps` contract), so the `_a11y`
+    /// argument is intentionally unused.
     pub(crate) fn create_presence_placeholder_impl(
         &mut self,
-        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> MacosNode {
         let view = callbacks::PresencePlaceholderView::new(self.mtm);
         let view: Retained<NSView> = Retained::into_super(view);
-        let _ = self.layout_for_view(&view);
-        // Register so `insert` knows this parent is a presence placeholder and
-        // can apply the absolute-fill upgrade for an out-of-flow child.
-        let key = &*view as *const NSView as usize;
-        self.presence_placeholders.insert(key);
-        let node = MacosNode::View(view);
-        a11y::apply(
-            &node,
-            a11y,
-            runtime_shared::accessibility::default_role(
-                runtime_shared::accessibility::PrimitiveKind::View,
-            ),
-        );
-        node
+        let _ = self.layout_for_view_with(&view, |layout| layout.new_contents_node());
+        MacosNode::View(view)
     }
 
     pub(crate) fn install_touch_handler_impl(
@@ -4486,27 +4468,7 @@ impl MacosBackend {
             }
         }
 
-        // Presence placeholder hosting an OUT-OF-FLOW child: upgrade the
-        // placeholder to fill its parent so the absolute child has real,
-        // non-collapsed geometry (AppKit hit-test / cursor / hover all clip to
-        // the placeholder's frame). An IN-FLOW child needs no upgrade — the
-        // placeholder is created in-flow and sizes to it, so a column of
-        // presence-wrapped cards (toasts) stacks like web. See
-        // `create_presence_placeholder`.
         let parent_key = parent_view as *const NSView as usize;
-        if self.presence_placeholders.contains(&parent_key)
-            && self.layout.is_absolute(child_layout)
-        {
-            let fill = StyleRules {
-                position: Some(runtime_shared::Position::Absolute),
-                top: Some(0.0.into()),
-                left: Some(0.0.into()),
-                right: Some(0.0.into()),
-                bottom: Some(0.0.into()),
-                ..Default::default()
-            };
-            self.layout.set_style(parent_layout, &fill);
-        }
 
         // Anchored portal: position the CONTENT child absolutely against the
         // trigger and re-pin it each frame. Composition inserts children in
@@ -4647,9 +4609,6 @@ impl MacosBackend {
         self.text_measure_sig.remove(&child_key);
         // Same for the cached applied frame (see `last_applied_frame`).
         self.last_applied_frame.remove(&child_key);
-        // If the removed view was a presence placeholder, forget its key so a
-        // recycled NSView pointer can't be mistaken for one.
-        self.presence_placeholders.remove(&child_key);
         // A clipped view's drop shadow lives on a sibling layer in the PARENT's
         // layer (see `shadow`), so `removeFromSuperview` alone would leave it
         // painting where the card used to be.
@@ -4831,7 +4790,6 @@ impl MacosBackend {
             self.text_measure_sig.remove(&(sub_ptr as *const NSView as usize));
             // Same for the cached applied frame (see `last_applied_frame`).
             self.last_applied_frame.remove(&(sub_ptr as *const NSView as usize));
-            self.presence_placeholders.remove(&(sub_ptr as *const NSView as usize));
             // Unparent the sibling shadow layer (mirror `remove_child`) — it
             // lives in THIS view's layer, not the child's, so it would outlive
             // the child it belongs to.
@@ -5230,6 +5188,53 @@ impl MacosBackend {
     /// NSSwitch, …) render their own system states, so they're skipped.
     /// macOS has no touch, so this is the desktop analogue of web's CSS
     /// `:hover`/`:active`.
+    /// Make a node's native widget inert — the macOS half of the
+    /// `set_disabled` capability (`mount_pressable`, `mount_text_input`,
+    /// `mount_text_area` bind it). Until this existed the trait default was
+    /// a no-op here, so a disabled control was blocked only by the
+    /// framework's press/edit gate and stayed keyboard-focusable.
+    ///
+    /// - `pressable` / `link` host (a `FlippedView` with an activation
+    ///   closure): leaves the key-view loop (`acceptsFirstResponder` /
+    ///   `canBecomeKeyView` → NO), like a disabled `NSButton`.
+    /// - `text_area` (chrome container → scroll view → `NSTextView`): the
+    ///   text view becomes non-editable AND non-selectable — an
+    ///   unselectable `NSTextView` refuses first responder, so it is not
+    ///   focusable either.
+    /// - any `NSControl` (`text_input`'s `NSTextField` / secure field,
+    ///   `NSSwitch`, `NSSlider`, `NSButton`): `setEnabled:` — a disabled
+    ///   NSTextField neither edits nor becomes key view.
+    ///
+    /// Each path first drops focus the node held: AppKit leaves a control
+    /// that goes inert mid-edit as first responder, still taking keys.
+    pub(crate) fn set_disabled_impl(&mut self, node: &MacosNode, disabled: bool) {
+        let MacosNode::View(view) = node else {
+            // A label is static text — nothing to make inert.
+            return;
+        };
+        if let Some(flipped) = as_flipped_view(view).filter(|f| f.has_activate()) {
+            flipped.set_disabled(disabled);
+            return;
+        }
+        if let Some(text_view) = text_area_inner_text_view(view) {
+            if disabled {
+                crate::imp::view::resign_if_first_responder(&text_view);
+            }
+            let enabled = !disabled;
+            let _: () = unsafe { msg_send![&text_view, setEditable: enabled] };
+            let _: () = unsafe { msg_send![&text_view, setSelectable: enabled] };
+            return;
+        }
+        let is_control: bool =
+            unsafe { msg_send![&**view, isKindOfClass: objc2::class!(NSControl)] };
+        if is_control {
+            if disabled {
+                crate::imp::view::resign_if_first_responder(view);
+            }
+            let _: () = unsafe { msg_send![&**view, setEnabled: !disabled] };
+        }
+    }
+
     pub(crate) fn attach_states_impl(&mut self, node: &MacosNode, setter: Rc<dyn Fn(StateBits, bool)>) {
         let view = node.as_view();
         if let Some(fv) = as_flipped_view(view) {

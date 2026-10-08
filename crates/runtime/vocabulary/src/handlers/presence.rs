@@ -44,7 +44,7 @@ use runtime_shared::scheduling::{after_animation_frame, after_ms, ScheduledTask}
 use runtime_scene::{dyn_keyed, fragment, Element, LiveNode, MountCx, Registry, Retired};
 use runtime_world::effect;
 
-use crate::caps::{IntrospectionOps, PresenceOps};
+use crate::caps::{A11yOps, IntrospectionOps, PresenceOps};
 use crate::prims::{PresencePrim, PrimCell};
 
 /// Mount a `presence`.
@@ -54,19 +54,27 @@ pub fn mount_presence<H>(
     _children: Vec<Element>,
 ) -> H::Node
 where
-    H: PresenceOps + IntrospectionOps,
+    H: PresenceOps + IntrospectionOps + A11yOps,
 {
     let backend = cx.backend().clone();
-    // The placeholder is created bare and NEVER styled by the handler:
-    // it must stay IN-FLOW so presence children participate in normal
-    // layout (stacked toasts keep their gaps). Backends that need
-    // absolute-fill behavior decide it per-child at insert time — see
-    // the macOS presence in-flow placeholder fix; forcing
-    // `absolute; inset: 0` here is exactly the bug that collapsed toast
-    // stacks.
+    // The placeholder is LAYOUT-TRANSPARENT (a reactive anchor — see
+    // `PresenceOps::create_presence_placeholder`) and NEVER styled by the
+    // handler: presence's child lays out as the direct child of
+    // presence's parent. That is what keeps a column of presence-wrapped
+    // toasts stacking with their gap (the macOS in-flow fix — forcing
+    // `absolute; inset: 0` collapsed the stack) AND what lets a
+    // `position: absolute` child resolve its insets against the
+    // positioned ancestor instead of a zero-height wrapper box (the iOS
+    // "alert never appears" bug). Enter/exit animate the child's own
+    // nodes below, never this one.
     let mut placeholder = backend
         .borrow_mut()
         .create_presence_placeholder(&prim.a11y);
+    // The default placeholder (an anchor) takes no a11y bag at creation,
+    // so the handler applies the author's, when there is one.
+    if !prim.a11y.is_default() {
+        backend.borrow_mut().update_accessibility(&placeholder, &prim.a11y, None);
+    }
 
     // Identity/robot registration on the PLACEHOLDER (the old core
     // registered `Element::Presence` itself): registered before the
@@ -236,7 +244,7 @@ where
 /// separately for backends assembling a custom registry.
 pub fn register_presence<H>(registry: &mut Registry<H>)
 where
-    H: PresenceOps + IntrospectionOps + 'static,
+    H: PresenceOps + IntrospectionOps + A11yOps + 'static,
 {
     registry.register::<PrimCell<PresencePrim>, _>(|cx, p, children| {
         mount_presence(cx, p.take(), children)

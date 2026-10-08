@@ -134,6 +134,13 @@ pub struct FlippedViewIvars {
     /// stay Tab-transparent (a bare container must not be a tab stop). Mirrors
     /// the `on_touch` click so keyboard and mouse converge on the same handler.
     activate: RefCell<Option<Rc<dyn Fn()>>>,
+    /// `set_disabled` on an interactive host. While `true` the view leaves
+    /// the key-view loop — it neither accepts first responder nor reports
+    /// `canBecomeKeyView` — exactly like a disabled `NSButton`. Without it a
+    /// disabled pressable (Button, Switch, Select trigger) stayed a Tab stop
+    /// whose Space/Return did nothing (the framework's press block held, the
+    /// focusability did not).
+    disabled: Cell<bool>,
     /// Explicit `StyleRules::pointer_events`, mapped by `apply_style`.
     /// `None` = unset (default hit-testing). `Some(None)` makes this view's
     /// subtree hit-transparent — the always-mounted AppShell scrim / overlay
@@ -595,7 +602,7 @@ declare_class!(
         // must never steal focus or become a tab stop.
         #[method(acceptsFirstResponder)]
         fn accepts_first_responder(&self) -> bool {
-            self.ivars().activate.borrow().is_some()
+            self.is_keyboard_interactive()
         }
 
         // Join the Tab ring with the SAME Full-Keyboard-Access gating `NSButton`
@@ -608,7 +615,7 @@ declare_class!(
             // Single tail expression (no early `return`): a `#[method] -> bool`
             // only converts the tail bool→ObjC `Bool`, so an early `return false`
             // would type-mismatch.
-            self.ivars().activate.borrow().is_some()
+            self.is_keyboard_interactive()
                 && unsafe {
                     let app: *mut AnyObject =
                         msg_send![objc2::class!(NSApplication), sharedApplication];
@@ -627,7 +634,13 @@ declare_class!(
         // become/resignFirstResponder wiring.
         #[method(becomeFirstResponder)]
         fn become_first_responder(&self) -> bool {
-            let ok: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            // A disabled host refuses programmatic focus too:
+            // `makeFirstResponder:` asks this, not `acceptsFirstResponder`.
+            // Gated on `disabled` alone (not on being interactive) so a plain
+            // layout view still takes first responder when code hands it
+            // focus deliberately.
+            let ok: bool = !self.ivars().disabled.get()
+                && unsafe { msg_send![super(self), becomeFirstResponder] };
             if ok {
                 self.fire_focus_state(true);
             }
@@ -696,6 +709,7 @@ impl FlippedView {
             tracking_area: RefCell::new(None),
             file_drop_handler: RefCell::new(None),
             activate: RefCell::new(None),
+            disabled: Cell::new(false),
             pointer_events: Cell::new(None),
             preserves_focus: Cell::new(false),
             layout_transparent: Cell::new(false),
@@ -742,9 +756,30 @@ impl FlippedView {
     }
 
     /// `true` if this view opted into keyboard activation (a `pressable` /
-    /// `link`) — i.e. it participates in the Tab key-view loop. Test hook.
+    /// `link`) and is not disabled — i.e. it participates in the Tab
+    /// key-view loop right now. Backs `acceptsFirstResponder` /
+    /// `canBecomeKeyView`; also the test hook.
     pub(crate) fn is_keyboard_interactive(&self) -> bool {
+        !self.ivars().disabled.get() && self.ivars().activate.borrow().is_some()
+    }
+
+    /// `true` for a `pressable` / `link` host (it carries an activation
+    /// closure), disabled or not — what `set_disabled` dispatches on.
+    pub(crate) fn has_activate(&self) -> bool {
         self.ivars().activate.borrow().is_some()
+    }
+
+    /// Take this interactive host out of (or back into) the key-view loop.
+    /// Disabling a view that is the window's first responder hands first
+    /// responder back to the window, so "disabled ⇒ not focused" holds
+    /// even when it goes inert under the user's focus. Press blocking is
+    /// NOT done here: the framework's press-block flag (`mount_pressable`)
+    /// already wraps the `activate` / tap closure on every backend.
+    pub(crate) fn set_disabled(&self, disabled: bool) {
+        self.ivars().disabled.set(disabled);
+        if disabled {
+            resign_if_first_responder(self);
+        }
     }
 
     /// Install (or replace) the `on_touch` handler. Called by
@@ -1395,13 +1430,29 @@ declare_class!(
             let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
             crate::imp::pending_focus::view_moved_to_window(self);
         }
+        // A disabled `text_area` (`set_disabled` → not editable, not
+        // selectable) must refuse focus. NSTextView keeps taking first
+        // responder with both flags off (measured: `makeFirstResponder:`
+        // still landed on it), so a disabled Textarea stayed focusable and
+        // drew the focus ring. `makeFirstResponder:` does not consult
+        // `acceptsFirstResponder` — it asks `becomeFirstResponder` — so the
+        // refusal lives in BOTH: this one keeps it out of the Tab key-view
+        // loop, `becomeFirstResponder` below refuses programmatic focus.
+        // Inert only when it can neither edit nor select — a read-only but
+        // selectable text view keeps accepting focus.
+        #[method(acceptsFirstResponder)]
+        fn accepts_first_responder(&self) -> bool {
+            self.can_take_focus()
+        }
         // An NSTextView is its OWN editor (no field-editor cell), so first-
         // responder transitions ARE the focus events. Drive `StateBits::FOCUSED`
         // from them so the chrome container's `state focused` border (the focus
         // ring) resolves — like the single-line Field.
         #[method(becomeFirstResponder)]
         fn become_first_responder(&self) -> bool {
-            let ok: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            // Short-circuit: an inert text view refuses without asking super.
+            let ok: bool =
+                self.can_take_focus() && unsafe { msg_send![super(self), becomeFirstResponder] };
             if ok {
                 if let Some(f) = self.ivars().focus_setter.borrow().as_ref() {
                     f(true);
@@ -1423,6 +1474,14 @@ declare_class!(
 );
 
 impl IdealystTextView {
+    /// Whether this text view may take keyboard focus: unless `set_disabled`
+    /// made it neither editable nor selectable.
+    fn can_take_focus(&self) -> bool {
+        let editable: bool = unsafe { msg_send![self, isEditable] };
+        let selectable: bool = unsafe { msg_send![self, isSelectable] };
+        editable || selectable
+    }
+
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(TextViewIvars {
@@ -2429,6 +2488,42 @@ mod secure_cell_tests {
         let r = centered_drawing_rect(base, natural, insets);
         assert_eq!(r.origin.y, 0.0, "no negative vertical offset");
         assert_eq!(r.size.height, 10.0, "clamped to the box height");
+    }
+}
+
+/// If `view` is focused — it is its window's first responder, or (for an
+/// `NSTextField`) the window's field editor is editing on its behalf —
+/// hand first responder back to the window. Used by `set_disabled`: AppKit
+/// does not drop focus from a control that goes inert under the user, so a
+/// field disabled mid-edit would keep its caret and keep taking keys.
+pub(crate) fn resign_if_first_responder(view: &NSView) {
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window];
+        if window.is_null() {
+            return;
+        }
+        let first: *mut AnyObject = msg_send![window, firstResponder];
+        if first.is_null() {
+            return;
+        }
+        let me = view as *const NSView as *mut AnyObject;
+        let mut owns = first == me;
+        if !owns {
+            // NSTextField edits through the window's shared field editor (an
+            // NSTextView whose delegate is the field), so the field itself is
+            // never the first responder while it is being typed into.
+            let is_text_view: bool = msg_send![first, isKindOfClass: objc2::class!(NSTextView)];
+            if is_text_view {
+                let is_field_editor: bool = msg_send![first, isFieldEditor];
+                if is_field_editor {
+                    let delegate: *mut AnyObject = msg_send![first, delegate];
+                    owns = delegate == me;
+                }
+            }
+        }
+        if owns {
+            let _: bool = msg_send![window, makeFirstResponder: std::ptr::null_mut::<AnyObject>()];
+        }
     }
 }
 

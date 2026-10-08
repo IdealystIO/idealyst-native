@@ -258,6 +258,61 @@ fn click_dispatch_returns_handler_for_clicked_button() {
     assert_eq!(counter.get(), 1, "outside-click should not fire the handler");
 }
 
+/// Regression: `set_disabled` was the trait's no-op default on this
+/// backend, so a disabled clickable node still handed its handler back
+/// from `dispatch_click`. For a `button` that IS the bug — its mount path
+/// relies on the native disable alone (no press-block flag) — so a
+/// disabled button fired. The click must also stop at the disabled node
+/// instead of falling through to an enclosing clickable card. Fails
+/// pre-fix: the inner handler is returned.
+#[test]
+fn regression_cpu_disabled_button_still_fires() {
+    let mut backend = CpuBackend::new(40, 40);
+    let a11y = AccessibilityProps::default();
+    let card_fired = Rc::new(std::cell::Cell::new(false));
+    let cf = card_fired.clone();
+    let mut card = backend.create_pressable(Rc::new(move || cf.set(true)), &a11y);
+    backend.apply_style(
+        &card,
+        &style_with(|s| {
+            s.width = Some(Tokenized::Literal(Length::Px(40.0)));
+            s.height = Some(Tokenized::Literal(Length::Px(40.0)));
+        }),
+    );
+    let inner_fired = Rc::new(std::cell::Cell::new(false));
+    let inf = inner_fired.clone();
+    let inner = backend.create_pressable(Rc::new(move || inf.set(true)), &a11y);
+    backend.apply_style(
+        &inner,
+        &style_with(|s| {
+            s.width = Some(Tokenized::Literal(Length::Px(20.0)));
+            s.height = Some(Tokenized::Literal(Length::Px(20.0)));
+        }),
+    );
+    backend.insert(&mut card, inner);
+    backend.finish(card);
+    let mut surface = MemSurface::new(40, 40);
+    backend.render(&mut surface);
+
+    StyleOps::set_disabled(&mut backend, &inner, true);
+    match backend.dispatch_click(5, 5) {
+        ClickOutcome::Unhandled => {}
+        ClickOutcome::HandlerFired(h) => {
+            h();
+            panic!("a click on a disabled node returned a handler");
+        }
+    }
+    assert!(!inner_fired.get() && !card_fired.get());
+
+    // Re-enabled: the same click fires the inner node again.
+    StyleOps::set_disabled(&mut backend, &inner, false);
+    match backend.dispatch_click(5, 5) {
+        ClickOutcome::HandlerFired(h) => h(),
+        other => panic!("expected HandlerFired, got {:?}", other),
+    }
+    assert!(inner_fired.get() && !card_fired.get());
+}
+
 #[test]
 fn set_animated_f32_opacity_overrides_static() {
     let mut backend = CpuBackend::new(10, 10);

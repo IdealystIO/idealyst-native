@@ -113,8 +113,10 @@ declared as a supertrait so the delegation is visible in the type system
   `ExternalOps::missing_primitive_placeholder`, which is why those traits
   declare `: ExternalOps`.
 - **Container degradation** — `create_pressable`, `create_link`,
-  `create_presence_placeholder`, `create_element` default to a plain
-  container, hence `: ViewOps`.
+  `create_element` default to a plain container, hence `: ViewOps`.
+  `create_presence_placeholder` is the exception: it defaults to
+  `Host::create_anchor`, because a presence must be layout-transparent
+  (see Presence / Portal below).
 - **Lowering defaults** — `create_styled_text` / `update_styled_text`
   concatenate runs into plain text; `update_button_label` lowers to
   `update_text` (hence `ButtonOps: TextOps`);
@@ -560,7 +562,22 @@ a Graphics canvas inside a shadow root is not found.
 `create_presence_placeholder` + `apply_presence` drive
 enter/exit animation for a mounting/unmounting child;
 `create_portal` / `set_portal_hidden` / `release_portal` back
-`overlay` and `anchored_overlay`. Both degrade to containers by default.
+`overlay` and `anchored_overlay`. Portals degrade to containers by default.
+
+The presence placeholder must be **layout-transparent** — the default is
+`Host::create_anchor` (`display: contents` on web, a `runtime_layout`
+contents node on Taffy hosts), so presence's child lays out exactly as if
+it were the direct child of presence's parent. A plain view there is a
+real flex item: Taffy resolves an absolute child's insets against its
+direct layout parent, so a `position: absolute; bottom: …` child landed
+against a zero-height wrapper at the top of its positioned ancestor and
+rendered off screen (the iOS "presence alert never appears" bug). An
+override may choose a different native view class (macOS does, for its
+deep-descent `hitTest:`) but must still register a contents layout node.
+The placeholder is never animated — `apply_presence` targets the child's
+own nodes — and the vocabulary handler applies a non-default a11y bag to
+it through `A11yOps::update_accessibility`, so the default ignores the
+`a11y` argument. Pinned by `runtime-vocabulary/tests/presence_layout.rs`.
 
 ---
 
@@ -609,8 +626,12 @@ Picked by `handles_states_natively()`:
 
 - **`true`** — the backend receives `apply_styled_states(base, overlays)`
   and emits its own state tracking. Web mints CSS pseudo-class rules
-  (`:hover`, `:active`, `:focus`, `[disabled]`) and lets the browser
-  activate them; no Rust-side bookkeeping.
+  (`:hover:not([disabled])`, `:active:not([disabled])`,
+  `:focus:not([disabled])`, `[disabled]`, via `css::state_pseudo`) and
+  lets the browser activate them; no Rust-side bookkeeping. The overlays
+  arrive in state-precedence order (hovered < focused < pressed <
+  disabled); emit them in that order, because the interaction rules tie
+  on specificity.
 - **`false`** — the framework calls `attach_states(node, setter)` with a
   closure that flips per-node state bits. The backend installs native
   touch/focus/press listeners that call the setter; the state signal
@@ -618,7 +639,10 @@ Picked by `handles_states_natively()`:
   the variant set, and the backend gets an ordinary `apply_style`.
 
 Mobile backends use the second path. Both produce the same observable
-behavior.
+behavior. That includes the rule that a disabled control shows no
+hover, press or focus styling. On the second path the resolver applies
+it, so a backend calls the setter with the raw bits and does not need
+to filter them. See [State precedence](styling.md#state-precedence).
 
 ---
 

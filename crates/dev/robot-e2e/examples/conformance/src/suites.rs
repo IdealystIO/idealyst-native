@@ -11,8 +11,9 @@ use robot_e2e::{expect, flow, run_suites, suite, test, ElementKind, Page};
 
 /// Entry point scheduled from `app()` ~1s after mount.
 ///
-/// All five suites run on every backend: primitives, modal, stack
-/// navigation, idea-ui components, and `#[method]` invocation.
+/// All six suites run on every backend: primitives, modal, stack
+/// navigation, idea-ui components, `#[method]` invocation, and media
+/// (image sources + the bottom-anchored menu).
 pub(crate) fn run_all() {
     run_suites(vec![
         primitives_suite(),
@@ -20,6 +21,7 @@ pub(crate) fn run_all() {
         navigation_suite(),
         idea_ui_suite(),
         component_methods_suite(),
+        media_suite(),
     ]);
 }
 
@@ -215,5 +217,36 @@ fn component_methods_suite() -> robot_e2e::Suite {
                 Ok(())
             },
         )],
+    )
+}
+
+/// `image()` source coverage: each local source kind must deliver
+/// `on_load` with its natural size, and an undecodable / unreachable one
+/// `on_error` — the Android "image loads nothing" regression. (The remote
+/// rows are network-dependent, so they're shown but not asserted.) Then
+/// the bottom-anchored menu opens and shrinks; its placement is checked
+/// visually (see `media_page`).
+fn media_suite() -> robot_e2e::Suite {
+    suite(
+        "media (image sources + anchored menu)",
+        vec![flow("every image source loads or errors; menu opens and shrinks")
+            .act(|p: &Page| p.get_by_test_id("goto-media").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("media-marker")).to_be_visible())
+            .poll(|p: &Page| expect(&p.get_by_test_id("img-png-status")).to_have_text("png: load 48x24"))
+            .poll(|p: &Page| expect(&p.get_by_test_id("img-svg-status")).to_have_text("svg: load 32x16"))
+            .poll(|p: &Page| expect(&p.get_by_test_id("img-svg5-status")).to_have_text("svg 5x: load 32x16"))
+            .poll(|p: &Page| expect(&p.get_by_test_id("img-asset-status")).to_have_text("asset: load 48x48"))
+            .poll(|p: &Page| expect(&p.get_by_test_id("img-bad-status")).to_have_text("bad data: error"))
+            .poll(|p: &Page| expect(&p.get_by_test_id("img-broken-status")).to_have_text("broken: error"))
+            .act(|p: &Page| p.get_by_test_id("menu-trigger").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("menu-panel")).to_be_visible())
+            .act(|p: &Page| expect(&p.get_by_test_id("menu-state")).to_have_text("menu rows: 6"))
+            .act(|p: &Page| p.get_by_test_id("menu-shrink").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("menu-state")).to_have_text("menu rows: 2"))
+            .act(|p: &Page| p.get_by_test_id("menu-trigger").click())
+            .act(|p: &Page| expect(&p.get_by_test_id("menu-panel")).not_to_be_visible())
+            .act(|p: &Page| p.get_by_test_id("media-back").click())
+            .poll(|p: &Page| expect(&p.get_by_test_id("media-marker")).not_to_be_visible())
+            .build()],
     )
 }

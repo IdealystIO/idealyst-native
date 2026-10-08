@@ -1402,6 +1402,10 @@ impl caps::StyleOps for MacosBackend {
         };
         MacosBackend::attach_states_impl(self, node, setter)
     }
+
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        MacosBackend::set_disabled_impl(self, node, disabled)
+    }
 }
 
 impl caps::AssetOps for MacosBackend {

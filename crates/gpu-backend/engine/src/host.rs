@@ -436,6 +436,30 @@ impl Host {
         a.from + (a.to - a.from) * eased
     }
 
+    /// Release keyboard focus held by an input that has since gone
+    /// `disabled` (`StyleOps::set_disabled`). Returns `true` when focus
+    /// was dropped.
+    ///
+    /// The backend that receives `set_disabled` cannot reach the host's
+    /// `focused_input`, so the host re-checks the node's `disabled` flag
+    /// at every point focus is consumed: each frame (`tick`), each key
+    /// (`key`) and each press (`pointer_down`). Checking in `key` as well
+    /// as `tick` is what makes it airtight — a keystroke that arrives
+    /// before the next frame after the disable is still refused.
+    /// Mirrors the other backends dropping first responder / DOM focus
+    /// the moment a control goes inert.
+    pub(crate) fn drop_inert_focus(&mut self) -> bool {
+        let inert = self
+            .focused_input
+            .as_ref()
+            .is_some_and(|n| n.borrow().disabled);
+        if inert {
+            self.focused_input = None;
+            self.sync_keyboard();
+        }
+        inert
+    }
+
     /// Reconcile the keyboard's rest value with the current focus
     /// state. Call after any event that may have changed focus
     /// (pointer-down on a non-input, key Escape, …). If the rest
@@ -642,6 +666,10 @@ impl Host {
         if self.chrome_clock_minute.get() != current_clock_minute() {
             self.refresh_clock_glyph();
         }
+        // A focused input that went `disabled` since the last frame
+        // loses focus now — before the keyboard anim is sampled, so the
+        // slide-out it starts is counted as alive below.
+        self.drop_inert_focus();
         // Tick the keyboard slide. Once duration elapses, drop
         // the anim so we stop firing redraws.
         let mut kb_alive = false;
@@ -980,6 +1008,15 @@ impl Host {
         };
         match press {
             ActivePress::SliderDrag { node } => {
+                // A slider that went `disabled` mid-drag ends the drag
+                // instead of tracking on — what a native slider does when
+                // it is disabled under the finger (`UISlider` /
+                // `NSSlider` cancel tracking, `<input type=range
+                // disabled>` stops taking input). `pick_action` already
+                // refuses a disabled slider at press time.
+                if node.borrow().disabled {
+                    return;
+                }
                 self.update_slider_drag(&node);
                 self.active_press = Some(ActivePress::SliderDrag { node });
             }
@@ -1083,6 +1120,7 @@ impl Host {
             return;
         }
         self.pointer = ev.position;
+        self.drop_inert_focus();
         // Tap-to-catch: a press anywhere stops any in-flight
         // momentum scroll, matching `UIScrollView`'s behavior of
         // halting deceleration on touch-down.
@@ -1575,6 +1613,11 @@ impl Host {
                 self.flash_key_press(label);
             }
         }
+        // A disabled input never takes a keystroke, even one that lands
+        // between its `set_disabled` and the next frame's `tick`.
+        if self.drop_inert_focus() {
+            return true;
+        }
         let Some(node) = self.focused_input.clone() else {
             return false;
         };
@@ -1745,6 +1788,15 @@ enum HitAction {
 }
 
 fn pick_action(node: &WgpuNode) -> HitAction {
+    // A disabled node is inert to the pointer: no press / PRESSED state,
+    // no toggle flip, no slider jump, and — the regression this guards —
+    // no input focus (which would raise the keyboard and route keys to a
+    // field the framework has disabled). The vocabulary's own press block
+    // and edit gate are a second line, not a substitute: they cannot stop
+    // the focus or the keyboard.
+    if node.borrow().disabled {
+        return HitAction::Nothing;
+    }
     match &node.borrow().kind {
         NodeKind::Pressable { on_click } => HitAction::Click(on_click.clone()),
         NodeKind::Button { on_click, .. } => HitAction::Click(on_click.clone()),
@@ -2660,6 +2712,186 @@ mod tests {
             PointerButton::Primary,
             "the button slot is restored for the next (primary) press",
         );
+    }
+
+    // -------------------------------------------------------------
+    // disabled — native inertness (focus / keys / presses)
+    // -------------------------------------------------------------
+
+    fn char_key(c: &str) -> KeyEvent {
+        KeyEvent {
+            key: Key::Character,
+            text: Some(c.to_string()),
+            modifiers: Default::default(),
+            pressed: true,
+        }
+    }
+
+    fn primary_press(at: (f32, f32)) -> PointerEvent {
+        PointerEvent { id: render_api::PointerId::MOUSE, button: PointerButton::Primary, position: at }
+    }
+
+    /// A host whose root is a single `text_input` laid out 100×100, plus
+    /// the log its `on_change` writes into.
+    fn host_with_text_input() -> (Host, WgpuNode, Rc<RefCell<Vec<String>>>) {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let edits: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let e = edits.clone();
+        let input = {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            let input = b.create_text_input_impl(
+                "",
+                None,
+                Rc::new(move |v: String| e.borrow_mut().push(v)),
+                None,
+                None,
+                false,
+                &Default::default(),
+            );
+            b.finish_impl(input.clone());
+            input
+        };
+        force_layout(host.backend(), &input, 100.0, 100.0);
+        host.set_viewport(400.0, 800.0);
+        (host, input, edits)
+    }
+
+    /// Regression: on the GPU backend `set_disabled` only flipped the
+    /// DISABLED *style* bit, so a disabled `text_input` still took focus
+    /// on click (raising the on-screen keyboard) and every keystroke
+    /// reached it. The vocabulary's edit gate swallowed the resulting
+    /// `on_change`, but the field was still focusable and editable at the
+    /// native level — unlike web / macOS / iOS / Android. Fails pre-fix:
+    /// the click focuses the field.
+    #[test]
+    fn regression_wgpu_disabled_text_input_still_takes_focus() {
+        let (mut host, input, edits) = host_with_text_input();
+        host.backend().borrow_mut().set_disabled_impl(&input, true);
+
+        host.pointer_down(primary_press((50.0, 50.0)));
+        host.pointer_up(primary_press((50.0, 50.0)));
+        assert!(
+            host.focused_input.is_none(),
+            "a click on a disabled text_input must not focus it",
+        );
+        assert!(!host.keyboard_visible(), "and must not raise the keyboard");
+        host.key(&char_key("a"));
+        assert!(edits.borrow().is_empty(), "no keystroke reaches a disabled field");
+
+        // Re-enabled, the same click focuses and typing edits again — the
+        // flag is a live toggle, not a one-way latch.
+        host.backend().borrow_mut().set_disabled_impl(&input, false);
+        host.pointer_down(primary_press((50.0, 50.0)));
+        assert!(host.focused_input.is_some(), "re-enabled field takes focus");
+        host.key(&char_key("a"));
+        assert_eq!(edits.borrow().as_slice(), &["a".to_string()]);
+    }
+
+    /// Regression: a FOCUSED input that goes disabled kept focus on the
+    /// GPU backend — keys kept arriving and the keyboard stayed up. Other
+    /// backends drop first responder / DOM focus at disable time. Here
+    /// the host re-checks at the next key and the next frame. Fails
+    /// pre-fix: the keystroke after the disable is delivered.
+    #[test]
+    fn regression_wgpu_disabled_input_drops_focus_it_holds() {
+        // Key path: disable, then type before any frame runs.
+        let (mut host, input, edits) = host_with_text_input();
+        host.pointer_down(primary_press((50.0, 50.0)));
+        assert!(host.focused_input.is_some());
+        host.backend().borrow_mut().set_disabled_impl(&input, true);
+        host.key(&char_key("x"));
+        assert!(edits.borrow().is_empty(), "the keystroke after disable is refused");
+        assert!(host.focused_input.is_none(), "and focus is released");
+
+        // Frame path: disable, then the next `tick` releases focus and
+        // starts the keyboard slide-out with no input event at all.
+        let (mut host, input, _edits) = host_with_text_input();
+        host.pointer_down(primary_press((50.0, 50.0)));
+        assert!(host.focused_input.is_some());
+        host.backend().borrow_mut().set_disabled_impl(&input, true);
+        host.tick();
+        assert!(host.focused_input.is_none(), "the next frame drops focus");
+        assert_eq!(host.keyboard_value, 0.0, "and the keyboard heads off-screen");
+    }
+
+    /// A disabled toggle is inert to the pointer at the host: no PRESSED
+    /// capture, no flip. (The vocabulary blocks a disabled *pressable*'s
+    /// callback, but a toggle's native flip is decided here.)
+    #[test]
+    fn regression_wgpu_disabled_toggle_still_flips() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let flips: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let f = flips.clone();
+        let toggle = {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            let t = b.create_toggle_impl(false, Rc::new(move |v| f.borrow_mut().push(v)), &Default::default());
+            b.finish_impl(t.clone());
+            t
+        };
+        force_layout(host.backend(), &toggle, 100.0, 100.0);
+        host.backend().borrow_mut().set_disabled_impl(&toggle, true);
+        host.pointer_down(primary_press((50.0, 50.0)));
+        host.pointer_up(primary_press((50.0, 50.0)));
+        assert!(flips.borrow().is_empty(), "a disabled toggle must not flip");
+        assert!(host.active_press.is_none(), "nor capture the press");
+    }
+
+    /// A slider laid out 100×100 at the origin, range 0..=1, plus the log
+    /// its `on_change` writes into.
+    fn host_with_slider() -> (Host, WgpuNode, Rc<RefCell<Vec<f32>>>) {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let moves: Rc<RefCell<Vec<f32>>> = Rc::new(RefCell::new(Vec::new()));
+        let m = moves.clone();
+        let slider = {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            let s = b.create_slider_impl(0.0, 0.0, 1.0, None, Rc::new(move |v| m.borrow_mut().push(v)), &Default::default());
+            b.finish_impl(s.clone());
+            s
+        };
+        force_layout(host.backend(), &slider, 100.0, 100.0);
+        host.set_viewport(400.0, 800.0);
+        (host, slider, moves)
+    }
+
+    /// A disabled slider is inert to the pointer: no jump on press, no
+    /// drag capture. Before the vocabulary bound `slider(disabled = …)`
+    /// this flag was never set for a slider; `pick_action` reading it is
+    /// what keeps the knob from moving under the pointer.
+    #[test]
+    fn disabled_slider_neither_jumps_nor_drags() {
+        let (mut host, slider, moves) = host_with_slider();
+        host.backend().borrow_mut().set_disabled_impl(&slider, true);
+        host.pointer_down(primary_press((50.0, 50.0)));
+        host.pointer_move(primary_press((80.0, 50.0)));
+        host.pointer_up(primary_press((80.0, 50.0)));
+        assert!(moves.borrow().is_empty(), "a disabled slider must not report a value");
+        assert!(host.active_press.is_none(), "nor capture the drag");
+
+        host.backend().borrow_mut().set_disabled_impl(&slider, false);
+        host.pointer_down(primary_press((50.0, 50.0)));
+        assert_eq!(moves.borrow().len(), 1, "re-enabled, a press jumps the knob");
+        host.pointer_up(primary_press((50.0, 50.0)));
+    }
+
+    /// A slider disabled mid-drag ends the drag: later pointer moves are
+    /// not tracked (native sliders cancel tracking when disabled under the
+    /// finger). Fails without the `SliderDrag` disabled check in
+    /// `pointer_move`: the move after the disable reports a value.
+    #[test]
+    fn regression_wgpu_slider_disabled_mid_drag_keeps_tracking() {
+        let (mut host, slider, moves) = host_with_slider();
+        host.pointer_down(primary_press((20.0, 50.0)));
+        host.pointer_move(primary_press((40.0, 50.0)));
+        let before = moves.borrow().len();
+        assert_eq!(before, 2, "precondition: press + one move tracked");
+        host.backend().borrow_mut().set_disabled_impl(&slider, true);
+        host.pointer_move(primary_press((80.0, 50.0)));
+        assert_eq!(moves.borrow().len(), before, "no value after the slider went inert");
+        assert!(host.active_press.is_none(), "the drag ended");
+        host.pointer_up(primary_press((80.0, 50.0)));
     }
 
     // -------------------------------------------------------------

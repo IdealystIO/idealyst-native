@@ -118,14 +118,10 @@ impl Wake for TaskWaker {
 /// main-thread-only). Crash-loud on panic, matching the scheduler's blocks.
 fn dispatch_poll(id: u64) {
     let block = StackBlock::new(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poll_task(id)));
-        if result.is_err() {
-            // The block runs through libdispatch's `extern "C"` drain; a Rust
-            // panic unwinding past it would abort with no message. Abort
-            // ourselves after logging — crash-loud is the project policy.
-            eprintln!("[backend-apple-core] async-executor task poll panicked — aborting");
-            std::process::abort();
-        }
+        // The block runs through libdispatch's `extern "C"` drain; a Rust
+        // panic unwinding past it would abort with no message. Name the site
+        // and abort ourselves — crash-loud is the project policy.
+        crate::crash::abort_on_panic("async-executor task poll", || poll_task(id));
     });
     // libdispatch needs a heap block: `.copy()` promotes the stack block and
     // refcounts it via `_Block_copy`.

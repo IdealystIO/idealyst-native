@@ -440,7 +440,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
-        Node::Toggle { common, value: v, on_change } => {
+        Node::Toggle { common, value: v, on_change, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let h = handler::<bool, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -448,6 +448,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     test_id,
                     value: value(conn, v),
                     on_change: Rc::new(move |b: bool| h(&b)),
+                    disabled: disabled.map(|d| value(conn, d)),
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::Toggle),
@@ -455,7 +456,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::Slider { common, value: v, on_change, min, max, step } => {
+        Node::Slider { common, value: v, on_change, min, max, step, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let h = handler::<f32, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -466,6 +467,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     min,
                     max,
                     step,
+                    disabled: disabled.map(|d| value(conn, d)),
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::Slider),
@@ -489,7 +491,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure } => {
+        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -512,6 +514,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     // call after the fill (`bundle::autofocus_fill`), not as
                     // a field — the app mounts it unfocused.
                     autofocus: false,
+                    disabled: disabled.map(|d| value(conn, d)),
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::TextInput),
@@ -519,7 +522,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::TextArea { common, value: v, on_change, on_key_down, placeholder, wrap, min_rows, max_rows } => {
+        Node::TextArea { common, value: v, on_change, on_key_down, placeholder, wrap, min_rows, max_rows, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -533,6 +536,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     min_rows,
                     max_rows,
                     autofocus: false,
+                    disabled: disabled.map(|d| value(conn, d)),
                     style,
                     a11y,
                     ref_fill: fill_handle(conn, fill, Held::TextArea),

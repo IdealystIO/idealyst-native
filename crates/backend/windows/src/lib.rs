@@ -1938,6 +1938,38 @@ impl WindowsBackend {
         node
     }
 
+    /// Native inert state for the `disabled` prop (`StyleOps::set_disabled`).
+    /// Was the trait's no-op default, so a disabled `text_input` (a real
+    /// `EDIT` control) still took focus on click and accepted typing — the
+    /// vocabulary's gate only dropped the resulting `on_change`.
+    ///
+    /// Child-window controls (`EDIT`, `BUTTON`, checkbox, trackbar) get
+    /// `EnableWindow(FALSE)`: Win32's own disabled state, which refuses
+    /// mouse + keyboard input, can't be focused by click or Tab, greys the
+    /// control and reports disabled to UIA. Focus the control holds is
+    /// handed back to its parent first — `EnableWindow` does not move the
+    /// focus off a window it disables, and a disabled window holding focus
+    /// leaves the app's keyboard shortcuts dead until the user clicks
+    /// elsewhere. Painted nodes (`view` / `pressable` / `link`) are never
+    /// focus targets on this backend and the vocabulary's press block
+    /// already gates their click, so there is nothing native to change.
+    fn set_disabled(&mut self, node: &WindowsNode, disabled: bool) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
+        use windows::Win32::UI::WindowsAndMessaging::GetParent;
+        let Some(NodeKind::Control { hwnd }) = self.nodes.get(&node.id).map(|m| &m.kind) else {
+            return;
+        };
+        let hwnd = *hwnd;
+        unsafe {
+            if disabled && GetFocus() == hwnd {
+                if let Ok(parent) = GetParent(hwnd) {
+                    let _ = SetFocus(parent);
+                }
+            }
+            let _ = EnableWindow(hwnd, !disabled);
+        }
+    }
+
     fn update_toggle_value(&mut self, node: &WindowsNode, value: bool) {
         unsafe {
             SendMessageW(
@@ -2558,5 +2590,103 @@ mod tests {
         assert!((c[1] - 0.0).abs() < 1e-6);
         assert!((c[2] - 0.2).abs() < 1e-2);
         assert!((c[3] - 0.502).abs() < 1e-2);
+    }
+}
+
+#[cfg(test)]
+mod disabled_tests {
+    use super::*;
+    use runtime_vocabulary::caps::StyleOps;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled, SetFocus};
+    use windows::Win32::UI::WindowsAndMessaging::{WS_OVERLAPPEDWINDOW, WS_VISIBLE};
+
+    /// Regression: `set_disabled` was the trait's no-op default here, so a
+    /// disabled `text_input` — a real `EDIT` control — stayed enabled:
+    /// clickable, focusable, typeable, with only the vocabulary's gate
+    /// dropping the `on_change`. Fails pre-fix: the EDIT is still enabled
+    /// and keeps the focus. Needs a desktop session (real HWNDs), so it
+    /// only runs on a Windows host.
+    #[test]
+    fn regression_windows_disabled_text_input_still_editable() {
+        let title = to_pcwstr("disabled-test");
+        let host = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                title.as_pcwstr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window");
+        let mut be = WindowsBackend::new(host);
+        let input = be.create_text_input("ab", None, Rc::new(|_| {}), None, None, false, &Default::default());
+        let edit = input.hwnd;
+        unsafe {
+            let _ = SetFocus(edit);
+        }
+        assert_eq!(unsafe { GetFocus() }, edit, "baseline: the enabled EDIT takes focus");
+
+        StyleOps::set_disabled(&mut be, &input, true);
+        assert!(!unsafe { IsWindowEnabled(edit) }.as_bool(), "Win32's own disabled state");
+        assert_ne!(unsafe { GetFocus() }, edit, "a field that goes disabled drops its focus");
+
+        StyleOps::set_disabled(&mut be, &input, false);
+        assert!(unsafe { IsWindowEnabled(edit) }.as_bool(), "re-enabled: a live toggle, not a latch");
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    /// `toggle` (`BS_AUTOCHECKBOX`) and `slider` (trackbar) are child
+    /// controls too: `set_disabled` puts them in Win32's disabled state and
+    /// takes focus off them. Before the vocabulary bound `disabled` on these
+    /// primitives, `set_disabled` never reached them. Needs a desktop
+    /// session (real HWNDs), so it only runs on a Windows host.
+    #[test]
+    fn disabled_toggle_and_slider_are_not_enabled() {
+        use runtime_vocabulary::caps::{SliderOps, ToggleOps};
+        let title = to_pcwstr("disabled-controls-test");
+        let host = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                title.as_pcwstr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window");
+        let mut be = WindowsBackend::new(host);
+        let toggle = be.create_toggle(false, Rc::new(|_| {}), &Default::default());
+        let slider = be.create_slider(0.5, 0.0, 1.0, None, Rc::new(|_| {}), &Default::default());
+        for node in [&toggle, &slider] {
+            let hwnd = node.hwnd;
+            unsafe {
+                let _ = SetFocus(hwnd);
+            }
+            StyleOps::set_disabled(&mut be, node, true);
+            assert!(!unsafe { IsWindowEnabled(hwnd) }.as_bool(), "Win32's own disabled state");
+            assert_ne!(unsafe { GetFocus() }, hwnd, "a control that goes disabled drops its focus");
+            StyleOps::set_disabled(&mut be, node, false);
+            assert!(unsafe { IsWindowEnabled(hwnd) }.as_bool(), "re-enabled");
+        }
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
     }
 }

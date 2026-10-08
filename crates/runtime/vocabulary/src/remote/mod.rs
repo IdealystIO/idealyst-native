@@ -75,7 +75,9 @@ pub mod wasm;
 /// - 1: every value through postcard (implicit: those bundles report none).
 /// - 2: a list of numbers is one little-endian byte run ([`bulk`]).
 /// - 3: [`Node::View`] carries `keyboard_avoid` (`keyboard_avoiding_view`).
-pub const CODEC_VERSION: u32 = 3;
+/// - 4: [`Node::TextInput`], [`Node::TextArea`], [`Node::Toggle`] and
+///   [`Node::Slider`] carry `disabled`.
+pub const CODEC_VERSION: u32 = 4;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -176,6 +178,8 @@ pub enum Node {
         value: Val<bool>,
         /// Takes a `bool`.
         on_change: Cb,
+        /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
+        disabled: Option<Val<bool>>,
     },
     Slider {
         common: Common,
@@ -185,6 +189,8 @@ pub enum Node {
         min: f32,
         max: f32,
         step: Option<f32>,
+        /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
+        disabled: Option<Val<bool>>,
     },
     ActivityIndicator {
         common: Common,
@@ -204,6 +210,8 @@ pub enum Node {
         on_focus: Option<Cb>,
         placeholder: Val<Option<String>>,
         secure: Val<bool>,
+        /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
+        disabled: Option<Val<bool>>,
     },
     TextArea {
         common: Common,
@@ -214,6 +222,8 @@ pub enum Node {
         wrap: bool,
         min_rows: Option<u32>,
         max_rows: Option<u32>,
+        /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
+        disabled: Option<Val<bool>>,
     },
     ScrollView {
         common: Common,

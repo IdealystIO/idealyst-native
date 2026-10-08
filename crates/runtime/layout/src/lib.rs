@@ -1859,11 +1859,10 @@ impl LayoutTree {
 
     /// Whether `node`'s current Taffy style is `position: absolute` —
     /// i.e. it's taken out of normal flow and contributes no in-flow
-    /// size to its parent. Read by backends that must adapt a wrapper's
-    /// geometry to whether its (already-styled) child is out of flow:
-    /// the macOS presence placeholder fills its parent only for an
-    /// absolute child (a floating FAB / popover) and otherwise stays
-    /// in-flow so a stack of presences (toasts) lays out like web.
+    /// size to its parent. (The macOS presence placeholder used to read
+    /// this to upgrade itself to `absolute; inset: 0` around an absolute
+    /// child; presence placeholders are now contents nodes, which need no
+    /// such adaptation.)
     pub fn is_absolute(&self, node: LayoutNode) -> bool {
         self.tree
             .style(node.0)
@@ -2663,9 +2662,11 @@ mod tests {
     /// cards must STACK, which requires each presence placeholder to be
     /// IN-FLOW (size to its child), not `position: absolute; inset: 0`.
     ///
-    /// This proves the mechanism the macOS `create_presence_placeholder` fix
-    /// relies on — and `is_absolute`, the getter `insert` reads to decide
-    /// whether to upgrade a placeholder to fill. With in-flow wrappers the two
+    /// Presence placeholders are now `new_contents_node`s (no box at all —
+    /// see `PresenceOps::create_presence_placeholder` and
+    /// `runtime-vocabulary/tests/presence_layout.rs`); this test still pins
+    /// the underlying flex shapes that made the absolute-fill wrapper wrong,
+    /// plus the `is_absolute` getter. With in-flow wrappers the two
     /// cards lay out one below the other and the stack's height is their sum;
     /// with absolute inset:0 wrappers (the old, buggy placeholder) both
     /// collapse onto y=0 and overlap — exactly the "toasts don't stack, no

@@ -28,6 +28,17 @@ pub struct TogglePrim {
     pub test_id: Option<&'static str>,
     pub value: Value<bool>,
     pub on_change: Rc<dyn Fn(bool)>,
+    /// Make the switch inert: `None` (the default) attaches nothing.
+    /// `Some` binds the disabled state — static or live — the way
+    /// [`TextInputPrim::disabled`] does: the backend's `set_disabled`
+    /// (native: not flippable and not keyboard-focusable —
+    /// `<input type=checkbox disabled>`, `NSSwitch.enabled`,
+    /// `UISwitch.enabled`, `Switch.setEnabled`, GTK `set_sensitive`,
+    /// Win32 `EnableWindow`; the wgpu / terminal / CPU backends refuse
+    /// the node in their own focus + hit-test dispatch), the `DISABLED`
+    /// state bit, and a gate that drops `on_change` while disabled on
+    /// every backend.
+    pub disabled: Option<Value<bool>>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(ToggleHandle)>>,
@@ -46,6 +57,11 @@ pub struct SliderPrim {
     pub min: f32,
     pub max: f32,
     pub step: Option<f32>,
+    /// Inert (not draggable, not keyboard-adjustable, `on_change` never
+    /// fires) while `true` — same contract as [`TogglePrim::disabled`]
+    /// (`<input type=range disabled>`, `NSSlider` / `UISlider.enabled`,
+    /// `SeekBar.setEnabled`, GTK `set_sensitive`, Win32 `EnableWindow`).
+    pub disabled: Option<Value<bool>>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(SliderHandle)>>,
@@ -90,6 +106,19 @@ pub struct TextInputPrim {
     /// several autofocus fields mount in one pass, the last one mounted
     /// wins (each `focus()` moves focus).
     pub autofocus: bool,
+    /// Make the field inert: `None` (the default) attaches nothing.
+    /// `Some` binds the field's disabled state — static or live — the way
+    /// [`PressablePrim::disabled`](crate::prims::PressablePrim) does:
+    /// the backend's `set_disabled` (native: not editable and not
+    /// keyboard-focusable — `<input disabled>`, `NSTextField.enabled`,
+    /// `UITextField.enabled`, `View.setEnabled`, GTK `set_sensitive`,
+    /// Win32 `EnableWindow`; the wgpu / terminal / CPU backends refuse
+    /// the node in their own focus + hit-test dispatch), the `DISABLED` state
+    /// bit (so a `state disabled { … }` overlay applies), and a gate that
+    /// drops `on_change` while disabled on every backend, including one
+    /// with no native inert state. `autofocus` is skipped when the field
+    /// mounts disabled.
+    pub disabled: Option<Value<bool>>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(TextInputHandle)>>,
@@ -113,6 +142,9 @@ pub struct TextAreaPrim {
     /// Focus once, right after mount — same contract as
     /// [`TextInputPrim::autofocus`].
     pub autofocus: bool,
+    /// Inert (not editable, not keyboard-focusable) while `true` — same
+    /// contract as [`TextInputPrim::disabled`].
+    pub disabled: Option<Value<bool>>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub ref_fill: Option<Box<dyn FnOnce(TextAreaHandle)>>,

@@ -47,6 +47,13 @@ use runtime_vocabulary::caps::{ScrollOps, TextOps, ViewOps};
 /// GTK must be initialised before any widget is constructed. Headless CI
 /// has no display; skip rather than fail there (same guard the sibling
 /// GTK tests use).
+///
+/// Called ONCE, from the single `#[test]` below. These checks used to be
+/// three `#[test]`s, and cargo runs each on its own thread: GTK only
+/// initialises on the first thread that asks, so `gtk4::init()` returned
+/// `Err` on the other two and they printed "skipping: no display" and
+/// PASSED without running — two of the three regressions were silently
+/// unguarded (or, depending on scheduling, raced the first into a crash).
 fn gtk_ready() -> bool {
     if gtk4::init().is_err() {
         eprintln!("skipping: no display available to initialize GTK");
@@ -55,15 +62,23 @@ fn gtk_ready() -> bool {
     true
 }
 
+/// The one GTK test in this binary: each check is a section, run on the
+/// thread that initialised GTK.
+#[test]
+fn node_handles_are_real() {
+    if !gtk_ready() {
+        return;
+    }
+    regression_view_handle_is_not_the_noop_default();
+    regression_text_handle_is_not_the_noop_default();
+    regression_scroll_view_handle_builds_without_panicking();
+}
+
 fn backend() -> LinuxBackend {
     LinuxBackend::new(gtk4::Window::new())
 }
 
-#[test]
 fn regression_view_handle_is_not_the_noop_default() {
-    if !gtk_ready() {
-        return;
-    }
     let mut b = backend();
     let node = ViewOps::create_view(&mut b, &AccessibilityProps::default());
 
@@ -78,11 +93,7 @@ fn regression_view_handle_is_not_the_noop_default() {
     );
 }
 
-#[test]
 fn regression_text_handle_is_not_the_noop_default() {
-    if !gtk_ready() {
-        return;
-    }
     let mut b = backend();
     let node = TextOps::create_text(&mut b, "hello", &AccessibilityProps::default());
 
@@ -105,11 +116,7 @@ fn regression_text_handle_is_not_the_noop_default() {
 // the widget and assert `scroll_to` moves the vadjustment. Noted here rather
 // than left as a silent gap: a reader comparing the fix to this file would
 // otherwise reasonably assume the scroll case was simply forgotten.
-#[test]
 fn regression_scroll_view_handle_builds_without_panicking() {
-    if !gtk_ready() {
-        return;
-    }
     let mut b = backend();
     let node = ScrollOps::create_scroll_view(&mut b, false, None, &AccessibilityProps::default());
 

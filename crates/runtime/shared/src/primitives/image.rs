@@ -9,8 +9,16 @@
 //!
 //! - **URL-based**: [`image`] takes a free-form `&str`/`String` or a
 //!   closure returning `String`. The framework hands the URL to the
-//!   backend as-is. Bundled / `file://` / `data:` URLs are supported
-//!   by the native loaders; the framework doesn't translate.
+//!   backend as-is; the framework doesn't translate. Web, iOS, macOS and
+//!   Android load `http(s)://` and `data:` URIs (base64 or
+//!   percent-encoded), including SVG — the native backends rasterize SVG
+//!   at the view's displayed size (`backend_image_source`). An undecodable
+//!   or unsupported source, or an unregistered asset id, fires `on_error`.
+//!   On Android a remote URL needs the app's `internet` capability
+//!   (`[package.metadata.idealyst] capabilities = ["internet"]`, or depend
+//!   on the `net` SDK, which declares it); without it the image fires
+//!   `on_error`. The backend deliberately doesn't declare it, so apps that
+//!   never load remote images don't ask for the permission.
 //! - **Asset-based**: [`image_asset`] takes a declarative
 //!   [`Asset<kinds::Image>`](crate::assets::Asset). The walker calls
 //!   `Backend::register_asset` once before `create_image`, and the
@@ -66,10 +74,10 @@ pub struct ImageLoadEvent {
 /// new bitmap loads. Born batched — one reactive cycle per call, like the
 /// touch / hover handlers.
 ///
-/// Delivered on web (`<img>` `load`) and Apple (async URL completion +
-/// synchronous asset assignment). A **no-op on Android** (its `ImageView`
-/// has no URL loader — nothing decodes to observe) and on headless / CPU
-/// backends (no real decode). See [`crate::Backend::install_image_load_handler`].
+/// Delivered on web (`<img>` `load`), Apple and Android (async URL
+/// completion + synchronous asset / `data:` assignment). A no-op on
+/// headless / CPU backends (no real decode). See
+/// [`crate::Backend::install_image_load_handler`].
 pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
 
 /// Installed via [`Bound::<ImageHandle>::on_error`]. Fires when the image
@@ -77,8 +85,8 @@ pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
 /// accepts. Carries no payload (there's nothing to report but the
 /// failure). Born batched like [`ImageLoadHandler`].
 ///
-/// Same backend coverage as [`ImageLoadHandler`]: web (`<img>` `error`)
-/// and Apple (async completion failure); no-op elsewhere. See
+/// Same backend coverage as [`ImageLoadHandler`]: web (`<img>` `error`),
+/// Apple and Android (load / decode failure); no-op elsewhere. See
 /// [`crate::Backend::install_image_error_handler`].
 pub type ImageErrorHandler = Rc<dyn Fn()>;
 

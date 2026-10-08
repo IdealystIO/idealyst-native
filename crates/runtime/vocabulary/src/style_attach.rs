@@ -1606,6 +1606,14 @@ fn layer_share(app: &StyleApplication, axis: &str) -> Rc<StyleRules> {
 /// pairs a natively-handling backend emits as pseudo-class CSS. Reads the
 /// sheet's cached axis slice — allocation-free when no `state` blocks are
 /// declared.
+///
+/// ORDER IS LOAD-BEARING: the slice is sorted by `StateBits::PRECEDENCE`
+/// (hovered < focused < pressed < disabled), and CSS backends emit the
+/// rules in this order, so equal-specificity state rules cascade exactly
+/// as `StyleSheet::resolve`'s state pass merges them. The "disabled
+/// suppresses interaction states" half of the contract is carried by the
+/// selectors (`css::state_pseudo`'s `:not([disabled])`), since the browser
+/// — not this function — decides which states are live.
 pub(crate) fn resolve_state_overlays(app: &StyleApplication) -> Vec<(StateBits, Rc<StyleRules>)> {
     let axes = app.sheet.state_axes();
     if axes.is_empty() {
@@ -1963,6 +1971,55 @@ mod overlay_merge_tests {
         let applied = backend.borrow().applied.last().cloned().expect("a style was applied");
         assert_eq!(applied.padding_top, px(8.0), "md's own property applies");
         assert_eq!(applied.min_height, px(0.0), "sm's min_height survives md");
+    }
+
+    /// Bug: a hovered DISABLED control kept its hover paint on every
+    /// event-driven backend (idea-ui `Select(disabled = true)` showed its
+    /// hover border). Drives the real state-signal path: the backend's
+    /// `attach_states` setter flips HOVERED, then DISABLED, then DISABLED
+    /// off again — the raw hover bit stays set throughout, as a pointer
+    /// resting on the control would leave it.
+    #[test]
+    fn regression_disabled_state_overrides_hovered_on_native() {
+        let world = World::new();
+        let backend = Rc::new(RefCell::new(NativeHost::default()));
+        let hover_bg = || Some(Tokenized::Literal(runtime_shared::Color("#333333".into())));
+        let sheet = Rc::new(
+            StyleSheet::new(|_vs| StyleRules::default())
+                .variant("__state_hovered", "on", move |_vs| StyleRules {
+                    background: hover_bg(),
+                    ..Default::default()
+                })
+                .variant("__state_disabled", "on", |_vs| StyleRules {
+                    opacity: Some(Tokenized::Literal(0.5)),
+                    ..Default::default()
+                }),
+        );
+        let (setter, _owned) = world.enter(|| {
+            collect_owned(|| {
+                attach_style(&backend, &1u32, StyleProp::Sheet(Box::new(StyleApplication::new(sheet.clone()))))
+            })
+        });
+        world.flush();
+        let last = |b: &Rc<RefCell<NativeHost>>| b.borrow().applied.last().cloned().expect("a style was applied");
+
+        world.enter(|| setter(StateBits::HOVERED, true));
+        world.flush();
+        assert_eq!(last(&backend).background, hover_bg(), "control: hover paints");
+
+        world.enter(|| setter(StateBits::DISABLED, true));
+        world.flush();
+        let disabled = last(&backend);
+        assert_eq!(disabled.background, None, "a disabled control shows no hover paint");
+        assert_eq!(disabled.opacity, Some(Tokenized::Literal(0.5)), "the disabled dim applies");
+
+        world.enter(|| setter(StateBits::DISABLED, false));
+        world.flush();
+        assert_eq!(
+            last(&backend).background,
+            hover_bg(),
+            "re-enabled under a resting pointer, the hover comes straight back"
+        );
     }
 
     /// CrewForge want_c5b3c05a, the half the CSS backends see: the state

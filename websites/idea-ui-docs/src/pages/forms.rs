@@ -388,6 +388,12 @@ pub fn field() -> Element {
         )
     };
 
+    // Read-only demo: a published settings value, frozen behind a lock.
+    let published = signal("ops@example.com".to_string());
+    let on_published: Rc<dyn Fn(String)> = Rc::new(move |s| published.set(s));
+    let locked = signal(true);
+    let on_locked: Rc<dyn Fn(bool)> = Rc::new(move |v| locked.set(v));
+
     let validated = signal(String::new());
     let on_validated: Rc<dyn Fn(String)> = Rc::new(move |s| validated.set(s));
     // Live validation: the Field flips to the Danger tone automatically when
@@ -493,6 +499,33 @@ ui! {
             CodePanel(src = r##"Field(value = v, on_change = on_v, size = FieldSize::Lg, leading = Adornment::Icon(icons_lucide::SEARCH))"##.to_string())
         }
     }, ui! {
+        Section(title = "Disabled".to_string()) {
+            P(content = "`disabled = true` makes the field read-only and inert — for a frozen, \
+                published version of a form. The input can't be edited or focused (it drops \
+                focus if it had it), `on_change` never fires, the field dims, and an \
+                `Adornment::button` is disabled with it. It takes a Signal/rx! too, so a lock \
+                toggles it in place. Textarea and Select take the same prop.".to_string())
+            DemoSurface {
+                Switch(label = Some("Locked".to_string()), value = locked, on_change = on_locked)
+                Field(
+                    label = Some("Alert email".to_string()),
+                    value = published,
+                    on_change = on_published,
+                    disabled = rx!(locked.get()),
+                )
+            }
+            CodePanel(src = r##"let locked = signal(true);
+
+ui! {
+    Field(
+        label = Some("Alert email".into()),
+        value = email,
+        on_change = on_email,
+        disabled = rx!(locked.get()),
+    )
+}"##.to_string())
+        }
+    }, ui! {
         Section(title = "Password + visibility toggle".to_string()) {
             P(content = "`secure` is a reactive prop, so `secure = rx!(!visible.get())` flips the \
                 mask in place — no branch around the Field, the input is never rebuilt, and the \
@@ -539,6 +572,7 @@ ui! {
                 Prop { name: "leading",     ty: "Adornment",                 desc: "Icon/element before the input (Adornment::Icon / ::element). Default None." },
                 Prop { name: "trailing",    ty: "Adornment",                 desc: "Icon/element after the input — e.g. a clear button or password-visibility toggle." },
                 Prop { name: "autofocus",   ty: "bool",                      desc: "Focus the input once when the Field mounts (works inside a Modal). The last autofocus field mounted wins. Default false." },
+                Prop { name: "disabled",    ty: "bool",                      desc: "Read-only and inert: not editable, not focusable, on_change never fires, dims, and disables Adornment::button. Takes a Signal/rx! too. Default: false." },
             ])
         }
     }])
@@ -614,6 +648,7 @@ pub fn textarea() -> Element {
                 Prop { name: "rows",        ty: "u32",                       desc: "Resting height in lines — the floor the box grows from. Default: 3." },
                 Prop { name: "max_rows",    ty: "u32",                       desc: "Ceiling in lines before it stops growing and scrolls. 0 (default) = uncapped." },
                 Prop { name: "autofocus",   ty: "bool",                      desc: "Focus the text area once when it mounts. The last autofocus field mounted wins. Default false." },
+                Prop { name: "disabled",    ty: "bool",                      desc: "Read-only and inert: not editable, not focusable, on_change never fires, and it dims. Takes a Signal/rx! too. Default: false." },
             ])
         }
     }])
@@ -673,6 +708,7 @@ pub fn select() -> Element {
                 Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Options to show. SelectOption::new(id, label)." },
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — trigger height." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Text shown on the trigger when no option matches the value." },
+                Prop { name: "disabled",    ty: "bool",               desc: "Read-only: the trigger won't open, leaves keyboard focus, and dims; an open menu closes. Takes a Signal/rx! too. Default: false." },
             ])
         }
     }, ui! {

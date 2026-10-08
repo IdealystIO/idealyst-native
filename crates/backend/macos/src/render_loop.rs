@@ -85,20 +85,9 @@ fn start_inner(f: Box<dyn FnMut(f32) + 'static>) -> MacosHandle {
         // UB. `catch_unwind` exists only to print the panic before the
         // mandatory abort (project policy: crash-loud), so the abort
         // points at the Rust panic site rather than `_CFRunLoopRun`.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend_apple_core::crash::abort_on_panic("macOS render-loop NSTimer", || {
             (state_for_block.borrow_mut())(elapsed);
-        }));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-macos] render-loop panic: {msg}");
-            std::process::abort();
-        }
+        });
     });
     let block = block.copy();
     let timer: Retained<NSObject> = unsafe {

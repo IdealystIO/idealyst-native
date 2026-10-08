@@ -30,6 +30,12 @@
 //! next to a Field, with the min/max-height contributed as a
 //! `with_computed` layer (keyed by `rows`+`max_rows`+`size` so
 //! identical configs share one backend class).
+//!
+//! `disabled` (reactive) makes it read-only and inert exactly like
+//! [`Field`](crate::components::field::Field)'s: the `text_area`
+//! primitive's `disabled` makes the native view non-editable and drops it
+//! from keyboard focus, `on_change` never fires, and the shared input
+//! sheet's `state disabled` overlay dims it.
 
 use std::rc::Rc;
 
@@ -102,6 +108,14 @@ pub struct TextareaProps {
     /// a `Modal`/portal (the focus waits for attach). Default `false`.
     #[prop(static)]
     pub autofocus: bool,
+    /// Make the text area read-only and inert. While `true` it is not
+    /// editable and not keyboard-focusable (it drops focus if it held it),
+    /// `on_change` never fires, `autofocus` is skipped, and it dims (the
+    /// shared Field input sheet's `state disabled` overlay). Default
+    /// `false`. Reactive: pass a `Signal<bool>`/`rx!` and it enables and
+    /// disables in place, without rebuilding the native view.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
 }
 
 impl Default for TextareaProps {
@@ -121,6 +135,7 @@ impl Default for TextareaProps {
             min_height: Reactive::Static(None),
             width: Reactive::Static(None),
             autofocus: false,
+            disabled: Reactive::Static(false),
         }
     }
 }
@@ -249,6 +264,14 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     if let Some(p) = props.placeholder.get() {
         input = input.placeholder(p);
     }
+    // `disabled` rides the primitive (native inert + out of keyboard focus,
+    // the `on_change` gate, the DISABLED state bit that resolves the sheet's
+    // `state disabled` dim). Attached only when it can be disabled.
+    let input = match props.disabled.clone() {
+        Reactive::Static(false) => input,
+        Reactive::Static(true) => input.disabled(true),
+        live => input.disabled(move || live.get()),
+    };
     // INVARIANT (D9): see Field. A live-error-derived (or any live
     // style-driving) border MUST be a reactive style closure (re-reads
     // `.get()` inside the apply Effect) or it snapshots the border color at
@@ -263,16 +286,15 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     };
     let input_node = input.into_element();
 
-    let mut children: Vec<Element> = Vec::with_capacity(3);
-    if let Some(l) = label_node {
-        children.push(l);
+    // `label_node` / `help_node` are `Option<Element>` — an absent one
+    // splats to nothing.
+    ui! {
+        view(style = FieldGroup()) {
+            label_node
+            input_node
+            help_node
+        }
     }
-    children.push(input_node);
-    if let Some(h) = help_node {
-        children.push(h);
-    }
-
-    ui! { view(style = FieldGroup()) { children } }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Form-control handlers: `toggle`, `slider`, `activity_indicator`,
 //! `text_input`, `text_area`.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use runtime_scene::{Element, MountCx};
@@ -17,7 +18,8 @@ use super::{bind_dyn, bind_value, initial_of};
 /// Sequence: `create_toggle(initial, on_change)` → attach_style →
 /// controlled-value write-back binding (one `update_toggle_value` at
 /// mount, then per change — the widget no-ops on same-value sets, so
-/// the round-trip is stable) → ref-fill.
+/// the round-trip is stable) → disabled binding (gate + `set_disabled`
+/// + `DISABLED` bit, same contract as `mount_text_input`) → ref-fill.
 pub fn mount_toggle<H>(cx: &mut MountCx<'_, H>, prim: TogglePrim, _children: Vec<Element>) -> H::Node
 where
     H: ToggleOps + StyleServices + IntrospectionOps,
@@ -26,12 +28,13 @@ where
     let initial = initial_of(&prim.value);
     #[cfg(feature = "robot")]
     let robot_set_toggle = prim.on_change.clone();
+    let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
     // Scope-guard every author callback before the backend stores it —
     // see `callback_guard` for the abort this prevents.
     let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend
         .borrow_mut()
-        .create_toggle(initial, alive.wrap1(prim.on_change), &prim.a11y);
+        .create_toggle(initial, alive.wrap1(on_change), &prim.a11y);
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
@@ -45,9 +48,7 @@ where
             ..Default::default()
         },
     );
-    if let Some(style) = prim.style {
-        attach_style(&backend, &node, style);
-    }
+    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     {
         let b = backend.clone();
         let n = node.clone();
@@ -55,6 +56,7 @@ where
             b.borrow_mut().update_toggle_value(&n, v);
         });
     }
+    bind_disabled(&backend, &node, prim.disabled, disabled_gate, state_setter);
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_toggle_handle(&node);
         fill(handle);
@@ -65,7 +67,8 @@ where
 /// Mount a `slider` — port of `walker/slider.rs::build`, including the
 /// step-snap wrapper: the user's `on_change` receives values snapped to
 /// `step` before dispatch, so every backend produces identical values
-/// regardless of native step handling.
+/// regardless of native step handling. `disabled` binds after the value
+/// write-back, same contract as `mount_toggle`.
 pub fn mount_slider<H>(cx: &mut MountCx<'_, H>, prim: SliderPrim, _children: Vec<Element>) -> H::Node
 where
     H: SliderOps + StyleServices + IntrospectionOps,
@@ -87,6 +90,7 @@ where
     } else {
         prim.on_change.clone()
     };
+    let (on_change_snapped, disabled_gate) = gate_change(&prim.disabled, on_change_snapped);
     let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_slider(
         initial,
@@ -109,9 +113,7 @@ where
             ..Default::default()
         },
     );
-    if let Some(style) = prim.style {
-        attach_style(&backend, &node, style);
-    }
+    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     {
         let b = backend.clone();
         let n = node.clone();
@@ -119,6 +121,7 @@ where
             b.borrow_mut().update_slider_value(&n, v);
         });
     }
+    bind_disabled(&backend, &node, prim.disabled, disabled_gate, state_setter);
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_slider_handle(&node);
         fill(handle);
@@ -178,13 +181,72 @@ where
     node
 }
 
+/// The `disabled` wiring a form control (`text_input`, `text_area`,
+/// `toggle`, `slider`) shares with `pressable`'s
+/// press-block (see `mount_pressable`): wrap `on_change` so it is dropped
+/// while the gate is up. Returns the (possibly wrapped) callback and the
+/// gate, `None` when the author attached no `disabled` (zero cost then).
+///
+/// The gate is what makes "a disabled control never reports a change" hold
+/// on EVERY backend: native `set_disabled` already stops typing where the
+/// toolkit has an inert state, but a backend with none (or an edit that
+/// was in flight when the field went inert) would otherwise still reach
+/// the author.
+fn gate_change<T: 'static>(
+    disabled: &Option<Value<bool>>,
+    on_change: Rc<dyn Fn(T)>,
+) -> (Rc<dyn Fn(T)>, Option<Rc<Cell<bool>>>) {
+    if disabled.is_none() {
+        return (on_change, None);
+    }
+    let gate = Rc::new(Cell::new(false));
+    let g = gate.clone();
+    let wrapped: Rc<dyn Fn(T)> = Rc::new(move |v: T| {
+        if !g.get() {
+            on_change(v);
+        }
+    });
+    (wrapped, Some(gate))
+}
+
+/// Bind a form control's `disabled` once the node exists — the same
+/// order `mount_pressable` uses: the change gate, the backend's native
+/// inert state (`set_disabled`: not editable / flippable / draggable AND
+/// not keyboard-focusable, which also drops focus if the control held it), then the `DISABLED`
+/// state bit so a `state disabled { … }` overlay resolves. Fires once at
+/// mount and then per change of a live source.
+fn bind_disabled<H: StyleServices + 'static>(
+    backend: &Rc<std::cell::RefCell<H>>,
+    node: &H::Node,
+    disabled: Option<Value<bool>>,
+    gate: Option<Rc<Cell<bool>>>,
+    state_setter: Option<Rc<dyn Fn(runtime_shared::StateBits, bool)>>,
+) where
+    H::Node: Clone + 'static,
+{
+    let (Some(disabled), Some(gate)) = (disabled, gate) else {
+        return;
+    };
+    let b = backend.clone();
+    let n = node.clone();
+    bind_value(disabled, move |&d| {
+        gate.set(d);
+        b.borrow_mut().set_disabled(&n, d);
+        if let Some(setter) = state_setter.as_ref() {
+            setter(runtime_shared::StateBits::DISABLED, d);
+        }
+    });
+}
+
 /// Mount a `text_input` — port of
 /// `walker/text_input.rs::build_text_input`.
 ///
 /// Sequence: `create_text_input(initial value/placeholder/secure,
 /// callbacks)` → attach_style → focus notifier → controlled-value
 /// write-back binding (first fire at mount) → `Dyn`-only secure binding
-/// → `Dyn`-only placeholder binding → `autofocus` → ref-fill.
+/// → `Dyn`-only placeholder binding → disabled binding (gate +
+/// `set_disabled` + `DISABLED` bit) → `autofocus` (skipped when mounted
+/// disabled) → ref-fill.
 pub fn mount_text_input<H>(
     cx: &mut MountCx<'_, H>,
     prim: TextInputPrim,
@@ -199,11 +261,12 @@ where
     let initial_placeholder = initial_of(&prim.placeholder);
     #[cfg(feature = "robot")]
     let robot_set_text = prim.on_change.clone();
+    let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
     let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_text_input(
         &initial_value,
         initial_placeholder.as_deref(),
-        alive.wrap1(prim.on_change),
+        alive.wrap1(on_change),
         prim.on_key_down.map(|f| alive.wrap_key(f)),
         prim.on_blur.map(|f| alive.wrap_blur(f)),
         initial_secure,
@@ -239,9 +302,7 @@ where
             },
         )
     };
-    if let Some(style) = prim.style {
-        attach_style(&backend, &node, style);
-    }
+    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     if let Some(on_focus) = prim.on_focus {
         backend
             .borrow_mut()
@@ -268,6 +329,11 @@ where
             b.borrow_mut().update_text_input_placeholder(&n, p.as_deref());
         });
     }
+    let mounts_disabled = {
+        let gate = disabled_gate.clone();
+        bind_disabled(&backend, &node, prim.disabled, disabled_gate, state_setter);
+        gate.is_some_and(|g| g.get())
+    };
     // `autofocus`: one focus through the handle's own ops, after the
     // value/style/focus-notifier wiring so `on_focus(true)` reaches the
     // author and the field shows its value. No timer — `focus()` is
@@ -275,8 +341,10 @@ where
     // hasn't attached yet (a portal, presence) focuses when it lands.
     // Before the ref fill so an author's `on_handle` that blurs wins. The
     // borrow ends before `focus()` runs: a backend that fires its focus
-    // notifier synchronously may re-enter the backend.
-    if prim.autofocus {
+    // notifier synchronously may re-enter the backend. A field that mounts
+    // disabled is not focusable, so it does not take the autofocus either
+    // (web's `<input disabled autofocus>` doesn't; native toolkits would).
+    if prim.autofocus && !mounts_disabled {
         let handle = backend.borrow().make_text_input_handle(&node);
         handle.focus();
     }
@@ -290,7 +358,8 @@ where
 /// Mount a `text_area` — port of
 /// `walker/text_input.rs::build_text_area`. Placeholder/wrap/rows are
 /// create-time config; the controlled `value` write-back binding fires
-/// once at mount then per change.
+/// once at mount then per change, then the `disabled` binding (same
+/// contract as `mount_text_input`).
 pub fn mount_text_area<H>(
     cx: &mut MountCx<'_, H>,
     prim: TextAreaPrim,
@@ -303,6 +372,7 @@ where
     let initial_value = initial_of(&prim.value);
     #[cfg(feature = "robot")]
     let robot_set_text = prim.on_change.clone();
+    let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
     let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_text_area(
         &initial_value,
@@ -310,7 +380,7 @@ where
         prim.wrap,
         prim.min_rows,
         prim.max_rows,
-        alive.wrap1(prim.on_change),
+        alive.wrap1(on_change),
         prim.on_key_down.map(|f| alive.wrap_key(f)),
         &prim.a11y,
     );
@@ -331,9 +401,7 @@ where
             ..Default::default()
         },
     );
-    if let Some(style) = prim.style {
-        attach_style(&backend, &node, style);
-    }
+    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     {
         let b = backend.clone();
         let n = node.clone();
@@ -341,6 +409,11 @@ where
             b.borrow_mut().update_text_area_value(&n, v);
         });
     }
+    let mounts_disabled = {
+        let gate = disabled_gate.clone();
+        bind_disabled(&backend, &node, prim.disabled, disabled_gate, state_setter);
+        gate.is_some_and(|g| g.get())
+    };
     // `autofocus`: one focus through the handle's own ops, after the
     // value/style/focus-notifier wiring so `on_focus(true)` reaches the
     // author and the field shows its value. No timer — `focus()` is
@@ -348,8 +421,9 @@ where
     // hasn't attached yet (a portal, presence) focuses when it lands.
     // Before the ref fill so an author's `on_handle` that blurs wins. The
     // borrow ends before `focus()` runs: a backend that fires its focus
-    // notifier synchronously may re-enter the backend.
-    if prim.autofocus {
+    // notifier synchronously may re-enter the backend. Skipped when the
+    // area mounts disabled — see `mount_text_input`.
+    if prim.autofocus && !mounts_disabled {
         let handle = backend.borrow().make_text_area_handle(&node);
         handle.focus();
     }

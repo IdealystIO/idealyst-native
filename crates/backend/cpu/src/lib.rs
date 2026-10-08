@@ -457,11 +457,23 @@ impl CpuBackend {
     /// the frame cache is populated.
     pub fn dispatch_click(&mut self, x: u32, y: u32) -> ClickOutcome {
         let Some(root) = self.find_root() else { return ClickOutcome::Unhandled };
-        let mut hit: Option<Rc<dyn Fn()>> = None;
+        // `Some(None)` is a hit on a disabled clickable node: the walk
+        // stopped there (an enclosing card must not fire for a click on
+        // its disabled button) but there is nothing to fire.
+        let mut hit: Option<Option<Rc<dyn Fn()>>> = None;
         self.hit_test(root, 0.0, 0.0, x as f32, y as f32, &mut hit);
         match hit {
-            Some(h) => ClickOutcome::HandlerFired(h),
-            None => ClickOutcome::Unhandled,
+            Some(Some(h)) => ClickOutcome::HandlerFired(h),
+            Some(None) | None => ClickOutcome::Unhandled,
+        }
+    }
+
+    /// Native inert state for the `disabled` prop
+    /// (`StyleOps::set_disabled`) — read by `hit_test`. Was the trait's
+    /// no-op default, so a disabled `button` still fired on click.
+    pub(crate) fn set_disabled(&mut self, node: &CpuNode, disabled: bool) {
+        if let Some(data) = self.nodes.get_mut(&node.id) {
+            data.disabled = disabled;
         }
     }
 
@@ -472,7 +484,7 @@ impl CpuBackend {
         parent_y: f32,
         px: f32,
         py: f32,
-        out: &mut Option<Rc<dyn Fn()>>,
+        out: &mut Option<Option<Rc<dyn Fn()>>>,
     ) {
         let Some(data) = self.nodes.get(&id) else { return };
         let frame = self.layout.frame_of(data.layout);
@@ -511,7 +523,7 @@ impl CpuBackend {
             }
         }
         if let Some(handler) = &data.on_click {
-            *out = Some(handler.clone());
+            *out = Some((!data.disabled).then(|| handler.clone()));
         }
     }
 }

@@ -38,6 +38,9 @@
 //! stroke draw-on animation is the one gap (renders fully drawn).
 //! `image` ([`image`]) renders a `gtk::Picture` with `object_fit` →
 //! `content-fit` (local path / `data:` URI / `http(s)` via GIO).
+//! `text_area` is a `GtkTextView` in a `GtkScrolledWindow` with an overlay
+//! placeholder and a `min_rows`/`max_rows` autosize measure (see
+//! [`text_area`]); author colours and font land on the inner view.
 //! `portal` ([`portal`]) mounts a full-viewport flex container into a
 //! window-level `gtk::Overlay`; viewport placements are fully placed,
 //! anchored placement is a documented gap (no per-frame scheduler on the
@@ -120,6 +123,7 @@ mod touch;
 mod virtualizer;
 mod icon;
 mod text;
+mod text_area;
 mod transform;
 mod view;
 
@@ -556,6 +560,17 @@ fn key_name(keyval: gtk4::gdk::Key) -> String {
         .unwrap_or_else(|| keyval.name().map(|n| n.to_string()).unwrap_or_default())
 }
 
+/// The `GtkTextView` inside a `text_area` node (its widget is the
+/// `GtkScrolledWindow` around it). `None` for any other node — a
+/// `scroll_view` is also a `GtkScrolledWindow`, but around a `GtkFixed`.
+pub(crate) fn text_area_view(widget: &gtk4::Widget) -> Option<gtk4::TextView> {
+    widget
+        .downcast_ref::<gtk4::ScrolledWindow>()?
+        .child()?
+        .downcast::<gtk4::TextView>()
+        .ok()
+}
+
 fn widget_measure(
     widget: &gtk4::Widget,
     known: Size<Option<f32>>,
@@ -663,10 +678,23 @@ pub struct LinuxBackend {
     /// Per-node CSS providers for widgets GTK paints ITSELF (`GtkEntry`,
     /// `GtkTextView`). See `apply_native_widget_css`.
     native_css: HashMap<u64, gtk4::CssProvider>,
-    /// Per-text-input re-entrancy guards: set while the backend writes the
-    /// entry's text, so the `changed` signal does not call the author back
-    /// with the value they just set (see `update_text_input_value`).
-    text_input_guards: HashMap<u64, Rc<std::cell::Cell<bool>>>,
+    /// Per-control re-entrancy guards (`text_input`, `text_area`, `toggle`,
+    /// `slider`): set while the backend writes the widget's value, so the
+    /// widget's change signal does not call the author back with the value
+    /// they just set (see `update_text_input_value`). GTK fires `changed` /
+    /// `notify::state` / `value-changed` for programmatic writes too; web
+    /// (`input.value = …`), AppKit and UIKit do not — the guard is what makes
+    /// this backend report USER edits only, like the others.
+    echo_guards: HashMap<u64, Rc<std::cell::Cell<bool>>>,
+    /// The last `StyleRules` applied to each natively-painted control
+    /// (`text_input`, `text_area`), so `apply_native_widget_css` can be
+    /// re-run once the node has ancestors to inherit colour and font from.
+    /// The walker styles a node BEFORE inserting it, so the first pass
+    /// always resolves the cascade against an empty ancestor chain.
+    native_styles: HashMap<u64, Rc<StyleRules>>,
+    /// Per-`text_area` measure state (declared font + content-dirty flag).
+    /// See `text_area.rs`.
+    text_areas: HashMap<u64, text_area::TextAreaState>,
     // The per-backend External table and navigator registry are gone in
     // runtime-v2: SDK payloads mount through `runtime_scene::Registry`
     // (typed by `TypeId`, installed at the app's boot seam) rather than
@@ -757,7 +785,9 @@ impl LinuxBackend {
             parent_of: HashMap::new(),
             input_controllers: HashMap::new(),
             native_css: HashMap::new(),
-            text_input_guards: HashMap::new(),
+            echo_guards: HashMap::new(),
+            native_styles: HashMap::new(),
+            text_areas: HashMap::new(),
             _font_files: Vec::new(),
             root_id: None,
             image_nodes: HashMap::new(),
@@ -1020,6 +1050,7 @@ impl LinuxBackend {
             });
         }
 
+        self.flush_text_area_dirty();
         self.layout.compute(root_layout, width, height);
 
         if std::env::var_os("IDEALYST_GTK_DUMP_LAYOUT").is_some() {
@@ -1165,6 +1196,7 @@ impl LinuxBackend {
         let Some(root_layout) = self.nodes.get(&id).map(|s| s.layout) else {
             return;
         };
+        self.flush_text_area_dirty();
         self.layout.compute(root_layout, width, height);
 
         // Anchored portal: re-pin the content child to its trigger. Read
@@ -1240,7 +1272,7 @@ impl LinuxBackend {
     /// the resolved placement be used as a frame origin directly.
     ///
     /// The geometry itself is deliberately NOT computed here: it comes
-    /// from `resolve_anchored_placement`, the placement algorithm shared
+    /// from `AnchoredPlacer`, the placement algorithm shared
     /// by every backend (collision flip + edge clamp included). Web, iOS
     /// and Android each carried their own copy once and they drifted —
     /// the same author intent placing differently per platform. This
@@ -1296,15 +1328,12 @@ impl LinuxBackend {
             return None;
         };
         let content = self.layout.frame_of(child_layout);
-        let placed = runtime_shared::primitives::portal::resolve_anchored_placement(
-            rect,
-            (content.width, content.height),
-            (vw, vh),
-            spec.side,
-            spec.align,
-            spec.offset,
-            portal::ANCHOR_EDGE_GAP,
-        );
+        // Re-resolved with the CURRENT content size every pass, so a
+        // content resize re-places; the placer's sticky side keeps a
+        // flipped overlay on the side it is on (see `portal::AnchorSpec`).
+        let mut placer = spec.placer.get();
+        let placed = placer.place(rect, (content.width, content.height), (vw, vh));
+        spec.placer.set(placer);
         Some((child_id, placed.x, placed.y))
     }
 
@@ -1469,9 +1498,79 @@ impl LinuxBackend {
     pub(crate) fn detach_input_controllers(&mut self, id: u64, widget: &gtk4::Widget) {
         if let Some(cs) = self.input_controllers.remove(&id) {
             for c in cs {
-                widget.remove_controller(&c);
+                // A `text_area`'s controllers sit on the inner `GtkTextView`,
+                // not on the node's `GtkScrolledWindow`: detach from the
+                // widget each one is actually attached to (removing a
+                // controller from the wrong widget is a GTK critical).
+                match c.widget() {
+                    Some(owner) => owner.remove_controller(&c),
+                    None => widget.remove_controller(&c),
+                }
             }
         }
+    }
+
+    /// Run `write` with the node's echo guard up, so the widget's change
+    /// signal (which GTK fires for programmatic writes) does not call the
+    /// author back. See [`Self::echo_guards`].
+    fn guarded_write(&self, id: u64, write: impl FnOnce()) {
+        let guard = self.echo_guards.get(&id).cloned();
+        if let Some(g) = &guard {
+            g.set(true);
+        }
+        write();
+        if let Some(g) = &guard {
+            g.set(false);
+        }
+    }
+
+    /// Re-mark every text area whose content changed since the last pass, so
+    /// Taffy re-runs its measure instead of serving the cached size. Called at
+    /// the top of every layout pass. See `text_area::TextAreaState::dirty`.
+    fn flush_text_area_dirty(&mut self) {
+        for st in self.text_areas.values() {
+            if st.dirty.replace(false) {
+                self.layout.mark_dirty(st.layout);
+            }
+        }
+    }
+
+    /// The font properties node `id` declares under `style`, each falling
+    /// back independently to the nearest ancestor that declares it — the
+    /// same cascade `ambient_text` resolves, but keeping "nobody declared
+    /// it" distinct from the framework's text defaults. See
+    /// `text_area::DeclaredFont`.
+    fn declared_font(&self, id: u64, style: &StyleRules) -> text_area::DeclaredFont {
+        let mut f = text_area::DeclaredFont {
+            family: style.font_family.as_ref().and_then(text::family_name),
+            size_px: match style.font_size.as_ref().map(|t| t.resolve()) {
+                Some(Length::Px(v)) => Some(v),
+                _ => None,
+            },
+            weight: style.font_weight,
+            italic: style
+                .font_style
+                .map(|s| matches!(s, runtime_shared::FontStyle::Italic)),
+        };
+        let mut cur = self.parent_of.get(&id).copied();
+        while let Some(node_id) = cur {
+            let Some(st) = self.nodes.get(&node_id) else { break };
+            let o = &st.own_text;
+            if f.family.is_none() {
+                f.family = o.family.clone();
+            }
+            if f.size_px.is_none() {
+                f.size_px = o.size_px;
+            }
+            if f.weight.is_none() {
+                f.weight = o.weight;
+            }
+            if f.italic.is_none() {
+                f.italic = o.italic;
+            }
+            cur = self.parent_of.get(&node_id).copied();
+        }
+        f
     }
 
     /// Push the app's resolved style into a widget GTK paints for us.
@@ -1486,12 +1585,25 @@ impl LinuxBackend {
     ///
     /// Scoped to a per-node CSS class, so one entry's colours can never leak
     /// onto another's.
+    ///
+    /// For a `text_area` the node widget is the `GtkScrolledWindow`; the
+    /// `GtkTextView` inside it is what paints text, caret and its own `text`
+    /// fill, so the stylesheet has to land on the VIEW. Matching only the node
+    /// widget (as this did) styled nothing at all for a text area: the desktop
+    /// theme's background, text colour and font showed through every author
+    /// style. Both get the class — the scrolled window so its own theme chrome
+    /// is cleared too; the box itself is painted by the parent (below).
     fn apply_native_widget_css(&mut self, id: u64, style: &StyleRules) {
         let Some(st) = self.nodes.get(&id) else { return };
-        let widget = st.widget.clone();
-        if !(widget.is::<gtk4::Entry>() || widget.is::<gtk4::TextView>()) {
+        let node_widget = st.widget.clone();
+        let area_view = text_area_view(&node_widget);
+        let widget: gtk4::Widget = if node_widget.is::<gtk4::Entry>() {
+            node_widget.clone()
+        } else if let Some(v) = &area_view {
+            v.clone().upcast()
+        } else {
             return;
-        }
+        };
 
         let class = format!("idealyst-native-{id}");
         let bg = style
@@ -1541,6 +1653,23 @@ impl LinuxBackend {
         // coincide and read as one. The box is painted by the parent at the
         // node's Taffy frame instead (see the `set_child_model` call in
         // `apply_style`), which is that same border box.
+        //
+        // Font: only what the author (or an ancestor) DECLARES — see
+        // `text_area::DeclaredFont`. On the class itself, so it reaches the
+        // `text` node and the placeholder by inheritance.
+        //
+        // Placeholder: the text colour at `PLACEHOLDER_ALPHA`, on BOTH the
+        // entry's built-in `placeholder` node and a text area's overlay label,
+        // so the two controls dim identically and the desktop theme's own
+        // placeholder dimming (an `opacity`, reset here) never stacks on top.
+        //
+        // `textview` padding: zeroed so the text starts exactly at the view's
+        // content corner — where the placeholder overlay is pinned and what
+        // the autosize measure assumes. Author padding lives on the scrolled
+        // window's margins (`apply_style` step 1a), like every leaf.
+        let font = self.declared_font(id, style);
+        let mut ph = fg;
+        ph[3] *= text_area::PLACEHOLDER_ALPHA;
         let css = format!(
             ".{class}, .{class} > text {{ background-image: none; \
              background-color: rgba(0,0,0,0); color: {fg}; caret-color: {fg}; \
@@ -1548,13 +1677,29 @@ impl LinuxBackend {
              min-height: 0; min-width: 0; \
              outline: none; outline-width: 0; outline-style: none; \
              box-shadow: none; }} \
+             .{class} {{ {font_css}}} \
+             textview.{class} {{ padding: 0; }} \
+             .{class} > text > placeholder, .{class} .{ph_class} {{ \
+             color: {ph}; opacity: 1; }} \
              .{class}:focus, .{class}:focus-visible, .{class}:focus-within, \
              .{class} > text:focus, .{class} > text:focus-visible {{ \
              outline: none; outline-width: 0; outline-style: none; \
              box-shadow: none; }}",
             fg = css_rgba(fg),
+            ph = css_rgba(ph),
+            font_css = font.css(),
+            ph_class = text_area::PLACEHOLDER_CLASS,
         );
         let _ = (bg, border, radius);
+
+        // A text area's measure needs the same font, and a font change
+        // changes its height.
+        if let Some(ta) = self.text_areas.get(&id) {
+            if *ta.font.borrow() != font {
+                *ta.font.borrow_mut() = font;
+                self.layout.mark_dirty(ta.layout);
+            }
+        }
 
         let provider = self.native_css.entry(id).or_insert_with(|| {
             let p = gtk4::CssProvider::new();
@@ -1568,6 +1713,18 @@ impl LinuxBackend {
         provider.load_from_data(&css);
         if !widget.has_css_class(&class) {
             widget.add_css_class(&class);
+        }
+        if area_view.is_some() && !node_widget.has_css_class(&class) {
+            node_widget.add_css_class(&class);
+        }
+    }
+
+    /// Re-run [`Self::apply_native_widget_css`] with the node's last style —
+    /// after it gains ancestors (`insert`) or an ancestor's inheritable text
+    /// properties change (`refresh_inherited_text`).
+    fn reapply_native_widget_css(&mut self, id: u64) {
+        if let Some(style) = self.native_styles.get(&id).cloned() {
+            self.apply_native_widget_css(id, &style);
         }
     }
 
@@ -1673,6 +1830,7 @@ impl LinuxBackend {
                             ic.set_color(inherited.color);
                         }
                     }
+                    self.reapply_native_widget_css(kid);
                 }
             }
             self.refresh_inherited_text(kid);
@@ -1899,6 +2057,9 @@ impl LinuxBackend {
         }
         self.children.entry(parent.id).or_default().push(child.id);
         self.parent_of.insert(child.id, parent.id);
+        // A native control styled before it had ancestors resolved its
+        // inherited colour / font against nothing; resolve again now.
+        self.reapply_native_widget_css(child.id);
 
         // GTK attach. `finish`/`relayout` writes the real transform.
         // Most parents are IdealystView; ScrolledWindow routes to its
@@ -2166,16 +2327,24 @@ impl LinuxBackend {
                 }
             }
             NodeKind::Other => {
-                // Widgets GTK paints itself (`GtkEntry`, `GtkTextView`) take
-                // the app's colours rather than the desktop theme's.
+                // Widgets GTK paints itself (`GtkEntry`, a `text_area`'s
+                // `GtkTextView`) take the app's colours rather than the
+                // desktop theme's.
+                let is_native_painted = self.nodes.get(&id).is_some_and(|st| {
+                    st.widget.is::<gtk4::Entry>() || text_area_view(&st.widget).is_some()
+                });
+                if is_native_painted {
+                    self.native_styles.insert(id, style.clone());
+                }
                 self.apply_native_widget_css(id, style);
                 // …and their BOX is painted by the parent at this node's Taffy
                 // frame, so it lands on the same border box web draws on rather
                 // than inset by the widget's margins. Same mechanism a text
-                // leaf uses; see `IdealystView::set_child_model`.
+                // leaf uses; see `IdealystView::set_child_model`. For a text
+                // area that frame is the scrolled window's, and the view, its
+                // `text` node and the scrolled window are all transparent
+                // (above), so this paint IS the visible box.
                 if let Some(st) = self.nodes.get(&id) {
-                    let is_native_painted =
-                        st.widget.is::<gtk4::Entry>() || st.widget.is::<gtk4::TextView>();
                     if is_native_painted {
                         let pm = build_paint_model(style);
                         let widget = st.widget.clone();
@@ -2657,7 +2826,7 @@ impl LinuxBackend {
         if !pending_controllers.is_empty() {
             self.input_controllers.insert(node.id, pending_controllers);
         }
-        self.text_input_guards.insert(node.id, echo_guard);
+        self.echo_guards.insert(node.id, echo_guard);
 
         // Give Taffy the entry's intrinsic size. Without this the node has
         // NO height source and the field lays out at zero height — present
@@ -2682,7 +2851,7 @@ impl LinuxBackend {
             if entry.text() == value {
                 return; // no-op writes would still fire `changed`
             }
-            let guard = self.text_input_guards.get(&node.id).cloned();
+            let guard = self.echo_guards.get(&node.id).cloned();
             if let Some(g) = &guard {
                 g.set(true);
             }
@@ -2727,28 +2896,224 @@ impl LinuxBackend {
         }
     }
 
+    /// Make a node natively inert (`StyleOps::set_disabled`) — the
+    /// framework's `disabled` prop on `text_input` / `text_area` /
+    /// `button` / `toggle` / `slider` / `pressable`.
+    ///
+    /// The vocabulary already drops a disabled field's edits and blocks a
+    /// disabled pressable's callback on every backend; what only the
+    /// backend can do is the NATIVE half: the control must stop taking
+    /// focus, editing and input. Without this (it was the trait's no-op
+    /// default here) a disabled `Field` was still a Tab stop you could
+    /// type into, the caret blinked, and the keystrokes were silently
+    /// thrown away by the gate.
+    ///
+    /// - Native GTK controls (`GtkEntry`, the `GtkScrolledWindow` around a
+    ///   `text_area`'s `GtkTextView`, `GtkButton`, `GtkSwitch`, `GtkScale`):
+    ///   `set_sensitive(false)` — GTK's own disabled state, the equivalent
+    ///   of AppKit `setEnabled:NO` / HTML `disabled`. An insensitive widget
+    ///   (and its whole subtree, so the text view inside the scroller too)
+    ///   takes no pointer or key input, refuses `grab_focus`, is skipped
+    ///   by Tab traversal, and reports disabled to AT-SPI.
+    /// - `IdealystView` (`pressable` / `link` / plain views): left
+    ///   sensitive on purpose. It is never a focus target on this backend
+    ///   (GtkWidget's `focusable` defaults to false and nothing turns it
+    ///   on), and the vocabulary's press block already gates its click.
+    ///   Making it insensitive would cascade GTK's `:disabled` theming to
+    ///   every descendant label and kill the hover controllers — a visual
+    ///   no other backend produces (rule: backends converge in output).
+    ///
+    /// Focus the node held is released by GTK itself: making a widget
+    /// insensitive clears the window's focus when it sits on that widget or
+    /// inside it (the `GtkText` in an entry, the `GtkTextView` in the
+    /// scroller) — `tests/disabled_controls.rs` pins this, since a field
+    /// left focused while inert keeps its FOCUSED style lit. The widget is
+    /// already insensitive when that `focus-leave` fires, so a `text_input`
+    /// `on_blur` returning `Keep` (which re-grabs from inside the signal)
+    /// cannot pull focus back onto it.
+    fn set_disabled(&mut self, node: &LinuxNode, disabled: bool) {
+        let widget = &node.widget;
+        if widget.is::<IdealystView>() {
+            return;
+        }
+        widget.set_sensitive(!disabled);
+    }
+
     fn update_text_input_secure(&mut self, node: &LinuxNode, secure: bool) {
         if let Some(entry) = node.widget.downcast_ref::<gtk4::Entry>() {
             entry.set_visibility(!secure);
         }
     }
 
+    /// A `text_area`: a `GtkTextView` inside a `GtkScrolledWindow` (the
+    /// node's widget), wired to the author's handlers.
+    ///
+    /// Used to build the view, set its text, and connect nothing — so the
+    /// buffer's `changed` signal never reached the author: `on_change` never
+    /// fired, a controlled `value` never saw what was typed (and the trait's
+    /// no-op `update_text_area_value` meant it never followed its signal
+    /// either), `on_key_down` was dropped, and `wrap` was ignored (GTK's
+    /// default is no wrapping, the primitive's default is wrapping).
+    /// Same wiring as `create_text_input`: `changed` behind the echo guard,
+    /// a key controller that reports the caret / selection in characters.
+    ///
+    /// It also dropped `placeholder`, `min_rows` and `max_rows` and had no
+    /// measure fn — an empty field showed no hint and an unsized one laid out
+    /// at zero height. The placeholder overlay and the rows-bounded autosize
+    /// measure live in `text_area.rs`.
     fn create_text_area(
         &mut self,
         initial_value: &str,
-        _placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        placeholder: Option<&str>,
+        wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
+        on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
+        use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
+
         let view = gtk4::TextView::new();
-        view.buffer().set_text(initial_value);
+        let buffer = view.buffer();
+        buffer.set_text(initial_value);
+        view.set_wrap_mode(if wrap { gtk4::WrapMode::WordChar } else { gtk4::WrapMode::None });
         let scrolled = gtk4::ScrolledWindow::new();
+        if wrap {
+            // Wrapped lines never overflow sideways; a horizontal scrollbar
+            // would only steal height.
+            scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+        }
         scrolled.set_child(Some(&view));
-        self.wrap(scrolled.upcast::<gtk4::Widget>(), NodeKind::Other)
+
+        // Author `on_change`, behind the echo guard: `update_text_area_value`
+        // calls `set_text`, which fires `changed` (twice — delete, then
+        // insert). Not gated on `is_live_interaction` for the same reason as
+        // the entry: GTK never rewrites the buffer on teardown.
+        let echo_guard = Rc::new(std::cell::Cell::new(false));
+        let guard = echo_guard.clone();
+        buffer.connect_changed(move |b| {
+            if guard.get() {
+                return;
+            }
+            let (start, end) = b.bounds();
+            (on_change)(b.text(&start, &end, true).to_string());
+        });
+
+        let mut pending_controllers: Vec<gtk4::EventController> = Vec::new();
+        if let Some(handler) = on_key_down {
+            let keys = gtk4::EventControllerKey::new();
+            let buffer_for_keys = buffer.clone();
+            keys.connect_key_pressed(move |_, keyval, _code, state| {
+                // Character offsets, like the entry's `selection_bounds`.
+                let (start, end) = buffer_for_keys
+                    .selection_bounds()
+                    .map(|(s, e)| (s.offset() as usize, e.offset() as usize))
+                    .unwrap_or_else(|| {
+                        let p = buffer_for_keys.cursor_position().max(0) as usize;
+                        (p, p)
+                    });
+                let ev = KeyEvent {
+                    key: key_name(keyval),
+                    shift: state.contains(gtk4::gdk::ModifierType::SHIFT_MASK),
+                    ctrl: state.contains(gtk4::gdk::ModifierType::CONTROL_MASK),
+                    alt: state.contains(gtk4::gdk::ModifierType::ALT_MASK),
+                    meta: state.contains(gtk4::gdk::ModifierType::SUPER_MASK),
+                    selection_start: start,
+                    selection_end: end,
+                };
+                // `PreventDefault` stops the key before the text view's own
+                // handling — an Enter that submits inserts no newline.
+                match (handler)(&ev) {
+                    KeyOutcome::PreventDefault => gtk4::glib::Propagation::Stop,
+                    KeyOutcome::Default => gtk4::glib::Propagation::Proceed,
+                }
+            });
+            view.add_controller(keys.clone());
+            pending_controllers.push(keys.upcast());
+        }
+
+        if let Some(p) = placeholder {
+            text_area::install_placeholder(&view, p);
+        }
+
+        let node = self.wrap(scrolled.clone().upcast::<gtk4::Widget>(), NodeKind::Other);
+        if !pending_controllers.is_empty() {
+            self.input_controllers.insert(node.id, pending_controllers);
+        }
+        self.echo_guards.insert(node.id, echo_guard);
+
+        // Autosize the soft-wrap (prose) shape only, like web / macOS / iOS:
+        // `wrap == false` is the code-editor shape, sized by its style.
+        if wrap {
+            if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
+                let font = Rc::new(std::cell::RefCell::new(text_area::DeclaredFont::default()));
+                let dirty = Rc::new(std::cell::Cell::new(false));
+                // Every content change — typing OR a programmatic write —
+                // re-measures. Not echo-guarded: the box must follow the
+                // signal too. `queue_resize` makes GTK re-allocate up to the
+                // root, whose allocation runs the layout pass that consumes
+                // the flag (`flush_text_area_dirty`).
+                let flag = dirty.clone();
+                let weak = scrolled.downgrade();
+                buffer.connect_changed(move |_| {
+                    flag.set(true);
+                    if let Some(sw) = weak.upgrade() {
+                        sw.queue_resize();
+                    }
+                });
+                let (v, f) = (view.clone(), font.clone());
+                self.layout.set_measure_fn(
+                    layout,
+                    Rc::new(move |known, available| {
+                        text_area::measure(&v, &f.borrow(), min_rows, max_rows, known, available)
+                    }),
+                );
+                self.text_areas
+                    .insert(node.id, text_area::TextAreaState { layout, font, dirty });
+            }
+        }
+        node
+    }
+
+    /// Drive a controlled `text_area` from its signal — the multi-line twin
+    /// of [`Self::update_text_input_value`]: skip same-value writes, write
+    /// behind the echo guard, and keep the caret where it was (clamped).
+    pub(crate) fn update_text_area_value(&mut self, node: &LinuxNode, value: &str) {
+        let Some(view) = text_area_view(&node.widget) else { return };
+        let buffer = view.buffer();
+        let (start, end) = buffer.bounds();
+        if buffer.text(&start, &end, true) == value {
+            return; // no-op writes would still fire `changed`
+        }
+        let caret = buffer.cursor_position();
+        self.guarded_write(node.id, || {
+            buffer.set_text(value);
+            let clamped = caret.min(value.chars().count() as i32).max(0);
+            buffer.place_cursor(&buffer.iter_at_offset(clamped));
+        });
+    }
+
+    /// Drive a controlled `toggle` from its signal. Was the trait's no-op
+    /// default, so a `value`-bound switch never followed programmatic
+    /// changes. Behind the echo guard: `set_active` fires `notify::state`,
+    /// which would report the write back as a user flip.
+    pub(crate) fn update_toggle_value(&mut self, node: &LinuxNode, value: bool) {
+        let Some(switch) = node.widget.downcast_ref::<gtk4::Switch>() else { return };
+        if switch.is_active() == value {
+            return;
+        }
+        self.guarded_write(node.id, || switch.set_active(value));
+    }
+
+    /// Drive a controlled `slider` from its signal — same reasons as
+    /// [`Self::update_toggle_value`] (`set_value` fires `value-changed`).
+    pub(crate) fn update_slider_value(&mut self, node: &LinuxNode, value: f32) {
+        let Some(scale) = node.widget.downcast_ref::<gtk4::Scale>() else { return };
+        if scale.value() as f32 == value {
+            return;
+        }
+        self.guarded_write(node.id, || scale.set_value(value as f64));
     }
 
     fn create_toggle(
@@ -2759,9 +3124,17 @@ impl LinuxBackend {
     ) -> LinuxNode {
         let switch = gtk4::Switch::new();
         switch.set_active(initial_value);
+        let echo_guard = Rc::new(std::cell::Cell::new(false));
+        let guard = echo_guard.clone();
         let fire = on_change.clone();
-        switch.connect_state_notify(move |s| (fire)(s.is_active()));
-        self.wrap(switch.upcast::<gtk4::Widget>(), NodeKind::Other)
+        switch.connect_state_notify(move |s| {
+            if !guard.get() {
+                (fire)(s.is_active());
+            }
+        });
+        let node = self.wrap(switch.upcast::<gtk4::Widget>(), NodeKind::Other);
+        self.echo_guards.insert(node.id, echo_guard);
+        node
     }
 
     fn create_slider(
@@ -2769,16 +3142,33 @@ impl LinuxBackend {
         initial_value: f32,
         min: f32,
         max: f32,
-        _step: Option<f32>,
+        step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
+        // The keyboard step (`step_increment`, what an arrow key moves): the
+        // author's `step`, else 1% of the range. It used to be a hard-coded
+        // `1.0`, so on a `0.0..=1.0` slider one arrow press jumped from end
+        // to end. The vocabulary snaps reported values to `step` itself,
+        // identically on every backend.
+        let increment = step
+            .filter(|s| *s > 0.0)
+            .unwrap_or((max - min).abs() / 100.0)
+            .max(f32::EPSILON) as f64;
         let scale =
-            gtk4::Scale::with_range(gtk4::Orientation::Horizontal, min as f64, max as f64, 1.0);
+            gtk4::Scale::with_range(gtk4::Orientation::Horizontal, min as f64, max as f64, increment);
         scale.set_value(initial_value as f64);
+        let echo_guard = Rc::new(std::cell::Cell::new(false));
+        let guard = echo_guard.clone();
         let fire = on_change.clone();
-        scale.connect_value_changed(move |s| (fire)(s.value() as f32));
-        self.wrap(scale.upcast::<gtk4::Widget>(), NodeKind::Other)
+        scale.connect_value_changed(move |s| {
+            if !guard.get() {
+                (fire)(s.value() as f32);
+            }
+        });
+        let node = self.wrap(scale.upcast::<gtk4::Widget>(), NodeKind::Other);
+        self.echo_guards.insert(node.id, echo_guard);
+        node
     }
 
     fn create_scroll_view(
@@ -2987,12 +3377,7 @@ impl LinuxBackend {
 
             self.portal_anchors.insert(
                 node.id,
-                portal::AnchorSpec {
-                    target: target.clone(),
-                    side: *side,
-                    align: *align,
-                    offset: *offset,
-                },
+                portal::AnchorSpec::new(target.clone(), *side, *align, *offset),
             );
         }
         // Base placement flex from the target (author/composition style
@@ -3579,6 +3964,36 @@ mod layout_tests {
             backend.node_frame(backdrop.id).map(|f| (f.0, f.1)),
             Some((0.0, 0.0)),
             "only the tracked child is re-pinned",
+        );
+
+        // --- 9b. Regression (idea-ui `Menu` with a header search): an
+        // overlay that flipped ABOVE because its content was too tall for
+        // the room below must, when the content shrinks, re-place on the
+        // side it is on with its bottom still on the trigger. A stateless
+        // re-resolve each pass re-picked `Below` once the shrunk content
+        // fit there and jumped the panel across the trigger.
+        // 300px viewport: 80px below the trigger (220..300), 200px above.
+        let size_content = |backend: &mut crate::LinuxBackend, h: f32| {
+            backend.apply_style(
+                &content,
+                &std::rc::Rc::new(StyleRules {
+                    width: Some(runtime_shared::Length::Px(120.0).into()),
+                    height: Some(runtime_shared::Length::Px(h).into()),
+                    ..Default::default()
+                }),
+            );
+            let trigger = backend.anchor_trigger_rect(anchored.id);
+            backend.layout_detached_root(anchored.id, 1000.0, 300.0, trigger);
+            backend.node_frame(content.id).unwrap()
+        };
+        let tall = size_content(&mut backend, 150.0);
+        assert_eq!(tall.1 + tall.3, 200.0 - 4.0, "150px doesn't fit the 80px below → flipped above");
+        let short = size_content(&mut backend, 40.0);
+        assert_eq!(
+            (short.1, short.1 + short.3),
+            (156.0, 196.0),
+            "the shrunk overlay must keep its bottom on the trigger (top 156), \
+             not jump below it (224)",
         );
 
         backend.release_portal(&anchored);
@@ -4423,6 +4838,12 @@ mod layout_tests {
         // and the marks inked, while a solid border still inks the gap
         // pixel. Lives here because it needs this thread's GTK.
         crate::view::patterned_border_render_tests::check_gsk_patterned_borders();
+
+        // --- 21. An input-transparent container (an anchored portal's
+        // full-viewport container) lets clicks in its empty area through to
+        // the dismiss-catcher beneath, while its children stay pickable.
+        // Lives here for the same one-GTK-thread reason as 20.
+        crate::view::input_transparency_tests::an_input_transparent_container_passes_clicks_through_but_keeps_its_children();
     }
 }
 

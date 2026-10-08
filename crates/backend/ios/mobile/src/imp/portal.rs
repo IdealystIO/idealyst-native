@@ -281,6 +281,15 @@ pub(crate) fn start_anchor_tracker(
     offset: f32,
 ) -> Retained<NSObject> {
     let popover_for_cb = popover;
+    // Lives as long as the tracker: remembers the side placement settled on
+    // so a shrinking flipped menu stays attached (see
+    // `portal_policy::anchor_tracker_placement`).
+    let placer = std::cell::RefCell::new(runtime_shared::primitives::portal::AnchoredPlacer::new(
+        side,
+        align,
+        offset,
+        crate::portal_policy::ANCHOR_EDGE_GAP,
+    ));
 
     let cb: Rc<dyn Fn()> = Rc::new(move || {
         let Some(trigger) = target.rect() else { return };
@@ -324,12 +333,10 @@ pub(crate) fn start_anchor_tracker(
         // align/side math WITHOUT either, which is why a menu near an
         // edge rendered off-screen on iOS and on-screen on web.
         let (top, left) = crate::portal_policy::anchor_tracker_placement(
+            &mut placer.borrow_mut(),
             trigger,
             (pop_w, pop_h),
             viewport,
-            side,
-            align,
-            offset,
         );
         let cur_top = pop_frame.origin.y as f32;
         let cur_left = pop_frame.origin.x as f32;
@@ -451,20 +458,9 @@ pub(crate) fn schedule_main<F: FnOnce() + 'static>(f: F) {
         // catch_unwind here only prints the panic location before
         // we abort \u{2014} project policy is crash-loud (no surviving
         // post-panic on user-supplied closures scheduled via portal).
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        backend_apple_core::crash::abort_on_panic("portal schedule_main closure", move || {
             boxed();
-        }));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-ios::portal] schedule_main closure panicked: {msg}");
-            std::process::abort();
-        }
+        });
     }
 
     unsafe {

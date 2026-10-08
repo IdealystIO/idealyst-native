@@ -338,6 +338,7 @@ impl TerminalBackend {
                 static_translate_x: None,
                 static_translate_y: None,
                 toggle_value: false,
+                disabled: false,
                 anim_phase: 0.0,
                 z_index: 0.0,
                 input: None,
@@ -409,10 +410,29 @@ impl TerminalBackend {
                 }
                 ClickOutcome::FocusedInput
             }
-            None => {
+            // A click on a disabled control is a click on something
+            // that can't take it: it blurs like a click on empty space.
+            Some(HitTarget::Inert) | None => {
                 self.focused_id = None;
                 ClickOutcome::Unhandled
             }
+        }
+    }
+
+    /// Native inert state for the `disabled` prop
+    /// (`StyleOps::set_disabled`). Was the trait's no-op default, so a
+    /// disabled `text_input` still took focus on click and every keystroke
+    /// edited its `InputState` (cursor moved, value redrawn) even though
+    /// the vocabulary's gate dropped the `on_change`.
+    ///
+    /// The flag is read by `hit_test_walk` (a disabled node is an inert
+    /// hit) and `dispatch_key`; disabling the focused input releases focus
+    /// right here, since this backend owns `focused_id`.
+    pub(crate) fn set_disabled(&mut self, node: &TermNode, disabled: bool) {
+        let Some(data) = self.nodes.get_mut(&node.id) else { return };
+        data.disabled = disabled;
+        if disabled && self.focused_id == Some(node.id) {
+            self.focused_id = None;
         }
     }
 
@@ -511,7 +531,9 @@ impl TerminalBackend {
         if out.is_some() {
             return;
         }
-        if let Some(handler) = &data.on_click {
+        if data.disabled && (data.on_click.is_some() || matches!(data.kind, NodeKind::TextInput)) {
+            *out = Some(HitTarget::Inert);
+        } else if let Some(handler) = &data.on_click {
             *out = Some(HitTarget::Handler(handler.clone()));
         } else if matches!(data.kind, NodeKind::TextInput) {
             *out = Some(HitTarget::FocusInput(id));
@@ -686,6 +708,12 @@ impl TerminalBackend {
         if !matches!(data.kind, NodeKind::TextInput) {
             return false;
         }
+        // Belt to `set_disabled`'s focus release: a disabled input never
+        // takes a keystroke, however it came to hold focus.
+        if data.disabled {
+            self.focused_id = None;
+            return false;
+        }
         // Compute the proposed mutation against a local copy first
         // so the `on_key_down` callback (which may read backend
         // state) doesn't see partially-updated text.
@@ -706,6 +734,12 @@ impl TerminalBackend {
 enum HitTarget {
     Handler(Rc<dyn Fn()>),
     FocusInput(u32),
+    /// The click landed on a `disabled` control. It is still the hit —
+    /// the walk stops here rather than falling through to an enabled
+    /// ancestor's `on_click` (a disabled button inside a pressable card
+    /// must not fire the card, matching a disabled `<button>` on web) —
+    /// but it does nothing: no handler, no focus.
+    Inert,
 }
 
 /// Host-side key event. Re-defined here so the backend doesn't pull
@@ -791,6 +825,116 @@ mod regression_tests {
             data.animated_opacity,
             Some(1.0),
             "animated slot must survive apply_style replay"
+        );
+    }
+
+    fn char_key(c: &str) -> TerminalKey {
+        TerminalKey { key: c.to_string(), shift: false, ctrl: false, alt: false, meta: false }
+    }
+
+    fn input_value(be: &TerminalBackend, node: &TermNode) -> String {
+        be.nodes[&node.id].input.as_ref().expect("text_input state").value.clone()
+    }
+
+    /// Regression: `set_disabled` was the trait's no-op default here, so a
+    /// disabled `text_input` still took focus on click and every keystroke
+    /// edited it (value + cursor redrawn) — the vocabulary's gate only
+    /// dropped the `on_change`. Fails pre-fix: the click focuses the field
+    /// and the key lands in its value.
+    #[test]
+    fn regression_terminal_disabled_text_input_still_editable() {
+        use runtime_vocabulary::caps::{LifecycleOps, TextInputOps};
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 3);
+        let input = be.create_text_input(
+            "ab",
+            None,
+            Rc::new(|_| {}),
+            None,
+            None,
+            false,
+            &AccessibilityProps::default(),
+        );
+        be.finish(input);
+        be.render_to_grid();
+
+        be.set_disabled(&input, true);
+        assert!(matches!(be.dispatch_click(0, 0), ClickOutcome::Unhandled), "no focus on click");
+        assert_eq!(be.focused_id, None);
+        be.dispatch_key(&char_key("x"));
+        assert_eq!(input_value(&be, &input), "ab", "a disabled field is not edited");
+
+        // Enabled again: the same click focuses and typing edits.
+        be.set_disabled(&input, false);
+        assert!(matches!(be.dispatch_click(0, 0), ClickOutcome::FocusedInput));
+        be.dispatch_key(&char_key("x"));
+        assert_eq!(input_value(&be, &input), "abx");
+
+        // Disabling the FOCUSED field releases focus at once, and a key
+        // that follows is not delivered.
+        be.set_disabled(&input, true);
+        assert_eq!(be.focused_id, None, "a field that goes disabled drops its focus");
+        be.dispatch_key(&char_key("y"));
+        assert_eq!(input_value(&be, &input), "abx");
+    }
+
+    /// A click on a disabled pressable is inert at the backend: its own
+    /// handler is not handed back (pre-fix it was — only the vocabulary's
+    /// press block stood between the click and the callback), AND it stops
+    /// there rather than falling through to an enclosing card's `on_click`
+    /// (a disabled `<button>` on web swallows the click too).
+    #[test]
+    fn regression_terminal_disabled_pressable_still_takes_the_click() {
+        use runtime_scene::Host;
+        use runtime_vocabulary::caps::{LifecycleOps, PressableOps};
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 3);
+        let card_fired = Rc::new(std::cell::Cell::new(false));
+        let cf = card_fired.clone();
+        let mut card = be.create_pressable(Rc::new(move || cf.set(true)), &AccessibilityProps::default());
+        let inner_fired = Rc::new(std::cell::Cell::new(false));
+        let inf = inner_fired.clone();
+        let inner = be.create_pressable(Rc::new(move || inf.set(true)), &AccessibilityProps::default());
+        be.apply_style(
+            &inner,
+            &Rc::new(StyleRules {
+                width: Some(Tokenized::Literal(runtime_shared::Length::Px(5.0))),
+                height: Some(Tokenized::Literal(runtime_shared::Length::Px(1.0))),
+                ..Default::default()
+            }),
+        );
+        be.insert(&mut card, inner);
+        be.finish(card);
+        be.render_to_grid();
+        be.set_disabled(&inner, true);
+        match be.dispatch_click(0, 0) {
+            ClickOutcome::HandlerFired(h) => h(),
+            _ => {}
+        }
+        assert!(!inner_fired.get(), "a disabled pressable's handler is not fired");
+        assert!(!card_fired.get(), "the disabled child swallowed the click; the card must not fire");
+    }
+
+    /// A disabled `toggle` is inert at the backend: the click that would
+    /// flip it lands on an inert hit (its flip handler is not handed back).
+    /// Before the vocabulary bound `toggle(disabled = …)`, `set_disabled`
+    /// never reached a toggle, so this path was unreachable.
+    #[test]
+    fn disabled_toggle_is_not_flipped_by_a_click() {
+        use runtime_vocabulary::caps::{LifecycleOps, ToggleOps};
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 3);
+        let flips = Rc::new(std::cell::Cell::new(0u32));
+        let f = flips.clone();
+        let toggle = be.create_toggle(false, Rc::new(move |_| f.set(f.get() + 1)), &AccessibilityProps::default());
+        be.finish(toggle);
+        be.render_to_grid();
+        be.set_disabled(&toggle, true);
+        assert!(matches!(be.dispatch_click(1, 0), ClickOutcome::Unhandled), "inert hit");
+        be.set_disabled(&toggle, false);
+        assert!(
+            matches!(be.dispatch_click(1, 0), ClickOutcome::HandlerFired(_)),
+            "re-enabled, the click reaches the toggle's flip handler"
         );
     }
 

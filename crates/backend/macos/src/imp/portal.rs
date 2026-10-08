@@ -27,7 +27,7 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{CGPoint, CGRect};
 
 use runtime_shared::primitives::portal::{
-    AnchorTarget, ElementAlign, ElementSide, ViewportRect,
+    AnchorTarget, AnchoredPlacer, ElementAlign, ElementSide, ViewportRect, ANCHOR_EDGE_GAP,
 };
 use runtime_shared::scheduling::RafLoop;
 use runtime_shared::{
@@ -198,6 +198,13 @@ pub(crate) fn start_anchor_tracker(
     let _: () = unsafe { msg_send![&*popover, setHidden: true] };
     let mut revealed = false;
     let mut frames: u32 = 0;
+    // Shared placement (side flip + viewport clamp), held for the tracker's
+    // life: it remembers the side it settled on, so when the popover's
+    // CONTENT resizes (a menu's header search filtering its rows) the next
+    // frame re-places it on the side it is already on — a flipped-above
+    // menu that shrinks keeps its bottom on the trigger instead of jumping
+    // below it.
+    let mut placer = AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP);
 
     runtime_shared::scheduling::raf_loop(move || {
         frames = frames.saturating_add(1);
@@ -232,13 +239,19 @@ pub(crate) fn start_anchor_tracker(
             return;
         }
 
-        // Shared measured align/side geometry (runtime_shared) — one
-        // definition across web / iOS / Android / macOS (CLAUDE.md §7).
-        // The tracker re-pins to the requested side without flip/clamp,
-        // matching the iOS tracker; web layers flip+clamp on top.
-        let (top, left) = runtime_shared::primitives::portal::anchor_top_left(
-            trigger, side, align, offset, (pop_w, pop_h),
-        );
+        // The container spans the window from its origin, so its bounds
+        // ARE the viewport the placement clamps against. Not laid out yet
+        // → skip this frame: clamping against a zero viewport would pin the
+        // popover into the top-left corner.
+        let Some(viewport) = container_viewport(&popover) else {
+            return;
+        };
+
+        // The shared placement (runtime_shared) — the same flip + clamp web,
+        // iOS and Linux run, re-resolved every frame with the CURRENT
+        // popover size so a content resize re-places (CLAUDE.md §7).
+        let placed = placer.place(trigger, (pop_w, pop_h), viewport);
+        let (top, left) = (placed.y, placed.x);
 
         // Compare against the LIVE frame rather than a stored "last written"
         // value: the layout pass writes `setFrame:` on every registered view
@@ -264,6 +277,15 @@ pub(crate) fn start_anchor_tracker(
             reveal(&popover);
         }
     })
+}
+
+/// The anchored container's bounds size — the viewport the popover is
+/// placed and clamped in — or `None` while it has no superview or no size.
+fn container_viewport(popover: &NSView) -> Option<(f32, f32)> {
+    let container: Option<Retained<NSView>> = unsafe { popover.superview() };
+    let bounds: CGRect = unsafe { msg_send![&*container?, bounds] };
+    let (w, h) = (bounds.size.width as f32, bounds.size.height as f32);
+    (w > 0.0 && h > 0.0).then_some((w, h))
 }
 
 /// Frames the tracker waits for a measurable trigger before revealing the

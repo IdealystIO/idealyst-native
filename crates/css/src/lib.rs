@@ -256,14 +256,27 @@ pub fn variant_class_key(
 /// Whether a text node's style must mint a text-shadow class variant.
 /// The CSS pseudo-class suffix for an interaction-state bit, so a state
 /// overlay becomes `.ui-<hash><pseudo> { … }`. Shared by the web backend
-/// (`apply_styled_states`) and SSR so hover/press/focus/disabled styles
-/// resolve identically. `None` for unsupported / empty bits.
+/// (`apply_styled_states`), SSR and the premint dump so
+/// hover/press/focus/disabled styles resolve identically. `None` for
+/// unsupported / empty bits.
+///
+/// The interaction pseudos carry `:not([disabled])`: that is the CSS form
+/// of the resolver's DISABLED-suppresses-interaction rule
+/// (`runtime_shared::StateBits::PRECEDENCE`). The browser keeps matching
+/// `:hover` on a disabled element, so without the guard a disabled
+/// control painted its hover border (idea-ui `Select(disabled)`) while
+/// every native backend — whose resolver drops the bits — did not. The
+/// guard's `[disabled]` is the same attribute the disabled overlay itself
+/// selects on. Specificity: the guarded rules are (0,3,0) against the
+/// disabled rule's (0,2,0), which is moot (they can never match the same
+/// element at once); among themselves they tie, so source order — the
+/// precedence-sorted overlay list — ranks hovered < focused < pressed.
 pub fn state_pseudo(state: runtime_shared::StateBits) -> Option<&'static str> {
     use runtime_shared::StateBits;
     match state {
-        StateBits::HOVERED => Some(":hover"),
-        StateBits::PRESSED => Some(":active"),
-        StateBits::FOCUSED => Some(":focus"),
+        StateBits::HOVERED => Some(":hover:not([disabled])"),
+        StateBits::PRESSED => Some(":active:not([disabled])"),
+        StateBits::FOCUSED => Some(":focus:not([disabled])"),
         // Attribute selector, NOT the `:disabled` pseudo-class.
         // `set_disabled` marks the node with the HTML `disabled`
         // *attribute*, and a pressable renders as a `<div>`. The
@@ -2477,13 +2490,21 @@ mod tests {
     /// active. Winner = highest specificity, then latest in sheet order —
     /// the two cascade inputs that decide between same-origin author
     /// rules. Specificity is one class plus one per pseudo-class /
-    /// attribute selector, which covers every selector the group emits.
+    /// attribute selector (a `:not(x)` counts as its argument `x`), which
+    /// covers every selector the group emits.
+    ///
+    /// `dom` is the element's live DOM state: `HOVERED`/`FOCUSED`/`PRESSED`
+    /// stand for the browser's `:hover`/`:focus`/`:active` matching, and
+    /// `DISABLED` for the `disabled` attribute `set_disabled` writes. These
+    /// are deliberately the RAW bits — the browser keeps matching `:hover`
+    /// on a disabled element, so any suppression has to come from the
+    /// emitted selectors themselves.
     fn cascade_value(
         group: &[String],
         prop: &str,
         viewport_w: f32,
         container_w: f32,
-        active: &[&str],
+        dom: runtime_shared::StateBits,
     ) -> Option<String> {
         let mut best: Option<(u8, String)> = None;
         for rule in group {
@@ -2505,10 +2526,11 @@ mod tests {
                 .find(|c| c == ':' || c == '[')
                 .map(|i| &selector[i..])
                 .unwrap_or("");
-            if !pseudo.is_empty() && !active.contains(&pseudo) {
+            if !suffix_matches(pseudo, dom) {
                 continue;
             }
-            let specificity = 1 + u8::from(!pseudo.is_empty());
+            let simple = pseudo.matches(':').count() + pseudo.matches('[').count();
+            let specificity = 1 + (simple - pseudo.matches(":not(").count()) as u8;
             if let Some(v) = body_value(body, prop) {
                 if best.as_ref().map_or(true, |(s, _)| specificity >= *s) {
                     best = Some((specificity, v));
@@ -2516,6 +2538,29 @@ mod tests {
             }
         }
         best.map(|(_, v)| v)
+    }
+
+    /// Whether a class's state suffix (`:hover:not([disabled])`,
+    /// `[disabled]`, …) matches an element in DOM state `dom`.
+    fn suffix_matches(mut suffix: &str, dom: runtime_shared::StateBits) -> bool {
+        use runtime_shared::StateBits;
+        let mut ok = true;
+        while !suffix.is_empty() {
+            let tokens: [(&str, bool); 5] = [
+                (":not([disabled])", !dom.contains(StateBits::DISABLED)),
+                ("[disabled]", dom.contains(StateBits::DISABLED)),
+                (":hover", dom.contains(StateBits::HOVERED)),
+                (":focus", dom.contains(StateBits::FOCUSED)),
+                (":active", dom.contains(StateBits::PRESSED)),
+            ];
+            let (rest, m) = tokens
+                .iter()
+                .find_map(|(t, m)| suffix.strip_prefix(t).map(|r| (r, *m)))
+                .unwrap_or_else(|| panic!("oracle cannot parse selector suffix {suffix:?}"));
+            ok &= m;
+            suffix = rest;
+        }
+        ok
     }
 
     /// The value of `prop` in one `rules_to_css` body.
@@ -2621,10 +2666,10 @@ mod tests {
                             on = on.with(cq_axis.clone(), "on");
                         }
                         let native_css = rules_to_css(&resolve_style(&on));
-                        let active: &[&str] = if hovered { &[":hover"] } else { &[] };
+                        let dom = if hovered { StateBits::HOVERED } else { StateBits::NONE };
                         for prop in ["min-height", "background", "padding-top", "padding-bottom"] {
                             assert_eq!(
-                                cascade_value(&group, prop, width, container_w, active),
+                                cascade_value(&group, prop, width, container_w, dom),
                                 body_value(&native_css, prop),
                                 "{prop} diverges from native resolution \
                                  (selected={selected}, hovered={hovered}, width={width}, \
@@ -2635,6 +2680,90 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Bug: a hovered DISABLED control kept its hover styling (idea-ui
+    /// `Select(disabled = true)` showed its hover border). Two defects on
+    /// the CSS path: `.cls:hover` keeps matching a `[disabled]` element, and
+    /// the state rules stacked in sheet DECLARATION order — so the same
+    /// sheet layered differently here than in `StyleSheet::resolve`.
+    ///
+    /// The live engine's state rules must cascade to exactly what the
+    /// native resolver gives for EVERY combination of the four DOM states,
+    /// with the sheet declaring its states out of precedence order (and a
+    /// `disabled` block that, like SelectTrigger's, never touches the
+    /// property hover sets). The overlays are built the way
+    /// `runtime-vocabulary`'s `resolve_state_overlays` builds them: one
+    /// layer share per `state_axes()` entry, in that slice's order.
+    #[test]
+    fn regression_disabled_state_overrides_hovered_in_css() {
+        use runtime_shared::{resolve_style, StateBits, StyleApplication, StyleSheet, Tokenized};
+        use std::rc::Rc;
+
+        let color = |c: &str| Some(Tokenized::Literal(Color(c.into())));
+        let sheet = Rc::new(
+            StyleSheet::new(move |_| StyleRules {
+                border_left_color: color("#000001"),
+                background: color("#000002"),
+                opacity: Some(Tokenized::Literal(1.0)),
+                ..Default::default()
+            })
+            // Declared disabled-first / pressed-before-focused on purpose.
+            .variant("__state_disabled", "on", move |_| StyleRules {
+                opacity: Some(Tokenized::Literal(0.5)),
+                ..Default::default()
+            })
+            .variant("__state_pressed", "on", move |_| StyleRules {
+                border_left_color: color("#0000aa"),
+                background: color("#0000a2"),
+                ..Default::default()
+            })
+            .variant("__state_hovered", "on", move |_| StyleRules {
+                border_left_color: color("#0000bb"),
+                background: color("#0000b2"),
+                opacity: Some(Tokenized::Literal(0.9)),
+                ..Default::default()
+            })
+            .variant("__state_focused", "on", move |_| StyleRules {
+                border_left_color: color("#0000cc"),
+                ..Default::default()
+            }),
+        );
+        let app = StyleApplication::new(sheet.clone());
+        let overlays: Vec<(StateBits, Rc<StyleRules>)> = sheet
+            .state_axes()
+            .iter()
+            .map(|(bit, axis)| {
+                let share = resolve_style(&app.clone().with(axis.to_string(), "on"))
+                    .restrict_to(&sheet.layer_mask(&app.variants, axis));
+                (*bit, Rc::new(share))
+            })
+            .collect();
+        let group = class_rule_group("ui-s", &resolve_style(&app), &overlays, &[], &[]);
+
+        for mask in 0u8..16 {
+            let dom = StateBits(mask);
+            let mut on = app.clone();
+            for axis in dom.active_axes() {
+                on = on.with(axis, "on");
+            }
+            let native_css = rules_to_css(&resolve_style(&on));
+            for prop in ["border-left-color", "background", "opacity"] {
+                assert_eq!(
+                    cascade_value(&group, prop, 1024.0, 0.0, dom),
+                    body_value(&native_css, prop),
+                    "{prop} diverges from native resolution for {dom:?}; group: {group:#?}"
+                );
+            }
+        }
+
+        // And the native side says what the bug report wants: hovered +
+        // disabled shows the disabled dim and NO hover paint.
+        let hovered_disabled = rules_to_css(&resolve_style(
+            &app.clone().with("__state_hovered", "on").with("__state_disabled", "on"),
+        ));
+        assert_eq!(body_value(&hovered_disabled, "opacity").as_deref(), Some("0.5"));
+        assert_eq!(body_value(&hovered_disabled, "border-left-color").as_deref(), Some("#000001"));
     }
 
     /// A layer that flex-promotes gets the column default from a `:where()`
@@ -2654,7 +2783,10 @@ mod tests {
         );
         let md = breakpoint_media_query(Breakpoint::Md).unwrap();
         assert!(group.contains(&format!("{md} {{ :where(.ui-x) {{ flex-direction: column }} }}")), "{group:#?}");
-        assert!(group.contains(&":where(.ui-x:hover) { flex-direction: column }".to_string()), "{group:#?}");
+        assert!(
+            group.contains(&":where(.ui-x:hover:not([disabled])) { flex-direction: column }".to_string()),
+            "{group:#?}"
+        );
         assert!(group.iter().filter(|r| !r.contains(":where(")).all(|r| !r.contains("flex-direction")), "{group:#?}");
     }
 

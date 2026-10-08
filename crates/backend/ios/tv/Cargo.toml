@@ -6,17 +6,18 @@ license.workspace = true
 
 # tvOS backend. Adds the focus-engine + TVUIKit layer on top of the
 # shared `backend-ios-core` substrate. Mirrors `backend-ios-mobile`
-# in shape: a staticlib + rlib pair, with optional `runtime-server` for
+# in shape: an rlib, with optional `runtime-server` for
 # running as a thin client of an runtime-server dev-server.
 #
 # Skeleton — TV-specific component variants, focus glue, and remote
 # input land here as they're built out.
 
 [lib]
-# Distinct lib name keeps the tvOS staticlib (`libbackend_ios_tv.a`)
-# from colliding with the iOS one in build artifacts.
 name = "backend_ios_tv"
-crate-type = ["staticlib", "rlib"]
+# rlib only, like `backend-ios-mobile`: the final staticlib an app links is
+# its generated wrapper's (or a runtime-server shell's). Nothing links this
+# crate's own `.a`, and building one archives the whole graph again.
+crate-type = ["rlib"]
 
 [features]
 debug-stats = ["runtime-shared/debug-stats"]

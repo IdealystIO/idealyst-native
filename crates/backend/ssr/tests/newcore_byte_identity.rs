@@ -217,7 +217,7 @@ fn corpus_styled_sheet_tokens_and_state_overlay() {
     assert_matches_frozen("styled_sheet_tokens", &new);
     // The token block and the hover overlay actually made it to <head>.
     assert!(new.head_css.contains("--color-surface:#101010;"), "tokens: {}", new.head_css);
-    assert!(new.head_css.contains(":hover{"), "hover overlay: {}", new.head_css);
+    assert!(new.head_css.contains(":hover:not([disabled]){"), "hover overlay: {}", new.head_css);
 }
 
 // ===========================================================================

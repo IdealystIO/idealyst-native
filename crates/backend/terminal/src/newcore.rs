@@ -1029,6 +1029,13 @@ impl caps::DocumentOps for TerminalBackend {}
 // ---------------------------------------------------------------------------
 
 impl caps::StyleOps for TerminalBackend {
+    /// Native inert state for the `disabled` prop — see the inherent
+    /// `TerminalBackend::set_disabled`. The trait default is a no-op,
+    /// which left a disabled field focusable and editable here.
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        TerminalBackend::set_disabled(self, node, disabled)
+    }
+
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Degrade LOUDLY, once. `terminal` has no scrolling gesture model,
         // so `Position::Sticky` renders as `Relative` and

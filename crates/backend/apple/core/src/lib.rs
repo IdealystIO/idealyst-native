@@ -26,6 +26,13 @@ pub mod font;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod log;
 
+/// Panic hook that writes panics through NSLog (stderr is invisible on a
+/// device), plus the `abort_on_panic` firewall for Rust bodies called from
+/// ObjC blocks / libdispatch / CFRunLoop. Installed by
+/// [`scheduler::install_scheduler`].
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod crash;
+
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
 
@@ -85,6 +92,12 @@ pub mod text_control_style;
 /// backends' UIKit/AppKit modules are, so a guard living inside one of them
 /// would never run on the host.
 pub mod cg;
+
+/// CoreGraphics / Foundation glue for the iOS and macOS image views: wraps
+/// a `backend_image_source::SvgRaster` in a `CGImage` and reads `NSData`
+/// bytes. The decoding itself (`data:` URIs, SVG) is the platform-neutral
+/// `backend-image-source` crate, shared with Android.
+pub mod image_source;
 
 pub mod border;
 

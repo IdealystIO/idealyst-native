@@ -209,6 +209,16 @@ pub trait StyleOps: Host {
 
     /// Mark the native widget inert (distinct from the DISABLED style
     /// bit).
+    ///
+    /// The contract every backend implements: while disabled the node
+    /// takes no pointer press, no keyboard focus (click, Tab and
+    /// programmatic), and no key input; focus it holds when it goes
+    /// disabled is released. `button` relies on this alone — its mount
+    /// path has no press-block flag — so the default no-op leaves a
+    /// disabled button live. Native toolkits use their own disabled state
+    /// (HTML `disabled`, `setEnabled`, GTK `set_sensitive`,
+    /// `EnableWindow`); self-drawing backends (wgpu, terminal, CPU) record
+    /// a flag their focus + hit-test dispatch refuses.
     #[allow(unused_variables)]
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
         // default: no-op

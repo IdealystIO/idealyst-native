@@ -363,7 +363,12 @@ A pressable widget with a label and a callback. Label is a
 The button carries a **`disabled` slot** because being inert is
 fundamentally different from being styled "looks disabled": the
 backend marks the native widget as non-interactive (`disabled`
-attr on web, `setEnabled(false)` on Android). Wired via
+attr on web, `setEnabled:NO` on macOS, `setEnabled(false)` on
+Android, `set_sensitive(false)` on GTK, `EnableWindow(FALSE)` on
+Windows; the GPU, terminal and CPU backends refuse it in their own
+hit-testing). A disabled button takes no click and no keyboard focus.
+`button` has no separate press block — this native state is what stops
+the click — so a backend that skips it leaves the button live. Wired via
 `.disabled(move || some_signal.get())` — the closure is reactive.
 The disabled flag also flips the `DISABLED` style state bit so any
 `state disabled { … }` overlay applies.
@@ -433,6 +438,38 @@ handle has the same attach-safe `focus()`. Over a remote bundle,
 `autofocus` crosses as a `focus()` call on the app's handle, which
 every app version already answers.
 
+**`disabled`** makes the field inert, the way `button`'s and
+`pressable`'s `disabled` do. It takes a plain `bool` or a live source
+and toggles in place without rebuilding the input. While it is on:
+
+- the field is not editable and cannot take keyboard focus. If it had
+  focus, it loses it. Each backend uses its native inert state:
+  `<input disabled>` / `<textarea disabled>` on web, a disabled
+  `NSTextField` on macOS (or, for `text_area`, an `NSTextView` that can
+  neither edit nor select), `UITextField.enabled` on iOS, and
+  `View.setEnabled(false)` on Android, which also hides the soft
+  keyboard; `set_sensitive(false)` on Linux/GTK (insensitive widgets
+  refuse focus, skip Tab and take no input); `EnableWindow(FALSE)` on
+  the Windows `EDIT` control. The GPU (wgpu), terminal and CPU
+  backends draw their own fields, so their input dispatch does the
+  same job: a click does not focus a disabled field, keys are not
+  delivered to it, and a field that is disabled while focused loses
+  focus (on wgpu the on-screen keyboard also slides away);
+- `on_change` never fires. The mount handler drops edits itself, as a
+  second guard on top of the native state;
+- the `DISABLED` style state bit is set, so a `state disabled { … }`
+  overlay applies;
+- `autofocus` is skipped when the field mounts disabled.
+
+```rust
+ui! {
+    text_input(value = email, on_change = move |s| email.set(s), disabled = move || locked.get())
+}
+```
+
+`text_area` takes the same `.disabled(…)` setter. Over a remote
+bundle it crosses as a field of the node (`CODEC_VERSION` 4).
+
 **Why controlled?** The rest of the framework's reactive shape
 assumes a single source of truth per piece of state. Uncontrolled
 inputs would create a parallel universe where the input's "real"
@@ -451,7 +488,24 @@ pub fn toggle(
 
 Same shape as `TextInput`, for boolean state. Native widget per
 platform (`<input type="checkbox">` on web, `Switch` on Android,
-`UISwitch` on iOS). Use it for "is the option on/off."
+`UISwitch` on iOS, `NSSwitch` on macOS, `GtkSwitch` on Linux, a
+checkbox on Windows). Use it for "is the option on/off."
+
+**`disabled`** works as it does on `text_input`: a plain `bool` or a
+live source, flipped in place. While it is on, the switch can't be
+flipped by pointer or keyboard and can't take keyboard focus (it loses
+focus if it had it), `on_change` never fires, and the `DISABLED` style
+state bit is set. Each backend uses its native inert state:
+`<input type=checkbox disabled>` on web, `NSSwitch.enabled` on macOS,
+`UISwitch.enabled` on iOS, `Switch.setEnabled(false)` on Android,
+`set_sensitive(false)` on Linux, `EnableWindow(FALSE)` on Windows; the
+wgpu and terminal backends refuse the press in their own hit-testing.
+
+```rust
+ui! {
+    toggle(value = on, on_change = move |v| on.set(v), disabled = move || locked.get())
+}
+```
 
 ### `Slider` — controlled numeric
 
@@ -467,6 +521,15 @@ Controlled numeric input with bounds and an optional step. Same
 controlled-signal pattern. The framework snaps `on_change` values
 to the nearest step before dispatching, so behavior is uniform
 across platforms regardless of native step support.
+
+`slider` takes the same **`disabled`** as `toggle`: while it is on the
+knob can't be dragged or moved with the keyboard, the slider can't
+take focus, `on_change` never fires, and the `DISABLED` state bit is
+set (`<input type=range disabled>`, `NSSlider` / `UISlider.enabled`,
+`SeekBar.setEnabled(false)`, GTK `set_sensitive(false)`, Win32
+`EnableWindow`; on wgpu a press doesn't start a drag, and a slider
+disabled mid-drag stops tracking). Over a remote bundle `disabled`
+crosses on both `toggle` and `slider` (`CODEC_VERSION` 4).
 
 The three controlled inputs (`TextInput`, `Toggle`, `Slider`) all
 share the same reactive shape: parent owns the signal, the
@@ -501,6 +564,31 @@ effect that calls `ImageOps::update_image_src` on change.
 
 `alt`/`accessibilityLabel`/`contentDescription` is set through a
 builder method.
+
+Sources: `http(s)://` URLs, `data:` URIs (base64 or percent-encoded),
+and declared assets (`image_asset`). SVG works on web, iOS, macOS and
+Android. The native backends sniff every source for SVG, then rasterize it
+with resvg at the view's displayed size × screen density. They
+re-rasterize when the view resizes, and the image measures at the SVG's
+intrinsic size. SVG `<text>` is not rendered on native, so convert text to
+outlines. Bitmaps go to the platform decoder (`UIImage`, `NSImage`,
+`BitmapFactory` — PNG, JPEG, WebP, GIF and more). An unsized image measures
+at its natural size: a bitmap's pixel count read as points/dp, or the SVG's
+intrinsic size. A source the backend can't load or decode fires `on_error`
+and logs a warning instead of staying blank. The decoding shared by the
+native backends lives in the `backend-image-source` crate.
+
+Remote URLs load off the UI thread. On Android the app needs the
+`internet` capability (`android.permission.INTERNET`), declared in the
+app's `Cargo.toml` — an app that depends on the `net` SDK already has it:
+
+```toml
+[package.metadata.idealyst]
+capabilities = ["internet"]
+```
+
+Without it a remote image fires `on_error` (the log names the missing
+permission).
 
 ### `activity_indicator` — passive feedback
 

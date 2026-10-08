@@ -1902,6 +1902,125 @@ fn a_state_arm_beats_an_ordinary_axis_on_the_same_property() {
     );
 }
 
+/// Sheet shaped like idea-ui's `SelectTrigger`: hover recolors the
+/// border, focus paints the ring, and `disabled` only DIMS — it never
+/// touches `border_color`. States are declared in idea-ui's usual order.
+fn select_trigger_like_sheet() -> StyleSheet {
+    let border = |c: &str| StyleRules {
+        border_left_color: Some(Tokenized::Literal(Color(c.into()))),
+        ..Default::default()
+    };
+    StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+        opacity: Some(Tokenized::Literal(1.0)),
+        ..border("#rest00")
+    })
+    .variant("__state_hovered", "on", move |_vs| StyleRules {
+        opacity: Some(Tokenized::Literal(0.92)),
+        ..border("#hover0")
+    })
+    .variant("__state_pressed", "on", move |_vs| StyleRules {
+        opacity: Some(Tokenized::Literal(0.85)),
+        ..Default::default()
+    })
+    .variant("__state_focused", "on", move |_vs| border("#focus0"))
+    .variant("__state_disabled", "on", |_vs| StyleRules {
+        opacity: Some(Tokenized::Literal(0.55)),
+        ..Default::default()
+    })
+}
+
+fn border_of(r: &StyleRules) -> Option<String> {
+    r.border_left_color.as_ref().map(|c| c.value().0.clone())
+}
+
+/// Bug: idea-ui `Select(disabled = true)` still showed its hover border
+/// under the pointer. The native resolver merged state overlays in
+/// `BTreeMap` (alphabetical) order — `__state_disabled` < `__state_focused`
+/// < `__state_hovered` < `__state_pressed` — so `hovered` beat `disabled`
+/// (a disabled Button hovered at 0.92 opacity instead of its 0.45 dim),
+/// and nothing at all stopped a hover block that sets a property the
+/// disabled block never touches (SelectTrigger's `border_color`).
+///
+/// Contract (`StateBits::PRECEDENCE`): while `disabled` is on, the
+/// interaction states (hovered / pressed / focused) do not take part in
+/// resolution at all.
+#[test]
+fn regression_disabled_state_overrides_hovered() {
+    let sheet = select_trigger_like_sheet();
+    let vs = |states: &[&str]| {
+        states.iter().fold(VariantSet::new(), |vs, s| vs.with(*s, "on"))
+    };
+
+    let hovered = sheet.resolve(&vs(&["__state_hovered"]));
+    assert_eq!(border_of(&hovered).as_deref(), Some("#hover0"), "control: hover paints its border");
+
+    for interaction in [
+        &["__state_hovered"][..],
+        &["__state_pressed"][..],
+        &["__state_focused"][..],
+        &["__state_hovered", "__state_pressed", "__state_focused"][..],
+    ] {
+        let mut on = interaction.to_vec();
+        on.push("__state_disabled");
+        let r = sheet.resolve(&vs(&on));
+        assert_eq!(
+            border_of(&r).as_deref(),
+            Some("#rest00"),
+            "{interaction:?} + disabled must show NO interaction paint"
+        );
+        assert_eq!(r.opacity, Some(Tokenized::Literal(0.55)), "{interaction:?} + disabled keeps the disabled dim");
+    }
+}
+
+/// A compound naming an interaction state is suppressed by `disabled` too
+/// — the suppression happens on the variant set, before any block or
+/// compound is matched.
+#[test]
+fn regression_disabled_suppresses_interaction_compounds() {
+    let sheet = select_trigger_like_sheet().compound(
+        vec![("__state_hovered", "on"), ("size", "lg")],
+        |_vs| StyleRules {
+            border_left_color: Some(Tokenized::Literal(Color("#cmpnd0".into()))),
+            ..Default::default()
+        },
+    );
+    let base = VariantSet::new().with("size", "lg").with("__state_hovered", "on");
+    assert_eq!(border_of(&sheet.resolve(&base)).as_deref(), Some("#cmpnd0"), "control");
+    let disabled = base.with("__state_disabled", "on");
+    assert_eq!(border_of(&sheet.resolve(&disabled)).as_deref(), Some("#rest00"));
+}
+
+/// The interaction states layer hovered < focused < pressed
+/// (`StateBits::PRECEDENCE`, CSS's LVHFA order), whatever order the sheet
+/// declares them in. They used to merge alphabetically on native
+/// (focused < hovered, so hovering a focused Select hid its focus ring)
+/// and in declaration order on web.
+#[test]
+fn state_overlays_layer_in_precedence_order_not_declaration_order() {
+    let border = |c: &'static str| {
+        move |_vs: &VariantSet| StyleRules {
+            border_left_color: Some(Tokenized::Literal(Color(c.into()))),
+            ..Default::default()
+        }
+    };
+    // Reverse of precedence, so neither declaration nor alphabetical
+    // order can produce the right answer.
+    let sheet = StyleSheet::new(|_vs: &VariantSet| StyleRules::default())
+        .variant("__state_pressed", "on", border("#press0"))
+        .variant("__state_focused", "on", border("#focus0"))
+        .variant("__state_hovered", "on", border("#hover0"));
+    let order: Vec<crate::StateBits> = sheet.state_axes().iter().map(|(b, _)| *b).collect();
+    assert_eq!(order, crate::StateBits::PRECEDENCE[..3].to_vec(), "state_axes() is precedence-sorted");
+
+    let r = |on: &[&str]| {
+        let vs = on.iter().fold(VariantSet::new(), |vs, s| vs.with(*s, "on"));
+        border_of(&sheet.resolve(&vs))
+    };
+    assert_eq!(r(&["__state_hovered", "__state_focused"]).as_deref(), Some("#focus0"), "focus beats hover");
+    assert_eq!(r(&["__state_hovered", "__state_pressed"]).as_deref(), Some("#press0"), "press beats hover");
+    assert_eq!(r(&["__state_focused", "__state_pressed"]).as_deref(), Some("#press0"), "press beats focus");
+}
+
 /// The third option the note above calls "a later resolution step": a
 /// COMPOUND. `resolve` layers compounds after every per-axis overlay, so a
 /// compound beats the alphabetically-later axis without anyone having to

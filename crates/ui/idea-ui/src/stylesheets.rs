@@ -947,8 +947,11 @@ stylesheet! {
         state focused(t) {
             border_color: t.color.focus_ring(),
         }
+        // `Select(disabled = …)`: dimmed like a disabled Field, with the
+        // default arrow instead of the base's hand cursor.
         state disabled(_t) {
             opacity: 0.55,
+            cursor: Cursor::Default,
         }
         transitions {
             background: 250ms EaseInOut,

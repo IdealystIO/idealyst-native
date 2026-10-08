@@ -865,6 +865,10 @@ mod native {
         ) -> Self::Node {
             AndroidBackend::create_pressable_impl(self, flushing0(on_click), a11y)
         }
+
+        fn make_pressable_handle(&self, node: &Self::Node) -> runtime_shared::PressableHandle {
+            AndroidBackend::make_pressable_handle_impl(self, node)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -938,6 +942,25 @@ mod native {
             a11y: &AccessibilityProps,
         ) -> Self::Node {
             AndroidBackend::create_image_impl(self, src, alt, a11y)
+        }
+
+        fn update_image_src(&mut self, node: &Self::Node, src: &str) {
+            AndroidBackend::update_image_src_impl(self, node, src)
+        }
+
+        fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
+            // Dispatch-site glue: a load completion (async for remote URLs)
+            // runs author code, so it needs the post-dispatch flush.
+            let f = handler;
+            let handler: ImageLoadHandler = Rc::new(move |ev| {
+                f(ev);
+                schedule_flush();
+            });
+            AndroidBackend::install_image_load_handler_impl(self, node, handler)
+        }
+
+        fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
+            AndroidBackend::install_image_error_handler_impl(self, node, flushing0(handler))
         }
     }
 

@@ -1,10 +1,10 @@
-//! Pins for the build.rs JS shim minifier (`build_support/js_min.rs`).
+//! Pins for the build.rs JS shim minifier (the `js-min` crate).
 //!
 //! The minifier runs at build time over `runtime/js/*.js`; a bug there
 //! ships broken JS inside the wasm and only surfaces as a runtime shim
 //! failure in the browser. These tests fail the build first.
 
-include!("../build_support/js_min.rs");
+use js_min::minify_js;
 
 use std::path::Path;
 

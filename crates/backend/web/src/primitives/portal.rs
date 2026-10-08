@@ -31,7 +31,7 @@ use crate::WebBackend;
 // ~12-15 KB flt2dec float formatter in every bundle (see css::css_num).
 use css::css_num;
 use runtime_shared::primitives::portal::{
-    AnchorTarget, ElementAlign, ElementSide, PortalHandle, PortalOps, PortalTarget,
+    AnchorTarget, AnchoredPlacer, ElementAlign, ElementSide, PortalHandle, PortalOps, PortalTarget,
     ViewportPlacement, ViewportRect,
 };
 use std::cell::RefCell;
@@ -83,6 +83,14 @@ pub(crate) struct PortalInstance {
     /// have mounted and a paint has measured them.
     #[allow(dead_code)]
     initial_measure_task: Option<runtime_shared::ScheduledTask>,
+    /// Re-places an anchored portal when its OWN rendered size changes
+    /// (a menu's header search filtering its rows, async content
+    /// arriving). Scroll / resize / first-paint only cover the trigger
+    /// and viewport moving; without this, a panel flipped `Above` kept
+    /// its stale top after shrinking and floated away from its trigger.
+    /// Disconnects as it drops (`release`).
+    #[allow(dead_code)]
+    content_resize_watch: Option<ContentResizeWatch>,
     /// Focus-trap `focusin` handler attached to the window. Only
     /// populated when `trap_focus = true`. Routes focus back to the
     /// first focusable child of the portal when it tries to leave
@@ -122,7 +130,7 @@ const PORTAL_ROOT_BASE_STYLE: &str = "position: fixed; z-index: 1000;";
 
 /// Gutter (CSS px) between the portal and the viewport edges when
 /// the anchor-positioning clamp kicks in.
-const EDGE_GAP: f32 = 8.0;
+const EDGE_GAP: f32 = runtime_shared::primitives::portal::ANCHOR_EDGE_GAP;
 
 pub(crate) fn create(
     b: &mut WebBackend,
@@ -190,8 +198,12 @@ pub(crate) fn create(
     //
     // Viewport portals don't need re-measurement — `inset`/`transform`
     // already pin them to the viewport regardless of scroll.
-    let (reposition_scroll_handler, reposition_resize_handler, initial_measure_task) =
-        if let PortalTarget::Anchor { target: anchor_target, side, align, offset } = &target {
+    let (
+        reposition_scroll_handler,
+        reposition_resize_handler,
+        initial_measure_task,
+        content_resize_watch,
+    ) = if let PortalTarget::Anchor { target: anchor_target, side, align, offset } = &target {
             install_anchor_reposition(
                 &portal_root,
                 anchor_target.clone(),
@@ -200,7 +212,7 @@ pub(crate) fn create(
                 *offset,
             )
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
     // ---- Focus trap ----
@@ -225,6 +237,7 @@ pub(crate) fn create(
             reposition_scroll_handler,
             reposition_resize_handler,
             initial_measure_task,
+            content_resize_watch,
             focus_trap_handler,
         },
     );
@@ -391,10 +404,46 @@ fn anchor_vertical(rect: ViewportRect, align: ElementAlign) -> f32 {
     }
 }
 
-/// Install the scroll/resize + first-paint reposition pipeline for an
-/// anchored portal. Returns the scroll/resize closures (so they stay
-/// alive until `release_portal` removes them) and the one-shot rAF
-/// task for the initial measurement.
+/// A `ResizeObserver` on an anchored portal's root, kept alive with its
+/// callback. Dropping it disconnects the observer before the callback
+/// goes, so the browser never delivers into a freed closure.
+pub(crate) struct ContentResizeWatch {
+    observer: web_glue::dom::ResizeObserver,
+    _callback: web_glue::Closure,
+}
+
+impl Drop for ContentResizeWatch {
+    fn drop(&mut self) {
+        self.observer.disconnect();
+    }
+}
+
+/// Observe `portal_root`'s rendered size and call `reposition` whenever
+/// it changes. `None` when the browser has no `ResizeObserver` (then the
+/// portal still re-places on scroll / resize, as before).
+///
+/// Convergence: `reposition` moves the root (`top` / `left`); a move can
+/// change a shrink-to-fit `position: fixed` box's width once (squeezed at
+/// an edge → natural), which delivers one more callback whose re-place
+/// writes the same position. `ResizeObserver` only delivers on a size
+/// change, so it settles instead of looping.
+fn watch_content_resize(
+    portal_root: &web_glue::dom::Element,
+    reposition: Rc<dyn Fn()>,
+) -> Option<ContentResizeWatch> {
+    let callback = web_glue::Closure::new(move |_entries: web_glue::JsValue| {
+        (reposition)();
+    });
+    let observer = web_glue::dom::ResizeObserver::new(callback.as_js().unchecked_ref()).ok()?;
+    observer.observe(portal_root);
+    Some(ContentResizeWatch { observer, _callback: callback })
+}
+
+/// Install the scroll/resize + content-resize + first-paint reposition
+/// pipeline for an anchored portal. Returns the scroll/resize closures
+/// and the content-resize watch (so they stay alive until
+/// `release_portal` removes them) and the one-shot rAF task for the
+/// initial measurement.
 fn install_anchor_reposition(
     portal_root: &web_glue::dom::Element,
     target: AnchorTarget,
@@ -405,12 +454,18 @@ fn install_anchor_reposition(
     Option<web_glue::dom::Listener>,
     Option<web_glue::dom::Listener>,
     Option<runtime_shared::ScheduledTask>,
+    Option<ContentResizeWatch>,
 ) {
     let window = match web_glue::dom::window() {
         Some(w) => w,
-        None => return (None, None, None),
+        None => return (None, None, None, None),
     };
     let portal_html: web_glue::dom::HtmlElement = portal_root.clone().unchecked_into();
+    // One placer per portal, for its whole life: it remembers the side it
+    // settled on, so a content resize re-places on THAT side (a flipped
+    // menu that shrinks keeps its bottom on the trigger) instead of
+    // re-picking from the requested side and jumping across the trigger.
+    let placer = std::cell::Cell::new(AnchoredPlacer::new(side, align, offset, EDGE_GAP));
 
     // Measure-based reposition: read the portal's *rendered* rect via
     // `getBoundingClientRect`, pick the side with enough room for it,
@@ -424,12 +479,12 @@ fn install_anchor_reposition(
         };
         let viewport = viewport_size();
         let portal_size = measure_portal_size(&portal_html);
-        // Shared, host-tested placement resolver (side-flip + measured
-        // position + viewport clamp). Lives in runtime_shared so web/iOS/
-        // Android can't drift (CLAUDE.md §7).
-        let placement = runtime_shared::primitives::portal::resolve_anchored_placement(
-            trigger, portal_size, viewport, side, align, offset, EDGE_GAP,
-        );
+        // Shared, host-tested placement (side-flip + measured position +
+        // viewport clamp + sticky side). Lives in runtime_shared so the
+        // backends can't drift (CLAUDE.md §7).
+        let mut p = placer.get();
+        let placement = p.place(trigger, portal_size, viewport);
+        placer.set(p);
         let style = portal_html.style();
         let _ = style.remove_property("transform");
         let _ = style.set_property("top", &format!("{}px", css_num(placement.y)));
@@ -458,7 +513,14 @@ fn install_anchor_reposition(
         (reposition_initial)();
     });
 
-    (Some(scroll_listener), Some(resize_listener), Some(initial_measure_task))
+    let content_resize_watch = watch_content_resize(portal_root, reposition);
+
+    (
+        Some(scroll_listener),
+        Some(resize_listener),
+        Some(initial_measure_task),
+        content_resize_watch,
+    )
 }
 
 /// Read the portal content's NATURAL rendered `(width, height)` from
@@ -670,6 +732,102 @@ mod tests {
         );
 
         el.remove();
+    }
+
+    /// An anchor handle that always reports the same viewport rect.
+    #[derive(Clone)]
+    struct FixedRect(ViewportRect);
+    impl runtime_shared::AnchorableHandle for FixedRect {
+        fn rect(&self) -> ViewportRect {
+            self.0
+        }
+    }
+
+    /// Await the next `requestAnimationFrame` callback.
+    async fn next_frame() {
+        let resolve: Rc<RefCell<Option<web_glue::js::Function>>> = Rc::new(RefCell::new(None));
+        let promise = web_glue::js::Promise::new(&mut |res, _rej| {
+            *resolve.borrow_mut() = Some(res);
+        });
+        let on_frame = web_glue::Closure::once(move |_| {
+            if let Some(r) = resolve.borrow_mut().take() {
+                let _ = r.call0(&web_glue::JsValue::UNDEFINED);
+            }
+        });
+        web_glue::dom::window().unwrap().request_animation_frame(&on_frame);
+        let _ = web_glue::JsFuture::new(&promise).await;
+    }
+
+    /// Every `ResizeObserver` delivery for a layout change made before this
+    /// call has run: "update the rendering" runs rAF callbacks, then layout,
+    /// then the resize broadcast — so two frames later it is done.
+    async fn resize_observations_delivered() {
+        next_frame().await;
+        next_frame().await;
+    }
+
+    /// Regression (idea-ui `Menu` with a header search): a `Below` menu
+    /// near the bottom of the viewport opens flipped `Above`, bottom on the
+    /// trigger. Filtering its rows shrank the panel, and the portal kept
+    /// its stale `top` — nothing re-placed it on a CONTENT resize (only
+    /// scroll / window resize / the first frame did), so its bottom
+    /// floated away from the trigger. Fails pre-fix on the post-shrink
+    /// bottom-edge assertion.
+    #[wasm_bindgen_test]
+    async fn regression_flipped_menu_reanchors_when_content_shrinks() {
+        crate::install_scheduler();
+        let (_, vh) = viewport_size();
+        // 100px of room below the trigger, plenty above.
+        let trigger = ViewportRect { x: 40.0, y: vh - 140.0, width: 120.0, height: 40.0 };
+        let offset = 4.0;
+        let anchor: runtime_shared::Ref<FixedRect> = runtime_shared::Ref::new();
+        anchor.fill(FixedRect(trigger));
+
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        root.set_attribute("style", PORTAL_ROOT_BASE_STYLE).unwrap();
+        let rows: web_glue::dom::HtmlElement =
+            doc.create_element("div").unwrap().dyn_into().unwrap();
+        rows.set_attribute("style", "width: 200px; height: 200px;").unwrap();
+        root.append_child(&rows).unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+
+        let _pipeline = install_anchor_reposition(
+            &root,
+            AnchorTarget::from(anchor),
+            ElementSide::Below,
+            ElementAlign::Start,
+            offset,
+        );
+        resize_observations_delivered().await;
+
+        let bottom_gap = || {
+            let r = root.get_bounding_client_rect();
+            (trigger.y - offset) - (r.y() + r.height()) as f32
+        };
+        assert!(
+            bottom_gap().abs() < 0.5,
+            "200px panel doesn't fit the 100px below → flipped above, bottom on the trigger \
+             (gap {})",
+            bottom_gap(),
+        );
+
+        // The header search filters the rows: 60px now fits BELOW, but the
+        // open panel must stay on the side it is on, bottom still attached.
+        rows.style().set_property("height", "60px").unwrap();
+        resize_observations_delivered().await;
+        let r = root.get_bounding_client_rect();
+        assert!(
+            bottom_gap().abs() < 0.5,
+            "after the shrink the panel's bottom must still sit on the trigger; \
+             top {} bottom {} (trigger top {})",
+            r.y(),
+            r.y() + r.height(),
+            trigger.y,
+        );
+
+        drop(_pipeline);
+        root.remove();
     }
 
     /// The measure parks the element to read it, so it must put `left`/`top`

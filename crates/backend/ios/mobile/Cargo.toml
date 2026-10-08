@@ -5,11 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-# Preserve the historical lib filename (`libbackend_ios.a`) so the
-# Xcode project's link step keeps working without edits, even though
-# the cargo package was renamed `backend-ios` -> `backend-ios-mobile`.
+# `backend_ios` is the Rust crate name downstream code imports
+# (`use backend_ios::…`), kept from before the package rename.
 name = "backend_ios"
-crate-type = ["staticlib", "rlib"]
+# rlib only. Nothing links this crate's own staticlib: a local build links
+# the generated per-app wrapper's (`lib<app>_ios_wrapper.a`, build-ios),
+# and runtime-server mode links `backend-ios-rs-shell`'s. Declaring
+# `staticlib` here still made cargo archive the whole dependency graph a
+# second time into an unused `deps/libbackend_ios-<hash>.a` on every build
+# that depends on it — 255–290 MB per variant in a registry-mode app's
+# wrapper target, 192 MB beside the RS shell's own archive in a simulator
+# debug build (measured 2026-10-08).
+crate-type = ["rlib"]
 
 [features]
 debug-stats = ["runtime-shared/debug-stats", "backend-ios-core/debug-stats"]
@@ -52,6 +59,9 @@ inventory = "0.3"
 # `backend-macos`. iOS/macOS render identical icons through this
 # single parser.
 backend-apple-core = { workspace = true }
+# `image()` `data:` URIs + SVG (decode, sniff, rasterize) — platform-neutral,
+# shared with Android; the CoreGraphics wrapper is in backend-apple-core.
+backend-image-source = { workspace = true }
 # Shared iOS/tvOS helpers (style + render loop driver). Same crate
 # is consumed by `backend-ios-tv`.
 backend-ios-core = { workspace = true }

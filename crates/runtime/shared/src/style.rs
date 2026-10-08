@@ -2694,6 +2694,11 @@ pub struct StyleSheet {
     /// Empty for the very common case of sheets with no `state` blocks
     /// — `resolve_state_overlays` short-circuits on `is_empty()` and
     /// avoids walking the variants BTreeMap per styled node.
+    ///
+    /// Kept SORTED by [`StateBits::PRECEDENCE`](crate::StateBits::PRECEDENCE)
+    /// (lowest first), whatever order the sheet declared its `state`
+    /// blocks in — every consumer (the resolver's state pass, CSS rule
+    /// order, the premint dump) layers states in this slice's order.
     state_axes: Vec<(crate::StateBits, VariantAxis)>,
     /// Cached list of breakpoint-overlay axes the sheet declares.
     /// Populated in `.variant(...)` whenever an axis named `__bp_*` is
@@ -2894,7 +2899,16 @@ impl StyleSheet {
         // same state (unusual — states only have "on" — but defensive).
         if let Some(bit) = state_axis_bit(&axis) {
             if !self.state_axes.iter().any(|(_, a)| a == &axis) {
-                self.state_axes.push((bit, axis.clone()));
+                // Insert at the bit's precedence slot, not at the end: the
+                // slice's order IS the state layering order on every path
+                // (see `StateBits::PRECEDENCE`), so declaration order must
+                // not leak into it.
+                let at = self
+                    .state_axes
+                    .iter()
+                    .position(|(b, _)| b.precedence_rank() > bit.precedence_rank())
+                    .unwrap_or(self.state_axes.len());
+                self.state_axes.insert(at, (bit, axis.clone()));
             }
         }
         // Same caching for breakpoint overlays (`__bp_*` axes), so
@@ -2937,15 +2951,6 @@ impl StyleSheet {
         self
     }
 
-    /// The cached set of state-overlay axes declared on this
-    /// stylesheet. Returns an empty slice for the common case of
-    /// sheets with no `state` blocks. Used by
-    /// `resolve_state_overlays` to skip per-call iteration of the
-    /// full variants map.
-    /// Pub (was crate-private) for the new-core vocabulary's overlay
-    /// resolution: scanning `variant_keys()` per call allocates the full
-    /// key list per styled node per fire — the cached slice is the
-    /// empty-slice fast path the old walker used.
     /// This sheet's structure, closures omitted (feature `remote-serde`).
     #[cfg(feature = "remote-serde")]
     pub fn shape(&self) -> SheetShape {
@@ -2998,6 +3003,16 @@ impl StyleSheet {
         sheet
     }
 
+    /// The cached set of state-overlay axes declared on this
+    /// stylesheet, sorted by [`StateBits::PRECEDENCE`](crate::StateBits::PRECEDENCE)
+    /// (lowest first — later entries win a property both set). Returns an
+    /// empty slice for the common case of sheets with no `state` blocks.
+    /// Used by `resolve_state_overlays` to skip per-call iteration of the
+    /// full variants map.
+    /// Pub (was crate-private) for the new-core vocabulary's overlay
+    /// resolution: scanning `variant_keys()` per call allocates the full
+    /// key list per styled node per fire — the cached slice is the
+    /// empty-slice fast path the old walker used.
     pub fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         &self.state_axes
     }
@@ -3216,12 +3231,31 @@ impl StyleSheet {
     /// Returns the effective `VariantSet` for resolution — the call site's
     /// `VariantSet` overlaid with each axis's declared default (if any)
     /// for axes the call site didn't specify.
+    ///
+    /// Also applies the DISABLED-suppresses-interaction rule
+    /// ([`StateBits::PRECEDENCE`](crate::StateBits::PRECEDENCE)): while
+    /// `__state_disabled` is on, the `__state_hovered` / `__state_pressed` /
+    /// `__state_focused` axes are dropped, so neither their own blocks nor
+    /// any compound naming them can fire. Done here — the one funnel every
+    /// resolution (`resolve`, `layer_mask`) passes through — rather than at
+    /// each backend's event source, so no backend can forget it and the
+    /// raw state bits stay truthful.
     fn effective_variants(&self, requested: &VariantSet) -> VariantSet {
         let mut out = requested.clone();
         for (axis, def) in &self.variants {
             if !out.0.contains_key(axis) {
                 if let Some(default) = &def.default {
                     out.0.insert(axis.clone(), default.clone());
+                }
+            }
+        }
+        let disabled = crate::StateBits::DISABLED.axis_name().expect("single state bit");
+        if out.0.get(disabled).is_some_and(|v| v.as_str() == "on") {
+            for bit in crate::StateBits::PRECEDENCE {
+                if crate::StateBits::INTERACTION.contains(bit) {
+                    if let Some(axis) = bit.axis_name() {
+                        out.0.remove(axis);
+                    }
                 }
             }
         }
@@ -3235,7 +3269,14 @@ impl StyleSheet {
 
         // Per-axis variants, in three passes: responsive overlays (see
         // below), ordinary axes in alphabetical order (the documented
-        // rule), then STATE axes.
+        // rule), then STATE axes in `StateBits::PRECEDENCE` order
+        // (hovered < focused < pressed < disabled; disabled additionally
+        // suppresses the other three in `effective_variants`). The state
+        // pass walks the precedence-sorted `state_axes` slice, NOT the
+        // variants BTreeMap: walking the map merged states alphabetically
+        // (disabled < focused < hovered < pressed), so `hovered` beat
+        // `focused` and `disabled` on native while CSS backends layered
+        // them in declaration order.
         //
         // States are overlays, not peer axes. `hovered`/`pressed`/
         // `focused`/`disabled` reach `resolve` as reserved
@@ -3279,6 +3320,8 @@ impl StyleSheet {
         // The precedence this function defines is THE layering contract
         // for every backend and the premint dump:
         //   base < breakpoints < containers < author axes < states < compounds
+        // (states among themselves: hovered < focused < pressed < disabled,
+        // with disabled suppressing the rest — `StateBits::PRECEDENCE`)
         // and each layer contributes only the properties its own block sets.
         let mut responsive: Vec<(u8, f32, &VariantAxis)> = Vec::new();
         for (bp, axis) in &self.breakpoint_axes {
@@ -3309,11 +3352,8 @@ impl StyleSheet {
                 }
             }
         }
-        for (axis, def) in &self.variants {
-            if !is_state_axis(axis) {
-                continue;
-            }
-            if let Some(value) = effective_variants.0.get(axis) {
+        for (_, axis) in &self.state_axes {
+            if let (Some(value), Some(def)) = (effective_variants.0.get(axis), self.variants.get(axis)) {
                 if let Some(f) = def.values.get(value) {
                     effective = effective.merge(&f(&effective_variants));
                 }
@@ -3481,8 +3521,9 @@ impl StyleSheet {
 
     /// Style-dump-visible re-exports of the overlay-axis lists (the
     /// crate-internal accessors the walker uses). Orders are
-    /// load-bearing: states in declaration order (matches
-    /// `resolve_state_overlays` → live web's rule order); breakpoints /
+    /// load-bearing: states in `StateBits::PRECEDENCE` order (matches
+    /// `resolve`'s state pass and `resolve_state_overlays` → live web's
+    /// rule order); breakpoints /
     /// containers get sorted by the dump (rank / threshold ascending,
     /// matching the walker's resolvers).
     #[cfg(feature = "style-dump")]

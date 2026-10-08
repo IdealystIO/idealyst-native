@@ -110,6 +110,11 @@ pub(crate) struct NodeData {
     pub static_translate_y: Option<Length>,
     /// Toggle value (only meaningful when kind == Toggle).
     pub toggle_value: bool,
+    /// Native-inert flag written by `StyleOps::set_disabled` (the
+    /// framework's `disabled` prop). A disabled node is never a click
+    /// target — no `on_click`, no input focus — and a focused input that
+    /// goes disabled loses focus (see `TerminalBackend::set_disabled`).
+    pub disabled: bool,
     /// Backend-allocated id used by ActivityIndicator's animation
     /// loop to look itself up. The trait's required `Self::Node` is
     /// `Copy`, so we route per-instance state through this id.

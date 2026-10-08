@@ -45,6 +45,8 @@ runtime-macros = { workspace = true }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-world = { workspace = true }
+# `embed_asset!` for the media screen's embedded SVG (`image_asset`).
+runtime-shared = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
 robot-e2e = { workspace = true, optional = true }
@@ -71,3 +73,8 @@ name      = "Conformance"
 bundle_id = "ai.truday.idealyst.conformance"
 version   = "0.0.1"
 targets   = ["web", "ios", "android", "macos"]
+
+# The media screen's remote images: Android gates outbound network behind
+# the INTERNET permission (the `internet` capability). Apple doesn't gate it.
+[package.metadata.idealyst]
+capabilities = ["internet"]

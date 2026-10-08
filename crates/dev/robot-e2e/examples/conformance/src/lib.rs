@@ -64,6 +64,7 @@ pub fn register_scene_extensions_recorder(
 pub(crate) const ROOT: Route<()> = Route::<()>::new("root", "/");
 pub(crate) const DETAIL: Route<()> = Route::<()>::new("detail", "/detail");
 pub(crate) const COMPONENTS: Route<()> = Route::<()>::new("components", "/components");
+pub(crate) const MEDIA: Route<()> = Route::<()>::new("media", "/media");
 
 /// ~1s gives the first layout/paint time to settle before the suite runs.
 #[cfg(feature = "robot")]
@@ -71,3 +72,10 @@ const INITIAL_RUN_DELAY_MS: i32 = 1000;
 
 pub use screens::{app, State};
 
+
+/// Android entry: the generated wrapper's `attach` mounts `scene_app()`
+/// (see `examples/README.md`). Without it the Android wrapper didn't
+/// compile.
+pub fn scene_app() -> runtime_vocabulary::glue::Element {
+    app()
+}

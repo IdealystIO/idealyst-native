@@ -3,7 +3,7 @@
 
 use crate::imp::callbacks::{leak, ClickCallback};
 use backend_android_core::helpers::{apply_default_layout_params, set_text};
-use crate::imp::view_rect::view_screen_rect;
+use crate::imp::view_rect::view_viewport_rect;
 use crate::imp::{with_env, AndroidBackend};
 use runtime_shared::primitives::portal::ViewportRect;
 use runtime_shared::{ButtonHandle, ButtonOps};
@@ -63,17 +63,14 @@ impl ButtonOps for AndroidButtonOps {
         });
     }
 
-    /// Screen-relative rect in physical pixels — origin top-left of
-    /// the device screen, including the status bar. We use screen
-    /// coords (not viewport / window coords) because the only
-    /// consumer on Android is `Overlay`'s `PopupWindow` anchoring,
-    /// which itself takes screen coords via `showAtLocation`. The
-    /// framework's `ViewportRect` is otherwise coord-system-agnostic
-    /// — backends just need internal consistency between the
-    /// producer (this method) and the consumer (overlay positioning).
+    /// Viewport-relative rect in dp (origin = the Activity root) — the
+    /// `ViewportRect` contract every backend's `rect()` honors, and the
+    /// space the anchored portal places in. (Was screen px for the old
+    /// `PopupWindow.showAtLocation`, which nothing else on any backend
+    /// used.)
     fn rect(&self, node: &dyn Any) -> ViewportRect {
         node.downcast_ref::<GlobalRef>()
-            .map(|gref| view_screen_rect(gref))
+            .map(view_viewport_rect)
             .unwrap_or_default()
     }
 }

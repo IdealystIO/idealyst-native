@@ -98,15 +98,15 @@ pub unsafe fn ios_main_with_register(
     endpoint_utf8: *const c_char,
     register: fn(&mut IosBackend),
 ) {
-    // Wrap the whole body in `catch_unwind` — this is an
+    // Wrap the whole body in the panic firewall — this is an
     // `extern "C"` boundary into Swift/UIKit code that is not built
     // for Rust unwind ABI. A panic propagating out is undefined
-    // behavior. The set_hook below still runs for diagnostics; the
-    // catch_unwind absorbs the unwind so we return to Swift normally.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        std::panic::set_hook(Box::new(|info| {
-            eprintln!("RUST PANIC: {}", info);
-        }));
+    // behavior, so the firewall logs the site and aborts (crash-loud).
+    // The hook installed first thing below logs the panic itself.
+    backend_apple_core::crash::abort_on_panic("ios_main", || {
+        // NSLog, not stderr: stderr never reaches a device's syslog. Same
+        // hook the local boot gets through `install_scheduler`.
+        backend_apple_core::crash::install_panic_hook();
 
         // SAFETY: contract requires main-thread invocation.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
@@ -222,12 +222,7 @@ pub unsafe fn ios_main_with_register(
                 }
             });
         });
-    }));
-    if let Err(payload) = result {
-        let msg = panic_payload_message(payload);
-        eprintln!("[backend-ios::aas] ios_main panicked: {msg}");
-        std::process::abort();
-    }
+    });
 }
 
 /// Tear down the active mount. The shared implementation; the C entry
@@ -235,15 +230,10 @@ pub unsafe fn ios_main_with_register(
 /// both call this so there's only ever ONE `#[no_mangle] ios_teardown`
 /// in the final link.
 pub unsafe fn ios_teardown_impl() {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    backend_apple_core::crash::abort_on_panic("ios_teardown", || {
         SHELL.with(|slot| slot.borrow_mut().take());
         HOST_VIEW.with(|slot| slot.borrow_mut().take());
-    }));
-    if let Err(payload) = result {
-        let msg = panic_payload_message(payload);
-        eprintln!("[backend-ios::aas] ios_teardown panicked: {msg}");
-        std::process::abort();
-    }
+    });
 }
 
 /// Tear down the active mount. Called by the Swift host from
@@ -268,15 +258,5 @@ fn sample_viewport(view: &Retained<UIView>) -> Option<WireViewport> {
         })
     } else {
         None
-    }
-}
-
-fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else {
-        "<non-string panic payload>".to_string()
     }
 }

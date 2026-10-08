@@ -291,7 +291,7 @@ pub(crate) fn focus_edit_text(node: &GlobalRef) {
     });
 }
 
-fn blur_edit_text(node: &GlobalRef) {
+pub(crate) fn blur_edit_text(node: &GlobalRef) {
     with_env(|env| {
         let _ = env.call_method(node.as_obj(), "clearFocus", "()V", &[]);
         let context = env

@@ -87,7 +87,9 @@ pub fn page() -> Element {
                 Typography(content = "Other commands".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "`check` runs `cargo check` across configured platforms. `clean` \
-                               removes the build cache. `sync` regenerates derived assets \
+                               removes the build output the CLI owns (the web, dev-server and MCP \
+                               target dirs); `clean --stale` keeps what current builds use and \
+                               drops only superseded output. `sync` regenerates derived assets \
                                (icons, splash screens) from the project config. `scaffold` \
                                materializes a per-platform wrapper project from the ephemeral \
                                build cache into the repo so you can hand-edit it. `brs` \
@@ -96,7 +98,7 @@ pub fn page() -> Element {
                 )
                 CodeBlock(
                     code = "idealyst check\n\
-                            idealyst clean\n\
+                            idealyst clean --stale\n\
                             idealyst sync\n\
                             idealyst scaffold ios\n\
                             idealyst brs".to_string(),

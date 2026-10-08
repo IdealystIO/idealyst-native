@@ -241,9 +241,10 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
 #[test]
 fn presence_placeholder_is_bare_and_in_flow() {
     // The placeholder mounts through create_presence_placeholder with NO
-    // style applied by the handler, and sits in normal child flow
-    // between its siblings — forcing `absolute; inset: 0` here is the
-    // bug that collapsed stacked toasts (macOS in-flow placeholder fix).
+    // style (and, for an empty a11y bag, no a11y write) from the handler,
+    // in its siblings' order. It is layout-transparent (an anchor by
+    // default — geometry pinned by `tests/presence_layout.rs`); forcing
+    // `absolute; inset: 0` here is the bug that collapsed stacked toasts.
     let h = harness();
     let _root = h.mount(
         view()
@@ -268,6 +269,28 @@ fn presence_placeholder_is_bare_and_in_flow() {
     assert!(
         !log.iter().any(|op| op.starts_with("apply_style n2")),
         "handler must not style the placeholder: {log:?}"
+    );
+}
+
+#[test]
+fn presence_applies_a_non_default_a11y_bag_to_the_placeholder() {
+    // The default placeholder is an anchor (`Host::create_anchor` takes no
+    // a11y bag), so the handler owns applying the author's bag — otherwise
+    // making presence layout-transparent would silently drop it.
+    let h = harness();
+    h.record_all(); // a11y writes are verbose-tier ops
+    let _root = h.mount(
+        presence(|| text().content("toast").build())
+            .present(false)
+            .a11y(runtime_shared::accessibility::AccessibilityProps {
+                label: Some("Notifications".into()),
+                ..Default::default()
+            })
+            .build(),
+    );
+    assert_eq!(
+        h.take_log(),
+        ["create n0 presence_placeholder", "update_accessibility n0"]
     );
 }
 

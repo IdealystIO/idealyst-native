@@ -29,6 +29,7 @@ pub fn toggle() -> ToggleBuilder {
             test_id: None,
             value: Value::Const(false),
             on_change: Rc::new(|_| {}),
+            disabled: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -69,6 +70,15 @@ impl ToggleBuilder {
         self
     }
 
+    /// Inert switch — static or live. Not flippable, not
+    /// keyboard-focusable, `on_change` never fires, and the `DISABLED`
+    /// state bit is set. See
+    /// [`TogglePrim::disabled`](crate::prims::TogglePrim::disabled).
+    pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+        self.prim.disabled = Some(disabled.into_value());
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(ToggleHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -89,6 +99,7 @@ pub fn slider() -> SliderBuilder {
             min: 0.0,
             max: 1.0,
             step: None,
+            disabled: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -140,6 +151,13 @@ impl SliderBuilder {
     /// (`robot` feature; the slot is inert otherwise).
     pub fn test_id(mut self, id: &'static str) -> Self {
         self.prim.test_id = Some(id);
+        self
+    }
+
+    /// Inert slider — static or live. Same contract as
+    /// [`ToggleBuilder::disabled`].
+    pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+        self.prim.disabled = Some(disabled.into_value());
         self
     }
 
@@ -229,6 +247,7 @@ pub fn text_input() -> TextInputBuilder {
             placeholder: Value::Const(None),
             secure: Value::Const(false),
             autofocus: false,
+            disabled: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -319,6 +338,14 @@ impl TextInputBuilder {
         self
     }
 
+    /// Inert field — static or live. Not editable, not keyboard-focusable,
+    /// `on_change` never fires, and the `DISABLED` state bit is set. See
+    /// [`TextInputPrim::disabled`](crate::prims::TextInputPrim::disabled).
+    pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+        self.prim.disabled = Some(disabled.into_value());
+        self
+    }
+
     pub fn on_handle(mut self, fill: impl FnOnce(TextInputHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -343,6 +370,7 @@ pub fn text_area() -> TextAreaBuilder {
             min_rows: None,
             max_rows: None,
             autofocus: false,
+            disabled: None,
             style: None,
             a11y: AccessibilityProps::default(),
             ref_fill: None,
@@ -413,6 +441,13 @@ impl TextAreaBuilder {
     /// [`TextInputPrim::autofocus`](crate::prims::TextInputPrim::autofocus).
     pub fn autofocus(mut self, autofocus: bool) -> Self {
         self.prim.autofocus = autofocus;
+        self
+    }
+
+    /// Inert text area — static or live. Same contract as
+    /// [`TextInputBuilder::disabled`].
+    pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+        self.prim.disabled = Some(disabled.into_value());
         self
     }
 

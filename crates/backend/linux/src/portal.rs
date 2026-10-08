@@ -45,9 +45,9 @@
 //! The container keeps a neutral top-left flex — it exists only to supply
 //! the viewport coordinate space — and the content child's frame is
 //! overridden every layout pass from
-//! [`runtime_shared::primitives::portal::resolve_anchored_placement`], the
-//! ONE placement algorithm every backend shares (collision flip + viewport
-//! clamp included). See [`AnchorSpec`] and
+//! [`runtime_shared::primitives::portal::AnchoredPlacer`], the ONE placement
+//! algorithm every backend shares (collision flip + viewport clamp + a
+//! sticky side, so a content resize re-places without flipping sides). See [`AnchorSpec`] and
 //! [`LinuxBackend::anchor_override`].
 //!
 //! The re-pin rides the existing frame beat rather than a per-portal
@@ -64,7 +64,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use runtime_shared::primitives::portal::{
-    AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
+    AnchoredPlacer, AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
 };
 use runtime_shared::{AlignItems, FlexDirection, JustifyContent, Length, StyleRules, Tokenized};
 
@@ -74,16 +74,31 @@ use crate::{IdealystView, LinuxBackend};
 /// edge. Matches the value the other backends pass to
 /// `resolve_anchored_placement`, so a popover pinned near a window edge
 /// lands in the same place on GTK as it does on web / AppKit.
-pub(crate) const ANCHOR_EDGE_GAP: f32 = 8.0;
+pub(crate) const ANCHOR_EDGE_GAP: f32 = runtime_shared::primitives::portal::ANCHOR_EDGE_GAP;
 
 /// What an anchored portal needs to re-pin itself: the trigger it tracks
 /// plus the author's placement intent. Recorded by `create_portal` and
 /// consumed by `LinuxBackend::anchor_override` on every layout pass.
+///
+/// The intent lives in an [`AnchoredPlacer`], held for the portal's whole
+/// life, because the placer remembers the side it settled on: every pass
+/// re-places with the CURRENT content size, and a content resize (a menu's
+/// header search filtering its rows) must re-place on the side the
+/// overlay is already on rather than re-pick from the requested side — a
+/// flipped-above menu that shrinks keeps its bottom on the trigger instead
+/// of jumping below it. `Cell` because `anchor_override` runs under `&self`.
 pub(crate) struct AnchorSpec {
     pub target: AnchorTarget,
-    pub side: ElementSide,
-    pub align: ElementAlign,
-    pub offset: f32,
+    pub placer: std::cell::Cell<AnchoredPlacer>,
+}
+
+impl AnchorSpec {
+    pub(crate) fn new(target: AnchorTarget, side: ElementSide, align: ElementAlign, offset: f32) -> Self {
+        Self {
+            target,
+            placer: std::cell::Cell::new(AnchoredPlacer::new(side, align, offset, ANCHOR_EDGE_GAP)),
+        }
+    }
 }
 
 /// Base Taffy style for a portal container: a full-viewport column flex

@@ -170,6 +170,11 @@ host-mock = { path = "../../dev/host-mock" }
 # used to make a proc-macro feature a cross-crate unification hazard is
 # gone (see runtime-macros/Cargo.toml).
 runtime-macros = { path = "../macros" }
+# The Taffy layout tree every native backend (iOS/macOS/Android) drives,
+# for `tests/presence_layout.rs`: a host whose nodes ARE layout nodes, so a
+# test can assert where a mounted primitive's children actually land —
+# geometry a recording mock cannot see.
+runtime-layout = { path = "../layout" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

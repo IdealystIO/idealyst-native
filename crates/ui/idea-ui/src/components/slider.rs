@@ -64,7 +64,8 @@ fn norm_pos(v: f32, min: f32, max: f32) -> f32 {
 // container dims (the divisor `x / width` must stay stable — see the module
 // docs); those are read once at build and not re-tracked. tone/variant/size
 // re-style the fill/track/thumb in place; `disabled`'s DIM rides the reactive
-// container style, its press-BLOCK is read once in `on_touch`.
+// container style, and its press-BLOCK is read live in `on_touch` (per touch),
+// so a live `disabled` blocks and unblocks in place.
 #[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -93,6 +94,7 @@ pub struct SliderProps {
     /// Rail thickness + thumb size. Default Md.
     pub size: ControlSize,
     /// When `true`, blocks dragging and dims the control. Default `false`.
+    /// A live value (`Signal` / `rx!`) blocks and unblocks in place.
     pub disabled: bool,
     /// Optional icon to the LEFT of the track (e.g. a "min"/volume-low glyph).
     /// Tinted muted. Sits outside the drag area so it can't perturb the
@@ -133,9 +135,11 @@ pub fn Slider(props: &SliderProps) -> Element {
     let (min, max, step) = (props.min.get(), props.max.get(), props.step.get());
     let w = props.width.get();
     let size = props.size.get();
-    // The press-BLOCK is read once (the `on_touch` closure captures it); the
-    // DIM rides the reactive container style below.
-    let disabled = props.disabled.get();
+    // The press-BLOCK is read per touch, not once at build: a build-time read
+    // left a live `disabled` dimming the slider while it still dragged (and a
+    // slider mounted disabled undraggable after it was enabled). The DIM
+    // rides the reactive container style below.
+    let disabled = props.disabled.clone();
     let dia = thumb_diameter(size);
 
     // Style keys as live closures so a reactive tone/variant/size re-styles the
@@ -227,7 +231,7 @@ pub fn Slider(props: &SliderProps) -> Element {
     let slider = runtime_core::view(vec![track, thumb])
         .with_style(container_style)
         .on_touch(move |ev| {
-            if disabled {
+            if disabled.get() {
                 return TouchResponse::IGNORED;
             }
             // A non-primary press is not a drag on any platform, and it is
@@ -415,6 +419,41 @@ mod tests {
             let r = h(&touch(TouchPhase::Began, 90.0));
             assert!(r.claim, "a primary press still claims the drag");
             assert_eq!(changes.get(), 1);
+        });
+    }
+
+    /// A LIVE `disabled` blocks the drag in place. The press-block used to be
+    /// read once at build, so `Slider(disabled = rx!(saving))` dimmed while
+    /// saving but still dragged (and a slider mounted disabled never became
+    /// draggable). Fails against the build-time read: the drag after the
+    /// flip still reports a value.
+    #[test]
+    fn regression_slider_live_disabled_still_drags() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let locked = runtime_core::signal(false);
+            let changes = Rc::new(std::cell::Cell::new(0u32));
+            let h = {
+                let changes = changes.clone();
+                drag_handler(Slider(&SliderProps {
+                    on_change: Rc::new(move |_| changes.set(changes.get() + 1)),
+                    disabled: Reactive::from(locked),
+                    ..Default::default()
+                }))
+            };
+            assert!(h(&touch(TouchPhase::Began, 90.0)).claim, "enabled: drags");
+            assert_eq!(changes.get(), 1);
+
+            locked.set(true);
+            idea_theme::testing::commit();
+            let r = h(&touch(TouchPhase::Began, 40.0));
+            assert!(!r.claim && !r.consumed, "disabled: the press is ignored");
+            assert_eq!(changes.get(), 1, "and the thumb does not move");
+
+            locked.set(false);
+            idea_theme::testing::commit();
+            assert!(h(&touch(TouchPhase::Began, 40.0)).claim, "re-enabled: drags again");
+            assert_eq!(changes.get(), 2);
         });
     }
 

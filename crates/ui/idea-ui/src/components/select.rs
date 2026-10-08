@@ -6,6 +6,11 @@
 //! (e.g. selecting an alert level). Not wired yet; lands here when
 //! there's a concrete use case.
 //!
+//! `disabled` (reactive) makes the Select read-only: the trigger's
+//! pressable is disabled (it won't open, and it leaves keyboard focus), the
+//! trigger sheet's `state disabled` overlay dims it, and an open menu
+//! closes if the Select goes disabled under it.
+//!
 //! ```ignore
 //! ui! {
 //!     Select(
@@ -123,6 +128,14 @@ pub struct SelectProps {
     /// Defaults to a chevron when `None`; pass `Some(icons_lucide::…)` to
     /// customize it.
     pub icon: Option<IconData>,
+    /// Make the Select read-only. While `true` the trigger does not open
+    /// the menu (mouse, keyboard and programmatic presses alike), is out of
+    /// keyboard focus, and dims (the trigger sheet's `state disabled`
+    /// overlay); `on_change` therefore never fires. An open menu closes if
+    /// the Select becomes disabled. Default `false`. Reactive: pass a
+    /// `Signal<bool>`/`rx!` and it enables and disables in place.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
 }
 
 impl Default for SelectProps {
@@ -134,6 +147,7 @@ impl Default for SelectProps {
             size: Reactive::Static(SelectSize::default()),
             placeholder: Reactive::Static(None),
             icon: Reactive::Static(None),
+            disabled: Reactive::Static(false),
         }
     }
 }
@@ -212,8 +226,30 @@ pub fn Select(props: SelectProps) -> Element {
     let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
     let trigger = runtime_core::pressable(vec![label_child, chevron], move || (on_open)())
         .with_style(trigger_style)
-        .bind(trigger_ref)
-        .into_element();
+        .bind(trigger_ref);
+    // `disabled` rides the trigger pressable's own binding: the mount
+    // handler's press block (so the menu never opens — mouse, keyboard or
+    // programmatic), the host's `set_disabled` (out of keyboard focus), and
+    // the DISABLED state bit (the sheet's `state disabled` dim). Attached
+    // only when the Select can be disabled (Button / Switch parity).
+    let trigger = match props.disabled.clone() {
+        Reactive::Static(false) => trigger,
+        Reactive::Static(true) => trigger.disabled(true),
+        live => {
+            // Going disabled while the menu is open closes it: the press
+            // block only stops NEW opens, and a read-only Select must not
+            // keep offering rows to pick. Scope-adopted like the chevron
+            // effect above.
+            let close_on_disable = live.clone();
+            effect!({
+                if close_on_disable.get() {
+                    open.set(false);
+                }
+            });
+            trigger.disabled(move || live.get())
+        }
+    };
+    let trigger = trigger.into_element();
 
     let menu_options = options.clone();
     let menu_on_change = on_change.clone();

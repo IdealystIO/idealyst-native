@@ -47,13 +47,38 @@ pub trait PortalOps: ExternalOps {
 }
 
 /// The `presence` primitive — enter/exit transforms around mount and
-/// deferred unmount. Serves `walker/presence.rs`. `: ViewOps` because
-/// the frozen placeholder default is a plain view (macOS overrides for
-/// its hit-test descent).
+/// deferred unmount. Serves `handlers/presence.rs`.
 pub trait PresenceOps: ViewOps {
     /// Create the mount point a presence subtree is inserted into.
+    ///
+    /// It MUST be layout-transparent — a reactive anchor
+    /// ([`Host::create_anchor`](runtime_scene::Host::create_anchor): `display: contents` on web, a
+    /// `runtime_layout` contents node on Taffy hosts). The author never
+    /// wrote this node, so presence's child has to lay out exactly as if
+    /// it were the direct child of presence's parent. A plain view here
+    /// is a real flex item, and Taffy resolves an absolute child's insets
+    /// against its DIRECT layout parent: a `position: absolute; bottom:
+    /// md` child of a plain-view placeholder was placed against a
+    /// full-width, ZERO-height box at the top of the positioned ancestor
+    /// and landed above it, off screen (the reported iOS "alert never
+    /// appears" bug; web hid it because a static `<div>` is not a CSS
+    /// containing block). The same box also hugged a `flex_grow` child
+    /// to nothing. Pinned by `tests/presence_layout.rs`.
+    ///
+    /// The enter/exit animation never targets this node — the handler
+    /// applies [`apply_presence`](Self::apply_presence) to the CHILD's
+    /// nodes — so a box-less placeholder loses nothing.
+    ///
+    /// `a11y` is the author's bag for the presence. The default ignores
+    /// it: the handler applies a non-default bag through
+    /// [`A11yOps::update_accessibility`](super::A11yOps::update_accessibility)
+    /// after creation, so an override need not either. An override
+    /// exists only to pick a different native view class (macOS: a
+    /// deep-descent hit-test view) — it must still register a contents
+    /// layout node.
+    #[allow(unused_variables)]
     fn create_presence_placeholder(&mut self, a11y: &AccessibilityProps) -> Self::Node {
-        self.create_view(a11y)
+        self.create_anchor()
     }
 
     /// Apply a presence transform (opacity + translate + scale):

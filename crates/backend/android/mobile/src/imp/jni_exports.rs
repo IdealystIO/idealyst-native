@@ -708,31 +708,6 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustOverlayKeyListener_na
     }
 }
 
-/// `RustPopupDismissListener.onDismiss` dispatch — element-anchored
-/// portals' `PopupWindow.OnDismissListener` trampoline. Same
-/// contract as the Dialog-flow dispatch above: invokes the user's
-/// `on_dismiss` if `inner` is still set, no-ops if `release_portal`
-/// has already blanked it.
-///
-/// # Safety
-///
-/// `ptr` must point to a live `Box<OverlayDismissCallback>`.
-#[no_mangle]
-pub unsafe extern "system" fn Java_io_idealyst_runtime_RustPopupDismissListener_nativeDismiss(
-    _env: JNIEnv,
-    _this: JObject,
-    ptr: jlong,
-) {
-    if ptr == 0 {
-        return;
-    }
-    let cb = &*(ptr as *const OverlayDismissCallback);
-    let maybe_cb = cb.inner.borrow().clone();
-    if let Some(dismiss) = maybe_cb {
-        run_void_callback("modal-dismiss", std::panic::AssertUnwindSafe(|| dismiss()));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // RustListAdapter (RecyclerView virtualizer)
 // ---------------------------------------------------------------------------

@@ -86,17 +86,13 @@ pub(crate) fn set_app_key_handler(backend: &mut MacosBackend, handler: Option<Ke
     // the event unchanged otherwise so normal key routing continues. The catch
     // is crash-loud per project policy (an FFI callback that unwinds aborts).
     let block = RcBlock::new(move |event: *mut NSObject| -> *mut NSObject {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        let outcome = backend_apple_core::crash::abort_on_panic("app key monitor", || unsafe {
             let ev = key_event_from_nsevent(event);
             handler(&ev)
-        }));
-        match result {
-            Ok(KeyOutcome::PreventDefault) => std::ptr::null_mut(),
-            Ok(KeyOutcome::Default) => event,
-            Err(_) => {
-                eprintln!("[backend-macos] app key handler panicked");
-                std::process::abort();
-            }
+        });
+        match outcome {
+            KeyOutcome::PreventDefault => std::ptr::null_mut(),
+            KeyOutcome::Default => event,
         }
     });
 

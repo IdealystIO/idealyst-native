@@ -560,19 +560,7 @@ fn post_layout_drain() {
         // message before we abort \u{2014} project policy is crash-loud
         // so the layout pass never silently keeps running on top of
         // a partially-mutated reactive state.
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(drain_queued_layout_pass));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-ios] layout-pass trampoline panic: {msg}");
-            std::process::abort();
-        }
+        backend_apple_core::crash::abort_on_panic("iOS layout-pass trampoline", drain_queued_layout_pass);
     }
 
     unsafe {
@@ -3992,7 +3980,27 @@ impl IosBackend {
                 let _: () = unsafe { msg_send![b, setEnabled: enabled] };
             }
             IosNode::TextField(f) => {
+                if disabled {
+                    // A disabled field must not keep (or later take) focus:
+                    // drop a pending pre-window focus and resign the
+                    // keyboard if it already has it. `setEnabled:` alone
+                    // leaves an active editing session running.
+                    pending_focus::cancel(f);
+                    let _: bool = unsafe { msg_send![f, resignFirstResponder] };
+                }
                 let _: () = unsafe { msg_send![f, setEnabled: enabled] };
+            }
+            IosNode::TextView(t) => {
+                // `UITextView` is a scroll view, not a `UIControl` — it has
+                // no `enabled`. Non-editable + non-selectable makes it inert
+                // and unable to become first responder, which is what
+                // `text_area(disabled = …)` means on every other backend.
+                if disabled {
+                    pending_focus::cancel(t);
+                    let _: bool = unsafe { msg_send![t, resignFirstResponder] };
+                }
+                let _: () = unsafe { msg_send![t, setEditable: enabled] };
+                let _: () = unsafe { msg_send![t, setSelectable: enabled] };
             }
             IosNode::Switch(s) => {
                 let _: () = unsafe { msg_send![s, setEnabled: enabled] };

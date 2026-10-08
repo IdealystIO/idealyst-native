@@ -115,6 +115,14 @@ fn a_live_disabled_follows_its_signal() {
     h.world.enter(|| lock.set(false));
     h.flush();
     assert_ne!(track_opacity(&h), dimmed(), "the dim clears in place");
+    // The host is told the track is enabled again — that call is what puts
+    // the track back into keyboard focus (web `tabindex`, macOS key-view
+    // loop; see `form_controls_disabled.rs`).
+    let last = h.ops().iter().rev().find(|o| o.starts_with("set_disabled ")).cloned();
+    assert!(
+        last.as_deref().is_some_and(|o| o.ends_with(" false")),
+        "re-enabling tells the host (back into keyboard focus): {last:?}"
+    );
     h.world.enter(|| (h.press_handler(0))());
     h.flush();
     assert_eq!(fired.get(), 1, "and the press goes through once enabled");

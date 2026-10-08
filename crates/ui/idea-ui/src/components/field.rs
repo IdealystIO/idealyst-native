@@ -24,6 +24,12 @@
 //! tone: a STATIC `StyleApplication` when `tone` and `error` are both
 //! fixed at build, and a reactive closure when either is live, so a live
 //! validation error paints in the Danger tone rather than the help grey.
+//!
+//! `disabled` (reactive) makes the field read-only and inert: the
+//! `text_input` primitive's `disabled` makes the native input non-editable
+//! and drops it from keyboard focus, `on_change` never fires, and the input
+//! sheet's `state disabled` overlay dims it. An adorned field dims its row
+//! shell instead (the `dimmed` axis) and disables its `Adornment::Button`s.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -36,6 +42,10 @@ use runtime_core::{
 };
 
 use crate::components::icon::Icon;
+
+/// Opacity of a disabled Field / Textarea (the input sheet's `state
+/// disabled` overlay and the adorned shell's `dimmed` axis).
+const FIELD_DISABLED_OPACITY: f32 = 0.55;
 
 /// Horizontal inset on the BARE (adorned) input. Just enough that the glyph's
 /// left/right bearing doesn't clip against the input edge (macOS draws the cell
@@ -131,8 +141,11 @@ fn adornment_icon_color() -> Color {
 /// Resolve an adornment to its renderable elements (empty for `None` /
 /// an empty group; one element per leaf, groups flattened in order).
 /// `Icon`/`Button` are sized from the field `size` and painted in the
-/// theme's muted text color.
-fn render_adornment(adornment: &Adornment, size: FieldSize) -> Vec<Element> {
+/// theme's muted text color. A `Button` follows the field's `disabled`
+/// (press blocked, out of the Tab order) — a read-only field must not be
+/// clearable through its ✕. An `Element` adornment is the author's own
+/// tree and is left as built.
+fn render_adornment(adornment: &Adornment, size: FieldSize, disabled: &Reactive<bool>) -> Vec<Element> {
     match adornment {
         Adornment::None => Vec::new(),
         Adornment::Element(build) => vec![build()],
@@ -149,14 +162,19 @@ fn render_adornment(adornment: &Adornment, size: FieldSize) -> Vec<Element> {
             // An icon-sized pressable — no button chrome/padding, so it never
             // inflates the field box (the whole point of `Button` vs an
             // `IconButton` in an `Element` adornment).
-            vec![
-                pressable(vec![glyph], move || on_press())
-                    .with_style(StyleApplication::new(adornment_button_sheet()))
-                    .into_element(),
-            ]
+            let button = pressable(vec![glyph], move || on_press())
+                .with_style(StyleApplication::new(adornment_button_sheet()));
+            // Bound only when the field can be disabled — an always-enabled
+            // field's button carries no disabled source (Button parity).
+            let button = match disabled.clone() {
+                Reactive::Static(false) => button,
+                Reactive::Static(true) => button.disabled(true),
+                live => button.disabled(move || live.get()),
+            };
+            vec![button.into_element()]
         }
         Adornment::Group(items) => {
-            items.iter().flat_map(|a| render_adornment(a, size)).collect()
+            items.iter().flat_map(|a| render_adornment(a, size, disabled)).collect()
         }
     }
 }
@@ -283,6 +301,16 @@ pub struct FieldProps {
     /// Default `false`.
     #[prop(static)]
     pub autofocus: bool,
+    /// Make the field read-only and inert — e.g. a frozen, published
+    /// version of a settings form. While `true` the input is not editable
+    /// and not keyboard-focusable (it drops focus if it held it),
+    /// `on_change` never fires, `autofocus` is skipped, the field dims (the
+    /// input sheet's `state disabled` overlay; an adorned field dims its
+    /// whole box) and `Adornment::Button`s are disabled with it. Default
+    /// `false`. Reactive: pass a `Signal<bool>`/`rx!` and the field enables
+    /// and disables in place, without rebuilding the input.
+    #[schema(constraint = "reactive: static bool or Signal/rx!")]
+    pub disabled: bool,
 }
 
 impl Default for FieldProps {
@@ -306,6 +334,7 @@ impl Default for FieldProps {
             on_focus_change: None,
             on_key_down: None,
             autofocus: false,
+            disabled: Reactive::Static(false),
         }
     }
 }
@@ -512,9 +541,30 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
             }
         })
         .variant("__state_disabled", "on", |_vs| StyleRules {
-            opacity: Some(Tokenized::Literal(0.55)),
+            opacity: Some(Tokenized::Literal(FIELD_DISABLED_OPACITY)),
             ..Default::default()
         });
+
+    // `dimmed` — the disabled look for a node that is NOT itself the
+    // disabled input: an ADORNED field's row shell, a plain view that can
+    // never receive the input's DISABLED state bit. The component sets it
+    // only while disabled (no default, no `off` arm — like `ring`), so an
+    // enabled field stamps nothing extra. Same opacity as the state overlay.
+    sheet = sheet.variant("dimmed", "on", |_vs| StyleRules {
+        opacity: Some(Tokenized::Literal(FIELD_DISABLED_OPACITY)),
+        ..Default::default()
+    });
+    // The input INSIDE a dimmed shell still gets its own DISABLED state bit
+    // (the primitive sets it), and opacity multiplies down the tree — it
+    // would read 0.55 × 0.55 ≈ 0.3, visibly fainter than the border and
+    // adornments around it. Compounds outrank state overlays in the
+    // cascade (`base < … < author axes < states < compounds`), so this
+    // cancels the input's own dim when it sits in a shell; the shell's dim
+    // covers it.
+    sheet = sheet.compound(vec![("slot", "shell"), ("__state_disabled", "on")], |_vs| StyleRules {
+        opacity: Some(Tokenized::Literal(1.0)),
+        ..Default::default()
+    });
 
     // Adorned-shell axes (leading/trailing icon shells). Enumerated
     // variants + compounds rather than the former single-slot
@@ -737,8 +787,8 @@ pub fn Field(props: &FieldProps) -> Element {
     };
 
     let secure = props.secure.clone();
-    let leading = render_adornment(&props.leading, size);
-    let trailing = render_adornment(&props.trailing, size);
+    let leading = render_adornment(&props.leading, size, &props.disabled);
+    let trailing = render_adornment(&props.trailing, size, &props.disabled);
     let adorned = !leading.is_empty() || !trailing.is_empty();
 
     // `placeholder` is routed LIVE: a reactive source updates the native
@@ -755,6 +805,15 @@ pub fn Field(props: &FieldProps) -> Element {
     if let Some(on_key) = props.on_key_down.clone() {
         input = input.on_key_down(move |e| (on_key)(e));
     }
+    // `disabled` rides the primitive: native inert + out of keyboard focus,
+    // the `on_change` gate, and the DISABLED state bit (the sheet's `state
+    // disabled` dim). Attached only when the field can be disabled — a
+    // `Static(false)` field carries no binding (Switch / Button parity).
+    let input = match props.disabled.clone() {
+        Reactive::Static(false) => input,
+        Reactive::Static(true) => input.disabled(true),
+        live => input.disabled(move || live.get()),
+    };
 
     // The "field box" — either the bare input (no adornments) or a flex-row
     // SHELL wrapping a bare input with leading/trailing adornments.
@@ -819,31 +878,34 @@ pub fn Field(props: &FieldProps) -> Element {
         // independent layers by construction.
         let make_shell = make_input_style.clone();
         let tone_for_shell = tone_key_for.clone();
+        let shell_disabled = props.disabled.clone();
         let shell_style = move || {
             // `false`: the shell paints its OWN focus ring via the `ring`
             // axis; make_input_style's focus handling targets the input.
-            // `ring` is only SET while focused — the axis declares no
-            // default and no `off` arm, so leaving it unset applies (and
-            // stamps) nothing, exactly like the resolver.
-            let app = make_shell(tone_for_shell(), false).with("adorned", "on");
+            // `ring` and `dimmed` are only SET while on — neither axis
+            // declares a default or an `off` arm, so leaving one unset
+            // applies (and stamps) nothing, exactly like the resolver.
+            // `disabled` is read LIVE so a reactive prop dims in place.
+            let mut app = make_shell(tone_for_shell(), false).with("adorned", "on");
             if focused.get() {
-                app.with("ring", "on")
-            } else {
-                app
+                app = app.with("ring", "on");
             }
+            if shell_disabled.get() {
+                app = app.with("dimmed", "on");
+            }
+            app
         };
 
-        let mut shell_children: Vec<Element> =
-            Vec::with_capacity(leading.len() + 1 + trailing.len());
-        shell_children.extend(leading);
-        shell_children.push(input_node);
-        shell_children.extend(trailing);
-        // Builder form (not `ui!`): the shell style is a reactive CLOSURE (it
-        // reads `focused`), and `with_style(closure)` is the canonical way to
-        // attach a live style source — mirrors switch.rs / segmented_control.rs.
-        runtime_core::view(shell_children)
-            .with_style(shell_style)
-            .into_element()
+        // The adornments are RECEIVED children (props), splatted around the
+        // input; the shell style is a reactive closure (it reads `focused`
+        // and `disabled`).
+        ui! {
+            view(style = shell_style) {
+                leading
+                input_node
+                trailing
+            }
+        }
     } else {
         // PLAIN: chrome + focus ring on the input itself. The ring is driven the
         // SAME way as the adorned shell — `on_focus` → `focused` → a theme
@@ -877,16 +939,15 @@ pub fn Field(props: &FieldProps) -> Element {
             .into_element()
     };
 
-    let mut children: Vec<Element> = Vec::with_capacity(3);
-    if let Some(l) = label_node {
-        children.push(l);
+    // `label_node` / `help_node` are `Option<Element>` — an absent one
+    // splats to nothing.
+    ui! {
+        view(style = FieldGroup()) {
+            label_node
+            field_box
+            help_node
+        }
     }
-    children.push(field_box);
-    if let Some(h) = help_node {
-        children.push(h);
-    }
-
-    ui! { view(style = FieldGroup()) { children } }
 }
 
 recipe!(

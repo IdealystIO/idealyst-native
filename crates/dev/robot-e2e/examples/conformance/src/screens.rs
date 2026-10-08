@@ -81,10 +81,12 @@ pub fn app() -> Element {
     let nav_detail = nav.clone();
     let nav_fill = nav.clone();
     let nav_components = nav.clone();
+    let nav_media = nav.clone();
     runtime_vocabulary::builders::stack_navigator(&crate::ROOT)
         .screen(crate::ROOT, move |_| root_page(state, nav_root.clone()))
         .screen(crate::DETAIL, move |_| detail_page(nav_detail.clone()))
         .screen(crate::COMPONENTS, move |_| components_page(nav_components.clone()))
+        .screen(crate::MEDIA, move |_| media_page(nav_media.clone()))
         .on_handle(move |h| *nav_fill.borrow_mut() = Some(h))
         .build()
 }
@@ -173,6 +175,12 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
     );
 
     // — Stack push. —
+    let nav_media = nav.clone();
+    let goto_media = move || {
+        if let Some(h) = nav_media.borrow().as_ref() {
+            h.push(&crate::MEDIA, ());
+        }
+    };
     let nav_components = nav.clone();
     let goto_components = move || {
         if let Some(h) = nav_components.borrow().as_ref() {
@@ -216,6 +224,7 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
         button("Components", goto_components)
             .test_id("goto-components")
             .into_element(),
+        button("Media", goto_media).test_id("goto-media").into_element(),
     ];
 
     // Wrap in a scroll view (weird condition: scrollable content). The
@@ -456,4 +465,165 @@ fn shadow_parity_row() -> Element {
             view(style = swatch(16.0, true), test_id = "shadow-clipped") {}
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Media screen — every `image()` source kind + an anchored menu pinned to
+// the bottom edge.
+// ---------------------------------------------------------------------------
+
+/// 48×24 PNG: left half red, right half blue. Natural size 48×24 dp.
+const PNG_DATA_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAYCAIAAAAzn+mLAAAAMklEQVR4nO3OMQ0AMAgAMIzgh2v69+IEE3w0qYBGZ63I91eEkJCQkJCQkJCQkJDQrdAAHNC0jJaU5dgAAAAASUVORK5CYII=";
+
+/// Percent-encoded SVG data URI (the CrewForge `BrandLockup` shape): a
+/// 32×16 red/blue plate with a diagonal stroke, so a blurry upscale is
+/// visible at 5×.
+const SVG_DATA_URI: &str = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2216%22%3E%3Crect%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%23e11d48%22%2F%3E%3Crect%20x%3D%2216%22%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%231d4ed8%22%2F%3E%3Cpath%20d%3D%22M0%2016L32%200%22%20stroke%3D%22%23fff%22%20stroke-width%3D%221%22%2F%3E%3C%2Fsvg%3E";
+
+/// Remote raster (PNG) and remote SVG — fetched off the UI thread.
+const REMOTE_PNG: &str = "https://httpbin.org/image/png";
+const REMOTE_SVG: &str = "https://www.rust-lang.org/logos/rust-logo-blk.svg";
+
+/// Unresolvable host: the fetch fails → `on_error`.
+const BROKEN_URL: &str = "https://nonexistent.invalid/missing.png";
+
+/// The embedded SVG asset (`image_asset`), registered before mount.
+fn badge() -> runtime_shared::assets::Asset<runtime_shared::assets::kinds::Image> {
+    runtime_shared::embed_asset!("../assets/badge.svg")
+}
+
+/// One labelled image row: the image and a live `on_load`/`on_error`
+/// status (`<id>-status`), which the media suite asserts against.
+fn media_row(
+    label: &'static str,
+    img: runtime_vocabulary::glue::primitives::image::GlueImage,
+    status_id: &'static str,
+    size: Option<(f32, f32)>,
+) -> Element {
+    use runtime_vocabulary::glue::{AlignItems, FlexDirection, Length, StyleRules, StyleSheet, Tokenized};
+    let status = signal(format!("{label}: pending"));
+    let r = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    let img = img
+        .on_load(move |ev| status.set(format!("{label}: load {}x{}", ev.width, ev.height)))
+        .on_error(move || status.set(format!("{label}: error")));
+    let img = match size {
+        Some((w, h)) => img.with_style(Rc::new(StyleSheet::r#static(StyleRules {
+            width: r(w),
+            height: r(h),
+            ..Default::default()
+        }))),
+        None => img,
+    };
+    let row = Rc::new(StyleSheet::r#static(StyleRules {
+        flex_direction: Some(FlexDirection::Row),
+        align_items: Some(AlignItems::Center),
+        gap: r(12.0),
+        margin_bottom: r(8.0),
+        ..Default::default()
+    }));
+    view(vec![
+        img.into_element(),
+        text(move || status.get()).test_id(status_id).into_element(),
+    ])
+    .with_style(row)
+    .into_element()
+}
+
+/// Every `image()` source kind, plus a `Below` menu anchored to a trigger
+/// pinned to the screen's bottom edge: it must flip ABOVE the trigger,
+/// stay inside the viewport, and keep its bottom edge on the trigger when
+/// "Shrink" drops rows (the Android `AnchoredPlacer` regressions).
+pub(crate) fn media_page(nav: NavCell) -> Element {
+    use runtime_vocabulary::glue::primitives::image::{image, image_asset};
+    use runtime_vocabulary::glue::primitives::overlay::{anchored_overlay, AnchorTarget, ElementSide};
+    use runtime_vocabulary::glue::{Color, Length, Ref, StyleRules, StyleSheet, Tokenized};
+
+    let r = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    let back = move || {
+        if let Some(h) = nav.borrow().as_ref() {
+            h.pop();
+        }
+    };
+
+    let menu_open = signal(false);
+    let menu_rows = signal(6_i32);
+    let trigger: Ref<runtime_shared::ButtonHandle> = Ref::new();
+    let panel_style = Rc::new(StyleSheet::r#static(StyleRules {
+        background: Some(Tokenized::Literal(Color("#fef3c7".into()))),
+        padding_top: r(8.0),
+        padding_bottom: r(8.0),
+        padding_left: r(12.0),
+        padding_right: r(12.0),
+        width: r(220.0),
+        ..Default::default()
+    }));
+    let menu = when(
+        move || menu_open.get(),
+        move || {
+            let extra_rows = when(
+                move || menu_rows.get() > 2,
+                || {
+                    view(vec![
+                        text("Item 3").into_element(),
+                        text("Item 4").into_element(),
+                        text("Item 5").into_element(),
+                        text("Item 6").into_element(),
+                    ])
+                    .into_element()
+                },
+                || view(vec![]).into_element(),
+            );
+            let panel = view(vec![
+                text("Item 1").test_id("menu-item-1").into_element(),
+                text("Item 2").into_element(),
+                extra_rows,
+                button("Shrink", move || menu_rows.set(2)).test_id("menu-shrink").into_element(),
+            ])
+            .with_style(panel_style.clone())
+            .test_id("menu-panel")
+            .into_element();
+            anchored_overlay(AnchorTarget::from(trigger), vec![panel])
+                .side(ElementSide::Below)
+                .offset(4.0)
+                .into_element()
+        },
+        || view(vec![]).into_element(),
+    );
+
+    // Spacer pushes the trigger to the bottom edge of the screen.
+    let spacer = Rc::new(StyleSheet::r#static(StyleRules {
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        ..Default::default()
+    }));
+    let page = Rc::new(StyleSheet::r#static(StyleRules {
+        flex_grow: Some(Tokenized::Literal(1.0)),
+        padding_top: r(12.0),
+        padding_bottom: r(12.0),
+        padding_left: r(12.0),
+        padding_right: r(12.0),
+        ..Default::default()
+    }));
+
+    let children: Vec<Element> = vec![
+        text("Media").test_id("media-marker").into_element(),
+        media_row("png", image(PNG_DATA_URI), "img-png-status", None),
+        media_row("svg", image(SVG_DATA_URI), "img-svg-status", None),
+        media_row("svg 5x", image(SVG_DATA_URI), "img-svg5-status", Some((160.0, 80.0))),
+        media_row("asset", image_asset(badge()), "img-asset-status", Some((72.0, 72.0))),
+        media_row("remote", image(REMOTE_PNG), "img-remote-status", Some((64.0, 64.0))),
+        media_row("remote svg", image(REMOTE_SVG), "img-remote-svg-status", Some((64.0, 64.0))),
+        media_row("broken", image(BROKEN_URL), "img-broken-status", Some((32.0, 32.0))),
+        media_row("bad data", image("data:image/png;base64,@@@@"), "img-bad-status", Some((32.0, 32.0))),
+        view(vec![]).with_style(spacer).into_element(),
+        text(move || format!("menu rows: {}", if menu_open.get() { menu_rows.get() } else { 0 }))
+            .test_id("menu-state")
+            .into_element(),
+        button("Menu", move || menu_open.update(|o| !o))
+            .bind(trigger)
+            .test_id("menu-trigger")
+            .into_element(),
+        menu,
+        button("Back", back).test_id("media-back").into_element(),
+    ];
+    view(children).with_style(page).into_element()
 }

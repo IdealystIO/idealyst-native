@@ -439,6 +439,12 @@ pub struct AndroidBackend {
     /// the same value and trampolines into `nativeGlobalKey`). `Some` while a
     /// handler is installed; freed + detached when replaced or cleared.
     pub(crate) app_key_ptr: Option<jlong>,
+    /// Decoded `image_asset` sources by id (`register_asset`,
+    /// `AssetTag::Image`). See `primitives::image`.
+    pub(crate) image_cache: primitives::image::ImageCache,
+    /// Load state of every live image view, by node key. The layout pass
+    /// re-rasterizes SVGs from here. See `primitives::image`.
+    pub(crate) image_states: primitives::image::ImageStates,
 }
 
 /// Read the device's `density` (screen-pixels-per-dp) from the
@@ -865,6 +871,7 @@ impl AndroidBackend {
         // NativeActivity, so nothing else populates it. Without this, the first
         // SDK call panics "android context was not initialized" → abort.
         init_ndk_context(&context);
+        view_rect::set_viewport_root(&root);
         let mut backend = Self {
             context,
             root,
@@ -872,6 +879,8 @@ impl AndroidBackend {
             external_scrollers: std::collections::HashSet::new(),
             scroll_view_inner: HashMap::new(),
             portal_instances: HashMap::new(),
+            image_cache: HashMap::new(),
+            image_states: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
             keyboard_avoiders: HashMap::new(),
             view_to_layout: HashMap::new(),
@@ -1555,10 +1564,17 @@ impl AndroidBackend {
             return;
         }
         let _t_total = phase_timer::PhaseTimer::start("layout_pass_total");
+        // Image views whose natural size changed (a load finished) since
+        // the last pass: Taffy caches leaf measurements, so re-measure them.
+        for key in primitives::image::take_natural_size_dirty() {
+            if let Some((_, node)) = self.view_to_layout.get(&key) {
+                self.layout.mark_dirty(*node);
+            }
+        }
         self.compute_layout_roots(vw, vh);
         // Snapshot the entries up front so the mutable JNI calls
         // below don't conflict with the borrow on `self.view_to_layout`.
-        let frames: Vec<(GlobalRef, runtime_layout::Frame)> = {
+        let mut frames: Vec<(GlobalRef, runtime_layout::Frame)> = {
             let _t = phase_timer::PhaseTimer::start("layout_snapshot_frames");
             self.view_to_layout
                 .iter()
@@ -1576,6 +1592,9 @@ impl AndroidBackend {
                 .map(|(_, (view, n))| (view.clone(), self.layout.frame_of(*n)))
                 .collect()
         };
+        // Anchored portals: move each content child from its in-flow spot
+        // to the anchor, using the size Taffy just computed.
+        primitives::overlay::place_anchored_contents(self, (vw, vh), &mut frames);
         with_env(|env| {
             // Build the batch: a parallel `View[]` + packed px quads,
             // applying the same filters the old per-view path used (skip
@@ -1634,6 +1653,16 @@ impl AndroidBackend {
                 // width is a no-op — which keeps the container-query
                 // restyle→relayout loop convergent.
                 fire_layout_for_view(key, frame.width, frame.height);
+                // A displayed SVG re-rasterizes at its laid-out size so it
+                // stays sharp (no-op for bitmaps / an unchanged density).
+                if let Some(image) = self.image_states.get(&key) {
+                    primitives::image::sync_svg_raster(
+                        env,
+                        image,
+                        (frame.width, frame.height),
+                        density,
+                    );
+                }
                 if let Some(state) = self.anim_state.get(&key) {
                     {
                         let _t = phase_timer::PhaseTimer::start("transform_pct");
@@ -1749,6 +1778,15 @@ pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
 
 pub(crate) struct AndroidViewOps;
 impl runtime_shared::ViewOps for AndroidViewOps {
+    /// Viewport-relative rect in dp — what an anchored portal targeting a
+    /// `Ref<ViewHandle>` places against (the trait default's zero rect
+    /// left a view-anchored popover pinned to the top-left).
+    fn rect(&self, node: &dyn std::any::Any) -> runtime_shared::primitives::portal::ViewportRect {
+        node.downcast_ref::<GlobalRef>()
+            .map(view_rect::view_viewport_rect)
+            .unwrap_or_default()
+    }
+
     fn subscribe_layout(
         &self,
         node: &dyn std::any::Any,
@@ -1839,6 +1877,24 @@ impl runtime_shared::ViewOps for AndroidViewOps {
     }
 }
 pub(crate) static ANDROID_VIEW_OPS: AndroidViewOps = AndroidViewOps;
+
+pub(crate) struct AndroidPressableOps;
+impl runtime_shared::PressableOps for AndroidPressableOps {
+    fn click(&self, node: &dyn std::any::Any) {
+        if let Some(view) = node.downcast_ref::<GlobalRef>() {
+            with_env(|env| {
+                let _ = env.call_method(view.as_obj(), "performClick", "()Z", &[]);
+            });
+        }
+    }
+
+    fn rect(&self, node: &dyn std::any::Any) -> runtime_shared::primitives::portal::ViewportRect {
+        node.downcast_ref::<GlobalRef>()
+            .map(view_rect::view_viewport_rect)
+            .unwrap_or_default()
+    }
+}
+pub(crate) static ANDROID_PRESSABLE_OPS: AndroidPressableOps = AndroidPressableOps;
 
 pub(crate) struct AndroidTextOps;
 impl runtime_shared::TextOps for AndroidTextOps {
@@ -2506,6 +2562,7 @@ impl AndroidBackend {
     }
 
     pub(crate) fn insert_at_impl(&mut self, parent: &mut GlobalRef, child: GlobalRef, index: usize) {
+        primitives::overlay::note_inserted_child(self, parent, &child);
         primitives::view::insert_at(self, parent, child, index);
         // Same dynamic-mount layout-pass policy as `insert`: a region
         // splicing rows into an already-attached parent mounts after the
@@ -2615,6 +2672,9 @@ impl AndroidBackend {
     pub(crate) fn insert_impl(&mut self, parent: &mut GlobalRef, child: GlobalRef) {
         let child_for_sticky = child.clone();
         primitives::view::insert(self, parent, child);
+        // An anchored portal places its LATEST child (the content, inserted
+        // after any backdrop) against the anchor.
+        primitives::overlay::note_inserted_child(self, parent, &child_for_sticky);
         // Retry pending sticky registrations now that this subtree
         // is wired into the parent chain. The walker fires
         // `apply_style` before `insert`, so any `Position::Sticky`
@@ -2723,6 +2783,26 @@ impl AndroidBackend {
         let node = primitives::image::create(self, src, alt);
         a11y::apply(&node, a11y, Some(runtime_shared::accessibility::Role::Image));
         node
+    }
+
+    pub(crate) fn update_image_src_impl(&mut self, node: &GlobalRef, src: &str) {
+        primitives::image::update_src(self, node, src);
+    }
+
+    pub(crate) fn install_image_load_handler_impl(
+        &mut self,
+        node: &GlobalRef,
+        handler: runtime_shared::ImageLoadHandler,
+    ) {
+        primitives::image::install_load_handler(self, node, handler);
+    }
+
+    pub(crate) fn install_image_error_handler_impl(
+        &mut self,
+        node: &GlobalRef,
+        handler: runtime_shared::ImageErrorHandler,
+    ) {
+        primitives::image::install_error_handler(self, node, handler);
     }
 
     pub(crate) fn create_icon_impl(
@@ -3201,6 +3281,13 @@ impl AndroidBackend {
     /// `view_handle.as_any()` to `GlobalRef` and reach the backend
     /// through `set_animated_f32` / `set_animated_color`; without this
     /// override the handle stores `Rc<()>` and the downcast fails.
+    /// Pressable handle carrying the `GlobalRef`, so a `Ref<PressableHandle>`
+    /// can anchor a popover (the trait default stores `Rc<()>` and reports a
+    /// zero rect) and `click()` works.
+    pub(crate) fn make_pressable_handle_impl(&self, node: &GlobalRef) -> runtime_shared::PressableHandle {
+        runtime_shared::PressableHandle::new(Rc::new(node.clone()), &ANDROID_PRESSABLE_OPS)
+    }
+
     pub(crate) fn make_view_handle_impl(&self, node: &GlobalRef) -> runtime_shared::ViewHandle {
         runtime_shared::ViewHandle::new(Rc::new(node.clone()), &ANDROID_VIEW_OPS)
     }
@@ -3326,9 +3413,12 @@ impl AndroidBackend {
         kind: runtime_shared::AssetTag,
         source: &runtime_shared::AssetSource,
     ) {
-        // Only the font branch needs JNI today; images on Android go
-        // through `create_image(src)` directly. Future image / video
-        // caches would chain here the same way the iOS backend does.
+        // Images decode once here (bitmap or parsed SVG) so every
+        // `asset://{id}` view shares the result — same as iOS/macOS.
+        if kind == runtime_shared::AssetTag::Image {
+            primitives::image::register_asset(&mut self.image_cache, id, kind, source);
+            return;
+        }
         if kind != runtime_shared::AssetTag::Font {
             return;
         }
@@ -3344,6 +3434,9 @@ impl AndroidBackend {
         id: runtime_shared::AssetId,
         kind: runtime_shared::AssetTag,
     ) {
+        if kind == runtime_shared::AssetTag::Image {
+            self.image_cache.remove(&id);
+        }
         self.font_registry.unregister_asset(id, kind);
     }
 
@@ -3416,6 +3509,8 @@ impl AndroidBackend {
             text_style.padding_top = None;
             text_style.padding_bottom = None;
             self.layout.set_style(layout_node, &text_style);
+        } else if let Some(rules) = primitives::overlay::overlay_layout_style(self, node, style) {
+            self.layout.set_style(layout_node, &rules);
         } else {
             self.layout.set_style(layout_node, style);
         }
@@ -3853,6 +3948,7 @@ impl AndroidBackend {
         // shared listener \u{2014} otherwise the listener slot stays
         // pinned by the on_scroll registry.
         self.scroll_observers.remove(&node_key);
+        primitives::image::forget(self, node);
         with_env(|env| {
             sticky::deregister(
                 env,
@@ -3898,14 +3994,44 @@ impl AndroidBackend {
     }
 
     pub(crate) fn set_disabled_impl(&mut self, node: &GlobalRef, disabled: bool) {
-        with_env(|env| {
+        // `setEnabled(false)` is the native inert state: a disabled EditText
+        // takes no input, and a disabled view cannot take focus
+        // (`View.canTakeFocus` requires ENABLED) — so a disabled
+        // `text_input` / `text_area` / pressable leaves keyboard focus.
+        let (focused, edit_text) = with_env(|env| {
             let _ = env.call_method(
                 node.as_obj(),
                 "setEnabled",
                 "(Z)V",
                 &[JValue::Bool(if disabled { 0 } else { 1 })],
             );
+            if !disabled {
+                return (false, false);
+            }
+            let focused = env
+                .call_method(node.as_obj(), "isFocused", "()Z", &[])
+                .and_then(|v| v.z())
+                .unwrap_or(false);
+            (focused, is_edit_text(env, node.as_obj()))
         });
+        if disabled {
+            // A focus requested before attach (`pending_focus`) must not land
+            // on a field that has since gone inert.
+            crate::imp::pending_focus::cancel(node);
+            // Disabling does not reliably drop focus the view ALREADY holds
+            // (AOSP releases differ), and never hides the soft keyboard an
+            // EditText raised — a field disabled mid-edit would keep the
+            // keyboard up over a field that ignores it. Blur explicitly.
+            if focused {
+                if edit_text {
+                    primitives::text_input::blur_edit_text(node);
+                } else {
+                    with_env(|env| {
+                        let _ = env.call_method(node.as_obj(), "clearFocus", "()V", &[]);
+                    });
+                }
+            }
+        }
     }
 
     pub(crate) fn attach_states_impl(

@@ -987,6 +987,12 @@ impl caps::DocumentOps for CpuBackend {}
 // ---------------------------------------------------------------------------
 
 impl caps::StyleOps for CpuBackend {
+    /// Native inert state for the `disabled` prop — see the inherent
+    /// `CpuBackend::set_disabled`.
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        CpuBackend::set_disabled(self, node, disabled)
+    }
+
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Degrade LOUDLY, once. `CPU` has no scrolling gesture model,
         // so `Position::Sticky` renders as `Relative` and

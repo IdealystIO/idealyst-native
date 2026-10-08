@@ -3379,6 +3379,53 @@ impl WebBackend {
         } else {
             let _ = element.remove_attribute("disabled");
         }
+        // Keyboard focus. A form control (`<input>`, `<textarea>`,
+        // `<button>`) leaves the Tab order natively once `disabled` is
+        // set. A `<div>` pressable does NOT: `disabled` is not a
+        // recognized attribute on a div, and its `tabindex="0"` (set by
+        // `primitives::pressable::create`) keeps it Tab-reachable — a
+        // disabled Button / Switch / Select trigger was still a tab stop
+        // whose Enter/Space did nothing. So a non-form-control with a
+        // `tabindex` is pulled out of the Tab order (`tabindex="-1"`) and
+        // marked `aria-disabled`; the author's original `tabindex` is
+        // stashed in `data-iy-tabindex` and restored on re-enable.
+        let natively_disableable = matches!(
+            element.tag_name().to_ascii_uppercase().as_str(),
+            "INPUT" | "TEXTAREA" | "BUTTON" | "SELECT"
+        );
+        if !natively_disableable {
+            if disabled {
+                if let Some(tab) = element.get_attribute("tabindex") {
+                    if !element.has_attribute(DISABLED_TABINDEX_STASH) {
+                        let _ = element.set_attribute(DISABLED_TABINDEX_STASH, &tab);
+                    }
+                    let _ = element.set_attribute("tabindex", "-1");
+                }
+                let _ = element.set_attribute("aria-disabled", "true");
+            } else {
+                if let Some(tab) = element.get_attribute(DISABLED_TABINDEX_STASH) {
+                    let _ = element.set_attribute("tabindex", &tab);
+                    let _ = element.remove_attribute(DISABLED_TABINDEX_STASH);
+                }
+                let _ = element.remove_attribute("aria-disabled");
+            }
+        }
+        // Drop focus the element held when it went inert. Browsers differ
+        // on whether a focused control that becomes `disabled` keeps
+        // `document.activeElement` (and so the `:focus` ring); a
+        // `tabindex=-1` div keeps focus everywhere. Blurring explicitly
+        // makes "disabled ⇒ not focused" hold on every engine.
+        if disabled {
+            let focused = self
+                .doc
+                .active_element()
+                .is_some_and(|a| a.as_js().strict_eq(element.as_js()));
+            if focused {
+                if let Ok(html) = element.dyn_into::<web_glue::dom::HtmlElement>() {
+                    let _ = html.blur();
+                }
+            }
+        }
     }
 
     /// Web state styling uses native CSS selectors (`:hover`,
@@ -3777,3 +3824,8 @@ fn external_placeholder_element(
     )));
     div
 }
+
+/// Where `set_disabled` stashes a non-form-control's own `tabindex` while
+/// it is disabled (it swaps in `-1` to leave the Tab order), so
+/// re-enabling restores exactly what was there.
+const DISABLED_TABINDEX_STASH: &str = "data-iy-tabindex";

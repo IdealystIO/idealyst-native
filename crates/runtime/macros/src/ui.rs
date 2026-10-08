@@ -1037,7 +1037,7 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
         quote! {}
     };
     // `secure`, `on_focus`, `on_key_down`, `placeholder_reactive`, `bind`,
-    // `autofocus`.
+    // `autofocus`, `disabled`.
     let setters = builder_calls(props, TEXT_INPUT_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call #setters
@@ -1058,7 +1058,9 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
         .find(|p| p.name == "on_change")
         .map(|p| p.value.to_token_stream())
         .unwrap_or_else(|| quote! { |_| {} });
-    quote! { ::runtime_core::primitives::toggle::toggle(#value, #on_change) }
+    // `disabled`.
+    let setters = builder_calls(props, TOGGLE_BUILDER_PROPS);
+    quote! { ::runtime_core::primitives::toggle::toggle(#value, #on_change) #setters }
 }
 
 /// Lower each named inline prop to the builder call of the same name,
@@ -1176,10 +1178,20 @@ const IMAGE_BUILDER_PROPS: &[&str] = &["on_load", "on_error", "alt_reactive", "b
 
 /// `text_input`'s inline setters. `placeholder` is the emitter's own
 /// (literal `.into()`).
-const TEXT_INPUT_BUILDER_PROPS: &[&str] =
-    &["secure", "on_focus", "on_key_down", "placeholder_reactive", "bind", "autofocus"];
+const TEXT_INPUT_BUILDER_PROPS: &[&str] = &[
+    "secure",
+    "on_focus",
+    "on_key_down",
+    "placeholder_reactive",
+    "bind",
+    "autofocus",
+    "disabled",
+];
 
-const SLIDER_BUILDER_PROPS: &[&str] = &["step"];
+/// `toggle`'s inline setters.
+const TOGGLE_BUILDER_PROPS: &[&str] = &["disabled"];
+
+const SLIDER_BUILDER_PROPS: &[&str] = &["step", "disabled"];
 
 const SLIDER_BUILDER_ONLY: &[(&str, &str)] =
     &[("range", "write the bounds as `min = …, max = …`")];
@@ -1275,7 +1287,7 @@ pub(crate) fn prim_surface(canonical: &str) -> PrimSurface {
             &[],
             false,
         ),
-        "toggle" => s(COMMON_PROPS, &["value", "on_change"], &[], &[], false),
+        "toggle" => s(COMMON_PROPS, &["value", "on_change"], TOGGLE_BUILDER_PROPS, &[], false),
         "slider" => s(
             COMMON_PROPS,
             &["value", "on_change", "min", "max"],

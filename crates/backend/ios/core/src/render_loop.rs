@@ -82,20 +82,9 @@ fn start_inner(f: Box<dyn FnMut(f32) + 'static>) -> IosHandle {
         // (project policy: crash-loud). Without the print, the abort
         // from `panic_cannot_unwind` would point at `_CFRunLoopRun`
         // rather than the original Rust panic site.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend_apple_core::crash::abort_on_panic("iOS render-loop NSTimer", || {
             (state_for_block.borrow_mut())(elapsed);
-        }));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-ios-core] render-loop panic: {msg}");
-            std::process::abort();
-        }
+        });
     });
     let block = block.copy();
     // Scheduled in `NSDefaultRunLoopMode` (NOT common modes) so the wgpu host's

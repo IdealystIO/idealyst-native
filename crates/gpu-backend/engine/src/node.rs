@@ -747,6 +747,16 @@ pub struct NodeData {
     /// the framework re-resolves the style and pushes the result
     /// through `apply_style`. Unused state bits are no-ops.
     pub state_setter: Option<Rc<dyn Fn(StateBits, bool)>>,
+    /// Native-inert flag written by `StyleOps::set_disabled` — the
+    /// framework's `disabled` prop on `text_input` / `text_area` /
+    /// pressables / toggles / sliders. Distinct from the DISABLED
+    /// *style* bit (which only re-resolves the look): this is what the
+    /// host's input dispatch reads, so a disabled node is never picked
+    /// as a press / toggle / slider / focus target and a focused input
+    /// that goes disabled loses focus (see `Host::drop_inert_focus`).
+    /// Without it the GPU backend was the one target where a disabled
+    /// field still took focus and raised the on-screen keyboard.
+    pub disabled: bool,
     /// Raw touch handler installed by
     /// [`runtime_shared::Backend::install_touch_handler`]. Present
     /// only on nodes whose primitive carries an `on_touch` slot. The
@@ -830,6 +840,7 @@ pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {
         style: None,
         render: RenderStyle::default(),
         state_setter: None,
+        disabled: false,
         touch_handler: None,
         animated: None,
         accessibility: AccessibilityProps::default(),

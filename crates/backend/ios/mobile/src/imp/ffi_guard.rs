@@ -16,26 +16,13 @@
 //! This mirrors the libdispatch trampoline in [`super::portal`] and the
 //! `extern "C"` entry guards in [`crate::runtime_server`].
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 /// Run `f` (an ObjC-dispatched method body) with a panic firewall. On a
 /// normal return, returns `f`'s value. On panic, logs `label` + the
-/// payload and aborts the process — it never returns `Err` or a default,
-/// because there is no safe value to hand back to UIKit.
+/// payload through NSLog (stderr is invisible on a device) and aborts the
+/// process — it never returns `Err` or a default, because there is no safe
+/// value to hand back to UIKit. Thin wrapper over the shared Apple firewall
+/// so iOS and macOS report crossings identically.
 #[inline]
 pub(crate) fn guard_ffi<R>(label: &'static str, f: impl FnOnce() -> R) -> R {
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(value) => value,
-        Err(payload) => {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.as_str()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                s
-            } else {
-                "<non-string panic payload>"
-            };
-            eprintln!("[backend-ios] panic crossing ObjC boundary in {label}: {msg}");
-            std::process::abort();
-        }
-    }
+    backend_apple_core::crash::abort_on_panic(label, f)
 }

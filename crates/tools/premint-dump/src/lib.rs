@@ -293,7 +293,11 @@ fn dump_sheet_parts(
         }
     }
 
-    // 5. State deltas, declaration order, AFTER the author axes: the
+    // 5. State deltas, in `StateBits::PRECEDENCE` order (hovered < focused
+    //    < pressed < disabled — `premint_state_axes` is kept sorted by it,
+    //    whatever order the sheet declared them in; the interaction pseudos
+    //    carry `:not([disabled])`, see `css::state_pseudo`), AFTER the
+    //    author axes: the
     //    resolver merges states last (`StyleSheet::resolve`'s state pass),
     //    so a state beats a variant on a property both set. `:where()`
     //    sheds the pseudo-class's specificity so this is decided by source
@@ -795,7 +799,7 @@ mod tests {
         );
         // State overlay: one rule on the BASE class, specificity-flattened.
         assert!(
-            out.contains(".iy-test:where(:hover) { color: #222222"),
+            out.contains(".iy-test:where(:hover:not([disabled])) { color: #222222"),
             "state delta as :where()-wrapped pseudo on the base; got:\n{out}"
         );
         // The whole point: no per-combo rules.
@@ -814,7 +818,7 @@ mod tests {
     #[test]
     fn regression_state_rules_follow_axis_rules() {
         let out = dump_all_css();
-        let state_pos = out.find(".iy-test:where(:hover)").expect("state rule present");
+        let state_pos = out.find(".iy-test:where(:hover:not([disabled]))").expect("state rule present");
         let axis_pos = out.find(".iy-test-tone-danger").expect("axis rule present");
         assert!(
             axis_pos < state_pos,
@@ -1234,7 +1238,7 @@ mod assembled_sheet_tests {
             &mut css,
             &mut FontCollector::default(),
         );
-        assert!(css.contains(":where(:hover)"), "state overlay missing from CSS:\n{css}");
+        assert!(css.contains(":where(:hover:not([disabled]))"), "state overlay missing from CSS:\n{css}");
     }
 
     /// Runtime-valued layers have no build-time class: an application
@@ -1280,6 +1284,46 @@ mod assembled_sheet_tests {
         let b = runtime_core::premint_class_name("idea-theme.v1.typography|h1,body,hero|");
         assert_ne!(a, b);
         assert!(a.starts_with("iy-") && a.len() == 15, "unexpected class shape: {a}");
+    }
+
+    /// Bug: a hovered DISABLED control kept its hover styling, and state
+    /// deltas were emitted in sheet DECLARATION order. The dump must emit
+    /// them in `StateBits::PRECEDENCE` order (hovered < focused < pressed <
+    /// disabled — they all sit at (0,1,0) under `:where()`, so source order
+    /// IS the precedence) with the interaction pseudos guarded off while
+    /// the element carries `[disabled]`, matching `StyleSheet::resolve`.
+    #[test]
+    fn regression_disabled_state_overrides_hovered_in_premint() {
+        let border = |c: &str| StyleRules {
+            border_left_color: Some(Color(c.into()).into()),
+            ..Default::default()
+        };
+        // Declared in the reverse of precedence order on purpose.
+        let sheet = StyleSheet::new(move |_vs: &VariantSet| border("#000001"))
+            .variant("__state_disabled", "on", |_vs| StyleRules {
+                opacity: Some(0.5.into()),
+                ..Default::default()
+            })
+            .variant("__state_pressed", "on", move |_vs| border("#0000aa"))
+            .variant("__state_focused", "on", move |_vs| border("#0000cc"))
+            .variant("__state_hovered", "on", move |_vs| border("#0000bb"))
+            .premint_as("test.state_precedence.v1");
+        let base = sheet.premint_class().unwrap().to_string();
+        let mut out = String::new();
+        let mut fonts = FontCollector::default();
+        dump_sheet_parts(&base, &sheet, &mut out, &mut fonts);
+        let at = |pseudo: &str| {
+            out.find(&format!(".{base}:where({pseudo}) {{"))
+                .unwrap_or_else(|| panic!("missing {pseudo} rule; got:\n{out}"))
+        };
+        let hover = at(":hover:not([disabled])");
+        let focus = at(":focus:not([disabled])");
+        let active = at(":active:not([disabled])");
+        let disabled = at("[disabled]");
+        assert!(
+            hover < focus && focus < active && active < disabled,
+            "state rules must follow StateBits::PRECEDENCE; got:\n{out}"
+        );
     }
 
     /// A sheet shaped like idea-theme's Button: an appearance axis plus the
@@ -1345,11 +1389,11 @@ mod assembled_sheet_tests {
         dump_sheet_parts(&base, &sheet, &mut out, &mut fonts);
 
         assert!(
-            out.contains(&format!(".{base}-appearance-solid:hover {{")),
-            "solid+hover compound must lower to `.<base>-appearance-solid:hover`; got:\n{out}"
+            out.contains(&format!(".{base}-appearance-solid:hover:not([disabled]) {{")),
+            "solid+hover compound must lower to `.<base>-appearance-solid:hover:not([disabled])`; got:\n{out}"
         );
         assert!(
-            out.contains(&format!(".{base}-appearance-ghost:hover {{")),
+            out.contains(&format!(".{base}-appearance-ghost:hover:not([disabled]) {{")),
             "ghost+hover compound must lower too; got:\n{out}"
         );
         assert!(
@@ -1375,7 +1419,7 @@ mod assembled_sheet_tests {
             .find(&format!(".{base}-appearance-solid {{"))
             .expect("arm rule present");
         let compound = out
-            .find(&format!(".{base}-appearance-solid:hover {{"))
+            .find(&format!(".{base}-appearance-solid:hover:not([disabled]) {{"))
             .expect("compound rule present");
         assert!(
             compound > arm,
@@ -1410,12 +1454,12 @@ mod assembled_sheet_tests {
         let mut fonts = FontCollector::default();
         dump_sheet_parts(&base, &sheet, &mut out, &mut fonts);
         let arm_rule = format!(".{base}-appearance-solid {{");
-        let compound_rule = format!(".{base}-appearance-solid:hover {{");
+        let compound_rule = format!(".{base}-appearance-solid:hover:not([disabled]) {{");
         assert!(out.find(&compound_rule) > out.find(&arm_rule));
         // (0,2,0) vs (0,1,0): the compound selector carries one class + one
         // pseudo, and — unlike the plain state delta — is NOT :where()-wrapped.
         assert!(
-            !out.contains(&format!(".{base}-appearance-solid:where(:hover)")),
+            !out.contains(&format!(".{base}-appearance-solid:where(:hover:not([disabled]))")),
             "the compound must keep its specificity; :where() would shed it \
              and let the later arm rules win instead. got:\n{out}"
         );

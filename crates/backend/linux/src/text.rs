@@ -71,7 +71,7 @@ pub fn family_name(f: &FontFamily) -> Option<String> {
     }
 }
 
-fn map_weight(w: FontWeight) -> pango::Weight {
+pub(crate) fn map_weight(w: FontWeight) -> pango::Weight {
     match w {
         FontWeight::Thin => pango::Weight::Thin,
         FontWeight::ExtraLight => pango::Weight::Ultralight,

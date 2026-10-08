@@ -101,3 +101,16 @@ core's testimony with no way to recover it. So:
   the glyph (`backend-web`
   `regression_icon_in_non_flex_view_does_not_sit_on_a_line_box`). That
   attribute is the only byte that moved.
+- **2026-10-08, disabled suppresses interaction states** —
+  `styled_sheet_tokens.head.css`: the hover rule's selector changed from
+  `.ui-47e76f6103ee4130:hover` to `.ui-47e76f6103ee4130:hover:not([disabled])`
+  (`css::state_pseudo`). The browser keeps matching `:hover` on a
+  `[disabled]` element, so a hovered disabled control painted its hover
+  style on web/SSR (idea-ui `Select(disabled)` showed its hover border);
+  the guard is the CSS form of `runtime_shared::StateBits::PRECEDENCE`'s
+  "disabled suppresses hovered/pressed/focused" rule, which the native
+  resolver applies to the state bits. No minted class hash moved (the
+  class key uses `state_key_tag`, not the pseudo), no HTML byte moved, and
+  that selector is the only byte that moved. Pinned by
+  `regression_ssr_state_rules_follow_state_precedence` (backend-ssr) and
+  `regression_disabled_state_overrides_hovered_in_css` (css).

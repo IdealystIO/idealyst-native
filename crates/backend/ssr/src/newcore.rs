@@ -1051,15 +1051,16 @@ impl caps::StyleOps for SsrBackend {
         // `media_rules` because that map holds whole rule strings.
         let locked = css::display_locked(base);
         for (state, overlay) in overlays {
-            if let Some(pseudo) = css::state_pseudo(*state) {
-                // Key carries the pseudo so head_css emits
-                // `.ui-<hash>:hover{ … }` (the node still wears `ui-<hash>`).
-                // The (0,2,0) pseudo-class rule wins over the (0,1,0)
+            if let (Some(pseudo), Some(rank)) = (css::state_pseudo(*state), state.precedence_rank()) {
+                // head_css emits `.ui-<hash>:hover:not([disabled]){ … }`
+                // (the node still wears `ui-<hash>`), the class's states in
+                // `StateBits::PRECEDENCE` order — see `state_rules`. The
+                // (0,2,0)+ state rule wins over the (0,1,0)
                 // `@media`/`@container` rules wherever it lands, and only
                 // for the properties the state sets.
-                self.style_rules
-                    .entry(format!("{class}{pseudo}"))
-                    .or_insert_with(|| css::state_layer_css(*state, overlay, locked));
+                self.state_rules
+                    .entry((class.clone(), rank))
+                    .or_insert_with(|| (pseudo, css::state_layer_css(*state, overlay, locked)));
                 if css::layer_needs_column_pin(overlay, locked) {
                     self.media_rules
                         .entry(format!("{class}{pseudo}~pin"))

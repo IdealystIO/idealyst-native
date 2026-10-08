@@ -1553,17 +1553,26 @@ impl WgpuBackend {
     }
 
     pub(crate) fn set_disabled_impl(&mut self, node: &WgpuNode, disabled: bool) {
+        // Native inertness: the host's input dispatch reads this flag
+        // (`pick_action` refuses a disabled node; `Host::drop_inert_focus`
+        // releases focus a disabled input holds on the next frame / key /
+        // press). This is the GPU backend's equivalent of web `disabled`,
+        // AppKit `setEnabled:NO` and GTK `set_sensitive(false)`.
+        node.borrow_mut().disabled = disabled;
         // The framework's state-overlay system handles the
         // visual side — any stylesheet with a
         // `state { disabled, … }` overlay re-resolves and
         // pushes a fresh style through `apply_style` once the
-        // state bit flips. Our job is just to flip the bit via
-        // the setter that `attach_states` cached on the node.
+        // state bit flips. Flip it via the setter that
+        // `attach_states` cached on the node.
         let setter = node.borrow().state_setter.clone();
         if let Some(setter) = setter {
             setter(StateBits::DISABLED, disabled);
-            request_redraw();
         }
+        // Always redraw, setter or not: the next frame's `tick` is where
+        // a focused input that just went inert drops its focus (and the
+        // on-screen keyboard slides away).
+        request_redraw();
     }
 
     pub(crate) fn frame_impl(

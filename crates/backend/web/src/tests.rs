@@ -789,6 +789,70 @@ fn regression_web_disabled_state_styles_div_pressable() {
     );
 }
 
+/// REGRESSION TEST: a hovered DISABLED control kept its hover styling on
+/// web (idea-ui `Select(disabled = true)` showed its hover border). The
+/// browser keeps matching `:hover` on an element carrying `disabled`, so
+/// the interaction-state rules must exclude it themselves —
+/// `css::state_pseudo` emits `:hover:not([disabled])` etc. — and the state
+/// rules must land in `StateBits::PRECEDENCE` order (hovered < focused <
+/// pressed < disabled), since the interaction rules tie on specificity.
+///
+/// `:hover` itself can't be driven from a test, so this proves the two
+/// halves the browser decides: the live CSSOM accepted the guarded
+/// selectors in precedence order (an unparseable selector is dropped by
+/// `insertRule`), and the `:not([disabled])` guard stops matching the
+/// moment `set_disabled` marks the element — checked through
+/// `Element.matches` on the selector with the dynamic pseudo removed.
+#[wasm_bindgen_test]
+fn regression_web_disabled_state_overrides_hovered() {
+    use runtime_shared::{StateBits, StyleRules, Tokenized};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let element = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&element).unwrap();
+    let node: web_glue::dom::Node = element.clone().unchecked_into();
+
+    let layer = |o: f32| Rc::new(StyleRules { opacity: Some(Tokenized::Literal(o)), ..Default::default() });
+    // Precedence order, exactly as `resolve_state_overlays` hands them over.
+    let overlays = vec![
+        (StateBits::HOVERED, layer(0.9)),
+        (StateBits::FOCUSED, layer(0.8)),
+        (StateBits::PRESSED, layer(0.7)),
+        (StateBits::DISABLED, layer(0.4)),
+    ];
+    backend.apply_styled_states_impl(&node, &layer(1.0), &overlays);
+    let id = backend.node_id(&node);
+    let class = backend.dynamic.get(&id).expect("node holds a dynamic slot").shared.class_name.clone();
+
+    let rules = backend.sheet().css_rules().expect("css_rules");
+    let selectors: Vec<String> = (0..rules.length())
+        .filter_map(|i| rules.get(i))
+        .filter_map(|r| r.dyn_into::<web_glue::dom::CssStyleRule>().ok())
+        .map(|r| r.selector_text())
+        .filter(|s| s.starts_with(&format!(".{class}:")) || s.starts_with(&format!(".{class}[")))
+        .collect();
+    assert_eq!(
+        selectors,
+        vec![
+            format!(".{class}:hover:not([disabled])"),
+            format!(".{class}:focus:not([disabled])"),
+            format!(".{class}:active:not([disabled])"),
+            format!(".{class}[disabled]"),
+        ],
+        "state rules: guarded interaction pseudos, in precedence order"
+    );
+
+    element.set_class_name(&class);
+    let guard = format!(".{class}:not([disabled])");
+    assert!(element.matches(&guard).unwrap(), "enabled: the interaction rules can match");
+    backend.set_disabled_impl(&node, true);
+    assert!(!element.matches(&guard).unwrap(), "disabled: no interaction rule can match");
+    assert!(element.matches(&format!(".{class}[disabled]")).unwrap(), "disabled: the dim rule matches");
+}
+
 // ---------------------------------------------------------------------------
 // Font linking — regression for fonts shipping inside the wasm
 // ---------------------------------------------------------------------------
@@ -4167,4 +4231,160 @@ async fn regression_virtual_grid_handle_reports_scrollport_and_scrollbar_thickne
     sleep_ms(0).await;
     grid.remove();
     sheet.remove();
+}
+
+/// REGRESSION TEST.
+///
+/// A disabled pressable stayed keyboard-focusable on web. A pressable is
+/// a `<div role=button tabindex=0>`; `set_disabled` only added the
+/// `disabled` attribute, which a `<div>` ignores for focus, so a disabled
+/// Button / Switch / Select trigger was still a Tab stop (Enter/Space then
+/// did nothing — the press block held, the focusability did not). The fix
+/// swaps the div to `tabindex=-1` + `aria-disabled` while disabled,
+/// restores its own `tabindex` on re-enable, and blurs it if it held
+/// focus.
+#[wasm_bindgen_test]
+fn regression_web_disabled_pressable_leaves_the_tab_order() {
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let node: web_glue::dom::Node =
+        backend.create_pressable_impl(Rc::new(|| {}), &Default::default());
+    let el: web_glue::dom::Element = node.clone().unchecked_into();
+    doc.body().unwrap().append_child(&el).unwrap();
+    let html: web_glue::dom::HtmlElement = node.clone().unchecked_into();
+    html.focus().unwrap();
+    assert_eq!(el.get_attribute("tabindex").as_deref(), Some("0"));
+    assert!(
+        doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+        "precondition: an enabled pressable takes focus"
+    );
+
+    backend.set_disabled_impl(&node, true);
+    assert_eq!(
+        el.get_attribute("tabindex").as_deref(),
+        Some("-1"),
+        "a disabled pressable must leave the Tab order"
+    );
+    assert_eq!(el.get_attribute("aria-disabled").as_deref(), Some("true"));
+    assert!(
+        !doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+        "a pressable that goes disabled while focused drops focus"
+    );
+
+    backend.set_disabled_impl(&node, false);
+    assert_eq!(
+        el.get_attribute("tabindex").as_deref(),
+        Some("0"),
+        "re-enabling restores the pressable's own tabindex"
+    );
+    assert!(!el.has_attribute("aria-disabled"));
+    assert!(!el.has_attribute("data-iy-tabindex"), "the stash is cleared");
+    el.remove();
+}
+
+/// A disabled `text_input` (idea-ui `Field(disabled = true)`) is a native
+/// `<input disabled>`: not focusable, not editable — and if it held focus
+/// when it went inert it is blurred, so no engine leaves a disabled field
+/// as `document.activeElement`.
+#[wasm_bindgen_test]
+fn disabled_text_input_is_native_disabled_and_drops_focus() {
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let node = backend.create_text_input_impl(
+        "frozen",
+        None,
+        Rc::new(|_: String| {}),
+        None,
+        None,
+        false,
+        &Default::default(),
+    );
+    let el: web_glue::dom::Element = node.clone().unchecked_into();
+    doc.body().unwrap().append_child(&el).unwrap();
+    let html: web_glue::dom::HtmlElement = node.clone().unchecked_into();
+    html.focus().unwrap();
+    assert!(doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())));
+
+    backend.set_disabled_impl(&node, true);
+    assert!(el.has_attribute("disabled"));
+    assert!(
+        !doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+        "a field that goes disabled while focused drops focus"
+    );
+    // Native inert: focus() on a disabled input is refused by the browser.
+    html.focus().unwrap();
+    assert!(
+        !doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+        "a disabled input cannot be focused"
+    );
+    assert!(!el.has_attribute("data-iy-tabindex"), "form controls keep their native path");
+
+    backend.set_disabled_impl(&node, false);
+    assert!(!el.has_attribute("disabled"));
+    html.focus().unwrap();
+    assert!(
+        doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+        "re-enabled, the field is focusable again"
+    );
+    el.remove();
+}
+
+/// A disabled `toggle` / `slider` is a native `<input type=checkbox|range
+/// disabled>`: a click can't flip it (no `on_change`), it can't take focus,
+/// and one that held focus when it went inert is blurred. Before the
+/// vocabulary bound `disabled` on these primitives, `set_disabled` never
+/// reached them at all; this pins the web half of that path.
+#[wasm_bindgen_test]
+fn disabled_toggle_and_slider_are_native_disabled_and_drop_focus() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let flips = Rc::new(Cell::new(0u32));
+    let f = flips.clone();
+    let toggle = backend.create_toggle_impl(false, Rc::new(move |_| f.set(f.get() + 1)), &Default::default());
+    let slider = backend.create_slider_impl(0.5, 0.0, 1.0, None, Rc::new(|_| {}), &Default::default());
+    for node in [&toggle, &slider] {
+        let el: web_glue::dom::Element = node.clone().unchecked_into();
+        doc.body().unwrap().append_child(&el).unwrap();
+        let html: web_glue::dom::HtmlElement = node.clone().unchecked_into();
+        html.focus().unwrap();
+        assert!(doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())), "precondition: focusable");
+
+        backend.set_disabled_impl(node, true);
+        assert!(el.has_attribute("disabled"));
+        assert!(
+            !doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+            "a control that goes disabled while focused drops focus"
+        );
+        html.focus().unwrap();
+        assert!(
+            !doc.active_element().is_some_and(|a| a.as_js().strict_eq(el.as_js())),
+            "a disabled control cannot be focused"
+        );
+        assert!(!el.has_attribute("data-iy-tabindex"), "form controls keep their native path");
+    }
+
+    // A click on the disabled checkbox is refused by the browser: no flip,
+    // no `change` event, so `on_change` never fires.
+    let toggle_html: web_glue::dom::HtmlElement = toggle.clone().unchecked_into();
+    toggle_html.click();
+    assert_eq!(flips.get(), 0, "a disabled toggle must not report a flip");
+
+    backend.set_disabled_impl(&toggle, false);
+    toggle_html.click();
+    assert_eq!(flips.get(), 1, "re-enabled, a click flips it");
+    for node in [&toggle, &slider] {
+        let el: web_glue::dom::Element = node.clone().unchecked_into();
+        el.remove();
+    }
 }

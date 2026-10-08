@@ -56,6 +56,9 @@ inventory = "0.3"
 # Cross-Apple substrate (NSLog, scheduler, CoreText font registry,
 # color parsing). Shared with backend-ios-core; same Phase 0 lift.
 backend-apple-core = { workspace = true }
+# `image()` `data:` URIs + SVG (decode, sniff, rasterize) — platform-neutral,
+# shared with Android; the CoreGraphics wrapper is in backend-apple-core.
+backend-image-source = { workspace = true }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }

@@ -546,7 +546,9 @@ The equivalence rests on two facts, both load-bearing:
 - **Source order mirrors the resolver's merge order** — the
   [layer order](#layer-order) every backend follows: base →
   breakpoints (rank ascending) → containers (threshold ascending) →
-  author axes (alphabetical) → states. States used to be emitted
+  author axes (alphabetical) → states (in
+  [state precedence](#state-precedence) order, interaction pseudos
+  guarded by `:not([disabled])`). States used to be emitted
   before the author axes, the resolver's order before states were
   made to merge last, so on a premint build a variant beat a state
   that set the same property.
@@ -888,9 +890,13 @@ There are two ways a backend can wire state activation:
 The backend receives `apply_styled_states(base, overlays)` (or
 `apply_styled_variants`, which adds the breakpoint and container
 overlays) and emits its own state-tracking mechanism. The web backend,
-for example, mints CSS pseudo-class rules — `:hover`, `:active`,
-`:focus`, `[disabled]` — so the browser handles state activation
-natively. No Rust↔JS round trip per event.
+for example, mints CSS pseudo-class rules —
+`:hover:not([disabled])`, `:active:not([disabled])`,
+`:focus:not([disabled])`, `[disabled]` — so the browser handles state
+activation natively. No Rust↔JS round trip per event. The
+`:not([disabled])` guard is how CSS follows the
+[state precedence](#state-precedence) rule that a disabled control shows
+no hover, press or focus styling.
 
 Each overlay the backend receives holds **only the properties its own
 block sets** (with the values the full merge gives them, so a variant or
@@ -900,7 +906,7 @@ the base:
 ```css
 .ui-x { min-height: 44px }
 @media (min-width: 640px) { .ui-x { min-height: 0px } }
-.ui-x:hover { background: … }
+.ui-x:hover:not([disabled]) { background: … }
 ```
 
 A hovered element at 640px and wider keeps `min-height: 0`: the
@@ -927,10 +933,57 @@ native style-state system.
 Both paths produce the same observable behavior on the resulting
 widget. The choice is purely about where the state tracking lives.
 
+### State precedence
+
+When several states are on at once, they layer in one fixed order,
+lowest to highest:
+
+**hovered < focused < pressed < disabled**
+
+and **`disabled` turns the other three off.** While a control is
+disabled, its `state hovered`, `state pressed` and `state focused`
+blocks don't apply, and neither does any compound that names one of
+them. The order is the same on every backend and in the premint CSS,
+and the order you declare `state` blocks in a sheet has no effect.
+
+Why this order:
+
+- **focused over hovered.** The focus ring is an accessibility signal.
+  It shouldn't disappear while the pointer sits on the control, as it
+  would on a `Select` whose hover border painted over its focus ring.
+- **pressed over both.** Press feedback answers the input happening
+  right now. A pressed button is always hovered too, so Button's 0.85
+  press dim has to beat its 0.92 hover dim.
+- **disabled turns them off.** A disabled control gives no interaction
+  feedback. Ordering alone can't guarantee that: `SelectTrigger`'s
+  `state disabled` block only sets `opacity`, so its `state hovered`
+  border would still paint. The mechanism differs per path. On
+  event-driven backends the resolver drops the interaction states from
+  the variant set while `__state_disabled` is on. On CSS backends the
+  interaction rules carry `:not([disabled])`. The state bits themselves
+  still record what happened, so a control that is re-enabled while the
+  pointer rests on it shows its hover straight away.
+
+This is the CSS `:hover` → `:focus` → `:active` convention the idea-ui
+sheets were written against. The order lives in one place,
+`runtime_shared::StateBits::PRECEDENCE`. `StyleSheet::state_axes()` is
+kept sorted by it, and the resolver's state pass, the overlay list CSS
+backends emit in source order, and the premint dump all read that
+slice. Before this was pinned down, the native resolver merged states
+alphabetically (so hovered beat both focused and disabled), web
+followed declaration order, and SSR followed selector text order. The
+same sheet came out differently on each, and a hovered disabled
+`Select` showed its hover border everywhere.
+
 ### Focus indicators
 
 A focusable element (a `pressable` is one: `tabindex="0"` on web, in the
-key-view loop on macOS) shows the platform's own focus ring until its
+key-view loop on macOS) stops being focusable while it is `disabled`: web
+swaps in `tabindex="-1"` plus `aria-disabled` and puts its own value back
+on re-enable, and macOS takes it out of the key-view loop. Either way it
+also gives up focus if it had it.
+
+A focusable element shows the platform's own focus ring until its
 stylesheet takes the job over. Declaring a `state focused` block is what
 takes it over: the sheet then owns the indicator, and the platform ring
 is suppressed. On web the `:focus` rule minted for the block starts with
@@ -1042,6 +1095,8 @@ Every backend and the premint asset follow one precedence, defined by
 
 **base < breakpoints (`sm` → `xl`) < containers (narrow → wide) <
 variants < states < compounds**
+
+(Among the states, see [State precedence](#state-precedence).)
 
 Each layer contributes only the properties its own block sets, so a
 higher layer overrides a lower one on the properties they share and

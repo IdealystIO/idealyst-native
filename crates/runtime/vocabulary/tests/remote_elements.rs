@@ -1193,3 +1193,136 @@ fn regression_a_list_count_past_its_bytes_is_refused() {
     vec![1u8, 2, 3].encode(&mut ok);
     assert_eq!(<Vec<u8>>::decode(&mut &ok[..]), Ok(vec![1, 2, 3]));
 }
+
+/// `text_input` / `text_area` `disabled` crosses (CODEC_VERSION 4): a
+/// crossed field goes inert exactly like the native one — `set_disabled`
+/// per change of the live source, and the edit gate holds on the app side.
+mod text_disabled {
+    use super::*;
+    use std::cell::RefCell;
+    use runtime_vocabulary::builders::{text_area, text_input};
+
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        h.record_all();
+        let got = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (tree, locked) = h.world.enter(|| {
+            let locked = signal(true);
+            let g1 = got.clone();
+            let g2 = got.clone();
+            let tree = view()
+                .child(
+                    text_input()
+                        .on_change(move |v| g1.borrow_mut().push(format!("input {v}")))
+                        .disabled(move || locked.get()),
+                )
+                .child(
+                    text_area()
+                        .on_change(move |v| g2.borrow_mut().push(format!("area {v}")))
+                        .disabled(move || locked.get()),
+                )
+                .build();
+            (tree, locked)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let mut steps = vec![h.take_log()];
+        (h.text_input_change(0))("a".into());
+        (h.text_input_change(1))("b".into());
+        h.flush();
+        h.world.enter(|| locked.set(false));
+        h.flush();
+        steps.push(h.take_log());
+        (h.text_input_change(0))("c".into());
+        (h.text_input_change(1))("d".into());
+        h.flush();
+        drop(realized);
+        let got = got.borrow().clone();
+        (steps, got)
+    }
+
+    #[test]
+    fn a_crossed_disabled_field_goes_inert_exactly_like_the_native_one() {
+        let (native, native_got) = script(false);
+        let (remote, remote_got) = script(true);
+        assert_eq!(remote, native, "the crossed fields drive the backend like the native ones");
+        assert_eq!(remote_got, native_got);
+        assert_eq!(
+            native_got,
+            vec!["input c".to_string(), "area d".to_string()],
+            "edits are dropped while disabled and flow once enabled"
+        );
+        assert!(
+            native[0].iter().filter(|l| l.starts_with("set_disabled")).count() == 2
+                && native[1].iter().filter(|l| l.ends_with(" false") && l.starts_with("set_disabled")).count() == 2,
+            "both fields mount inert and are re-enabled in place: {native:?}"
+        );
+    }
+}
+
+/// `toggle` / `slider` `disabled` crosses too (CODEC_VERSION 4): a crossed
+/// control goes inert exactly like the native one.
+mod control_disabled {
+    use super::*;
+    use std::cell::RefCell;
+    use runtime_vocabulary::builders::{slider, toggle};
+
+    fn script(remote: bool) -> (Vec<Vec<String>>, Vec<String>) {
+        let h = Harness::new();
+        h.record_all();
+        let got = Rc::new(RefCell::new(Vec::<String>::new()));
+        let (tree, locked) = h.world.enter(|| {
+            let locked = signal(true);
+            let g1 = got.clone();
+            let g2 = got.clone();
+            let tree = view()
+                .child(
+                    toggle()
+                        .on_change(move |v| g1.borrow_mut().push(format!("toggle {v}")))
+                        .disabled(move || locked.get()),
+                )
+                .child(
+                    slider()
+                        .on_change(move |v| g2.borrow_mut().push(format!("slider {v}")))
+                        .disabled(move || locked.get()),
+                )
+                .build();
+            (tree, locked)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let mut steps = vec![h.take_log()];
+        (h.toggle_change(0))(true);
+        (h.slider_change(0))(0.5);
+        h.flush();
+        h.world.enter(|| locked.set(false));
+        h.flush();
+        steps.push(h.take_log());
+        (h.toggle_change(0))(true);
+        (h.slider_change(0))(0.25);
+        h.flush();
+        drop(realized);
+        let got = got.borrow().clone();
+        (steps, got)
+    }
+
+    #[test]
+    fn a_crossed_disabled_toggle_and_slider_go_inert_exactly_like_the_native_ones() {
+        let (native, native_got) = script(false);
+        let (remote, remote_got) = script(true);
+        assert_eq!(remote, native, "the crossed controls drive the backend like the native ones");
+        assert_eq!(remote_got, native_got);
+        assert_eq!(
+            native_got,
+            vec!["toggle true".to_string(), "slider 0.25".to_string()],
+            "changes are dropped while disabled and flow once enabled"
+        );
+        assert!(
+            native[0].iter().filter(|l| l.starts_with("set_disabled")).count() == 2
+                && native[1].iter().filter(|l| l.ends_with(" false") && l.starts_with("set_disabled")).count() == 2,
+            "both controls mount inert and are re-enabled in place: {native:?}"
+        );
+    }
+}

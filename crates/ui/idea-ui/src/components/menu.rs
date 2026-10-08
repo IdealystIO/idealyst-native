@@ -155,6 +155,9 @@ pub struct MenuProps {
     /// Fires on click-outside / Escape; flip your open-state signal.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
     /// Which side of the anchor the panel opens toward. Default `Below`.
+    /// A panel too tall for that side flips to the other one; when its rows
+    /// change (a `header` search filtering them) it re-places on the side it
+    /// is on, keeping the edge nearest the anchor attached.
     // TODO(reactive-sweep): route `side` to anchored_overlay `.side()`
     // (structural positioning, not a style sink). Kept bare for now.
     #[prop(static)]

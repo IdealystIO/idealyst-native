@@ -1,5 +1,5 @@
-//! `Element::Portal` — view overlay reparented into the Activity root
-//! (viewport-anchored) or `PopupWindow` (element-anchored).
+//! `Element::Portal` — a view overlay added to the Activity root, for both
+//! viewport-anchored and element-anchored portals.
 //!
 //! # Two flavors, one Node shape
 //!
@@ -7,7 +7,7 @@
 //! The walker calls `insert_children` on it to populate; `view::insert`
 //! checks `is_portal_node` and skips when the walker later tries to
 //! splice the holder into its surrounding parent view (the overlay
-//! container / PopupWindow already owns its parenting).
+//! container already owns its parenting).
 //!
 //! ## Viewport-anchored: a "dumb" view overlay
 //!
@@ -63,45 +63,64 @@
 //! KEYCODE_BACK ACTION_UP and consumes the event. Non-modal overlays
 //! attach no key listener and back falls through to the app/navigator.
 //!
-//! ## Element-anchored: `PopupWindow`
+//! ## Element-anchored: the same overlay, content placed by `AnchoredPlacer`
 //!
-//! `PortalTarget::Anchor { target, side, align, offset }`. Anchored
-//! to the trigger's screen rect (resolved via `target.rect()`).
-//! Backed by an Android `PopupWindow`. The popup is left
-//! non-focusable + non-outside-touchable: any backdrop the host
-//! supplies inside the portal's content tree is responsible for
-//! catching the outside tap. Back-button dismissal in this flow is
-//! best-effort; without `focusable=true` the popup doesn't receive
-//! the press, but enabling focus traps the IME and breaks input on
-//! the surrounding screen. We accept the trade-off — popovers are
-//! transient and dismissed by their own pressable backdrop or by a
-//! reactive open-state change.
+//! `PortalTarget::Anchor { target, side, align, offset }` (popovers, menus,
+//! tooltips). The same full-bleed overlay (so modality, back key and
+//! touch pass-through behave exactly as above), whose Taffy root uses
+//! `anchored_portal_policy::anchored_container_rules` so the content child
+//! — the LAST child inserted, after any backdrop — sizes to its content.
+//! Its top-left is then resolved by one long-lived
+//! `anchored_portal_policy::AnchorTracker` (the shared `AnchoredPlacer`:
+//! flip only when the content stops fitting, keep the settled side, clamp
+//! with `ANCHOR_EDGE_GAP`):
+//!
+//! - in every layout pass ([`place_anchored_contents`]), with the content
+//!   size Taffy just computed — so the first visible frame is already
+//!   placed, and a content resize (a menu filter dropping rows) re-places
+//!   on the pass it triggers;
+//! - every frame while open ([`track_anchor`], a `raf_loop`), so the
+//!   popover follows an anchor that moves without a layout pass of ours
+//!   (scrolling). Mirrors iOS's per-vsync `CADisplayLink` tracker.
+//!
+//! The anchor rect comes from the handle's `rect()` in viewport dp (root-
+//! relative — `view_rect::view_viewport_rect`), the same space as the
+//! overlay's frames. This replaced a `PopupWindow` placed once with an
+//! unmeasured (0×0) content size; see `crate::anchored_portal_policy`.
 
 use crate::imp::callbacks::{leak, OverlayDismissCallback};
 use crate::imp::{with_env, AndroidBackend};
+use crate::anchored_portal_policy::{anchored_container_rules, AnchorTracker};
 use runtime_shared::primitives::portal::{
-    AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement, ViewportRect,
+    AnchorTarget, ElementAlign, ElementSide, PortalTarget, ViewportPlacement,
 };
-use jni::objects::{GlobalRef, JObject, JValue};
+use jni::objects::{GlobalRef, JValue};
 use jni::sys::jlong;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Per-portal backend state. Discriminates between the two host
-/// types so `release_portal` knows which teardown path to take.
+/// Per-portal backend state. Discriminates between the two portal kinds
+/// so `release_portal` / the layout pass know which bookkeeping applies.
+/// Both render into the same kind of host: a full-bleed `FrameLayout`
+/// overlay in the Activity `root`.
 pub(crate) enum PortalHost {
-    /// Viewport-anchored: a `FrameLayout` overlay added on top of the
-    /// app content inside the Activity `root`. `release_portal`
-    /// `removeView`s it from `root` and drops its Taffy node.
+    /// Viewport-anchored: the content positions itself inside the overlay
+    /// with flex. `release_portal` `removeView`s it from `root` and drops
+    /// its Taffy node.
     ViewOverlay(GlobalRef),
-    /// Element-anchored: an `android.widget.PopupWindow`. Torn down via
-    /// `PopupWindow.dismiss()`.
-    Popup(GlobalRef),
+    /// Element-anchored: the content child is placed against the anchor by
+    /// [`AnchorState`]'s placer on every layout pass and every frame.
+    Anchored {
+        overlay: GlobalRef,
+        state: Rc<AnchorState>,
+        /// Per-frame anchor tracker; dropping it cancels the loop.
+        _tracker: runtime_shared::RafLoop,
+    },
 }
 
 pub(crate) struct PortalInstance {
-    /// The Android host object (overlay View or PopupWindow). Held as a
+    /// The overlay view (+ anchored placement state). Held as a
     /// `GlobalRef` so the JVM doesn't GC it while shown.
     pub(crate) host: PortalHost,
     /// Raw pointer to the leaked `OverlayDismissCallback`. Used by
@@ -134,7 +153,7 @@ pub(crate) fn create(
             side,
             align,
             offset,
-        } => create_popup_portal(b, target, side, align, offset, on_dismiss, trap_focus),
+        } => create_anchored_portal(b, target, side, align, offset, on_dismiss, trap_focus),
         // Named slots: no backend mounting infrastructure yet.
         // Fall back to a viewport-centered overlay so authors don't
         // see a hard crash — same posture as the iOS skin's Named
@@ -168,7 +187,55 @@ fn create_overlay_portal(
         inner: RefCell::new(on_dismiss.clone()),
     });
 
-    let overlay = with_env(|env| {
+    let overlay = make_overlay_view(b, trap_focus, on_dismiss.is_some(), dismiss_cb_ptr);
+
+    // Queue the overlay for reveal once the next `run_layout_pass` lays
+    // out its content. See the INVISIBLE set in `make_overlay_view` for the bug this
+    // prevents (one unlaid-out frame at the 0,0 origin on mount).
+    b.pending_reveal.push(overlay.clone());
+
+    let key = AndroidBackend::node_key_of(&overlay);
+    b.portal_instances.insert(
+        key,
+        PortalInstance {
+            host: PortalHost::ViewOverlay(overlay.clone()),
+            dismiss_cb_ptr,
+        },
+    );
+
+    // Register the overlay as a Taffy ROOT sized to the viewport. It's a
+    // detached sub-root (not a child of the app tree's Taffy root) so it
+    // lays out in viewport space — its children then position themselves
+    // (the Modal's flex-center wrapper, the toast host's bottom align).
+    // `layout_for_view` creates a fresh node with both axes `Auto`, which
+    // `run_layout_pass` force-fills to the viewport because the node is a
+    // root. No `set_root_axes_wrap` — that band-aid existed only to let a
+    // WRAP_CONTENT Dialog window's gravity center the card; with a
+    // full-bleed overlay, centering is pure flex inside the content.
+    b.layout_for_view(&overlay);
+
+    // The overlay's subtree is inserted by the walker AFTER this returns;
+    // `Backend::insert` kicks a coalesced layout pass when it sees an
+    // insert into a portal content holder (it checks `portal_instances`),
+    // so the overlay's Taffy root gets `compute()`d once its children
+    // exist. No deferred `show()` is needed — the overlay is already in
+    // the view tree and simply paints on the next frame.
+
+    overlay
+}
+
+/// Build the full-bleed overlay `FrameLayout` both portal flavors render
+/// into, add it on top of the app content in the Activity `root` (same
+/// window), and leave it `INVISIBLE` until its first layout pass (the
+/// caller queues it in `pending_reveal`). See the module docs for the
+/// touch-modality / back-key posture `trap_focus` selects.
+fn make_overlay_view(
+    b: &AndroidBackend,
+    trap_focus: bool,
+    has_dismiss: bool,
+    dismiss_cb_ptr: jlong,
+) -> GlobalRef {
+    with_env(|env| {
         // The overlay container IS the content holder: a FrameLayout the
         // walker inserts portal children into directly. FrameLayout (vs
         // LinearLayout) because the backend drives all child placement
@@ -229,7 +296,7 @@ fn create_overlay_portal(
             );
             let _ = env.call_method(&overlay, "requestFocus", "()Z", &[]);
 
-            if on_dismiss.is_some() {
+            if has_dismiss {
                 let listener_class = env
                     .find_class("io/idealyst/runtime/RustOverlayKeyListener")
                     .unwrap();
@@ -272,48 +339,32 @@ fn create_overlay_portal(
         );
 
         env.new_global_ref(overlay).unwrap()
-    });
-
-    // Queue the overlay for reveal once the next `run_layout_pass` lays
-    // out its content. See the INVISIBLE set above for the bug this
-    // prevents (one unlaid-out frame at the 0,0 origin on mount).
-    b.pending_reveal.push(overlay.clone());
-
-    let key = AndroidBackend::node_key_of(&overlay);
-    b.portal_instances.insert(
-        key,
-        PortalInstance {
-            host: PortalHost::ViewOverlay(overlay.clone()),
-            dismiss_cb_ptr,
-        },
-    );
-
-    // Register the overlay as a Taffy ROOT sized to the viewport. It's a
-    // detached sub-root (not a child of the app tree's Taffy root) so it
-    // lays out in viewport space — its children then position themselves
-    // (the Modal's flex-center wrapper, the toast host's bottom align).
-    // `layout_for_view` creates a fresh node with both axes `Auto`, which
-    // `run_layout_pass` force-fills to the viewport because the node is a
-    // root. No `set_root_axes_wrap` — that band-aid existed only to let a
-    // WRAP_CONTENT Dialog window's gravity center the card; with a
-    // full-bleed overlay, centering is pure flex inside the content.
-    b.layout_for_view(&overlay);
-
-    // The overlay's subtree is inserted by the walker AFTER this returns;
-    // `Backend::insert` kicks a coalesced layout pass when it sees an
-    // insert into a portal content holder (it checks `portal_instances`),
-    // so the overlay's Taffy root gets `compute()`d once its children
-    // exist. No deferred `show()` is needed — the overlay is already in
-    // the view tree and simply paints on the next frame.
-
-    overlay
+    })
 }
 
 // ---------------------------------------------------------------------------
-// PopupWindow path (element-anchored)
+// Anchored path (element-anchored): same overlay, content re-placed
 // ---------------------------------------------------------------------------
 
-fn create_popup_portal(
+/// Live placement state of an anchored portal. Shared between the
+/// `PortalInstance` (read by the layout pass) and the per-frame tracker.
+pub(crate) struct AnchorState {
+    target: AnchorTarget,
+    /// The ONE `AnchoredPlacer` for this portal's lifetime (sticky side).
+    tracker: RefCell<AnchorTracker>,
+    /// The content child the placement moves: the LATEST child inserted
+    /// into the overlay. Composition inserts `[backdrop, content]` with the
+    /// content last, so re-pointing on every insert lands on the content —
+    /// the same rule as iOS `portal_policy::anchored_insert_action`.
+    content: RefCell<Option<GlobalRef>>,
+    /// Content size (dp) from the last layout pass — the per-frame tracker
+    /// re-places with it without re-running Taffy.
+    content_size: Cell<(f32, f32)>,
+    /// Viewport (overlay) size in dp from the last layout pass.
+    viewport: Cell<(f32, f32)>,
+}
+
+fn create_anchored_portal(
     b: &mut AndroidBackend,
     target: AnchorTarget,
     side: ElementSide,
@@ -325,172 +376,128 @@ fn create_popup_portal(
     let dismiss_cb_ptr = leak(OverlayDismissCallback {
         inner: RefCell::new(on_dismiss.clone()),
     });
+    // The same in-window overlay the viewport portal uses — NOT a
+    // `PopupWindow` (a second window placed once, unmeasured; see
+    // `crate::anchored_portal_policy` for the bugs that caused). A
+    // non-`trap_focus` popover leaves the overlay non-clickable, so taps
+    // outside its content fall through to the app (iOS's passthrough
+    // container); a backdrop child, when the composition asks for one,
+    // catches them instead.
+    let overlay = make_overlay_view(b, trap_focus, on_dismiss.is_some(), dismiss_cb_ptr);
+    b.pending_reveal.push(overlay.clone());
 
-    // Resolve the trigger rect now. The target's primitive has
-    // already mounted (the user clicked it to open this popover),
-    // so `.rect()` returns real coords. If for some reason it
-    // doesn't (target ref hasn't been filled), fall back to the
-    // zero rect which positions at top-left of the screen — visible
-    // and obvious, but not crashy.
-    let trigger_rect = target.rect().unwrap_or_default();
-    let (x_dp, y_dp) = compute_popup_position(&trigger_rect, side, align, offset);
-
-    let (popup, content_holder) = with_env(|env| {
-        let content = make_content_holder(env, &b.context);
-
-        // ---- PopupWindow ----
-        // Three-arg constructor: (View contentView, int width, int height).
-        // WRAP_CONTENT for both — the content's stylesheet drives size.
-        const WRAP_CONTENT: i32 = -2;
-        let popup_class = env.find_class("android/widget/PopupWindow").unwrap();
-        let popup = env
-            .new_object(
-                &popup_class,
-                "(Landroid/view/View;II)V",
-                &[
-                    JValue::Object(&content),
-                    JValue::Int(WRAP_CONTENT),
-                    JValue::Int(WRAP_CONTENT),
-                ],
-            )
-            .unwrap();
-
-        // Backdrop is composition-level — the host supplies a
-        // fullscreen pressable child if it wants tap-outside
-        // dismissal. PopupWindow itself stays scrim-less.
-        //
-        // Focus posture:
-        //   - trap_focus=false (default): non-focusable popup. Surface
-        //     under the popup stays interactive; back-button does NOT
-        //     dismiss (Android quirk: popup must be focusable to
-        //     receive the press). Reactive open-state flips handle the
-        //     usual close paths.
-        //   - trap_focus=true: focusable popup. Steals input focus +
-        //     receives back-button. Required for keyboard-driven UI.
-        if trap_focus {
-            let _ = env.call_method(&popup, "setFocusable", "(Z)V", &[JValue::Bool(1)]);
-            // Non-null background drawable is required for tap-outside
-            // dispatch — needed when the popup is focusable, otherwise
-            // back-button dismissal works but the popup never receives
-            // its own dismiss event. Transparent so we don't add a
-            // visible scrim.
-            let color_drawable_class = env
-                .find_class("android/graphics/drawable/ColorDrawable")
-                .unwrap();
-            let drawable = env
-                .new_object(&color_drawable_class, "(I)V", &[JValue::Int(0)])
-                .unwrap();
-            let _ = env.call_method(
-                &popup,
-                "setBackgroundDrawable",
-                "(Landroid/graphics/drawable/Drawable;)V",
-                &[JValue::Object(&drawable)],
-            );
-        }
-
-        // ---- Dismiss listener ----
-        if on_dismiss.is_some() {
-            let listener_class = env
-                .find_class("io/idealyst/runtime/RustPopupDismissListener")
-                .unwrap();
-            let listener = env
-                .new_object(&listener_class, "(J)V", &[JValue::Long(dismiss_cb_ptr)])
-                .unwrap();
-            let _ = env.call_method(
-                &popup,
-                "setOnDismissListener",
-                "(Landroid/widget/PopupWindow$OnDismissListener;)V",
-                &[JValue::Object(&listener)],
-            );
-        }
-
-        // ---- Show ----
-        // showAtLocation needs an anchor View for window-token resolution
-        // (PopupWindow attaches to the same window). The backend's root
-        // view works for any popup anchored anywhere on screen.
-        // Gravity.NO_GRAVITY = 0 means "x and y are absolute screen coords."
-        let _ = env.call_method(
-            &popup,
-            "showAtLocation",
-            "(Landroid/view/View;III)V",
-            &[
-                JValue::Object(&b.root.as_obj()),
-                JValue::Int(0), // NO_GRAVITY
-                JValue::Int(x_dp),
-                JValue::Int(y_dp),
-            ],
-        );
-
-        (
-            env.new_global_ref(popup).unwrap(),
-            env.new_global_ref(content).unwrap(),
-        )
+    let state = Rc::new(AnchorState {
+        target,
+        tracker: RefCell::new(AnchorTracker::new(side, align, offset)),
+        content: RefCell::new(None),
+        content_size: Cell::new((0.0, 0.0)),
+        viewport: Cell::new((0.0, 0.0)),
     });
 
-    let key = AndroidBackend::node_key_of(&content_holder);
+    // Re-place every frame while open: the anchor can move without any
+    // layout pass of ours (a scroll under the popover, an animation). The
+    // layout pass covers content resizes and the first placement; this
+    // covers anchor motion. Mirrors iOS's per-vsync `CADisplayLink`
+    // tracker. Dropped (cancelled) with the `PortalInstance`.
+    let per_frame = state.clone();
+    let tracker = runtime_shared::raf_loop(move || track_anchor(&per_frame));
+
+    let key = AndroidBackend::node_key_of(&overlay);
     b.portal_instances.insert(
         key,
         PortalInstance {
-            host: PortalHost::Popup(popup),
+            host: PortalHost::Anchored { overlay: overlay.clone(), state, _tracker: tracker },
             dismiss_cb_ptr,
         },
     );
 
-    content_holder
+    // Taffy ROOT sized to the viewport (like the viewport overlay), styled
+    // so the content child sizes to its content instead of stretching —
+    // the placer needs the content's real size.
+    let node = b.layout_for_view(&overlay);
+    b.layout
+        .set_style(node, &anchored_container_rules(&runtime_shared::StyleRules::default()));
+    overlay
 }
 
-/// Compute the popup's top-left position in screen pixels from the
-/// trigger's screen rect + the desired side/align/offset.
-///
-/// This is the unmeasured anchor path — we don't yet know the
-/// popup's rendered size (it hasn't been laid out), so `End`-align
-/// and `Center`-align with `Below`/`Above` will be slightly off
-/// until first layout. Web does a post-mount measure + re-position
-/// to refine; this implementation skips that pass for now. In
-/// practice for typical popover sizes the initial placement is
-/// already close enough. A follow-up could call `popup.getWidth() /
-/// getHeight()` after `showAtLocation` and re-`update(x, y, ...)`.
-fn compute_popup_position(
-    trigger: &ViewportRect,
-    side: ElementSide,
-    align: ElementAlign,
-    offset: f32,
-) -> (i32, i32) {
-    // Unmeasured initial placement: pass content size (0, 0) to the shared
-    // measured-placement helper in runtime_shared. With zero size the align
-    // math collapses to "align to the trigger's start/center/end edge" —
-    // exactly the prior behavior — but the align/side geometry now lives in
-    // one place across web/iOS/Android (CLAUDE.md §7). A future measured
-    // re-position pass can graduate to the full `resolve_anchored_placement`
-    // (collision flip + viewport clamp) like web.
-    let (top, left) = runtime_shared::primitives::portal::anchor_top_left(
-        *trigger, side, align, offset, (0.0, 0.0),
-    );
-    (left.round() as i32, top.round() as i32)
+/// One frame of the anchor tracker: re-resolve the content's top-left and,
+/// if it moved, write just that view's frame (one `applyFrames` call).
+fn track_anchor(state: &AnchorState) {
+    let Some(content) = state.content.borrow().clone() else { return };
+    let (w, h) = state.content_size.get();
+    let moved = state
+        .tracker
+        .borrow_mut()
+        .replace_if_moved(state.target.rect(), (w, h), state.viewport.get());
+    let Some((x, y)) = moved else { return };
+    with_env(|env| {
+        let d = crate::imp::cached_density(env, &content.as_obj());
+        let px = |v: f32| (v * d).round() as i32;
+        crate::imp::apply_frames_batch(env, &[&content], &[px(x), px(y), px(w), px(h)]);
+    });
+}
+
+/// `insert(parent, child)` hook: when `parent` is an anchored portal's
+/// overlay, `child` becomes the content the placement moves.
+pub(crate) fn note_inserted_child(b: &AndroidBackend, parent: &GlobalRef, child: &GlobalRef) {
+    let key = AndroidBackend::node_key_of(parent);
+    if let Some(PortalInstance { host: PortalHost::Anchored { state, .. }, .. }) =
+        b.portal_instances.get(&key)
+    {
+        *state.content.borrow_mut() = Some(child.clone());
+    }
+}
+
+/// Layout-pass hook: for every anchored portal, place its content child
+/// against the anchor with the content's freshly computed size, overriding
+/// the in-flow `(x, y)` Taffy gave it. Called with the pass's frame
+/// snapshot before it is applied, so the content lands placed on the same
+/// pass that sized it (no frame at the overlay origin first).
+pub(crate) fn place_anchored_contents(
+    b: &AndroidBackend,
+    viewport: (f32, f32),
+    frames: &mut [(GlobalRef, runtime_layout::Frame)],
+) {
+    for instance in b.portal_instances.values() {
+        let PortalHost::Anchored { state, .. } = &instance.host else { continue };
+        let Some(content) = state.content.borrow().clone() else { continue };
+        let ckey = AndroidBackend::node_key_of(&content);
+        let Some((_, frame)) = frames
+            .iter_mut()
+            .find(|(v, _)| AndroidBackend::node_key_of(v) == ckey)
+        else {
+            continue;
+        };
+        state.content_size.set((frame.width, frame.height));
+        state.viewport.set(viewport);
+        if let Some((x, y)) = state.tracker.borrow_mut().place(
+            state.target.rect(),
+            (frame.width, frame.height),
+            viewport,
+        ) {
+            frame.x = x;
+            frame.y = y;
+        }
+    }
+}
+
+/// `apply_style` hook: an anchored portal's overlay keeps the content-
+/// sizing container rules under whatever style the portal itself carries.
+pub(crate) fn overlay_layout_style(
+    b: &AndroidBackend,
+    node: &GlobalRef,
+    style: &runtime_shared::StyleRules,
+) -> Option<runtime_shared::StyleRules> {
+    match b.portal_instances.get(&AndroidBackend::node_key_of(node)) {
+        Some(PortalInstance { host: PortalHost::Anchored { .. }, .. }) => {
+            Some(anchored_container_rules(style))
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Build the LinearLayout that hosts the portal's children.
-/// VERTICAL orientation matches the framework's default flex-column.
-fn make_content_holder<'l>(env: &mut jni::JNIEnv<'l>, ctx: &GlobalRef) -> JObject<'l> {
-    let ll_class = env.find_class("android/widget/LinearLayout").unwrap();
-    let content = env
-        .new_object(
-            &ll_class,
-            "(Landroid/content/Context;)V",
-            &[JValue::Object(&ctx.as_obj())],
-        )
-        .unwrap();
-    // setOrientation(LinearLayout.VERTICAL = 1).
-    let _ = env.call_method(&content, "setOrientation", "(I)V", &[JValue::Int(1)]);
-    content
-}
-
-// ---------------------------------------------------------------------------
-// release — common path for both view overlay and PopupWindow
+// release — common path for both portal kinds
 // ---------------------------------------------------------------------------
 
 pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
@@ -500,8 +507,7 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
     };
 
     // Step 1: blank the user closure so any in-flight dismiss event
-    // — including the one Android dispatches synchronously when we
-    // call dismiss() below on PopupWindow — becomes a no-op for
+    // (a back key already queued for the overlay) becomes a no-op for
     // user code. Without this the framework-driven teardown would
     // re-fire on_dismiss, flipping the open-state signal that's
     // already off, which is harmless but noisy.
@@ -512,38 +518,30 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
         }
     }
 
-    // Step 2: tear down the host.
-    //   - ViewOverlay: remove the overlay from `root` (so it stops
-    //     painting + receiving input) and drop its Taffy node so the
-    //     next layout pass doesn't try to lay out a detached subtree.
-    //   - Popup: PopupWindow.dismiss(). Its OnDismissListener fires for
-    //     ALL dismissals — step 1's blanking is what keeps that benign.
-    with_env(|env| match &instance.host {
-        PortalHost::ViewOverlay(overlay) => {
-            let _ = env.call_method(
-                &b.root.as_obj(),
-                "removeView",
-                "(Landroid/view/View;)V",
-                &[JValue::Object(&overlay.as_obj())],
-            );
-        }
-        PortalHost::Popup(p) => {
-            let _ = env.call_method(p, "dismiss", "()V", &[]);
-        }
+    // Step 2: tear down the host — both kinds are an overlay in `root`:
+    // remove it (so it stops painting + receiving input) and drop its
+    // Taffy node + view-table entry so the next layout pass doesn't lay
+    // out a detached subtree. Dropping an anchored instance also drops its
+    // `RafLoop`, cancelling the per-frame tracker.
+    let overlay = match &instance.host {
+        PortalHost::ViewOverlay(overlay) | PortalHost::Anchored { overlay, .. } => overlay.clone(),
+    };
+    with_env(|env| {
+        let _ = env.call_method(
+            &b.root.as_obj(),
+            "removeView",
+            "(Landroid/view/View;)V",
+            &[JValue::Object(&overlay.as_obj())],
+        );
     });
-
-    // For a view overlay, also drop its Taffy node + view-table entry.
-    // `node_key_of(node)` is the overlay's own key (the content holder IS
-    // the overlay), so look the layout node up before it's gone.
-    if let PortalHost::ViewOverlay(overlay) = &instance.host {
-        let layout_node = b.layout_for_view(overlay);
-        b.layout.remove_node(layout_node);
-        b.view_to_layout.remove(&AndroidBackend::node_key_of(overlay));
-    }
+    let layout_node = b.layout_for_view(&overlay);
+    b.layout.remove_node(layout_node);
+    b.view_to_layout.remove(&AndroidBackend::node_key_of(&overlay));
+    drop(instance.host);
 
     // Step 3: deliberately leak `instance.dismiss_cb_ptr` — Android
     // can dispatch a queued dismiss event after we've returned (a
-    // back-key already in flight, a popup dismiss event), and the
+    // back-key already in flight), and the
     // trampoline would dereference a freed pointer. Same posture as
     // `StateCallback`: leak rather than risk UAF.
 }
@@ -555,7 +553,7 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
 /// True if `node` is a registered portal's content holder. Used by
 /// `view::insert` to skip the `addView` call — portal content holders
 /// are already parented (the view overlay was added to the Activity
-/// `root`; the popup owns its own content view), and the walker's
+/// `root`), and the walker's
 /// parent-side insert would throw
 /// `IllegalStateException("specified child already has a parent")`.
 pub(crate) fn is_portal_node(b: &AndroidBackend, node: &GlobalRef) -> bool {

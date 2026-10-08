@@ -48,6 +48,9 @@ backend-android-core = { workspace = true }
 # crate; Android applies the computed frames via per-child
 # `FrameLayout.LayoutParams` margins.
 runtime-layout = { workspace = true }
+# `image()` decoding shared with iOS/macOS: `data:` URIs, SVG sniffing, and
+# resvg rasterization (BitmapFactory reads neither SVG nor data: URIs).
+backend-image-source = { workspace = true }
 # Used by the Graphics primitive to expose the SurfaceView's
 # `Surface` as a standard raw-window-handle so any GPU library
 # (wgpu, etc.) can plug in. Tiny dep; trait + enum definitions only.

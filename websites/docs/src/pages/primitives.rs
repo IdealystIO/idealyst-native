@@ -261,6 +261,11 @@ docs! {
                 )
             }
         "##),
+        p("The optional ", code("disabled"), " takes a plain ", code("bool"),
+          " or a live source. While it is on, the switch can't be flipped or \
+           focused, ", code("on_change"), " never fires, and the ",
+          code("state disabled"), " styling block applies. Every backend uses \
+           its native disabled state."),
     },
 
     section(heading = "Slider") {
@@ -274,7 +279,7 @@ docs! {
                     on_change = move |v| volume.set(v),
                     min = 0.0,
                     max = 100.0,
-                    step = Some(5.0),
+                    step = 5.0,
                 )
             }
         "##),
@@ -282,6 +287,9 @@ docs! {
           code("on_change"), " values to the nearest step before dispatching — \
            behavior matches across backends, regardless of whether the platform \
            widget supports stepping natively."),
+        p(code("slider"), " takes the same ", code("disabled"), " as ",
+          code("toggle"), ": the knob can't be dragged or moved with the \
+           keyboard, and ", code("on_change"), " never fires."),
     },
 
     section(heading = "Feedback") {
@@ -488,6 +496,13 @@ docs! {
           " for the present/absent state; the framework defers the actual \
            unmount until the exit animation's duration elapses, so the leaving \
            subtree stays alive long enough to play its exit."),
+        p("Presence adds no box of its own on any backend: its child lays out \
+           exactly as if it were the direct child of presence's parent. A ",
+          code("position: Absolute"),
+          " child resolves its insets against presence's parent, a ",
+          code("flex_grow"),
+          " child fills, and a column of presence-wrapped toasts keeps its gap. \
+           The enter and exit animation moves the child itself."),
         p("See Overlays and animation for placement, backdrop modes, focus \
            trapping, and the animation primitives."),
     },

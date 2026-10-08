@@ -731,7 +731,7 @@ mod full_radius_tests {
 
 
 #[cfg(test)]
-mod input_transparency_tests {
+pub(crate) mod input_transparency_tests {
     use super::IdealystView;
     use gtk4::prelude::*;
 
@@ -748,12 +748,14 @@ mod input_transparency_tests {
     ///
     /// `set_can_target(false)` cannot express this: it removes the whole
     /// subtree from picking, so the panel would stop being clickable too.
-    #[test]
-    fn an_input_transparent_container_passes_clicks_through_but_keeps_its_children() {
-        if gtk4::init().is_err() {
-            eprintln!("SKIP: no display");
-            return;
-        }
+    ///
+    /// Not a `#[test]` of its own: it was one, and it raced the crate's
+    /// other GTK test for `gtk::init` — two threads initializing / driving
+    /// GTK at once, which panics ("initialize GTK from two different
+    /// threads") or segfaults depending on timing. Called from
+    /// `layout_tests::regression_gtk_layout_behaviors` instead, on the one
+    /// thread that ran `gtk::init`.
+    pub(crate) fn an_input_transparent_container_passes_clicks_through_but_keeps_its_children() {
         let window = gtk4::Window::new();
         window.set_default_size(400, 300);
 

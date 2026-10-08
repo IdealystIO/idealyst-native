@@ -1021,6 +1021,12 @@ impl caps::DocumentOps for WindowsBackend {}
 // ---------------------------------------------------------------------------
 
 impl caps::StyleOps for WindowsBackend {
+    /// Native inert state for the `disabled` prop — see the inherent
+    /// `WindowsBackend::set_disabled` (`EnableWindow`).
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        WindowsBackend::set_disabled(self, node, disabled)
+    }
+
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Delegates to the inherent body, which translates the rules into
         // the Taffy style AND the painted visual (background, border,

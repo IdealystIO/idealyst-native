@@ -56,6 +56,13 @@ pub(crate) struct NodeData {
     /// Optional press handler. Set by `create_button` (from
     /// `Action.fire`) and `create_pressable`.
     pub on_click: Option<Rc<dyn Fn()>>,
+    /// Native-inert flag written by `StyleOps::set_disabled` (the
+    /// framework's `disabled` prop). A disabled clickable node is still
+    /// the click's hit — the walk stops there — but hands back no
+    /// handler. `button` relies on this alone: its mount path has no
+    /// press-block flag (that is the bare-`pressable` path), so before
+    /// this a disabled button fired on click here.
+    pub disabled: bool,
     /// Last applied resolved style. Kept around for the renderer
     /// because not everything cachable into raw `Rgba` lives in the
     /// flat fields below (border widths, corner radii, etc.).
@@ -159,6 +166,7 @@ impl NodeData {
             kind,
             content,
             on_click: None,
+            disabled: false,
             style: None,
             layout,
             children: Vec::new(),

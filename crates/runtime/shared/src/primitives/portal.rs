@@ -19,8 +19,9 @@
 //!   `position`/`inset`/anchor offset is derived from the target.
 //! - **iOS**: window-level `addSubview:` against the key window,
 //!   with the frame computed from the target.
-//! - **Android**: window-level `WindowManager.addView` or a
-//!   `Dialog`-hosted view.
+//! - **Android**: a full-bleed overlay view added to the Activity
+//!   root (same window as the app), for both viewport and anchored
+//!   portals.
 //! - **wgpu / native skins**: top-of-stack rectangle inserted into
 //!   the renderer's scene graph at root z.
 //! - **Roku**: a `Group` parented to the root scene above all other
@@ -38,9 +39,11 @@
 //!   drawers, sheets, alerts.
 //! - [`PortalTarget::Anchor`] — element-tracking, positioned by
 //!   [`ElementSide`] + [`ElementAlign`] + offset. The backend
-//!   subscribes to scroll / layout / orientation events and
-//!   re-queries `target.rect()` on each, repositioning the portal
-//!   accordingly. Use for popovers, tooltips, dropdowns.
+//!   subscribes to scroll / layout / orientation events AND to the
+//!   portal content's own size changes, re-queries `target.rect()` on
+//!   each, and re-places the portal through one long-lived
+//!   [`AnchoredPlacer`] (flip + clamp + sticky side). Use for popovers,
+//!   tooltips, dropdowns.
 //! - [`PortalTarget::Named`] — mount into a named container
 //!   previously registered with the backend. Reserved for future
 //!   "slot" routing.
@@ -249,6 +252,89 @@ pub fn resolve_anchored_placement(
     edge_gap: f32,
 ) -> AnchorPlacement {
     let side = pick_anchor_side(requested_side, trigger, content, viewport, offset);
+    place_on_side(trigger, content, viewport, side, align, offset, edge_gap)
+}
+
+/// Gutter every backend keeps between an anchored overlay and the
+/// viewport edges when the clamp kicks in. One value, shared, because
+/// the same author intent must not place differently per platform.
+pub const ANCHOR_EDGE_GAP: f32 = 8.0;
+
+/// Stateful anchored placement: [`resolve_anchored_placement`] plus a
+/// memory of the side it last settled on. This is what a backend holds
+/// for the LIFETIME of an anchored overlay and calls on every re-place
+/// (scroll, viewport resize, AND content resize).
+///
+/// # Why the side is sticky
+///
+/// A stateless re-resolve re-picks the side from the *requested* one on
+/// every call. Take a `Below` menu that opened flipped `Above` because
+/// its content was too tall to fit below, then shrank (a header search
+/// filtered the rows): the stateless resolver now sees room below and
+/// jumps the whole panel to the other side of the trigger — mid-typing,
+/// under the caret — and jumps it back as soon as a deleted character
+/// regrows the list past the threshold. That flip-flop is worse than the
+/// staleness it replaces.
+///
+/// The placer instead KEEPS the side it settled on for as long as the
+/// content still fits there, and re-runs the flip rule (from that side)
+/// only when it no longer does. Because the overlay re-places on the side
+/// it is on, the edge nearest the anchor stays attached: a flipped-above
+/// panel that shrinks keeps its BOTTOM edge on the trigger (its top moves
+/// down), instead of keeping a stale top and floating away from the
+/// trigger — the pre-fix behavior on web, which never re-placed on a
+/// content resize at all.
+///
+/// The settled side resets only with the placer itself (a fresh overlay
+/// mount re-evaluates from the requested side).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AnchoredPlacer {
+    requested_side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    edge_gap: f32,
+    settled_side: Option<ElementSide>,
+}
+
+impl AnchoredPlacer {
+    pub fn new(requested_side: ElementSide, align: ElementAlign, offset: f32, edge_gap: f32) -> Self {
+        Self { requested_side, align, offset, edge_gap, settled_side: None }
+    }
+
+    /// The side the last [`place`](Self::place) settled on, if any.
+    pub fn settled_side(&self) -> Option<ElementSide> {
+        self.settled_side
+    }
+
+    /// Resolve the placement for the current measurements and remember
+    /// the side chosen. Same flip / align / clamp geometry as
+    /// [`resolve_anchored_placement`]; the only difference is which side
+    /// the flip rule starts from (see the type docs).
+    pub fn place(
+        &mut self,
+        trigger: ViewportRect,
+        content: (f32, f32),
+        viewport: (f32, f32),
+    ) -> AnchorPlacement {
+        let side = match self.settled_side {
+            Some(settled) if side_fits(settled, trigger, content, viewport, self.offset) => settled,
+            Some(settled) => pick_anchor_side(settled, trigger, content, viewport, self.offset),
+            None => pick_anchor_side(self.requested_side, trigger, content, viewport, self.offset),
+        };
+        self.settled_side = Some(side);
+        place_on_side(trigger, content, viewport, side, self.align, self.offset, self.edge_gap)
+    }
+}
+
+fn place_on_side(
+    trigger: ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    side: ElementSide,
+    align: ElementAlign,
+    offset: f32,
+    edge_gap: f32,
+) -> AnchorPlacement {
     let (y, x) = anchor_top_left(trigger, side, align, offset, content);
     let (y, x) = clamp_into_viewport(y, x, content, viewport, edge_gap);
     AnchorPlacement { side, x, y }
@@ -259,11 +345,10 @@ pub fn resolve_anchored_placement(
 /// WITHOUT any collision flip or viewport clamp.
 ///
 /// This is the shared piece every backend's anchored-overlay placement is
-/// built on. [`resolve_anchored_placement`] composes it with flip + clamp;
-/// backends that don't (yet) do a measured flip/clamp pass — the iOS
-/// display-link tracker, the Android popup (which passes `content = (0,0)`
-/// for its unmeasured initial placement) — call this directly so the
-/// align/side math is defined in exactly one place (CLAUDE.md §7).
+/// built on. [`resolve_anchored_placement`] and [`AnchoredPlacer`] compose
+/// it with flip + clamp, so the align/side math is defined in exactly one
+/// place (CLAUDE.md §7). Backends place through [`AnchoredPlacer`], not
+/// this.
 pub fn anchor_top_left(
     rect: ViewportRect,
     side: ElementSide,
@@ -290,6 +375,42 @@ pub fn anchor_top_left(
     }
 }
 
+/// Room the overlay needs along `side`'s axis, and the room `side` and its
+/// opposite have: `(needed, have, opposite_have, opposite)`.
+fn side_room(
+    side: ElementSide,
+    trigger: ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    offset: f32,
+) -> (f32, f32, f32, ElementSide) {
+    let (ow, oh) = content;
+    let (vw, vh) = viewport;
+    let needed = match side {
+        ElementSide::Above | ElementSide::Below => oh + offset,
+        ElementSide::Start | ElementSide::End => ow + offset,
+    };
+    let (have, opposite_have, opposite) = match side {
+        ElementSide::Below => (vh - (trigger.y + trigger.height), trigger.y, ElementSide::Above),
+        ElementSide::Above => (trigger.y, vh - (trigger.y + trigger.height), ElementSide::Below),
+        ElementSide::Start => (trigger.x, vw - (trigger.x + trigger.width), ElementSide::End),
+        ElementSide::End => (vw - (trigger.x + trigger.width), trigger.x, ElementSide::Start),
+    };
+    (needed, have, opposite_have, opposite)
+}
+
+/// Does the measured content fit on `side` without overflowing the viewport?
+fn side_fits(
+    side: ElementSide,
+    trigger: ViewportRect,
+    content: (f32, f32),
+    viewport: (f32, f32),
+    offset: f32,
+) -> bool {
+    let (needed, have, _, _) = side_room(side, trigger, content, viewport, offset);
+    have >= needed
+}
+
 /// Pick the side the overlay anchors on. If the requested side lacks room
 /// for the measured content, flip to the opposite — unless the opposite is
 /// even tighter (then keep the original and let it overflow, matching what
@@ -301,18 +422,8 @@ fn pick_anchor_side(
     viewport: (f32, f32),
     offset: f32,
 ) -> ElementSide {
-    let (ow, oh) = content;
-    let (vw, vh) = viewport;
-    let needed = match requested {
-        ElementSide::Above | ElementSide::Below => oh + offset,
-        ElementSide::Start | ElementSide::End => ow + offset,
-    };
-    let (have, opposite_have, opposite) = match requested {
-        ElementSide::Below => (vh - (trigger.y + trigger.height), trigger.y, ElementSide::Above),
-        ElementSide::Above => (trigger.y, vh - (trigger.y + trigger.height), ElementSide::Below),
-        ElementSide::Start => (trigger.x, vw - (trigger.x + trigger.width), ElementSide::End),
-        ElementSide::End => (vw - (trigger.x + trigger.width), trigger.x, ElementSide::Start),
-    };
+    let (needed, have, opposite_have, opposite) =
+        side_room(requested, trigger, content, viewport, offset);
     if have < needed && opposite_have > have {
         opposite
     } else {
@@ -388,6 +499,94 @@ mod placement_tests {
             near_top, (120.0, 760.0), VP, ElementSide::Below, ElementAlign::Start, 0.0, GAP,
         );
         assert_eq!(p.side, ElementSide::Below);
+    }
+
+    /// The bug-report geometry: a 900px-tall viewport, a 40px trigger at
+    /// y=590, a `Below` menu tall enough (12 rows) to flip `Above`.
+    const MENU_VP: (f32, f32) = (1200.0, 900.0);
+    fn menu_trigger() -> ViewportRect {
+        ViewportRect { x: 300.0, y: 590.0, width: 120.0, height: 40.0 }
+    }
+
+    /// Regression (idea-ui `Menu` with a header search, all platforms): a
+    /// `Below` menu opened flipped `Above` with its bottom on the trigger;
+    /// typing in the header filtered 12 rows to 2, and the panel kept its
+    /// old top (~218px) — its bottom ended ~180px above the trigger. Web
+    /// never re-placed on a content resize; the backends that did
+    /// re-resolve every frame (iOS, Linux) instead jumped the panel to the
+    /// other side of the trigger under the caret.
+    ///
+    /// The placer must re-place on the side it settled on, keeping the
+    /// edge nearest the anchor (the bottom) attached. Fails before the fix
+    /// two ways: there was no stateful placer to call, and the stateless
+    /// resolve on the shrunk content picks `Below` (the jump).
+    #[test]
+    fn regression_flipped_menu_reanchors_when_content_shrinks() {
+        let mut placer = AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 4.0, GAP);
+        let tall = (240.0, 368.0);
+        let opened = placer.place(menu_trigger(), tall, MENU_VP);
+        assert_eq!(opened.side, ElementSide::Above, "12 rows don't fit below → flipped");
+        assert_eq!(opened.y + tall.1, 590.0 - 4.0, "flipped panel's bottom sits on the trigger");
+
+        let short = (240.0, 96.0);
+        let shrunk = placer.place(menu_trigger(), short, MENU_VP);
+        assert_eq!(shrunk.side, ElementSide::Above, "a shrink must not jump the panel across the trigger");
+        assert_eq!(
+            shrunk.y + short.1,
+            590.0 - 4.0,
+            "the shrunk panel's BOTTOM must stay on the trigger (got top {}, bottom {})",
+            shrunk.y,
+            shrunk.y + short.1,
+        );
+        assert!(shrunk.y > opened.y, "the top edge moves down; it must not stay stale");
+
+        // Growing back (characters deleted) keeps it above too — no flicker.
+        let regrown = placer.place(menu_trigger(), tall, MENU_VP);
+        assert_eq!(regrown, opened);
+    }
+
+    /// The stateless resolver is the "fresh mount" answer: the shrunk menu
+    /// fits below, so a NEW overlay with that content opens on the
+    /// requested side. Pins the difference the placer's memory makes.
+    #[test]
+    fn stateless_resolve_prefers_requested_side_when_it_fits() {
+        let p = resolve_anchored_placement(
+            menu_trigger(), (240.0, 96.0), MENU_VP, ElementSide::Below, ElementAlign::Start, 4.0, GAP,
+        );
+        assert_eq!(p.side, ElementSide::Below);
+    }
+
+    /// The settled side is held only while the content fits there. A
+    /// flipped-above panel whose content grows past the room above (and
+    /// the room below is larger) re-runs the flip rule and goes back below.
+    #[test]
+    fn placer_reflips_when_settled_side_stops_fitting() {
+        // Trigger in the lower-middle: 420 above, 440 below.
+        let trigger = ViewportRect { x: 300.0, y: 420.0, width: 120.0, height: 40.0 };
+        let mut placer = AnchoredPlacer::new(ElementSide::Above, ElementAlign::Start, 0.0, GAP);
+        let first = placer.place(trigger, (240.0, 300.0), MENU_VP);
+        assert_eq!(first.side, ElementSide::Above);
+        let grown = placer.place(trigger, (240.0, 430.0), MENU_VP);
+        assert_eq!(grown.side, ElementSide::Below, "430 > 420 above, 440 below → flip");
+        assert_eq!(placer.settled_side(), Some(ElementSide::Below));
+        assert_eq!(grown.y, 460.0);
+    }
+
+    /// A placer's first call is exactly the stateless resolve.
+    #[test]
+    fn placer_first_call_matches_stateless_resolve() {
+        let low = ViewportRect { x: 400.0, y: 760.0, width: 100.0, height: 30.0 };
+        for (side, content) in [
+            (ElementSide::Below, (120.0, 200.0)),
+            (ElementSide::Below, (120.0, 20.0)),
+            (ElementSide::End, (300.0, 50.0)),
+        ] {
+            let mut placer = AnchoredPlacer::new(side, ElementAlign::Center, 2.0, GAP);
+            assert_eq!(
+                placer.place(low, content, VP),
+                resolve_anchored_placement(low, content, VP, side, ElementAlign::Center, 2.0, GAP),
+            );
+        }
     }
 
     #[test]

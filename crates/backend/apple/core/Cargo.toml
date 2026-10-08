@@ -46,6 +46,9 @@ harness = false
 # (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the
 # bytes embedded. See `runtime_shared::assets`.
 runtime-shared = { workspace = true, features = ["embed-font-bytes"] }
+# `image_source`'s CoreGraphics wrapper takes the platform-neutral
+# `SvgRaster` (data:-URI + SVG decoding shared with Android).
+backend-image-source = { workspace = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))'.dependencies]
 objc2 = "0.5"

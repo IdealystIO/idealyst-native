@@ -64,7 +64,9 @@ mod raf_link {
                 // Count this animation frame for the frame-pacing trace (debug).
                 #[cfg(debug_assertions)]
                 crate::perf_trace::on_raf_tick();
-                (self.ivars().state.borrow_mut())();
+                crate::crash::abort_on_panic("CADisplayLink raf tick", || {
+                    (self.ivars().state.borrow_mut())();
+                });
             }
         }
     );
@@ -127,6 +129,9 @@ pub fn end_mount_buffering() {
 /// Register this scheduler with `runtime-core`. Idempotent — first
 /// install wins. Safe to call from any Apple host (iOS / tvOS / macOS).
 pub fn install_scheduler() {
+    // First, so a panic anywhere after boot reaches the unified log instead
+    // of a stderr nobody captures on a device. First-install wins.
+    crate::crash::install_panic_hook();
     install(Box::new(AppleScheduler));
     // Wire `runtime_shared::debug_log` through NSLog so author-side
     // diagnostic instrumentation (e.g. in the welcome example's
@@ -296,7 +301,9 @@ impl Scheduler for AppleScheduler {
                 // event tracking — the macOS analogue of the iOS finding.
                 #[cfg(debug_assertions)]
                 crate::perf_trace::on_raf_tick();
-                (state_for_block.borrow_mut())();
+                crate::crash::abort_on_panic("NSTimer raf tick", || {
+                    (state_for_block.borrow_mut())();
+                });
             });
             let block = block.copy();
             extern "C" {
@@ -415,12 +422,18 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     }
     let cell_for_block = cell.clone();
     let block = StackBlock::new(move |_t: *const NSObject| {
-        // Same `RefMut`-lifetime fix as the libdispatch branch above:
-        // bind through a let so the borrow ends before `g()` runs.
-        let taken = cell_for_block.borrow_mut().take();
-        if let Some(g) = taken {
-            g();
-        }
+        // The block is invoked by NSTimer (ObjC); a panic unwinding out of
+        // it aborts via `panic_cannot_unwind` with the site lost — this was
+        // the kiosk crash in `after_ms_inner`'s block invoke. Name the site,
+        // then abort (crash-loud).
+        crate::crash::abort_on_panic("NSTimer after_ms block", || {
+            // Same `RefMut`-lifetime fix as the libdispatch branch above:
+            // bind through a let so the borrow ends before `g()` runs.
+            let taken = cell_for_block.borrow_mut().take();
+            if let Some(g) = taken {
+                g();
+            }
+        });
     });
     let block = block.copy();
     // `timerWithTimeInterval:` requires a non-negative interval.
@@ -540,13 +553,12 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
         // Block is invoked through libdispatch's main-queue drain
         // (extern "C"). A Rust panic propagating out aborts the
         // process via `panic_cannot_unwind` with no readable message.
-        // catch_unwind here is purely to print the panic location
-        // *before* we abort \u{2014} the abort is mandatory so we never
-        // keep running on the partially-invariant state that produced
-        // the panic. Crash-loud is the project policy; see
-        // [[project-refmut-lifetime-reentrancy]] for the bug that
+        // The firewall names the site *before* we abort — the abort
+        // is mandatory so we never keep running on the partially-invariant
+        // state that produced the panic. Crash-loud is the project policy;
+        // see [[project-refmut-lifetime-reentrancy]] for the bug that
         // motivated tightening this.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::crash::abort_on_panic("libdispatch main-queue block", || {
             // Bind the take() out so the `RefMut` temporary dies before
             // `g()` runs — same reentrancy fix as the after_ms_inner
             // branches above.
@@ -554,18 +566,7 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
             if let Some(g) = taken {
                 g();
             }
-        }));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-apple-core] microtask panic: {msg}");
-            std::process::abort();
-        }
+        });
     });
     // libdispatch needs a heap-allocated block (StackBlock lives on
     // the stack; .copy() promotes to heap and refcounts via _Block_copy).

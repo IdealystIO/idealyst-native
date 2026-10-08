@@ -1930,6 +1930,18 @@ pub mod primitives {
             pub(crate) a11y: AccessibilityProps,
         }
 
+        impl GlueToggle {
+            /// Inert switch — a plain `bool` or a live source (`move ||
+            /// locked.get()`, a `Signal`). While `true` the switch can't
+            /// be flipped by pointer or keyboard, is not keyboard-focusable,
+            /// never fires `on_change`, and resolves its style's
+            /// `state disabled` overlay.
+            pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+                self.b = self.b.disabled(disabled);
+                self
+            }
+        }
+
         glue_wrapper_common!(GlueToggle);
     }
 
@@ -1957,6 +1969,13 @@ pub mod primitives {
 
             pub fn step(mut self, step: f32) -> Self {
                 self.b = self.b.step(step);
+                self
+            }
+
+            /// Inert slider — see
+            /// [`GlueToggle::disabled`](super::toggle::GlueToggle::disabled).
+            pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+                self.b = self.b.disabled(disabled);
                 self
             }
         }
@@ -2025,6 +2044,16 @@ pub mod primitives {
 
             pub fn secure(mut self, secure: impl IntoValue<bool>) -> Self {
                 self.b = self.b.secure(secure);
+                self
+            }
+
+            /// Inert field — a plain `bool` or a live source (`move ||
+            /// locked.get()`, a `Signal`). While `true` the field is not
+            /// editable, not keyboard-focusable (it drops focus if it
+            /// held it), never fires `on_change`, and resolves its
+            /// style's `state disabled` overlay.
+            pub fn disabled(mut self, disabled: impl IntoValue<bool>) -> Self {
+                self.b = self.b.disabled(disabled);
                 self
             }
 
@@ -2822,6 +2851,13 @@ pub mod primitives {
             /// [`GlueTextInput::autofocus`](super::text_input::GlueTextInput::autofocus).
             pub fn autofocus(mut self, autofocus: bool) -> Self {
                 self.b = self.b.autofocus(autofocus);
+                self
+            }
+
+            /// Inert text area — see
+            /// [`GlueTextInput::disabled`](super::text_input::GlueTextInput::disabled).
+            pub fn disabled(mut self, disabled: impl runtime_world::IntoValue<bool>) -> Self {
+                self.b = self.b.disabled(disabled);
                 self
             }
 

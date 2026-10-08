@@ -118,6 +118,18 @@ mod text_truncation_policy;
 #[allow(dead_code)]
 mod soft_keyboard_policy;
 
+/// `image()` routing (which loader a `src` takes), the iOS-matching Taffy
+/// measurement, and the SVG re-raster gate. Un-gated like `sticky_compute`
+/// so the regression tests run on the host; the JNI half lives in
+/// `imp/primitives/image.rs`.
+mod image_policy;
+
+/// Anchored-portal placement (`AnchoredPlacer` wrapper, screen px →
+/// viewport dp, overlay root style). Un-gated like `sticky_compute` so the
+/// regression tests run on the host; the JNI half lives in
+/// `imp/primitives/overlay.rs`.
+mod anchored_portal_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

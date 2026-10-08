@@ -316,13 +316,13 @@ impl runtime_shared::primitives::text_input::TextInputOps for LinuxTextInputOps 
         if let Some(e) = Self::entry(node) {
             // Attach-safe: an entry not yet mapped in a window grabs focus
             // once it is (`pending_focus`).
-            pending_focus::request_focus(&e);
+            pending_focus::request_focus(e.upcast_ref());
         }
     }
 
     fn blur(&self, node: &dyn Any) {
         if let Some(e) = Self::entry(node) {
-            pending_focus::cancel(&e);
+            pending_focus::cancel(e.upcast_ref());
             // GTK has no "unfocus this widget"; moving focus to the window
             // root is the toolkit's way of dropping it from a specific widget.
             if let Some(root) = e.root() {
@@ -366,7 +366,71 @@ pub(crate) fn make_text_input_handle(
     )
 }
 
-/// Attach-safe `focus()` for the GTK entry (the `TextInputOps::focus`
+// =========================================================================
+// Text-area handle — `Ref<TextAreaHandle>`, and what `text_area(autofocus)`
+// focuses through. Was never implemented, so it fell to `NoopTextAreaOps`:
+// `focus()` / `blur()` / `select_all()` / `insert_text()` did nothing, and
+// an autofocus text area never took focus on this backend.
+// =========================================================================
+
+struct LinuxTextAreaOps;
+static LINUX_TEXT_AREA_OPS: LinuxTextAreaOps = LinuxTextAreaOps;
+
+impl LinuxTextAreaOps {
+    fn view(node: &dyn Any) -> Option<gtk4::TextView> {
+        crate::text_area_view(&node.downcast_ref::<HandleState>()?.node.widget)
+    }
+}
+
+impl runtime_shared::primitives::text_area::TextAreaOps for LinuxTextAreaOps {
+    fn focus(&self, node: &dyn Any) {
+        if let Some(v) = Self::view(node) {
+            pending_focus::request_focus(v.upcast_ref());
+        }
+    }
+
+    fn blur(&self, node: &dyn Any) {
+        if let Some(v) = Self::view(node) {
+            pending_focus::cancel(v.upcast_ref());
+            if let Some(root) = v.root() {
+                root.set_focus(None::<&gtk4::Widget>);
+            }
+        }
+    }
+
+    fn select_all(&self, node: &dyn Any) {
+        if let Some(v) = Self::view(node) {
+            let b = v.buffer();
+            let (start, end) = b.bounds();
+            b.select_range(&start, &end);
+        }
+    }
+
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        let Some(v) = Self::view(node) else { return };
+        // Replace the selection (or insert at the caret) as a user edit —
+        // through the buffer's normal `changed` path, so the controlling
+        // `Signal` observes it, as the trait requires.
+        let b = v.buffer();
+        b.delete_selection(true, true);
+        b.insert_at_cursor(text);
+    }
+}
+
+pub(crate) fn make_text_area_handle(
+    backend: &LinuxBackend,
+    node: &LinuxNode,
+) -> runtime_shared::primitives::text_area::TextAreaHandle {
+    runtime_shared::primitives::text_area::TextAreaHandle::new(
+        std::rc::Rc::new(HandleState {
+            backend: backend.self_ref(),
+            node: node.clone(),
+        }) as std::rc::Rc<dyn Any>,
+        &LINUX_TEXT_AREA_OPS,
+    )
+}
+
+/// Attach-safe `focus()` for the GTK entry / text view (the `TextInputOps::focus`
 /// contract). `grab_focus` does nothing for a widget that isn't in a mapped
 /// toplevel yet, and realize builds a subtree before appending it, so a
 /// `focus()` right after mount used to be lost.
@@ -387,14 +451,14 @@ mod pending_focus {
     use runtime_shared::primitives::text_input::{FocusRequest, PendingFocus};
 
     thread_local! {
-        static PENDING: RefCell<PendingFocus<gtk4::Entry>> = const { RefCell::new(PendingFocus::new()) };
+        static PENDING: RefCell<PendingFocus<gtk4::Widget>> = const { RefCell::new(PendingFocus::new()) };
     }
 
-    fn attached(e: &gtk4::Entry) -> bool {
+    fn attached(e: &gtk4::Widget) -> bool {
         e.root().is_some() && e.is_mapped()
     }
 
-    pub(super) fn request_focus(e: &gtk4::Entry) {
+    pub(super) fn request_focus(e: &gtk4::Widget) {
         let req = PENDING.with(|p| p.borrow_mut().request(e.clone(), attached(e)));
         match req {
             FocusRequest::Now(e) => {
@@ -419,7 +483,7 @@ mod pending_focus {
         }
     }
 
-    pub(super) fn cancel(e: &gtk4::Entry) {
+    pub(super) fn cancel(e: &gtk4::Widget) {
         PENDING.with(|p| p.borrow_mut().cancel(|q| q == e));
     }
 }

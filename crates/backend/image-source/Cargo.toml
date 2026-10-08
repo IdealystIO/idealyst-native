@@ -1,0 +1,34 @@
+[package]
+name = "backend-image-source"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Platform-neutral image-source decoding for native backends: data: URIs, SVG sniffing, and resvg rasterization."
+
+# Why a crate of its own (and not a module in `runtime-shared` or
+# `backend-apple-core`):
+#
+# - The decoding is shared by EVERY native backend whose platform image
+#   decoder can't read SVG or resolve a `data:` URI — iOS + macOS
+#   (`UIImage`/`NSImage(data:)`) and Android (`BitmapFactory`). It is pure
+#   Rust with no platform code, so it can't live in `backend-apple-core`
+#   (Android must not depend on the Apple substrate).
+# - It must NOT reach the web build: `<img>` decodes SVG and `data:` URIs
+#   itself, and resvg is ~hundreds of KB of wasm. `runtime-shared` is in
+#   every graph including web; putting resvg there behind a feature would
+#   still let any crate in a workspace build unify the feature on for
+#   everyone. A separate crate is only linked by the backends that list it.
+#
+# Platform wrappers stay with their platform: the CoreGraphics `CGImage`
+# wrapper + `nsdata_bytes` live in `backend-apple-core::image_source`, the
+# `android.graphics.Bitmap` upload lives in `backend-android-mobile`.
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# SVG decoding for `image()`. Default features off — the text stack
+# (fontdb, shaping, system-font scanning) is most of resvg's size and logos
+# rarely carry `<text>`; `raster-images` (embedded PNG/JPEG inside an SVG)
+# is also off.
+resvg = { version = "0.45", default-features = false }

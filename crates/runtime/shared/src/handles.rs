@@ -44,6 +44,62 @@ impl StateBits {
 
     pub const NONE: StateBits = StateBits(0);
 
+    /// The pointer/keyboard INTERACTION states — the ones [`Self::DISABLED`]
+    /// suppresses (see [`Self::PRECEDENCE`]).
+    pub const INTERACTION: StateBits =
+        StateBits(Self::HOVERED.0 | Self::PRESSED.0 | Self::FOCUSED.0);
+
+    /// THE state-overlay precedence, lowest to highest: when two active
+    /// state overlays set the same property, the later one in this list
+    /// wins. Single source of truth for every resolution path —
+    /// `StyleSheet::resolve`'s state pass (native / event-driven backends),
+    /// the overlay order handed to CSS backends (web + SSR rule source
+    /// order) and the premint dump's state-rule order all read it, through
+    /// `StyleSheet::state_axes()` which is kept sorted by it.
+    ///
+    /// Why this order — it is the CSS "LVHFA" convention the idea-ui sheets
+    /// were written against (`:hover` < `:focus` < `:active`):
+    /// - `focused` over `hovered`: the focus indicator is an accessibility
+    ///   affordance and must not vanish while the pointer rests on the
+    ///   control (SelectTrigger's focus ring vs its hover border).
+    /// - `pressed` over both: press feedback is the transient response to
+    ///   the input happening right now (Button's 0.85 press dim beats its
+    ///   0.92 hover dim; it is always hovered while pressed).
+    /// - `disabled` last, AND it suppresses the other three outright: a
+    ///   disabled control gives no interaction feedback at all. Ordering
+    ///   alone could not express that — a `state disabled` block that only
+    ///   dims (`opacity`) leaves a `state hovered { border_color }` free to
+    ///   paint, because the two never touch the same property. So while
+    ///   `DISABLED` is on, resolution ignores the interaction bits (see
+    ///   [`Self::for_style`]); the bits themselves stay truthful, so a
+    ///   control re-enabled under a resting pointer shows its hover at once.
+    ///
+    /// This replaced an accidental order: the native resolver merged states
+    /// in `BTreeMap` (alphabetical) order — disabled < focused < hovered <
+    /// pressed — while CSS backends emitted them in sheet DECLARATION order
+    /// (and SSR in alphabetical selector order), so the same sheet resolved
+    /// differently per backend and a hovered disabled control showed its
+    /// hover everywhere.
+    pub const PRECEDENCE: [StateBits; 4] =
+        [Self::HOVERED, Self::FOCUSED, Self::PRESSED, Self::DISABLED];
+
+    /// This single state's index in [`Self::PRECEDENCE`] (higher wins), or
+    /// `None` for an empty/combined/unknown value.
+    pub fn precedence_rank(self) -> Option<usize> {
+        Self::PRECEDENCE.iter().position(|&b| b == self)
+    }
+
+    /// The bits that take part in STYLE resolution: `self` with the
+    /// [`Self::INTERACTION`] bits dropped while [`Self::DISABLED`] is set
+    /// (the suppression rule documented on [`Self::PRECEDENCE`]).
+    pub fn for_style(self) -> StateBits {
+        if self.contains(Self::DISABLED) {
+            self.without(Self::INTERACTION)
+        } else {
+            self
+        }
+    }
+
     pub fn contains(self, other: StateBits) -> bool {
         (self.0 & other.0) == other.0
     }
@@ -68,11 +124,14 @@ impl StateBits {
         }
     }
 
-    /// Iterate the set bits in this bitmask, yielding their
-    /// `__state_*` axis names. Used by the framework to build a
-    /// `VariantSet` for resolution from the current active states.
+    /// Iterate the set bits in this bitmask, in [`Self::PRECEDENCE`]
+    /// order, yielding their `__state_*` axis names. Used by the framework
+    /// to build a `VariantSet` for resolution from the current active
+    /// states. Yields the RAW bits — the disabled-suppresses-interaction
+    /// rule is applied by `StyleSheet` resolution itself, so it holds for
+    /// every caller that hands a variant set to the resolver.
     pub fn active_axes(self) -> impl Iterator<Item = &'static str> {
-        [Self::HOVERED, Self::PRESSED, Self::FOCUSED, Self::DISABLED]
+        Self::PRECEDENCE
             .into_iter()
             .filter(move |&bit| self.contains(bit))
             .filter_map(|bit| bit.axis_name())
@@ -607,12 +666,35 @@ mod tests {
             .with(StateBits::FOCUSED)
             .with(StateBits::DISABLED);
         let axes: Vec<&'static str> = combined.active_axes().collect();
-        // Iteration order: HOVERED, PRESSED, FOCUSED, DISABLED.
-        // PRESSED isn't set so it's skipped.
+        // Iteration order is `PRECEDENCE`: HOVERED, FOCUSED, PRESSED,
+        // DISABLED. PRESSED isn't set so it's skipped.
         assert_eq!(
             axes,
             vec!["__state_hovered", "__state_focused", "__state_disabled"],
         );
+    }
+
+    #[test]
+    fn statebits_precedence_is_hover_focus_press_disabled() {
+        assert_eq!(
+            StateBits::PRECEDENCE,
+            [StateBits::HOVERED, StateBits::FOCUSED, StateBits::PRESSED, StateBits::DISABLED],
+        );
+        assert!(StateBits::FOCUSED.precedence_rank() > StateBits::HOVERED.precedence_rank());
+        assert!(StateBits::PRESSED.precedence_rank() > StateBits::FOCUSED.precedence_rank());
+        assert!(StateBits::DISABLED.precedence_rank() > StateBits::PRESSED.precedence_rank());
+        assert_eq!(StateBits::HOVERED.with(StateBits::PRESSED).precedence_rank(), None);
+    }
+
+    #[test]
+    fn statebits_for_style_drops_interaction_states_while_disabled() {
+        let all = StateBits::HOVERED
+            .with(StateBits::PRESSED)
+            .with(StateBits::FOCUSED)
+            .with(StateBits::DISABLED);
+        assert_eq!(all.for_style(), StateBits::DISABLED);
+        let enabled = StateBits::HOVERED.with(StateBits::PRESSED);
+        assert_eq!(enabled.for_style(), enabled, "no suppression without DISABLED");
     }
 
     #[test]

@@ -125,7 +125,15 @@ wire = { workspace = true, optional = true }
 # (a handful of enums + traits, no platform code).
 raw-window-handle = "0.6"
 
+[build-dependencies]
+# build.rs strips comments from the embedded `runtime/js` shims with it.
+js-min = { workspace = true }
+
 [dev-dependencies]
+# `tests/minify_shims.rs` pins the minifier against the real shims.
+# Path-only: a versioned internal dev-dep is resolved from the registry
+# when packaging (docs/registry.md).
+js-min = { path = "../../tools/js-min" }
 # Browser-side test harness for `WebBackend` unit tests. Runs via
 # `wasm-pack test --headless --chrome --package backend-web`. Required
 # for tests that need real DOM (the `node_id` identity invariant

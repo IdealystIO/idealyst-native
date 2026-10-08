@@ -982,6 +982,20 @@ impl caps::TextInputOps for LinuxBackend {
         // master, which wrapped only on_change + on_key_down here.
         LinuxBackend::create_text_area(self, initial_value, _placeholder, _wrap, _min_rows, _max_rows, flushing1(on_change), on_key_down.map(flushing_key), _a11y)
     }
+
+    // Both were missing, i.e. the trait's SILENT no-op defaults (see the
+    // note above `make_text_input_handle`): a `value`-bound text area never
+    // followed its signal, and its handle / `autofocus` did nothing.
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        LinuxBackend::update_text_area_value(self, node, value)
+    }
+
+    fn make_text_area_handle(
+        &self,
+        node: &Self::Node,
+    ) -> runtime_shared::primitives::text_area::TextAreaHandle {
+        crate::handles::make_text_area_handle(self, node)
+    }
 }
 
 impl caps::ToggleOps for LinuxBackend {
@@ -997,6 +1011,12 @@ impl caps::ToggleOps for LinuxBackend {
         // after it returns. Without this the handler mutates its signal and
         // nothing re-renders — the v2 flush is not implicit.
         LinuxBackend::create_toggle(self, initial_value, flushing1(on_change), _a11y)
+    }
+
+    /// Was missing (the trait's silent no-op): a `value`-bound switch never
+    /// followed its signal on this backend.
+    fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
+        LinuxBackend::update_toggle_value(self, node, value)
     }
 }
 
@@ -1016,6 +1036,12 @@ impl caps::SliderOps for LinuxBackend {
         // after it returns. Without this the handler mutates its signal and
         // nothing re-renders — the v2 flush is not implicit.
         LinuxBackend::create_slider(self, initial_value, min, max, _step, flushing1(on_change), _a11y)
+    }
+
+    /// Was missing (the trait's silent no-op): a `value`-bound slider never
+    /// followed its signal on this backend.
+    fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
+        LinuxBackend::update_slider_value(self, node, value)
     }
 }
 
@@ -1277,6 +1303,13 @@ impl caps::StyleOps for LinuxBackend {
         if let Some(prev) = self.state_controllers.insert(node.id(), installed) {
             prev.detach(&node.widget());
         }
+    }
+
+    /// Native inert state for the `disabled` prop. Was the trait's no-op
+    /// default, which left a disabled field focusable and typeable. See
+    /// the inherent `LinuxBackend::set_disabled`.
+    fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
+        LinuxBackend::set_disabled(self, node, disabled)
     }
 
     /// Release the state controllers when the node's style scope tears

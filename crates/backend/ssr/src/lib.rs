@@ -398,6 +398,20 @@ pub struct SsrBackend {
     /// model the web backend uses, emitted as a `<head>` stylesheet
     /// instead of inline `style="…"`. `BTreeMap` for deterministic output.
     style_rules: std::collections::BTreeMap<String, String>,
+    /// State-overlay rules (`.ui-<hash>:hover:not([disabled]){…}`,
+    /// `.ui-<hash>[disabled]{…}`), keyed by `(class, precedence rank)` →
+    /// `(selector suffix, body)` and emitted right after their class's
+    /// base rule in `head_css`.
+    ///
+    /// Kept out of `style_rules` because that map orders by SELECTOR TEXT,
+    /// which ranked a class's states alphabetically (`:active` < `:focus` <
+    /// `:hover` < `[disabled]`) — so on the static first paint a hovered
+    /// button's `:hover` rule beat its `:active` one, the opposite of the
+    /// live web backend and of `StyleSheet::resolve`. The interaction rules
+    /// tie on specificity, so source order is the precedence; keying by
+    /// `StateBits::precedence_rank` makes it the one
+    /// `runtime_shared::StateBits::PRECEDENCE` defines.
+    state_rules: std::collections::BTreeMap<(String, usize), (&'static str, String)>,
     /// Responsive breakpoint overlays from [`Backend::apply_styled_variants`],
     /// emitted as `@media (min-width: …) { .ui-<hash> { … } }` rules so the
     /// SSR first paint already respects size boundaries — a mobile request
@@ -473,6 +487,7 @@ impl SsrBackend {
                     self.style_rules.retain(|k, _| {
                         k != &prev && !k.starts_with(&pseudo_colon) && !k.starts_with(&pseudo_attr)
                     });
+                    self.state_rules.retain(|(class, _), _| class != &prev);
                     let media_prefix = format!("{prev}@");
                     self.media_rules.retain(|k, _| !k.starts_with(&media_prefix));
                 }
@@ -567,6 +582,19 @@ impl SsrBackend {
             out.push('{');
             out.push_str(body);
             out.push('}');
+            // The class's state rules directly after its base rule, in
+            // precedence order (see `state_rules`).
+            let states = self
+                .state_rules
+                .range((class.clone(), 0)..=(class.clone(), usize::MAX));
+            for (_, (pseudo, body)) in states {
+                out.push('.');
+                out.push_str(class);
+                out.push_str(pseudo);
+                out.push('{');
+                out.push_str(body);
+                out.push('}');
+            }
         }
         for rule in self.media_rules.values() {
             out.push_str(rule);
@@ -1076,7 +1104,48 @@ mod tests {
             .to_string();
         let head = b.head_css();
         assert!(head.contains(&format!(".{class}{{background: #ffffff}}")), "base rule, got: {head}");
-        assert!(head.contains(&format!(".{class}:hover{{background: #eeeeee}}")), "hover rule, got: {head}");
+        assert!(
+            head.contains(&format!(".{class}:hover:not([disabled]){{background: #eeeeee}}")),
+            "hover rule, guarded off while disabled, got: {head}"
+        );
+    }
+
+    /// Bug: SSR kept state rules in the selector-text-ordered
+    /// `style_rules` map, so a class's states landed alphabetically
+    /// (`:active` < `:focus` < `:hover` < `[disabled]`): a hovered, pressed
+    /// button's static first paint showed the hover style over the press
+    /// one, and a focused, hovered field lost its focus ring — the reverse
+    /// of `StyleSheet::resolve` and the live web backend. The rules must
+    /// come out in `StateBits::PRECEDENCE` order (hovered < focused <
+    /// pressed < disabled), and the interaction ones must not match a
+    /// `[disabled]` element.
+    #[test]
+    fn regression_ssr_state_rules_follow_state_precedence() {
+        use runtime_shared::StateBits;
+        let mut b = SsrBackend::new();
+        let v = b.create_view(&AccessibilityProps::default());
+        let bg = |c: &str| {
+            let mut r = StyleRules::default();
+            r.background = Some(Tokenized::Literal(Color(c.into())));
+            Rc::new(r)
+        };
+        b.apply_styled_states(
+            &v,
+            &bg("#ffffff"),
+            &[
+                (StateBits::HOVERED, bg("#aaaaaa")),
+                (StateBits::FOCUSED, bg("#bbbbbb")),
+                (StateBits::PRESSED, bg("#cccccc")),
+                (StateBits::DISABLED, bg("#dddddd")),
+            ],
+        );
+        let head = b.head_css();
+        let at = |needle: &str| head.find(needle).unwrap_or_else(|| panic!("missing {needle}: {head}"));
+        let hover = at(":hover:not([disabled]){background: #aaaaaa}");
+        let focus = at(":focus:not([disabled]){outline:none;background: #bbbbbb}");
+        let active = at(":active:not([disabled]){background: #cccccc}");
+        let disabled = at("[disabled]{background: #dddddd}");
+        assert!(hover < focus && focus < active && active < disabled, "precedence order, got: {head}");
     }
 
     /// REGRESSION: re-applying a style to a node REPLACES its minted
@@ -1204,7 +1273,7 @@ mod tests {
         );
         let head = b.head_css();
         assert!(
-            head.contains(":focus{outline:none;background: #ddddff}"),
+            head.contains(":focus:not([disabled]){outline:none;background: #ddddff}"),
             "focus overlay must prepend outline:none, got: {head}"
         );
     }

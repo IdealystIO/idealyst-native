@@ -31,8 +31,20 @@
 //! - **Exit**: when `present()` flips false, apply `exit.state` and
 //!   start a `ScheduledTask` for `exit.duration_ms`. When the timer
 //!   fires, drop the scope for real. If `present()` flips back to
-//!   true before the timer fires, cancel the task and re-apply the
-//!   resting state — the in-flight interpolation reverses naturally.
+//!   true before the timer fires, a FRESH child is built (playing
+//!   `enter`) while the outgoing one finishes its exit — a crossfade;
+//!   child-local state does not survive the flicker (see
+//!   `runtime_vocabulary::handlers::presence`).
+//!
+//! # Layout transparency
+//!
+//! Presence adds no box. Its mount point is a reactive anchor
+//! (`display: contents` on web, a `runtime_layout` contents node on
+//! every Taffy host), so the child lays out exactly as if it were the
+//! direct child of presence's parent: a `position: absolute` child's
+//! insets resolve against presence's parent, a `flex_grow` child fills,
+//! a stack of presence-wrapped toasts keeps its gap. The animation
+//! states above apply to the child's own node(s), never to a wrapper.
 //!
 //! # Why a tight vocabulary
 //!
@@ -62,7 +74,7 @@
 //!
 //! let open = signal(false);
 //! ui! {
-//!     Presence(
+//!     presence(
 //!         present = move || open.get(),
 //!         enter = PresenceAnim::new(
 //!             PresenceState { opacity: Some(0.0), translate_y: Some(8.0), ..Default::default() },

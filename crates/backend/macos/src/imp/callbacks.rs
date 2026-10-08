@@ -795,23 +795,19 @@ impl PrivateLayerPassthroughView {
 
 // =========================================================================
 // PresencePlaceholderView — the mount point a `Presence` subtree is inserted
-// into (see `runtime_shared::walker::presence`). The runtime builds the child in
-// a fresh scope and `insert`s it into this placeholder, which is itself a
-// child of the real parent. Almost every presence child — a settings popover,
-// a media inspector, the chrome restore button — is `position: Absolute`, so
-// it contributes NOTHING to the placeholder's in-flow size: the placeholder
-// (and any style-less wrapper inside it) lays out collapsed, e.g. 1024×0 (full
-// cross-axis width, zero main-axis height) at the origin.
+// into (`runtime_vocabulary::handlers::presence`). Its layout node is a
+// `runtime_layout` contents node (`create_presence_placeholder_impl`), so it
+// has no box of its own: its children are laid out as the real parent's, and
+// the view itself is framed to that parent's box. That fixes the placeholder's
+// OWN geometry — but presence children routinely carry collapsed, style-less
+// wrappers of their own (an `on_tap` wrapper lays out e.g. 1024×0 with the
+// real button as its `position: Absolute` grandchild).
 //
 // AppKit's default `NSView.hitTest:` first checks the point against `self`'s
 // frame and returns `nil` if it misses — it never consults subviews. Every
 // collapsed view in the chain therefore rejects clicks, even though AppKit
 // PAINTS the absolutely-positioned leaf (NSView doesn't clip subviews to
-// bounds): the presence content renders fine yet swallows every click. Same
-// failure the `when`/`for` anchorless splice (`supports_child_splice`) fixed
-// for those primitives — but `Presence` keeps a stable placeholder (it has to
-// survive the exit animation), so it can't take that path and needs its own
-// hit-test fix.
+// bounds): the presence content renders fine yet swallows every click.
 //
 // We override `hitTest:` with a GEOMETRIC deep descent
 // ([`presence_deep_hit`]): find the deepest subview whose frame actually

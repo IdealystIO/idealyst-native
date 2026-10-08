@@ -178,18 +178,7 @@ fn install_observer() {
         // is undefined behavior. `catch_unwind` here only buys us a
         // readable message before we abort — crash-loud is the project
         // policy, same as the layout-pass dispatch trampoline.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(fire));
-        if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else {
-                "<non-string panic payload>".to_string()
-            };
-            eprintln!("[backend-apple-core] pre-commit hook panic: {msg}");
-            std::process::abort();
-        }
+        crate::crash::abort_on_panic("CFRunLoop pre-commit observer", fire);
     }
 
     // Observe both activities CoreAnimation observes: `BeforeWaiting`

@@ -250,7 +250,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "image",
         pascal_name: "Image",
-        docs: "Bitmap / vector image. Source is platform-aware (asset path, URL, base64); backends use `UIImageView` (iOS), `ImageView` (Android), `<img>` (web), and a layer-backed image view (macOS). Content fit is controlled by the `object_fit` style property (`Fill` / `Contain` / `Cover`); the default is `Contain` (aspect-fit) on every backend. Optional load observers: `on_load = |ev| ...` fires once the bitmap decodes with its natural `ev.width`/`ev.height`; `on_error = || ...` fires on load/decode failure (inline props, or the same-named builder methods). Both are delivered on web + Apple and are a no-op on Android (no URL loader) / headless backends.",
+        docs: "Bitmap / vector image. Source is platform-aware (declared asset, `http(s)://` URL, or `data:` URI — base64 or percent-encoded). SVG renders on web, iOS, macOS and Android (the native backends rasterize it at the displayed size; SVG `<text>` is not drawn there — outline it). Backends use `UIImageView` (iOS), `ImageView` (Android), `<img>` (web), and a layer-backed image view (macOS). Content fit is controlled by the `object_fit` style property (`Fill` / `Contain` / `Cover`); the default is `Contain` (aspect-fit) on every backend. Optional load observers: `on_load = |ev| ...` fires once the bitmap decodes with its natural `ev.width`/`ev.height`; `on_error = || ...` fires on load/decode failure (inline props, or the same-named builder methods). Both are delivered on web, iOS, macOS and Android, and are a no-op on headless backends. Remote URLs on Android need the `internet` capability (`[package.metadata.idealyst] capabilities = [\"internet\"]` in the app's Cargo.toml; the `net` SDK declares it).",
         props: &[
             PropFieldSpec {
                 name: "src",
@@ -393,6 +393,12 @@ inventory::submit! {
                 constraint: "plain bool, read at mount only",
             },
             PropFieldSpec {
+                name: "disabled",
+                type_str: "impl IntoValue<bool>",
+                doc: "Make the field inert: not editable, not keyboard-focusable (it drops focus if it held it), on_change never fires, autofocus is skipped, and the style's `state disabled` overlay applies. A plain bool or a live source (closure/Signal) — toggles in place without rebuilding the input. Native: `<input disabled>` (web), `NSTextField.enabled` (macOS), `UITextField.enabled` (iOS), `View.setEnabled` (Android).",
+                constraint: "",
+            },
+            PropFieldSpec {
                 name: "ref",
                 type_str: "Ref<TextInputHandle>",
                 doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text). focus() is attach-safe: called before the field is on screen (right after mount, inside a portal), it applies once the field is attached; a blur() first cancels it.",
@@ -445,6 +451,12 @@ inventory::submit! {
                 constraint: "builder method `.autofocus(bool)`",
             },
             PropFieldSpec {
+                name: "disabled",
+                type_str: "impl IntoValue<bool>",
+                doc: "Make the area inert — same contract as `text_input`'s `disabled`: not editable, not keyboard-focusable, on_change never fires, `state disabled` overlay applies; live sources toggle in place. Native: `<textarea disabled>` (web), non-editable + non-selectable `NSTextView` (macOS), `View.setEnabled` (Android).",
+                constraint: "builder method `.disabled(..)`",
+            },
+            PropFieldSpec {
                 name: "ref",
                 type_str: "Ref<TextAreaHandle>",
                 doc: "Imperative handle: focus(), blur(), select_all(), insert_text(text). focus() is attach-safe (applies once the field is attached).",
@@ -476,6 +488,12 @@ inventory::submit! {
                 name: "on_change",
                 type_str: "Fn(bool)",
                 doc: "Fires with the new state on user interaction. Typical body: `value.set(new_state)`. REQUIRED for the toggle to do anything.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "disabled",
+                type_str: "impl IntoValue<bool>",
+                doc: "Make the switch inert: can't be flipped by pointer or keyboard, not keyboard-focusable (it drops focus if it held it), on_change never fires, and the style's `state disabled` overlay applies. A plain bool or a live source (closure/Signal) — toggles in place. Native: `<input type=checkbox disabled>` (web), `NSSwitch.enabled` (macOS), `UISwitch.enabled` (iOS), `Switch.setEnabled` (Android), GTK `set_sensitive` (Linux), `EnableWindow` (Windows).",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,
@@ -586,6 +604,12 @@ inventory::submit! {
                 name: "step",
                 type_str: "f32",
                 doc: "Snap increment.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "disabled",
+                type_str: "impl IntoValue<bool>",
+                doc: "Make the slider inert — same contract as `toggle`'s `disabled`: can't be dragged or moved by keyboard, not focusable, on_change never fires, `state disabled` overlay applies; live sources toggle in place. Native: `<input type=range disabled>` (web), `NSSlider` / `UISlider.enabled`, `SeekBar.setEnabled` (Android), GTK `set_sensitive`, `EnableWindow` (Windows).",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,
@@ -874,7 +898,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "presence",
         pascal_name: "Presence",
-        docs: "THE canonical primitive for animated show/hide. Wrap children whose mount/unmount should animate — the framework applies the `enter` state before first paint then interpolates to rest, and on hide plays the `exit` state before actually dropping the subtree. This is the DECLARATIVE animation tool (contrast the imperative `animated!` value driver): reach for `presence` whenever a panel/modal/toast should fade or slide in and out. The prop is `present` (a reactive `Fn() -> bool`) — NOT `when` (that's the `when` control-flow primitive; `presence(when = …)` is a compile error naming the valid props). `enter`/`exit` are `PresenceAnim` values built from a `PresenceState` (opacity + 2D translate + uniform scale — the cross-backend-cheap vocabulary) plus a duration and `Easing`.",
+        docs: "THE canonical primitive for animated show/hide. Wrap children whose mount/unmount should animate — the framework applies the `enter` state before first paint then interpolates to rest, and on hide plays the `exit` state before actually dropping the subtree. This is the DECLARATIVE animation tool (contrast the imperative `animated!` value driver): reach for `presence` whenever a panel/modal/toast should fade or slide in and out. The prop is `present` (a reactive `Fn() -> bool`) — NOT `when` (that's the `when` control-flow primitive; `presence(when = …)` is a compile error naming the valid props). `enter`/`exit` are `PresenceAnim` values built from a `PresenceState` (opacity + 2D translate + uniform scale — the cross-backend-cheap vocabulary) plus a duration and `Easing`. LAYOUT-TRANSPARENT on every backend: presence adds no box of its own, so its child lays out exactly as if it were the direct child of presence's parent — a `position: Absolute` child's insets resolve against presence's parent (put the absolute layer INSIDE presence; no extra absolute-fill wrapper needed), a `flex_grow` child fills, and a column of presence-wrapped toasts keeps its `gap`. The enter/exit transform animates the child itself.",
         props: &[
             PropFieldSpec {
                 name: "present",
@@ -891,13 +915,13 @@ inventory::submit! {
             PropFieldSpec {
                 name: "exit",
                 type_str: "PresenceAnim",
-                doc: "Exit animation: the `PresenceState` interpolated toward before the scope drops. Same shape as `enter` (mirror it for a symmetric fade/slide). A mid-exit flip back to `present` reverses the in-flight interpolation without rebuilding the child.",
+                doc: "Exit animation: the `PresenceState` interpolated toward before the scope drops. Same shape as `enter` (mirror it for a symmetric fade/slide). A flip back to `present` mid-exit builds a FRESH child (playing `enter`) while the outgoing one finishes its exit — a crossfade.",
                 constraint: "builder method `.exit(anim)`",
             },
             PropFieldSpec {
                 name: "children",
                 type_str: "Vec<Element>",
-                doc: "Animated subtree. Rebuilt only on a real mount (first appearance, or after a full exit completes) — signals/refs inside survive a near-miss flicker.",
+                doc: "Animated subtree. Built fresh on every false → true flip of `present` (including one mid-exit) — child-local signals/refs do NOT survive a hide/show, so keep state that must persist outside the presence.",
                 constraint: "",
             },
         ],
@@ -991,7 +1015,7 @@ inventory::submit! {
             PropFieldSpec {
                 name: "side",
                 type_str: "ElementSide",
-                doc: "Which side of the target the content sits on (`Above`/`Below`/`Start`/`End`). Default `Below`.",
+                doc: "Which side of the target the content prefers (`Above`/`Below`/`Start`/`End`). Default `Below`. If the content doesn't fit on that side and the opposite side has more room, it flips; it is then clamped inside the viewport. The overlay re-places whenever the trigger moves, the viewport resizes, or its OWN content resizes (e.g. a header search filtering a menu's rows), and it keeps the side it is already on while the content still fits there — so a flipped-above menu that shrinks keeps its bottom edge on the trigger instead of jumping across it.",
                 constraint: "",
             },
             PropFieldSpec {

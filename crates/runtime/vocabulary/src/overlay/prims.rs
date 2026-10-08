@@ -115,9 +115,27 @@ pub(crate) fn set_literal(data: &dyn Any, name: &str, value: &LiteralValue) -> b
                 Some(b) => set_const_bool(&mut p.secure, b),
                 None => false,
             },
+            "disabled" => match (&mut p.disabled, as_bool(value)) {
+                (slot @ None, Some(b)) => {
+                    *slot = Some(Value::Const(b));
+                    true
+                }
+                (Some(v), Some(b)) => set_const_bool(v, b),
+                _ => false,
+            },
         _ => set_a11y(&mut p.a11y, name, value),
     });
-    on_prim!(data, TogglePrim, |p| set_a11y(&mut p.a11y, name, value));
+    on_prim!(data, TogglePrim, |p| match name {
+            "disabled" => match (&mut p.disabled, as_bool(value)) {
+                (slot @ None, Some(b)) => {
+                    *slot = Some(Value::Const(b));
+                    true
+                }
+                (Some(v), Some(b)) => set_const_bool(v, b),
+                _ => false,
+            },
+        _ => set_a11y(&mut p.a11y, name, value),
+    });
     on_prim!(data, SliderPrim, |p| match name {
             "min" => set_f32(&mut p.min, value),
             "max" => set_f32(&mut p.max, value),
@@ -127,6 +145,14 @@ pub(crate) fn set_literal(data: &dyn Any, name: &str, value: &LiteralValue) -> b
                     true
                 }
                 None => false,
+            },
+            "disabled" => match (&mut p.disabled, as_bool(value)) {
+                (slot @ None, Some(b)) => {
+                    *slot = Some(Value::Const(b));
+                    true
+                }
+                (Some(v), Some(b)) => set_const_bool(v, b),
+                _ => false,
             },
         _ => set_a11y(&mut p.a11y, name, value),
     });

@@ -58,17 +58,19 @@
 //! objc callback contributes only the two measurements it feeds in
 //! (the popover frame and the container bounds) — and the "is the
 //! container laid out yet?" half of that is [`anchor_tracker_viewport`].
+//! It runs through a per-tracker `AnchoredPlacer` rather than the
+//! stateless resolver, so the side a menu settled on sticks while the
+//! content still fits there — a flipped-above menu that shrinks keeps its
+//! bottom edge on the trigger instead of jumping below it.
 
 use std::collections::HashSet;
 
-use runtime_shared::primitives::portal::{
-    resolve_anchored_placement, ElementAlign, ElementSide, ViewportRect,
-};
+use runtime_shared::primitives::portal::{AnchoredPlacer, ViewportRect};
 
 /// Gutter kept between a measured popover and every viewport edge when
-/// the clamp kicks in. Matches the web backend's `EDGE_GAP`, because
+/// the clamp kicks in. The shared constant every backend uses, because
 /// the same author intent must not place differently per platform.
-pub(crate) const ANCHOR_EDGE_GAP: f32 = 8.0;
+pub(crate) use runtime_shared::primitives::portal::ANCHOR_EDGE_GAP;
 
 /// What `insert(portal_parent, child)` should do with `child` for an
 /// anchored portal, given whether the entry already has a live tracker.
@@ -176,22 +178,26 @@ pub(crate) fn anchor_tracker_viewport(width: f32, height: f32) -> Option<(f32, f
 /// here because iOS, like web, positions by origin alone.
 // Consumed by `imp::start_anchor_tracker` (ios-only) and the tests below.
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+///
+/// `placer` lives as long as the tracker and remembers the side it
+/// settled on: a flipped-above menu whose content shrinks keeps its
+/// bottom edge on the trigger instead of jumping back below it on the
+/// next vsync (and back again as the content regrows). Same
+/// `AnchoredPlacer` web, macOS and Linux use.
 pub(crate) fn anchor_tracker_placement(
+    placer: &mut AnchoredPlacer,
     trigger: ViewportRect,
     content: (f32, f32),
     viewport: (f32, f32),
-    side: ElementSide,
-    align: ElementAlign,
-    offset: f32,
 ) -> (f32, f32) {
-    let placement =
-        resolve_anchored_placement(trigger, content, viewport, side, align, offset, ANCHOR_EDGE_GAP);
+    let placement = placer.place(trigger, content, viewport);
     (placement.y, placement.x)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_shared::primitives::portal::{ElementAlign, ElementSide};
 
     /// A viewport (non-anchored) portal never starts a tracker — every
     /// child is a plain flex child. Covers the Modal / sheet path.
@@ -241,12 +247,10 @@ mod tests {
         // 136pt past the edge.
         let trigger = ViewportRect { x: 376.0, y: 100.0, width: 32.0, height: 32.0 };
         let (_, left) = anchor_tracker_placement(
+            &mut AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, ANCHOR_EDGE_GAP),
             trigger,
             (200.0, 120.0),
             (440.0, 956.0),
-            ElementSide::Below,
-            ElementAlign::Start,
-            0.0,
         );
 
         assert!(
@@ -272,15 +276,30 @@ mod tests {
     fn anchor_tracker_leaves_a_popover_with_room_alone() {
         let trigger = ViewportRect { x: 100.0, y: 100.0, width: 32.0, height: 32.0 };
         let (top, left) = anchor_tracker_placement(
+            &mut AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 0.0, ANCHOR_EDGE_GAP),
             trigger,
             (200.0, 120.0),
             (440.0, 956.0),
-            ElementSide::Below,
-            ElementAlign::Start,
-            0.0,
         );
         assert_eq!(left, 100.0, "start-aligned with room: left edge meets the trigger's");
         assert_eq!(top, 132.0, "below with room: top meets the trigger's bottom");
+    }
+
+    /// Regression (CrewForge searchable Access "Add" menu): a menu that
+    /// flipped above its trigger and then shrank (header search filtered
+    /// it to 2 rows) must keep its bottom edge on the trigger. The old
+    /// stateless resolver re-ran the flip rule from `Below` every vsync,
+    /// so the shrunk menu jumped under the trigger mid-typing.
+    #[test]
+    fn regression_flipped_menu_stays_attached_above_when_content_shrinks() {
+        let viewport = (600.0, 900.0);
+        let trigger = ViewportRect { x: 100.0, y: 590.0, width: 120.0, height: 36.0 };
+        let mut placer =
+            AnchoredPlacer::new(ElementSide::Below, ElementAlign::Start, 4.0, ANCHOR_EDGE_GAP);
+        let (top, _) = anchor_tracker_placement(&mut placer, trigger, (240.0, 368.0), viewport);
+        assert_eq!(top + 368.0, 586.0, "tall menu flips above, bottom on the trigger's top - offset");
+        let (top, _) = anchor_tracker_placement(&mut placer, trigger, (240.0, 96.0), viewport);
+        assert_eq!(top + 96.0, 586.0, "shrunk menu keeps its bottom attached, got top {top}");
     }
 
     /// The container's bounds ARE the viewport (it is window-rooted and

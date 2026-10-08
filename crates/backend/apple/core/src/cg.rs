@@ -48,6 +48,19 @@ unsafe impl Encode for CGPathRef {
     const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGPath", &[]));
 }
 
+/// Opaque `CGImageRef`, encoded as `^{CGImage=}`.
+///
+/// Used for `+[UIImage imageWithCGImage:scale:orientation:]` and
+/// `-[NSImage initWithCGImage:size:]` when showing a rasterized SVG
+/// (`image_source`).
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct CGImageRef(pub *const std::ffi::c_void);
+
+unsafe impl Encode for CGImageRef {
+    const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGImage", &[]));
+}
+
 /// `CATransform3D` — Core Animation's 4x4 matrix, as `-[CALayer transform]`
 /// takes and returns it.
 ///
@@ -126,6 +139,17 @@ mod tests {
             CGColorRef::ENCODING,
             Encoding::Pointer(&Encoding::Struct("CGColor", &[])),
             "CGColorRef must encode as ^{{CGColor=}}",
+        );
+    }
+
+    /// Same trap: `imageWithCGImage:` / `initWithCGImage:size:` declare
+    /// `^{CGImage=}`; a `^v` would abort the first SVG image shown.
+    #[test]
+    fn cgimage_encodes_as_typed_cgimage() {
+        assert_eq!(
+            CGImageRef::ENCODING,
+            Encoding::Pointer(&Encoding::Struct("CGImage", &[])),
+            "CGImageRef must encode as ^{{CGImage=}}",
         );
     }
 
