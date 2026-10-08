@@ -555,6 +555,37 @@ Rejecting via hash`). The captured invocations live under the same
 directory and separate with it. The cost is one cold framework build per
 app the first time the tier is armed.
 
+### Builds trim their own superseded output
+
+Every rehash of a crate (a framework release, `cargo update`, a feature
+change) leaves the old units and a dead `<crate>-<hash>/` incremental cache
+behind — cargo never deletes a unit it stopped using, and rustc only cleans
+inside the hash it is compiling. After each successful build the web pipeline
+records the units the build consisted of under the app's name
+(`<target>/wasm32-unknown-unknown/<profile>/.idealyst-live/<app>.json`) and
+removes every unit and `incremental/` cache no app's record names
+(`build_ios::target_gc`) — in-tree examples share one `idealyst-web-<key>` dir
+per config, so the prune keeps the union of their records. A record not
+refreshed in 30 days stops counting (`build_web::WEB_RECORD_TTL`). The replay's
+`incremental-hotpatch/` can't be recorded (rustc writes it outside cargo, and
+the two dirs can't be merged: the replay compiles with different tracked
+flags, so each would discard the other's cache), so it keeps its newest cache
+per crate (`build_web::WEB_HOTPATCH_INCREMENTAL_KEEP`). A profile whose build
+is running is skipped. The dev server's build (`idealyst-dev-server`, shared by
+every app of a workspace) and the MCP catalog's (`idealyst-mcp`) record and
+prune the same way; a `--shared-target` server build never prunes.
+
+Each app's dev and release builds, with and without the tier, record the
+key of the `idealyst-web-<key>` dir they last used
+(`<target>/idealyst-web-keys/`). When a config change moves a slot to a
+new key, the dir it used before is removed, unless another slot still
+records it (then only the app's unit record there is dropped) or a build
+holds its lock. `idealyst clean --stale` sweeps the web dirs no slot records
+(including those built by a CLI from before the records) and legacy dirs, and
+prunes every recorded target dir — web, dev server, catalog, the wrappers'
+private targets — by its records; a dir built before the records existed
+falls back to keeping the newest unit and incremental caches per crate.
+
 ### The session pins the `idealyst` binary
 
 A hot-patch build sets `RUSTC_WRAPPER` to the running `idealyst`
@@ -1495,7 +1526,9 @@ r rebuild · l log: dev → server → all · e error · c clear · q quit · �
   shows its error (the old server keeps running through a failed build).
 - **The two builds run at once.** The bundle compiles in its own keyed
   target dir (`target/idealyst-web-<key>`) and the server in
-  `target/idealyst-dev-server` (or, with `--shared-target`, the
+  `idealyst-dev-server/` under the cargo workspace's target — one dir for
+  every app of the workspace, so apps that declare the same server package
+  build it once (or, with `--shared-target`, the
   workspace's `target/`), so they take different cargo locks and nothing
   is gained by waiting; the server used to be built by `cargo run` only
   after the bundle was done, with nothing on screen to say it existed. The

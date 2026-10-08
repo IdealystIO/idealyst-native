@@ -79,7 +79,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let cargo_target_dir = wrapper_target_dir(&wrapper_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
-    cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
+    cargo_build(&wrapper_dir, &cargo_target_dir, opts.release, &opts.user_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name);
@@ -174,10 +174,17 @@ edition = "2021"
 {features_block}"#,
     );
 
-    write_shared_target_config(wrapper_dir, cargo_target_dir)?;
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
-    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
+    write_target_config(wrapper_dir, cargo_target_dir)?;
+    // Written only on a content change: cargo dirties a path package on a
+    // newer source mtime, so an identical rewrite relinked the binary on
+    // every run.
+    build_ios::write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    build_ios::write_if_changed(&wrapper_dir.join("src/main.rs"), &main_rs)?;
+    // Build exactly the versions the app locked (re-seeded whenever the
+    // app's lock changes) instead of re-resolving against the registry on
+    // every run. Safe because the target dir is private. See
+    // `build_ios::seed_wrapper_lockfile`.
+    build_ios::seed_wrapper_lockfile(wrapper_dir, project_dir)?;
     Ok(())
 }
 
@@ -278,35 +285,28 @@ fn main() {{
 /// Kept as a function so the invariant ("never the project's target dir") is
 /// testable without running a real cargo build.
 fn wrapper_target_dir(wrapper_dir: &Path) -> PathBuf {
-    wrapper_dir.join("target")
+    build_ios::wrapper_target_dir(wrapper_dir)
 }
 
-fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
-    let config = format!(
-        "# GENERATED. A target dir PRIVATE to this wrapper.\n\
-         # The wrapper is a separate workspace with its own lockfile and\n\
-         # feature resolution; sharing the project's `target/` lets the two\n\
-         # write incompatible copies of the same crates into one directory,\n\
-         # and the project's next build links a mixture (\"multiple different\n\
-         # versions of crate `runtime_scene`\"). Do not point this back at\n\
-         # the project's target dir.\n\
-         \n\
-         [build]\n\
-         target-dir = \"{}\"\n",
-        target_dir.display(),
-    );
-    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
-    // undefined registry name there is a hard error. Define it here rather
-    // than relying on an ancestor config having done so.
-    let config = config + &build_ios::registry_config_block();
+/// The wrapper's `.cargo/config.toml`: its PRIVATE target dir + the
+/// framework registry (`build_ios::private_target_config`). The wrapper is
+/// a separate workspace with its own lockfile and feature resolution;
+/// sharing the project's `target/` let the two write incompatible copies
+/// of the same crates into one directory, and the project's next build
+/// linked a mixture ("multiple different versions of crate
+/// `runtime_scene`"). Do not point it back at the project's target dir.
+fn write_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
+    let config = build_ios::private_target_config("idealyst build --linux", target_dir);
     fs::create_dir_all(dir.join(".cargo"))?;
-    fs::write(dir.join(".cargo/config.toml"), config)?;
+    build_ios::write_if_changed(&dir.join(".cargo/config.toml"), &config)?;
     Ok(())
 }
 
-fn cargo_build(wrapper_dir: &Path, release: bool, user_features: &[String]) -> Result<()> {
+/// Build the wrapper into `target_dir`, then prune that dir to the units
+/// its recorded variants use (`build_ios::build_wrapper`).
+fn cargo_build(wrapper_dir: &Path, target_dir: &Path, release: bool, user_features: &[String]) -> Result<()> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["build"]).current_dir(wrapper_dir);
+    cmd.args(["build"]);
     if release {
         cmd.arg("--release");
     }
@@ -323,12 +323,8 @@ fn cargo_build(wrapper_dir: &Path, release: bool, user_features: &[String]) -> R
         },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
-    if !status.success() {
-        anyhow::bail!("[build-linux] cargo build exited with {status}");
-    }
+    let spec = build_ios::target_gc::BuildSpec::wrapper(target_dir, None, release, user_features);
+    build_ios::build_wrapper("build-linux", wrapper_dir, &mut cmd, &spec)?;
     Ok(())
 }
 
@@ -438,7 +434,8 @@ mod regression_tests {
         );
     }
 
-    /// The wrapper's stale `Cargo.lock` must be REMOVED on regeneration.
+    /// The wrapper's stale `Cargo.lock` must not survive regeneration — it is
+    /// replaced by the app's (`build_ios::seed_wrapper_lockfile`).
     ///
     /// It goes stale whenever the user crate's dependencies change — which never
     /// touches the wrapper's own manifest — and cargo then resolves the framework
@@ -446,12 +443,13 @@ mod regression_tests {
     /// multiple different versions of crate `runtime_scene`": a message that
     /// names neither the lockfile nor the real cause.
     #[test]
-    fn a_stale_wrapper_lockfile_is_removed_on_regeneration() {
+    fn a_stale_wrapper_lockfile_is_replaced_on_regeneration() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let wrapper_dir = tmp.path().join("wrapper");
         let workspace_root = tmp.path().join("workspace");
         std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("Cargo.lock"), "the app's lock").unwrap();
         std::fs::create_dir_all(&workspace_root).unwrap();
         std::fs::create_dir_all(&wrapper_dir).unwrap();
         std::fs::write(wrapper_dir.join("Cargo.lock"), "stale").unwrap();
@@ -471,9 +469,12 @@ mod regression_tests {
         )
         .expect("generate wrapper");
 
-        assert!(
-            !wrapper_dir.join("Cargo.lock").exists(),
-            "a stale wrapper lock must be deleted so the next build re-resolves",
+        // Replaced by the app's lock (`build_ios::seed_wrapper_lockfile`),
+        // not deleted: deleting re-resolved against the registry every run.
+        assert_eq!(
+            std::fs::read_to_string(wrapper_dir.join("Cargo.lock")).unwrap(),
+            "the app's lock",
+            "a stale wrapper lock must not survive regeneration",
         );
     }
 
@@ -516,6 +517,30 @@ mod regression_tests {
         );
     }
 
+    /// The stub framework the Linux wrapper names, in the shared offline
+    /// world (`build_ios::test_support`).
+    fn lock_world() -> build_ios::test_support::LockWorld {
+        build_ios::test_support::LockWorld::new(&[("crates/host/gtk", "host-gtk", &["robot"])], &[])
+    }
+
+    fn generate_in(world: &build_ios::test_support::LockWorld, wrapper: &std::path::Path) {
+        let opts = BuildOptions { release: false, mode: BuildMode::Local, user_features: Vec::new(), source: world.source() };
+        generate_wrapper(wrapper, &wrapper_target_dir(wrapper), &world.app, &fake_manifest(), &opts)
+            .expect("generate wrapper");
+    }
+
+    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// Linux wrapper deleted its `Cargo.lock` on every generation, so each
+    /// run resolved the registry's newest versions instead of the app's
+    /// locked ones. Its target dir was already private — the reason the
+    /// deletion existed (seeding in a SHARED dir) no longer applied.
+    #[test]
+    fn regression_linux_wrapper_lock_reresolved_every_run() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("linux");
+        world.assert_wrapper_follows_app_lock(&wrapper, || generate_in(&world, &wrapper));
+    }
+
     /// The wrapper must never build into the project's `target/`.
     ///
     /// Regression: it did, to reuse compiled dependencies. But the wrapper is
@@ -554,7 +579,7 @@ mod regression_tests {
         // And the generated cargo config must actually point there, since that
         // file is what cargo obeys.
         std::fs::create_dir_all(&wrapper_dir).unwrap();
-        write_shared_target_config(&wrapper_dir, &chosen).expect("write config");
+        write_target_config(&wrapper_dir, &chosen).expect("write config");
         let cfg = std::fs::read_to_string(wrapper_dir.join(".cargo/config.toml")).unwrap();
         assert!(
             cfg.contains(&format!("target-dir = \"{}\"", chosen.display())),

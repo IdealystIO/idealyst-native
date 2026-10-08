@@ -1,12 +1,26 @@
 [package]
 name = "idealyst-cli"
-version.workspace = true
+version = "1.6.0"
 edition.workspace = true
 license.workspace = true
 description = "Idealyst framework CLI — scaffold, dev-serve, build, and run idealyst apps"
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+# `package-assets/` is gitignored, so it has to be named here to be
+# packaged; `include` also keeps the e2e `tests/` (which need the
+# workspace) out of the published crate.
+include = ["/src/**", "/build.rs", "/package-assets/**"]
+
+# The binary embeds two things that live outside this directory: the
+# `idealyst new` scaffold (`examples/welcome`) and the Inspector front end
+# (built from `examples/inspector`). A change to either is a change to the
+# CLI, and the release stages both into `package-assets/` before packaging
+# — the build script exports them when the env var is set. See build.rs,
+# "Package assets".
+[package.metadata.registry]
+also-watch = ["examples/welcome", "examples/inspector"]
+prepackage = [
+    "cargo", "build", "-p", "idealyst-cli",
+    "--config", "env.IDEALYST_CLI_EXPORT_PACKAGE_ASSETS='1'",
+]
 
 # The package is `idealyst-cli` so `cargo install idealyst-cli` is
 # discoverable, but the binary itself is `idealyst` — what users type.
@@ -20,6 +34,8 @@ anyhow = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"
+# `idealyst update` compares the running version with the registry's.
+semver = { version = "1", features = ["serde"] }
 # Unified SDK config loader — `dev`/`worker` read the merged `idealyst.toml`
 # (connection profiles + `[jobs]`/`[pubsub]`) to decide worker orchestration.
 # Default features only: the loader + schema, none of the SDK wiring.

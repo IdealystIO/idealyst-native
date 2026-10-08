@@ -1,11 +1,9 @@
 [package]
 name = "build-linux"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "Linux GTK4-host build orchestration for `idealyst build --linux`: generates a binary wrapper around a user's app crate on host-gtk and builds it."
 
 # Linux GTK4-host build orchestration for `idealyst build --linux`
 # (and `idealyst run linux` / `idealyst dev --linux`).
@@ -29,4 +27,6 @@ anyhow = "1"
 build-ios = { workspace = true }
 
 [dev-dependencies]
+# The shared offline cargo world for the wrapper lock tests.
+build-ios = { workspace = true, features = ["test-support"] }
 tempfile = "3"

@@ -11,9 +11,12 @@
 //! the wrapper via `cargo build`, returns the produced binary's
 //! path.
 //!
-//! Mirrors `build-sim` for the sim runtime — same template shape,
-//! same shared-target-dir trick to avoid recompiling deps per
-//! wrapper.
+//! Mirrors `build-sim` for the sim runtime — same template shape.
+//! Like every generated wrapper it builds into a target dir private to
+//! it, with its `Cargo.lock` seeded from the app's, and prunes that dir
+//! to the units its recorded variants use after each build
+//! (`build_ios::wrapper_target_dir`, `docs/registry.md` "Generated
+//! wrappers").
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -84,7 +87,11 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let wrapper_root = opts.source.wrapper_root(&project_dir);
     let subdir = if opts.mode.is_runtime_server() { "macos-runtime-server" } else { "macos" };
     let wrapper_dir = wrapper_root.join(&manifest.name).join(subdir);
-    let cargo_target_dir = opts.source.cargo_target_dir(&project_dir);
+    // PRIVATE to the wrapper — see `build_ios::wrapper_target_dir`. It used
+    // to be the project's shared `target/`; what that sharing was worth
+    // (nearly nothing) is measured in `docs/registry.md` "Generated
+    // wrappers".
+    let cargo_target_dir = build_ios::wrapper_target_dir(&wrapper_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
     let extra_features: &[&str] = if opts.mode.is_runtime_server() {
@@ -113,6 +120,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     } else {
         cargo_build(
             &wrapper_dir,
+            &cargo_target_dir,
             opts.release,
             &opts.user_features,
             extra_features,
@@ -292,16 +300,15 @@ edition = "2021"
         patch_block = opts.source.patch_block(),
     );
 
-    write_shared_target_config(wrapper_dir, cargo_target_dir)?;
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    // The wrapper is its own `[workspace]`, so it keeps its own
-    // lockfile and nothing invalidates it — a rewritten manifest with
-    // unchanged content leaves cargo on the versions it locked the
-    // first time, so a published framework fix never arrives and a
-    // changed user dep resolves the framework twice. See
-    // `build_ios::refresh_wrapper_lockfile`.
-    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
-    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
+    write_target_config(wrapper_dir, cargo_target_dir)?;
+    build_ios::write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    build_ios::write_if_changed(&wrapper_dir.join("src/main.rs"), &main_rs)?;
+    // The wrapper is its own `[workspace]` with its own lock. Seed it from
+    // the app's (re-seeding whenever that changes), so the wrapper builds
+    // exactly the versions the app locked — neither frozen at its first
+    // resolve nor re-resolved against the registry every run. Safe because
+    // the target dir is private (`build_ios::seed_wrapper_lockfile`).
+    build_ios::seed_wrapper_lockfile(wrapper_dir, project_dir)?;
     Ok(())
 }
 
@@ -426,29 +433,21 @@ fn main() {{
     )
 }
 
-/// Redirect the wrapper crate's build output back into the project's
-/// (or framework workspace's) shared `target/` so common dependencies
-/// aren't recompiled per wrapper.
-fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
-    let config = format!(
-        "# GENERATED. Share the project's `target/` so common\n\
-         # dependencies aren't recompiled per-wrapper.\n\
-         \n\
-         [build]\n\
-         target-dir = \"{}\"\n",
-        target_dir.display(),
-    );
-    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
-    // undefined registry name there is a hard error. Define it here rather
-    // than relying on an ancestor config having done so.
-    let config = config + &build_ios::registry_config_block();
+/// The wrapper's `.cargo/config.toml`: its private target dir + the
+/// framework registry (`build_ios::private_target_config`).
+fn write_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
+    let config = build_ios::private_target_config("idealyst build --macos", target_dir);
     fs::create_dir_all(dir.join(".cargo"))?;
-    fs::write(dir.join(".cargo/config.toml"), config)?;
+    build_ios::write_if_changed(&dir.join(".cargo/config.toml"), &config)?;
     Ok(())
 }
 
+/// Build the wrapper into `target_dir`, then prune that dir to the units
+/// its recorded variants use (`build_ios::build_wrapper`).
+#[allow(clippy::too_many_arguments)]
 fn cargo_build(
     wrapper_dir: &Path,
+    target_dir: &Path,
     release: bool,
     user_features: &[String],
     extra_features: &[&str],
@@ -456,7 +455,7 @@ fn cargo_build(
     deployment_target: Option<&str>,
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["build"]).current_dir(wrapper_dir);
+    cmd.args(["build"]);
     if release {
         cmd.arg("--release");
     }
@@ -485,12 +484,8 @@ fn cargo_build(
         },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
-    if !status.success() {
-        anyhow::bail!("[build-macos] cargo build exited with {status}");
-    }
+    let spec = build_ios::target_gc::BuildSpec::wrapper(target_dir, target, release, &combined);
+    build_ios::build_wrapper("build-macos", wrapper_dir, &mut cmd, &spec)?;
     Ok(())
 }
 
@@ -518,6 +513,7 @@ fn build_universal(
         ensure_rust_target(target);
         cargo_build(
             wrapper_dir,
+            cargo_target_dir,
             release,
             user_features,
             extra_features,
@@ -639,6 +635,81 @@ mod regression_tests {
         generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    /// An unchanged regeneration must not touch the wrapper's files. Cargo
+    /// dirties a path package on a newer source mtime, so an identical
+    /// rewrite of `src/main.rs` recompiled and relinked the wrapper binary
+    /// on every run.
+    #[test]
+    fn regression_macos_wrapper_rewritten_every_run() {
+        let (wrapper_dir, tmp) = run_generator(BuildMode::Local);
+        let files = ["Cargo.toml", "src/main.rs", ".cargo/config.toml"];
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for f in files {
+            std::fs::File::options().write(true).open(wrapper_dir.join(f)).unwrap().set_modified(past).unwrap();
+        }
+        let opts = BuildOptions {
+            release: false,
+            mode: BuildMode::Local,
+            source: FrameworkSource::Workspace { root: tmp.path().join("workspace") },
+            user_features: Vec::new(),
+            universal: false,
+        };
+        generate_wrapper(&wrapper_dir, &tmp.path().join("target"), &tmp.path().join("project"), &fake_manifest(), &opts)
+            .expect("regenerate wrapper");
+        for f in files {
+            let m = std::fs::metadata(wrapper_dir.join(f)).unwrap().modified().unwrap();
+            assert_eq!(m, past, "{f} was rewritten with identical content");
+        }
+    }
+
+    /// The stub framework the macOS wrapper names, in the shared offline
+    /// world (`build_ios::test_support`).
+    fn lock_world() -> build_ios::test_support::LockWorld {
+        build_ios::test_support::LockWorld::new(
+            &[
+                ("crates/gpu-backend/host/appkit", "host-appkit", &["robot", "runtime-server"]),
+                ("crates/dev/runtime-server-shell", "runtime-server-shell-native", &["runtime-server"]),
+            ],
+            &[],
+        )
+    }
+
+    fn generate_in(world: &build_ios::test_support::LockWorld, wrapper: &std::path::Path) {
+        let opts = BuildOptions {
+            release: false,
+            mode: BuildMode::Local,
+            source: world.source(),
+            user_features: Vec::new(),
+            universal: false,
+        };
+        generate_wrapper(wrapper, &build_ios::wrapper_target_dir(wrapper), &world.app, &fake_manifest(), &opts)
+            .expect("generate wrapper");
+    }
+
+    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// macOS wrapper deleted its `Cargo.lock` on every generation, so each
+    /// run re-resolved against the registry — the newest compatible
+    /// versions rather than the app's locked ones (`fakedep` 1.1.0 here,
+    /// against an app locked to 1.0.0), and a new generation of the whole
+    /// tree on every framework release. It now seeds from the app's lock.
+    #[test]
+    fn regression_macos_wrapper_lock_reresolved_every_run() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("macos");
+        world.assert_wrapper_follows_app_lock(&wrapper, || generate_in(&world, &wrapper));
+    }
+
+    /// The wrapper builds into its OWN target dir: the seeded lock and the
+    /// post-build prune (which deletes whatever no wrapper variant
+    /// recorded) both require that nothing else builds there.
+    #[test]
+    fn macos_wrapper_target_dir_is_private() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("macos");
+        generate_in(&world, &wrapper);
+        world.assert_private_target_dir(&wrapper, &world.source().cargo_target_dir(&world.app));
     }
 
     /// Regression: an out-of-tree project whose framework source resolved to a

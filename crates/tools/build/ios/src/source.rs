@@ -83,7 +83,14 @@ pub enum FrameworkSource {
     /// cannot — its source id carries the commit, so every crate in the
     /// graph gets a new PackageId on every bump and the whole framework
     /// rebuilds.
-    Registry { registry: String, version: String },
+    ///
+    /// `versions` carries one requirement PER CRATE. Framework crates
+    /// release independently (`backend-web` is on 2.x while
+    /// `runtime-world` is on 1.8), so no single number can be written
+    /// for all of them — the old single `version` field wrote `"1.5"`
+    /// for `backend-web` (unsatisfiable) and copied runtime-core's
+    /// `"1.11"` onto `runtime-world` (also unsatisfiable).
+    Registry { registry: String, versions: FrameworkVersions },
 }
 
 /// Compile-time registry defaults baked into the CLI binary, the
@@ -94,8 +101,122 @@ pub struct RegistryDefaults {
     pub name: String,
     /// Sparse index URL, needed to write that `.cargo/config.toml`.
     pub index: String,
-    /// Version requirement to scaffold with — a caret on major.minor.
-    pub version: String,
+    /// Every framework crate's requirement as of the CLI's build — what a
+    /// fresh scaffold pins, and the fallback for any crate an existing
+    /// project's graph does not already resolve.
+    pub versions: FrameworkVersions,
+}
+
+/// Version requirements for the framework's registry crates, one per
+/// crate, as caret requirements on major.minor (`"2.5"` admits 2.5.0 up
+/// to, not including, 3.0.0).
+///
+/// Major.minor rather than the full version: a wrapper should not force a
+/// patch release the app's lock does not have — the wrapper's lock is
+/// seeded from the app's, and every requirement the seed already satisfies
+/// costs no update. The one deliberate raise is to the CLI's own floor (the
+/// version its generated wrapper source is written against); see
+/// [`FrameworkVersions::pin`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameworkVersions {
+    /// Keyed by package name.
+    crates: std::collections::BTreeMap<String, CrateReq>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CrateReq {
+    /// Directory under the framework workspace root (`crates/backend/web`),
+    /// which is how wrapper generators name a crate ([`FrameworkSource::dep`]).
+    /// `None` for a crate known only from a project's resolved graph.
+    subpath: Option<String>,
+    req: String,
+}
+
+impl FrameworkVersions {
+    /// Build from `(subpath, package name, version)` triples — the CLI
+    /// derives them from the framework's `[workspace.dependencies]`.
+    pub fn new<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Self {
+        let crates = entries
+            .into_iter()
+            .filter_map(|(subpath, name, version)| {
+                let req = major_minor(version)?;
+                Some((name.to_string(), CrateReq { subpath: Some(subpath.to_string()), req }))
+            })
+            .collect();
+        Self { crates }
+    }
+
+    /// The requirement for the crate at `subpath`.
+    pub fn for_subpath(&self, subpath: &str) -> Option<&str> {
+        self.crates
+            .values()
+            .find(|c| c.subpath.as_deref() == Some(subpath))
+            .map(|c| c.req.as_str())
+    }
+
+    /// The requirement for the package called `name`.
+    pub fn for_package(&self, name: &str) -> Option<&str> {
+        self.crates.get(name).map(|c| c.req.as_str())
+    }
+
+    /// Narrow `name`'s requirement to the version a project actually
+    /// resolved, so the wrapper unifies with the app's own copy — but
+    /// never BELOW the CLI's own requirement within the same semver-
+    /// compatible range.
+    ///
+    /// # Why the floor
+    ///
+    /// The generated wrapper source is written against the CLI's own
+    /// framework: the iOS template calls
+    /// `backend_ios::newcore::deliver_inbound_link`, which exists from
+    /// backend-ios-mobile 1.14. Pinning the wrapper down to an app lock at
+    /// 1.13 produced a wrapper that cannot compile (E0425). That went
+    /// unnoticed while the wrapper deleted its lock every run, because a
+    /// fresh resolve always took the newest release; once the wrapper
+    /// follows the app's lock (`wrapper_lock::seed_wrapper_lockfile`) the
+    /// requirement has to carry the template's real floor.
+    ///
+    /// Raising cannot duplicate the crate: two caret requirements in one
+    /// compatible range (`^1.13` from the app, `^1.14` from the wrapper)
+    /// unify to ONE version that satisfies both, and cargo bumps only that
+    /// crate in the wrapper's lock. A different major (or, below 1.0, a
+    /// different minor) is a different crate to cargo, so there the app's
+    /// version wins: one copy that may not fit the template beats two
+    /// copies that cannot cross the wrapper boundary.
+    pub fn pin(&mut self, name: &str, version: &str) {
+        let Some(req) = major_minor(version) else { return };
+        match self.crates.get_mut(name) {
+            Some(c) => c.req = at_least_within_range(&req, &c.req),
+            None => {
+                self.crates.insert(name.to_string(), CrateReq { subpath: None, req });
+            }
+        }
+    }
+}
+
+/// `resolved`, raised to `floor` when both are `major.minor` in the same
+/// semver-compatible range and `floor` is newer. See
+/// [`FrameworkVersions::pin`].
+fn at_least_within_range(resolved: &str, floor: &str) -> String {
+    let parse = |v: &str| -> Option<(u64, u64)> {
+        let (major, minor) = v.split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    };
+    match (parse(resolved), parse(floor)) {
+        (Some((rmaj, rmin)), Some((fmaj, fmin))) if rmaj == fmaj && rmaj != 0 && fmin > rmin => {
+            floor.to_string()
+        }
+        _ => resolved.to_string(),
+    }
+}
+
+/// `"1.11.0"`, `"^1.11"`, `"=2.5.3"` → `"1.11"` / `"2.5"`. A bare major
+/// (`"1"`) becomes `"1.0"`.
+fn major_minor(version: &str) -> Option<String> {
+    let mut it = version.trim().trim_start_matches(['^', '~', '=']).split('.');
+    let major = it.next().filter(|m| !m.is_empty() && m.chars().all(|c| c.is_ascii_digit()))?;
+    let minor = it.next().unwrap_or("0");
+    Some(format!("{major}.{minor}"))
 }
 
 /// Compile-time git defaults baked into the CLI binary.
@@ -184,17 +305,17 @@ impl FrameworkSource {
         }
         // A duplicate-`runtime-core` graph is a hard error, not a
         // fallback — see `framework_source_from_metadata`.
-        if let Some(from_cargo) = resolve_via_cargo_metadata(project_dir)? {
+        if let Some(from_cargo) = resolve_via_cargo_metadata(project_dir, &reg.versions)? {
             return Ok(from_cargo);
         }
-        if let Some(from_project) = read_project_framework_dep(project_dir) {
+        if let Some(from_project) = read_project_framework_dep(project_dir, &reg.versions) {
             return Ok(from_project);
         }
         // Nothing told us how this project pins the framework — this is
         // fresh `idealyst new` scaffolding, with no Cargo.toml yet. Scaffold
         // against the registry: a git pin would make every framework release
         // rebuild the consumer's entire graph.
-        Ok(Self::Registry { registry: reg.name, version: reg.version })
+        Ok(Self::Registry { registry: reg.name, versions: reg.versions })
     }
 
     /// One-line summary for the "which framework am I building
@@ -212,9 +333,10 @@ impl FrameworkSource {
                 let (key, value) = refspec.as_pair();
                 format!("git {url} ({key} {value})")
             }
-            Self::Registry { registry, version } => {
-                format!("registry {registry} ({version})")
-            }
+            Self::Registry { registry, versions } => format!(
+                "registry {registry} ({FRAMEWORK_PKG} {})",
+                versions.for_package(FRAMEWORK_PKG).unwrap_or("unknown"),
+            ),
         }
     }
 
@@ -406,10 +528,22 @@ impl FrameworkSource {
             // names that belong to unrelated packages on crates.io — `css`,
             // `wire`, `net`, `table`, `menu`, `video`, `canvas` — so a bare
             // version requirement resolves to a stranger's crate.
-            Self::Registry { registry, version } => format!(
-                "{{ version = \"{}\", registry = \"{}\"{} }}",
-                version, registry, features_clause,
-            ),
+            Self::Registry { registry, versions } => {
+                // Every crate a generator names must be published. One that
+                // is not (`publish = false`) has no requirement to write,
+                // and a guessed one would fail later as an unresolvable
+                // dependency in a generated manifest the user never wrote.
+                let version = versions.for_subpath(subpath).unwrap_or_else(|| {
+                    panic!(
+                        "{subpath} is not a published framework crate, so a registry-sourced \
+                         project cannot depend on it"
+                    )
+                });
+                format!(
+                    "{{ version = \"{}\", registry = \"{}\"{} }}",
+                    version, registry, features_clause,
+                )
+            }
         }
     }
 
@@ -607,7 +741,10 @@ fn is_framework_root(root: &Path) -> bool {
 /// reports nothing usable, which covers the `idealyst new` case where
 /// there is no manifest yet. Returns `Err` only for a graph that is
 /// *provably* broken, i.e. more than one `runtime-core`.
-fn resolve_via_cargo_metadata(project_dir: &Path) -> Result<Option<FrameworkSource>> {
+fn resolve_via_cargo_metadata(
+    project_dir: &Path,
+    defaults: &FrameworkVersions,
+) -> Result<Option<FrameworkSource>> {
     let manifest = project_dir.join("Cargo.toml");
     if !manifest.is_file() {
         return Ok(None);
@@ -644,14 +781,17 @@ fn resolve_via_cargo_metadata(project_dir: &Path) -> Result<Option<FrameworkSour
             return Ok(None);
         }
     };
-    framework_source_from_metadata(&meta)
+    framework_source_from_metadata(&meta, defaults)
 }
 
 /// Pull the framework source out of a parsed `cargo metadata` document.
 ///
 /// Split from [`resolve_via_cargo_metadata`] so the interesting logic is
 /// testable without shelling out to cargo.
-fn framework_source_from_metadata(meta: &serde_json::Value) -> Result<Option<FrameworkSource>> {
+fn framework_source_from_metadata(
+    meta: &serde_json::Value,
+    defaults: &FrameworkVersions,
+) -> Result<Option<FrameworkSource>> {
     let Some(packages) = meta.get("packages").and_then(|p| p.as_array()) else {
         return Ok(None);
     };
@@ -662,7 +802,7 @@ fn framework_source_from_metadata(meta: &serde_json::Value) -> Result<Option<Fra
 
     match hits.as_slice() {
         [] => Ok(None),
-        [only] => Ok(package_to_source(only)),
+        [only] => Ok(package_to_source(only, packages, defaults)),
         many => {
             // Two `runtime-core`s in one graph can never work: cargo
             // compiles both, their types are nominally distinct, and
@@ -704,7 +844,11 @@ fn describe_metadata_pkg(pkg: &serde_json::Value) -> String {
 /// `None` means "cargo resolved it to something a wrapper dep can't
 /// spell" (a registry release, say) — the caller falls through to the
 /// git defaults exactly as it did before this branch existed.
-fn package_to_source(pkg: &serde_json::Value) -> Option<FrameworkSource> {
+fn package_to_source(
+    pkg: &serde_json::Value,
+    packages: &[serde_json::Value],
+    defaults: &FrameworkVersions,
+) -> Option<FrameworkSource> {
     match pkg.get("source").and_then(|s| s.as_str()) {
         // `source: null` is cargo's encoding for a path dependency —
         // either a workspace member or a `path = "..."` dep. The
@@ -724,19 +868,29 @@ fn package_to_source(pkg: &serde_json::Value) -> Option<FrameworkSource> {
         }
         Some(s) if s.starts_with("git+") => parse_git_source(s),
         // `registry+sparse+https://…` — a published `runtime-core`. Mirror
-        // the app's own pin so the wrapper resolves the identical crate;
-        // the version comes from the resolved package, narrowed to
-        // major.minor so a patch release does not split the graph.
+        // the app's own graph so the wrapper resolves the identical crates:
+        // every framework crate the app resolved is pinned to ITS resolved
+        // version (narrowed to major.minor so a patch release does not split
+        // the graph), and anything the app does not use yet falls back to
+        // the CLI's table. Only packages from the SAME source as
+        // `runtime-core` count — several framework crates share a name with
+        // an unrelated crates.io package (`css`, `wire`, `net`), and the
+        // app may use one of those too.
         Some(s) if s.contains("sparse+") || s.starts_with("registry+") => {
-            let version = pkg.get("version").and_then(|v| v.as_str())?;
-            let (major, minor) = {
-                let mut it = version.split('.');
-                (it.next()?, it.next()?)
-            };
-            Some(FrameworkSource::Registry {
-                registry: REGISTRY_NAME.to_string(),
-                version: format!("{major}.{minor}"),
-            })
+            pkg.get("version").and_then(|v| v.as_str())?;
+            let mut versions = defaults.clone();
+            for p in packages {
+                if p.get("source").and_then(|v| v.as_str()) != Some(s) {
+                    continue;
+                }
+                if let (Some(name), Some(version)) = (
+                    p.get("name").and_then(|v| v.as_str()),
+                    p.get("version").and_then(|v| v.as_str()),
+                ) {
+                    versions.pin(name, version);
+                }
+            }
+            Some(FrameworkSource::Registry { registry: REGISTRY_NAME.to_string(), versions })
         }
         Some(_) => None,
     }
@@ -849,7 +1003,10 @@ fn percent_decode(s: &str) -> String {
 /// the dep is in a form we can't interpret (e.g. plain version
 /// string, custom registries). Callers fall back to the git
 /// defaults in those cases.
-fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
+fn read_project_framework_dep(
+    project_dir: &Path,
+    defaults: &FrameworkVersions,
+) -> Option<FrameworkSource> {
     let raw = fs::read_to_string(project_dir.join("Cargo.toml")).ok()?;
     let parsed: toml::Value = toml::from_str(&raw).ok()?;
     let table = parsed
@@ -869,30 +1026,31 @@ fn read_project_framework_dep(project_dir: &Path) -> Option<FrameworkSource> {
             .get("dependencies")?
             .get(FRAMEWORK_PKG)?
             .as_table()?;
-        return framework_dep_from_table(inherited, &root_dir);
+        return framework_dep_from_table(inherited, &root_dir, defaults);
     }
 
-    framework_dep_from_table(table, project_dir)
+    framework_dep_from_table(table, project_dir, defaults)
 }
 
 /// Interpret one `runtime-core` dep table. `base_dir` is the directory
 /// holding the manifest the table was written in — a relative `path`
 /// resolves against it, per cargo's rules.
-fn registry_dep_from_table(dep: &toml::Table) -> Option<FrameworkSource> {
+fn registry_dep_from_table(dep: &toml::Table, defaults: &FrameworkVersions) -> Option<FrameworkSource> {
     let registry = dep.get("registry")?.as_str()?;
     let version = dep.get("version")?.as_str()?;
-    // Narrow to major.minor: the wrapper must not pin a patch the app has
-    // not, or cargo resolves two `runtime-core`s and nothing type-checks
-    // across the wrapper boundary.
-    let mut it = version.trim_start_matches(['^', '~', '=']).split('.');
-    let (major, minor) = (it.next()?, it.next().unwrap_or("0"));
-    Some(FrameworkSource::Registry {
-        registry: registry.to_string(),
-        version: format!("{major}.{minor}"),
-    })
+    // The manifest names only `runtime-core`'s requirement; every other
+    // crate falls back to the CLI's table. (`pin` narrows to major.minor:
+    // the wrapper must not pin a patch the app has not.)
+    let mut versions = defaults.clone();
+    versions.pin(FRAMEWORK_PKG, version);
+    Some(FrameworkSource::Registry { registry: registry.to_string(), versions })
 }
 
-fn framework_dep_from_table(table: &toml::Table, base_dir: &Path) -> Option<FrameworkSource> {
+fn framework_dep_from_table(
+    table: &toml::Table,
+    base_dir: &Path,
+    defaults: &FrameworkVersions,
+) -> Option<FrameworkSource> {
     if let Some(path_str) = table.get("path").and_then(|v| v.as_str()) {
         // Resolve against `base_dir` and canonicalize so the recovered
         // workspace root is ABSOLUTE. This matters because the
@@ -929,7 +1087,7 @@ fn framework_dep_from_table(table: &toml::Table, base_dir: &Path) -> Option<Fram
 
     // A registry dep before a git one: `{ version, registry }` carries no
     // `git` key, so this only fires when the project pins the registry.
-    if let Some(reg) = registry_dep_from_table(table) {
+    if let Some(reg) = registry_dep_from_table(table, defaults) {
         return Some(reg);
     }
 
@@ -1051,11 +1209,22 @@ mod tests {
         }
     }
 
+    /// A table shaped like the real one: crates on different majors and
+    /// minors, which is the whole reason the table is per-crate.
+    fn table() -> FrameworkVersions {
+        FrameworkVersions::new([
+            ("crates/runtime/core", "runtime-core", "1.11.0"),
+            ("crates/runtime/world", "runtime-world", "1.8.0"),
+            ("crates/backend/web", "backend-web", "2.5.0"),
+            ("crates/css", "css", "1.5.4"),
+        ])
+    }
+
     fn registry_defaults() -> RegistryDefaults {
         RegistryDefaults {
             name: "idealyst".into(),
             index: "sparse+https://crates.idealyst.io/index/".into(),
-            version: "1.5".into(),
+            versions: table(),
         }
     }
 
@@ -1093,8 +1262,8 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", rev = "d
                 assert_eq!(url, "https://github.com/IdealystIO/idealyst-native");
                 assert!(matches!(refspec, GitRef::Rev(s) if s == "deadbeef"));
             }
-            FrameworkSource::Registry { registry, version } => panic!(
-                "expected the project's git pin to win, got registry {registry} {version}"
+            FrameworkSource::Registry { registry, .. } => panic!(
+                "expected the project's git pin to win, got registry {registry}"
             ),
             FrameworkSource::Workspace { root } => panic!(
                 "expected Git source, got Workspace {{ root: {} }} — \
@@ -1149,9 +1318,9 @@ edition = "2021"
         let src = FrameworkSource::detect(&proj.path, git_defaults(), registry_defaults())
             .expect("detect");
         match src {
-            FrameworkSource::Registry { registry, version } => {
+            FrameworkSource::Registry { registry, versions } => {
                 assert_eq!(registry, "idealyst");
-                assert_eq!(version, "1.5");
+                assert_eq!(versions, table(), "a fresh scaffold pins the CLI's table as-is");
             }
             other => panic!("expected the registry fallback, got {other:?}"),
         }
@@ -1180,9 +1349,21 @@ runtime-core = { version = "1.5.2", registry = "idealyst" }
         let src = FrameworkSource::detect(&proj.path, git_defaults(), registry_defaults())
             .expect("detect");
         match src {
-            FrameworkSource::Registry { registry, version } => {
+            FrameworkSource::Registry { registry, versions } => {
                 assert_eq!(registry, "idealyst");
-                assert_eq!(version, "1.5", "patch must be dropped from the requirement");
+                // `^1.5.2` and the CLI's `^1.11` unify to one copy, and the
+                // generated wrapper source needs 1.11 — so the CLI's floor
+                // wins inside the range (see `FrameworkVersions::pin`).
+                assert_eq!(
+                    versions.for_package("runtime-core"),
+                    Some("1.11"),
+                    "never below the template's floor within one major"
+                );
+                assert_eq!(
+                    versions.for_subpath("crates/backend/web"),
+                    Some("2.5"),
+                    "crates the manifest doesn't name keep their own table entry"
+                );
             }
             other => panic!("expected the project's registry pin, got {other:?}"),
         }
@@ -1193,18 +1374,96 @@ runtime-core = { version = "1.5.2", registry = "idealyst" }
     /// version requirement silently resolves to a stranger's crate.
     #[test]
     fn registry_dep_names_the_registry_and_carries_features() {
-        let src = FrameworkSource::Registry {
-            registry: "idealyst".into(),
-            version: "1.5".into(),
-        };
+        let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: table() };
         assert_eq!(
             src.dep("crates/runtime/core", &["async-driver"]),
-            r#"{ version = "1.5", registry = "idealyst", features = ["async-driver"] }"#
+            r#"{ version = "1.11", registry = "idealyst", features = ["async-driver"] }"#
         );
         assert_eq!(
             src.dep("crates/css", &[]),
             r#"{ version = "1.5", registry = "idealyst" }"#
         );
+    }
+
+    /// Regression: `Registry` carried ONE version for every framework crate.
+    /// A fresh scaffold wrote the CLI's `"1.5"` for `backend-web`, which is
+    /// on 2.x, and an existing project copied runtime-core's `"1.11"` onto
+    /// `runtime-world`, which is at 1.8 — both unsatisfiable, so
+    /// `idealyst new --lib` and registry-mode wrappers failed to resolve.
+    /// Each crate now gets its own requirement.
+    #[test]
+    fn regression_each_registry_crate_gets_its_own_version() {
+        let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: table() };
+        assert_eq!(src.dep("crates/backend/web", &[]), r#"{ version = "2.5", registry = "idealyst" }"#);
+        assert_eq!(src.dep("crates/runtime/world", &[]), r#"{ version = "1.8", registry = "idealyst" }"#);
+        assert_eq!(src.dep("crates/runtime/core", &[]), r#"{ version = "1.11", registry = "idealyst" }"#);
+    }
+
+    /// An existing registry project: every framework crate its graph
+    /// resolved is pinned to the version it resolved, so the wrapper
+    /// unifies with the app's copies; a crate the app doesn't use keeps the
+    /// table's requirement. A crates.io package sharing a framework crate's
+    /// name (`css`) must not pin ours.
+    #[test]
+    fn metadata_pins_each_resolved_framework_crate() {
+        let reg = "registry+sparse+https://crates.idealyst.io/index/";
+        let meta = metadata_with(serde_json::json!([
+            { "name": "runtime-core", "version": "1.12.3", "source": reg, "manifest_path": "/r/core/Cargo.toml" },
+            { "name": "runtime-world", "version": "1.7.0", "source": reg, "manifest_path": "/r/world/Cargo.toml" },
+            { "name": "css", "version": "0.4.1",
+              "source": "registry+https://github.com/rust-lang/crates.io-index", "manifest_path": "/c/css/Cargo.toml" },
+        ]));
+        match framework_source_from_metadata(&meta, &table()).expect("single hit") {
+            Some(FrameworkSource::Registry { versions, .. }) => {
+                assert_eq!(versions.for_subpath("crates/runtime/core"), Some("1.12"), "app ahead of the CLI: the app's");
+                assert_eq!(versions.for_subpath("crates/runtime/world"), Some("1.8"), "app behind the CLI: the CLI's floor");
+                assert_eq!(versions.for_subpath("crates/backend/web"), Some("2.5"), "not in the graph: table");
+                assert_eq!(versions.for_subpath("crates/css"), Some("1.5"), "crates.io `css` is not ours");
+            }
+            other => panic!("expected Registry, got {other:?}"),
+        }
+    }
+
+    /// Regression: a wrapper pinned BELOW the CLI's own requirement could
+    /// not compile its own generated source. The app's lock held
+    /// backend-ios-mobile 1.13.0, the pin narrowed the wrapper's
+    /// requirement to `1.13`, and the iOS template's call to
+    /// `deliver_inbound_link` (new in 1.14) failed with E0425. Within one
+    /// compatible range the CLI's floor wins; across ranges the app's
+    /// version does (a raise there would mean two copies of the crate).
+    #[test]
+    fn regression_pin_never_drops_below_the_templates_floor() {
+        let mut v = FrameworkVersions::new([
+            ("crates/backend/ios/mobile", "backend-ios-mobile", "1.14.0"),
+            ("crates/backend/web", "backend-web", "2.5.0"),
+            ("crates/x", "zero", "0.3.0"),
+        ]);
+        v.pin("backend-ios-mobile", "1.13.0");
+        assert_eq!(v.for_package("backend-ios-mobile"), Some("1.14"), "raised to the template's floor");
+        v.pin("backend-web", "1.9.0");
+        assert_eq!(v.for_package("backend-web"), Some("1.9"), "another major: the app's, never a second copy");
+        v.pin("zero", "0.2.0");
+        assert_eq!(v.for_package("zero"), Some("0.2"), "0.x minors are separate ranges");
+        v.pin("backend-ios-mobile", "1.15.2");
+        assert_eq!(v.for_package("backend-ios-mobile"), Some("1.15"), "an app ahead of the CLI keeps its version");
+    }
+
+    #[test]
+    fn requirements_narrow_to_major_minor() {
+        assert_eq!(major_minor("1.11.0").as_deref(), Some("1.11"));
+        assert_eq!(major_minor("^2.5").as_deref(), Some("2.5"));
+        assert_eq!(major_minor("=0.2.1").as_deref(), Some("0.2"));
+        assert_eq!(major_minor("1").as_deref(), Some("1.0"));
+        assert_eq!(major_minor("*"), None);
+    }
+
+    /// A generator naming an UNPUBLISHED crate in registry mode would write
+    /// a dependency nothing can resolve. Fail at the call, naming the crate.
+    #[test]
+    #[should_panic(expected = "crates/tools/premint-dump is not a published framework crate")]
+    fn an_unpublished_crate_has_no_registry_dep() {
+        let src = FrameworkSource::Registry { registry: "idealyst".into(), versions: table() };
+        src.dep("crates/tools/premint-dump", &[]);
     }
 
     /// In Git mode the wrapper and target dirs must be project-local —
@@ -1295,8 +1554,8 @@ runtime-core = { path = "../fw/crates/runtime/core" }
             FrameworkSource::Git { .. } => {
                 panic!("relative path dep must resolve to Workspace, not Git")
             }
-            FrameworkSource::Registry { registry, version } => panic!(
-                "expected a workspace path, got registry {registry} {version}"
+            FrameworkSource::Registry { registry, .. } => panic!(
+                "expected a workspace path, got registry {registry}"
             ),
         }
     }
@@ -1367,7 +1626,7 @@ runtime-core = { workspace = true }
         )
         .expect("write member Cargo.toml");
 
-        match read_project_framework_dep(&member) {
+        match read_project_framework_dep(&member, &table()) {
             Some(FrameworkSource::Workspace { root: found }) => assert_eq!(
                 found, fw,
                 "the member's relative path must resolve against the workspace root",
@@ -1406,7 +1665,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
         )
         .expect("write member Cargo.toml");
 
-        match read_project_framework_dep(&member) {
+        match read_project_framework_dep(&member, &table()) {
             Some(FrameworkSource::Git { url, refspec: GitRef::Tag(t) }) => {
                 assert_eq!(url, "https://github.com/IdealystIO/idealyst-native");
                 assert_eq!(t, "1.2.5");
@@ -1437,7 +1696,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
               "manifest_path": fw.join("crates/runtime/core/Cargo.toml").to_str().unwrap() },
         ]));
 
-        match framework_source_from_metadata(&meta).expect("single hit is not an error") {
+        match framework_source_from_metadata(&meta, &table()).expect("single hit is not an error") {
             Some(FrameworkSource::Workspace { root }) => assert_eq!(root, fw),
             other => panic!("expected Workspace, got {other:?}"),
         }
@@ -1457,7 +1716,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
               "manifest_path": "/cargo/git/checkouts/idealyst/abc123/crates/runtime/core/Cargo.toml" },
         ]));
 
-        let err = framework_source_from_metadata(&meta)
+        let err = framework_source_from_metadata(&meta, &table())
             .expect_err("a two-instance graph must not resolve silently");
         let msg = format!("{err:#}");
         assert!(msg.contains("/local/fw"), "names the path source: {msg}");
@@ -1473,7 +1732,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
             { "name": "serde", "source": "registry+https://github.com/rust-lang/crates.io-index",
               "manifest_path": "/cargo/registry/serde/Cargo.toml" },
         ]));
-        assert!(framework_source_from_metadata(&meta).expect("no hit is not an error").is_none());
+        assert!(framework_source_from_metadata(&meta, &table()).expect("no hit is not an error").is_none());
     }
 
     /// Cargo keys crate identity on the whole source id, so the refspec
@@ -1517,7 +1776,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
             { "name": "runtime-core", "source": "registry+https://github.com/rust-lang/crates.io-index",
               "manifest_path": "/cargo/registry/runtime-core-1.2.5/Cargo.toml" },
         ]));
-        assert!(framework_source_from_metadata(&meta).expect("registry is not an error").is_none());
+        assert!(framework_source_from_metadata(&meta, &table()).expect("registry is not an error").is_none());
     }
 
     /// A path-resolved package whose manifest ISN'T inside a framework
@@ -1529,7 +1788,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
             { "name": "runtime-core", "source": serde_json::Value::Null,
               "manifest_path": "/nowhere/near/a/checkout/Cargo.toml" },
         ]));
-        assert!(framework_source_from_metadata(&meta).expect("not an error").is_none());
+        assert!(framework_source_from_metadata(&meta, &table()).expect("not an error").is_none());
     }
 
     /// `require_workspace_root` is the legacy fail-clear helper. The

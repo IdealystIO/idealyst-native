@@ -1,11 +1,9 @@
 [package]
 name = "run-windows"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "Windows launcher for `idealyst run windows` / `idealyst dev --windows`: builds via build-windows, then launches the .exe."
 
 # Windows launcher for `idealyst run --windows` / `idealyst dev --windows`.
 #

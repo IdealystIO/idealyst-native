@@ -103,21 +103,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name);
-    // Non-premint: `write_shared_target_config` points the wrapper's
-    // cargo at the project's shared `target/` (so common deps aren't
-    // recompiled per-wrapper) and the binary lands there. Premint: the
-    // build injects `--cfg idealyst_premint*` RUSTFLAGS, and cargo
-    // fingerprints every unit on RUSTFLAGS — sharing the target dir
-    // would rebuild the whole native graph AND invalidate the project's
-    // normal dev/test artifacts in both directions (the premint dump
-    // wrapper documents the same concern). So premint builds get their
-    // own `target-premint/` under the wrapper, cached across premint
-    // builds and never thrashing the shared cache.
-    let binary = if opts.premint {
-        wrapper_dir.join("target-premint").join(profile).join(&bin_name)
-    } else {
-        project_dir.join("target").join(profile).join(&bin_name)
-    };
+    let binary = ssr_target_dir(&wrapper_dir, opts.premint).join(profile).join(&bin_name);
 
     if !binary.is_file() {
         anyhow::bail!(
@@ -406,55 +392,44 @@ fn main() {{
         premint = premint,
     );
 
-    write_target_config(wrapper_dir, project_dir, premint)?;
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    // The wrapper is its own `[workspace]`, so it keeps its own
-    // lockfile and nothing invalidates it — a rewritten manifest with
-    // unchanged content leaves cargo on the versions it locked the
-    // first time, so a published framework fix never arrives and a
-    // changed user dep resolves the framework twice. See
-    // `build_ios::refresh_wrapper_lockfile`.
-    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
-    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
+    write_target_config(wrapper_dir, premint)?;
+    build_ios::write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    build_ios::write_if_changed(&wrapper_dir.join("src/main.rs"), &main_rs)?;
+    // Build exactly the versions the app locked (re-seeded whenever the
+    // app's lock changes) — safe because the target dir is private. See
+    // `build_ios::seed_wrapper_lockfile`.
+    build_ios::seed_wrapper_lockfile(wrapper_dir, project_dir)?;
     Ok(())
 }
 
-/// Point the wrapper crate's build output somewhere deliberate — and
-/// always WRITE the file, since the wrapper dir persists across builds
-/// and a stale config from the other mode must not survive a
-/// premint/non-premint flip.
+/// Where the SSR wrapper builds — PRIVATE to the wrapper in both modes
+/// (`build_ios::wrapper_target_dir`), and a separate dir per premint
+/// posture:
 ///
-/// - Non-premint: the project's shared `target/`, so common
-///   dependencies aren't recompiled per wrapper invocation.
-/// - Premint: a wrapper-local `target-premint/`. The premint build
-///   injects `--cfg idealyst_premint*` RUSTFLAGS and cargo fingerprints
-///   every unit on RUSTFLAGS — sharing the project target would rebuild
-///   the entire native graph and invalidate the project's normal
-///   dev/test artifacts in both directions (the premint dump wrapper
-///   documents the same hazard). Isolated, the premint graph caches
-///   across premint builds and never thrashes the shared cache.
-fn write_target_config(dir: &Path, project_dir: &Path, premint: bool) -> Result<()> {
-    let config = if premint {
-        "# GENERATED. Premint builds carry --cfg RUSTFLAGS that would\n\
-         # invalidate the project's shared target cache, so they build\n\
-         # into their own dir (cached across premint builds).\n\
-         \n\
-         [build]\n\
-         target-dir = \"target-premint\"\n"
-            .to_string()
+/// - Non-premint: `<wrapper>/target`.
+/// - Premint: `<wrapper>/target-premint`. The premint build injects
+///   `--cfg idealyst_premint*` RUSTFLAGS and cargo fingerprints every unit
+///   on RUSTFLAGS, so one dir for both would rebuild the whole native graph
+///   on every flip. Kept apart, each caches across its own builds.
+///
+/// It used to be the project's shared `target/` for non-premint builds;
+/// that ruled out a lock seeded from the app's and the post-build prune
+/// (see `build_ios::wrapper_target_dir`).
+pub fn ssr_target_dir(wrapper_dir: &Path, premint: bool) -> PathBuf {
+    if premint {
+        wrapper_dir.join("target-premint")
     } else {
-        let target_dir = project_dir.join("target");
-        format!(
-            "# GENERATED. Share the project's `target/` so common\n\
-             # dependencies aren't recompiled per-wrapper.\n\
-             \n\
-             [build]\n\
-             target-dir = \"{}\"\n",
-            target_dir.display(),
-        )
-    };
+        build_ios::wrapper_target_dir(wrapper_dir)
+    }
+}
+
+/// The wrapper's `.cargo/config.toml` — always WRITTEN, since the wrapper
+/// dir persists across builds and a stale config from the other premint
+/// posture must not survive a flip.
+fn write_target_config(dir: &Path, premint: bool) -> Result<()> {
+    let config = build_ios::private_target_config("idealyst dev --ssr", &ssr_target_dir(dir, premint));
     fs::create_dir_all(dir.join(".cargo"))?;
-    fs::write(dir.join(".cargo/config.toml"), config)?;
+    build_ios::write_if_changed(&dir.join(".cargo/config.toml"), &config)?;
     Ok(())
 }
 
@@ -483,7 +458,7 @@ fn cargo_build(wrapper_dir: &Path, opts: &BuildOptions) -> Result<()> {
     let release = opts.release;
     let user_features = &opts.user_features;
     let mut cmd = Command::new("cargo");
-    cmd.args(["build"]).current_dir(wrapper_dir);
+    cmd.args(["build"]);
     if release {
         cmd.arg("--release");
     }
@@ -518,12 +493,9 @@ fn cargo_build(wrapper_dir: &Path, opts: &BuildOptions) -> Result<()> {
         if release { " --release" } else { "" },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
-    if !status.success() {
-        anyhow::bail!("cargo build failed for the SSR wrapper at {}", wrapper_dir.display());
-    }
+    let target_dir = ssr_target_dir(wrapper_dir, opts.premint);
+    let spec = build_ios::target_gc::BuildSpec::wrapper(&target_dir, None, release, user_features);
+    build_ios::build_wrapper("build-ssr", wrapper_dir, &mut cmd, &spec)?;
     Ok(())
 }
 
@@ -556,6 +528,70 @@ mod wrapper_template_tests {
             fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap(),
             fs::read_to_string(wrapper_dir.join(".cargo/config.toml")).unwrap(),
         )
+    }
+
+    /// An unchanged regeneration must not touch the wrapper's files: cargo
+    /// dirties a path package on a newer source mtime, so an identical
+    /// rewrite of `src/main.rs` recompiled and relinked the SSR binary on
+    /// every run.
+    #[test]
+    fn regression_ssr_wrapper_rewritten_every_run() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_dir = tmp.path().join("project");
+        let wrapper_dir = tmp.path().join("wrapper");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("Cargo.toml"), "[package]\nname = \"demo-app\"\nversion = \"0.0.1\"\n").unwrap();
+        let manifest = parse_manifest(&project_dir).expect("parse manifest");
+        let source = FrameworkSource::Workspace { root: tmp.path().join("workspace") };
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, false).expect("generate");
+        let files = ["Cargo.toml", "src/main.rs", ".cargo/config.toml"];
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for f in files {
+            fs::File::options().write(true).open(wrapper_dir.join(f)).unwrap().set_modified(past).unwrap();
+        }
+        generate_wrapper(&wrapper_dir, &project_dir, &source, &manifest, false).expect("regenerate");
+        for f in files {
+            let m = fs::metadata(wrapper_dir.join(f)).unwrap().modified().unwrap();
+            assert_eq!(m, past, "{f} was rewritten with identical content");
+        }
+    }
+
+    /// The stub framework the SSR wrapper names, in the shared offline
+    /// world (`build_ios::test_support`).
+    fn lock_world() -> build_ios::test_support::LockWorld {
+        build_ios::test_support::LockWorld::new(&[("crates/backend/ssr", "backend-ssr", &["serve"])], &[])
+    }
+
+    fn generate_in(world: &build_ios::test_support::LockWorld, wrapper: &Path, premint: bool) {
+        let manifest = parse_manifest(&world.app).expect("parse manifest");
+        generate_wrapper(wrapper, &world.app, &world.source(), &manifest, premint).expect("generate wrapper");
+    }
+
+    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the SSR
+    /// wrapper deleted its `Cargo.lock` on every generation, so each run
+    /// resolved the registry's newest versions instead of the app's locked
+    /// ones — a different graph from the app's and a new generation of the
+    /// tree per framework release.
+    #[test]
+    fn regression_ssr_wrapper_lock_reresolved_every_run() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("ssr/wrapper");
+        world.assert_wrapper_follows_app_lock(&wrapper, || generate_in(&world, &wrapper, false));
+    }
+
+    /// The wrapper builds into its OWN target dir in both premint postures
+    /// (seeded lock + post-build prune both require it), one per posture.
+    #[test]
+    fn ssr_wrapper_target_dir_is_private() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("ssr/wrapper");
+        let project_target = world.source().cargo_target_dir(&world.app);
+        generate_in(&world, &wrapper, false);
+        world.assert_private_target_dir(&wrapper, &project_target);
+        generate_in(&world, &wrapper, true);
+        let premint = build_ios::test_support::LockWorld::configured_target_dir(&wrapper);
+        assert_eq!(premint, wrapper.join("target-premint"));
+        assert_ne!(premint, project_target);
     }
 
     fn generated_wrapper() -> (String, String) {
@@ -650,10 +686,10 @@ mod wrapper_template_tests {
             main_rs.contains("premint_css,"),
             "serve mode threads the link through ServeConfig:\n{main_rs}"
         );
-        // Premint builds must NOT share the project target dir — the
-        // --cfg RUSTFLAGS would invalidate the whole shared cache.
+        // Premint builds get their own dir — the --cfg RUSTFLAGS would
+        // otherwise rebuild the whole graph on every posture flip.
         assert!(
-            config.contains("target-dir = \"target-premint\""),
+            config.contains("/target-premint\""),
             "premint wrapper isolates its target dir:\n{config}"
         );
 
@@ -664,7 +700,7 @@ mod wrapper_template_tests {
         );
         assert!(
             !config.contains("target-premint"),
-            "non-premint wrapper keeps the shared target dir:\n{config}"
+            "non-premint wrapper builds into its plain private dir:\n{config}"
         );
     }
 

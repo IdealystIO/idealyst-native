@@ -70,6 +70,8 @@ pub struct CargoSummary {
     /// The last executable the build produced (or found fresh) — the
     /// binary of a `--bin` build. See [`CargoStream::executable`].
     pub executable: Option<PathBuf>,
+    /// The build's unit messages, raw. See [`CargoStream::unit_messages`].
+    pub unit_messages: Vec<String>,
 }
 
 /// How to learn the progress bar's total for a build (see
@@ -173,6 +175,7 @@ pub fn run_cargo(
             errors: s.errors(),
             compiled: s.compiled(),
             executable: s.executable().map(PathBuf::from),
+            unit_messages: s.unit_messages().to_vec(),
         })
         .unwrap_or_default();
     Ok((status, summary))

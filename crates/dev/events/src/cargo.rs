@@ -46,6 +46,7 @@ pub struct CargoStream {
     current: Option<String>,
     errors: u32,
     executable: Option<String>,
+    unit_messages: Vec<String>,
 }
 
 impl CargoStream {
@@ -82,6 +83,14 @@ impl CargoStream {
         self.executable.as_deref()
     }
 
+    /// Every `compiler-artifact` and `build-script-executed` message, raw:
+    /// the build's units, for a caller that records them
+    /// (`build_ios::target_gc` prunes a target dir to what recorded builds
+    /// use). Fresh units are reported too.
+    pub fn unit_messages(&self) -> &[String] {
+        &self.unit_messages
+    }
+
     /// A verbatim line, filed under this build's target.
     fn output(&self, line: &str) -> DevEvent {
         DevEvent::Output {
@@ -107,7 +116,12 @@ impl CargoStream {
             return vec![self.output(line)];
         };
         match msg["reason"].as_str() {
+            Some("build-script-executed") => {
+                self.unit_messages.push(line.to_string());
+                Vec::new()
+            }
             Some("compiler-artifact") => {
+                self.unit_messages.push(line.to_string());
                 // Before the package check: a bin's artifact arrives after
                 // its package's lib artifact was already counted.
                 if let Some(exe) = msg["executable"].as_str() {
@@ -131,8 +145,7 @@ impl CargoStream {
                 }
                 vec![DevEvent::Diagnostic { target: self.target.clone(), diagnostic }]
             }
-            // `build-script-executed`, `build-finished`, and whatever
-            // future cargo adds: nothing a consumer needs that the
+            // `build-finished`, and whatever future cargo adds: nothing a consumer needs that the
             // process's exit status does not already say.
             _ => Vec::new(),
         }
@@ -232,6 +245,25 @@ pub fn closure_size(metadata: &Value) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every unit message is kept raw — both kinds, fresh or not, and
+    /// including a package's second artifact — so a caller can record the
+    /// build's exact unit set; nothing else is.
+    #[test]
+    fn unit_messages_keep_every_artifact_and_build_script_message() {
+        let mut s = CargoStream::new("web");
+        let lines = [
+            r#"{"reason":"compiler-artifact","package_id":"a","filenames":["/t/deps/liba-1111111111111111.rlib"],"fresh":true}"#,
+            r#"{"reason":"build-script-executed","package_id":"a","out_dir":"/t/build/a-2222222222222222/out"}"#,
+            r#"{"reason":"compiler-artifact","package_id":"a","filenames":["/t/a"],"executable":"/t/a","fresh":false}"#,
+        ];
+        for l in lines {
+            s.stdout_line(l);
+        }
+        s.stdout_line(r#"{"reason":"build-finished","success":true}"#);
+        s.stdout_line("plain text");
+        assert_eq!(s.unit_messages(), &lines.map(String::from));
+    }
 
     /// The full-stack server's build finds the binary it restarts from
     /// cargo's messages. The bin's artifact comes after its package's lib

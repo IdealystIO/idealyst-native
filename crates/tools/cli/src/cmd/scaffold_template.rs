@@ -8,7 +8,9 @@
 //!   pulse, complete with bundled Inter typeface. The source is
 //!   embedded into the CLI binary via `include_str!` /
 //!   `include_bytes!`, so the scaffold is always identical to the
-//!   reference welcome example — no separate template to drift.
+//!   reference welcome example — no separate template to drift. A
+//!   registry install embeds the copy the release staged from it (see
+//!   build.rs, "Package assets").
 //! - **Library** — a third-party primitive extension. Pure `rlib`,
 //!   defines a `*Props` payload + a PascalCase constructor + a scene
 //!   `Registry` handler per backend, gated on `target_arch` /
@@ -86,39 +88,41 @@ pub fn write(
 //
 // Each source file is pulled from `examples/welcome/` at compile time
 // so any change to the reference welcome propagates here on the next
-// CLI rebuild. Cargo.toml + index.html are reformatted with the
+// CLI rebuild. `IDEALYST_WELCOME_DIR` is set by build.rs: the workspace's
+// `examples/welcome` when there is one, and the copy the release staged
+// into `package-assets/welcome` in a registry install. Cargo.toml + index.html are reformatted with the
 // caller's name / bundle id / framework source; everything else is
 // dropped through unchanged. The welcome source is intentionally
 // name-agnostic (no `welcome::*` self-references, no `mod welcome`)
 // so the verbatim copy compiles under any crate name.
 
-const WELCOME_LIB_RS: &str = include_str!("../../../../../examples/welcome/src/lib.rs");
-const WELCOME_APP_RS: &str = include_str!("../../../../../examples/welcome/src/app.rs");
+const WELCOME_LIB_RS: &str = include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/lib.rs"));
+const WELCOME_APP_RS: &str = include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/app.rs"));
 const WELCOME_COORDINATOR_RS: &str =
-    include_str!("../../../../../examples/welcome/src/coordinator.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/coordinator.rs"));
 const WELCOME_CONSTANTS_RS: &str =
-    include_str!("../../../../../examples/welcome/src/constants.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/constants.rs"));
 const WELCOME_TYPEFACE_RS: &str =
-    include_str!("../../../../../examples/welcome/src/typeface.rs");
-const WELCOME_COLOR_RS: &str = include_str!("../../../../../examples/welcome/src/color.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/typeface.rs"));
+const WELCOME_COLOR_RS: &str = include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/color.rs"));
 const WELCOME_STYLE_HELPERS_RS: &str =
-    include_str!("../../../../../examples/welcome/src/style_helpers.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/style_helpers.rs"));
 const WELCOME_COMPONENTS_RS: &str =
-    include_str!("../../../../../examples/welcome/src/components.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components.rs"));
 const WELCOME_COMPONENT_PAGE: &str =
-    include_str!("../../../../../examples/welcome/src/components/page.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/page.rs"));
 const WELCOME_COMPONENT_VIGNETTE: &str =
-    include_str!("../../../../../examples/welcome/src/components/vignette.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/vignette.rs"));
 const WELCOME_COMPONENT_SUN_GLARE: &str =
-    include_str!("../../../../../examples/welcome/src/components/sun_glare.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/sun_glare.rs"));
 const WELCOME_COMPONENT_PLANET: &str =
-    include_str!("../../../../../examples/welcome/src/components/planet.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/planet.rs"));
 const WELCOME_COMPONENT_WELCOME_PHRASE: &str =
-    include_str!("../../../../../examples/welcome/src/components/welcome_phrase.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/welcome_phrase.rs"));
 const WELCOME_COMPONENT_SUBTITLE: &str =
-    include_str!("../../../../../examples/welcome/src/components/subtitle.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/subtitle.rs"));
 const WELCOME_COMPONENT_CONTENT_LAYER: &str =
-    include_str!("../../../../../examples/welcome/src/components/content_layer.rs");
+    include_str!(concat!(env!("IDEALYST_WELCOME_DIR"), "/src/components/content_layer.rs"));
 
 // Inter typeface — full upright family bundled with every new project
 // so the headline / subtitle render at real weight rather than
@@ -127,39 +131,39 @@ const WELCOME_COMPONENT_CONTENT_LAYER: &str =
 const INTER_FONTS: &[(&str, &[u8])] = &[
     (
         "fonts/Inter-Thin.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-Thin.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-Thin.ttf")),
     ),
     (
         "fonts/Inter-ExtraLight.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-ExtraLight.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-ExtraLight.ttf")),
     ),
     (
         "fonts/Inter-Light.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-Light.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-Light.ttf")),
     ),
     (
         "fonts/Inter-Regular.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-Regular.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-Regular.ttf")),
     ),
     (
         "fonts/Inter-Medium.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-Medium.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-Medium.ttf")),
     ),
     (
         "fonts/Inter-SemiBold.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-SemiBold.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-SemiBold.ttf")),
     ),
     (
         "fonts/Inter-Bold.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-Bold.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-Bold.ttf")),
     ),
     (
         "fonts/Inter-ExtraBold.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-ExtraBold.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-ExtraBold.ttf")),
     ),
     (
         "fonts/Inter-Black.ttf",
-        include_bytes!("../../../../../examples/welcome/fonts/Inter-Black.ttf"),
+        include_bytes!(concat!(env!("IDEALYST_WELCOME_DIR"), "/fonts/Inter-Black.ttf")),
     ),
 ];
 

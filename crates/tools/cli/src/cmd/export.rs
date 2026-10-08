@@ -149,9 +149,8 @@ fn discover(project: &Path) -> Result<Vec<cg::ExternalComponent>> {
     )
     .context("prepare the external-component manifest extractor")?;
 
-    let output = Command::new("cargo")
-        .current_dir(&wrapper)
-        .args(["run", "-q", "--bin", "external-manifest"])
+    let exe = super::catalog_wrapper::build_extractor(&wrapper, "external-manifest")?;
+    let output = Command::new(&exe)
         .output()
         .context("run the external-manifest extractor")?;
     if !output.status.success() {

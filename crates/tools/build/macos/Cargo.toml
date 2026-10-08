@@ -1,11 +1,9 @@
 [package]
 name = "build-macos"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "macOS build orchestration for `idealyst build --macos`: generates a binary wrapper around a user's app crate and builds it."
 
 # macOS build orchestration for `idealyst build --macos`.
 #
@@ -26,5 +24,7 @@ anyhow = "1"
 build-ios = { workspace = true }
 
 [dev-dependencies]
+# The shared offline cargo world for the wrapper lock tests.
+build-ios = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 toml = "0.8"

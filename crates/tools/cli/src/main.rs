@@ -97,6 +97,9 @@ enum Command {
     Configure(cmd::configure::Args),
     /// Diagnose the local toolchain (Rust, web, iOS, Android; Roku pending).
     Doctor(cmd::doctor::Args),
+    /// Update this CLI to the newest release: rebuilds it from the
+    /// registry and replaces the running binary. `--check` only reports.
+    Update(cmd::update::Args),
     /// Regenerate icons, splash, and other derived assets.
     Sync(cmd::sync::Args),
     /// Inspect generated icons (preview as platform-style mockups,
@@ -184,6 +187,7 @@ fn main() -> anyhow::Result<()> {
         Command::CatalogScan(args) => cmd::catalog_scan::run(args),
         Command::Configure(args) => cmd::configure::run(args),
         Command::Doctor(args) => cmd::doctor::run(args),
+        Command::Update(args) => cmd::update::run(args),
         Command::Sync(args) => cmd::sync::run(args),
         Command::Icon(args) => cmd::icon::run(args),
         Command::Scaffold(args) => cmd::scaffold::run(args),

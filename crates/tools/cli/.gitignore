@@ -1,0 +1,4 @@
+# Staged by the release's prepackage step (build.rs, "Package assets") and
+# shipped in the published crate through `include`. Never committed: the
+# workspace's examples/welcome and examples/inspector are the source.
+/package-assets/

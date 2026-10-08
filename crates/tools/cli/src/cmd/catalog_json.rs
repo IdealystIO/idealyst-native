@@ -70,15 +70,15 @@ pub fn run(args: Args) -> Result<()> {
     }
     .context("generate the catalog wrapper crate")?;
 
-    // Inherit stdout so the JSON streams straight through; `-q` keeps
-    // cargo's progress off stdout (diagnostics still reach stderr).
-    let status = Command::new("cargo")
-        .current_dir(&wrapper_dir)
-        .args(["run", "-q", "--bin", "catalog"])
+    // Built (and its sidecar pruned) by `build_extractor`, then run with
+    // stdout inherited so the JSON streams straight through.
+    let exe = super::catalog_wrapper::build_extractor(&wrapper_dir, "catalog")
+        .context("build the catalog wrapper (see stderr above)")?;
+    let status = Command::new(&exe)
         .status()
-        .context("run the catalog wrapper (`cargo run -q --bin catalog`)")?;
+        .with_context(|| format!("run the catalog extractor {}", exe.display()))?;
     if !status.success() {
-        bail!("catalog wrapper build/run failed (see stderr above)");
+        bail!("catalog extractor failed (see stderr above)");
     }
     Ok(())
 }

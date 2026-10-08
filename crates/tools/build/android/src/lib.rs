@@ -48,7 +48,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use build_ios::{parse_manifest, FrameworkSource, Manifest};
+use build_ios::{
+    build_wrapper, parse_manifest, seed_wrapper_lockfile, target_gc, write_if_changed,
+    FrameworkSource, Manifest,
+};
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -175,20 +178,20 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         opts.mode,
     )?;
 
-    cargo_build(&wrapper_dir, target_triple, opts.release, &opts.user_features)?;
+    let target_dir = wrapper_target_dir(&wrapper_dir);
+    cargo_build(
+        &wrapper_dir,
+        &target_gc::BuildSpec::wrapper(&target_dir, Some(target_triple), opts.release, &opts.user_features),
+        &opts.user_features,
+    )?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let dylib_name = match opts.mode {
         BuildMode::Local => format!("lib{}_android_wrapper.so", manifest.lib_name),
         BuildMode::RuntimeServer => format!("lib{}_android_aas_wrapper.so", manifest.lib_name),
     };
-    // Wrapper's `.cargo/config.toml` redirects build output to the
-    // resolved target dir (workspace's `target/` in-tree; the project's
-    // own `target/` for external consumers). Sharing avoids
-    // re-compiling deps that cargo already has cached for this source.
-    let dylib = opts
-        .source
-        .cargo_target_dir(&project_dir)
+    // The wrapper's private target dir — see `wrapper_target_dir`.
+    let dylib = target_dir
         .join(target_triple)
         .join(profile)
         .join(&dylib_name);
@@ -307,18 +310,7 @@ fn generate_wrapper(
     fs::create_dir_all(wrapper_dir.join(".cargo"))
         .with_context(|| format!("create {}", wrapper_dir.join(".cargo").display()))?;
 
-    let wrapper_name = match mode {
-        BuildMode::Local => format!("{}-android-wrapper", manifest.name),
-        // NB: the package name MUST translate to the `.so` filename the
-        // build + run sides expect (`lib{lib_name}_android_aas_wrapper.so`).
-        // Cargo derives the dylib name from the package name with `-` → `_`,
-        // so using `-android-runtime-server-wrapper` would emit
-        // `lib<name>_android_runtime_server_wrapper.so` instead — paths
-        // diverge and the post-build artifact-existence check fails with
-        // "cargo build reported success but … was not produced". Naming
-        // it `-android-aas-wrapper` here matches the expected `.so`.
-        BuildMode::RuntimeServer => format!("{}-android-aas-wrapper", manifest.name),
-    };
+    let wrapper_name = wrapper_package_name(manifest, mode);
     // `runtime-core` + `runtime-shared` as DIRECT deps so the wrapper's
     // own `dev` feature can map onto them (cargo resolves `<dep>/<feat>`
     // only for direct dependencies): the facade carries the catalog
@@ -813,19 +805,13 @@ pub extern "system" fn Java_{jni}_NativeBridge_reportViewport<'local>(
     // fails with an obscure "ld: unknown option" or similar.
     let clang_wrapper = toolchain_bin.join(format!("{target_triple}{api_level}-clang"));
     let ar = toolchain_bin.join("llvm-ar");
-    // Share `target/` with whatever the source resolved to (the
-    // framework workspace's `target/` in-tree, the project's own
-    // `target/` for external consumers). Common deps (the runtime,
-    // dev-client, backend-android) don't recompile from scratch for
-    // the wrapper that way. Cross-target artifacts live under
-    // `<target>/aarch64-linux-android/...` so they coexist
-    // peacefully with host-target artifacts in the same directory.
-    let workspace_target = source.cargo_target_dir(project_dir);
+    // A target dir PRIVATE to this wrapper — see `wrapper_target_dir`.
     let cargo_config = format!(
         r#"# GENERATED. Points the Android cross-compile at the NDK's
-# Clang wrapper so cargo can link the cdylib without `cargo-ndk`,
-# and shares the workspace's `target/` so common dependencies
-# aren't recompiled per-wrapper.
+# Clang wrapper so cargo can link the cdylib without `cargo-ndk`, and
+# builds into a target dir private to this wrapper (its lock is seeded
+# from the app's, and its target dir is pruned after every build — see
+# `build_android::wrapper_target_dir`).
 
 [build]
 target-dir = "{target_dir}"
@@ -834,7 +820,7 @@ target-dir = "{target_dir}"
 linker = "{linker}"
 ar = "{ar}"
 "#,
-        target_dir = workspace_target.display(),
+        target_dir = wrapper_target_dir(wrapper_dir).display(),
         target_triple = target_triple,
         linker = clang_wrapper.display(),
         ar = ar.display(),
@@ -850,54 +836,79 @@ ar = "{ar}"
         );
     }
 
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    // The wrapper is its own `[workspace]`, so it keeps its own
-    // lockfile and nothing invalidates it — a rewritten manifest with
-    // unchanged content leaves cargo on the versions it locked the
-    // first time, so a published framework fix never arrives and a
-    // changed user dep resolves the framework twice. See
-    // `build_ios::refresh_wrapper_lockfile`.
-    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
-    fs::write(wrapper_dir.join("src/lib.rs"), lib_rs)?;
-    fs::write(wrapper_dir.join(".cargo/config.toml"), cargo_config)?;
+    // Written only on a content change: an identical rewrite of
+    // `src/lib.rs` dirties the wrapper crate and relinks the cdylib on
+    // every run.
+    write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    write_if_changed(&wrapper_dir.join("src/lib.rs"), &lib_rs)?;
+    write_if_changed(&wrapper_dir.join(".cargo/config.toml"), &cargo_config)?;
+    // The wrapper is its own `[workspace]` with its own lock. Seed it from
+    // the app's (re-seeding whenever that changes) so the wrapper builds
+    // exactly what the app locked — neither frozen at its first resolve
+    // nor re-resolved against the registry every run. See
+    // `build_ios::wrapper_lock::seed_wrapper_lockfile`.
+    seed_wrapper_lockfile(wrapper_dir, project_dir)?;
     Ok(())
+}
+
+/// The wrapper's package name.
+///
+/// NB: the package name MUST translate to the `.so` filename the build +
+/// run sides expect (`lib{lib_name}_android_aas_wrapper.so`). Cargo
+/// derives the dylib name from the package name with `-` → `_`, so using
+/// `-android-runtime-server-wrapper` would emit
+/// `lib<name>_android_runtime_server_wrapper.so` instead — paths diverge
+/// and the post-build artifact-existence check fails with "cargo build
+/// reported success but … was not produced".
+fn wrapper_package_name(manifest: &Manifest, mode: BuildMode) -> String {
+    match mode {
+        BuildMode::Local => format!("{}-android-wrapper", manifest.name),
+        BuildMode::RuntimeServer => format!("{}-android-aas-wrapper", manifest.name),
+    }
+}
+
+/// Where the wrapper builds: a target dir PRIVATE to it
+/// ([`build_ios::wrapper_target_dir`]).
+///
+/// It used to share the project's `target/` to reuse compiled
+/// dependencies, but nothing else builds for `aarch64-linux-android`
+/// there — the reuse was only host proc-macros and build scripts — while
+/// the sharing ruled out the two things that keep the wrapper's disk use
+/// bounded: a lock seeded from the app's (identically-resolved units from
+/// two workspaces interleaved in one dir is the duplicate-crate failure
+/// the Linux builder hit), and pruning every unit no wrapper variant
+/// recorded (which would delete the app's own build in a shared dir).
+/// Pinned with `CARGO_TARGET_DIR` on the cargo invocation so an inherited
+/// `build.target-dir` or a global `CARGO_TARGET_DIR` cannot redirect it.
+pub fn wrapper_target_dir(wrapper_dir: &Path) -> PathBuf {
+    build_ios::wrapper_target_dir(wrapper_dir)
 }
 
 // ---------------------------------------------------------------------------
 // Cargo invocation
 // ---------------------------------------------------------------------------
 
-fn cargo_build(
-    wrapper_dir: &Path,
-    target: &str,
-    release: bool,
-    user_features: &[String],
-) -> Result<()> {
+/// Build the wrapper, then prune its private target dir down to the units
+/// the recorded variants (dev / non-dev, per profile) still use — see
+/// `build_ios::target_gc`.
+fn cargo_build(wrapper_dir: &Path, spec: &target_gc::BuildSpec<'_>, features: &[String]) -> Result<()> {
+    let triple = spec.triple.expect("an Android build always passes --target");
     let mut cmd = Command::new("cargo");
-    cmd.args(["build", "--target", target]).current_dir(wrapper_dir);
-    if release {
+    cmd.args(["build", "--target", triple]);
+    if spec.release {
         cmd.arg("--release");
     }
-    if !user_features.is_empty() {
-        cmd.arg("--features").arg(user_features.join(","));
+    let features = features.join(",");
+    if !features.is_empty() {
+        cmd.arg("--features").arg(&features);
     }
-
     eprintln!(
-        "[build-android] cargo build --target {target}{}{} (in {})",
-        if release { " --release" } else { "" },
-        if user_features.is_empty() {
-            String::new()
-        } else {
-            format!(" --features {}", user_features.join(","))
-        },
+        "[build-android] cargo build --target {triple}{}{} (in {})",
+        if spec.release { " --release" } else { "" },
+        if features.is_empty() { String::new() } else { format!(" --features {features}") },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
-    if !status.success() {
-        anyhow::bail!("cargo build exited with {status}");
-    }
+    build_wrapper("build-android", wrapper_dir, &mut cmd, spec)?;
     Ok(())
 }
 
@@ -1175,5 +1186,84 @@ mod regression_tests {
             "runtime-server Android wrapper must NOT depend on the user crate \
              (the sidecar owns it); leaks two reactive kernels. Got:\n{cargo}",
         );
+    }
+
+    fn regenerate(tmp: &std::path::Path, mode: BuildMode) {
+        let source = FrameworkSource::Workspace { root: tmp.join("workspace") };
+        generate_wrapper(
+            &tmp.join("wrapper"),
+            &tmp.join("project"),
+            &source,
+            &fake_manifest(),
+            "ai_example_demo",
+            &tmp.join("ndk_bin"),
+            "aarch64-linux-android",
+            21,
+            mode,
+        )
+        .expect("regenerate wrapper");
+    }
+
+    /// Regression (same bug as iOS, CrewForge 2026-10-08): the wrapper's
+    /// lock was DELETED on every generation, so every build re-resolved
+    /// against the registry — a different graph from the app's lock and a
+    /// new generation of the tree per framework release. It must instead
+    /// be seeded from the app's lock and then left alone while that lock
+    /// is unchanged. (`build-ios`'s `regression_ios_wrapper_lock_reresolved_every_run`
+    /// proves with real cargo that a seeded lock pins the app's versions.)
+    #[test]
+    fn regression_android_wrapper_lock_reresolved_every_run() {
+        for mode in [BuildMode::Local, BuildMode::RuntimeServer] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            std::fs::create_dir_all(tmp.path().join("project")).unwrap();
+            std::fs::write(tmp.path().join("project/Cargo.lock"), "app lock").unwrap();
+            std::fs::create_dir_all(tmp.path().join("workspace")).unwrap();
+            std::fs::create_dir_all(tmp.path().join("ndk_bin")).unwrap();
+            std::fs::write(tmp.path().join("ndk_bin/aarch64-linux-android21-clang"), b"").unwrap();
+            regenerate(tmp.path(), mode);
+            let lock = tmp.path().join("wrapper/Cargo.lock");
+            assert_eq!(std::fs::read_to_string(&lock).unwrap(), "app lock", "{mode:?}: seeded from the app");
+            // Cargo completes the lock with the wrapper's own entries; an
+            // unchanged regeneration must keep that, not delete it.
+            std::fs::write(&lock, "app lock + wrapper entries").unwrap();
+            build_ios::record_resolved_lock(&tmp.path().join("wrapper")).unwrap();
+            regenerate(tmp.path(), mode);
+            assert_eq!(
+                std::fs::read_to_string(&lock).unwrap(),
+                "app lock + wrapper entries",
+                "{mode:?}: an unchanged app lock must leave the wrapper's lock alone"
+            );
+        }
+    }
+
+    /// An unchanged regeneration must not touch any wrapper file: cargo
+    /// dirties a path package on a newer source mtime, which recompiles
+    /// the wrapper crate and relinks the cdylib on every run.
+    #[test]
+    fn regression_android_wrapper_rewritten_every_run() {
+        let (wrapper_dir, tmp) = run_generator(BuildMode::Local);
+        let files = ["Cargo.toml", "src/lib.rs", ".cargo/config.toml"];
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for f in files {
+            std::fs::File::options().write(true).open(wrapper_dir.join(f)).unwrap().set_modified(past).unwrap();
+        }
+        regenerate(tmp.path(), BuildMode::Local);
+        for f in files {
+            let m = std::fs::metadata(wrapper_dir.join(f)).unwrap().modified().unwrap();
+            assert_eq!(m, past, "{f} was rewritten with identical content");
+        }
+    }
+
+    /// The wrapper builds into its OWN target dir: a seeded lock and the
+    /// post-build prune are both unsafe in the project's shared `target/`.
+    #[test]
+    fn android_wrapper_target_dir_is_private() {
+        let (wrapper_dir, tmp) = run_generator(BuildMode::Local);
+        let cfg = std::fs::read_to_string(wrapper_dir.join(".cargo/config.toml")).unwrap();
+        let private = wrapper_target_dir(&wrapper_dir);
+        assert!(cfg.contains(&format!("target-dir = \"{}\"", private.display())), "{cfg}");
+        let shared = FrameworkSource::Workspace { root: tmp.path().join("workspace") }
+            .cargo_target_dir(&tmp.path().join("project"));
+        assert!(!cfg.contains(&format!("target-dir = \"{}\"", shared.display())), "{cfg}");
     }
 }

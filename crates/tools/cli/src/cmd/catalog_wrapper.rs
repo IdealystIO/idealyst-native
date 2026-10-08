@@ -75,10 +75,14 @@
 //! incremental cache per path crate (the wrapper bin, every linked
 //! workspace member) behind for good. Measured on CrewForge's
 //! `app-checkin` sidecar: 174 cache dirs, 36 of them for the 3-line
-//! `catalog` bin, 33 GB. [`prune_incremental`] runs on every generate and
-//! keeps the newest [`INCREMENTAL_KEEP_PER_CRATE`] per crate, so
-//! incremental stays on (warm rebuilds of the linked members stay fast)
-//! and the cache stops growing with history.
+//! `catalog` bin, 33 GB. So every extraction builds through
+//! [`build_extractor`], which records the build's units under the
+//! wrapper's own name and prunes the sidecar to the union of every
+//! recorded extractor (`build_ios::target_gc`) — exact, so incremental
+//! stays on (warm rebuilds of the linked members stay fast) and the cache
+//! stops growing with history. [`prune_incremental`] on every generate is
+//! the fallback for a sidecar an older CLI built (no records): it keeps
+//! the newest [`INCREMENTAL_KEEP_PER_CRATE`] caches per crate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -234,49 +238,16 @@ pub fn sidecar_target_dir(source: &FrameworkSource, project_root: &Path) -> Path
 
 /// The cargo target root the catalog wrapper lives under — its sources
 /// at `<root>/idealyst/…`, its build output at `<root>/idealyst-mcp`.
-///
-/// - Framework as a local path ([`FrameworkSource::Workspace`]): the
-///   checkout's `target/`, shared by every project built against it so
-///   the framework graph compiles once.
-/// - Otherwise: the target dir cargo reports for the project's
-///   workspace. `known` is that value when the caller already ran a
-///   full `cargo metadata` for the project (generation does, for the
-///   forced deps), so the common path costs no extra cargo call; without
-///   it a `--no-deps` metadata call asks. Falls back to
-///   `<project>/target` only when cargo can't answer at all.
-///
-/// NOT [`FrameworkSource::cargo_target_dir`] for a registry/git project:
-/// that is `<crate dir>/target`, and for a workspace member (the editor
-/// extension catalogs whichever crate a file belongs to) it creates a
-/// fresh `target/` inside the source tree, per member, each a separate
-/// cold copy of the dependency graph.
+/// The CLI-wide rule, [`crate::framework_source::cli_target_root`]: for a
+/// workspace member it is the workspace's target, so the editor
+/// extension cataloguing whichever crate a file belongs to never creates a
+/// fresh `target/` inside the source tree per member.
 pub fn catalog_target_root(
     source: &FrameworkSource,
     project_root: &Path,
     known: Option<PathBuf>,
 ) -> PathBuf {
-    if source.is_workspace() {
-        return source.cargo_target_dir(project_root);
-    }
-    known
-        .or_else(|| cargo_workspace_target_dir(project_root))
-        .unwrap_or_else(|| source.cargo_target_dir(project_root))
-}
-
-/// `target_directory` from a `--no-deps` `cargo metadata` of the
-/// workspace `project_root` belongs to. `None` when cargo can't run or
-/// the manifest doesn't parse.
-fn cargo_workspace_target_dir(project_root: &Path) -> Option<PathBuf> {
-    let out = std::process::Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1", "--manifest-path"])
-        .arg(project_root.join("Cargo.toml"))
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let meta: Value = serde_json::from_slice(&out.stdout).ok()?;
-    metadata_target_dir(&meta)
+    crate::framework_source::cli_target_root(source, project_root, known)
 }
 
 fn metadata_target_dir(meta: &Value) -> Option<PathBuf> {
@@ -535,6 +506,15 @@ fn generate_with_link(
 # cargo would try to claim it as a member of the parent workspace.
 [workspace]
 
+# No debug info. This binary runs once to print the catalog as JSON and is
+# never debugged, and DWARF is most of what a dev build writes: without it
+# the object files, rlibs and incremental caches this sidecar keeps are a
+# fraction of the size. Measured on `examples/login-demo` (cold, 2026-10-08):
+# 1.1 GB -> 773 MB, deps 668 -> 390 MB, byte-identical catalog JSON.
+# Incremental stays on — `mcp --watch` rebuilds this on every save.
+[profile.dev]
+debug = 0
+
 [package]
 name = "{name}-{subdir}-wrapper"
 version = "0.0.1"
@@ -658,116 +638,77 @@ pub const INCREMENTAL_KEEP_PER_CRATE: usize = 3;
 /// "Newest" is the cache dir's own mtime, which moves when rustc
 /// finalises a session into it (it creates the new session and deletes
 /// the old one), i.e. whenever that unit was last compiled.
+///
+/// Only a profile dir WITHOUT records (built by an older CLI) is trimmed
+/// by recency; a recorded one is pruned against its records instead —
+/// recency would delete live caches of other recorded extractors (each
+/// project set has its own feature union, so one crate can hold more live
+/// caches than any fixed N).
 pub fn prune_incremental(target_dir: &Path) -> usize {
-    let mut removed = 0;
-    for profile in profile_dirs(target_dir) {
-        let Some(_locks) = CargoBuildLocks::try_acquire(&profile) else {
-            continue;
-        };
-        removed += prune_incremental_dir(&profile.join("incremental"), INCREMENTAL_KEEP_PER_CRATE);
-    }
-    removed
+    let (recorded, unrecorded) = build_ios::target_gc::prune_recorded(target_dir, false);
+    let per_dir: Vec<(&str, usize)> = build_ios::target_gc::INCREMENTAL_DIRS
+        .iter()
+        .map(|d| (*d, INCREMENTAL_KEEP_PER_CRATE))
+        .collect();
+    recorded.incremental_removed
+        + unrecorded
+            .iter()
+            .map(|p| build_ios::target_gc::prune_incremental_in_profile(p, &per_dir, false).incremental_removed)
+            .sum::<usize>()
 }
 
-/// Every dir under `target_dir` that holds an `incremental/` —
-/// `<target>/<profile>` and `<target>/<triple>/<profile>`.
-fn profile_dirs(target_dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(target_dir) else {
-        return out;
+/// How long an extractor's record in the sidecar keeps its units without
+/// a rebuild. The sidecar is shared by every project set the editor
+/// extension or `idealyst mcp` ever catalogued; one never catalogued
+/// again stops pinning its graph after this.
+pub const EXTRACTOR_RECORD_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
+
+/// Build the generated extractor at `wrapper_dir` (its `bin` target) and
+/// return the binary to run — in place of `cargo run -q --bin <bin>`.
+///
+/// The build records its units in the sidecar under the wrapper's own
+/// name and prunes the sidecar to the union of every recorded extractor
+/// (`build_ios::target_gc`): three flavours and any number of project
+/// sets share it, each live, so only records can tell their units from
+/// superseded ones. Cargo's progress is quiet (`-q`), diagnostics go to
+/// stderr, and nothing reaches stdout — `idealyst mcp` speaks its
+/// protocol there.
+pub fn build_extractor(wrapper_dir: &Path, bin: &str) -> Result<PathBuf> {
+    let sidecar = configured_target_dir(wrapper_dir)?;
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["build", "-q", "--bin", bin])
+        .current_dir(wrapper_dir)
+        .env("CARGO_TARGET_DIR", &sidecar)
+        .stdin(std::process::Stdio::null());
+    let spec = build_ios::target_gc::BuildSpec {
+        target_dir: &sidecar,
+        triple: None,
+        release: false,
+        variant: build_ios::target_gc::variant_key(&wrapper_dir.display().to_string()),
+        record_ttl: Some(EXTRACTOR_RECORD_TTL),
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if path.join("incremental").is_dir() {
-            out.push(path);
-            continue;
-        }
-        if let Ok(inner) = fs::read_dir(&path) {
-            out.extend(
-                inner
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.join("incremental").is_dir()),
-            );
-        }
-    }
-    out
+    let (units, _report) = build_ios::target_gc::build_and_prune(&mut cmd, &spec)
+        .with_context(|| format!("build the `{bin}` extractor in {}", wrapper_dir.display()))?;
+    units
+        .executable
+        .with_context(|| format!("cargo built `{bin}` but reported no executable"))
 }
 
-/// Cargo's exclusive build locks on one profile dir, held for as long as
-/// this value lives.
-struct CargoBuildLocks(#[allow(dead_code)] Vec<fs::File>);
-
-impl CargoBuildLocks {
-    /// `None` if any lock is held by someone else (a build is running).
-    /// A lock file that doesn't exist is not held by anyone.
-    fn try_acquire(profile: &Path) -> Option<Self> {
-        let mut held = Vec::new();
-        for name in [".cargo-lock", ".cargo-build-lock"] {
-            let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(profile.join(name))
-            else {
-                continue;
-            };
-            match file.try_lock() {
-                Ok(()) => held.push(file),
-                Err(_) => return None,
-            }
-        }
-        Some(Self(held))
-    }
+/// The `[build] target-dir` a generated wrapper's `.cargo/config.toml`
+/// names — the sidecar [`generate_with`] wrote there.
+fn configured_target_dir(wrapper_dir: &Path) -> Result<PathBuf> {
+    let path = wrapper_dir.join(".cargo/config.toml");
+    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let config: toml::Value = toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    config
+        .get("build")
+        .and_then(|b| b.get("target-dir"))
+        .and_then(|d| d.as_str())
+        .map(PathBuf::from)
+        .with_context(|| format!("{} names no build.target-dir", path.display()))
 }
 
-/// Pure core of [`prune_incremental`] for one `incremental/` dir: group
-/// the `<crate>-<hash>` cache dirs by crate and remove all but the
-/// `keep` most recently written of each. Entries that aren't a cache dir
-/// are left alone.
-fn prune_incremental_dir(incremental: &Path, keep: usize) -> usize {
-    use std::collections::HashMap;
-    let Ok(entries) = fs::read_dir(incremental) else {
-        return 0;
-    };
-    let mut by_crate: HashMap<String, Vec<(std::time::SystemTime, PathBuf)>> = HashMap::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        // rustc names the dir `<crate name>-<base36 stable crate id>`.
-        let Some((krate, hash)) = name.rsplit_once('-') else {
-            continue;
-        };
-        if krate.is_empty()
-            || hash.is_empty()
-            || !hash.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
-        {
-            continue;
-        }
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        by_crate.entry(krate.to_string()).or_default().push((mtime, path));
-    }
-    let mut removed = 0;
-    for (_, mut caches) in by_crate {
-        if caches.len() <= keep {
-            continue;
-        }
-        caches.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, stale) in caches.into_iter().skip(keep) {
-            if fs::remove_dir_all(&stale).is_ok() {
-                removed += 1;
-            }
-        }
-    }
-    removed
-}
+use build_ios::target_gc::{profile_dirs, CargoBuildLocks};
 
 /// Remove catalog wrappers and the sidecar an older CLI left in a
 /// project's OWN `target/` — the `<crate dir>/target` placement
@@ -1064,7 +1005,7 @@ fn collect_forced_deps(
         } else {
             &[]
         };
-        let Some(dep_line) = dep_line_for(source, dir, pkg_source, pkg_version, features) else {
+        let Some(dep_line) = dep_line_for(source, dir, name, pkg_source, pkg_version, features) else {
             // git mode + third-party source: skip (see fn docs).
             eprintln!(
                 "[idealyst mcp] skipping force-link of `{name}` — its source isn't the \
@@ -1180,6 +1121,7 @@ fn pkg_lib_target_name(pkg: &Value) -> Option<String> {
 fn dep_line_for(
     source: &FrameworkSource,
     manifest_dir: &Path,
+    pkg_name: &str,
     pkg_source: Option<&str>,
     pkg_version: &str,
     features: &[&str],
@@ -1212,7 +1154,7 @@ fn dep_line_for(
             let (key, value) = refspec.as_pair();
             Some(format!("{{ git = \"{}\", {} = \"{}\"{} }}", url, key, value, feat))
         }
-        FrameworkSource::Registry { registry, version } => {
+        FrameworkSource::Registry { registry, versions } => {
             // Same rule as the git arm: only force-link crates that come
             // from OUR registry. Re-declaring a crates.io package here
             // would fork the graph — and several framework crates share a
@@ -1222,13 +1164,12 @@ fn dep_line_for(
             if !src.contains("sparse+") && !src.starts_with("registry+") {
                 return None;
             }
-            // The crate's OWN resolved version, not the framework's: a
-            // registry crate need not track the framework's number
-            // (charts 1.2 beside runtime-core 1.5), and a caret on what
-            // the project resolved is always satisfiable by the lock the
-            // wrapper is seeded with. The framework version is the
-            // fallback when metadata carried none.
-            let v = if pkg_version.is_empty() { version.as_str() } else { pkg_version };
+            // The crate's OWN resolved version: a caret on what the
+            // project resolved is always satisfiable by the lock the
+            // wrapper is seeded with. The crate's entry in the framework
+            // table is the fallback when metadata carried none; with
+            // neither there is nothing safe to write, so skip it.
+            let v = if pkg_version.is_empty() { versions.for_package(pkg_name)? } else { pkg_version };
             Some(format!(
                 "{{ version = \"{}\", registry = \"{}\"{} }}",
                 v, registry, feat
@@ -1478,6 +1419,10 @@ mod tests {
         assert!(cargo.contains("my-app = { path ="), "cargo: {cargo}");
         // Standalone so the parent workspace doesn't claim it.
         assert!(cargo.contains("[workspace]"));
+        // Regression (CrewForge, 2026-10-08: a 16 GB `idealyst-mcp/`): the
+        // catalog binary is only run, never debugged — no DWARF in its
+        // objects or incremental caches.
+        assert!(cargo.contains("[profile.dev]\ndebug = 0\n"), "{cargo}");
 
         let main_rs = fs::read_to_string(wrapper.join("src/main.rs")).unwrap();
         // Imports by LIB name (hyphen → underscore) and dumps the catalog.
@@ -2015,7 +1960,7 @@ mod tests {
         };
         let registry = FrameworkSource::Registry {
             registry: "idealyst".to_string(),
-            version: "1.5".to_string(),
+            versions: build_ios::FrameworkVersions::default(),
         };
         // `idea-ui` in the fixture is a local crate (source: null) that
         // depends on runtime-core — the shared-library shape.
@@ -2039,7 +1984,7 @@ mod tests {
     fn deps_only_links_transitive_non_members_and_skips_target_gated_deps() {
         let src = FrameworkSource::Registry {
             registry: "idealyst".to_string(),
-            version: "1.5".to_string(),
+            versions: build_ios::FrameworkVersions::default(),
         };
         let reg = "sparse+https://crates.idealyst.io/index/";
         let meta = json!({
@@ -2122,5 +2067,73 @@ mod tests {
         fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
         assert!(generate(&dir).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression (CrewForge, 2026-10-08: 174 caches / 33 GB in one
+    /// sidecar): every extraction now builds through `build_extractor`,
+    /// which records its units under the wrapper's own name and prunes the
+    /// sidecar to the union of every recorded extractor. A graph change
+    /// removes that extractor's superseded units — and never another
+    /// extractor's live ones, which keep-newest-N could not promise.
+    #[test]
+    fn regression_extractor_builds_prune_the_sidecar_to_recorded_extractors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let sidecar = root.join("target").join(SIDECAR_TARGET_DIR);
+        let write = |p: &Path, s: &str| {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, s).unwrap();
+        };
+        let leaf = |version: &str| {
+            write(
+                &root.join("leaf/Cargo.toml"),
+                &format!("[package]\nname = \"leaf\"\nversion = \"{version}\"\nedition = \"2021\"\n"),
+            );
+        };
+        leaf("0.1.0");
+        write(&root.join("leaf/src/lib.rs"), "pub fn v() -> u32 { 7 }\n");
+        let wrapper = |name: &str| -> PathBuf {
+            let dir = root.join("target/idealyst").join(name).join("catalog");
+            write(
+                &dir.join("Cargo.toml"),
+                &format!(
+                    "[workspace]\n[package]\nname = \"{name}\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\
+                     [[bin]]\nname = \"catalog\"\npath = \"src/main.rs\"\n\
+                     [dependencies]\nleaf = {{ path = \"{}\" }}\n",
+                    root.join("leaf").display()
+                ),
+            );
+            write(&dir.join("src/main.rs"), "fn main() { println!(\"{}\", leaf::v()); }\n");
+            write(&dir.join(".cargo/config.toml"), &format!("[build]\ntarget-dir = \"{}\"\n", sidecar.display()));
+            dir
+        };
+        let (one, two) = (wrapper("set-one"), wrapper("set-two"));
+        let catalogs = || {
+            fs::read_dir(sidecar.join("debug/deps"))
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    n.starts_with("catalog-") && !n.contains('.')
+                })
+                .count()
+        };
+        let exe = build_extractor(&one, "catalog").expect("build set-one");
+        let out = std::process::Command::new(&exe).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "7", "the returned binary is the extractor");
+        build_extractor(&two, "catalog").expect("build set-two");
+        assert_eq!(catalogs(), 2);
+
+        leaf("0.2.0");
+        build_extractor(&one, "catalog").expect("rebuild set-one");
+        assert_eq!(catalogs(), 2, "set-one's old extractor pruned, set-two's kept");
+        build_extractor(&two, "catalog").expect("rebuild set-two");
+        assert_eq!(catalogs(), 2, "and set-two's old one once it moved too");
+        let leaves = fs::read_dir(sidecar.join("debug/deps"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".rlib"))
+            .count();
+        assert_eq!(leaves, 1, "only the current leaf survives");
     }
 }

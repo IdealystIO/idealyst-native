@@ -29,6 +29,7 @@ pub mod scaffold_template;
 pub mod serve;
 pub mod sync;
 pub mod test;
+pub mod update;
 pub mod worker;
 
 /// Shorthand for the "not implemented yet" stub each command returns

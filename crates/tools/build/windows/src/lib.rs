@@ -64,13 +64,13 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
 
     let wrapper_root = opts.source.wrapper_root(&project_dir);
     let wrapper_dir = wrapper_root.join(&manifest.name).join("windows");
-    let cargo_target_dir = windows_target_dir(opts.source.cargo_target_dir(&project_dir));
+    let cargo_target_dir = windows_target_dir(&wrapper_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name);
-    cargo_build(&wrapper_dir, opts.release, &opts.user_features)?;
+    cargo_build(&wrapper_dir, &cargo_target_dir, opts.release, &opts.user_features)?;
 
     // cargo emits `<bin_name>.exe` on the windows target.
     let binary = cargo_target_dir.join(profile).join(format!("{bin_name}.exe"));
@@ -89,22 +89,27 @@ fn binary_name(project_name: &str) -> String {
     format!("{project_name}-windows")
 }
 
-/// Windows builds get their own bucket INSIDE the shared target dir:
-/// `<target>/win32`.
+/// Where the Windows wrapper builds: a target dir PRIVATE to it
+/// (`build_ios::wrapper_target_dir` — `<wrapper>/target`).
 ///
-/// The project's `target/` is also written by builds from other
-/// operating systems when the repo lives on a shared filesystem (this
-/// project's dev setup: Linux host + Windows VM over a `Z:` share).
-/// Cargo does not segregate host-triple artifacts or fingerprints by
-/// triple — a Linux build of the same crate replaces
-/// `deps/lib<crate>*.rlib` and re-stamps `.fingerprint/`, after which
-/// the next Windows build either fails with E0461 ("couldn't find
-/// crate `<name>` with expected target triple x86_64-pc-windows-msvc")
-/// or, worse, silently links artifacts cargo wrongly believes fresh.
-/// A per-OS bucket keeps Windows wrappers sharing dependencies with
-/// each other while never colliding with another OS's builds.
-fn windows_target_dir(shared: PathBuf) -> PathBuf {
-    shared.join("win32")
+/// Two reasons, the second inherited from the per-OS bucket this replaced
+/// (`<shared target>/win32`):
+///
+/// - Every wrapper seeds its lock from the app's and prunes its target dir
+///   after each build, and both require that nothing else builds there.
+/// - The project's `target/` is also written by builds from other
+///   operating systems when the repo lives on a shared filesystem (this
+///   project's dev setup: Linux host + Windows VM over a `Z:` share).
+///   Cargo does not segregate host-triple artifacts or fingerprints by
+///   triple — a Linux build of the same crate replaces
+///   `deps/lib<crate>*.rlib` and re-stamps `.fingerprint/`, after which
+///   the next Windows build either fails with E0461 ("couldn't find crate
+///   `<name>` with expected target triple x86_64-pc-windows-msvc") or,
+///   worse, silently links artifacts cargo wrongly believes fresh. Only
+///   the Windows builder generates the `windows` wrapper, so no other OS
+///   ever builds into its dir.
+fn windows_target_dir(wrapper_dir: &Path) -> PathBuf {
+    build_ios::wrapper_target_dir(wrapper_dir)
 }
 
 fn generate_wrapper(
@@ -166,16 +171,14 @@ dev = ["runtime-core/dev"]
 
     let main_rs = main_rs(&manifest.lib_name, &manifest.app.name, &bundle_id, &bin_name);
 
-    write_shared_target_config(wrapper_dir, cargo_target_dir)?;
+    write_target_config(wrapper_dir, cargo_target_dir)?;
     write_replacing(&wrapper_dir.join("Cargo.toml"), &cargo_toml, "#")?;
-    // The wrapper is its own `[workspace]`, so it keeps its own
-    // lockfile and nothing invalidates it — a rewritten manifest with
-    // unchanged content leaves cargo on the versions it locked the
-    // first time, so a published framework fix never arrives and a
-    // changed user dep resolves the framework twice. See
-    // `build_ios::refresh_wrapper_lockfile`.
-    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
     write_replacing(&wrapper_dir.join("src/main.rs"), &main_rs, "//")?;
+    // Build exactly the versions the app locked (re-seeded whenever the
+    // app's lock changes) instead of re-resolving against the registry on
+    // every run. Safe because the target dir is private. See
+    // `build_ios::seed_wrapper_lockfile`.
+    build_ios::seed_wrapper_lockfile(wrapper_dir, project_dir)?;
     Ok(())
 }
 
@@ -335,29 +338,21 @@ fn main() {{
 
 /// Redirect the wrapper crate's build output into the project's shared
 /// `target/` so common dependencies aren't recompiled per wrapper.
-fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
-    let config = format!(
-        "# GENERATED. Share the project's `target/` so common\n\
-         # dependencies aren't recompiled per-wrapper.\n\
-         \n\
-         [build]\n\
-         target-dir = \"{}\"\n",
-        // Cargo config paths use forward slashes even on Windows;
-        // escape backslashes so a Windows path stays valid TOML.
-        target_dir.display().to_string().replace('\\', "/"),
-    );
-    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
-    // undefined registry name there is a hard error. Define it here rather
-    // than relying on an ancestor config having done so.
-    let config = config + &build_ios::registry_config_block();
+/// The wrapper's `.cargo/config.toml`: its private target dir + the
+/// framework registry (`build_ios::private_target_config`, which writes
+/// the path with forward slashes — a backslash is an invalid TOML escape).
+fn write_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
+    let config = build_ios::private_target_config("idealyst build --windows", target_dir);
     fs::create_dir_all(dir.join(".cargo"))?;
     write_replacing(&dir.join(".cargo/config.toml"), &config, "#")?;
     Ok(())
 }
 
-fn cargo_build(wrapper_dir: &Path, release: bool, user_features: &[String]) -> Result<()> {
+/// Build the wrapper into `target_dir`, then prune that dir to the units
+/// its recorded variants use (`build_ios::build_wrapper`).
+fn cargo_build(wrapper_dir: &Path, target_dir: &Path, release: bool, user_features: &[String]) -> Result<()> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["build"]).current_dir(wrapper_dir);
+    cmd.args(["build"]);
     if release {
         cmd.arg("--release");
     }
@@ -374,12 +369,8 @@ fn cargo_build(wrapper_dir: &Path, release: bool, user_features: &[String]) -> R
         },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
-    if !status.success() {
-        anyhow::bail!("[build-windows] cargo build exited with {status}");
-    }
+    let spec = build_ios::target_gc::BuildSpec::wrapper(target_dir, None, release, user_features);
+    build_ios::build_wrapper("build-windows", wrapper_dir, &mut cmd, &spec)?;
     Ok(())
 }
 
@@ -392,15 +383,34 @@ mod tests {
     /// crates replace the rlibs / fingerprints in place and the next
     /// Windows link fails with E0461 ("couldn't find crate `website`
     /// with expected target triple x86_64-pc-windows-msvc") — or worse,
-    /// silently reuses stale artifacts. See `windows_target_dir`.
+    /// silently reuses stale artifacts. See `windows_target_dir`: the dir
+    /// is under the `windows` wrapper, which only the Windows builder
+    /// generates.
     #[test]
     fn regression_cross_os_shared_target_gets_win32_bucket() {
-        let d = windows_target_dir(PathBuf::from("Z:/proj/target"));
-        assert!(
-            d.ends_with("target/win32"),
-            "windows builds must land in their own per-OS bucket, got {}",
-            d.display()
-        );
+        let wrapper = PathBuf::from("Z:/proj/target/idealyst/demo/windows");
+        let d = windows_target_dir(&wrapper);
+        assert!(d.starts_with(&wrapper), "windows builds must land under the windows wrapper, got {}", d.display());
+        assert_ne!(d, PathBuf::from("Z:/proj/target"));
+    }
+
+    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// Windows wrapper deleted its `Cargo.lock` on every generation, so
+    /// each run resolved the registry's newest versions instead of the
+    /// app's locked ones — a different graph from the app's and a new
+    /// generation of the tree per framework release.
+    #[test]
+    fn regression_windows_wrapper_lock_reresolved_every_run() {
+        let world = build_ios::test_support::LockWorld::new(&[("crates/host/win32", "host-win32", &[])], &[]);
+        let wrapper = world.wrapper_dir("windows");
+        let manifest = build_ios::parse_manifest(&world.app).expect("parse manifest");
+        let opts = BuildOptions { release: false, user_features: Vec::new(), source: world.source() };
+        let generate = || {
+            generate_wrapper(&wrapper, &windows_target_dir(&wrapper), &world.app, &manifest, &opts)
+                .expect("generate wrapper")
+        };
+        world.assert_wrapper_follows_app_lock(&wrapper, generate);
+        world.assert_private_target_dir(&wrapper, &world.source().cargo_target_dir(&world.app));
     }
 
     /// A regenerated (shorter) wrapper file must parse as EXACTLY the
@@ -433,18 +443,18 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The bucket path must survive the forward-slash TOML rewrite in
-    /// `write_shared_target_config` (backslashes are invalid TOML
-    /// escapes — the wrapper Cargo config gotcha).
+    /// The target path must survive the forward-slash TOML rewrite in
+    /// `write_target_config` (backslashes are invalid TOML escapes — the
+    /// wrapper Cargo config gotcha).
     #[test]
     fn win32_bucket_config_is_valid_toml_path() {
         let dir = std::env::temp_dir().join("idealyst-build-windows-test-cfg");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let bucket = windows_target_dir(PathBuf::from(r"Z:\proj\target"));
-        write_shared_target_config(&dir, &bucket).unwrap();
+        let bucket = PathBuf::from(r"Z:\proj\target\idealyst\demo\windows\target");
+        write_target_config(&dir, &bucket).unwrap();
         let cfg = fs::read_to_string(dir.join(".cargo/config.toml")).unwrap();
-        assert!(cfg.contains("target-dir = \"Z:/proj/target/win32\""), "got:\n{cfg}");
+        assert!(cfg.contains("target-dir = \"Z:/proj/target/idealyst/demo/windows/target\""), "got:\n{cfg}");
         let _ = fs::remove_dir_all(&dir);
     }
 }

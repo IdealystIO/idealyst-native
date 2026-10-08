@@ -9,9 +9,15 @@
 //! and are owned by the backend, but the `run-android` build pipeline
 //! is what actually compiles + bundles them into the user's APK.
 //!
-//! The first-party files are embedded into the CLI binary via
-//! `include_str!`, so the CLI carries its own copy and external
-//! `cargo install` builds still see them.
+//! The first-party files are read from whichever `backend-android-mobile`
+//! the app's wrapper actually resolves (found through `cargo metadata`,
+//! like the third-party sources below): its `runtime/kotlin/` tree, which
+//! every published version of the crate carries. The Kotlin therefore
+//! always matches the JNI code it is compiled against. It used to be
+//! embedded into the CLI with `include_str!`, which tied it to the
+//! commit the CLI was built from rather than to the app's backend, and
+//! needed a hand-kept file list — `RustUnderlineSpan.kt` was never added
+//! to it, so its class was missing from every APK.
 //!
 //! # Third-party SDK contributions
 //!
@@ -39,9 +45,7 @@
 //! Paths are resolved relative to the declaring package's manifest
 //! directory. We discover them by running `cargo metadata` against
 //! the user's wrapper crate (which transitively depends on every
-//! SDK), then read the files off disk at build time. Unlike the
-//! first-party runtime — which the CLI bakes in via `include_str!` —
-//! third-party files must exist on disk during `idealyst run`.
+//! SDK), then read the files off disk at build time.
 //!
 //! # AndroidX resolution
 //!
@@ -62,226 +66,14 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-/// Embedded copy of the backend's Kotlin runtime. Each entry is the
-/// filename + raw source; we stage them into the per-build directory
-/// before invoking kotlinc.
-///
-/// Updating this list: add or remove a file under
-/// `crates/backend/android/mobile/runtime/kotlin/io/idealyst/runtime/`
-/// and mirror the change here. There is no automatic discovery
-/// because `include_str!` requires a literal path.
-const RUNTIME_KOTLIN_FILES: &[(&str, &str)] = &[
-    (
-        "Animators.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/Animators.kt"
-        ),
-    ),
-    (
-        "RustActionBarHelper.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustActionBarHelper.kt"
-        ),
-    ),
-    (
-        "RustActivityResult.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustActivityResult.kt"
-        ),
-    ),
-    (
-        "RustBorderDrawable.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustBorderDrawable.kt"
-        ),
-    ),
-    (
-        "RustClickListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustClickListener.kt"
-        ),
-    ),
-    (
-        "RustCodeBlock.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustCodeBlock.kt"
-        ),
-    ),
-    (
-        "RustDrawerLayout.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustDrawerLayout.kt"
-        ),
-    ),
-    (
-        "RustFrameCallback.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustFrameCallback.kt"
-        ),
-    ),
-    (
-        "RustGraphicsCallback.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustGraphicsCallback.kt"
-        ),
-    ),
-    (
-        "RustTextureListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustTextureListener.kt"
-        ),
-    ),
-    (
-        "RustHostFragment.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustHostFragment.kt"
-        ),
-    ),
-    (
-        "RustLayoutApply.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustLayoutApply.kt"
-        ),
-    ),
-    (
-        "RustListAdapter.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustListAdapter.kt"
-        ),
-    ),
-    (
-        "RustVirtualGrid.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustVirtualGrid.kt"
-        ),
-    ),
-    (
-        "RustNavigator.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustNavigator.kt"
-        ),
-    ),
-    (
-        "RustSystemUi.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustSystemUi.kt"
-        ),
-    ),
-    (
-        "RustKeyListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustKeyListener.kt"
-        ),
-    ),
-    (
-        "RustGlobalKeyListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustGlobalKeyListener.kt"
-        ),
-    ),
-    (
-        "RustViewportResizeListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustViewportResizeListener.kt"
-        ),
-    ),
-    (
-        "RustKeyboardInsets.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustKeyboardInsets.kt"
-        ),
-    ),
-    (
-        "RustKeyboardAvoider.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustKeyboardAvoider.kt"
-        ),
-    ),
-    (
-        "RustOverlayDismissListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustOverlayDismissListener.kt"
-        ),
-    ),
-    (
-        "RustOverlayKeyListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustOverlayKeyListener.kt"
-        ),
-    ),
-    (
-        "RustAttachFocus.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustAttachFocus.kt"
-        ),
-    ),
-    (
-        "RustPopupDismissListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustPopupDismissListener.kt"
-        ),
-    ),
-    (
-        "RustSliderListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustSliderListener.kt"
-        ),
-    ),
-    (
-        "RustStateListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustStateListener.kt"
-        ),
-    ),
-    (
-        "RustStickyScrollListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustStickyScrollListener.kt"
-        ),
-    ),
-    (
-        "RustTextWatcher.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustTextWatcher.kt"
-        ),
-    ),
-    (
-        "RustToggleListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustToggleListener.kt"
-        ),
-    ),
-    (
-        "RustTouchListener.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustTouchListener.kt"
-        ),
-    ),
-    (
-        "RustScheduledRunnable.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustScheduledRunnable.kt"
-        ),
-    ),
-    (
-        "RustAsyncPoll.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustAsyncPoll.kt"
-        ),
-    ),
-    (
-        "RustActivityResult.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustActivityResult.kt"
-        ),
-    ),
-    (
-        "RustOverlayPassthrough.kt",
-        include_str!(
-            "../../../../backend/android/mobile/runtime/kotlin/io/idealyst/runtime/RustOverlayPassthrough.kt"
-        ),
-    ),
-];
+/// The crate whose `runtime/kotlin/` tree is the framework's own Kotlin
+/// runtime (`RustNavigator`, `RustDrawerLayout`, the listener shims…).
+const BACKEND_PACKAGE: &str = "backend-android-mobile";
+
+/// Where that tree lives, relative to the backend's manifest directory.
+/// Files under it are staged at their path relative to it, which is
+/// their Java package path (`io/idealyst/runtime/RustNavigator.kt`).
+const BACKEND_KOTLIN_DIR: &str = "runtime/kotlin";
 
 /// AndroidX modules the runtime references directly or transitively.
 ///
@@ -399,8 +191,8 @@ struct ResolvedArtifact {
 /// One JVM source file contributed by a third-party SDK. Same shape
 /// for both Kotlin (`.kt`) and Java (`.java`) — only the staging root
 /// + compile step differ. The framework's own runtime Kotlin files are
-/// staged the same way but originate from [`RUNTIME_KOTLIN_FILES`]
-/// (embedded via `include_str!`).
+/// staged the same way; they come from [`BACKEND_PACKAGE`]'s
+/// [`BACKEND_KOTLIN_DIR`] rather than from a metadata declaration.
 struct ExtensionSource {
     /// The crate that declared this file — used only for diagnostics
     /// (conflict messages, "where did this come from?" errors).
@@ -419,6 +211,10 @@ struct ExtensionSource {
 /// transitive dep tree.
 #[derive(Default)]
 struct DiscoveredExtensions {
+    /// The framework's own Kotlin runtime, from the resolved
+    /// [`BACKEND_PACKAGE`]. Empty only when the wrapper doesn't depend on
+    /// the backend, which `build_runtime` refuses.
+    backend_kotlin: Vec<ExtensionSource>,
     kotlin: Vec<ExtensionSource>,
     java: Vec<ExtensionSource>,
     /// Additional (group, artifact) pairs to feed into AndroidX
@@ -437,9 +233,10 @@ struct DiscoveredExtensions {
 /// exact same scope that `cargo build` will compile.
 fn discover_extensions(wrapper_manifest: &Path) -> Result<DiscoveredExtensions> {
     if !wrapper_manifest.is_file() {
-        // No wrapper yet — caller hasn't generated one. The framework's
-        // own runtime still works without third-party extensions.
-        return Ok(DiscoveredExtensions::default());
+        anyhow::bail!(
+            "no wrapper crate at {} — the Kotlin runtime is read from the backend it resolves",
+            wrapper_manifest.display(),
+        );
     }
 
     let output = Command::new("cargo")
@@ -462,13 +259,33 @@ fn discover_extensions(wrapper_manifest: &Path) -> Result<DiscoveredExtensions> 
     }
     let json: Value = serde_json::from_slice(&output.stdout)
         .with_context(|| "parse cargo metadata JSON")?;
+    extensions_from_metadata(&json)
+}
 
+/// The pure half of [`discover_extensions`]: everything it collects, from
+/// `cargo metadata` JSON.
+fn extensions_from_metadata(json: &Value) -> Result<DiscoveredExtensions> {
     let mut out = DiscoveredExtensions::default();
     let Some(packages) = json.get("packages").and_then(|v| v.as_array()) else {
         return Ok(out);
     };
 
     for pkg in packages {
+        if pkg.get("name").and_then(|v| v.as_str()) == Some(BACKEND_PACKAGE) {
+            let manifest_path = pkg
+                .get("manifest_path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("{BACKEND_PACKAGE} has no manifest_path"))?;
+            let dir = Path::new(manifest_path)
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("manifest_path {manifest_path} has no parent"))?;
+            if !out.backend_kotlin.is_empty() {
+                anyhow::bail!(
+                    "the wrapper resolves {BACKEND_PACKAGE} twice; its Kotlin runtime would be ambiguous"
+                );
+            }
+            collect_backend_kotlin(&dir.join(BACKEND_KOTLIN_DIR), &mut out.backend_kotlin)?;
+        }
         let Some(android) = pkg
             .pointer("/metadata/idealyst/android")
             .and_then(|v| v.as_object())
@@ -559,6 +376,33 @@ fn collect_jvm_sources(
     Ok(())
 }
 
+/// Every `.kt` file under the backend's Kotlin tree, staged at its path
+/// relative to the tree. Sorted, so the staged set is stable run to run.
+fn collect_backend_kotlin(root: &Path, sink: &mut Vec<ExtensionSource>) -> Result<()> {
+    fn walk(root: &Path, dir: &Path, sink: &mut Vec<ExtensionSource>) -> Result<()> {
+        for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(root, &path, sink)?;
+            } else if path.extension().is_some_and(|e| e == "kt") {
+                sink.push(ExtensionSource {
+                    package: BACKEND_PACKAGE.to_string(),
+                    staged_relpath: path.strip_prefix(root).expect("walked under root").to_path_buf(),
+                    source_path: path,
+                });
+            }
+        }
+        Ok(())
+    }
+    let start = sink.len();
+    walk(root, root, sink)?;
+    sink[start..].sort_by(|a, b| a.staged_relpath.cmp(&b.staged_relpath));
+    if sink.len() == start {
+        anyhow::bail!("{BACKEND_PACKAGE} has no Kotlin runtime under {}", root.display());
+    }
+    Ok(())
+}
+
 /// Given a `runtime_kotlin`/`runtime_java` entry relative to the SDK's
 /// manifest dir, produce the path the file should be staged at under
 /// the language-specific source root. Entries are conventionally
@@ -614,22 +458,23 @@ pub fn build_runtime(
     fs::create_dir_all(&kotlin_src_root)
         .with_context(|| format!("create {}", kotlin_src_root.display()))?;
 
-    // Stage first-party (framework) runtime files under
-    // `io/idealyst/runtime/`.
-    let idealyst_runtime_dir = kotlin_src_root.join("io/idealyst/runtime");
-    fs::create_dir_all(&idealyst_runtime_dir)
-        .with_context(|| format!("create {}", idealyst_runtime_dir.display()))?;
-    for (name, body) in RUNTIME_KOTLIN_FILES {
-        fs::write(idealyst_runtime_dir.join(name), body)
-            .with_context(|| format!("write runtime kotlin {}", name))?;
-    }
-
-    // Discover + stage third-party runtime files. Kotlin sources go
-    // under `kotlin_src_root`; Java sources under `extension-java/`
-    // (kept separate from the user's `java/` tree so we can mix-and-
-    // -match per call without disturbing the user's source layout).
+    // Discover + stage the framework's runtime (from the backend the
+    // wrapper resolves) and third-party runtime files, in one pass so a
+    // third-party file that collides with a framework one is reported.
+    // Kotlin sources go under `kotlin_src_root`; Java sources under
+    // `extension-java/` (kept separate from the user's `java/` tree so we
+    // can mix-and-match per call without disturbing the user's source
+    // layout).
     let extensions = discover_extensions(wrapper_manifest)?;
-    stage_extension_sources(&extensions.kotlin, &kotlin_src_root, "kotlin")?;
+    if extensions.backend_kotlin.is_empty() {
+        anyhow::bail!(
+            "{} does not depend on {BACKEND_PACKAGE}, so there is no Kotlin runtime to compile",
+            wrapper_manifest.display(),
+        );
+    }
+    let kotlin: Vec<&ExtensionSource> =
+        extensions.backend_kotlin.iter().chain(&extensions.kotlin).collect();
+    stage_extension_sources(&kotlin, &kotlin_src_root, "kotlin")?;
 
     let extension_java_dir = if extensions.java.is_empty() {
         None
@@ -639,7 +484,7 @@ pub fn build_runtime(
             fs::remove_dir_all(&dir)?;
         }
         fs::create_dir_all(&dir)?;
-        stage_extension_sources(&extensions.java, &dir, "java")?;
+        stage_extension_sources(&extensions.java.iter().collect::<Vec<_>>(), &dir, "java")?;
         Some(dir)
     };
 
@@ -746,7 +591,7 @@ pub fn build_runtime(
 /// `label` is a human-readable language tag ("kotlin" or "java") used
 /// only in eprintln + error messages.
 fn stage_extension_sources(
-    sources: &[ExtensionSource],
+    sources: &[&ExtensionSource],
     dest_root: &Path,
     label: &str,
 ) -> Result<()> {
@@ -778,12 +623,16 @@ fn stage_extension_sources(
                 dest.display(),
             )
         })?;
-        eprintln!(
-            "[run-android] {} runtime extension from {} → {}",
-            label,
-            ext.package,
-            ext.staged_relpath.display()
-        );
+        // The framework's own runtime is every build's baseline; only a
+        // third-party contribution is worth a line.
+        if ext.package != BACKEND_PACKAGE {
+            eprintln!(
+                "[run-android] {} runtime extension from {} → {}",
+                label,
+                ext.package,
+                ext.staged_relpath.display()
+            );
+        }
     }
     Ok(())
 }
@@ -1154,7 +1003,115 @@ fn extract_classes(
 
 #[cfg(test)]
 mod tests {
-    use super::REQUIRED_ANDROIDX;
+    use super::{
+        extensions_from_metadata, stage_extension_sources, ExtensionSource, BACKEND_KOTLIN_DIR,
+        BACKEND_PACKAGE, REQUIRED_ANDROIDX,
+    };
+    use std::path::{Path, PathBuf};
+
+    /// `cargo metadata` JSON naming one package, the way the wrapper's
+    /// graph reports `backend-android-mobile`.
+    fn metadata_with_backend(manifest: &Path) -> serde_json::Value {
+        serde_json::json!({ "packages": [
+            { "name": "user-app", "manifest_path": "/app/Cargo.toml", "metadata": null },
+            { "name": BACKEND_PACKAGE, "manifest_path": manifest, "metadata": null },
+        ]})
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("run-android-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn staged(root: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push(p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Regression: the backend's Kotlin runtime used to be a hand-kept
+    /// `include_str!` list in this crate, and `RustUnderlineSpan.kt` —
+    /// which `imp/primitives/text.rs` reaches with `find_class` — was never
+    /// added to it, so no APK carried the class. Every `.kt` file in the
+    /// backend's tree must now be staged, with nothing to keep in sync.
+    #[test]
+    fn regression_every_backend_kotlin_file_is_staged() {
+        let backend = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../backend/android/mobile");
+        let Ok(backend) = backend.canonicalize() else {
+            return; // a packaged crate, outside the workspace
+        };
+        let found = extensions_from_metadata(&metadata_with_backend(&backend.join("Cargo.toml"))).unwrap();
+        let out = scratch("every-kt");
+        stage_extension_sources(&found.backend_kotlin.iter().collect::<Vec<_>>(), &out, "kotlin").unwrap();
+
+        let tree = backend.join(BACKEND_KOTLIN_DIR).join("io/idealyst/runtime");
+        let mut expected: Vec<String> = std::fs::read_dir(&tree)
+            .unwrap()
+            .map(|e| format!("io/idealyst/runtime/{}", e.unwrap().file_name().to_string_lossy()))
+            .filter(|n| n.ends_with(".kt"))
+            .collect();
+        expected.sort();
+        assert!(expected.contains(&"io/idealyst/runtime/RustUnderlineSpan.kt".to_string()));
+        assert_eq!(staged(&out), expected);
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    /// The runtime comes from the backend the wrapper RESOLVES, not from a
+    /// copy fixed when the CLI was built: a CLI released on its own schedule
+    /// must still compile the Kotlin that matches the app's JNI code.
+    #[test]
+    fn the_kotlin_runtime_comes_from_the_resolved_backend() {
+        let fake = scratch("fake-backend");
+        std::fs::create_dir_all(fake.join("runtime/kotlin/io/idealyst/runtime")).unwrap();
+        std::fs::write(fake.join("runtime/kotlin/io/idealyst/runtime/OnlyThis.kt"), "class OnlyThis").unwrap();
+        std::fs::write(fake.join("runtime/kotlin/io/idealyst/runtime/notes.txt"), "not kotlin").unwrap();
+
+        let found = extensions_from_metadata(&metadata_with_backend(&fake.join("Cargo.toml"))).unwrap();
+        let names: Vec<_> = found.backend_kotlin.iter().map(|e| e.staged_relpath.clone()).collect();
+        assert_eq!(names, [PathBuf::from("io/idealyst/runtime/OnlyThis.kt")]);
+        std::fs::remove_dir_all(&fake).unwrap();
+    }
+
+    #[test]
+    fn a_graph_without_the_backend_yields_no_runtime() {
+        let json = serde_json::json!({ "packages": [
+            { "name": "user-app", "manifest_path": "/app/Cargo.toml", "metadata": null },
+        ]});
+        assert!(extensions_from_metadata(&json).unwrap().backend_kotlin.is_empty());
+    }
+
+    /// A third-party SDK shipping a file at a framework runtime path would
+    /// silently replace the framework's class; staging both in one pass
+    /// turns that into an error naming both packages.
+    #[test]
+    fn a_third_party_file_colliding_with_the_runtime_is_an_error() {
+        let src = scratch("collide-src");
+        std::fs::write(src.join("A.kt"), "class A").unwrap();
+        let at = |package: &str| ExtensionSource {
+            package: package.to_string(),
+            source_path: src.join("A.kt"),
+            staged_relpath: PathBuf::from("io/idealyst/runtime/RustNavigator.kt"),
+        };
+        let (framework, sdk) = (at(BACKEND_PACKAGE), at("some-sdk"));
+        let out = scratch("collide-out");
+        let err = stage_extension_sources(&[&framework, &sdk], &out, "kotlin").unwrap_err();
+        assert!(err.to_string().contains("some-sdk"), "{err}");
+        std::fs::remove_dir_all(&src).unwrap();
+        std::fs::remove_dir_all(&out).unwrap();
+    }
 
     fn lists(group: &str, artifact: &str) -> bool {
         REQUIRED_ANDROIDX.iter().any(|(g, a)| *g == group && *a == artifact)

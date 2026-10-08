@@ -187,12 +187,18 @@ fn extract_catalog(project: &Path, dest: &Path) -> bool {
         }
     };
 
-    // Same command `idealyst mcp` runs to reload a project's catalog.
-    let output = match Command::new("cargo")
-        .current_dir(&wrapper_dir)
-        .args(["run", "-q", "--bin", "catalog"])
-        .output()
-    {
+    // Same build `idealyst mcp` runs to reload a project's catalog.
+    let exe = match crate::cmd::catalog_wrapper::build_extractor(&wrapper_dir, "catalog") {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!(
+                "[idealyst docs] catalog extraction failed ({e:#}); documenting the framework \
+                 catalog instead"
+            );
+            return false;
+        }
+    };
+    let output = match Command::new(&exe).output() {
         Ok(o) => o,
         Err(e) => {
             eprintln!("[idealyst docs] failed to launch the catalog extractor ({e}); \

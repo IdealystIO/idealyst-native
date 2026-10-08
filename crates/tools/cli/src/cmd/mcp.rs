@@ -347,10 +347,21 @@ pub fn run(args: Args) -> Result<()> {
                                     e
                                 );
                             }
-                            let mut c = std::process::Command::new("cargo");
-                            c.current_dir(wrapper_dir.as_path());
-                            c.args(["run", "-q", "--bin", "catalog"]);
-                            c
+                            // Built (and the sidecar pruned) here, then the
+                            // binary is what the server runs. On a build
+                            // failure, hand back `cargo run` instead: it
+                            // fails the same way, with the diagnostics on
+                            // the stderr the server captures and reports.
+                            match super::catalog_wrapper::build_extractor(&wrapper_dir, "catalog") {
+                                Ok(exe) => std::process::Command::new(exe),
+                                Err(e) => {
+                                    eprintln!("[idealyst mcp] {e:#}");
+                                    let mut c = std::process::Command::new("cargo");
+                                    c.current_dir(wrapper_dir.as_path());
+                                    c.args(["run", "-q", "--bin", "catalog"]);
+                                    c
+                                }
+                            }
                         });
                     }
                     Err(e) => {
@@ -546,9 +557,8 @@ fn check_catalog(
 
     let wrapper = super::catalog_wrapper::generate_for_roots(&projects)
         .context("generate the catalog extractor")?;
-    let output = std::process::Command::new("cargo")
-        .current_dir(&wrapper)
-        .args(["run", "-q", "--bin", "catalog"])
+    let exe = super::catalog_wrapper::build_extractor(&wrapper, "catalog")?;
+    let output = std::process::Command::new(&exe)
         .output()
         .context("run the catalog extractor")?;
     if !output.status.success() {

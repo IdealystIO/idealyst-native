@@ -1,11 +1,9 @@
 [package]
 name = "run-terminal"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "Terminal launcher for `idealyst dev --terminal`: builds via build-terminal, then runs the binary on the real TTY."
 
 # Terminal launcher for `idealyst dev --terminal` (and a future
 # `idealyst run terminal`).

@@ -1,11 +1,9 @@
 [package]
 name = "build-terminal"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "Terminal-host build orchestration for `idealyst dev --terminal`: generates a binary wrapper around a user's app crate on host-terminal and builds it."
 
 # Terminal-host build orchestration for `idealyst dev --terminal`
 # (and a future `idealyst build --terminal`).
@@ -27,6 +25,8 @@ anyhow = "1"
 build-ios = { workspace = true }
 
 [dev-dependencies]
+# The shared offline cargo world for the wrapper lock tests.
+build-ios = { workspace = true, features = ["test-support"] }
 # Temp fixture dirs for wrapper-shape regression tests
 # (`src/lib.rs::regression_tests`). Each test generates the wrapper
 # for a synthetic manifest and asserts on the produced main.rs —

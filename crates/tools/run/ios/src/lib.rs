@@ -106,21 +106,6 @@ pub(crate) fn targeted_device_family() -> String {
         .join(",")
 }
 
-/// The runtime-server-mode iOS staticlib is `backend-ios-mobile` itself, built
-/// with its `runtime-server` feature. That feature compiles in the
-/// `#[no_mangle] ios_main` / `ios_teardown` symbols defined in
-/// `backend_ios_mobile::aas`, which Xcode's linker pulls into the app
-/// binary to satisfy Swift's `_ios_main` reference.
-///
-/// There used to be a thin wrapper crate (`runtime-server-ios`) whose
-/// only job was to keep those symbols alive via a link anchor —
-/// removed once we confirmed that `backend-ios-mobile`'s own
-/// staticlib build already exports them (verified with `nm`).
-///
-/// The `_LIB` constant is the staticlib *filename* stem (i.e.
-/// `libbackend_ios.a`), which is preserved by `[lib] name =
-/// "backend_ios"` in that crate so the Xcode link step doesn't have
-/// to know about the package rename.
 /// The runtime-server shell crate built + linked for `--ios` (default
 /// runtime-server mode). This is `backend-ios-rs-shell`, NOT
 /// `backend-ios-mobile`: the shell sits ABOVE the backend so it can

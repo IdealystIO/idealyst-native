@@ -1,11 +1,9 @@
 [package]
 name = "run-macos"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "macOS launcher for `idealyst run macos` / `idealyst dev --macos`: builds via build-macos, then launches the binary."
 
 # macOS launcher for `idealyst run --macos` / `idealyst dev --macos`.
 #

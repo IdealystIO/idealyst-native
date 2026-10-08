@@ -896,11 +896,17 @@ pub fn run(args: Args) -> Result<()> {
     let mut backend_pid: Option<u32> = None;
     let backend_port = dev_server_port(&args, &manifest.app);
     if backend_declared && !active_targets.contains(&Target::Web) {
+        let server_target = session_server_target_dir(&dir, args.shared_target);
+        if !args.no_build {
+            if let Err(e) = build_server_recorded(&dir, &manifest, &server_target, !args.shared_target) {
+                crate::dlog!("dev backend", "server build: {e:#}");
+            }
+        }
         match spawn_backend(
             &dir,
             &manifest,
             None,
-            &server_target_dir(&dir, args.shared_target),
+            &server_target,
             backend_port,
             None,
             &server_log,
@@ -2315,9 +2321,15 @@ fn launch_ssr(
 /// versa. On a busy tree that alone keeps the port down for minutes at a
 /// time, which is indistinguishable from the server being broken.
 ///
-/// Rooted at `cargo_target_dir` (the same base the web bundle uses) so
-/// sibling apps under one framework source still share a warm dependency
-/// cache. `server_watch_setup`'s `cargo build` and `spawn_backend`'s
+/// Rooted at [`cli_target_root`](crate::framework_source::cli_target_root)
+/// — the cargo WORKSPACE's target, not the app crate's — so every app of a
+/// workspace builds its server into ONE `idealyst-dev-server/`. Apps that
+/// declare the same server package (CrewForge's `app-main` and
+/// `app-checkin` both run `crewforge-server`) then share one copy of its
+/// units instead of each paying a cold build into its own; two sessions
+/// building at once serialise on cargo's lock for that dir. Different
+/// server packages or feature sets coexist there the way they do in any
+/// target dir (units are keyed by package + features). `server_watch_setup`'s `cargo build` and `spawn_backend`'s
 /// `cargo run` MUST both go through here — pointing them at different
 /// dirs would make every respawn a fresh compile with the port closed.
 ///
@@ -2335,6 +2347,7 @@ fn launch_ssr(
 ///
 /// A laptop with an IDE open keeps the default.
 fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
+    use crate::framework_source::{cargo_workspace_target_dir, cli_target_root};
     if shared {
         // The PROJECT's workspace target, as cargo itself resolves it —
         // NOT `framework_source::cargo_target_dir`, which for a
@@ -2345,43 +2358,69 @@ fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
         // third 7 GB copy of the dependency graph, concurrent with the
         // agent's `cargo test`, which is the exact contention the flag
         // exists to remove.
-        if let Some(dir) = cargo_workspace_target_dir(project_dir) {
-            return dir;
-        }
+        //
+        // With no answer from cargo (no cargo on PATH, a manifest that
+        // does not parse) the project-local dir is the closest thing
+        // left.
+        return cargo_workspace_target_dir(project_dir)
+            .unwrap_or_else(|| project_dir.join("target"));
     }
-    let base = match crate::framework_source::resolve(project_dir) {
-        Ok(source) => source.cargo_target_dir(project_dir),
+    match crate::framework_source::resolve(project_dir) {
+        Ok(source) => cli_target_root(&source, project_dir, None).join(DEV_SERVER_TARGET_DIR),
         // Resolution only fails when the framework source can't be
         // determined at all. Isolation matters more than the cross-app
         // sharing, so fall back to a project-local dir — never `target/`.
-        Err(_) => project_dir.join("target"),
-    };
-    if shared {
-        // `cargo metadata` failed (no cargo on PATH, or a manifest that
-        // does not parse). Sharing the framework-source dir is the
-        // closest thing left; it at least matches what the web build
-        // beside it uses.
-        base
-    } else {
-        base.join("idealyst-dev-server")
+        Err(_) => project_dir.join("target").join(DEV_SERVER_TARGET_DIR),
     }
 }
 
-/// `target_directory` from `cargo metadata` for the workspace that
-/// contains `project_dir` — honours `CARGO_TARGET_DIR` and
-/// `.cargo/config.toml` the same way every other cargo invocation in
-/// that tree does, which is the whole point of sharing.
-fn cargo_workspace_target_dir(project_dir: &Path) -> Option<PathBuf> {
-    let out = Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1", "--manifest-path"])
-        .arg(project_dir.join("Cargo.toml"))
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+/// [`server_target_dir`] for a dev session that is about to build there:
+/// also reclaims the per-app dir an older CLI used, and says so.
+fn session_server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
+    let target = server_target_dir(project_dir, shared);
+    let reclaimed = remove_legacy_dev_server_dir(project_dir, &target);
+    if reclaimed > 0 {
+        crate::dlog!(
+            "dev",
+            "removed the old per-app server build {} ({} MB); the server now builds in {}",
+            project_dir.join("target").join(DEV_SERVER_TARGET_DIR).display(),
+            reclaimed / (1024 * 1024),
+            target.display(),
+        );
     }
-    let meta: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    meta.get("target_directory")?.as_str().map(PathBuf::from)
+    target
+}
+
+/// Directory name of the dev server's isolated build, under the CLI
+/// target root (see [`server_target_dir`]).
+const DEV_SERVER_TARGET_DIR: &str = "idealyst-dev-server";
+
+/// Remove the per-app `<app crate>/target/idealyst-dev-server/` an older
+/// CLI built into, now that the server builds under the workspace target
+/// (see [`server_target_dir`]). Each one is a full, now-unused copy of the
+/// server's dependency graph — 22–27 GB apiece in CrewForge. Skipped while
+/// any build holds its cargo locks (a session of an older CLI may still be
+/// using it), and never fatal: a dir we fail to remove costs disk, not a
+/// dev session. Returns the bytes reclaimed.
+fn remove_legacy_dev_server_dir(project_dir: &Path, current: &Path) -> u64 {
+    let legacy = project_dir.join("target").join(DEV_SERVER_TARGET_DIR);
+    if !legacy.is_dir() || same_dir(&legacy, current) {
+        return 0;
+    }
+    let Some(locks) = build_ios::target_gc::CargoBuildLocks::try_acquire_all(&legacy) else {
+        return 0;
+    };
+    let bytes = build_ios::target_gc::dir_size(&legacy);
+    let removed = std::fs::remove_dir_all(&legacy).is_ok();
+    drop(locks);
+    if removed { bytes } else { 0 }
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// Where `idealyst dev` stages the web bundle it serves — for the
@@ -2586,7 +2625,7 @@ fn launch_web_with_backend(
     // from `build --web`'s `dist/web` on purpose — see
     // `dev_web_bundle_dir`.
     let dist_web = dev_web_bundle_dir(dir);
-    let server_target = server_target_dir(dir, args.shared_target);
+    let server_target = session_server_target_dir(dir, args.shared_target);
     let server_log = server_log_path(dir, manifest);
     // The relay `run()` already started and exported (`--no-robot`
     // leaves it unset). Read once: the port is fixed for the session,
@@ -2635,7 +2674,7 @@ fn launch_web_with_backend(
     let setup = if args.no_build {
         None
     } else {
-        match server_watch_setup(dir, manifest, &server_target, shared.clone()) {
+        match server_watch_setup(dir, manifest, &server_target, !args.shared_target, shared.clone()) {
             Ok(setup) => Some(setup),
             // A server we can't resolve well enough to watch is not a
             // reason to refuse the dev session — it still runs, it just
@@ -3651,10 +3690,12 @@ fn server_watch_setup(
     dir: &Path,
     manifest: &build_ios::Manifest,
     target_dir: &Path,
+    prune: bool,
     shared: ServerBuildShared,
 ) -> Result<(Vec<PathBuf>, ServerBuild)> {
     // Base command + the manifest whose local closure we watch.
     let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
+    let variant = server_record_variant(&watched_manifest, &base_args);
 
     let roots = dev_reload::watch_roots(&watched_manifest);
     let target_dir = target_dir.to_path_buf();
@@ -3683,6 +3724,7 @@ fn server_watch_setup(
             stage: "cargo".into(),
         });
         let started = std::time::Instant::now();
+        let gc_before = build_ios::target_gc::IncrementalSnapshot::take(&target_dir);
         // Captured, not inherited: its progress and diagnostics are the
         // server row's events, and cargo's lines reach the terminal as
         // `output` events filed under the server.
@@ -3699,6 +3741,9 @@ fn server_watch_setup(
             ms: started.elapsed().as_millis() as u64,
         });
         anyhow::ensure!(status.success(), "server build failed");
+        if prune {
+            prune_server_target(&target_dir, &variant, &gc_before, &summary.unit_messages);
+        }
         let exe = summary.executable.context(
             "cargo reported success but emitted no executable artifact — \
              is `server_bin` the name of an actual [[bin]] target?",
@@ -3718,6 +3763,75 @@ fn server_watch_setup(
         }
     };
     Ok((roots, Box::new(build)))
+}
+
+/// The record name of one server build in `idealyst-dev-server`: the
+/// manifest plus the selecting args (package, features, bin). Several
+/// apps' servers share that dir, each recorded under its own name.
+fn server_record_variant(manifest: &Path, args: &[String]) -> String {
+    build_ios::target_gc::variant_key(&format!("{} {}", manifest.display(), args.join(" ")))
+}
+
+/// How long a server's record in `idealyst-dev-server` keeps its units
+/// without a rebuild — the dir outlives any app that stops using it.
+const SERVER_RECORD_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
+
+/// Record a server build's units and prune `idealyst-dev-server` to what
+/// the recorded server builds use (`build_ios::target_gc`).
+///
+/// Every app in the workspace builds its server into that ONE dir (see
+/// [`server_target_dir`]), so each build records under its own name and
+/// the prune keeps the union; a record not refreshed in
+/// [`SERVER_RECORD_TTL`] stops counting. NEVER for `--shared-target`:
+/// that dir is the workspace's own `target/`, where everything not
+/// recorded is the user's build. A build run by `--no-build`'s `cargo
+/// run` (or an older CLI) records nothing, so its units can be pruned by
+/// another session's build — that costs it one rebuild, never
+/// correctness. Never fatal.
+fn prune_server_target(
+    target_dir: &Path,
+    variant: &str,
+    before: &build_ios::target_gc::IncrementalSnapshot,
+    messages: &[String],
+) {
+    let mut units = build_ios::target_gc::CargoUnits::default();
+    for m in messages {
+        units.absorb(m);
+    }
+    let spec = build_ios::target_gc::BuildSpec {
+        target_dir,
+        triple: None,
+        release: false,
+        variant: variant.to_string(),
+        record_ttl: Some(SERVER_RECORD_TTL),
+    };
+    let report = build_ios::target_gc::record_and_prune_or_log(&spec, &units, before);
+    if let Some(summary) = report.summary() {
+        crate::dlog!("dev server", "{summary} in {}", target_dir.display());
+    }
+}
+
+/// The native-only session's server build: the same recorded `cargo build`
+/// the full-stack watcher runs, once, before [`spawn_backend`]'s `cargo
+/// run` (which then finds it fresh). Without it the server's units would
+/// be the one unrecorded build in `idealyst-dev-server`, and the next
+/// recorded build there — another app's — would prune them. A failure is
+/// returned for logging only; `cargo run` reports it again the way it
+/// always did.
+fn build_server_recorded(dir: &Path, manifest: &build_ios::Manifest, target_dir: &Path, prune: bool) -> Result<()> {
+    let (watched_manifest, base_args) = server_build_args(dir, manifest)?;
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(dir).arg("build").args(&base_args).arg("--target-dir").arg(target_dir);
+    let before = build_ios::target_gc::IncrementalSnapshot::take(target_dir);
+    let (status, summary) =
+        dev_events::process::run_cargo(&mut cmd, &dev_events::global(), dev_events::SERVER_TARGET, None)
+            .context("run `cargo build` for the server")?;
+    anyhow::ensure!(status.success(), "server build failed");
+    if prune {
+        let variant = server_record_variant(&watched_manifest, &base_args);
+        prune_server_target(target_dir, &variant, &before, &summary.unit_messages);
+    }
+    Ok(())
 }
 
 /// The host's target triple (`rustc -vV`), for the server's progress
@@ -4638,7 +4752,7 @@ mod tests {
     fn test_source() -> build_ios::FrameworkSource {
         build_ios::FrameworkSource::Registry {
             registry: "idealyst".to_string(),
-            version: "1.5".to_string(),
+            versions: build_ios::FrameworkVersions::default(),
         }
     }
 
@@ -5396,6 +5510,80 @@ mod tests {
         assert_ne!(server_target_dir(&app, false), root.join("target"));
     }
 
+    /// Regression (CrewForge, 2026-10-08): two apps of one workspace that
+    /// declare the same server package each built it into their own
+    /// `<app>/target/idealyst-dev-server/` (27 + 22 GB of identical units)
+    /// because the dir was rooted at the APP crate's `target/`. Both now
+    /// resolve to the workspace's one dir. Registry-sourced apps, as
+    /// CrewForge's are.
+    #[test]
+    fn regression_dev_server_dir_duplicated_per_app() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n",
+        )
+        .unwrap();
+        for app in ["app-main", "app-checkin"] {
+            let dir = root.join("crates").join(app);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{app}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                     [dependencies]\nruntime-core = {{ version = \"1\", registry = \"idealyst\" }}\n"
+                ),
+            )
+            .unwrap();
+        }
+        let main = server_target_dir(&root.join("crates/app-main"), false);
+        let checkin = server_target_dir(&root.join("crates/app-checkin"), false);
+        assert_eq!(main, checkin, "one server build dir per workspace, not per app");
+        // Whatever cargo reports for the workspace (`root/target`, unless
+        // the environment sets CARGO_TARGET_DIR) — never an app's own dir.
+        let ws_target = crate::framework_source::cargo_workspace_target_dir(root).unwrap();
+        assert_eq!(main, ws_target.join(DEV_SERVER_TARGET_DIR));
+    }
+
+    /// The old per-app dir is reclaimed once the session builds elsewhere —
+    /// but never while a build holds its cargo lock.
+    #[test]
+    fn legacy_per_app_dev_server_dir_is_removed_unless_locked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("crates/app-main");
+        let legacy = app.join("target").join(DEV_SERVER_TARGET_DIR);
+        let profile = legacy.join("debug");
+        std::fs::create_dir_all(profile.join("incremental/server-1")).unwrap();
+        std::fs::write(profile.join("incremental/server-1/blob"), vec![0u8; 4096]).unwrap();
+        let current = tmp.path().join("target").join(DEV_SERVER_TARGET_DIR);
+
+        let lock = std::fs::File::create(profile.join(".cargo-lock")).unwrap();
+        lock.lock().unwrap();
+        assert_eq!(remove_legacy_dev_server_dir(&app, &current), 0, "a running build keeps it");
+        assert!(legacy.is_dir());
+        drop(lock);
+
+        // Retried: a sibling test's `fork` can hold the dropped flock for
+        // the instant before its child `exec`s (see `target_gc` tests).
+        let mut reclaimed = 0;
+        for _ in 0..100 {
+            reclaimed = remove_legacy_dev_server_dir(&app, &current);
+            if reclaimed > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(reclaimed >= 4096, "{reclaimed}");
+        assert!(!legacy.exists());
+        // When the legacy path IS the current one (no workspace above the
+        // app), it is the live build dir and must stay.
+        std::fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(remove_legacy_dev_server_dir(&app, &legacy), 0);
+        assert!(legacy.is_dir());
+    }
+
     /// With nothing for cargo to resolve, `--shared-target` still
     /// returns SOMETHING usable rather than failing the dev session.
     #[test]
@@ -5499,5 +5687,76 @@ mod tests {
             full_stack_bundle_options(&args, &test_source(), staged.clone(), None, None, None)
                 .unwrap();
         assert_eq!(opts.bundle_out_dir.as_deref(), Some(staged.as_path()));
+    }
+
+    /// Regression (CrewForge, 2026-10-08): every app in a workspace builds
+    /// its server into ONE `idealyst-dev-server/`, and nothing ever removed
+    /// a superseded unit there — 22–27 GB per copy. Each server build now
+    /// records its units under its own name, and the prune keeps the union:
+    /// a release that moves one app's server removes ITS old generation,
+    /// and never the other app's live one.
+    #[test]
+    fn regression_dev_server_dir_keeps_every_apps_server_and_drops_superseded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let target = root.join(DEV_SERVER_TARGET_DIR);
+        let write = |p: &Path, s: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, s).unwrap();
+        };
+        let leaf = |version: &str| {
+            write(
+                &root.join("leaf/Cargo.toml"),
+                &format!("[package]\nname = \"leaf\"\nversion = \"{version}\"\nedition = \"2021\"\n"),
+            );
+        };
+        leaf("0.1.0");
+        write(&root.join("leaf/src/lib.rs"), "pub fn v() -> u32 { 1 }\n");
+        let app = |name: &str| -> (PathBuf, build_ios::Manifest) {
+            let dir = root.join(name);
+            write(
+                &dir.join("Cargo.toml"),
+                &format!(
+                    "[workspace]\n[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+                     [dependencies]\nleaf = {{ path = \"../leaf\" }}\n\n[features]\nserver = []\n\n\
+                     [[bin]]\nname = \"srv\"\npath = \"src/main.rs\"\n\n\
+                     [package.metadata.idealyst.app]\nserver_bin = \"srv\"\n"
+                ),
+            );
+            write(&dir.join("src/main.rs"), "fn main() { println!(\"{}\", leaf::v()); }\n");
+            let manifest = build_ios::parse_manifest(&dir).expect("parse manifest");
+            (dir, manifest)
+        };
+        let (a, ma) = app("app-a");
+        let (b, mb) = app("app-b");
+        let deps = target.join("debug/deps");
+        let count = |prefix: &str| {
+            std::fs::read_dir(&deps)
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    n.starts_with(prefix) && if prefix.starts_with("lib") { n.ends_with(".rlib") } else { !n.contains('.') }
+                })
+                .count()
+        };
+        build_server_recorded(&a, &ma, &target, true).expect("build a");
+        build_server_recorded(&b, &mb, &target, true).expect("build b");
+        assert_eq!(count("srv-"), 2, "both apps' servers live");
+
+        // A release moves app-a's graph: its old generation goes, app-b's
+        // (still on the old leaf) stays.
+        leaf("0.2.0");
+        build_server_recorded(&a, &ma, &target, true).expect("rebuild a");
+        assert_eq!(count("srv-"), 2, "a's old server pruned, b's kept");
+        assert_eq!(count("libleaf-"), 2, "b still uses the old leaf");
+        build_server_recorded(&b, &mb, &target, true).expect("rebuild b");
+        assert_eq!(count("srv-"), 2);
+        assert_eq!(count("libleaf-"), 1, "nothing uses the old leaf any more");
+
+        // `--shared-target` never prunes: that dir is the user's own.
+        leaf("0.3.0");
+        build_server_recorded(&a, &ma, &target, false).expect("unpruned build");
+        assert_eq!(count("srv-"), 3, "an unpruned build leaves the old generations");
     }
 }

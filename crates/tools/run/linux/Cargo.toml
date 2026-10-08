@@ -1,11 +1,9 @@
 [package]
 name = "run-linux"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
+description = "Linux (GTK4) launcher for `idealyst run linux` / `idealyst dev --linux`: builds via build-linux, then launches the binary."
 
 # Linux (GTK4) launcher for `idealyst run linux` and
 # `idealyst dev --linux`.

@@ -36,6 +36,87 @@ Two things are required for that, and either alone buys nothing:
 `idealyst new` scaffolds registry deps and writes the `.cargo/config.toml` that
 defines the registry. Nothing else to set up.
 
+Each framework crate is pinned to its OWN version — they release independently,
+so `backend-web` may be on 2.x while `runtime-world` is on 1.8. The CLI carries
+the framework's `[workspace.dependencies]` from when it was built and writes
+each crate's major.minor from there (`backend-web = { version = "2.5", … }`).
+For an existing registry project, the wrappers the CLI generates pin every
+framework crate the app already resolves to the version it resolved, so they
+unify with the app's copies; only crates the app doesn't use yet come from the
+CLI's table. One exception: a requirement is never pinned *below* the CLI's own
+within the same major, because the generated wrapper source is written against
+the CLI's framework (see "Generated wrappers" below).
+
+## Generated wrappers
+
+Every native platform build goes through a generated wrapper crate at
+`<app>/target/idealyst/<app>/<platform>/…` — its own cargo workspace, with its
+own `Cargo.lock`, regenerated on every `idealyst dev` / `build` / `run`. Every
+wrapper (iOS, Android, macOS, Linux, Windows, terminal, sim, SSR) works the
+same way; only Roku still re-resolves per run:
+
+- **The wrapper builds exactly what the app locked.** Its `Cargo.lock` is
+  copied from the app's (the workspace root's, for a member) and re-copied only
+  when the app's lock *content* changes — `.idealyst-lock-seed` next to it
+  records which lock it came from and what cargo made of it. A run with
+  nothing changed resolves nothing and contacts no index. A `cargo update` in
+  the app reaches the wrapper on its next build.
+- **Except where the CLI needs newer.** A wrapper requirement is the app's
+  resolved major.minor, raised to the CLI's own within the same major (never
+  across majors, which would mean two copies of the crate). If the app's lock
+  is behind the CLI — `backend-ios-mobile` 1.13 against a CLI whose template
+  calls 1.14's `deliver_inbound_link` — cargo bumps just that crate in the
+  wrapper. Keep the app's lock and the CLI in step (`[workspace.metadata.idealyst]`)
+  and the wrapper matches the app exactly.
+- **Files are written only when their content changes**, so an unchanged
+  regeneration does not dirty the wrapper crate (which for the iOS staticlib
+  meant re-archiving a ~1 GB debug `.a`).
+- **The target dir is private and pruned.** `<wrapper>/target` belongs to the
+  wrapper alone (SSR keeps a second, `<wrapper>/target-premint`, for its
+  premint posture; the CLI pins the dir with `CARGO_TARGET_DIR`). Each build
+  records its units per variant in the profile dir it compiled into —
+  `<target>/<triple>/<profile>/.idealyst-live/` for a cross build,
+  `<target>/<profile>/.idealyst-live/` for a desktop host build — as
+  `dev.json` for `idealyst dev`'s `--features dev` and `default.json` for
+  `build` / `run`, and then deletes every unit, root binary/staticlib/cdylib
+  and incremental cache no recorded variant uses (`build_ios::target_gc`).
+  Disk use stays at one current build per variant (measured: ~2.8 GB for a
+  small app's dev + non-dev iOS simulator builds, flat across releases;
+  1.93 GB for `examples/inspector`'s macOS build, unchanged by a no-op
+  rebuild), instead of one more generation per framework release.
+
+The dev and non-dev variants share every unit below the framework
+(third-party crates, `runtime-world`, `runtime-scene`); they differ from
+`runtime-shared` up, because `dev` turns on `runtime-shared/robot` + `catalog`,
+the vocabulary's robot registry, and the macros' catalog emission — which
+reaches every `#[component]` crate including the app. Narrowing it further
+would mean shipping the robot/catalog hooks in production builds.
+
+### Why the desktop wrappers no longer share the project's `target/`
+
+The macOS, terminal, sim and SSR wrappers used to build into the project's own
+`target/` to reuse its compiled dependencies. Measured for
+`examples/inspector` on macOS (2026-10-08, cargo 1.97, M3 Max): a cold wrapper
+build into its own dir took 32.4 s; into a target the project's
+`cargo build -p inspector` had just filled, 17.8 s — 39 of the wrapper's 222
+units were reusable, every one a third-party crate. Path crates (the framework
+in a checkout, the app itself) never match: cargo hashes a path package by its
+path relative to the workspace root, and the wrapper is its own workspace; nor
+does the workspace's `[profile.dev]` apply inside it. And the saving is paid
+once per graph change, since the wrapper's own rebuilds are incremental either
+way.
+
+Against that, a shared dir rules out both halves of keeping the wrapper
+bounded. The prune deletes every unit no wrapper variant recorded — in a
+shared dir, the app's own build. And a seeded lock makes the wrapper resolve
+the app's versions, so its units sit beside the app's differing only in that
+workspace root: the Linux wrapper, sharing the project's target, poisoned the
+project's next build that way ("multiple different versions of crate
+`runtime_scene`", one source file named as both types) until it moved to a
+private dir. Deleting the lock instead, which the shared-target wrappers did,
+re-resolved against the registry every run — a new generation of the tree on
+every framework release, piling up with nothing to remove it.
+
 Existing projects pinned by git keep working — the CLI mirrors whatever the
 project already resolves `runtime-core` to, so a git-pinned project still gets
 git-pinned wrappers. Only the fallback for a project with no framework dep yet
@@ -162,6 +243,29 @@ the diff-driven plan can never reach, because correcting recorded metadata does
 not change any crate's source. It never downgrades a crate that earned a bigger
 bump on its own.
 
+**A crate built from files outside its directory** declares them in
+`[package.metadata.registry]`. The CLI is the case it exists for: the binary
+embeds the `idealyst new` scaffold (`examples/welcome`) and the Inspector's web
+build (from `examples/inspector`), and `cargo package` carries only the crate's
+own directory.
+
+```toml
+[package.metadata.registry]
+also-watch = ["examples/welcome", "examples/inspector"]
+prepackage = ["cargo", "build", "-p", "idealyst-cli", "--config", "env.IDEALYST_CLI_EXPORT_PACKAGE_ASSETS='1'"]
+```
+
+- `also-watch` paths count as the crate's own when the plan asks "what changed
+  since the last release?", so a scaffold edit releases a new CLI.
+- `prepackage` runs from the workspace root just before `cargo package` for
+  that crate, and a failure stops the release. The CLI's command makes its
+  build script copy both into `crates/tools/cli/package-assets/` — gitignored,
+  listed in the crate's `include` — and the published build script reads them
+  from there when no workspace surrounds it. In the workspace it always reads
+  the workspace, so a stale `package-assets/` never leaks into a dev build.
+  Unknown keys in the table are an error, so a misspelling cannot silently
+  publish a crate without its files.
+
 `--bump <CRATE>=<LEVEL>` raises a crate's bump level. The level is classified
 from commit SUBJECTS, and a subject is a sentence someone wrote rather than a
 contract — additive public API lands under a free-form subject and reads as a
@@ -236,9 +340,23 @@ entry and 404s on the download.
   `registry migrate` de-linked all 73 that existed then; `wire`'s
   `runtime-macros`/`runtime-template` dev-deps were added later with
   `workspace = true` and are versioned.
-- **Workspace-internal crates are `publish = false`** — 125 of them: tooling,
-  the 31 runnable examples under `*/examples/`, smoke tests, benchmarks.
-  Consumers never name them.
+- **Workspace-internal crates are `publish = false`**: the runnable examples
+  under `*/examples/`, smoke tests, benchmarks, and the release tooling itself.
+  Consumers never name them. The CLI (`idealyst-cli`) and the 35 crates it
+  builds on — `build-*`, `run-*`, `dev-*`, `wasm-carve`, `mcp-server`, `lint`,
+  `configure`, `robot-*`, `inspector-*`, … — ARE published, so the CLI installs
+  from the registry (`cargo install idealyst-cli --index …`, or `idealyst
+  update`). Their versions move like any other crate's; consumers' app builds
+  never depend on them, so their releases cost no one a rebuild.
+- **A missing crate must answer 404, not 403.** S3 reports an absent key as
+  AccessDenied to any caller that may not list the bucket, and cargo treats a
+  403 from a sparse index as a hard error rather than "no such crate" — a
+  typo'd crate name reads as `AccessDenied`, and a multi-crate `cargo package`
+  cannot overlay not-yet-published siblings. `scripts/provision-registry.sh`
+  therefore grants the distribution `s3:ListBucket` as well as `s3:GetObject`.
+  That exposes no listing: the root is served as `index.html` and the cache
+  policy forwards no query string. Re-apply after editing the policy with
+  `AWS_PROFILE=idealyst ./scripts/provision-registry.sh distribution`.
 - **A renamed dependency is keyed by its alias.**
   `wasm-split = { path = "…", package = "wasm-splitter" }` lives under the key
   `wasm-split`, so looking it up by package name misses it — and appending a

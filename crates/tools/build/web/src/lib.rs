@@ -587,6 +587,123 @@ pub fn resolve_primitive_set(spec: Option<&[String]>) -> Result<Option<Vec<Strin
 /// tell whether the two would contend for one target dir's lock. The dir
 /// is keyed, so in practice they never do; the check keeps that true if
 /// the layout changes.
+/// Directory (under the framework target root, beside the
+/// `idealyst-web-<key>` dirs) recording which key each build slot last
+/// used. See [`record_web_key`].
+pub const WEB_KEYS_DIR: &str = "idealyst-web-keys";
+
+/// The build "slot" a web build occupies: one per app, dev vs release,
+/// with and without the hot-patch tier. A slot holds one live
+/// `idealyst-web-<key>` dir at a time — when its key moves (a `--premint`
+/// toggle, a feature change, a debuginfo change), the previous dir is
+/// superseded.
+///
+/// Release and hot-patch are separate slots, not part of what can be
+/// superseded, because they are the configurations a developer genuinely
+/// alternates between (`idealyst dev` vs `idealyst build --release`);
+/// treating them as one slot would delete a warm dir on every switch.
+pub fn web_key_slot(app: &str, opts: &BuildOptions) -> String {
+    format!(
+        "{app}.{}{}",
+        if opts.release { "release" } else { "dev" },
+        if opts.hot_patch { ".hotpatch" } else { "" },
+    )
+}
+
+/// Keys some slot under `root` currently records — the `idealyst-web-<key>`
+/// dirs that are live. Anything else under `root` is superseded or was
+/// built by a CLI that predates the records.
+pub fn referenced_web_keys(root: &Path) -> std::collections::HashSet<String> {
+    fs::read_dir(root.join(WEB_KEYS_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .map(|k| k.trim().to_string())
+        .filter(|k| is_web_key(k))
+        .collect()
+}
+
+/// A key as [`config_key`] renders it: 8 lowercase hex digits. Checked
+/// before a recorded key is turned into a path to delete.
+fn is_web_key(k: &str) -> bool {
+    k.len() == 8 && k.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Record that `slot` now builds with `key` under `root` (the framework
+/// target root holding the `idealyst-web-*` dirs), and retire the dir the
+/// slot used before if nothing else still uses it. Returns the retired dir.
+///
+/// The CLI used to start a new `idealyst-web-<key>` on every config change
+/// and never remove the old one. Measured in CrewForge (2026-10-08):
+/// `app-checkin` held a 2.6 GB dir three weeks after its config moved on.
+///
+/// The old dir is kept when another slot still records its key (in-tree
+/// examples share dirs: the key leaves out the app unless hot-patching),
+/// or when a build holds its cargo locks; `idealyst clean --stale` sweeps
+/// whatever no slot references.
+pub fn record_web_key(root: &Path, slot: &str, key: &str) -> Option<PathBuf> {
+    let keys = root.join(WEB_KEYS_DIR);
+    let record = keys.join(slot);
+    let previous = fs::read_to_string(&record).ok().map(|k| k.trim().to_string());
+    fs::create_dir_all(&keys).ok()?;
+    fs::write(&record, key).ok()?;
+    let previous = previous.filter(|p| p != key && is_web_key(p))?;
+    let dir = root.join(format!("idealyst-web-{previous}"));
+    if referenced_web_keys(root).contains(&previous) {
+        // Another slot still builds there: keep the dir, but stop keeping
+        // THIS app's units in it — its record would otherwise pin them
+        // until it expired.
+        let app = slot.split('.').next().unwrap_or(slot);
+        build_ios::target_gc::forget_variant(&dir, &web_record_variant(app));
+        return None;
+    }
+    if !dir.is_dir() {
+        return None;
+    }
+    let locks = build_ios::target_gc::CargoBuildLocks::try_acquire_all(&dir)?;
+    let removed = fs::remove_dir_all(&dir).is_ok();
+    drop(locks);
+    removed.then_some(dir)
+}
+
+/// Incremental caches kept per crate name, per incremental dir, in a web
+/// profile dir that has NO records (built by a CLI from before them) —
+/// `idealyst clean --stale`'s fallback. A build prunes its own dir by its
+/// records instead (see `build_inner`); only the `incremental-hotpatch`
+/// entry applies to every build ([`WEB_HOTPATCH_INCREMENTAL_KEEP`]).
+///
+/// - `incremental/`: 2. A `Workspace`-sourced framework (in-tree examples)
+///   shares one `idealyst-web-<key>` dir between every app with the same
+///   build flags, and framework crates are path deps — so incremental —
+///   with features that can differ per app. Two keeps the common
+///   two-apps-alternating case warm; anything older is a superseded
+///   graph.
+/// - `incremental-hotpatch/`: 1. Hot-patch builds key their target dir on
+///   the project path (one app per dir), and a replay compiles exactly the
+///   hash the latest base build captured, so only the newest is live. A
+///   replay that is creating the newest hash's dir right now is never at
+///   risk: that dir is the newest by mtime.
+pub const WEB_INCREMENTAL_KEEP: &[(&str, usize)] =
+    &[("incremental", 2), ("incremental-hotpatch", 1)];
+
+/// The recency trim every web build applies: only `incremental-hotpatch/`,
+/// which no record can name. `incremental/` is pruned by the build's
+/// records; [`WEB_INCREMENTAL_KEEP`] is the fallback for a web dir built
+/// before records existed (`idealyst clean --stale`).
+pub const WEB_HOTPATCH_INCREMENTAL_KEEP: &[(&str, usize)] = &[("incremental-hotpatch", 1)];
+
+/// How long an app's record in a web target dir keeps its units without
+/// a rebuild. Long enough that an app you come back to after a holiday is
+/// still warm; short enough that an app deleted from the workspace stops
+/// pinning a copy of its graph.
+pub const WEB_RECORD_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
+
+/// The record name an app's web build uses in its target dir.
+pub fn web_record_variant(app: &str) -> String {
+    build_ios::target_gc::variant_key(app)
+}
+
 pub fn web_target_dir(project_dir: &Path, opts: &BuildOptions) -> PathBuf {
     let project_dir = fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
     let key = config_key(opts, &project_dir);
@@ -719,8 +836,13 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
     let passes = passes_key(&opts);
     let before = WasmStamp::of(&original_wasm, passes);
     let mut timings = BuildTimings::new(&reporter);
+    // What the build consisted of, for the post-build prune (`target_gc`):
+    // incremental mtimes before it, its unit messages after.
+    let mut built_units: Option<(build_ios::target_gc::IncrementalSnapshot, build_ios::target_gc::CargoUnits)> =
+        None;
     if run_cargo {
-        timings.time("cargo", || {
+        let gc_before = build_ios::target_gc::IncrementalSnapshot::take(&target_dir);
+        let messages = timings.time("cargo", || {
             cargo_build_wasm(
                 &reporter,
                 &project_dir,
@@ -741,6 +863,11 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
                 &project_dir,
             )
         })?;
+        let mut units = build_ios::target_gc::CargoUnits::default();
+        for m in &messages {
+            units.absorb(m);
+        }
+        built_units = Some((gc_before, units));
     }
     let after = WasmStamp::of(&original_wasm, passes);
     let outputs_present = wrapper_pkg
@@ -1131,6 +1258,48 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
 
     timings.record("stage+fingerprint", stage_start.elapsed());
     timings.report();
+
+    // Prune what this build superseded. Every rehash of a crate (a
+    // framework release, `cargo update`, a feature change) leaves the old
+    // units AND a dead incremental cache behind, and rustc only ever cleans
+    // inside the hash it is compiling. Measured in CrewForge (2026-10-08):
+    // 12 and 19 dead caches for `crewforge_main` in `incremental/` and the
+    // hot-patch replay's `incremental-hotpatch/`, ~10 GB per dir before an
+    // outside GC.
+    //
+    // Exact, from records (`target_gc`): this build records its units under
+    // the app's name, and the prune keeps the union of every app's record —
+    // in-tree examples share one `idealyst-web-<key>` dir per config. A
+    // record not refreshed in `WEB_RECORD_TTL` stops counting (an app
+    // deleted or moved). `incremental-hotpatch/` has no record (the replay
+    // writes it outside cargo), so it keeps its newest cache per crate.
+    // Never fatal; a profile whose build is running is skipped.
+    if let Some((gc_before, units)) = &built_units {
+        let spec = build_ios::target_gc::BuildSpec {
+            target_dir: &target_dir,
+            triple: Some(TARGET_TRIPLE),
+            release: opts.release,
+            variant: web_record_variant(&manifest.name),
+            record_ttl: Some(WEB_RECORD_TTL),
+        };
+        let report = build_ios::target_gc::record_and_prune_or_log(&spec, units, gc_before);
+        if let Some(summary) = report.summary() {
+            reporter.log("build-web", summary);
+        }
+    }
+    let pruned = build_ios::target_gc::prune_incremental_dirs(&target_dir, WEB_HOTPATCH_INCREMENTAL_KEEP);
+    if pruned > 0 {
+        reporter.log("build-web", format!("removed {pruned} superseded hot-patch incremental cache dir(s)"));
+    }
+    if let Some(parent) = target_dir.parent() {
+        if let Some(retired) = record_web_key(parent, &web_key_slot(&manifest.name, &opts), &key) {
+            reporter.log(
+                "build-web",
+                format!("removed {}: this app's {} build moved to {}", retired.display(),
+                    if opts.release { "release" } else { "dev" }, target_dir.display()),
+            );
+        }
+    }
 
     let served_wasm = served_wasm_path(&wrapper_pkg, &manifest.lib_name);
     Ok(BuildArtifact {
@@ -2234,6 +2403,9 @@ struct BuildTimings {
 /// The row a build's events are filed under.
 const TARGET: &str = "web";
 
+/// The wasm target triple the web build compiles for.
+const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
+
 impl BuildTimings {
     fn new(reporter: &dev_events::Reporter) -> Self {
         Self { phases: Vec::new(), reporter: reporter.clone() }
@@ -2762,7 +2934,7 @@ fn cargo_build_wasm(
     user_features: &[String],
     source: &FrameworkSource,
     project_root: &Path,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut cmd = Command::new("cargo");
     // `panic_immediate_abort` lives in std/core, so stripping panics
     // means recompiling std from source with `-Z build-std` — both of
@@ -2941,7 +3113,7 @@ fn cargo_build_wasm(
     // Captured, not inherited: every line cargo writes becomes an event
     // (the plain sink prints it exactly as cargo would have), and its
     // JSON messages become progress and structured diagnostics.
-    let (status, _summary) =
+    let (status, summary) =
         dev_events::process::run_cargo(&mut cmd, reporter, TARGET, Some(closure))
             .with_context(|| "exec cargo")?;
     if !status.success() {
@@ -2957,7 +3129,8 @@ fn cargo_build_wasm(
         }
         anyhow::bail!("cargo exited with {status}");
     }
-    Ok(())
+    // The build's units, for the post-build prune (`target_gc`).
+    Ok(summary.unit_messages)
 }
 
 /// The flags `wasm-bindgen --target web` gets beyond the target, by
@@ -3718,6 +3891,101 @@ mod regression_tests {
             config_key(&o, Path::new("/apps/lab")),
             config_key(&o, Path::new("/apps/lab")),
         );
+    }
+
+    /// Regression (CrewForge, 2026-10-08): a config change started a new
+    /// `idealyst-web-<key>` dir and the old one stayed forever
+    /// (`app-checkin`: 2.6 GB, three weeks stale). Now a slot moving to a
+    /// new key retires the dir it used before.
+    #[test]
+    fn regression_superseded_web_dirs_never_retired() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let old = root.join("idealyst-web-b59982c6");
+        std::fs::create_dir_all(old.join("wasm32-unknown-unknown/debug/incremental")).unwrap();
+        assert_eq!(record_web_key(root, "app-checkin.dev.hotpatch", "b59982c6"), None);
+        let new = root.join("idealyst-web-d9cd1286");
+        std::fs::create_dir_all(&new).unwrap();
+        assert_eq!(
+            record_web_key(root, "app-checkin.dev.hotpatch", "d9cd1286"),
+            Some(old.clone()),
+        );
+        assert!(!old.exists(), "the superseded dir is removed");
+        assert!(new.is_dir(), "the current dir is untouched");
+        // Rebuilding with the same key retires nothing.
+        assert_eq!(record_web_key(root, "app-checkin.dev.hotpatch", "d9cd1286"), None);
+        assert!(new.is_dir());
+    }
+
+    /// A dir another slot still records is shared, not superseded — and a
+    /// release build never retires the dev dir (separate slots).
+    #[test]
+    fn a_web_dir_another_slot_still_uses_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let shared = root.join("idealyst-web-d42137e0");
+        std::fs::create_dir_all(&shared).unwrap();
+        record_web_key(root, "lab.dev", "d42137e0");
+        record_web_key(root, "fiddle.dev", "d42137e0");
+        assert_eq!(record_web_key(root, "lab.dev", "0badcafe"), None);
+        assert!(shared.is_dir(), "fiddle.dev still builds there");
+        record_web_key(root, "fiddle.release", "11111111");
+        assert!(shared.is_dir());
+        assert_eq!(referenced_web_keys(root).len(), 3);
+    }
+
+    /// An app whose config moved off a dir another app still builds in
+    /// stops keeping its units there: its record in that dir is dropped,
+    /// so the other app's next prune removes them (instead of the record
+    /// pinning them until it expired). The other app's record stays.
+    #[test]
+    fn an_app_leaving_a_shared_web_dir_drops_its_record_there() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let shared = root.join("idealyst-web-d42137e0");
+        let records = shared.join("wasm32-unknown-unknown/debug").join(build_ios::target_gc::RECORDS_DIR);
+        std::fs::create_dir_all(shared.join("wasm32-unknown-unknown/debug/deps")).unwrap();
+        std::fs::create_dir_all(&records).unwrap();
+        for app in ["lab", "fiddle"] {
+            std::fs::write(records.join(format!("{}.json", web_record_variant(app))), "{\"hashes\":[],\"incremental\":{}}")
+                .unwrap();
+            record_web_key(root, &format!("{app}.dev"), "d42137e0");
+        }
+        assert_eq!(record_web_key(root, "lab.dev", "0badcafe"), None, "fiddle still builds there");
+        assert!(!records.join("lab.json").exists(), "lab's record no longer pins its units");
+        assert!(records.join("fiddle.json").is_file());
+    }
+
+    /// A build holding the old dir's cargo lock keeps it; a recorded key
+    /// that isn't a key never becomes a path to delete.
+    #[test]
+    fn a_locked_or_malformed_old_web_dir_is_not_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let old = root.join("idealyst-web-aaaaaaaa");
+        let profile = old.join("wasm32-unknown-unknown/debug");
+        std::fs::create_dir_all(profile.join("incremental")).unwrap();
+        record_web_key(root, "app.dev", "aaaaaaaa");
+        let lock = std::fs::File::create(profile.join(".cargo-lock")).unwrap();
+        lock.lock().unwrap();
+        assert_eq!(record_web_key(root, "app.dev", "bbbbbbbb"), None);
+        assert!(old.is_dir());
+        drop(lock);
+
+        std::fs::write(root.join(WEB_KEYS_DIR).join("evil.dev"), "../../etc").unwrap();
+        assert_eq!(record_web_key(root, "evil.dev", "cccccccc"), None);
+        assert!(!referenced_web_keys(root).contains("../../etc"));
+    }
+
+    #[test]
+    fn web_key_slots_separate_release_and_hot_patch() {
+        let mut o = key_opts();
+        assert_eq!(web_key_slot("app", &o), "app.dev");
+        o.hot_patch = true;
+        assert_eq!(web_key_slot("app", &o), "app.dev.hotpatch");
+        o.release = true;
+        o.hot_patch = false;
+        assert_eq!(web_key_slot("app", &o), "app.release");
     }
 
     /// Without the tier, sibling apps keep sharing dependency builds —

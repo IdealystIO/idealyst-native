@@ -62,7 +62,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         "terminal"
     };
     let wrapper_dir = wrapper_root.join(&manifest.name).join(subdir);
-    let cargo_target_dir = opts.source.cargo_target_dir(&project_dir);
+    // PRIVATE to the wrapper — see `build_ios::wrapper_target_dir`.
+    let cargo_target_dir = build_ios::wrapper_target_dir(&wrapper_dir);
 
     generate_wrapper(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?;
     let extra_features: &[&str] = if opts.mode.is_runtime_server() {
@@ -70,7 +71,7 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     } else {
         &[]
     };
-    cargo_build(&wrapper_dir, opts.release, &opts.user_features, extra_features)?;
+    cargo_build(&wrapper_dir, &cargo_target_dir, opts.release, &opts.user_features, extra_features)?;
 
     let profile = if opts.release { "release" } else { "debug" };
     let bin_name = binary_name(&manifest.name, opts.mode);
@@ -258,16 +259,13 @@ edition = "2021"
         },
     );
 
-    write_shared_target_config(wrapper_dir, cargo_target_dir)?;
-    fs::write(wrapper_dir.join("Cargo.toml"), cargo_toml)?;
-    // The wrapper is its own `[workspace]`, so it keeps its own
-    // lockfile and nothing invalidates it — a rewritten manifest with
-    // unchanged content leaves cargo on the versions it locked the
-    // first time, so a published framework fix never arrives and a
-    // changed user dep resolves the framework twice. See
-    // `build_ios::refresh_wrapper_lockfile`.
-    build_ios::refresh_wrapper_lockfile(wrapper_dir)?;
-    fs::write(wrapper_dir.join("src/main.rs"), main_rs)?;
+    write_target_config(wrapper_dir, cargo_target_dir)?;
+    build_ios::write_if_changed(&wrapper_dir.join("Cargo.toml"), &cargo_toml)?;
+    build_ios::write_if_changed(&wrapper_dir.join("src/main.rs"), &main_rs)?;
+    // Build exactly the versions the app locked (re-seeded whenever the
+    // app's lock changes) — safe because the target dir is private. See
+    // `build_ios::seed_wrapper_lockfile`.
+    build_ios::seed_wrapper_lockfile(wrapper_dir, project_dir)?;
     Ok(())
 }
 
@@ -329,32 +327,26 @@ fn main() {{
     )
 }
 
-fn write_shared_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
-    let config = format!(
-        "# GENERATED. Share the project's `target/` so common\n\
-         # dependencies aren't recompiled per-wrapper.\n\
-         \n\
-         [build]\n\
-         target-dir = \"{}\"\n",
-        target_dir.display(),
-    );
-    // The wrapper Cargo.toml carries a `[patch.<registry>]` section, and an
-    // undefined registry name there is a hard error. Define it here rather
-    // than relying on an ancestor config having done so.
-    let config = config + &build_ios::registry_config_block();
+/// The wrapper's `.cargo/config.toml`: its private target dir + the
+/// framework registry (`build_ios::private_target_config`).
+fn write_target_config(dir: &Path, target_dir: &Path) -> Result<()> {
+    let config = build_ios::private_target_config("idealyst dev --terminal", target_dir);
     fs::create_dir_all(dir.join(".cargo"))?;
-    fs::write(dir.join(".cargo/config.toml"), config)?;
+    build_ios::write_if_changed(&dir.join(".cargo/config.toml"), &config)?;
     Ok(())
 }
 
+/// Build the wrapper into `target_dir`, then prune that dir to the units
+/// its recorded variants use (`build_ios::build_wrapper`).
 fn cargo_build(
     wrapper_dir: &Path,
+    target_dir: &Path,
     release: bool,
     user_features: &[String],
     extra_features: &[&str],
 ) -> Result<()> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["build"]).current_dir(wrapper_dir);
+    cmd.args(["build"]);
     if release {
         cmd.arg("--release");
     }
@@ -373,12 +365,8 @@ fn cargo_build(
         },
         wrapper_dir.display(),
     );
-    let status = cmd
-        .status()
-        .with_context(|| "spawn `cargo` — is it on your PATH?")?;
-    if !status.success() {
-        anyhow::bail!("[build-terminal] cargo build exited with {status}");
-    }
+    let spec = build_ios::target_gc::BuildSpec::wrapper(target_dir, None, release, &combined);
+    build_ios::build_wrapper("build-terminal", wrapper_dir, &mut cmd, &spec)?;
     Ok(())
 }
 
@@ -443,6 +431,83 @@ mod regression_tests {
         generate_wrapper(&wrapper_dir, &cargo_target, &project_dir, &manifest, &opts)
             .expect("generate wrapper");
         (wrapper_dir, tmp)
+    }
+
+    /// The stub framework the terminal wrapper names, in the shared
+    /// offline world (`build_ios::test_support`).
+    fn lock_world() -> build_ios::test_support::LockWorld {
+        build_ios::test_support::LockWorld::new(
+            &[
+                ("crates/gpu-backend/host/terminal", "host-terminal", &["runtime-server"]),
+                ("crates/dev/runtime-server-shell", "runtime-server-shell-native", &["runtime-server"]),
+            ],
+            &[],
+        )
+    }
+
+    fn generate_in(world: &build_ios::test_support::LockWorld, wrapper: &std::path::Path) {
+        let opts = BuildOptions {
+            release: false,
+            mode: BuildMode::Local,
+            user_features: Vec::new(),
+            source: world.source(),
+        };
+        generate_wrapper(
+            wrapper,
+            &build_ios::wrapper_target_dir(wrapper),
+            &world.app,
+            &manifest_with_targets(Vec::new()),
+            &opts,
+        )
+        .expect("generate wrapper");
+    }
+
+    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// terminal wrapper deleted its `Cargo.lock` on every generation, so
+    /// each run resolved the registry's newest versions instead of the
+    /// app's locked ones — a different graph from the app's and a new
+    /// generation of the tree per framework release.
+    #[test]
+    fn regression_terminal_wrapper_lock_reresolved_every_run() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("terminal");
+        world.assert_wrapper_follows_app_lock(&wrapper, || generate_in(&world, &wrapper));
+    }
+
+    /// The wrapper builds into its OWN target dir (seeded lock + post-build
+    /// prune both require it).
+    #[test]
+    fn terminal_wrapper_target_dir_is_private() {
+        let world = lock_world();
+        let wrapper = world.wrapper_dir("terminal");
+        generate_in(&world, &wrapper);
+        world.assert_private_target_dir(&wrapper, &world.source().cargo_target_dir(&world.app));
+    }
+
+    /// An unchanged regeneration must not touch the wrapper's files. Cargo
+    /// dirties a path package on a newer source mtime, so an identical
+    /// rewrite of `src/main.rs` recompiled and relinked the wrapper binary
+    /// on every run.
+    #[test]
+    fn regression_terminal_wrapper_rewritten_every_run() {
+        let (wrapper_dir, tmp) = run_generator(Vec::new(), BuildMode::Local);
+        let files = ["Cargo.toml", "src/main.rs", ".cargo/config.toml"];
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for f in files {
+            std::fs::File::options().write(true).open(wrapper_dir.join(f)).unwrap().set_modified(past).unwrap();
+        }
+        let opts = BuildOptions {
+            release: false,
+            mode: BuildMode::Local,
+            user_features: Vec::new(),
+            source: FrameworkSource::Workspace { root: tmp.path().join("workspace") },
+        };
+        generate_wrapper(&wrapper_dir, &tmp.path().join("target"), &tmp.path().join("project"), &manifest_with_targets(Vec::new()), &opts)
+            .expect("regenerate wrapper");
+        for f in files {
+            let m = std::fs::metadata(wrapper_dir.join(f)).unwrap().modified().unwrap();
+            assert_eq!(m, past, "{f} was rewritten with identical content");
+        }
     }
 
     /// Mobile-targeted projects (`targets = ["ios", "android", …]`)
