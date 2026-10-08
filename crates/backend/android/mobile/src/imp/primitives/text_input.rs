@@ -65,6 +65,19 @@ fn create_inner(
             )
             .unwrap();
         set_text(env, &local, initial_value);
+        if !multiline {
+            // `text_input` is single-line on every backend (a UITextField on
+            // iOS, an <input> on web); `text_area` is the multi-line one. A
+            // bare `EditText` is NOT: it accepted Enter as a newline, and
+            // since the field keeps its one-line height the text scrolled up
+            // inside the box, showing only the new empty line. A plain
+            // TYPE_CLASS_TEXT (1) — no TYPE_TEXT_FLAG_MULTI_LINE — makes
+            // `TextView.setInputType` apply single-line mode itself
+            // (`maxLines = 1`, newlines stripped), and the soft keyboard's
+            // Enter becomes the IME action, routed to `on_key_down` as
+            // "Enter" below (iOS reports Return the same way).
+            let _ = env.call_method(&local, "setInputType", "(I)V", &[JValue::Int(1)]);
+        }
         if multiline {
             // InputType bits: TYPE_CLASS_TEXT (1) |
             // TYPE_TEXT_FLAG_MULTI_LINE (0x00020000) = 0x00020001.
@@ -152,6 +165,17 @@ fn create_inner(
                 "(Landroid/view/View$OnKeyListener;)V",
                 &[JValue::Object(&listener)],
             );
+            if !multiline {
+                // A single-line field's soft-keyboard Enter is an editor
+                // action, not a key event; the same listener reports it as
+                // "Enter" so `on_key_down` sees Return on Android as on iOS.
+                let _ = env.call_method(
+                    &local,
+                    "setOnEditorActionListener",
+                    "(Landroid/widget/TextView$OnEditorActionListener;)V",
+                    &[JValue::Object(&listener)],
+                );
+            }
         }
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
