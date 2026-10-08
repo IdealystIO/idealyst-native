@@ -560,7 +560,7 @@ backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.14.0", r
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "1.5.2", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "1.5.2", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "1.5.2", registry = "idealyst" }
-backend-android-mobile = { path = "crates/backend/android/mobile", version = "1.10.1", registry = "idealyst" }
+backend-android-mobile = { path = "crates/backend/android/mobile", version = "1.10.2", registry = "idealyst" }
 backend-android-tv = { path = "crates/backend/android/tv", version = "1.5.2", registry = "idealyst" }
 backend-roku = { path = "crates/backend/roku", version = "1.5.3", registry = "idealyst" }
 backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", registry = "idealyst" }
