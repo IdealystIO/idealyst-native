@@ -2,18 +2,18 @@
 //! container. An idealyst project's devcontainer is half-useless without it
 //! (`idealyst dev`, `idealyst lint`, `idealyst configure`, …).
 //!
-//! The only distribution channel today is a source build
-//! (`cargo install --git`; no crates.io release, no prebuilt binaries — see
-//! README "Installing"), which takes several minutes cold. To avoid paying
-//! that on every container rebuild, the install root lives in a named volume
-//! and the post-create step skips the build when the binary is already
-//! there; a `/usr/local/bin` symlink (refreshed each create) puts it on PATH
-//! regardless of the image's profile. To force a rebuild of a cached CLI,
-//! `cargo install --force --git … --root /idealyst/cli` inside the
-//! container (or drop the volume).
+//! The CLI is a source build from the framework's registry (`cargo install
+//! idealyst-cli --index …`; no prebuilt binaries — see README "Installing"),
+//! which takes several minutes cold. To avoid paying that on every container
+//! rebuild, the install root lives in a named volume and the post-create
+//! step skips the build when the binary is already there; a
+//! `/usr/local/bin` symlink (refreshed each create) puts it on PATH
+//! regardless of the image's profile. To move a cached CLI to the newest
+//! release, run `idealyst update` inside the container (it reinstalls into
+//! the same root), or drop the volume.
 //!
-//! Requires a Rust toolchain + git in the base image — true for the
-//! scaffolded `mcr.microsoft.com/devcontainers/rust` base.
+//! Requires a Rust toolchain in the base image — true for the scaffolded
+//! `mcr.microsoft.com/devcontainers/rust` base.
 
 use crate::devcontainer::service::{Ctx, DevService, ServiceFragment};
 
@@ -23,19 +23,14 @@ const ROOT: &str = "/idealyst/cli";
 
 const VOLUME: &str = "idealyst-cli-cache";
 
-const REPO: &str = "https://github.com/IdealystIO/idealyst-native";
-
-/// The framework's own registry, handed to `cargo install` as an
-/// environment variable.
+/// The framework's own registry, named to `cargo install` with `--index`.
 ///
-/// `cargo install --git` parses the fetched checkout's manifests WITHOUT
-/// the project's `.cargo/config.toml`, so the `registry = "idealyst"`
-/// dependencies every framework crate carries fail to resolve, and cargo
-/// reports the package itself as missing ("could not find `idealyst-cli`
-/// in … with version `*`") rather than the registry. Reproduced with
-/// cargo 1.97.1 in every form of the command (plain, `--rev`, `--branch`,
-/// from a cwd whose config defines the registry) and fixed only by the
-/// variable. The same index the CLI's `framework_source` defaults to.
+/// Installing the PUBLISHED crate needs nothing else: a published manifest
+/// records each dependency's registry by URL. (The old `cargo install --git`
+/// form needed `CARGO_REGISTRIES_IDEALYST_INDEX` in the environment, because
+/// a git checkout's manifests name the registry only as `"idealyst"` and
+/// `cargo install` reads no project `.cargo/config.toml`.) The same index
+/// the CLI's `framework_source` defaults to.
 const REGISTRY_INDEX: &str = "sparse+https://crates.idealyst.io/index/";
 
 pub struct IdealystCli;
@@ -48,14 +43,13 @@ impl DevService for IdealystCli {
         "Idealyst CLI"
     }
     fn description(&self) -> &'static str {
-        "the `idealyst` CLI in the container (source build, cached in a volume across rebuilds)"
+        "the `idealyst` CLI in the container (built from the registry, cached in a volume across rebuilds)"
     }
 
     fn fragment(&self, _variant: Option<&str>, _ctx: &Ctx) -> ServiceFragment {
         let install = format!(
             "{chown}; test -x {ROOT}/bin/idealyst || \
-             CARGO_REGISTRIES_IDEALYST_INDEX={REGISTRY_INDEX} \
-             cargo install --git {REPO} idealyst-cli --root {ROOT}; \
+             cargo install idealyst-cli --index {REGISTRY_INDEX} --locked --root {ROOT}; \
              sudo -n ln -sf {ROOT}/bin/idealyst /usr/local/bin/idealyst 2>/dev/null || \
              ln -sf {ROOT}/bin/idealyst /usr/local/bin/idealyst 2>/dev/null || true",
             chown = super::chown_cmd(ROOT),

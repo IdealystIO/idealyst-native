@@ -46,6 +46,8 @@ members = [
     # Native backends — implement the scene Host + capability traits on
     # top of a platform's UI toolkit.
     "crates/backend/apple/core",
+    # Platform-neutral data:-URI + SVG image decoding (iOS, macOS, Android).
+    "crates/backend/image-source",
     "crates/backend/macos",
     "crates/backend/ios/core",
     "crates/backend/ios/mobile",
@@ -321,6 +323,8 @@ members = [
     # See `crates/tools/wasm-split/README.md`.
     "crates/tools/wasm-split/wasm-split",
     "crates/tools/wasm-split/wasm-carve",
+    # The JS comment stripper backend-web's build script and wasm-carve share.
+    "crates/tools/js-min",
     "crates/tools/wasm-split/wasm-split-macro",
     "crates/tools/icon-gen",
     "crates/tools/build/runtime-server",
@@ -504,7 +508,7 @@ dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.16.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.11.0", registry = "idealyst" }
 mcp-catalog = { path = "crates/mcp/catalog", version = "1.17.0", registry = "idealyst" }
-mcp-server = { path = "crates/mcp/server" }
+mcp-server = { path = "crates/mcp/server", version = "1.5.2", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.10.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.0.0", registry = "idealyst" }
@@ -518,42 +522,43 @@ parity-goldens = { path = "crates/dev/parity-goldens" }
 ui-lowering-parity = { path = "crates/dev/ui-lowering-parity" }
 headless-screenshot = { path = "crates/dev/headless-screenshot", version = "1.5.3", registry = "idealyst" }
 robot-e2e = { path = "crates/dev/robot-e2e" }
-robot-relay = { path = "crates/dev/robot-relay" }
-inspector-protocol = { path = "crates/dev/inspector-protocol" }
-inspector-server = { path = "crates/dev/inspector-server" }
-robot-test = { path = "crates/dev/robot-test" }
-robot-test-macros = { path = "crates/dev/robot-test-macros" }
-native-parity = { path = "crates/dev/native-parity" }
-dev-http = { path = "crates/dev/http" }
+robot-relay = { path = "crates/dev/robot-relay", version = "1.5.2", registry = "idealyst" }
+inspector-protocol = { path = "crates/dev/inspector-protocol", version = "1.5.2", registry = "idealyst" }
+inspector-server = { path = "crates/dev/inspector-server", version = "1.5.2", registry = "idealyst" }
+robot-test = { path = "crates/dev/robot-test", version = "1.5.2", registry = "idealyst" }
+robot-test-macros = { path = "crates/dev/robot-test-macros", version = "1.5.2", registry = "idealyst" }
+native-parity = { path = "crates/dev/native-parity", version = "1.5.2", registry = "idealyst" }
+dev-http = { path = "crates/dev/http", version = "1.5.2", registry = "idealyst" }
 dev-overlay = { path = "crates/dev/overlay", version = "1.8.0", registry = "idealyst" }
 dev-events = { path = "crates/dev/events", version = "1.8.0", registry = "idealyst" }
-dev-reload = { path = "crates/dev/reload" }
+dev-reload = { path = "crates/dev/reload", version = "1.5.2", registry = "idealyst" }
 web-dev-host = { path = "crates/dev/web-host" }
-build-ios = { path = "crates/tools/build/ios" }
-run-ios = { path = "crates/tools/run/ios" }
-build-runtime-server = { path = "crates/tools/build/runtime-server" }
-build-android = { path = "crates/tools/build/android" }
-run-android = { path = "crates/tools/run/android" }
-build-roku = { path = "crates/tools/build/roku" }
-run-roku = { path = "crates/tools/run/roku" }
-build-sim = { path = "crates/tools/build/sim" }
-build-web = { path = "crates/tools/build/web" }
-build-macos = { path = "crates/tools/build/macos" }
-build-ssr = { path = "crates/tools/build/ssr" }
-build-remote = { path = "crates/tools/build/remote" }
-build-serverless-lambda = { path = "crates/tools/build/serverless-lambda" }
-run-macos = { path = "crates/tools/run/macos" }
-build-terminal = { path = "crates/tools/build/terminal" }
-run-terminal = { path = "crates/tools/run/terminal" }
-build-linux = { path = "crates/tools/build/linux" }
-run-linux = { path = "crates/tools/run/linux" }
-build-windows = { path = "crates/tools/build/windows" }
-run-windows = { path = "crates/tools/run/windows" }
-dev-tui = { path = "crates/tools/dev-tui" }
-lint = { path = "crates/tools/lint" }
-configure = { path = "crates/tools/configure" }
-icon-gen = { path = "crates/tools/icon-gen" }
+build-ios = { path = "crates/tools/build/ios", version = "1.5.2", registry = "idealyst" }
+run-ios = { path = "crates/tools/run/ios", version = "1.5.2", registry = "idealyst" }
+build-runtime-server = { path = "crates/tools/build/runtime-server", version = "1.5.2", registry = "idealyst" }
+build-android = { path = "crates/tools/build/android", version = "1.5.2", registry = "idealyst" }
+run-android = { path = "crates/tools/run/android", version = "1.5.2", registry = "idealyst" }
+build-roku = { path = "crates/tools/build/roku", version = "1.5.2", registry = "idealyst" }
+run-roku = { path = "crates/tools/run/roku", version = "1.5.2", registry = "idealyst" }
+build-sim = { path = "crates/tools/build/sim", version = "1.5.2", registry = "idealyst" }
+build-web = { path = "crates/tools/build/web", version = "1.5.2", registry = "idealyst" }
+build-macos = { path = "crates/tools/build/macos", version = "1.5.2", registry = "idealyst" }
+build-ssr = { path = "crates/tools/build/ssr", version = "1.5.2", registry = "idealyst" }
+build-remote = { path = "crates/tools/build/remote", version = "1.5.2", registry = "idealyst" }
+build-serverless-lambda = { path = "crates/tools/build/serverless-lambda", version = "1.5.2", registry = "idealyst" }
+run-macos = { path = "crates/tools/run/macos", version = "1.5.2", registry = "idealyst" }
+build-terminal = { path = "crates/tools/build/terminal", version = "1.5.2", registry = "idealyst" }
+run-terminal = { path = "crates/tools/run/terminal", version = "1.5.2", registry = "idealyst" }
+build-linux = { path = "crates/tools/build/linux", version = "1.5.2", registry = "idealyst" }
+run-linux = { path = "crates/tools/run/linux", version = "1.5.2", registry = "idealyst" }
+build-windows = { path = "crates/tools/build/windows", version = "1.5.2", registry = "idealyst" }
+run-windows = { path = "crates/tools/run/windows", version = "1.5.2", registry = "idealyst" }
+dev-tui = { path = "crates/tools/dev-tui", version = "1.5.2", registry = "idealyst" }
+lint = { path = "crates/tools/lint", version = "1.5.2", registry = "idealyst" }
+configure = { path = "crates/tools/configure", version = "1.5.2", registry = "idealyst" }
+icon-gen = { path = "crates/tools/icon-gen", version = "1.5.2", registry = "idealyst" }
 backend-apple-core = { path = "crates/backend/apple/core", version = "1.8.0", registry = "idealyst" }
+backend-image-source = { path = "crates/backend/image-source", version = "1.0.0", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "1.12.0", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "1.7.0", registry = "idealyst" }
 backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "1.14.0", registry = "idealyst" }
@@ -699,7 +704,8 @@ flate2 = "1"
 # paths resolve to our vendored copy.
 wasm-split = { path = "crates/tools/wasm-split/wasm-split", package = "wasm-splitter", version = "1.5.2", registry = "idealyst" }
 wasm-split-macro = { path = "crates/tools/wasm-split/wasm-split-macro", version = "1.5.3", registry = "idealyst" }
-wasm-carve = { path = "crates/tools/wasm-split/wasm-carve" }
+wasm-carve = { path = "crates/tools/wasm-split/wasm-carve", version = "1.5.2", registry = "idealyst" }
+js-min = { path = "crates/tools/js-min", version = "1.0.0", registry = "idealyst" }
 
 # Third-party deps shared by the web build tooling. Keep these in one
 # place so version bumps land atomically.

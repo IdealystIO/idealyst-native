@@ -1,0 +1,10 @@
+[package]
+name = "js-min"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Conservative JS comment/whitespace stripper shared by backend-web's build script and wasm-carve: removes only what provably cannot change behavior (comments, per-line whitespace, blank lines), keeping every newline so ASI is untouched."
+
+# Zero dependencies on purpose: backend-web's build script depends on it,
+# so it compiles on every web app's first build.
+[dependencies]

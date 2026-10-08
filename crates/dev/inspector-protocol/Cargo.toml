@@ -1,12 +1,9 @@
 [package]
 name = "inspector-protocol"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "The wire protocol between the Idealyst Inspector front end and its debug server (`idealyst inspect`): the typed mirror of a target app's state (`Snapshot`), the discovered-app list, and the JSON messages each side sends over the Inspector WebSocket. Plain serde types, so the same crate builds for the wasm front end and the native server."
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
 
 [dependencies]
 serde = { workspace = true }

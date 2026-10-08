@@ -227,6 +227,16 @@ JSON
 }
 
 # Let ONLY this distribution read the bucket.
+#
+# `s3:ListBucket` is there so a MISSING key answers 404, not 403. Without
+# it S3 reports every absent key as AccessDenied (it won't reveal whether a
+# key exists to a caller who can't list), and cargo treats a 403 from a
+# sparse index as a hard error rather than "no such crate" — a typo'd crate
+# name read as "Access Denied", and a multi-crate `cargo package` could not
+# overlay unpublished siblings. It does not expose a listing through the
+# distribution: a listing is a request for the bucket ROOT, which
+# CloudFront serves as `index.html` (see `cmd_root`), and the cache policy
+# forwards no query string (`?list-type=2`) to the origin.
 attach_bucket_policy() {
     local id="$1" acct; acct="$(account_id)"
     say "attaching the bucket policy"
@@ -241,9 +251,18 @@ attach_bucket_policy() {
         \"Condition\": { \"StringEquals\": {
           \"AWS:SourceArn\": \"arn:aws:cloudfront::${acct}:distribution/${id}\"
         }}
+      }, {
+        \"Sid\": \"AllowCloudFrontNotFound\",
+        \"Effect\": \"Allow\",
+        \"Principal\": { \"Service\": \"cloudfront.amazonaws.com\" },
+        \"Action\": \"s3:ListBucket\",
+        \"Resource\": \"arn:aws:s3:::${BUCKET}\",
+        \"Condition\": { \"StringEquals\": {
+          \"AWS:SourceArn\": \"arn:aws:cloudfront::${acct}:distribution/${id}\"
+        }}
       }]
     }"
-    info "only distribution ${id} may read s3://${BUCKET}"
+    info "only distribution ${id} may read s3://${BUCKET} (missing keys answer 404)"
 }
 
 # --- dns --------------------------------------------------------------------
@@ -278,9 +297,10 @@ cmd_dns() {
 # --- status -----------------------------------------------------------------
 
 # Serve index.html at the bucket root. A sparse registry has no browsable
-# root, so without this `https://crates.idealyst.io/` answers 403 — the bucket
-# grants no listing by design — and anyone who pastes the URL into a browser
-# gets an access error instead of the setup instructions.
+# root, so without this `https://crates.idealyst.io/` would answer with an
+# error — or, since the distribution may list the bucket (see
+# `attach_bucket_policy`), with the bucket's key listing — instead of the
+# setup instructions. Keep this set: it is what keeps the root from listing.
 cmd_root() {
     local id; id="$(dist_id)"
     if [ "$id" = "None" ] || [ -z "$id" ]; then die "no distribution yet — run \`$0 distribution\`"; fi

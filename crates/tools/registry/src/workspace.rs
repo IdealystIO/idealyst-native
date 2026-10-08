@@ -24,6 +24,37 @@ struct RawPackage {
     /// `Some([registry, ..])` for an allow-list, and `None` for "anywhere".
     publish: Option<Vec<String>>,
     dependencies: Vec<RawDep>,
+    /// `[package.metadata]`, as JSON. The tool reads its own table,
+    /// `[package.metadata.registry]` — see [`RegistryMeta`].
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+/// A crate's `[package.metadata.registry]` table: what the release has to
+/// know about a crate whose published bytes are not just its own directory.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct RegistryMeta {
+    /// Workspace-relative paths outside the crate's directory that its
+    /// published bytes are built from. A change under any of them releases
+    /// the crate.
+    #[serde(default)]
+    also_watch: Vec<String>,
+    /// A command (argv, run from the workspace root) the release runs before
+    /// `cargo package` for this crate — to stage files the crate embeds from
+    /// outside its own directory into a gitignored, `include`d folder inside it.
+    #[serde(default)]
+    prepackage: Option<Vec<String>>,
+}
+
+impl RawPackage {
+    fn registry_meta(&self) -> Result<RegistryMeta> {
+        match self.metadata.as_ref().and_then(|m| m.get("registry")) {
+            None => Ok(RegistryMeta::default()),
+            Some(v) => serde_json::from_value(v.clone())
+                .with_context(|| format!("{}: invalid [package.metadata.registry]", self.name)),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +125,10 @@ pub struct Package {
     /// depends on `wire`, and `idea-ui` dev-depends on `premint-dump`, which
     /// is not published at all.
     pub dev_deps: BTreeSet<String>,
+    /// `[package.metadata.registry] also-watch` — see [`RegistryMeta`].
+    pub also_watch: Vec<String>,
+    /// `[package.metadata.registry] prepackage` — see [`RegistryMeta`].
+    pub prepackage: Option<Vec<String>>,
 }
 
 pub struct Workspace {
@@ -154,9 +189,15 @@ impl Workspace {
                 .filter(|d| d.kind.as_deref() == Some("dev") && d.resolved_from_registry())
                 .map(|d| d.name.clone())
                 .collect();
+            let meta = p.registry_meta()?;
+            if meta.prepackage.as_ref().is_some_and(|c| c.is_empty()) {
+                bail!("{}: [package.metadata.registry] prepackage is an empty command", p.name);
+            }
             packages.insert(
                 p.name.clone(),
                 Package {
+                    also_watch: meta.also_watch,
+                    prepackage: meta.prepackage,
                     name: p.name.clone(),
                     nested: Vec::new(),
                     version: semver::Version::parse(&p.version)
@@ -435,6 +476,8 @@ runtime-template = { workspace = true }
                             nested: vec![],
                             deps: set(deps),
                             dev_deps: set(dev),
+                            also_watch: Vec::new(),
+                            prepackage: None,
                         },
                     )
                 })
@@ -470,5 +513,42 @@ runtime-template = { workspace = true }
     fn dev_dependencies_do_not_drag_dependents_into_a_release() {
         let ws = bare(&[("a", &[], &["b"]), ("b", &[], &[]), ("c", &["b"], &[])]);
         assert_eq!(ws.dependents_of(["b"]), BTreeSet::from(["c".to_string()]));
+    }
+
+    /// `[package.metadata.registry]` reaches the package model: the CLI's
+    /// `also-watch` paths and `prepackage` command are what let a crate that
+    /// embeds files from outside its directory be released correctly.
+    #[test]
+    fn registry_metadata_is_read_from_the_manifest() {
+        let root = "[workspace]\nresolver = \"2\"\nmembers = [\"cli\", \"plain\"]\n";
+        let cli = member(
+            "cli",
+            r#"[package.metadata.registry]
+also-watch = ["examples/welcome", "examples/inspector"]
+prepackage = ["cargo", "build", "-p", "cli"]
+"#,
+        );
+        let (d, ws) = fixture("regmeta", root, &[("cli", &cli), ("plain", &member("plain", ""))]);
+        let p = &ws.packages["cli"];
+        assert_eq!(p.also_watch, ["examples/welcome", "examples/inspector"]);
+        assert_eq!(p.prepackage.as_deref(), Some(&["cargo".to_string(), "build".into(), "-p".into(), "cli".into()][..]));
+        let plain = &ws.packages["plain"];
+        assert!(plain.also_watch.is_empty() && plain.prepackage.is_none());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A misspelled key (`also_watch`, `pre-package`) must not be silently
+    /// ignored: the crate would then be released without its embedded files
+    /// staged, and that only shows up when someone installs it.
+    #[test]
+    fn an_unknown_registry_metadata_key_is_an_error() {
+        let raw: RawPackage = serde_json::from_value(serde_json::json!({
+            "id": "x", "name": "x", "version": "1.0.0", "manifest_path": "/x/Cargo.toml",
+            "publish": null, "dependencies": [],
+            "metadata": { "registry": { "pre-package": ["true"] } },
+        }))
+        .unwrap();
+        let err = raw.registry_meta().unwrap_err();
+        assert!(format!("{err:#}").contains("pre-package"), "{err:#}");
     }
 }

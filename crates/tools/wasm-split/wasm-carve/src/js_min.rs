@@ -1,5 +1,5 @@
 //! The conservative JS minifier backend-web runs over its embedded shims
-//! (`crates/backend/web/build_support/js_min.rs`), shared by source so the
+//! (the `js-min` crate, shared with backend-web's build script) so the
 //! glue file's own JS is stripped by exactly the same transforms: comments
 //! and per-line whitespace only, every newline in code kept (ASI is
 //! untouched), no renaming. Its one blind spot — a regex literal containing
@@ -8,4 +8,4 @@
 //! to a crate's import snippets or `js_module!` sources; the tests pin that
 //! those inputs contain no regex literals.
 
-include!("../../../../backend/web/build_support/js_min.rs");
+pub use js_min::minify_js;

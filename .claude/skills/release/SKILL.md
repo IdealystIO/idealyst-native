@@ -327,14 +327,24 @@ Do **not** add `Co-Authored-By: Claude` or any AI attribution trailer
   succeeds *silently* otherwise.
 - **`denoise` cannot be published** (git dep on `deep_filter`); it is
   `publish = false` by design, not an oversight.
-- **Tooling crates publish nothing.** The CLI, `dev-reload`, `build-web`, the
-  MCP server and the 31 runnable examples are all `publish = false`. A commit
-  touching only those releases nothing — say so rather than looking for a crate
-  to bump. Their "deploy" IS the push: the CLI installs via
-  `cargo install --git`, so once the commit is on `origin/master` anyone who
-  reinstalls has it. Confirm it is on origin, tell the user that is what
-  deployed means for it, and if a guide in `crates/mcp/catalog/guides` also
-  described the old behaviour, fix the guide — that DOES re-cut `mcp-catalog`.
+- **The CLI is a published crate.** `idealyst-cli` and the 35 tooling crates it
+  builds on (`build-*`, `run-*`, `dev-reload`, `dev-http`, `wasm-carve`,
+  `mcp-server`, `lint`, …) release like any other crate, and users get them
+  through `idealyst update` / `cargo install idealyst-cli --index …`. A CLI
+  change is not deployed until it is released. The runnable examples and the
+  release tooling are still `publish = false`.
+  - The CLI embeds `examples/welcome` and the Inspector bundle, both outside
+    its directory. `[package.metadata.registry] also-watch` makes an edit there
+    plan a CLI release, and `prepackage` stages them into
+    `crates/tools/cli/package-assets/` before `cargo package` — that step
+    builds the Inspector for the web, so it needs the wasm toolchain and adds
+    about a minute. If it fails, the release stops; do not work around it.
+  - Verify a CLI release from outside the workspace with
+    `cargo install idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked --root <scratch>`,
+    then `<scratch>/bin/idealyst new <dir>` (scaffold present) and
+    `<scratch>/bin/idealyst inspect` (front end present, not "will serve no page").
+  - If a guide in `crates/mcp/catalog/guides` described the old behaviour,
+    fix the guide — that re-cuts `mcp-catalog`.
 - **`build` writes the version bumps.** A local `build` rehearsal leaves the
   manifests modified, and the real `publish` then refuses the dirty tree. Do
   not rehearse before a real publish; if you must, `git checkout -- Cargo.toml

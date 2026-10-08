@@ -54,14 +54,14 @@ leave it off.
 
 The `idealyst` CLI is the entry point for everything user-facing: scaffolding
 new projects, building / running them for web / iOS / Android, the hot-reload
-dev server, and the doctor command for diagnosing your toolchain. It's built
-from source via `cargo install`; there are no pre-built binaries yet.
+dev server, and the doctor command for diagnosing your toolchain. It's
+published to the framework's registry, `crates.idealyst.io`, and built from
+source by `cargo install`; there are no pre-built binaries yet.
 
 ### Prerequisites
 
 - **Rust** stable toolchain (1.78+ recommended). Install via
   [rustup](https://rustup.rs/) if you don't already have it.
-- **Git**. `cargo install --git` needs it on your `PATH`.
 
 Per-platform tooling (Xcode for iOS, Android NDK for Android, `wasm-pack` for
 web bundling) is only needed when you actually `build` / `run` for that target.
@@ -71,29 +71,45 @@ what each enabled target is missing.
 ### Install
 
 ```bash
-export CARGO_REGISTRIES_IDEALYST_INDEX=sparse+https://crates.idealyst.io/index/
-cargo install --git https://github.com/IdealystIO/idealyst-native idealyst-cli
+cargo install idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked
 ```
 
-That fetches the latest commit on `master`, compiles in release mode, and drops
-the `idealyst` binary into `~/.cargo/bin/` (which is on your `PATH` if you set
-Rust up through `rustup`).
+That builds the newest release in release mode and drops the `idealyst` binary
+into `~/.cargo/bin/` (which is on your `PATH` if you set Rust up through
+`rustup`). `--index` names the registry directly, so no `.cargo/config.toml`
+or environment variable is needed; `--locked` builds the exact dependency
+graph the release was checked against. Add `--version <x.y.z>` to install a
+particular release.
 
-The environment variable is required, not a convenience: the framework's crates
-depend on each other through the `idealyst` registry, and `cargo install --git`
-parses the fetched checkout without any project's `.cargo/config.toml`. Without
-it, cargo reports the CLI as missing (`could not find \`idealyst-cli\` in … with
-version \`*\``) rather than naming the registry.
-
-To pin to a specific commit / tag / branch:
+### Update
 
 ```bash
-cargo install --git https://github.com/IdealystIO/idealyst-native --rev <sha>    idealyst-cli
-cargo install --git https://github.com/IdealystIO/idealyst-native --tag <tag>    idealyst-cli
-cargo install --git https://github.com/IdealystIO/idealyst-native --branch <br>  idealyst-cli
+idealyst update          # rebuild the newest release and replace this binary
+idealyst update --check  # only report whether a newer release exists
 ```
 
-To re-install / upgrade over an existing copy, add `--force`.
+`update` reads the registry's index, and when a newer release is published it
+runs the same `cargo install` into the directory the running binary was
+installed to. It keeps a build cache in `~/.idealyst/cli-target`, so later
+updates rebuild only what changed. `--version <x.y.z>` installs a specific
+release, older ones included.
+
+### Unreleased commits
+
+To run a commit that hasn't been released yet, install from git. Inside a git
+checkout the framework's crates name their registry only as `"idealyst"`, so
+cargo needs it defined in the environment:
+
+```bash
+export CARGO_REGISTRIES_IDEALYST_INDEX=sparse+https://crates.idealyst.io/index/
+cargo install --git https://github.com/IdealystIO/idealyst-native idealyst-cli
+cargo install --git https://github.com/IdealystIO/idealyst-native --rev <sha> idealyst-cli
+```
+
+Without the variable cargo reports the CLI itself as missing (`could not find
+\`idealyst-cli\` in … with version \`*\``) rather than naming the registry. A
+later `idealyst update` moves a git install back onto releases once a newer
+one is published.
 
 ### Verify
 

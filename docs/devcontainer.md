@@ -116,15 +116,16 @@ history — lives:
 
 `idealyst-cli` installs the `idealyst` CLI itself into the container — an
 idealyst project's devcontainer wants it for `idealyst dev` / `lint` /
-`configure`. The only distribution channel today is a source build
-(`cargo install --git`), which is slow cold, so the install root lives in a
-named volume (`idealyst-cli-cache`) and the keyed `postCreateCommand` skips
-the build when the cached binary already exists — you pay the compile once
-per project, not per rebuild. A `/usr/local/bin/idealyst` symlink (refreshed
-each create) puts it on PATH. Requires a Rust toolchain + git in the base
-image (true for the scaffolded Rust base). To force-refresh a cached CLI, run
-`cargo install --force --git https://github.com/IdealystIO/idealyst-native idealyst-cli --root /idealyst/cli`
-in the container, or drop the volume.
+`configure`. It is a source build from the framework registry
+(`cargo install idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked`),
+which is slow cold, so the install root lives in a named volume
+(`idealyst-cli-cache`) and the keyed `postCreateCommand` skips the build when
+the cached binary already exists — you pay the compile once per project, not
+per rebuild. A `/usr/local/bin/idealyst` symlink (refreshed each create) puts
+it on PATH. Requires a Rust toolchain in the base image (true for the
+scaffolded Rust base). To move a cached CLI to the newest release, run
+`idealyst update` in the container — it rebuilds into the same
+`/idealyst/cli` root — or drop the volume.
 
 ### Ownership in `devcontainer.json`
 

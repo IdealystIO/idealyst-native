@@ -105,11 +105,21 @@ pub fn classify(message: &str) -> Bump {
 /// at the version already in the manifest rather than bumping past it, so
 /// that the registry starts where the git tags left off instead of skipping a
 /// version for no reason.
-pub fn bump_for(root: &Path, rel_dir: &str, nested: &[String], since: &str) -> Result<Bump> {
+/// `also` lists paths OUTSIDE the crate's directory that its published bytes
+/// are built from (`[package.metadata.registry] also-watch`) — the CLI embeds
+/// `examples/welcome` and the Inspector bundle, so a change there is a change
+/// to the CLI.
+pub fn bump_for(
+    root: &Path,
+    rel_dir: &str,
+    also: &[String],
+    nested: &[String],
+    since: &str,
+) -> Result<Bump> {
     // `%x1e` (record separator) between commits, `%x1f` (unit separator)
     // between a commit's sha and its message: commit bodies contain blank
     // lines, so no newline-based delimiter is safe here.
-    let args = log_args(rel_dir, nested, since);
+    let args = log_args(rel_dir, also, nested, since);
     let out = Command::new("git")
         .args(&args)
         .current_dir(root)
@@ -128,7 +138,7 @@ pub fn bump_for(root: &Path, rel_dir: &str, nested: &[String], since: &str) -> R
     let mut strongest = Bump::None;
     for record in text.split('\u{1e}').filter(|c| !c.trim().is_empty()) {
         let (sha, message) = record.trim_start().split_once('\u{1f}').unwrap_or(("", record));
-        if !sha.is_empty() && is_own_version_bump(root, rel_dir, nested, sha)? {
+        if !sha.is_empty() && is_own_version_bump(root, rel_dir, also, nested, sha)? {
             continue;
         }
         strongest = strongest.max(classify(message));
@@ -151,20 +161,26 @@ pub fn bump_for(root: &Path, rel_dir: &str, nested: &[String], since: &str) -> R
 /// A commit is skipped only when its ENTIRE footprint in this crate is the
 /// `version` key of the crate's own manifest. Any other line in that file, or
 /// any other file, and it is a real change.
-fn is_own_version_bump(root: &Path, rel_dir: &str, nested: &[String], sha: &str) -> Result<bool> {
+fn is_own_version_bump(
+    root: &Path,
+    rel_dir: &str,
+    also: &[String],
+    nested: &[String],
+    sha: &str,
+) -> Result<bool> {
     let manifest = format!("{rel_dir}/Cargo.toml");
-    let files = run_git(root, &show_args("--name-only", rel_dir, nested, sha))?;
+    let files = run_git(root, &show_args("--name-only", rel_dir, also, nested, sha))?;
     let touched: Vec<&str> = files.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     if touched != [manifest.as_str()] {
         return Ok(false);
     }
     // `-U0`: no context lines, so every `+`/`-` line in the patch is a line
     // the commit actually changed.
-    let patch = run_git(root, &show_args("-U0", &manifest, &[], sha))?;
+    let patch = run_git(root, &show_args("-U0", &manifest, &[], &[], sha))?;
     Ok(is_version_only_patch(&patch))
 }
 
-fn show_args(mode: &str, path: &str, nested: &[String], sha: &str) -> Vec<String> {
+fn show_args(mode: &str, path: &str, also: &[String], nested: &[String], sha: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "show".into(),
         "--format=".into(),
@@ -173,6 +189,7 @@ fn show_args(mode: &str, path: &str, nested: &[String], sha: &str) -> Vec<String
         "--".into(),
         path.to_string(),
     ];
+    args.extend(also.iter().cloned());
     args.extend(nested.iter().map(|d| format!(":(exclude){d}")));
     args
 }
@@ -303,7 +320,7 @@ fn differs_only_in_version_field(a: &str, b: &str) -> bool {
 /// demonstrates, and a demo under something like `runtime-shared` would make
 /// every consumer rebuild most of the framework for a change that is not in
 /// the crate at all.
-fn log_args(rel_dir: &str, nested: &[String], since: &str) -> Vec<String> {
+fn log_args(rel_dir: &str, also: &[String], nested: &[String], since: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "log".into(),
         "--no-merges".into(),
@@ -312,6 +329,7 @@ fn log_args(rel_dir: &str, nested: &[String], since: &str) -> Vec<String> {
         "--".into(),
         rel_dir.to_string(),
     ];
+    args.extend(also.iter().cloned());
     args.extend(nested.iter().map(|d| format!(":(exclude){d}")));
     args
 }
@@ -377,6 +395,7 @@ mod tests {
     fn regression_nested_members_are_excluded_from_a_crates_changes() {
         let args = log_args(
             "crates/sdk/client/dnd",
+            &[],
             &["crates/sdk/client/dnd/examples/kanban-demo".to_string(),
               "crates/sdk/client/dnd/examples/sortable-demo".to_string()],
             "abc123",
@@ -389,7 +408,7 @@ mod tests {
 
     #[test]
     fn a_crate_with_no_nested_members_gets_no_exclusions() {
-        let args = log_args("crates/css", &[], "abc123");
+        let args = log_args("crates/css", &[], &[], "abc123");
         assert_eq!(args.len(), 6);
         assert_eq!(args.last().unwrap(), "crates/css");
     }
@@ -447,7 +466,7 @@ mod tests {
 
     #[test]
     fn the_log_format_carries_the_sha_ahead_of_the_message() {
-        let args = log_args("crates/css", &[], "abc123");
+        let args = log_args("crates/css", &[], &[], "abc123");
         assert_eq!(args[2], "--format=%H%x1f%B%x1e");
     }
 
@@ -573,14 +592,58 @@ mod tests {
         git(&["commit", "-qm", "fix(css): promote a flex container"]);
 
         assert_eq!(
-            bump_for(&dir, "crates/net", &[], &released).unwrap(),
+            bump_for(&dir, "crates/net", &[], &[], &released).unwrap(),
             Bump::None,
             "net's only change since the last release was that release's own version bump"
         );
         assert_eq!(
-            bump_for(&dir, "crates/css", &[], &released).unwrap(),
+            bump_for(&dir, "crates/css", &[], &[], &released).unwrap(),
             Bump::Patch,
             "css really did change and must still be released"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Regression: the CLI embeds `examples/welcome` (the `idealyst new`
+    /// scaffold) and the Inspector, both outside its own directory. Asked
+    /// only about `crates/tools/cli`, a welcome-only edit planned no CLI
+    /// release, and registry installs kept scaffolding the old project.
+    /// `also-watch` paths count as the crate's own.
+    #[test]
+    fn regression_also_watch_paths_count_as_the_crates_own_changes() {
+        let dir = std::env::temp_dir().join(format!("registry-alsowatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("crates/cli/src")).unwrap();
+        std::fs::create_dir_all(dir.join("examples/welcome/src")).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git").args(args).current_dir(&dir).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        let write = |path: &str, body: &str| std::fs::write(dir.join(path), body).unwrap();
+        write("crates/cli/Cargo.toml", "[package]\nname = \"cli\"\nversion = \"1.6.0\"\n");
+        write("crates/cli/src/main.rs", "fn main() {}\n");
+        write("examples/welcome/src/lib.rs", "pub fn a() {}\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "feat: the world"]);
+        let released = String::from_utf8_lossy(
+            &Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output().unwrap().stdout,
+        )
+        .trim()
+        .to_string();
+
+        write("examples/welcome/src/lib.rs", "pub fn a() {}\npub fn b() {}\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "feat(welcome): a second act"]);
+
+        assert_eq!(bump_for(&dir, "crates/cli", &[], &[], &released).unwrap(), Bump::None);
+        assert_eq!(
+            bump_for(&dir, "crates/cli", &["examples/welcome".to_string()], &[], &released).unwrap(),
+            Bump::Minor,
+            "the scaffold the CLI embeds changed, so the CLI did"
         );
 
         std::fs::remove_dir_all(&dir).unwrap();

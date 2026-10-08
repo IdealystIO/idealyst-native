@@ -147,8 +147,8 @@ fn quickstart_section() -> Element {
     let section_style = crate::responsive::responsive_style(HomeSection::sheet());
 
     let install_snippet =
-        "# Install the CLI from the GitHub repo\n\
-         cargo install --git https://github.com/IdealystIO/idealyst-native idealyst-cli\n\n\
+        "# Install the CLI from the framework registry\n\
+         cargo install idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked\n\n\
          # Scaffold a project and run it\n\
          idealyst new my-app\n\
          cd my-app\n\

@@ -1,12 +1,9 @@
 [package]
 name = "robot-test-macros"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "The `#[robot_test]` attribute macro — turns a Rust function that drives an `App` over the Robot relay into a standard `#[test]`, so the same suite runs under plain `cargo test` and under `idealyst test` (which prepares the relay + app first)."
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
 
 [lib]
 proc-macro = true

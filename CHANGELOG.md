@@ -204,6 +204,32 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **The CLI installs from the registry, and `idealyst update` updates it**
+  (`idealyst-cli` 1.6.0, `registry`). `idealyst-cli` and the 35 tooling
+  crates it builds on are now published to `crates.idealyst.io`:
+  `cargo install idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked`
+  needs no environment variable or `.cargo/config.toml`. `idealyst update`
+  checks the registry and, when a newer release exists, rebuilds it into the
+  running binary's install root (`--check` only reports, `--version` picks a
+  release). The CLI now versions on its own. `idealyst configure devcontainer` installs the CLI
+  from the registry too. The release tool gained
+  `[package.metadata.registry] also-watch` / `prepackage` for a crate built
+  from files outside its directory (the CLI embeds `examples/welcome` and the
+  Inspector). `README.md` "Installing the CLI", `docs/registry.md`.
+
+- **`toggle(disabled = …)` and `slider(disabled = …)`**
+  (`runtime-vocabulary`, `runtime-macros`, `render-wgpu`, `mcp-catalog`).
+  The two primitives had no `disabled` input, so the vocabulary never
+  called the host's `set_disabled` for them and every backend's native
+  branch (`UISwitch` / `UISlider.enabled`, `NSSwitch` / `NSSlider`
+  `setEnabled:`, GTK `set_sensitive`, Win32 `EnableWindow`, Android
+  `setEnabled`, `<input type=checkbox|range disabled>`) was unreachable.
+  They now take a `bool` or a live source, like `text_input`: the native
+  inert state, the `DISABLED` style state bit, and a gate that drops
+  `on_change` on every backend. On wgpu a slider disabled mid-drag stops
+  tracking. Crosses to remote bundles (`CODEC_VERSION` 4, shared with
+  `text_input` / `text_area` `disabled`).
+
 - **`keyboard_avoiding_view` — content that stays clear of the soft
   keyboard, moving with the platform's own keyboard animation**
   (`runtime-shared`, `runtime-layout`, `runtime-vocabulary`,
@@ -875,6 +901,114 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **Every generated wrapper builds the app's own lock and stops piling
+  up generations on disk** (`build-ios`, `build-android`, `build-macos`,
+  `build-linux`, `build-windows`, `build-terminal`, `build-sim`, `build-ssr`;
+  also `idealyst-cli`). The generated wrapper deleted its `Cargo.lock` on every run, so every
+  `idealyst dev` / `build` / `run` re-resolved against the registry: the
+  wrapper built the newest releases rather than what the app locked, and each
+  framework release became a fresh generation of every crate above it, beside
+  the old one, times two for `dev` on/off (CrewForge: 25 framework crates at
+  two versions in one iOS wrapper target, 4.2 GB reclaimed by an outside GC).
+  Now the wrapper's lock is seeded from the app's and re-seeded only when the
+  app's lock content changes (or something else rewrote the wrapper's), so a
+  run with nothing changed does no resolution at all; generated files are
+  written only when their content changes (an identical rewrite of
+  `src/lib.rs` re-archived the ~1 GB debug staticlib every run); and after each
+  build the wrapper's private target dir is pruned to exactly the units the
+  current dev and non-dev builds use. A wrapper requirement is never lowered
+  below the CLI's own version within one major (the template calls API that
+  exists only from there — e.g. `deliver_inbound_link`, backend-ios-mobile
+  1.14), so an app lock behind the CLI gets that one crate bumped in the
+  wrapper instead of a wrapper that fails to compile. Every wrapper now
+  builds into its own `target/` (`<wrapper>/target`; SSR's premint posture
+  in `<wrapper>/target-premint`) instead of the project's — the Android,
+  macOS, terminal, sim and SSR wrappers used the project's shared target,
+  Windows a `<target>/win32` bucket — so the first build of each after
+  upgrading compiles from scratch once. The shared dir bought little: for
+  `examples/inspector` on macOS, building the wrapper into a target the
+  project's own `cargo build` had just filled reused 39 of 222 units (all
+  third-party; path crates hash against their own workspace root, and the
+  workspace's `[profile.dev]` does not apply inside the wrapper), 17.8 s
+  against 32.4 s cold — once per graph change — while it ruled out both the
+  seeded lock and the prune. A no-op rebuild takes 0.4 s and the target
+  stays at 1.93 GB. `docs/registry.md` "Generated wrappers".
+
+- **CLI-run builds prune exactly what they superseded** (`build-ios`
+  `target_gc`, `build-web`, `dev-events`, `idealyst-cli`). Cargo never
+  deletes a unit it stopped using, so every framework release, `cargo
+  update` or feature change left the previous generation in the web build's
+  `idealyst-web-<key>`, the dev server's `idealyst-dev-server` and the MCP
+  catalog's `idealyst-mcp` (CrewForge: 12 and 19 dead incremental caches for
+  one crate, ~10 GB per dir; 174 caches / 33 GB in one catalog sidecar).
+  Every build the CLI runs now records the units it consists of, under the
+  app's (or server's, or extractor's) own name, and prunes the dir to the
+  union of the recorded builds — exact where "keep the newest N" deleted a
+  sibling app's live units or kept superseded ones. A record not refreshed
+  for 30 days stops counting in these shared dirs; an app whose web config
+  moves off a dir another app still uses drops its record there. Only the
+  hot-patch replay's `incremental-hotpatch/` (written outside cargo) is
+  still trimmed by recency. `idealyst clean --stale` prunes recorded dirs —
+  now including the wrappers' private targets — by their records, and falls
+  back to keep-newest only for dirs a CLI from before the records built.
+  `dev-events`' `CargoSummary` gains `unit_messages`. `--shared-target`
+  server builds are never pruned. `docs/hot-reload.md` "Builds trim their
+  own superseded output".
+
+- **Registry projects pin each framework crate at its own version**
+  (`build-ios`, `idealyst-cli`). A registry-sourced project's dependencies
+  were written with ONE version for every framework crate: a fresh
+  `idealyst new --lib` wrote `backend-web = "1.5"` (it is on 2.x), and the
+  wrappers for an existing project copied runtime-core's `1.11` onto
+  `runtime-world` (at 1.8) — neither resolves. `FrameworkSource::Registry`
+  now carries a per-crate table: each crate the app's graph already resolved
+  is pinned to that version, and everything else to its entry in the
+  framework's `[workspace.dependencies]` as of the CLI's build. The
+  `IDEALYST_REGISTRY_VERSION` override (one number for every crate) is gone.
+
+- **`RustUnderlineSpan` is in the APK** (`run-android`). The backend's Kotlin
+  runtime was a hand-kept `include_str!` list in `run-android`, and
+  `RustUnderlineSpan.kt` (which `text`'s underline drawing loads with
+  `find_class`) was never added to it. `run-android` now compiles the
+  `runtime/kotlin` tree of the `backend-android-mobile` the app resolves, so
+  every file is included and the Kotlin always matches the app's backend
+  version rather than the commit the CLI was built from.
+
+- **Linux `text_area` reports edits** (`backend-linux`). It connected
+  nothing to its `GtkTextBuffer`: `on_change` never fired, so the app never
+  saw typed text; a controlled `value` never reached the widget
+  (`update_text_area_value` was the no-op default); `on_key_down` was
+  dropped; `wrap` was ignored; and its `Ref<TextAreaHandle>` (and
+  `autofocus`) did nothing. All are wired now, with the same echo guard
+  the entry uses, so a programmatic write is not reported as an edit.
+  Linux `toggle` / `slider` also follow their controlled `value` now (both
+  `update_*_value` were missing), and a slider's keyboard step is the
+  author's `step` (or 1% of the range) instead of a fixed `1.0`.
+
+- **`image()` loads on Android** (`backend-android-mobile`, new
+  `backend-image-source`). The Android image view ignored `src`: no
+  `asset://`, `data:` URI or network load, no SVG, a 0×0 box when unsized,
+  and `on_load` / `on_error` never fired. It now loads embedded assets,
+  `data:` URIs and `http(s)://` URLs (fetched off the UI thread), decodes
+  bitmaps with `BitmapFactory` and SVG with resvg (re-rasterized at the
+  displayed size), measures at the natural size, and fires `on_load` /
+  `on_error` like iOS and macOS. The `data:` URI + SVG decoding moved from
+  `backend-apple-core::image_source` into the platform-neutral
+  `backend-image-source` crate, shared by iOS, macOS and Android
+  (`backend-apple-core::image_source` keeps only the CoreGraphics glue).
+  Remote images on Android need the app's `android.permission.INTERNET`.
+- **Android popovers and menus place like every other backend**
+  (`backend-android-mobile`). An `anchored_overlay` was a `PopupWindow`
+  placed once with an unmeasured (0×0) size: a menu opened near the bottom
+  ran off the screen instead of flipping above its trigger, nothing was
+  clamped to the screen edges, `Center`/`End` alignment was off, and it
+  never moved when its content resized or its anchor scrolled. It is now
+  the same in-window overlay modals use, placed through the shared
+  `AnchoredPlacer` on every layout pass and every frame while open. A
+  `Ref<ViewHandle>` / `Ref<PressableHandle>` can now anchor one on Android
+  (their `rect()` was a zero rect), and `rect()` reports viewport dp like
+  the other backends (it was screen pixels).
 
 - **A fitted `virtual_grid` on macOS keeps its last row under legacy
   scrollers** (`backend-macos`, `runtime-layout`). A grid styled to fit its

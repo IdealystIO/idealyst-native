@@ -409,6 +409,28 @@ fn write_cargo_config(root: &Path, r: &RemoteArgs) -> Result<()> {
 /// cargo reports as "no matching package named X found" for whichever crate it
 /// happened to be resolving — an error message that points nowhere near the
 /// actual fault, which is why this has its own regression test.
+/// Run a crate's `[package.metadata.registry] prepackage` command.
+///
+/// It exists for a crate that embeds files from OUTSIDE its own directory —
+/// the CLI embeds `examples/welcome` and the Inspector's web build. `cargo
+/// package` carries only the crate's directory, so the command stages those
+/// files into a gitignored folder the crate lists in `include`. It runs from
+/// the workspace root, and a failure stops the release: packaging anyway
+/// would publish a crate that cannot build outside this workspace.
+fn run_prepackage(root: &Path, name: &str, argv: &[String]) -> Result<()> {
+    println!("  {name} — prepackage: {}", argv.join(" "));
+    let (program, args) = argv.split_first().context("empty prepackage command")?;
+    let st = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .status()
+        .with_context(|| format!("running {name}'s prepackage command"))?;
+    if !st.success() {
+        bail!("{name}'s prepackage command failed ({st}): {}", argv.join(" "));
+    }
+    Ok(())
+}
+
 /// Write the planned versions into the manifests before packaging.
 ///
 /// `cargo package` names its tarball after the version in the manifest, so the
@@ -581,7 +603,7 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
             );
             continue;
         };
-        let bump = version::bump_for(&ws.root, &p.rel_dir, &p.nested, &prev.commit)?;
+        let bump = version::bump_for(&ws.root, &p.rel_dir, &p.also_watch, &p.nested, &prev.commit)?;
         if bump == Bump::None {
             continue;
         }
@@ -810,6 +832,10 @@ fn build(
     let mut state = ReleaseState::default();
     for p in ws.publish_order(&|n| plan.contains_key(n))? {
         let Some(rel) = plan.get(&p.name) else { continue };
+
+        if let Some(argv) = &p.prepackage {
+            run_prepackage(&ws.root, &p.name, argv)?;
+        }
 
         let mut cmd = Command::new("cargo");
         cmd.args(["package", "-p", &p.name, "--allow-dirty"]);
@@ -1050,6 +1076,8 @@ mod tests {
             nested: vec![],
             deps: Default::default(),
             dev_deps: Default::default(),
+            also_watch: Vec::new(),
+            prepackage: None,
         };
         let ws = Workspace {
             root: d.clone(),
@@ -1108,6 +1136,8 @@ mod tests {
                             nested: vec![],
                             deps: Default::default(),
                             dev_deps: Default::default(),
+                            also_watch: Vec::new(),
+                            prepackage: None,
                         },
                     )
                 })

@@ -1342,6 +1342,7 @@ version = "1.10.2"
 dependencies = [
  "android_logger",
  "backend-android-core",
+ "backend-image-source",
  "inventory",
  "jni 0.21.1",
  "log",
@@ -1374,6 +1375,7 @@ dependencies = [
 name = "backend-apple-core"
 version = "1.8.0"
 dependencies = [
+ "backend-image-source",
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
@@ -1408,6 +1410,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "backend-image-source"
+version = "1.0.0"
+dependencies = [
+ "resvg",
+]
+
+[[package]]
 name = "backend-ios-core"
 version = "1.7.0"
 dependencies = [
@@ -1426,6 +1435,7 @@ name = "backend-ios-mobile"
 version = "1.14.0"
 dependencies = [
  "backend-apple-core",
+ "backend-image-source",
  "backend-ios-core",
  "block2 0.5.1",
  "inventory",
@@ -1487,6 +1497,7 @@ name = "backend-macos"
 version = "1.12.0"
 dependencies = [
  "backend-apple-core",
+ "backend-image-source",
  "block2 0.5.1",
  "inventory",
  "objc2 0.5.2",
@@ -1569,6 +1580,7 @@ dependencies = [
  "idea-theme",
  "idea-ui",
  "inventory",
+ "js-min",
  "raw-window-handle",
  "runtime-scene",
  "runtime-shared",
@@ -2650,6 +2662,7 @@ dependencies = [
  "robot-e2e",
  "runtime-macros",
  "runtime-scene",
+ "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen",
@@ -6270,7 +6283,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6321,6 +6334,7 @@ dependencies = [
  "run-windows",
  "runtime-macros-parse",
  "runtime-template",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6746,6 +6760,10 @@ dependencies = [
  "getrandom 0.3.4",
  "libc",
 ]
+
+[[package]]
+name = "js-min"
+version = "1.0.0"
 
 [[package]]
 name = "js-sys"
@@ -10485,6 +10503,7 @@ dependencies = [
  "linkme",
  "mcp-catalog",
  "postcard",
+ "runtime-layout",
  "runtime-macros",
  "runtime-scene",
  "runtime-shared",
@@ -10948,6 +10967,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "seq-macro"
@@ -13759,6 +13782,7 @@ name = "wasm-carve"
 version = "1.5.2"
 dependencies = [
  "anyhow",
+ "js-min",
  "libc",
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",

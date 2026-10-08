@@ -1,12 +1,9 @@
 [package]
 name = "dev-tui"
-version.workspace = true
+version = "1.5.2"
 edition.workspace = true
 license.workspace = true
 description = "The interactive panel for `idealyst dev`: a live view of the session (per-target state, cargo progress, recent saves, build errors, the log), built as an idealyst app on the framework's terminal backend."
-# Not published to the idealyst registry: this crate is workspace-internal
-# (tooling, demo, smoke test, or benchmark). Consumers never name it.
-publish = false
 
 [lib]
 crate-type = ["rlib"]
