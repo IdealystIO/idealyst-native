@@ -186,7 +186,7 @@ fn button_icon_sheet() -> Rc<runtime_core::StyleSheet> {
     })
 }
 
-/// The text-typography subset the label must carry ON ITS OWN NODE.
+// The text-typography subset the label must carry ON ITS OWN NODE.
 // (Former `label_typography_style` — a per-instance snapshot of the
 // container typography plus a color override — is replaced by the
 // installed Button LABEL sheet (`installed_button_label_sheet`), whose

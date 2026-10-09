@@ -1806,23 +1806,6 @@ fn notify_js_subscriber(sid: SignalId) {
     }
 }
 
-/// Register a JS-side notifier for `signal_id_raw` (the `u64`
-/// returned by [`Signal::id`]). Replaces any previously-registered
-/// notifier for the same signal — at most one notifier per signal
-/// is the contract, because the notifier's job is "ship the new
-/// value to JS", and shipping twice is wasteful (the JS side
-/// fans out to multiple bindings on its own).
-///
-/// `notifier` runs from inside `Signal::set` / `Signal::update`
-/// AFTER the Rust subscriber fan-out completes. It typically
-/// captures the `Signal<T>` handle + a backend reference and ships
-/// the new value to the backend's JS bridge. Whatever it does is
-/// opaque to the framework.
-///
-/// Cleanup: the notifier is dropped automatically when the
-/// associated signal's slot is freed (see `take_signals_batched`).
-/// Callers don't need to unregister manually unless they want to
-/// detach a notifier from a still-live signal.
 // =============================================================================
 // Read/write capability halves (ReadSignal / WriteSignal)
 // =============================================================================
@@ -1978,6 +1961,23 @@ impl<T> From<Signal<T>> for WriteSignal<T> {
     }
 }
 
+/// Register a JS-side notifier for `signal_id_raw` (the `u64`
+/// returned by [`Signal::id`]). Replaces any previously-registered
+/// notifier for the same signal — at most one notifier per signal
+/// is the contract, because the notifier's job is "ship the new
+/// value to JS", and shipping twice is wasteful (the JS side
+/// fans out to multiple bindings on its own).
+///
+/// `notifier` runs from inside `Signal::set` / `Signal::update`
+/// AFTER the Rust subscriber fan-out completes. It typically
+/// captures the `Signal<T>` handle + a backend reference and ships
+/// the new value to the backend's JS bridge. Whatever it does is
+/// opaque to the framework.
+///
+/// Cleanup: the notifier is dropped automatically when the
+/// associated signal's slot is freed (see `take_signals_batched`).
+/// Callers don't need to unregister manually unless they want to
+/// detach a notifier from a still-live signal.
 pub fn register_signal_js_notifier<F: Fn() + 'static>(signal_id_raw: u64, notifier: F) {
     ARENA.with(|a| {
         a.borrow_mut()

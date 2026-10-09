@@ -2288,15 +2288,6 @@ mod tests {
     use super::*;
     use runtime_shared::Tokenized;
 
-    /// `auto` grid columns with cells that measure like real text
-    /// reproduce `table-layout: auto`: a content-heavy column takes the
-    /// space it needs and the others stay tight — and the table fills its
-    /// width without overflowing — because the engine resets a grid
-    /// item's `min-width: auto` (which Taffy floors at content size) to 0
-    /// so wide columns can shrink and wrap. This is the exact behavior
-    /// the SDK's native table relies on; it regressed when columns were
-    /// split evenly (`1fr`) or overflowed (`auto` without the reset).
-
     // -----------------------------------------------------------------
     // Viewport seeding — what `set_overflow_scroll` is FOR.
     //
@@ -2554,6 +2545,14 @@ mod tests {
         );
     }
 
+    /// `auto` grid columns with cells that measure like real text
+    /// reproduce `table-layout: auto`: a content-heavy column takes the
+    /// space it needs and the others stay tight — and the table fills its
+    /// width without overflowing — because the engine resets a grid
+    /// item's `min-width: auto` (which Taffy floors at content size) to 0
+    /// so wide columns can shrink and wrap. This is the exact behavior
+    /// the SDK's native table relies on; it regressed when columns were
+    /// split evenly (`1fr`) or overflowed (`auto` without the reset).
     #[test]
     fn grid_text_columns_match_table_layout_auto() {
         // single-line (max-content) width and longest-word (min-content)

@@ -1325,7 +1325,7 @@ pub fn rules_to_css(rules: &StyleRules) -> String {
 /// equivalent of collecting `format!("{name}: {value}")` strings and
 /// `join("; ")`-ing them (the writer's original shape). Shared by every
 /// declaration site so the `format!` expansion machinery appears once,
-/// not once per property (see [`rules_to_css_with_shadow`]'s size note).
+/// not once per property (see [`rules_to_css_impl`]'s size note).
 fn push_decl(out: &mut String, name: &str, value: &str) {
     if !out.is_empty() {
         out.push_str("; ");
@@ -1334,18 +1334,6 @@ fn push_decl(out: &mut String, name: &str, value: &str) {
     out.push_str(": ");
     out.push_str(value);
 }
-
-/// **Size note.** This is the framework's largest single wasm function,
-/// so it's written as a tag-dispatched property table in emission order
-/// rather than ~85 straight-line `if let … parts.push(format!(…))`
-/// blocks: each inline `format!` expands its own `Arguments` pieces +
-/// argument marshalling (~130 B of wasm), and 85 of those dominated the
-/// function (~12.6 KB post `-Oz`). The table form pays a few stores per
-/// entry and shares one formatting path per value shape (~5 KB). Output
-/// is byte-identical — pinned by `tests/golden_rules_to_css.rs`, which
-/// matters beyond size: class names are minted from this output, so a
-/// byte change splits web/SSR class identity.
-
 
 /// DELTA lowering for premint arm/overlay rules: identical to
 /// [`rules_to_css`] except the `flex-direction: column` framework
@@ -1405,6 +1393,16 @@ pub fn flex_promoted(rules: &StyleRules) -> bool {
     }
 }
 
+/// **Size note.** This is the framework's largest single wasm function,
+/// so it's written as a tag-dispatched property table in emission order
+/// rather than ~85 straight-line `if let … parts.push(format!(…))`
+/// blocks: each inline `format!` expands its own `Arguments` pieces +
+/// argument marshalling (~130 B of wasm), and 85 of those dominated the
+/// function (~12.6 KB post `-Oz`). The table form pays a few stores per
+/// entry and shares one formatting path per value shape (~5 KB). Output
+/// is byte-identical — pinned by `tests/golden_rules_to_css.rs`, which
+/// matters beyond size: class names are minted from this output, so a
+/// byte change splits web/SSR class identity.
 fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex: bool) -> String {
     use runtime_shared::{Color, Length, Tokenized};
 

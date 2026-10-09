@@ -1958,12 +1958,6 @@ mod tests {
         }
     }
 
-    /// The press channel a touch backend uses in place of hover.
-    ///
-    /// Three properties, and the third is the one that matters for a
-    /// scrollable surface: a touch that slides away must CLEAR the press
-    /// even though the finger is still down, or every drag that starts
-    /// on a row leaves it stuck looking pressed until the finger lifts.
     // -----------------------------------------------------------------
     // Non-primary press gate (`Recognizer::drive`)
     // -----------------------------------------------------------------
@@ -2198,6 +2192,12 @@ mod tests {
         assert_eq!(fires.get(), 0, "the timer was never armed");
     }
 
+    /// The press channel a touch backend uses in place of hover.
+    ///
+    /// Three properties, and the third is the one that matters for a
+    /// scrollable surface: a touch that slides away must CLEAR the press
+    /// even though the finger is still down, or every drag that starts
+    /// on a row leaves it stuck looking pressed until the finger lifts.
     #[test]
     fn tap_with_press_reports_down_up_and_slide_away() {
         let log: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));

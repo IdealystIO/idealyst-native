@@ -33,9 +33,6 @@ pub enum Kind {
     Library,
 }
 
-/// Materialize the chosen scaffold under `dir`.
-///
-
 /// Write `.cargo/config.toml` naming the framework registry.
 ///
 /// A scaffolded project pins the framework by version, and every one of those
@@ -66,6 +63,8 @@ fn write_cargo_config(dir: &Path, source: &FrameworkSource) -> Result<()> {
     Ok(())
 }
 
+/// Materialize the chosen scaffold under `dir`.
+///
 /// `dir` must already exist and be empty (or the caller is happy to
 /// have it stomped — `new` enforces emptiness, `init` does not).
 pub fn write(
