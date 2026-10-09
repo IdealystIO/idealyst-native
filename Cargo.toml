@@ -516,12 +516,12 @@ premint-dump = { path = "crates/tools/premint-dump" }
 # the dump run never renders.
 linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
-runtime-macros = { path = "crates/runtime/macros", version = "1.17.0", registry = "idealyst" }
+runtime-macros = { path = "crates/runtime/macros", version = "1.18.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.11.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "1.0.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.18.0", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.19.0", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.0.0", registry = "idealyst" }
-mcp-server = { path = "crates/mcp/server", version = "1.5.2", registry = "idealyst" }
+mcp-server = { path = "crates/mcp/server", version = "1.6.0", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.11.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.0.0", registry = "idealyst" }
@@ -592,7 +592,7 @@ backend-windows = { path = "crates/backend/windows", version = "1.7.1", registry
 backend-linux = { path = "crates/backend/linux", version = "1.8.2", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.2", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.11.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.12.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "1.5.2", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "2.0.1", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -618,7 +618,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "1.10.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.5", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "3.6.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "3.7.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.2", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.6", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
@@ -636,16 +636,16 @@ markdown = { path = "crates/sdk/client/markdown", version = "1.5.4", registry = 
 webview = { path = "crates/sdk/client/webview", version = "1.6.1", registry = "idealyst" }
 video = { path = "crates/sdk/client/video", version = "1.7.0", registry = "idealyst" }
 svg = { path = "crates/sdk/client/svg", version = "1.6.1", registry = "idealyst" }
-canvas = { path = "crates/sdk/client/canvas", version = "1.8.0", registry = "idealyst" }
+canvas = { path = "crates/sdk/client/canvas", version = "1.9.0", registry = "idealyst" }
 canvas-core = { path = "crates/sdk/client/canvas/core", version = "1.8.0", registry = "idealyst" }
 charts-core = { path = "crates/sdk/client/charts/core", version = "1.6.1", registry = "idealyst" }
 charts = { path = "crates/sdk/client/charts", version = "1.5.5", registry = "idealyst" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.7.0", registry = "idealyst" }
-canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "2.1.0", registry = "idealyst" }
+canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "2.2.0", registry = "idealyst" }
 gpu-surface = { path = "crates/sdk/client/gpu-surface", version = "1.0.0", registry = "idealyst" }
-canvas3d = { path = "crates/sdk/client/canvas3d", version = "0.1.0", registry = "idealyst" }
-canvas3d-core = { path = "crates/sdk/client/canvas3d/core", version = "0.1.0", registry = "idealyst" }
-canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "0.1.0", registry = "idealyst" }
+canvas3d = { path = "crates/sdk/client/canvas3d", version = "0.2.0", registry = "idealyst" }
+canvas3d-core = { path = "crates/sdk/client/canvas3d/core", version = "0.2.0", registry = "idealyst" }
+canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "0.2.0", registry = "idealyst" }
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.4", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "1.6.1", registry = "idealyst" }
@@ -773,7 +773,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.6.1", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.7.0", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at

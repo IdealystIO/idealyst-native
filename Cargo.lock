@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "canvas"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "canvas-core",
 ]
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-vello"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "backend-linux",
  "canvas-core",
@@ -2327,14 +2327,14 @@ dependencies = [
 
 [[package]]
 name = "canvas3d"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "canvas3d-core",
 ]
 
 [[package]]
 name = "canvas3d-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "canvas-core",
@@ -2364,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "canvas3d-wgpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "canvas-core",
@@ -6330,7 +6330,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6348,7 +6348,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6444,7 +6444,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7581,7 +7581,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.18.0"
+version = "1.19.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7606,7 +7606,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10605,7 +10605,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "runtime-macros-expand",
 ]

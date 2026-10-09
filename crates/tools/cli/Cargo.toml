@@ -1,6 +1,6 @@
 [package]
 name = "idealyst-cli"
-version = "1.6.1"
+version = "1.7.0"
 edition.workspace = true
 license.workspace = true
 description = "Idealyst framework CLI — scaffold, dev-serve, build, and run idealyst apps"
