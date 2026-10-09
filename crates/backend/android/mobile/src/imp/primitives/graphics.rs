@@ -137,6 +137,13 @@ pub(crate) struct GraphicsCallback {
     /// `on_ready`) and `on_lost` (only fires if we'd previously
     /// fired `on_ready`).
     pub(crate) ready_fired: bool,
+    /// Display density (physical px per dp), read once at creation. Reported
+    /// as the graphics event `scale`: `last_size` is in physical px while
+    /// layout and touch positions are in dp, so a renderer needs the ratio to
+    /// put its author content (and hit tests) in the same units. Reporting
+    /// 1.0 made GPU views treat px as dp — content drew `density`× small and
+    /// picks missed.
+    pub(crate) density: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +164,7 @@ pub(crate) fn create(
         last_size: (0, 0),
         pending_window: None,
         ready_fired: false,
+        density: with_env(|env| crate::imp::density_of(env, &b.context.as_obj())).unwrap_or(1.0),
     };
     let ptr: jlong = leak(cb);
 
@@ -356,9 +364,7 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGraphicsCallback_nati
         return;
     }
 
-    // 1.0 keeps the historical physical-scale behavior; Android's density-aware
-    // scale is a separate validated follow-up (would change the active vello path).
-    let event = OnResizeEvent { size: new_size, scale: 1.0 };
+    let event = OnResizeEvent { size: new_size, scale: cb.density };
     let mut on_resize = std::mem::replace(
         &mut *cb.on_resize.borrow_mut(),
         Box::new(|_| {}),
@@ -440,7 +446,7 @@ unsafe fn fire_on_ready(
     let event = OnReadyEvent {
         target: GraphicsTarget::RawWindow(surface_handle),
         size: cb.last_size,
-        scale: 1.0,
+        scale: cb.density,
     };
     let mut on_ready = std::mem::replace(
         &mut *cb.on_ready.borrow_mut(),

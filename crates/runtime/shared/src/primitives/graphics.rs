@@ -42,8 +42,11 @@
 //!   creation/destruction follows `SurfaceHolder.Callback`'s
 //!   `surfaceCreated` / `surfaceChanged` / `surfaceDestroyed` events,
 //!   which fire `on_ready` / `on_resize` / `on_lost` respectively.
-//! - **iOS**: not yet implemented — would expose the view's
-//!   `CAMetalLayer` as `AppKitWindowHandle`/`UiKitWindowHandle`.
+//! - **iOS**: a `MetalView` (a `UIView` backed by `CAMetalLayer`), exposed
+//!   as `UiKitWindowHandle` + `UiKitDisplayHandle`
+//!   (`backend/ios/mobile/src/imp/graphics.rs`).
+//! - **macOS**: a layer-backed `NSView` with a `CAMetalLayer`, exposed as
+//!   `AppKitWindowHandle` (`backend/macos/src/imp/graphics.rs`).
 //! - **Linux (GTK4)**: a `GtkGLArea`, exposed as a [`GlTarget`] rather
 //!   than a window handle — see below.
 //! - **Windows**: a DirectComposition visual in a composition tree

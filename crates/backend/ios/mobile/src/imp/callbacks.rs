@@ -387,9 +387,13 @@ declare_class!(
                     cb(OnReadyEvent {
                         target: GraphicsTarget::RawWindow(surface),
                         size: new_size,
-                        // iOS rides canvas-native (no vello yet); 1.0 keeps the
-                        // physical-size contract until iOS GPU canvas is wired.
-                        scale: 1.0,
+                        // `size` is frame × contentScaleFactor, so this is the
+                        // physical-px-per-point ratio a renderer divides by to
+                        // get the LOGICAL size its author content (and touch
+                        // positions, which UIKit reports in points) lives in.
+                        // Reporting 1.0 here made GPU views treat physical px
+                        // as points: content drew ~3× small and picks missed.
+                        scale: scale as f32,
                     });
                 }
                 self.ivars().ready_fired.set(true);
@@ -402,7 +406,7 @@ declare_class!(
             // Bounds changed after on_ready — fire on_resize.
             let mut handler = self.ivars().on_resize.borrow_mut();
             if let Some(cb) = handler.as_mut() {
-                cb(OnResizeEvent { size: new_size, scale: 1.0 });
+                cb(OnResizeEvent { size: new_size, scale: scale as f32 });
             }
             self.ivars().last_size.set(new_size);
         }
