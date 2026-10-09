@@ -252,6 +252,18 @@ sdk!(
     "3D views: `{ canvas3d::Canvas3d(Canvas3dProps { draw: canvas3d::draw(|s: &mut Scene3d| { s.camera(..).light(..); s.model(&model, xf).pick_id(1); }), overlay: Some(canvas::draw(..)), handle: Some(h) }) }` — spliced as a child expression, NOT a `ui!` tag. RENDERER REQUIRED: register `canvas3d_wgpu::register` at boot (an unregistered `Canvas3dPrim` panics at mount; SSR registers `canvas3d::register_ssr`). Three layers like a game engine: `draw` is the 3D scene (glTF models via `Model::from_gltf(bytes)`, directional + ambient light, world-space `Lines` depth-tested or on top — grids/selection boxes belong HERE), `overlay` is a 2D canvas painter composited in the SAME frame (anchor with `camera.project(p, s.size())`), and interactive UI is ordinary views stacked over it. `OrbitCamera` hands out `touch_handler(&handle)` / `wheel_handler()` for the WRAPPING view's `on_touch` / `on_wheel` (drag orbit, shift-drag/two-finger pan, wheel/pinch dolly). `Canvas3dHandle::pick(x, y)` is exact CPU ray picking against `pick_id`'d models. Web: WebGPU, falling back to WebGL2 per view (all shaders are WebGL2-safe); native: Metal/Vulkan/DX12/GL. glTF loads from BYTES only (no fs/URL; an external-URI .gltf errors) and does not yet load skins, morphs or animations."
 );
 sdk!(
+    "gpu-surface",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "For RENDERER authors, not app code: the wgpu plumbing a scene-registry renderer mounts on a `graphics` surface — adapter/device bring-up gated on `Requirements` (capabilities, never platform checks), the shared `Rgba8Unorm` frame target, a present blit that converts the frame's `FrameAlpha` (straight or premultiplied) to the surface's, `OverlayCompositor` for layering one frame target onto another, and the mount lifecycle (`mount` + `SurfaceState` natively; `WebGpuProbe::run` → `claim`, or `claim_webgl` behind the `webgl` feature, on web, rAF-paced). `headless_device` + `read_target_rgba` give GPU tests real pixels. canvas-vello and canvas3d-wgpu are built on it; an app never depends on it directly."
+);
+sdk!(
+    "qr",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "QR codes: SHOW (`ui! { QrCode(data = url) }` — vector modules drawn into a `canvas`, square at the container's width unless `size = Some(px)`; every prop reactive), EXPORT (`QrMatrix::encode(..)?.to_svg(..)` — pure Rust, works server-side) and SCAN (`QrScanner` over any `MediaStream`, e.g. from `camera`; `decode_rgba8` / `decode_luma8` for stills). Features `component` / `generate` / `scan` are all on by default; a display-only app can take `default-features = false, features = [\"component\"]`. Keep a light background: most scanners can't read light-on-dark codes."
+);
+sdk!(
     "video",
     SdkCategory::Media,
     SdkKind::External,
@@ -285,6 +297,12 @@ sdk!(
     SdkCategory::Ui,
     SdkKind::Api,
     "Theming abstraction + extensibility for the idealyst design system."
+);
+sdk!(
+    "idea-theme-editor",
+    SdkCategory::Ui,
+    SdkKind::Api,
+    "A live editor for the installed idea-ui theme: `ui! { ThemeEditor(draft = ThemeDraft::from_live()) }` turns every token into a control, commits each edit immediately (the app re-tints as you type), saves/loads a flat JSON file, and exports Rust to paste into the app's theme setup. Only TOKENIZED values move — literals hard-coded in a component stylesheet are out of its reach. Opt-in crate so a dev panel never lands in an app bundle that doesn't ask for it."
 );
 sdk!(
     "icons-lucide",

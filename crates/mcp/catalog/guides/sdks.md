@@ -154,6 +154,8 @@ receives events produced on another.
 | **`video`** | Third-party `Video` playback primitive (a scene-registry payload). |
 | **`canvas`** | The author-facing facade for the 2D-drawing SDK (GPU canvas + self-capture compositor). |
 | **`canvas3d`** | 3D views — glTF models, lights, an orbit camera, world-space lines, exact CPU picking, and a 2D `canvas` overlay composited in the same frame. A child **expression** (`{ canvas3d::Canvas3d(Canvas3dProps { draw, overlay, handle }) }`), not a `ui!` tag; **register `canvas3d_wgpu::register` at boot**. Web runs WebGPU and falls back to WebGL2 per view; native runs Metal / Vulkan / DX12 / GL. Models load from bytes (`Model::from_gltf`); skins, morphs and animation are not loaded yet. |
+| **`qr`** | QR codes: `QrCode(data = ..)` draws one into a `canvas`; `QrMatrix::encode(..)?.to_svg(..)` exports SVG (works server-side); `QrScanner` reads codes out of any `MediaStream` (e.g. `camera`). Features `component` / `generate` / `scan`, all on by default. |
+| **`gpu-surface`** | For **renderer authors**, not apps: the wgpu surface lifecycle, device bring-up, frame target, present blit and overlay compositor that `canvas-vello` and `canvas3d-wgpu` share. Reach for it when writing a GPU-backed scene-registry renderer of your own. |
 | **`charts`** | Reactive charting — line/area/bar/scatter/heatmap, pie/donut, radial bars and gauges. Draws onto a `canvas`. See the [charts guide](charts.md). |
 
 ## UI primitives & extensions (scene-registry payloads)
@@ -172,6 +174,7 @@ extension SDKs" just below.
 | **`idea-ui-mail`** | Email-safe component set (`EmailBody`, `EmailContainer`, `Section`, `Heading`, `Text`, `Button`, `Divider`, `Spacer`) — the opinion layer over the un-opinionated `backend-email` renderer. Builds its `StyleRules` directly and reads **no theme** (a headless email render has no theme lifecycle), so `idea-theme` tokens do not apply and colors are plain CSS strings. For email templates handed to the `email` SDK's `.template(...)`, not for app screens. Nothing to register. |
 | **`idea-ui-nav`** | Themed navigation **chrome** for the navigators — `AppShell` (responsive pinned-sidebar ⇄ drawer), `TabBar`, `Drawer`, `StackHeader`. It does **not** navigate: a navigator owns only `{ nav.outlet }`, and these are the author layout wrapping it, wired to `nav.active_route` / `nav.on_select` from the `.layout(|nav| …)` closure. This is why there is no tab- or drawer-navigator crate. See [[navigation]]. Nothing to register. |
 | **`idea-theme`** | Theming abstraction + extensibility for the idealyst design system. |
+| **`idea-theme-editor`** | A live editor for the installed idea-ui theme — `ThemeEditor(draft = ThemeDraft::from_live())`; every token becomes a control, edits re-tint the app immediately, and the result saves as JSON or exports as Rust. Only tokenized values are editable. Opt-in so it never lands in a bundle that does not ask for it. |
 | **`icons-lucide`** | Lucide icon pack — only icons you reference end up in the binary. |
 | **`webview`** | Third-party `WebView` primitive. The canonical single-crate cfg-gated External pattern. |
 | **`maps`** | Third-party `MapView` primitive. |

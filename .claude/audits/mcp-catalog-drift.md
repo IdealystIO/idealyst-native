@@ -104,7 +104,7 @@ a spelling that silently did nothing.
 
 ### SDK roster coverage
 
-- [ ] List the crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`).
+- [ ] List the crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`). `tests/sdk_roster.rs` does this walk in both directions and fails on a missing or stale entry; its `NOT_AUTHOR_FACING` list is the exclusion set, so review any name added there.
 - [ ] For each author-facing crate, search `crates/mcp/catalog/src/sdks.rs` for an `sdk!("<crate>", …)` entry. Flag any crate with no entry — it's undiscoverable from `list_sdks` / `describe_sdk` / `search`.
 - [ ] Flag any `SdkEntry` whose `name` no longer matches a directory under `crates/{sdk,api,ui}/` — a stale claim whose `dep_line` won't resolve.
 - [ ] Spot-check `category` (data / media / ui / device) and `kind` (api vs external — does the crate expose plain functions/types, or a `ui!` `Element::External` primitive?). A `MapView`/`WebView`/`Video`-style primitive is `External`; `net`/`storage`/`server` are `Api`.
