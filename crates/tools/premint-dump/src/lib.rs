@@ -1317,7 +1317,7 @@ mod assembled_sheet_tests {
                 .unwrap_or_else(|| panic!("missing {pseudo} rule; got:\n{out}"))
         };
         let hover = at(":hover:not([disabled])");
-        let focus = at(":focus:not([disabled])");
+        let focus = at(":focus-visible:not([disabled])");
         let active = at(":active:not([disabled])");
         let disabled = at("[disabled]");
         assert!(

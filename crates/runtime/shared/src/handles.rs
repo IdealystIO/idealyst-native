@@ -39,6 +39,14 @@ pub struct StateBits(pub u8);
 impl StateBits {
     pub const HOVERED: StateBits = StateBits(1 << 0);
     pub const PRESSED: StateBits = StateBits(1 << 1);
+    /// Focus that should SHOW — the CSS `:focus-visible` rule, on every
+    /// backend: keyboard focus (Tab) sets it, and so does focus on a text
+    /// field however it arrived; a mouse click or tap on a pressable does
+    /// not, though the control may still take focus. A focus ring that
+    /// lit on every click read as a stuck "selected" state on buttons and
+    /// switches. Web lowers it to `:focus-visible`; macOS skips a
+    /// first-responder change made by a click; GTK follows the window's
+    /// own focus-visible flag.
     pub const FOCUSED: StateBits = StateBits(1 << 2);
     pub const DISABLED: StateBits = StateBits(1 << 3);
 

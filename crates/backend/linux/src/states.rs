@@ -25,7 +25,7 @@
 //! |---|---|
 //! | [`StateBits::HOVERED`] | `EventControllerMotion` enter/leave |
 //! | [`StateBits::PRESSED`] | `GestureClick` pressed / released + cancel |
-//! | [`StateBits::FOCUSED`] | `EventControllerFocus` enter/leave |
+//! | [`StateBits::FOCUSED`] | `EventControllerFocus` enter/leave, gated on focus-visible |
 //!
 //! `DISABLED` is deliberately absent: it is not an input-driven state.
 //! The framework sets it from the author's `disabled` prop and routes the
@@ -137,10 +137,22 @@ pub(crate) fn attach(
     widget.add_controller(click.clone());
 
     // --- focus -------------------------------------------------------
+    //
+    // FOCUSED is the `:focus-visible` rule on every backend: a click that
+    // focuses a button must not light its focus ring (it read as a stuck
+    // "selected" state), keyboard focus must. GTK tracks that itself — the
+    // window's `focus-visible` turns on with keyboard navigation and off
+    // with pointer input — so focus-enter reports it rather than `true`.
+    // A text entry is exempt and always shows focus, as `:focus-visible`
+    // does for a text field: the ring marks where typing goes.
     let focus = gtk4::EventControllerFocus::new();
     {
         let s = setter.clone();
-        focus.connect_enter(move |_| s(StateBits::FOCUSED, true));
+        let target = widget.downgrade();
+        focus.connect_enter(move |_| {
+            let show = target.upgrade().map_or(true, |w| focus_is_visible(&w));
+            s(StateBits::FOCUSED, show)
+        });
     }
     {
         let s = setter;
@@ -151,6 +163,29 @@ pub(crate) fn attach(
     StateControllers {
         controllers: vec![motion.upcast(), click.upcast(), focus.upcast()],
     }
+}
+
+/// Whether focus that just entered `widget` should SHOW — see `attach`.
+fn focus_is_visible(widget: &gtk4::Widget) -> bool {
+    if is_text_entry(widget) {
+        return true;
+    }
+    // A widget outside a window (none in practice once focusable) shows focus
+    // rather than silently hiding it.
+    widget
+        .root()
+        .and_then(|r| r.downcast::<gtk4::Window>().ok())
+        .map_or(true, |w| w.property::<bool>("focus-visible"))
+}
+
+/// A text input node: a `GtkEntry` (`text_input`) or the `ScrolledWindow`
+/// around a `GtkTextView` (`text_area`).
+fn is_text_entry(widget: &gtk4::Widget) -> bool {
+    widget.is::<gtk4::Entry>()
+        || widget
+            .downcast_ref::<gtk4::ScrolledWindow>()
+            .and_then(|s| s.child())
+            .is_some_and(|c| c.is::<gtk4::TextView>())
 }
 
 /// Wire the author's `.on_hover(…)` handler — `true` on enter, `false`

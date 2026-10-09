@@ -892,7 +892,7 @@ The backend receives `apply_styled_states(base, overlays)` (or
 overlays) and emits its own state-tracking mechanism. The web backend,
 for example, mints CSS pseudo-class rules —
 `:hover:not([disabled])`, `:active:not([disabled])`,
-`:focus:not([disabled])`, `[disabled]` — so the browser handles state
+`:focus-visible:not([disabled])`, `[disabled]` — so the browser handles state
 activation natively. No Rust↔JS round trip per event. The
 `:not([disabled])` guard is how CSS follows the
 [state precedence](#state-precedence) rule that a disabled control shows
@@ -977,6 +977,16 @@ same sheet came out differently on each, and a hovered disabled
 
 ### Focus indicators
 
+`state focused` means focus that should SHOW — the CSS `:focus-visible`
+rule — on every backend. Keyboard focus (Tab) lights it, and so does
+focus on a text field however it arrived (the ring marks where typing
+goes). A mouse click or a tap on a button, switch or segment does not,
+even when the control takes focus: a ring after every click read as a
+stuck "selected" state. Web lowers the state to `:focus-visible`; macOS
+skips a first-responder change made by a click; GTK follows the window's
+`focus-visible` flag; Android pressables are not focusable in touch mode,
+and iOS only focuses text fields.
+
 A focusable element (a `pressable` is one: `tabindex="0"` on web, in the
 key-view loop on macOS) stops being focusable while it is `disabled`: web
 swaps in `tabindex="-1"` plus `aria-disabled` and puts its own value back
@@ -986,7 +996,7 @@ also gives up focus if it had it.
 A focusable element shows the platform's own focus ring until its
 stylesheet takes the job over. Declaring a `state focused` block is what
 takes it over: the sheet then owns the indicator, and the platform ring
-is suppressed. On web the `:focus` rule minted for the block starts with
+is suppressed. On web the `:focus-visible` rule minted for the block starts with
 `outline: none` (the live engine, SSR and premint all mint it that way);
 macOS never draws its native ring on framework views.
 

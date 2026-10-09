@@ -1142,7 +1142,7 @@ mod tests {
         let head = b.head_css();
         let at = |needle: &str| head.find(needle).unwrap_or_else(|| panic!("missing {needle}: {head}"));
         let hover = at(":hover:not([disabled]){background: #aaaaaa}");
-        let focus = at(":focus:not([disabled]){outline:none;background: #bbbbbb}");
+        let focus = at(":focus-visible:not([disabled]){outline:none;background: #bbbbbb}");
         let active = at(":active:not([disabled]){background: #cccccc}");
         let disabled = at("[disabled]{background: #dddddd}");
         assert!(hover < focus && focus < active && active < disabled, "precedence order, got: {head}");
@@ -1273,7 +1273,7 @@ mod tests {
         );
         let head = b.head_css();
         assert!(
-            head.contains(":focus:not([disabled]){outline:none;background: #ddddff}"),
+            head.contains(":focus-visible:not([disabled]){outline:none;background: #ddddff}"),
             "focus overlay must prepend outline:none, got: {head}"
         );
     }

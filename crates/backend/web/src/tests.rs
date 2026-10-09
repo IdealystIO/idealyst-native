@@ -838,7 +838,7 @@ fn regression_web_disabled_state_overrides_hovered() {
         selectors,
         vec![
             format!(".{class}:hover:not([disabled])"),
-            format!(".{class}:focus:not([disabled])"),
+            format!(".{class}:focus-visible:not([disabled])"),
             format!(".{class}:active:not([disabled])"),
             format!(".{class}[disabled]"),
         ],

@@ -271,12 +271,22 @@ pub fn variant_class_key(
 /// disabled rule's (0,2,0), which is moot (they can never match the same
 /// element at once); among themselves they tie, so source order — the
 /// precedence-sorted overlay list — ranks hovered < focused < pressed.
+///
+/// FOCUSED lowers to `:focus-visible`, not `:focus`. `:focus` also matches
+/// an element focused by a mouse click or a tap, so every pressable control
+/// (a `Button`, a `Switch`, a segment) wore its focus ring after being
+/// clicked — it read as a stuck "selected" state. `:focus-visible` is the
+/// browser's own heuristic for "show a focus indicator": keyboard focus
+/// matches, a pointer click on a button does not, and a text field matches
+/// however it was focused (the caret is what you type into), so the field
+/// ring is unchanged. Native backends drive the same rule from their own
+/// input source — see `runtime_shared::StateBits::FOCUSED`.
 pub fn state_pseudo(state: runtime_shared::StateBits) -> Option<&'static str> {
     use runtime_shared::StateBits;
     match state {
         StateBits::HOVERED => Some(":hover:not([disabled])"),
         StateBits::PRESSED => Some(":active:not([disabled])"),
-        StateBits::FOCUSED => Some(":focus:not([disabled])"),
+        StateBits::FOCUSED => Some(":focus-visible:not([disabled])"),
         // Attribute selector, NOT the `:disabled` pseudo-class.
         // `set_disabled` marks the node with the HTML `disabled`
         // *attribute*, and a pressable renders as a `<div>`. The
@@ -1828,6 +1838,20 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Regression: the FOCUSED overlay lowered to `:focus`, which also
+    /// matches a control focused by a mouse click, so every clicked
+    /// `Button` / `Switch` / segment kept its themed focus ring as if it
+    /// were selected. It must be `:focus-visible` (keyboard focus, and text
+    /// fields however focused), still guarded against `[disabled]`.
+    #[test]
+    fn regression_focused_state_is_focus_visible_not_focus() {
+        use runtime_shared::StateBits;
+        assert_eq!(state_pseudo(StateBits::FOCUSED), Some(":focus-visible:not([disabled])"));
+        // The other states are unchanged.
+        assert_eq!(state_pseudo(StateBits::HOVERED), Some(":hover:not([disabled])"));
+        assert_eq!(state_pseudo(StateBits::PRESSED), Some(":active:not([disabled])"));
+    }
+
     use super::*;
     use runtime_shared::{Color, Length, TokenEntry, TokenValue};
 
@@ -2546,10 +2570,13 @@ mod tests {
         use runtime_shared::StateBits;
         let mut ok = true;
         while !suffix.is_empty() {
-            let tokens: [(&str, bool); 5] = [
+            // `:focus-visible` before `:focus`: the shorter token is a
+            // prefix of the longer and would match first.
+            let tokens: [(&str, bool); 6] = [
                 (":not([disabled])", !dom.contains(StateBits::DISABLED)),
                 ("[disabled]", dom.contains(StateBits::DISABLED)),
                 (":hover", dom.contains(StateBits::HOVERED)),
+                (":focus-visible", dom.contains(StateBits::FOCUSED)),
                 (":focus", dom.contains(StateBits::FOCUSED)),
                 (":active", dom.contains(StateBits::PRESSED)),
             ];

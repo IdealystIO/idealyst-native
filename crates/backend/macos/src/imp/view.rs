@@ -641,7 +641,14 @@ declare_class!(
             // focus deliberately.
             let ok: bool = !self.ivars().disabled.get()
                 && unsafe { msg_send![super(self), becomeFirstResponder] };
-            if ok {
+            // A CLICK still makes the control first responder (so keyboard
+            // activation and Tab continue from it, as before), but it must
+            // not light the focus ring: `StateBits::FOCUSED` is the
+            // `:focus-visible` rule on every backend, and a ring that lit on
+            // every click read as a stuck "selected" state on buttons and
+            // switches. Tab / programmatic focus arrive on a non-mouse event
+            // and still show it.
+            if ok && !current_event_is_pointer_press() {
                 self.fire_focus_state(true);
             }
             ok
@@ -2523,6 +2530,61 @@ pub(crate) fn resign_if_first_responder(view: &NSView) {
         }
         if owns {
             let _: bool = msg_send![window, makeFirstResponder: std::ptr::null_mut::<AnyObject>()];
+        }
+    }
+}
+
+/// `NSEventType` raw values for the three mouse-button presses
+/// (`NSEventTypeLeftMouseDown` / `RightMouseDown` / `OtherMouseDown`).
+const NS_EVENT_LEFT_MOUSE_DOWN: usize = 1;
+const NS_EVENT_RIGHT_MOUSE_DOWN: usize = 3;
+const NS_EVENT_OTHER_MOUSE_DOWN: usize = 25;
+
+/// Whether an `NSEventType` raw value is a mouse-button press.
+fn is_pointer_press_event_type(t: usize) -> bool {
+    matches!(t, NS_EVENT_LEFT_MOUSE_DOWN | NS_EVENT_RIGHT_MOUSE_DOWN | NS_EVENT_OTHER_MOUSE_DOWN)
+}
+
+/// Whether the event AppKit is dispatching right now is a mouse press — i.e.
+/// a first-responder change is happening because the user CLICKED, not
+/// because of Tab or code. `NSWindow` makes a clicked view first responder
+/// from inside its `mouseDown:` dispatch, so `currentEvent` is that press.
+/// (`NSEventType` is an `NSUInteger`: read as `usize`, never `u32`, or the
+/// arm64 `msg_send!` encoding check aborts.)
+fn current_event_is_pointer_press() -> bool {
+    unsafe {
+        let app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let event: *mut AnyObject = msg_send![app, currentEvent];
+        if event.is_null() {
+            return false;
+        }
+        let ty: usize = msg_send![event, type];
+        is_pointer_press_event_type(ty)
+    }
+}
+
+#[cfg(test)]
+mod focus_visible_tests {
+    use super::is_pointer_press_event_type;
+
+    // Regression: clicking an idea-ui Button / Switch / segment on macOS made
+    // it first responder, which fired `StateBits::FOCUSED` and drew the themed
+    // focus ring — after every click, like a stuck "selected" state. A click
+    // must not show focus; Tab must. The live first-responder path needs a
+    // main-thread NSApp (the harness runs off it), so this pins the event
+    // classification the gate rests on: mouse presses suppress the ring,
+    // key-down (Tab) and the other event kinds do not.
+    #[test]
+    fn regression_click_focus_does_not_light_the_ring() {
+        for press in [1usize, 3, 25] {
+            assert!(is_pointer_press_event_type(press), "mouse press {press} suppresses the ring");
+        }
+        // keyDown (10), mouseUp (2), mouseMoved (5), appKitDefined (13).
+        for other in [10usize, 2, 5, 13] {
+            assert!(!is_pointer_press_event_type(other), "event type {other} shows the ring");
         }
     }
 }

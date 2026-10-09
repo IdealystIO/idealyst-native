@@ -627,7 +627,7 @@ Picked by `handles_states_natively()`:
 - **`true`** — the backend receives `apply_styled_states(base, overlays)`
   and emits its own state tracking. Web mints CSS pseudo-class rules
   (`:hover:not([disabled])`, `:active:not([disabled])`,
-  `:focus:not([disabled])`, `[disabled]`, via `css::state_pseudo`) and
+  `:focus-visible:not([disabled])`, `[disabled]`, via `css::state_pseudo`) and
   lets the browser activate them; no Rust-side bookkeeping. The overlays
   arrive in state-precedence order (hovered < focused < pressed <
   disabled); emit them in that order, because the interaction rules tie

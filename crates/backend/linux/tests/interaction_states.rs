@@ -75,6 +75,10 @@ fn hoverable() -> Rc<StyleSheet> {
         .variant("__state_pressed", "on", |_| StyleRules {
             width: Some(Length::Px(150.0).into()),
             ..Default::default()
+        })
+        .variant("__state_focused", "on", |_| StyleRules {
+            width: Some(Length::Px(200.0).into()),
+            ..Default::default()
         }),
     )
 }
@@ -222,6 +226,42 @@ fn regression_hover_variant_restyles_the_node() {
         "a cancelled press must clear PRESSED. Still 150 means only `released` \
          was wired, so dragging off a button leaves it pressed forever",
     );
+
+    // --- focus follows FOCUS-VISIBLE, not raw focus ------------------
+    //
+    // Regression: a click focused the widget, focus-enter fired, and the
+    // themed focus ring lit after every click — buttons and switches looked
+    // stuck "selected". `StateBits::FOCUSED` is the `:focus-visible` rule on
+    // every backend, and GTK keeps that bit itself: the window's
+    // `focus-visible` is set by keyboard navigation and cleared by pointer
+    // input. Pointer-style focus must not light the variant; keyboard-style
+    // focus must.
+    let set_focus_visible = |on: bool| window.set_property("focus-visible", on);
+    set_focus_visible(false);
+    for f in controllers_of::<gtk4::EventControllerFocus>(&node) {
+        f.emit_by_name::<()>("enter", &[]);
+    }
+    settle(&ctx, &backend);
+    assert_eq!(
+        width_now(node_id),
+        100.0,
+        "focus that arrived by pointer (window focus-visible off) must not light \
+         the focused variant — that was the ring-after-every-click bug",
+    );
+    for f in controllers_of::<gtk4::EventControllerFocus>(&node) {
+        f.emit_by_name::<()>("leave", &[]);
+    }
+    set_focus_visible(true);
+    for f in controllers_of::<gtk4::EventControllerFocus>(&node) {
+        f.emit_by_name::<()>("enter", &[]);
+    }
+    settle(&ctx, &backend);
+    assert_eq!(width_now(node_id), 200.0, "keyboard focus (focus-visible on) lights the ring");
+    for f in controllers_of::<gtk4::EventControllerFocus>(&node) {
+        f.emit_by_name::<()>("leave", &[]);
+    }
+    settle(&ctx, &backend);
+    assert_eq!(width_now(node_id), 100.0, "focus-leave clears it");
 
     // --- teardown: a focus/hover event AFTER the node's scope dies must
     // not write through the freed signal slot.
