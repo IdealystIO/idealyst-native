@@ -2,6 +2,7 @@
 
 use crate::camera::{Camera, Ray};
 use crate::color::Color;
+use crate::anim::{Animation, Pose};
 use crate::model::{Aabb, Model};
 use crate::pick::{pick, PickHit};
 use glam::{Mat4, Vec2, Vec3};
@@ -86,6 +87,8 @@ pub struct ModelItem {
     pub transform: Mat4,
     /// Set → the model is pickable and [`Scene3d::pick`] reports this id.
     pub pick_id: Option<u32>,
+    /// How the model's nodes are posed; `None` draws the rest pose.
+    pub pose: Option<Pose>,
 }
 
 /// One batch of lines.
@@ -171,7 +174,7 @@ impl Scene3d {
     /// Draw `model` placed by `transform`. Returns the item to set a pick id
     /// on: `s.model(&m, xf).pick_id(1);`.
     pub fn model(&mut self, model: &Model, transform: Mat4) -> &mut ModelItem {
-        self.models.push(ModelItem { model: model.clone(), transform, pick_id: None });
+        self.models.push(ModelItem { model: model.clone(), transform, pick_id: None, pose: None });
         self.models.last_mut().expect("just pushed")
     }
 
@@ -226,6 +229,28 @@ impl ModelItem {
     pub fn pick_id(&mut self, id: u32) -> &mut Self {
         self.pick_id = Some(id);
         self
+    }
+
+    /// Draw the model in `pose` (built from this model — see [`Pose`]).
+    ///
+    /// Panics if `pose` belongs to another model.
+    pub fn pose(&mut self, pose: Pose) -> &mut Self {
+        assert_eq!(pose.model_id(), self.model.id(), "a pose of another model");
+        self.pose = Some(pose);
+        self
+    }
+
+    /// Draw the model with `anim` sampled at `time` seconds over its rest
+    /// pose. Shorthand for `.pose(Pose::rest(&model).sampled(anim, time))`;
+    /// wrap `time` with [`Animation::looped`] for a repeating clip.
+    pub fn animation(&mut self, anim: &Animation, time: f32) -> &mut Self {
+        let pose = Pose::rest(&self.model).sampled(anim, time);
+        self.pose(pose)
+    }
+
+    /// Model-space transform of every node as drawn (see [`Model::globals`]).
+    pub fn globals(&self) -> Vec<Mat4> {
+        self.model.globals(self.pose.as_ref())
     }
 }
 

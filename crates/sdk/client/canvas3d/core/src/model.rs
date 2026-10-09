@@ -6,6 +6,7 @@
 //! uploads on it, so a model drawn every frame uploads once; cloning a
 //! [`Model`] is a refcount bump that keeps the id.
 
+use crate::anim::{self, Animation, Node, Pose, Skin, SkinWeights};
 use crate::color::Color;
 use glam::{Mat4, Vec3};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,7 +90,11 @@ pub struct MeshData {
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
+    /// Rest-pose bounds of `positions`.
     pub bounds: Aabb,
+    /// Skin influences, for a mesh a [`Skin`] deforms (see
+    /// [`with_skin`](MeshData::with_skin)).
+    pub skin: Option<SkinWeights>,
 }
 
 impl MeshData {
@@ -114,7 +119,29 @@ impl MeshData {
         let uvs = uvs.unwrap_or_else(|| vec![[0.0, 0.0]; n]);
         assert_eq!(uvs.len(), n, "uvs length");
         let bounds = Aabb::from_points(positions.iter().map(|p| Vec3::from(*p)));
-        MeshData { id: next_id(), positions, normals, uvs, indices, bounds }
+        MeshData { id: next_id(), positions, normals, uvs, indices, bounds, skin: None }
+    }
+
+    /// Attach per-vertex skin influences. Each vertex's weights are
+    /// normalised to sum to 1; a vertex with no weight at all is bound fully
+    /// to its first joint.
+    ///
+    /// Panics if the arrays aren't one entry per vertex. Whether the joint
+    /// indices fit a skin is checked when the mesh joins a [`Model`].
+    pub fn with_skin(mut self, mut skin: SkinWeights) -> MeshData {
+        let n = self.positions.len();
+        assert_eq!(skin.joints.len(), n, "skin joints length");
+        assert_eq!(skin.weights.len(), n, "skin weights length");
+        for w in &mut skin.weights {
+            let sum: f32 = w.iter().map(|x| x.max(0.0)).sum();
+            *w = if sum > 0.0 && sum.is_finite() {
+                w.map(|x| x.max(0.0) / sum)
+            } else {
+                [1.0, 0.0, 0.0, 0.0]
+            };
+        }
+        self.skin = Some(skin);
+        self
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -336,12 +363,50 @@ impl Material {
 }
 
 /// One drawable piece of a model: a mesh, the index of its material in
-/// [`Model::materials`], and its transform relative to the model.
+/// [`Model::materials`], and where it sits in the model.
+///
+/// A part is placed one of three ways:
+/// - **fixed**: `node` and `skin` are `None`; `transform` places it;
+/// - **on a node**: it follows that node of the hierarchy, so animating the
+///   node moves it (`transform` is filled in with the node's rest placement);
+/// - **skinned**: its mesh deforms with the joints of `skin`; `transform`
+///   and `node` don't apply (glTF's rule).
 #[derive(Clone, Debug)]
 pub struct Part {
     pub mesh: Arc<MeshData>,
     pub material: usize,
     pub transform: Mat4,
+    pub node: Option<usize>,
+    pub skin: Option<usize>,
+}
+
+impl Part {
+    /// A fixed part.
+    pub fn new(mesh: Arc<MeshData>, material: usize, transform: Mat4) -> Part {
+        Part { mesh, material, transform, node: None, skin: None }
+    }
+
+    /// Attach the part to `node`.
+    pub fn on_node(mut self, node: usize) -> Part {
+        self.node = Some(node);
+        self
+    }
+
+    /// Deform the part's mesh with `skin` (its mesh needs [`SkinWeights`]).
+    pub fn skinned(mut self, skin: usize) -> Part {
+        self.skin = Some(skin);
+        self
+    }
+}
+
+/// Everything a [`Model`] is made of, for [`Model::from_desc`].
+#[derive(Clone, Debug, Default)]
+pub struct ModelDesc {
+    pub parts: Vec<Part>,
+    pub materials: Vec<Material>,
+    pub nodes: Vec<Node>,
+    pub skins: Vec<Skin>,
+    pub animations: Vec<Animation>,
 }
 
 #[derive(Debug)]
@@ -349,6 +414,11 @@ struct ModelData {
     parts: Vec<Part>,
     materials: Vec<Material>,
     bounds: Aabb,
+    nodes: Vec<Node>,
+    /// Parents before children (see `anim::hierarchy_order`).
+    order: Vec<usize>,
+    skins: Vec<Skin>,
+    animations: Vec<Animation>,
 }
 
 /// A drawable group of meshes and materials. Cheap to clone; clones share the
@@ -373,6 +443,10 @@ pub enum ModelError {
     MissingPositions,
     /// An image's buffer view runs past the end of its buffer.
     BadBufferView,
+    /// The asset's hierarchy, skins or animations are inconsistent (a cycle,
+    /// an index out of range, a channel whose values don't match its
+    /// keyframes …).
+    Invalid(&'static str),
 }
 
 impl std::fmt::Display for ModelError {
@@ -384,6 +458,7 @@ impl std::fmt::Display for ModelError {
             ModelError::Image(e) => write!(f, "glTF image: {e}"),
             ModelError::MissingPositions => f.write_str("glTF primitive has no POSITION attribute"),
             ModelError::BadBufferView => f.write_str("glTF image buffer view is out of range"),
+            ModelError::Invalid(why) => write!(f, "glTF: {why}"),
         }
     }
 }
@@ -406,22 +481,69 @@ impl Model {
     /// A model of one mesh with one material.
     pub fn from_mesh(mesh: MeshData, material: Material) -> Model {
         Model::from_parts(
-            vec![Part { mesh: Arc::new(mesh), material: 0, transform: Mat4::IDENTITY }],
+            vec![Part::new(Arc::new(mesh), 0, Mat4::IDENTITY)],
             vec![material],
         )
     }
 
-    /// A model from explicit parts. Each part's `material` must index
-    /// `materials`.
+    /// A model from fixed parts (no hierarchy). Each part's `material` must
+    /// index `materials`.
     pub fn from_parts(parts: Vec<Part>, materials: Vec<Material>) -> Model {
-        assert!(
-            parts.iter().all(|p| p.material < materials.len()),
-            "part material index out of range"
-        );
-        let bounds = parts
-            .iter()
-            .fold(Aabb::EMPTY, |b, p| b.union(p.mesh.bounds.transformed(p.transform)));
-        Model { id: next_id(), data: Arc::new(ModelData { parts, materials, bounds }) }
+        Model::from_desc(ModelDesc { parts, materials, ..Default::default() })
+    }
+
+    /// A model with a node hierarchy, skins and animations — what
+    /// [`from_gltf`](Model::from_gltf) builds, available for models made in
+    /// code.
+    ///
+    /// Panics if the description is inconsistent: a part's material, node or
+    /// skin out of range, a skinned part whose mesh has no [`SkinWeights`] or
+    /// uses a joint its skin doesn't have, a skin whose inverse-bind list
+    /// doesn't match its joints, or a parent cycle.
+    pub fn from_desc(desc: ModelDesc) -> Model {
+        match Model::try_from_desc(desc) {
+            Ok(m) => m,
+            Err(why) => panic!("{why}"),
+        }
+    }
+
+    pub(crate) fn try_from_desc(desc: ModelDesc) -> Result<Model, &'static str> {
+        let ModelDesc { mut parts, materials, nodes, skins, animations } = desc;
+        let order = anim::hierarchy_order(&nodes).ok_or("the node hierarchy has a cycle or a bad parent index")?;
+        for skin in &skins {
+            if skin.inverse_bind.len() != skin.joints.len() {
+                return Err("a skin's inverse-bind matrices don't match its joints");
+            }
+            if skin.joints.iter().any(|&j| j >= nodes.len()) {
+                return Err("a skin joint is not a node of the model");
+            }
+        }
+        for p in &parts {
+            if p.material >= materials.len() {
+                return Err("part material index out of range");
+            }
+            if p.node.is_some_and(|n| n >= nodes.len()) {
+                return Err("part node index out of range");
+            }
+            if let Some(s) = p.skin {
+                let skin = skins.get(s).ok_or("part skin index out of range")?;
+                let weights = p.mesh.skin.as_ref().ok_or("a skinned part's mesh has no skin weights")?;
+                let joints = skin.joints.len();
+                if weights.joints.iter().flatten().any(|&j| j as usize >= joints) {
+                    return Err("a mesh vertex uses a joint its skin doesn't have");
+                }
+            }
+        }
+        let rest: Vec<_> = nodes.iter().map(|n| n.rest).collect();
+        let globals = anim::globals(&nodes, &order, &rest);
+        for p in &mut parts {
+            if let (Some(n), None) = (p.node, p.skin) {
+                p.transform = globals[n];
+            }
+        }
+        let mut data = ModelData { parts, materials, bounds: Aabb::EMPTY, nodes, order, skins, animations };
+        data.bounds = bounds_for(&data, &globals);
+        Ok(Model { id: next_id(), data: Arc::new(data) })
     }
 
     /// Load a glTF 2.0 asset from bytes: binary `.glb`, or `.gltf` JSON whose
@@ -432,8 +554,14 @@ impl Model {
     /// Supported: triangle primitives with positions, optional normals,
     /// `TEXCOORD_0` and indices; metallic-roughness materials with their five
     /// textures (all read through `TEXCOORD_0`); alpha modes; double-sided;
-    /// `KHR_materials_unlit`. Not loaded (in this version): skins, morph
-    /// targets, animations, cameras, lights, non-triangle primitives.
+    /// `KHR_materials_unlit`; the node hierarchy; skins (`JOINTS_0` /
+    /// `WEIGHTS_0`: up to four joints per vertex); animations of node
+    /// translation, rotation and scale with step, linear and cubic-spline
+    /// interpolation.
+    ///
+    /// Not loaded (in this version): morph targets and the `weights`
+    /// animation channels that drive them, a second set of skin influences
+    /// (`JOINTS_1` / `WEIGHTS_1`), cameras, lights, non-triangle primitives.
     pub fn from_gltf(bytes: &[u8]) -> Result<Model, ModelError> {
         crate::gltf_load::load(bytes)
     }
@@ -450,10 +578,89 @@ impl Model {
         &self.data.materials
     }
 
-    /// Model-space bounds of every part (with part transforms applied).
+    /// Model-space bounds of every part in the rest pose. An animated model
+    /// can move outside them; [`posed_bounds`](Model::posed_bounds) measures
+    /// a pose.
     pub fn bounds(&self) -> Aabb {
         self.data.bounds
     }
+
+    pub fn nodes(&self) -> &[Node] {
+        &self.data.nodes
+    }
+
+    pub fn skins(&self) -> &[Skin] {
+        &self.data.skins
+    }
+
+    pub fn animations(&self) -> &[Animation] {
+        &self.data.animations
+    }
+
+    /// The clip called `name`.
+    pub fn animation(&self, name: &str) -> Option<&Animation> {
+        self.data.animations.iter().find(|a| a.name() == Some(name))
+    }
+
+    /// The index of the node called `name`, for [`Pose::set`].
+    pub fn node(&self, name: &str) -> Option<usize> {
+        self.data.nodes.iter().position(|n| n.name.as_deref() == Some(name))
+    }
+
+    /// Model-space transform of every node in `pose` (`None`: the rest pose).
+    ///
+    /// Panics if `pose` belongs to another model.
+    pub fn globals(&self, pose: Option<&Pose>) -> Vec<Mat4> {
+        let rest;
+        let locals = match pose {
+            Some(p) => {
+                assert_eq!(p.model_id(), self.id, "a pose of another model");
+                p.locals()
+            }
+            None => {
+                rest = self.data.nodes.iter().map(|n| n.rest).collect::<Vec<_>>();
+                &rest
+            }
+        };
+        anim::globals(&self.data.nodes, &self.data.order, locals)
+    }
+
+    /// Where `part` sits in the model under `globals` (from
+    /// [`globals`](Model::globals)). A skinned part is placed by its joints,
+    /// so this is the identity for one.
+    pub fn part_transform(&self, part: &Part, globals: &[Mat4]) -> Mat4 {
+        match (part.skin, part.node) {
+            (Some(_), _) => Mat4::IDENTITY,
+            (None, Some(n)) => globals[n],
+            (None, None) => part.transform,
+        }
+    }
+
+    /// The skinning matrix of each joint of skin `skin` under `globals`.
+    pub fn joint_matrices(&self, skin: usize, globals: &[Mat4]) -> Vec<Mat4> {
+        anim::joint_matrices(&self.data.skins[skin], globals)
+    }
+
+    /// Exact model-space bounds of every part in `pose` (skinned meshes are
+    /// deformed on the CPU to measure them, so this costs a pass over their
+    /// vertices — call it when the pose changes, not per vertex of work).
+    pub fn posed_bounds(&self, pose: &Pose) -> Aabb {
+        bounds_for(&self.data, &self.globals(Some(pose)))
+    }
+}
+
+fn bounds_for(data: &ModelData, globals: &[Mat4]) -> Aabb {
+    data.parts.iter().fold(Aabb::EMPTY, |b, p| {
+        let part = match (p.skin, p.node) {
+            (Some(s), _) => {
+                let joints = anim::joint_matrices(&data.skins[s], globals);
+                anim::bounds_of(&anim::skinned_positions(&p.mesh, &joints))
+            }
+            (None, Some(n)) => p.mesh.bounds.transformed(globals[n]),
+            (None, None) => p.mesh.bounds.transformed(p.transform),
+        };
+        b.union(part)
+    })
 }
 
 #[cfg(test)]
@@ -508,12 +715,8 @@ mod tests {
     #[test]
     fn model_bounds_include_part_transforms() {
         let parts = vec![
-            Part { mesh: Arc::new(MeshData::cube(1.0)), material: 0, transform: Mat4::IDENTITY },
-            Part {
-                mesh: Arc::new(MeshData::cube(1.0)),
-                material: 0,
-                transform: Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0)),
-            },
+            Part::new(Arc::new(MeshData::cube(1.0)), 0, Mat4::IDENTITY),
+            Part::new(Arc::new(MeshData::cube(1.0)), 0, Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0))),
         ];
         let m = Model::from_parts(parts, vec![Material::default()]);
         assert_eq!(m.bounds(), Aabb::new(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(5.5, 0.5, 0.5)));

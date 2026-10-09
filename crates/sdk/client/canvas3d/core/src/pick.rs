@@ -4,6 +4,7 @@
 //! positions on the CPU), with a per-part bounding-box rejection first. Rays
 //! are tested in each part's local space, so no geometry is transformed.
 
+use crate::anim::skinned_positions;
 use crate::camera::Ray;
 use crate::model::Aabb;
 use crate::scene::Scene3d;
@@ -66,14 +67,19 @@ pub fn ray_aabb(origin: Vec3, dir: Vec3, bounds: Aabb) -> Option<(f32, f32)> {
     (far >= near.max(0.0)).then_some((near, far))
 }
 
-/// The nearest hit of `ray` (unit `dir`) on the pickable models of `scene`.
+/// The nearest hit of `ray` (unit `dir`) on the pickable models of `scene`,
+/// as drawn: animated parts where their pose put them, skinned meshes
+/// deformed (on the CPU, for the pickable models only, at pick time).
 pub fn pick(scene: &Scene3d, ray: Ray) -> Option<PickHit> {
     let mut best: Option<(f32, u32)> = None;
     for item in scene.models() {
         let Some(id) = item.pick_id else { continue };
+        let globals = item.globals();
         for part in item.model.parts() {
-            let to_world = item.transform * part.transform;
-            let Some(t) = nearest_in_part(ray, to_world, part, &item.model) else { continue };
+            let to_world = item.transform * item.model.part_transform(part, &globals);
+            let skinned =
+                part.skin.map(|s| skinned_positions(&part.mesh, &item.model.joint_matrices(s, &globals)));
+            let Some(t) = nearest_in_part(ray, to_world, part, &item.model, skinned.as_deref()) else { continue };
             if best.is_none_or(|(bt, _)| t < bt) {
                 best = Some((t, id));
             }
@@ -82,7 +88,15 @@ pub fn pick(scene: &Scene3d, ray: Ray) -> Option<PickHit> {
     best.map(|(t, id)| PickHit { pick_id: id, world_pos: ray.at(t), distance: t })
 }
 
-fn nearest_in_part(ray: Ray, to_world: Mat4, part: &crate::model::Part, model: &crate::model::Model) -> Option<f32> {
+/// `skinned`: the part's vertices already deformed into model space (then
+/// `to_world` is the item transform alone).
+fn nearest_in_part(
+    ray: Ray,
+    to_world: Mat4,
+    part: &crate::model::Part,
+    model: &crate::model::Model,
+    skinned: Option<&[Vec3]>,
+) -> Option<f32> {
     // A degenerate (non-invertible) transform collapses the part to nothing
     // pickable — and draws nothing either.
     if to_world.determinant().abs() < f32::EPSILON {
@@ -93,14 +107,24 @@ fn nearest_in_part(ray: Ray, to_world: Mat4, part: &crate::model::Part, model: &
     // `t` stays the WORLD distance along the unit world ray.
     let o = to_local.transform_point3(ray.origin);
     let d = to_local.transform_vector3(ray.dir);
-    ray_aabb(o, d, part.mesh.bounds)?;
+    let mesh = &part.mesh;
+    let bounds = match skinned {
+        Some(p) => Aabb::from_points(p.iter().copied()),
+        None => mesh.bounds,
+    };
+    ray_aabb(o, d, bounds)?;
     // A mirroring transform flips which side is the front face.
     let mirrored = to_world.determinant() < 0.0;
     let cull_back = !model.materials()[part.material].double_sided;
-    let mesh = &part.mesh;
     let mut nearest: Option<f32> = None;
     for tri in 0..mesh.triangle_count() {
-        let mut corners = mesh.triangle(tri);
+        let mut corners = match skinned {
+            Some(p) => {
+                let i = &mesh.indices[tri * 3..tri * 3 + 3];
+                [p[i[0] as usize], p[i[1] as usize], p[i[2] as usize]]
+            }
+            None => mesh.triangle(tri),
+        };
         if mirrored {
             corners.swap(1, 2);
         }

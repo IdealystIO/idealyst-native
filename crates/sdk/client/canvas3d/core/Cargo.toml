@@ -28,8 +28,9 @@ glam = "0.34"
 # URL loading + its own image decoding): models are loaded from bytes the app
 # already has (embedded, fetched, picked), which is the only thing that works
 # on every target. `utils` provides the typed accessor reader;
-# `KHR_materials_unlit` exposes the unlit flag.
-gltf = { version = "1.4", default-features = false, features = ["utils", "KHR_materials_unlit"] }
+# `KHR_materials_unlit` exposes the unlit flag; `names` keeps node and
+# animation names (`Model::animation("Walk")`, `Model::node("Head")`).
+gltf = { version = "1.4", default-features = false, features = ["utils", "names", "KHR_materials_unlit"] }
 # Embedded `data:` buffer URIs in a .gltf.
 base64 = "0.22"
 # Texture decoding (PNG/JPEG — the two formats glTF core allows). Same crate,

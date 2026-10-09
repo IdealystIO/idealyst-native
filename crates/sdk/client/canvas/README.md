@@ -169,7 +169,10 @@ entry points exist for drawing canvas scenes inside another GPU renderer's frame
 
 - `canvas_vello::SceneRenderer` renders with vello on a device you already own.
 - `canvas_vello::rasterize_cpu` (crate feature `cpu`) uses vello_cpu, for GPUs
-  that can't run vello's compute shaders.
+  that can't run vello's compute shaders. `cpu_footprint` measures the part of
+  the frame a scene can draw into, and `rasterize_cpu_region` rasterizes just
+  that part, so a small overlay costs what it covers rather than the whole
+  frame.
 
 Registering both (native first, then vello) is the recommended setup on
 GPU-capable platforms: `canvas-vello` **self-gates** — it wins on a real GPU and

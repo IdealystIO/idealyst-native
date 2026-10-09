@@ -44,6 +44,7 @@ ds-bundle/
 # multiplying 7.8 MB across every pinned release checkout.
 /crates/sdk/client/denoise/examples/denoise-demo/assets/DeepFilterNet3_onnx.tar.gz
 
-# glTF model for canvas3d-demo (CC0, Khronos WaterBottle). Fetch with
+# glTF models for canvas3d-demo (Khronos WaterBottle + Fox). Fetch with
 # ./scripts/fetch-canvas3d-demo-model.sh — pinned + checksummed, never committed.
 /crates/sdk/client/canvas3d/examples/canvas3d-demo/assets/WaterBottle.glb
+/crates/sdk/client/canvas3d/examples/canvas3d-demo/assets/Fox.glb

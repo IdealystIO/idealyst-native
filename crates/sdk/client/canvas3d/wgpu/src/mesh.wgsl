@@ -37,6 +37,8 @@ struct Object {
     params: vec4<f32>,
     // alpha_cutoff, alpha_mode (0 opaque, 1 mask, 2 blend), unlit, has_normal_map
     params2: vec4<f32>,
+    // x = index of this draw's first joint in `joint_matrices` (skinned only).
+    skin: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> object: Object;
 
@@ -48,6 +50,30 @@ struct Object {
 @group(2) @binding(3) var t_occlusion: texture_2d<f32>;
 @group(2) @binding(4) var t_emissive: texture_2d<f32>;
 @group(2) @binding(5) var samp: sampler;
+
+// Skinning: every joint matrix of the frame, 4 texels (one per column) per
+// joint, JOINTS_PER_ROW joints per row. A float texture rather than a uniform
+// array because WebGL2 caps a uniform block at 16 KiB (256 matrices shared by
+// every skinned draw); a vertex-stage textureLoad of an unfilterable float
+// texture is core WebGL2. Only the skinned pipeline layout has group 3.
+const JOINTS_PER_ROW: u32 = 64u;
+@group(3) @binding(0) var joint_matrices: texture_2d<f32>;
+
+fn joint(i: u32) -> mat4x4<f32> {
+    let x = i32((i % JOINTS_PER_ROW) * 4u);
+    let y = i32(i / JOINTS_PER_ROW);
+    return mat4x4<f32>(
+        textureLoad(joint_matrices, vec2<i32>(x, y), 0),
+        textureLoad(joint_matrices, vec2<i32>(x + 1, y), 0),
+        textureLoad(joint_matrices, vec2<i32>(x + 2, y), 0),
+        textureLoad(joint_matrices, vec2<i32>(x + 3, y), 0),
+    );
+}
+
+struct SkinIn {
+    @location(3) joints: vec4<u32>,
+    @location(4) weights: vec4<f32>,
+};
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -69,6 +95,26 @@ fn vs_main(in: VsIn) -> VsOut {
     out.world = world.xyz;
     out.clip = frame.view_proj * world;
     out.normal = (object.normal * vec4<f32>(in.normal, 0.0)).xyz;
+    out.uv = in.uv;
+    return out;
+}
+
+// A skinned vertex: the weighted blend of its joints' matrices takes it from
+// bind pose to model space; `object.model` then places the model. Normals go
+// through the same blend — exact for joints without non-uniform scale, which
+// is what rigs use.
+@vertex
+fn vs_skinned(in: VsIn, skin: SkinIn) -> VsOut {
+    let base = u32(object.skin.x);
+    let m = joint(base + skin.joints.x) * skin.weights.x
+        + joint(base + skin.joints.y) * skin.weights.y
+        + joint(base + skin.joints.z) * skin.weights.z
+        + joint(base + skin.joints.w) * skin.weights.w;
+    let world = object.model * (m * vec4<f32>(in.pos, 1.0));
+    var out: VsOut;
+    out.world = world.xyz;
+    out.clip = frame.view_proj * world;
+    out.normal = (object.normal * (m * vec4<f32>(in.normal, 0.0))).xyz;
     out.uv = in.uv;
     return out;
 }

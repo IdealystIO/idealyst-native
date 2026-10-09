@@ -47,7 +47,7 @@ pub use scene_renderer::{adapter_can_run_vello, SceneRenderer};
 #[cfg(feature = "cpu")]
 mod encode_cpu;
 #[cfg(feature = "cpu")]
-pub use encode_cpu::rasterize_cpu;
+pub use encode_cpu::{cpu_footprint, rasterize_cpu, rasterize_cpu_region, Footprint, PixelRect};
 
 /// The source-over compositor canvas-vello uses everywhere it lays vello
 /// content over what the frame target holds: both sides straight alpha (vello's

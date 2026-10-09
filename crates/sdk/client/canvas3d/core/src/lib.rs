@@ -11,7 +11,13 @@
 //! 3. **Ordinary views** stacked over the canvas, for interactive UI.
 //!
 //! The painters run inside the renderer's reactive effect: any signal they
-//! read (an [`OrbitCamera`], a selection) re-renders the view.
+//! read (an [`OrbitCamera`], a selection, an [`AnimationClock`]) re-renders
+//! the view.
+//!
+//! Models keep their node hierarchy, skins and animation clips: sample a
+//! clip into a [`Pose`] and draw with `s.model(&m, xf).pose(pose)` (or the
+//! `.animation(&clip, t)` shorthand). See the crate README's Animation
+//! section.
 //!
 //! ```ignore
 //! let model = Model::from_gltf(include_bytes!("../assets/helmet.glb"))?;
@@ -40,7 +46,12 @@ mod color;
 pub use color::{linear_to_srgb, srgb_to_linear, Color};
 
 mod model;
-pub use model::{Aabb, AlphaMode, Material, MeshData, Model, ModelError, Part, Texture};
+pub use model::{Aabb, AlphaMode, Material, MeshData, Model, ModelDesc, ModelError, Part, Texture};
+
+mod anim;
+pub use anim::{
+    skinned_positions, Animation, Channel, ChannelValues, Interpolation, Node, Pose, Skin, SkinWeights, Transform,
+};
 
 mod gltf_load;
 
@@ -49,6 +60,9 @@ pub use scene::{Light, LineBatch, LineDepth, Lines, ModelItem, Scene3d};
 
 mod pick;
 pub use pick::{pick, ray_aabb, ray_triangle, PickHit};
+
+mod clock;
+pub use clock::AnimationClock;
 
 mod orbit;
 pub use orbit::{OrbitCamera, OrbitConfig, OrbitState};
@@ -93,8 +107,8 @@ impl Default for Canvas3dProps {
 /// Everything a screen using `canvas3d` usually needs.
 pub mod prelude {
     pub use crate::{
-        draw, Aabb, Camera, Canvas3d, Canvas3dHandle, Canvas3dProps, Color, Light, LineDepth, Lines,
-        Mat4, Material, MeshData, Model, OrbitCamera, OrbitConfig, PickHit, Projection, Quat, Scene3d,
-        Vec2, Vec3,
+        draw, Aabb, Animation, AnimationClock, Camera, Canvas3d, Canvas3dHandle, Canvas3dProps, Color, Light,
+        LineDepth, Lines, Mat4, Material, MeshData, Model, OrbitCamera, OrbitConfig, PickHit, Pose, Projection,
+        Quat, Scene3d, Transform, Vec2, Vec3,
     };
 }

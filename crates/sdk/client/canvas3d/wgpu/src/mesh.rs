@@ -9,6 +9,16 @@
 //! 3. alpha-blended parts, back to front (depth test on, write off),
 //! 4. on-top lines.
 //!
+//! # Animation
+//!
+//! Each model item is drawn in its pose (`ModelItem::globals`): parts on
+//! nodes take their node's posed transform; skinned parts are deformed in
+//! the vertex shader (`vs_skinned`) by joint matrices computed here on the
+//! CPU. Every joint matrix of the frame goes into one float texture
+//! ([`JOINTS_PER_ROW`] joints per row); a skinned draw records where its
+//! joints start in its object uniforms. Two items drawing the same model in
+//! different poses get two ranges.
+//!
 //! # Resource caching
 //!
 //! Meshes and textures upload once and stay resident while the author still
@@ -32,6 +42,12 @@ pub(crate) const MAX_LIGHTS: usize = 4;
 /// most 256 on every backend (WebGL2 included), so one stride fits all.
 const UNIFORM_STRIDE: u64 = 256;
 const VERTEX_STRIDE: u64 = 32; // position(12) + normal(12) + uv(8)
+const SKIN_STRIDE: u64 = 24; // joints u16×4 (8) + weights f32×4 (16)
+/// Joints per row of the joint-matrix texture (`JOINTS_PER_ROW` in
+/// `mesh.wgsl`). 64 joints × 4 texels × 16 bytes = 4096-byte rows, a
+/// multiple of wgpu's 256-byte row alignment.
+pub(crate) const JOINTS_PER_ROW: usize = 64;
+const JOINT_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 /// The most samples this adapter can resolve for both the colour and depth
 /// formats, among 4 and 1. Anti-aliasing quality is the same request on
@@ -68,6 +84,8 @@ struct ObjectUniforms {
     emissive: [f32; 4],
     params: [f32; 4],
     params2: [f32; 4],
+    /// x = first joint index (skinned draws).
+    skin: [f32; 4],
 }
 
 #[repr(C)]
@@ -88,6 +106,8 @@ struct PipelineKey {
     cull: bool,
     /// Front faces wind clockwise (a mirroring model transform).
     cw: bool,
+    /// Deformed by joints (`vs_skinned`, the skinned layout).
+    skinned: bool,
 }
 
 struct MeshGpu {
@@ -95,6 +115,8 @@ struct MeshGpu {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
+    /// Joints + weights, for a mesh with skin influences.
+    skin: Option<wgpu::Buffer>,
 }
 
 struct TextureGpu {
@@ -119,6 +141,10 @@ pub struct MeshRenderer {
     material_bgl: wgpu::BindGroupLayout,
     line_bgl: wgpu::BindGroupLayout,
     mesh_layout: wgpu::PipelineLayout,
+    skinned_layout: wgpu::PipelineLayout,
+    skin_bgl: wgpu::BindGroupLayout,
+    /// The frame's joint matrices, its bind group, and its capacity in rows.
+    joints: Option<(wgpu::Texture, wgpu::BindGroup, u32)>,
     mesh_shader: wgpu::ShaderModule,
     pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
     line_pipelines: HashMap<LineDepthKey, wgpu::RenderPipeline>,
@@ -208,6 +234,19 @@ impl MeshRenderer {
                 },
             ],
         });
+        let skin_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("canvas3d-skin-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
         let line_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("canvas3d-line-bgl"),
             entries: &[uniform_entry(0, vs_fs, true)],
@@ -215,6 +254,11 @@ impl MeshRenderer {
         let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("canvas3d-mesh-pl"),
             bind_group_layouts: &[Some(&frame_bgl), Some(&object_bgl), Some(&material_bgl)],
+            immediate_size: 0,
+        });
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("canvas3d-skinned-pl"),
+            bind_group_layouts: &[Some(&frame_bgl), Some(&object_bgl), Some(&material_bgl), Some(&skin_bgl)],
             immediate_size: 0,
         });
         let line_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -259,6 +303,9 @@ impl MeshRenderer {
             material_bgl,
             line_bgl,
             mesh_layout,
+            skinned_layout,
+            skin_bgl,
+            joints: None,
             mesh_shader,
             pipelines: HashMap::new(),
             line_pipelines: HashMap::new(),
@@ -304,19 +351,27 @@ impl MeshRenderer {
 
     fn pipeline(&mut self, device: &wgpu::Device, key: PipelineKey) -> &wgpu::RenderPipeline {
         let sample_count = self.sample_count;
-        let (layout, shader) = (&self.mesh_layout, &self.mesh_shader);
+        let layout = if key.skinned { &self.skinned_layout } else { &self.mesh_layout };
+        let shader = &self.mesh_shader;
         self.pipelines.entry(key).or_insert_with(|| {
+            let base = wgpu::VertexBufferLayout {
+                array_stride: VERTEX_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
+            };
+            let skin = wgpu::VertexBufferLayout {
+                array_stride: SKIN_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![3 => Uint16x4, 4 => Float32x4],
+            };
+            let buffers = [base, skin];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("canvas3d-mesh-pipeline"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: VERTEX_STRIDE,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
-                    }],
+                    entry_point: Some(if key.skinned { "vs_skinned" } else { "vs_main" }),
+                    buffers: if key.skinned { &buffers[..] } else { &buffers[..1] },
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -430,9 +485,17 @@ impl MeshRenderer {
         }
         let vertices = buffer_init(device, "canvas3d-vertices", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX);
         let indices = buffer_init(device, "canvas3d-indices", bytemuck::cast_slice(&mesh.indices), wgpu::BufferUsages::INDEX);
+        let skin = mesh.skin.as_ref().map(|s| {
+            let mut bytes = Vec::with_capacity(s.joints.len() * SKIN_STRIDE as usize);
+            for (j, w) in s.joints.iter().zip(&s.weights) {
+                bytes.extend_from_slice(bytemuck::cast_slice(j));
+                bytes.extend_from_slice(bytemuck::cast_slice(w));
+            }
+            buffer_init(device, "canvas3d-skin", &bytes, wgpu::BufferUsages::VERTEX)
+        });
         self.meshes.insert(
             mesh.id,
-            MeshGpu { source: Arc::downgrade(mesh), vertices, indices, index_count: mesh.indices.len() as u32 },
+            MeshGpu { source: Arc::downgrade(mesh), vertices, indices, index_count: mesh.indices.len() as u32, skin },
         );
     }
 
@@ -523,6 +586,56 @@ impl MeshRenderer {
         *slot = Some((buf, bg, cap));
     }
 
+    /// Upload the frame's joint matrices, growing the texture (doubling rows)
+    /// when they don't fit.
+    fn upload_joints(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, joints: &[Mat4]) {
+        let rows = joints.len().div_ceil(JOINTS_PER_ROW).max(1) as u32;
+        if self.joints.as_ref().is_none_or(|(_, _, cap)| *cap < rows) {
+            let cap = rows.next_power_of_two();
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("canvas3d-joints"),
+                size: wgpu::Extent3d { width: (JOINTS_PER_ROW * 4) as u32, height: cap, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: JOINT_TEXTURE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("canvas3d-joints-bg"),
+                layout: &self.skin_bgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+            });
+            self.joints = Some((texture, bg, cap));
+        }
+        if joints.is_empty() {
+            return;
+        }
+        let mut data = vec![0f32; rows as usize * JOINTS_PER_ROW * 16];
+        for (i, m) in joints.iter().enumerate() {
+            data[i * 16..i * 16 + 16].copy_from_slice(&m.to_cols_array());
+        }
+        let (texture, _, _) = self.joints.as_ref().expect("ensured");
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            bytemuck::cast_slice(&data),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((JOINTS_PER_ROW * 4 * 16) as u32),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d { width: (JOINTS_PER_ROW * 4) as u32, height: rows, depth_or_array_layers: 1 },
+        );
+    }
+
+    /// Joint-texture rows currently allocated.
+    #[cfg(test)]
+    pub(crate) fn joint_rows(&self) -> u32 {
+        self.joints.as_ref().map_or(0, |(_, _, cap)| *cap)
+    }
+
     /// Record the 3D pass for `scene` into `encoder`, rendering into
     /// `target` (a `size`-sized [`TARGET_FORMAT`] view). Uniform and buffer
     /// writes go through `queue` and land before the encoder's submission.
@@ -568,28 +681,52 @@ impl MeshRenderer {
         let mut draws: Vec<Draw> = Vec::new();
         let mut objects: Vec<ObjectUniforms> = Vec::new();
         let mut used_materials: HashSet<(u64, usize)> = HashSet::new();
+        let mut joints: Vec<Mat4> = Vec::new();
         for item in scene.models() {
+            let globals = item.globals();
+            // Where each of this item's skins starts in `joints` (parts that
+            // share a skin share its matrices).
+            let mut skin_base: HashMap<usize, u32> = HashMap::new();
             for part in item.model.parts() {
-                let model = item.transform * part.transform;
+                let model = item.transform * item.model.part_transform(part, &globals);
                 let det = model.determinant();
                 if det.abs() < f32::EPSILON || part.mesh.indices.is_empty() {
                     continue; // collapsed or empty: nothing to draw
                 }
+                let joint_base = part.skin.map(|s| {
+                    *skin_base.entry(s).or_insert_with(|| {
+                        let base = joints.len() as u32;
+                        joints.extend(item.model.joint_matrices(s, &globals));
+                        base
+                    })
+                });
                 let material = &item.model.materials()[part.material];
                 let mat_key = (item.model.id(), part.material);
                 self.mesh_gpu(device, &part.mesh);
                 self.material_bind_group(device, queue, mat_key, material);
                 used_materials.insert(mat_key);
                 let blend = material.alpha_mode == AlphaMode::Blend;
-                let center = model.transform_point3(part.mesh.bounds.center());
+                // A skinned part's own bounds are its bind pose; the model's
+                // rest bounds are a steadier sort key for it.
+                let center = match joint_base {
+                    Some(_) => item.transform.transform_point3(item.model.bounds().center()),
+                    None => model.transform_point3(part.mesh.bounds.center()),
+                };
                 draws.push(Draw {
                     mesh: part.mesh.id,
                     material: mat_key,
-                    key: PipelineKey { blend, cull: !material.double_sided, cw: det < 0.0 },
+                    key: PipelineKey {
+                        blend,
+                        cull: !material.double_sided,
+                        cw: det < 0.0,
+                        skinned: joint_base.is_some(),
+                    },
                     slot: objects.len() as u32,
                     depth: center.distance_squared(camera.eye),
                 });
-                objects.push(object_uniforms(model, material));
+                let mut uniforms = object_uniforms(model, material);
+                uniforms.skin[0] = joint_base.unwrap_or(0) as f32;
+                objects.push(uniforms);
             }
         }
         Self::ensure_slots(
@@ -609,6 +746,10 @@ impl MeshRenderer {
             if !bytes.is_empty() {
                 queue.write_buffer(buf, 0, &bytes);
             }
+        }
+
+        if !joints.is_empty() {
+            self.upload_joints(device, queue, &joints);
         }
 
         // --- lines: one vertex buffer, one uniform slot per batch ---
@@ -679,7 +820,7 @@ impl MeshRenderer {
 
         // Opaque first, blended back to front.
         let (mut opaque, mut blended): (Vec<&Draw>, Vec<&Draw>) = draws.iter().partition(|d| !d.key.blend);
-        opaque.sort_by_key(|d| (d.key.cull, d.key.cw)); // fewer pipeline switches
+        opaque.sort_by_key(|d| (d.key.skinned, d.key.cull, d.key.cw)); // fewer pipeline switches
         blended.sort_by(|a, b| b.depth.total_cmp(&a.depth));
 
         let clear = encoded_premultiplied(scene.clear_color());
@@ -725,6 +866,11 @@ impl MeshRenderer {
                 pass.set_bind_group(1, object_bg, &[d.slot * UNIFORM_STRIDE as u32]);
                 pass.set_bind_group(2, &self.materials[&d.material], &[]);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                if d.key.skinned {
+                    let (Some(skin), Some((_, joints_bg, _))) = (&mesh.skin, &self.joints) else { continue };
+                    pass.set_bind_group(3, joints_bg, &[]);
+                    pass.set_vertex_buffer(1, skin.slice(..));
+                }
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
@@ -771,6 +917,7 @@ fn object_uniforms(model: Mat4, m: &Material) -> ObjectUniforms {
             if m.unlit { 1.0 } else { 0.0 },
             if m.normal_texture.is_some() { 1.0 } else { 0.0 },
         ],
+        skin: [0.0; 4],
     }
 }
 

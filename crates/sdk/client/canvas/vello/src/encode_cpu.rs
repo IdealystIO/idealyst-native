@@ -44,6 +44,105 @@ pub fn rasterize_cpu(scene: &CanvasScene, width: u32, height: u32, scale: f64) -
     pixmap.data_as_u8_slice().to_vec()
 }
 
+/// A rectangle of physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl PixelRect {
+    pub fn area(&self) -> u64 {
+        self.w as u64 * self.h as u64
+    }
+}
+
+/// Where a scene can put pixels, as [`cpu_footprint`] measures it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Footprint {
+    /// Nothing reaches the frame.
+    Nothing,
+    /// Everything drawn lies inside this rectangle (a conservative bound).
+    Region(PixelRect),
+    /// Not measured: the scene has an op whose extent isn't computed here
+    /// (text, shape batches, masks, textures) or that carries state across
+    /// frames (retained `Layer` / `LayerCached` logs). Rasterize the whole
+    /// frame, every frame.
+    Unknown,
+}
+
+/// Extra device pixels around a measured footprint: anti-aliasing reaches
+/// about a pixel past the geometry.
+const FOOTPRINT_MARGIN_PX: f64 = 2.0;
+
+/// The part of a `width`×`height` frame `scene` (logical units at `scale`)
+/// can draw into — so a caller can rasterize and upload just that, with
+/// [`rasterize_cpu_region`], instead of the whole frame.
+///
+/// A `Region` or `Nothing` answer also means the scene is **stateless**:
+/// rasterizing it twice gives the same pixels, so a caller may skip a frame
+/// whose scene equals the last one.
+pub fn cpu_footprint(scene: &CanvasScene, width: u32, height: u32, scale: f64) -> Footprint {
+    let mut bounds: Option<Rect> = None;
+    let mut cur = Affine::scale(scale);
+    let mut stack: Vec<Affine> = Vec::new();
+    for op in scene.ops() {
+        let local = match op {
+            DrawOp::Save => {
+                stack.push(cur);
+                continue;
+            }
+            DrawOp::Restore => {
+                if let Some(saved) = stack.pop() {
+                    cur = saved;
+                }
+                continue;
+            }
+            DrawOp::Transform(t) => {
+                cur *= affine_of(t);
+                continue;
+            }
+            // A clip only removes pixels: ignoring it keeps the bound
+            // conservative.
+            DrawOp::Clip { .. } => continue,
+            DrawOp::Fill { path, .. } => bez_of(path).bounding_box(),
+            DrawOp::Stroke { path, stroke, .. } => {
+                // Half the width, stretched by the longest a join or square
+                // cap can reach (a miter's limit, or √2 for a square cap).
+                let reach = stroke.width.max(0.0) as f64 * 0.5 * (stroke.miter_limit as f64).max(std::f64::consts::SQRT_2);
+                bez_of(path).bounding_box().inflate(reach, reach)
+            }
+            DrawOp::Image { dst, .. } => Rect::new(dst.x as f64, dst.y as f64, (dst.x + dst.w) as f64, (dst.y + dst.h) as f64),
+            _ => return Footprint::Unknown,
+        };
+        let device = cur.transform_rect_bbox(local);
+        bounds = Some(bounds.map_or(device, |b| b.union(device)));
+    }
+    let Some(b) = bounds else { return Footprint::Nothing };
+    let b = b.inflate(FOOTPRINT_MARGIN_PX, FOOTPRINT_MARGIN_PX).intersect(Rect::new(0.0, 0.0, width as f64, height as f64));
+    if !(b.width() > 0.0 && b.height() > 0.0) {
+        return Footprint::Nothing;
+    }
+    let (x0, y0) = (b.x0.floor() as u32, b.y0.floor() as u32);
+    let (x1, y1) = (b.x1.ceil() as u32, b.y1.ceil() as u32);
+    Footprint::Region(PixelRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+}
+
+/// [`rasterize_cpu`] for just `rect` of the frame: a `rect.w`×`rect.h`
+/// buffer holding exactly the pixels the full raster would have there.
+pub fn rasterize_cpu_region(scene: &CanvasScene, rect: PixelRect, scale: f64) -> Vec<u8> {
+    let (w, h) = (clamp_dim(rect.w), clamp_dim(rect.h));
+    let mut ctx = RenderContext::new(w, h);
+    let base = Affine::translate((-(rect.x as f64), -(rect.y as f64))) * Affine::scale(scale);
+    encode_ops(scene.ops(), &mut ctx, base);
+    ctx.flush();
+    let mut pixmap = Pixmap::new(w, h);
+    ctx.render(&mut pixmap, &mut Resources::new());
+    pixmap.data_as_u8_slice().to_vec()
+}
+
 fn clamp_dim(d: u32) -> u16 {
     d.clamp(1, u16::MAX as u32) as u16
 }
@@ -257,6 +356,52 @@ mod tests {
     fn px(buf: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * w + x) * 4) as usize;
         [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+    }
+
+    /// A marker of the size an overlay pins to a 3D point: a stroked ring
+    /// and a dot, placed by a transform, on a large frame.
+    fn marker(at: (f32, f32)) -> CanvasScene {
+        let mut s = CanvasScene::new();
+        s.save().translate(at.0, at.1).rotate(0.3);
+        s.path().add_path(Path::circle(0.0, 0.0, 10.0));
+        s.stroke(Paint::solid(Color::new(255, 115, 25, 255)), canvas_core::Stroke::width(2.0));
+        s.path().add_path(Path::circle(0.0, 0.0, 2.5));
+        s.fill(Paint::solid(Color::new(255, 115, 25, 255)));
+        s.restore();
+        s
+    }
+
+    #[test]
+    fn region_raster_is_the_full_raster_cropped() {
+        let (w, h, scale) = (300, 200, 2.0);
+        let s = marker((60.0, 40.0));
+        let full = rasterize_cpu(&s, w, h, scale);
+        let Footprint::Region(r) = cpu_footprint(&s, w, h, scale) else { panic!("a measurable scene") };
+        assert!(r.area() < (w * h / 10) as u64, "a small marker gets a small region: {r:?}");
+        let region = rasterize_cpu_region(&s, r, scale);
+        for y in 0..h {
+            for x in 0..w {
+                let inside = (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y);
+                let want = px(&full, w, x, y);
+                if inside {
+                    assert_eq!(px(&region, r.w, x - r.x, y - r.y), want, "({x},{y}) differs from the full raster");
+                } else {
+                    assert_eq!(want, [0, 0, 0, 0], "({x},{y}) is outside the footprint but drawn");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn footprint_is_nothing_offscreen_and_unknown_for_unmeasured_or_stateful_ops() {
+        assert_eq!(cpu_footprint(&CanvasScene::new(), 100, 100, 1.0), Footprint::Nothing);
+        assert_eq!(cpu_footprint(&marker((-500.0, -500.0)), 100, 100, 1.0), Footprint::Nothing);
+        let mut layered = CanvasScene::new();
+        layered.layer(1, false, |l| {
+            l.path().add_path(Path::rect(0.0, 0.0, 4.0, 4.0));
+            l.fill(Paint::solid(Color::new(0, 0, 0, 255)));
+        });
+        assert_eq!(cpu_footprint(&layered, 100, 100, 1.0), Footprint::Unknown, "a retained layer carries state");
     }
 
     #[test]

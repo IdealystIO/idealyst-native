@@ -33,7 +33,7 @@ At boot, register the renderer: `canvas3d_wgpu::register(registry)`. A
 register `canvas3d::register_ssr` instead, which emits a plain `<canvas>`.
 
 `crates/sdk/client/canvas3d/examples/canvas3d-demo` is a working example.
-Fetch its model first with `./scripts/fetch-canvas3d-demo-model.sh`.
+Fetch its models first with `./scripts/fetch-canvas3d-demo-model.sh`.
 
 ## Three layers
 
@@ -62,10 +62,14 @@ paced to `requestAnimationFrame`.
   A `.gltf` that references external files returns `ModelError::ExternalUri`.
 - **Supported:** triangle meshes (positions, normals, `TEXCOORD_0`, indices),
   the node hierarchy, metallic-roughness materials with all five texture maps,
-  opaque, mask and blend alpha modes, double-sided materials, and
-  `KHR_materials_unlit`.
-- **Not supported yet:** skinning, morph targets, animation, the file's own
-  cameras and lights, and non-triangle primitives.
+  opaque, mask and blend alpha modes, double-sided materials,
+  `KHR_materials_unlit`, skins (up to four joints per vertex) and animation
+  clips that move nodes (translation, rotation, scale; step, linear and
+  cubic-spline). See [Animation](#animation).
+- **Not supported yet:** morph targets (and the `weights` animation channels
+  that drive them), a second set of skin influences (`JOINTS_1` /
+  `WEIGHTS_1`), the file's own cameras and lights, and non-triangle
+  primitives.
 - `Model::from_mesh(MeshData::cube(1.0), Material::color(..))` builds a model
   in code. `MeshData` also has `plane` and `uv_sphere`.
 - `from_gltf` parses and decodes every texture synchronously. The demo's 9 MB
@@ -75,6 +79,49 @@ paced to `requestAnimationFrame`.
 - Cloning a `Model` is cheap and keeps its id. The renderer uploads each mesh
   and texture once and frees the GPU copy when the last `Model` holding it is
   dropped.
+
+## Animation
+
+A loaded model keeps its node hierarchy, skins and clips. Time is an input
+you pass in, so playing, pausing, scrubbing and crossfading all work the same
+way:
+
+```rust
+let fox = Model::from_gltf(FOX_GLB)?;
+let walk = fox.animation("Walk").expect("clip").clone();
+let clock = AnimationClock::new();
+clock.play();
+
+draw: canvas3d::draw(move |s| {
+    let t = clock.time();                       // reactive: repaints every frame while playing
+    s.model(&fox, xf).animation(&walk, walk.looped(t));
+})
+```
+
+- **`AnimationClock`** is a reactive number of seconds with `play`, `pause`,
+  `seek` and `set_speed`. It's `Copy`, like a signal. It advances on the
+  framework's animation clock, the same per-frame tick that animated styles
+  use, and is registered there only while playing. A paused clock, or a
+  view that doesn't read one, costs nothing per frame. It stops when the
+  component that created it goes away.
+- **`Pose`** holds the local transform of every node of one model.
+  `Pose::rest(&model).sampled(&clip, t)` samples a clip.
+  `a.blend(&b, w)` crossfades between two poses. `pose.set(node, transform)`
+  moves one node by hand (aiming a head, an IK result), and
+  `model.node("Head")` finds a node's index. Draw the result with
+  `s.model(&model, xf).pose(pose)`. `.animation(&clip, t)` is shorthand for
+  one clip over the rest pose.
+- Clips clamp at their ends. Wrap time with `clip.looped(t)` to repeat.
+- **Picking follows the pose.** A pick tests the model where it's drawn,
+  deforming skinned meshes on the CPU only for pickable models and only when
+  you pick. `model.bounds()` is the rest pose; `model.posed_bounds(&pose)`
+  measures a pose, for example to draw a selection box that moves with the
+  model.
+- **The renderer** deforms skinned meshes on the GPU. It puts every joint
+  matrix of the frame in one float texture, because WebGL2 limits a uniform
+  block to 16 KiB (256 matrices). So joint counts have no limit, and two
+  copies of one model can be drawn in different poses in the same frame.
+  Parts attached to animated nodes are placed on the CPU.
 
 ## Picking
 
@@ -121,7 +168,12 @@ short of straight up or down, so the camera never flips.
 - **The 2D overlay** is drawn with GPU vello where vello's compute pipeline can
   run. Elsewhere (WebGL2, the iOS Simulator, the Android emulator) it uses
   vello_cpu and uploads the result. The two are tested to produce matching
-  pixels.
+  pixels. An overlay identical to the previous frame's isn't drawn again,
+  and the CPU path rasterizes and uploads only the area the overlay covers.
+  This matters for an animating view: it repaints every display frame, and a
+  full-screen CPU overlay at phone resolution costs about 100 ms per frame in
+  an unoptimized build. Text, retained layers and masks still take the
+  full-frame path.
 - **Which backend is running:** `Canvas3dHandle::renderer_info()` returns a
   reactive string such as "WebGPU", "WebGL2" or "Metal", for diagnostics and
   HUDs.
