@@ -87,9 +87,10 @@ Data comes from two sources, merged:
   superseded incremental caches so the dir doesn't grow with every
   framework release.
 - **`idealyst catalog-scan`** — what the workspace **writes**: every
-  framework-dependent crate's components, props, `IdealystSchema` enums
-  and `value_of` markers, read from source with `syn` in about a
-  second. Every such crate is scanned on activation and re-scanned on
+  framework-dependent crate's components, props, types, values, recipes
+  and scopes, read from source without compiling — by running the
+  catalog macros' own expansion, so the entries are exactly what the
+  compiled catalog would hold. Every such crate is scanned on activation and re-scanned on
   **every save**, so a component you just wrote completes, hovers and
   takes prop values the moment you save. A file that doesn't parse is
   skipped and the rest still count, so a half-typed edit never blanks

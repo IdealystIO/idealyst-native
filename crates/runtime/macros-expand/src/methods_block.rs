@@ -84,7 +84,7 @@ pub(crate) fn extract_and_rewrite(
                 .args
                 .iter()
                 .map(|(ident, ty)| {
-                    let ty_str = quote::quote! { #ty }.to_string();
+                    let ty_str = crate::token_text::token_text(&quote::quote! { #ty });
                     (ident.to_string(), ty_str)
                 })
                 .collect(),
@@ -233,6 +233,8 @@ struct MethodDef {
 /// Per-method summary exported to the parent macro for MCP registration
 /// — read-only view over a parsed `MethodDef` that callers outside this
 /// module can consume without touching the inner `Block`.
+// Read only by the catalog emission (`mcp_emit`).
+#[cfg_attr(not(feature = "catalog"), allow(dead_code))]
 pub(crate) struct MethodInfo {
     pub name: String,
     pub docs: String,

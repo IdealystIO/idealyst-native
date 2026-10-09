@@ -14,107 +14,23 @@ rust-version = "1.88"
 proc-macro = true
 
 [features]
-# NOTE: the `new-core` lowering switch is GONE. `ui!` / `jsx!` /
-# `#[component]` / `#[props]` now always emit at `runtime_scene::Element`
-# + `runtime_vocabulary` builders + `runtime_world` reactivity, and
-# `finish()` always runs the `::runtime_core` -> `::runtime_vocabulary::glue`
-# retarget (src/new_core.rs). Consumer crates must depend on
-# `runtime-vocabulary` — that is where the emitted absolute paths land.
-# It was a feature only while two cores existed, and it carried a real
-# unification hazard (a proc-macro crate is compiled once per build
-# graph, so one crate enabling it flipped the lowering for every crate
-# in the same cargo invocation). One core, one lowering, no switch.
-
-# `ui-overlay`: emit a per-node origin tag — a site key and a node index,
-# both integer literals — so a dev-time overlay can address what a `ui!`
-# site built and patch its static half without recompiling. The
-# DESCRIPTOR that gives those numbers meaning is produced from source at
-# build time, not emitted here; see `ui_overlay`'s module docs for the
-# measurement that settled that. OFF by default; with it off the
-# emission is byte-identical to a build without the feature (proved by
-# running the whole `ui-lowering-parity` corpus in both states against
-# one set of frozen goldens).
+# Every feature is the expansion crate's (`runtime-macros-expand`, where
+# the code and the reasoning for each switch live), forwarded one-for-one.
+# This crate is only the proc-macro boundary: one shim per macro that
+# converts `proc_macro` <-> `proc_macro2` token streams and calls in. See
+# that crate's manifest for why the split exists.
 #
-# Pulls in `runtime-template` for the one thing both halves must agree
-# on, `site_key`. Optional, so the default build graph of this
-# proc-macro crate is unchanged.
-#
-# Yes, a proc-macro crate compiles once per build graph, so this flips
-# for every crate in one cargo invocation — that is WANTED here (a
-# half-tagged tree is a half-patchable app), and unlike the retired
-# lowering switch it is a cargo FEATURE, which cargo fingerprints. No
-# invisible-env hazard, no target-dir keying needed.
-ui-overlay = ["dep:runtime-template"]
-
-# Forwarded from the app crate's debug-stats. Toggles whether
-# `#[component]` emits enter/exit instrumentation calls into the
-# generated component function bodies. When off, the macro emits
-# no instrumentation at all.
-debug-stats = []
-
-# Forwarded from the host wrapper's `hot-reload`. When on, `#[component]`
-# rewrites the function body to dispatch through
-# `dev_hot::call(impl_fn, args_tuple)` so a hot-reloaded
-# replacement can be jump-table-swapped at runtime. When off, the
-# macro emits the function exactly as the author wrote it — no
-# wrapper, no indirection, zero production overhead.
-hot-reload = []
-
-# Catalog capture — when on, `#[component]`, `#[derive(IdealystSchema)]`,
-# and `#[idealyst_tool]` additionally emit `inventory::submit!` calls
-# that register the item (name, docs, props, composes graph, …) into
-# `mcp-catalog`'s distributed slice. This is the project's introspection
-# surface: the MCP server is one consumer, a docs renderer is another.
-# When off, the macros emit zero catalog code — no inventory entry, no
-# dependency on `mcp-catalog`. See `docs/mcp-catalog-spec.md`.
-#
-# Pulls `prettyplease` — used only by `recipe!` to format captured
-# recipe source for the catalog — so it compiles only in catalog builds.
-catalog = ["dep:prettyplease", "runtime-macros-parse/catalog"]
-
-# Backward-compatible alias. The catalog used to be called "mcp" (after
-# its first consumer); the gate is now `catalog` since the data feeds
-# docs/tooling too, and MCP merely relies on it. `runtime-macros/mcp`
-# still works and just turns on `catalog`.
+# A proc-macro crate compiles once per build graph, so a feature turned on
+# here anywhere flips the expansion for every crate in that cargo
+# invocation — the same as before the split.
+ui-overlay = ["runtime-macros-expand/ui-overlay"]
+debug-stats = ["runtime-macros-expand/debug-stats"]
+hot-reload = ["runtime-macros-expand/hot-reload"]
+catalog = ["runtime-macros-expand/catalog"]
+# Backward-compatible alias for `catalog`.
 mcp = ["catalog"]
-
-# Compile-time documentation enforcement. When on, `#[component]` errors
-# if the component fn has no `///` doc comment, and
-# `#[derive(IdealystSchema)]` errors on any undocumented prop field / enum
-# variant. Independent of `mcp` (you can enforce docs without building a
-# catalog), though the two pair naturally. Forwarded from
-# `runtime-core/strict-docs`. Off by default; opt in per build.
-strict-docs = []
-
-# Compile-time naming enforcement. When on, `#[component]` errors if the
-# component fn name isn't PascalCase — the convention `ui!`/`jsx!` rely on
-# to tell a component tag (`Button`) from a primitive (`view`). This is the
-# hard-stop sibling of the `component-pascal-case` lint rule (`idealyst
-# lint`): the lint warns during editing, the feature fails the build.
-# Forwarded from `runtime-core/strict-naming`. Off by default.
-strict-naming = []
+strict-docs = ["runtime-macros-expand/strict-docs"]
+strict-naming = ["runtime-macros-expand/strict-naming"]
 
 [dependencies]
-# The `ui!` front end: parser, split pass, node numbering, IDE recovery.
-# A plain library so the CLI can run the same code at build time — a
-# proc-macro crate cannot be depended on as one. See its manifest.
-runtime-macros-parse = { workspace = true }
-# Only for `site_key` — the fold of package/file/line/column that a
-# node's tag carries. Enabled by `ui-overlay`; absent otherwise, so the
-# default proc-macro build graph is untouched.
-runtime-template = { workspace = true, optional = true }
-syn = { version = "2", features = ["full", "visit", "visit-mut", "extra-traits"] }
-quote = "1"
-# `span-locations` gives us `Span::start()` so the `mcp` feature can
-# capture per-edge source lines when walking `ui!`/`jsx!` bodies. On
-# stable Rust inside a real proc-macro context, the line is `0` (the
-# proc_macro crate doesn't expose source locations on stable); the
-# field is still emitted so a future stable Rust will light it up
-# automatically. See mcp_emit.rs / mcp_catalog::EdgeRef.
-proc-macro2 = { version = "1", features = ["span-locations"] }
-# Stable hashing for `lazy! { … }`'s generated function / split-module
-# names. Per-call-site uniqueness comes from the block's token text.
-sha2 = "0.10"
-# Formats captured `recipe!` source into readable, exact Rust for the
-# catalog. Optional — only pulled in by the `catalog` feature.
-prettyplease = { version = "0.2", optional = true }
+runtime-macros-expand = { workspace = true }

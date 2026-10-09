@@ -110,16 +110,18 @@ pub struct Args {
     pub from_bin: Option<std::path::PathBuf>,
 
     /// Watch source directories and refresh the catalog on change.
-    /// Overrides the default watch set (the project's `src/` +
-    /// `Cargo.toml`). The watcher re-runs the catalog extractor on
-    /// every save, so adding a component or a dependency refreshes the
-    /// catalog without restarting the server. Pass once per dir.
+    /// Overrides the default watch set (the `src/` + `Cargo.toml` of every
+    /// workspace crate the catalog reads). A refresh reads the workspace's
+    /// catalog from source and compiles only the dependencies, and those
+    /// only when they change, so adding a component or a dependency
+    /// refreshes the catalog without restarting the server — or building
+    /// the app. Pass once per dir.
     #[arg(long = "watch", value_name = "DIR")]
     pub watch_dirs: Vec<std::path::PathBuf>,
 
     /// Disable the default catalog file-watch. By default `idealyst mcp`
-    /// watches the project's `src/` + `Cargo.toml` and rebuilds the
-    /// catalog (via the managed wrapper) on change, so new components /
+    /// watches the workspace crates' `src/` + `Cargo.toml` and refreshes
+    /// the catalog on change (`catalog-json --scan`), so new components /
     /// dependencies appear in a running session. `--no-watch` turns that
     /// off: the catalog is loaded once at startup and a pre-built
     /// `target/{debug,release}/catalog` binary is preferred (lock-free,
@@ -327,6 +329,19 @@ pub fn run(args: Args) -> Result<()> {
                     // `managed` stays false: this source cannot rebuild,
                     // which is precisely why the watcher must not be
                     // default-enabled for it.
+                } else if let Some(source) = scanned_catalog_source(&projects) {
+                    // The refresh reads the workspace from source; only
+                    // its dependencies are compiled, and only when they
+                    // change (`catalog-json --scan`).
+                    managed = true;
+                    managed_projects = source.watch_roots;
+                    let exe = std::sync::Arc::new(source.exe);
+                    let args = std::sync::Arc::new(source.args);
+                    opts = opts.with_subprocess_catalog(move || {
+                        let mut c = std::process::Command::new(exe.as_path());
+                        c.args(args.iter());
+                        c
+                    });
                 } else {
                 match super::catalog_wrapper::generate_for_roots(&projects) {
                     Ok(wrapper_dir) => {
@@ -401,6 +416,44 @@ pub fn run(args: Args) -> Result<()> {
         mcp_server::run_stdio_with_full_options(opts).await
     })
     .map_err(|e| anyhow::anyhow!("mcp server exited: {:?}", e))
+}
+
+/// The refresh command for the scanned catalog: this binary's
+/// `catalog-json --scan` over `projects`, and the crate directories to
+/// watch — every member the scan reads, not only the projects, since a
+/// refresh no longer costs a build. `None` (with the reason on stderr)
+/// when the scan cannot be planned; the caller then compiles the catalog
+/// as before.
+struct ScannedCatalogSource {
+    exe: std::path::PathBuf,
+    args: Vec<std::ffi::OsString>,
+    watch_roots: Vec<std::path::PathBuf>,
+}
+
+fn scanned_catalog_source(projects: &[std::path::PathBuf]) -> Option<ScannedCatalogSource> {
+    let plan = match super::scan_plan::plan(projects) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("[idealyst mcp] cannot read the catalog from source ({e:#}); compiling it on each refresh instead");
+            return None;
+        }
+    };
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("[idealyst mcp] cannot locate this binary ({e}); compiling the catalog on each refresh instead");
+            return None;
+        }
+    };
+    let mut args: Vec<std::ffi::OsString> = vec!["catalog-json".into(), "--scan".into()];
+    args.extend(projects.iter().map(|p| p.clone().into_os_string()));
+    let mut watch_roots = plan.member_dirs;
+    for p in projects {
+        if !watch_roots.contains(p) {
+            watch_roots.push(p.clone());
+        }
+    }
+    Some(ScannedCatalogSource { exe, args, watch_roots })
 }
 
 /// How the server should obtain the project's catalog JSON, decided

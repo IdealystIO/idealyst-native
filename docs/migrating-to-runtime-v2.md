@@ -709,7 +709,7 @@ returning garbage. SSR pins the same contract per request
 
 These fail loudly at compile time with a message naming the deferral —
 none degrade silently. Exact messages live in
-`crates/runtime/macros/src/ui.rs` and `lib.rs`. Two rows that were
+`crates/runtime/macros-expand/src/ui.rs` and `lib.rs`. Two rows that were
 deferred mid-migration have since landed and are marked **supported**
 below; trust the compiler over this table:
 
@@ -918,7 +918,7 @@ Two adjacent nuances:
 - **Omitted required signal props.** Leaving out a required two-way
   prop (`text_input.value`, `toggle.value`, `slider.value`, …) mints a
   fresh default-valued signal instead of the old core's detached
-  sentinel (`crates/runtime/macros/src/ui.rs`, the `fresh_signal`
+  sentinel (`crates/runtime/macros-expand/src/ui.rs`, the `fresh_signal`
   emission sites; `crates/runtime/vocabulary/src/glue.rs::fresh_signal`).
   Code that accidentally relied on the sentinel's panic now silently
   gets a working, unshared signal.

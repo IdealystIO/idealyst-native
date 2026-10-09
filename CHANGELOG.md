@@ -208,6 +208,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `Lg`. Each size is the same height and font size as a Select, Field or
   outlined Button at that size, so the control lines up beside them in a
   toolbar; segment icons scale with it as Field's adornments do.
+- **`idealyst catalog-json --scan`** — the full catalog without
+  compiling the workspace: dependencies compiled (`--deps-only`), members
+  read from source (see Changed). `catalog-json` also takes several
+  project directories now.
+- **`catalog-scan`** (crate) — reads a workspace's catalog entries from
+  source by running `runtime-macros-expand` on the items carrying catalog
+  macros, `macro_rules!` that expand to them included (an interpreter
+  handles idea-theme's `tone!` and an app's own). It refuses, by name,
+  what it cannot reproduce rather than dropping it.
+- **`mcp_catalog::CatalogParts`** — a catalog as lists of entries from
+  any source: read back from JSON, merged (`extend_replacing`), written
+  by the same serializer `catalog_json()` uses.
+
 - **The CLI installs from the registry, and `idealyst update` updates it**
   (`idealyst-cli` 1.6.0, `registry`). `idealyst-cli` and the 35 tooling
   crates it builds on are now published to `crates.idealyst.io`:
@@ -718,6 +731,36 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **`idealyst mcp` no longer builds the app to refresh its catalog**
+  (`idealyst-cli`, new `catalog-scan`, new `runtime-macros-expand`). The
+  catalog refresh that runs on every save used to rebuild a binary
+  linking the whole project — on a large workspace minutes of several
+  cores, competing with `idealyst dev`. It now runs `idealyst
+  catalog-json --scan`: the workspace's own crates are read from source
+  by running the catalog macros' own expansion on them, and only the
+  dependencies are compiled, rebuilt only when they change and cached
+  against the lockfile when they all come from a registry. The document
+  is the same, byte for byte (pinned by a parity test against the
+  compiled macros). On CrewForge a warm refresh went from a rebuild of
+  the app to about four CPU-seconds on one core. A workspace crate whose
+  catalog entries only exist at run time (style tokens registered with
+  `register_style_token!`) is compiled with the dependencies instead,
+  and the refresh says so on stderr. The watcher now covers every
+  workspace crate the catalog reads, not only the projects.
+- **`idealyst catalog-scan` reports exactly what the compiled catalog
+  holds** (VS Code extension's scan-on-save). It used to approximate the
+  macros with its own `syn` walk; it now runs their expansion, so types
+  read as the compiled catalog spells them
+  (`:: runtime_core :: Reactive < String >`, `Rc < dyn Fn() >`, not
+  `Reactive<String>`), a `#[props]` struct only has a schema when it
+  derives `IdealystSchema` (as compiled), and recipes, scopes, tools,
+  methods and animations are listed too. `cfg` gates are honoured, and a
+  module is found the way rustc finds it rather than by file layout.
+- **`runtime-macros` is a shim over `runtime-macros-expand`.** Every
+  macro's expansion moved, unchanged, into a plain library so tools can
+  run it outside rustc; the proc-macro crate converts token streams and
+  calls in. Same features, forwarded.
+
 - **Dev errors are shown, not only logged** (`idealyst dev`, `dev-tui`).
   - A full-stack server that exits is reported with the cause read from
     its output (`exited (exit status: 1) · Error: Address already in
@@ -905,6 +948,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A component's props are documented from its own props struct, not
+  a same-named one elsewhere** (`mcp-catalog`, `mcp-server`, docs-app).
+  A param names its props struct by bare ident, and the catalog joined it
+  to the first struct with that name in link order; CrewForge has 151
+  components whose props struct shares its name with another (two
+  `BlockerRowProps`), and those were documented with the other struct's
+  fields. The join now takes the struct registered nearest the component
+  (`mcp_catalog::nearest_schema`).
+- **The dependency catalog includes SDKs reached through a target-gated
+  dependency that applies to the host** (`idealyst-cli`: `catalog-json`,
+  `--deps-only`, `idealyst mcp`). Every `[target.'cfg(…)'.dependencies]`
+  edge was skipped as if it were for another target, so an SDK an app
+  depends on under `cfg(not(target_os = "linux"))` was never force-linked
+  on a Mac, and what it registers itself (the `permissions` SDK's recipe)
+  was missing. The dependency walk now resolves for the host and follows
+  the gated edges that apply there.
 
 - **Every generated wrapper builds the app's own lock and stops piling
   up generations on disk** (`build-ios`, `build-android`, `build-macos`,

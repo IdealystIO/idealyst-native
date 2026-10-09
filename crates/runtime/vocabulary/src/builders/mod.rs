@@ -18,7 +18,7 @@
 //!   signals/memos of `ToString` values are dynamic.
 //!
 //! Tag names match `canonical_primitive`'s snake_case list
-//! (`crates/runtime/macros/src/primitives.rs`): `view`, `text`, `button`,
+//! (`crates/runtime/macros-parse/src/primitives.rs`): `view`, `text`, `button`,
 //! `pressable`, `image`, `icon`, `toggle`, `slider`,
 //! `activity_indicator`, `link`, `scroll_view`, `text_input`,
 //! `text_area`, plus the P3-set `virtualizer` (`flat_list`'s

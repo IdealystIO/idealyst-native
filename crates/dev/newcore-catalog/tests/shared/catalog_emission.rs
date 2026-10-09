@@ -1217,7 +1217,7 @@ fn struct_schema_also_emits_type_entry() {
 /// legacy explicit-props `#[method]` shape rides the old `Bindable<H>`
 /// (which closes over the old `Element`) and is a *named compile error*
 /// on the new core, so the same-source form has to be the inline one
-/// (`crates/runtime/macros/src/lib.rs`, the `#[method]` deferral). The
+/// (`crates/runtime/macros-expand/src/lib.rs`, the `#[method]` deferral). The
 /// method body likewise writes `set(get() + n)` rather than `update`,
 /// whose closure shape differs between the cores
 /// (`docs/migrating-to-runtime-v2.md`, "Testing and the robot bridge").

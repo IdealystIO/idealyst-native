@@ -70,19 +70,18 @@
 //! per call site, so two identical-shaped `lazy!` blocks in
 //! different places get distinct chunks.
 
-use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use sha2::{Digest, Sha256};
 
-pub fn emit(input: TokenStream) -> TokenStream2 {
+pub fn emit(input: TokenStream2) -> TokenStream2 {
     // Tokens-as-bytes hash. Stable across rebuilds because token text is
     // deterministic; unique per call site (different contents → different
     // hash → different chunk name).
     let token_text = input.to_string();
     let hash = stable_hash(&token_text);
 
-    let body_tokens: proc_macro2::TokenStream = input.into();
+    let body_tokens = input;
     let body_ident = syn::Ident::new(&format!("__idealyst_lazy_body_{hash}"), Span::call_site());
     let split_name = syn::Ident::new(&format!("__idealyst_lazy_{hash}"), Span::call_site());
 

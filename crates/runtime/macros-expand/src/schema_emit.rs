@@ -94,7 +94,7 @@ fn emit_named_struct(
             let name_ident = f.ident.as_ref()?;
             let name = name_ident.to_string();
             let ty = &f.ty;
-            let type_str = quote! { #ty }.to_string();
+            let type_str = crate::token_text::token_text(&quote! { #ty });
             let doc = collect_field_docs(&f.attrs);
             let constraint = collect_constraint(&f.attrs);
             Some(quote! {
@@ -161,7 +161,7 @@ fn emit_enum(enum_name_str: &str, type_docs: &str, data: &syn::DataEnum) -> Toke
                     .filter_map(|f| {
                         let name = f.ident.as_ref()?.to_string();
                         let ty = &f.ty;
-                        let type_str = quote! { #ty }.to_string();
+                        let type_str = crate::token_text::token_text(&quote! { #ty });
                         let doc = collect_field_docs(&f.attrs);
                         let constraint = collect_constraint(&f.attrs);
                         Some(quote! {
@@ -179,7 +179,7 @@ fn emit_enum(enum_name_str: &str, type_docs: &str, data: &syn::DataEnum) -> Toke
                     .iter()
                     .map(|f| {
                         let ty = &f.ty;
-                        let type_str = quote! { #ty }.to_string();
+                        let type_str = crate::token_text::token_text(&quote! { #ty });
                         let doc = collect_field_docs(&f.attrs);
                         let constraint = collect_constraint(&f.attrs);
                         // Tuple variants have no field name — emit

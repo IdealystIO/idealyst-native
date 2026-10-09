@@ -18,6 +18,7 @@ members = [
     "crates/runtime/shared",
     "crates/runtime/macros",
     "crates/runtime/macros-parse",
+    "crates/runtime/macros-expand",
     # The reactive kernel: worlds, staged commits, derivation-class flush.
     "crates/runtime/world",
     # The scene core: Element/realize/Host/Registry + the Dyn/Keyed
@@ -189,6 +190,7 @@ members = [
 
     # MCP — project-aware catalog + stdio server (catalog + Robot tools).
     "crates/mcp/catalog",
+    "crates/mcp/catalog-scan",
     "crates/mcp/server",
 
     # UI — component library + extras.
@@ -516,7 +518,9 @@ linkme = "0.3"
 dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.17.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.11.0", registry = "idealyst" }
+runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "1.0.0", registry = "idealyst" }
 mcp-catalog = { path = "crates/mcp/catalog", version = "1.18.0", registry = "idealyst" }
+catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "1.5.2", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "1.11.0", registry = "idealyst" }

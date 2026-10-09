@@ -98,6 +98,7 @@ fn bound_name(b: &TypeParamBound) -> Option<(String, &syn::TraitBound)> {
 
 /// Each type parameter's kind, from its bounds (inline and in the where
 /// clause).
+#[cfg(test)]
 fn classify(func: &ItemFn) -> syn::Result<Vec<(syn::Ident, Kind)>> {
     classify_with_bounds(func).map(|(p, _)| p)
 }

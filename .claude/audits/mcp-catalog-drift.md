@@ -11,7 +11,7 @@ targets:
   - crates/runtime/core/src/element.rs
   - crates/runtime/core/src/lib.rs
   - crates/runtime/macros/src/lib.rs
-  - crates/runtime/macros/src/stylesheet.rs
+  - crates/runtime/macros-expand/src/stylesheet.rs
 severity: medium
 ---
 
@@ -27,7 +27,7 @@ Five drift surfaces matter:
 
 2. **Macro table vs. the actual macro definitions.** `crates/mcp/catalog/src/macros.rs` hand-curates one `MacroEntry` per authoring macro. The truth is the `macro_rules!` set in `crates/runtime/core/src/lib.rs` and the proc-macros in `crates/runtime/macros/src/lib.rs`. Adding/renaming/removing a macro without updating the table means the catalog documents a macro that doesn't exist (misleads AI authors) or omits one that does (the gap this slice was created to close — `effect!` was invisible, so authors fell back to a bare `Effect::new`). The `expansion` field must also still match what the macro lowers to.
 
-3. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
+3. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros-expand/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
 
 4. **Guide cross-references.** Each `guides/*.md` may reference catalog entries via `[[name]]`. If a primitive is renamed or removed, every dangling `[[name]]` becomes a broken link. Same for `[[memory]]` references that ship as part of in-repo memory-style cross-links.
 
@@ -68,7 +68,7 @@ a spelling that silently did nothing.
   (`crates/runtime/vocabulary/src/prims/<name>.rs`) and list its `pub` fields.
 - [ ] Every field an author sets — anything with a builder setter in
   `crates/runtime/vocabulary/src/glue.rs` on the matching `Glue*` type, or
-  an inline prop the `ui!` emitter in `crates/runtime/macros/src/ui.rs`
+  an inline prop the `ui!` emitter in `crates/runtime/macros-expand/src/ui.rs`
   lowers — must have a `PropFieldSpec` with a `doc` that says what it is
   FOR, not only what it is.
 - [ ] A prop that only some backends answer (a defaulted no-op cap method,
@@ -98,7 +98,7 @@ a spelling that silently did nothing.
 
 ### State whitelist parity
 
-- [ ] Read the allowlist in `crates/runtime/macros/src/stylesheet.rs` (search for `let allowed = [`).
+- [ ] Read the allowlist in `crates/runtime/macros-expand/src/stylesheet.rs` (search for `let allowed = [`).
 - [ ] Compare with the four `inventory::submit!` calls in `crates/mcp/catalog/src/states.rs`. They must be set-equal.
 - [ ] Flag any mismatch as `severity: high` — a parser-accepted state without a catalog entry (or vice versa) breaks the cross-platform contract.
 

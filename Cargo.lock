@@ -2387,6 +2387,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
+name = "catalog-scan"
+version = "1.0.0"
+dependencies = [
+ "mcp-catalog",
+ "proc-macro2",
+ "quote",
+ "runtime-macros-expand",
+ "serde_json",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6449,6 +6461,7 @@ dependencies = [
  "build-terminal",
  "build-web",
  "build-windows",
+ "catalog-scan",
  "clap",
  "configure",
  "ctrlc",
@@ -7570,6 +7583,7 @@ dependencies = [
 name = "mcp-catalog"
 version = "1.18.0"
 dependencies = [
+ "catalog-scan",
  "inventory",
  "runtime-core",
  "runtime-macros",
@@ -10592,6 +10606,13 @@ dependencies = [
 [[package]]
 name = "runtime-macros"
 version = "1.17.0"
+dependencies = [
+ "runtime-macros-expand",
+]
+
+[[package]]
+name = "runtime-macros-expand"
+version = "1.0.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",

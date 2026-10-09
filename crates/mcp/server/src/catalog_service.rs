@@ -3457,7 +3457,7 @@ fn entry_to_json(
             // (`#[derive(IdealystSchema)]`). This is the prop-level
             // documentation surface.
             if !p.type_short_name.is_empty() {
-                match prop_fields_for(cat, p.type_short_name) {
+                match prop_fields_for(cat, p.type_short_name, entry.module_path) {
                     Some(fields) => {
                         obj.insert("schema".into(), serde_json::json!(fields));
                     }
@@ -3508,7 +3508,8 @@ fn entry_to_json(
 /// Resolve a component param's props struct to its per-field docs
 /// (`{ name, type, doc, constraint }`), for inlining under a param's
 /// `schema`. `short_name` is the param type's bare ident (e.g.
-/// `ButtonProps`).
+/// `ButtonProps`); `near` is the component's module path, which picks
+/// between structs that share the name.
 ///
 /// Prefers the loaded catalog's `types` slice — that's the path that
 /// survives the wire: a project's `#[derive(IdealystSchema)]` props
@@ -3520,12 +3521,17 @@ fn entry_to_json(
 fn prop_fields_for(
     cat: &ResolvedCatalog,
     short_name: &str,
+    near: &str,
 ) -> Option<Vec<serde_json::Value>> {
-    // Wire path: the props struct as a documented `TypeEntry`.
-    for t in cat.types() {
-        if t.short_name != short_name {
-            continue;
-        }
+    // Wire path: the props struct as a documented `TypeEntry` — of the
+    // structs with this name, the one nearest the component
+    // (`nearest_by_module`; apps reuse props-struct names across modules).
+    let structs = cat
+        .types()
+        .iter()
+        .copied()
+        .filter(|t| t.short_name == short_name && matches!(t.shape, mcp_catalog::TypeShape::Struct { .. }));
+    if let Some(t) = mcp_catalog::nearest_by_module(structs, |t| t.module_path, near) {
         if let mcp_catalog::TypeShape::Struct { fields } = &t.shape {
             return Some(
                 fields
@@ -3543,7 +3549,7 @@ fn prop_fields_for(
         }
     }
     // In-process fallback (server binary compiled with the components).
-    let schema = mcp_catalog::lookup_schema(short_name)?;
+    let schema = mcp_catalog::nearest_schema(short_name, near)?;
     Some(
         schema
             .fields
@@ -4631,6 +4637,38 @@ mod tests {
         assert_eq!(schema[0]["name"], "value");
         assert_eq!(schema[0]["doc"], "The gauge value, 0.0-1.0.");
         assert_eq!(schema[0]["constraint"], "0..=1");
+    }
+
+    /// Regression: two props structs with one name in different modules
+    /// (CrewForge has `BlockerRowProps` in two crates) — the param joined
+    /// whichever `TypeEntry` came first, documenting the component with
+    /// the other struct's fields. It joins the one nearest the component.
+    #[tokio::test]
+    async fn describe_component_joins_the_props_struct_nearest_the_component() {
+        let json = r#"{
+          "catalog_version": 2,
+          "components": [
+            { "name": "Row", "module_path": "accounting::lifecycle", "file": "src/lifecycle.rs", "line": 1,
+              "docs": "", "composes": [],
+              "params": [ { "name": "props", "type": "& RowProps", "type_short_name": "RowProps" } ] }
+          ],
+          "types": [
+            { "short_name": "RowProps", "module_path": "ui_shared::wizard", "docs": "",
+              "shape": { "kind": "struct", "fields": [ { "name": "blocker", "type": "Blocker", "doc": "", "constraint": "" } ] } },
+            { "short_name": "RowProps", "module_path": "accounting::lifecycle", "docs": "",
+              "shape": { "kind": "struct", "fields": [ { "name": "chip", "type": "String", "doc": "", "constraint": "" } ] } }
+          ]
+        }"#;
+        let cat = mcp_catalog::ResolvedCatalog::build_from_json(json).expect("build catalog from wire JSON");
+        let svc = CatalogService::new();
+        svc.replace_catalog(cat).await;
+        let result = svc
+            .describe_component(Parameters(NameRequest { name: "Row".into(), app: None }))
+            .await
+            .expect("describe_component succeeds");
+        let payload = result.content.iter().find_map(|c| c.as_text().map(|t| t.text.clone())).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["params"][0]["schema"][0]["name"], "chip", "{v}");
     }
 
     /// When a component's `*Props` param has NO catalogued type (the

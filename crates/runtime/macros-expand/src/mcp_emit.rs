@@ -192,7 +192,7 @@ fn collect_params(sig: &syn::Signature) -> Vec<(String, String, String)> {
             _ => "_".to_string(),
         };
         let ty = &*pat_type.ty;
-        let type_str = quote! { #ty }.to_string();
+        let type_str = crate::token_text::token_text(&quote! { #ty });
         let short = type_short_name(ty).unwrap_or_default();
         out.push((name, type_str, short));
     }
@@ -315,7 +315,7 @@ impl<'ast> Visit<'ast> for AnimationCollector {
                         },
                         _ => String::new(),
                     };
-                    let initial = em.mac.tokens.to_string();
+                    let initial = crate::token_text::token_text(&em.mac.tokens);
                     let line = em.mac.path.span().start().line as u32;
                     self.items.push(AnimationCapture { binding, initial, line });
                 }
@@ -334,7 +334,7 @@ impl<'ast> Visit<'ast> for AnimationCollector {
             // accept the rare double-count for now — consumers can
             // dedupe on `(binding, line)`. In practice components use
             // the `let` form.
-            let initial = node.mac.tokens.to_string();
+            let initial = crate::token_text::token_text(&node.mac.tokens);
             let line = node.mac.path.span().start().line as u32;
             // Skip if the binding is already empty AND we'd
             // immediately follow a let-captured one on the same line.

@@ -557,7 +557,7 @@ and they do not currently have equal coverage on this core:
   **`runtime-world` emits none of them**. On runtime v2 the transaction
   report is therefore empty of signal/effect data; the surviving
   contributions are `#[component]` enter/exit spans (emitted by
-  `crates/runtime/macros/src/lib.rs`) and the style-cache counters.
+  `crates/runtime/macros-expand/src/lib.rs`) and the style-cache counters.
   Attribute a slow turn with phase counters until the kernel is
   instrumented.
 

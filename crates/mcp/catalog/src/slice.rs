@@ -21,7 +21,7 @@
 use serde_json::{json, Value};
 
 use crate::{
-    AnimationEntry, ComponentEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry,
+    AnimationEntry, ComponentEntry, PropsSchemaEntry, GuideEntry, IconSetEntry, MacroEntry, MethodEntry,
     PrimitiveEntry, RecipeEntry, ScopeEntry, SdkEntry, StateEntry, StyleTokenEntry, ToolEntry,
     TypeEntry, TypeShape,
     UtilityEntry, ValueEntry,
@@ -34,9 +34,25 @@ pub trait CatalogSlice: Sized + 'static {
     /// (`"components"`, `"primitives"`, …).
     const KEY: &'static str;
 
-    /// Every entry of this slice, in the stable order `catalog_json`
-    /// emits (so JSON diffs stay minimal).
-    fn collect_sorted() -> Vec<&'static Self>;
+    /// Every entry of this slice registered in this process's inventory,
+    /// in no particular order.
+    fn registered() -> Vec<&'static Self>;
+
+    /// Put entries in the stable order the catalog document lists them in
+    /// (so JSON diffs stay minimal). Separate from [`registered`] because a
+    /// catalog is not always this process's inventory: the scanner's
+    /// catalog is a dependency extractor's entries plus entries read from
+    /// source, and it has to come out in the same order.
+    ///
+    /// [`registered`]: CatalogSlice::registered
+    fn sort(v: &mut [&'static Self]);
+
+    /// [`registered`](CatalogSlice::registered), [`sort`](CatalogSlice::sort)ed.
+    fn collect_sorted() -> Vec<&'static Self> {
+        let mut v = Self::registered();
+        Self::sort(&mut v);
+        v
+    }
 
     /// Serialize one entry to its JSON object.
     fn to_json(&self) -> Value;
@@ -65,13 +81,27 @@ pub fn slice_array<S: CatalogSlice>() -> Value {
 impl CatalogSlice for ComponentEntry {
     const KEY: &'static str = "components";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static ComponentEntry> = crate::entries().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::entries().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|e| (e.module_path, e.name));
-        v
     }
 
     fn to_json(&self) -> Value {
+        self.to_json_with(&|short_name| crate::nearest_schema(short_name, self.module_path))
+    }
+}
+
+impl ComponentEntry {
+    /// [`CatalogSlice::to_json`] with the props-schema join made through
+    /// `schemas` (param type's short name → schema) instead of this
+    /// process's inventory — for a catalog assembled from more than one
+    /// source (see [`crate::CatalogParts`]), where the schema a param names
+    /// may have come from either. Pick the schema nearest this component
+    /// ([`crate::nearest_by_module`]), as `to_json` does.
+    pub fn to_json_with(&self, schemas: &dyn Fn(&str) -> Option<&'static PropsSchemaEntry>) -> Value {
         let composes: Vec<Value> = self
             .composes
             .iter()
@@ -87,7 +117,7 @@ impl CatalogSlice for ComponentEntry {
                 let schema = if p.type_short_name.is_empty() {
                     None
                 } else {
-                    crate::lookup_schema(p.type_short_name)
+                    schemas(p.type_short_name)
                 };
                 let mut obj = serde_json::Map::new();
                 obj.insert("name".into(), p.name.into());
@@ -130,10 +160,12 @@ impl CatalogSlice for ComponentEntry {
 impl CatalogSlice for PrimitiveEntry {
     const KEY: &'static str = "primitives";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static PrimitiveEntry> = crate::primitives().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::primitives().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|p| p.name);
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -167,10 +199,12 @@ impl CatalogSlice for PrimitiveEntry {
 impl CatalogSlice for UtilityEntry {
     const KEY: &'static str = "utilities";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static UtilityEntry> = crate::utilities().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::utilities().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|u| u.name);
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -206,10 +240,12 @@ impl CatalogSlice for UtilityEntry {
 impl CatalogSlice for MacroEntry {
     const KEY: &'static str = "macros";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static MacroEntry> = crate::macros().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::macros().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|m| m.name);
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -233,10 +269,12 @@ impl CatalogSlice for MacroEntry {
 impl CatalogSlice for StateEntry {
     const KEY: &'static str = "states";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static StateEntry> = crate::states().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::states().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|s| s.name);
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -255,12 +293,14 @@ impl CatalogSlice for StateEntry {
 impl CatalogSlice for StyleTokenEntry {
     const KEY: &'static str = "style_tokens";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static StyleTokenEntry> = crate::style_tokens().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::style_tokens().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         // By path, not name: consumers (editor completion) walk these in
         // the order an author types them.
         v.sort_by_key(|t| (t.vocabulary, t.namespace, t.path));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -283,10 +323,12 @@ impl CatalogSlice for StyleTokenEntry {
 impl CatalogSlice for GuideEntry {
     const KEY: &'static str = "guides";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static GuideEntry> = crate::guides().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::guides().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|g| (g.order, g.slug));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -307,10 +349,12 @@ impl CatalogSlice for GuideEntry {
 impl CatalogSlice for MethodEntry {
     const KEY: &'static str = "methods";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static MethodEntry> = crate::methods().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::methods().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|m| (m.parent_module_path, m.parent_name, m.name));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -344,10 +388,12 @@ impl CatalogSlice for MethodEntry {
 impl CatalogSlice for AnimationEntry {
     const KEY: &'static str = "animations";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static AnimationEntry> = crate::animations().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::animations().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|a| (a.parent_module_path, a.parent_name, a.binding, a.line));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -369,10 +415,12 @@ impl CatalogSlice for AnimationEntry {
 impl CatalogSlice for TypeEntry {
     const KEY: &'static str = "types";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static TypeEntry> = crate::types().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::types().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|t| (t.module_path, t.short_name));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -430,10 +478,12 @@ impl CatalogSlice for TypeEntry {
 impl CatalogSlice for ToolEntry {
     const KEY: &'static str = "tools";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static ToolEntry> = crate::tools().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::tools().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|t| (t.module_path, t.name));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -468,10 +518,12 @@ impl CatalogSlice for ToolEntry {
 impl CatalogSlice for RecipeEntry {
     const KEY: &'static str = "recipes";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static RecipeEntry> = crate::recipes().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::recipes().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|r| (r.target, r.module_path, r.name));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -496,10 +548,12 @@ impl CatalogSlice for RecipeEntry {
 impl CatalogSlice for ScopeEntry {
     const KEY: &'static str = "scopes";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static ScopeEntry> = crate::scopes().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::scopes().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|s| (s.order, s.slug));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -520,10 +574,12 @@ impl CatalogSlice for ScopeEntry {
 impl CatalogSlice for SdkEntry {
     const KEY: &'static str = "sdks";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static SdkEntry> = crate::sdks().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::sdks().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|s| s.name);
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -545,10 +601,12 @@ impl CatalogSlice for SdkEntry {
 impl CatalogSlice for ValueEntry {
     const KEY: &'static str = "values";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static ValueEntry> = crate::values().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::values().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|e| (e.value_of, e.module_path, e.short_name));
-        v
     }
 
     fn to_json(&self) -> Value {
@@ -573,10 +631,12 @@ impl CatalogSlice for ValueEntry {
 impl CatalogSlice for IconSetEntry {
     const KEY: &'static str = "icon_sets";
 
-    fn collect_sorted() -> Vec<&'static Self> {
-        let mut v: Vec<&'static IconSetEntry> = crate::icon_sets().collect();
+    fn registered() -> Vec<&'static Self> {
+        crate::icon_sets().collect()
+    }
+
+    fn sort(v: &mut [&'static Self]) {
         v.sort_by_key(|s| s.name);
-        v
     }
 
     fn to_json(&self) -> Value {

@@ -128,6 +128,9 @@ pathdiff = "0.2"
 # concatenates their BrightScript output into a single `.brs` file.
 backend-roku-transpile = { workspace = true }
 syn = { version = "2", features = ["full"] }
+# Reads the workspace's own catalog entries from source (`catalog-json
+# --scan`, `catalog-scan`, and the MCP server's refresh).
+catalog-scan = { workspace = true }
 # `catalog-scan` prints a param's type as the author wrote it.
 quote = { workspace = true }
 # Source linter engine — powers the `lint` subcommand and the

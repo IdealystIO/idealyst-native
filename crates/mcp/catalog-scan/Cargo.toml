@@ -1,0 +1,35 @@
+# catalog-scan — an app's MCP catalog entries, read from source.
+#
+# The catalog used to come only from a compiled extractor: a generated
+# binary linking every project crate with `runtime-core/catalog` on, run
+# once to print its `inventory` registrations. That is a full host build
+# of the whole app — on a large workspace minutes of several cores, and
+# `idealyst mcp --watch` redid it on every save, alongside the dev build.
+#
+# Every catalog entry is compile-time data (string literals,
+# `module_path!()`, `file!()`, `line!()`), so the build is not needed to
+# know it. This crate walks each crate's module tree, runs the REAL macro
+# expansion (`runtime-macros-expand`) over the items the catalog macros
+# are attached to, and reads the `inventory::submit!` literals back as
+# entries. The CLI merges them with a dependency extractor's catalog,
+# which only rebuilds when dependencies change.
+[package]
+name = "catalog-scan"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+description = "Read an idealyst app's MCP catalog entries from source by running the catalog macros' own expansion."
+
+[dependencies]
+mcp-catalog = { workspace = true }
+# The catalog half of the expansion is what the scanner runs, so it needs
+# the emission on.
+runtime-macros-expand = { workspace = true, features = ["catalog"] }
+# `span-locations`: entry lines (`composes` edges, animations) come from
+# token spans, which carry real positions only with it.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

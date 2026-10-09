@@ -76,7 +76,7 @@ fn collect_params(sig: &syn::Signature) -> Vec<(String, String, String)> {
             _ => "_".to_string(),
         };
         let ty = &*pat_type.ty;
-        let type_str = quote! { #ty }.to_string();
+        let type_str = crate::token_text::token_text(&quote! { #ty });
         let short = type_short_name(ty).unwrap_or_default();
         out.push((name, type_str, short));
     }
@@ -96,6 +96,6 @@ fn type_short_name(ty: &syn::Type) -> Option<String> {
 fn collect_return_type(sig: &syn::Signature) -> String {
     match &sig.output {
         syn::ReturnType::Default => String::new(),
-        syn::ReturnType::Type(_, ty) => quote! { #ty }.to_string(),
+        syn::ReturnType::Type(_, ty) => crate::token_text::token_text(&quote! { #ty }),
     }
 }

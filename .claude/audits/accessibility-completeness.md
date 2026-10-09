@@ -6,8 +6,8 @@ targets:
   - crates/runtime/core/src/backend.rs
   - crates/runtime/core/src/element.rs
   - crates/runtime/core/src/builder.rs
-  - crates/runtime/macros/src/ui.rs
-  - crates/runtime/macros/src/jsx.rs
+  - crates/runtime/macros-expand/src/ui.rs
+  - crates/runtime/macros-expand/src/jsx.rs
   - crates/dev/wire/src/lib.rs
   - crates/backend/web
   - crates/backend/ios/mobile
@@ -88,7 +88,7 @@ must stay in lockstep with the `AccessibilityProps` fields.
       `live_region`. A new author-writable field on `AccessibilityProps`
       needs a matching setter here. `LazyBuilder` carries the same set.
 - [ ] **The macro attr list matches the setters.** `is_a11y_attr` in
-      `crates/runtime/macros/src/ui.rs` is the single source of truth both
+      `crates/runtime/macros-expand/src/ui.rs` is the single source of truth both
       `ui!` and `jsx!` consult; each recognized name must equal a
       `Bound` setter name (the macros emit `.<name>(<value>)`). A setter
       added without updating `is_a11y_attr` is unreachable from the

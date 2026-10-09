@@ -282,20 +282,24 @@ The MCP server runs as a long-lived process under `cargo idealyst mcp` and updat
 
 **b) File-watch and rebuild via the existing `dev-reload` infrastructure.** The repo already has `crates/dev/reload/` driving hot-reload for the running app. The MCP server hooks into the same file-watch loop — when a source file under the project changes, `dev-reload` triggers a rebuild; the MCP server intercepts the catalog-rebuild step. We do **not** stand up a separate file watcher; that would invite drift between what the running app sees and what the MCP catalog sees.
 
-**c) A thin catalog-extraction binary that compiles fast.** This is the critical optimisation. The full `--features mcp` user-app binary is heavy because it links every platform backend. But the catalog binary doesn't need iOS UIKit, Android JNI, wgpu, or any other backend — it just enumerates `inventory::iter` and prints JSON. We give the catalog binary its own Cargo profile (`[profile.mcp-catalog]`) and feature surface that excludes platform-backend deps. Result: incremental rebuilds in the low-second range, even when only a comment changed.
+**c) The refresh reads the workspace from source.** Rebuilding a catalog binary on every save is a full host build of the app (every crate the project links, with the `catalog` feature on), and on a large workspace that was minutes of several cores competing with `idealyst dev`. The refresh is `idealyst catalog-json --scan`, which splits the catalog at the workspace boundary:
+
+- everything outside the workspace comes from the compiled extractor with no workspace crate linked (`--deps-only`), which only rebuilds when the dependency graph changes and, with registry dependencies, is cached against the lockfile and manifests;
+- the workspace's own crates are read from source by `crates/mcp/catalog-scan`, which runs the catalog macros' own expansion (`crates/runtime/macros-expand`, the library `runtime-macros` is a shim over) on the items carrying them and reads the emitted `inventory::submit!` literals back, `module_path!()` / `file!()` / `line!()` resolved as rustc would. The entries are identical to a compiled catalog's; a crate whose registrations cannot be read from source (one computed at run time) is compiled with the dependencies instead.
 
 Flow on a file change:
 
 ```
-file save → dev-reload detects → cargo build --features mcp --bin mcp_catalog
-          → catalog binary prints JSON to stdout
-          → mcp-runtime parses, atomically swaps in-memory catalog
+file save → watcher (src/ + Cargo.toml of every workspace crate the catalog reads)
+          → idealyst catalog-json --scan: cargo metadata, source scan, cached dependency catalog
+          → JSON on stdout
+          → mcp-server parses it, atomically swaps the in-memory catalog
           → emits notifications/resources/list_changed to subscribed clients
 ```
 
-If the rebuild fails (compile error), the MCP server keeps serving the previous good catalog and surfaces the build error as a server-side log entry. The client doesn't see a stale-vs-fresh distinction unless it specifically queries for build status (future tool: `last_build_status`).
+If the refresh fails, the MCP server keeps serving the previous good catalog and surfaces the error as a server-side log entry. A source file that does not tokenize (an edit in progress) is skipped with a warning rather than failing the refresh.
 
-**Latency expectations.** Sub-second for trivial edits (doc-comment-only changes hit incremental compilation hard); a few seconds when component bodies change; ten-plus seconds on the first cold rebuild or when something in `runtime-core` itself changes. Acceptable for the workflow — the user isn't blocked on it, the LLM consumer just sees a fresher catalog on the next query.
+**Cost.** On CrewForge (35 workspace crates) a warm refresh is about four CPU-seconds on one core, nearly all of it the macro expansion. The dependency extractor builds once, then again only when dependencies change.
 
 ## 9. Open questions
 

@@ -14,6 +14,7 @@ cannot drift.
 | Crate | Path | Role |
 | --- | --- | --- |
 | `mcp-catalog` | [`catalog/`](./catalog) | The catalog data model + resolution. Eight inventory slices (Component / Primitive / Utility / State / Guide / Method / Animation / Type). The `#[component]` macro submits to these slices at compile time. |
+| `catalog-scan` | [`catalog-scan/`](./catalog-scan) | Reads a workspace's catalog entries from **source**, with no build: it runs the catalog macros' own expansion (`runtime-macros-expand`) over the items they are attached to and reads the `inventory::submit!` literals back. Entries are byte-identical to a compiled catalog's (pinned by `mcp-catalog`'s `source_scan_reads_exactly_what_the_compiled_macros_register`). Used by `idealyst mcp`'s refresh, `catalog-json --scan` and `catalog-scan`. |
 | `mcp-server` | [`server/`](./server) | Stdio MCP server (`idealyst mcp`). Surfaces catalog tools (`list_components`, `describe_component`, `find_uses`, …) and the `idealyst://catalog` resource, **plus** the Robot tools (`find_element`, `click`, `type_text`, `get_snapshot`, …) that drive a running app, **plus** the dev-session tools (`run_dev` / `list_dev_sessions` / `stop_dev` / `read_dev_log` / `wait_for_app`) that launch, observe, and tear down `idealyst dev` from MCP. Reaches the app's Robot bridge via discovery (`~/.idealyst/apps/`) or an explicit `--robot-port`. Consumed by Claude Code / IDE plugins. |
 
 ## How the catalog gets populated
@@ -36,9 +37,36 @@ cannot drift.
    and exposes it over stdio MCP
 ```
 
-Each scaffolded project ships a `catalog` binary that exposes its
-own catalog. Drift between code and surface is structurally
-impossible — they come from the same source.
+The CLI builds that catalog without any per-project setup: it generates
+a small extractor crate that links the project with the `catalog`
+feature on and prints `catalog_json()` (`crates/tools/cli/src/cmd/catalog_wrapper.rs`).
+Drift between code and surface is structurally impossible — they come
+from the same source.
+
+### Keeping it current without building the app
+
+`idealyst mcp` refreshes the catalog on every save, and linking the
+whole project for that is a full host build of the app — on a large
+workspace, minutes of several cores competing with `idealyst dev`. So
+the refresh (`idealyst catalog-json --scan`) splits the catalog at the
+workspace boundary:
+
+- **Dependencies** (idea-ui, idea-theme, SDKs) come from the compiled
+  extractor with none of the workspace's crates linked
+  (`catalog-json --deps-only`). It only has to rebuild when the
+  dependency graph changes, and when every dependency comes from a
+  registry the result is cached against the lockfile and manifests.
+- **The workspace's own crates** are read from source by
+  [`catalog-scan`](./catalog-scan): the same macro expansion the compiler
+  runs, applied to the items carrying catalog macros, with `cfg`s
+  evaluated as a catalog build would (`catalog` features on). No guessing:
+  a crate whose registrations only exist at run time (idea-theme's style
+  tokens compute their defaults by calling the theme) is refused by name
+  and compiled with the dependencies instead.
+
+Measured on CrewForge (35 workspace crates): a warm refresh costs about
+four CPU-seconds on one core, where the compiled extractor rebuilt the
+app on every save.
 
 ### Scope: the catalog is the linked dependency graph
 

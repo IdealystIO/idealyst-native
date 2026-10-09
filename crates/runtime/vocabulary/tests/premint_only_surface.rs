@@ -293,7 +293,7 @@ fn both_dynamic_preminted_paths_share_one_class_swap() {
 #[test]
 fn macro_premint_branches_share_one_class_assembly() {
     let src =
-        std::fs::read_to_string(repo_root().join("crates/runtime/macros/src/stylesheet.rs"))
+        std::fs::read_to_string(repo_root().join("crates/runtime/macros-expand/src/stylesheet.rs"))
             .expect("read stylesheet.rs");
     assert_eq!(
         src.matches("#(#premint_axis_pushes)*").count(),

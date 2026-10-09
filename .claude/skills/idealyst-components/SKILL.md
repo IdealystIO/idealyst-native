@@ -23,8 +23,8 @@ Read it for the full worked template; use the files below as ground truth.
 | Structural branch as `if` / `match` inside `ui!` + controlled `Signal` | `crates/ui/idea-ui/src/components/checkbox.rs`, `select.rs`, `calendar.rs` |
 | When a direct `when` / `switch` is legitimate (and how to mark it) | `crates/ui/idea-ui/src/components/mod.rs` (module docs) |
 | Full reactive fast-path split (static vs live, slot overrides) | `crates/ui/idea-ui/src/components/button.rs` |
-| `#[props]` macro behavior (what wraps / what's skipped) | `crates/runtime/macros/src/props_attr.rs` |
-| `#[component]` args + signature rules | `crates/runtime/macros/src/component_attr.rs`, `invocation_macro.rs` |
+| `#[props]` macro behavior (what wraps / what's skipped) | `crates/runtime/macros-expand/src/props_attr.rs` |
+| `#[component]` args + signature rules | `crates/runtime/macros-expand/src/component_attr.rs`, `invocation_macro.rs` |
 
 ## The shape, in order
 

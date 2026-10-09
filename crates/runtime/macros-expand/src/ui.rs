@@ -411,7 +411,7 @@ fn parse_fstring(value: &str) -> Result<Option<Vec<FPiece>>, String> {
     // that let `text { "{item.name}" }` render the literal `{item.name}`.
     let mut force_err = false;
     let mut slots = 0usize;
-    let mut push_ch = |pieces: &mut Vec<FPiece>, c: char| match pieces.last_mut() {
+    let push_ch = |pieces: &mut Vec<FPiece>, c: char| match pieces.last_mut() {
         Some(FPiece::Lit(s)) => s.push(c),
         _ => pieces.push(FPiece::Lit(c.to_string())),
     };

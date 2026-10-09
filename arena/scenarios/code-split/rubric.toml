@@ -30,7 +30,7 @@ assertion = { target = "web" }
 # --- decision items (source-verifiable: did the agent pick the right APIs) ---
 
 # The `lazy!` macro is the framework's code-splitting boundary. VERIFIED against
-# the real macro (crates/runtime/macros/src/lazy.rs): the author form is the
+# the real macro (crates/runtime/macros-expand/src/lazy.rs): the author form is the
 # BRACE / block form `lazy! { <ui-block> }` — the MCP catalog's one-line
 # `invocation: "lazy!(path::to::Component)"` is misleading (the body is a `ui!`
 # block coerced via `IntoElement`, not a path). A verified probe with

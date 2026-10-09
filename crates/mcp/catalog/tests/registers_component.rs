@@ -37,3 +37,88 @@ include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../dev/newcore-catalog/tests/shared/catalog_emission.rs"
 ));
+
+/// Reading the catalog document back with `CatalogParts::from_json` and
+/// writing it again reproduces it byte for byte. The CLI's catalog
+/// scanner depends on this: it re-serializes a dependency extractor's
+/// whole document through `CatalogParts` when it merges the scanned
+/// workspace entries in, so any field the reader drops or the writer
+/// derives differently would silently change the catalog.
+#[test]
+fn catalog_parts_json_round_trip_is_exact() {
+    let original = mcp_catalog::catalog_json();
+    assert!(
+        !original["components"].as_array().unwrap().is_empty(),
+        "the suite registers components; an empty catalog proves nothing"
+    );
+    let parts = mcp_catalog::CatalogParts::from_json(&original).expect("read the document back");
+    assert_eq!(
+        serde_json::to_string_pretty(&parts.to_json()).unwrap(),
+        serde_json::to_string_pretty(&original).unwrap()
+    );
+}
+
+/// The CLI's catalog scanner reads entries from source by running the
+/// catalog macros' own expansion; this pins that it reads exactly what a
+/// compiled extractor registers. The suite's fixture is both: compiled
+/// into this binary (its entries are in the inventory under this test
+/// target's name) and handed to the scanner as a crate root under the
+/// same name. Every macro-emitted slice must come out identical — names,
+/// params, schemas, composes edges and their lines, `file!()`, `line!()`,
+/// recipe source — in the catalog document both are written to.
+#[test]
+fn source_scan_reads_exactly_what_the_compiled_macros_register() {
+    use mcp_catalog::{origin_crate, CatalogParts};
+
+    const CRATE: &str = "registers_component";
+    // The path rustc reports through `file!()` for the `include!`d
+    // fixture: the include's argument as written, `..` and all.
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dev/newcore-catalog/tests/shared/catalog_emission.rs");
+
+    let ours = |m: &str| origin_crate(m) == CRATE;
+    let all = CatalogParts::registered();
+    let compiled = CatalogParts {
+        components: all.components.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        props_schemas: all.props_schemas.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        methods: all.methods.iter().copied().filter(|e| ours(e.parent_module_path)).collect(),
+        animations: all.animations.iter().copied().filter(|e| ours(e.parent_module_path)).collect(),
+        types: all.types.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        values: all.values.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        tools: all.tools.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        recipes: all.recipes.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        scopes: all.scopes.iter().copied().filter(|e| ours(e.module_path)).collect(),
+        ..Default::default()
+    };
+    // Every slice the scan reads must actually be exercised here, or the
+    // comparison below proves nothing about it.
+    for (slice, n) in [
+        ("components", compiled.components.len()),
+        ("props_schemas", compiled.props_schemas.len()),
+        ("methods", compiled.methods.len()),
+        ("animations", compiled.animations.len()),
+        ("types", compiled.types.len()),
+        ("tools", compiled.tools.len()),
+        ("recipes", compiled.recipes.len()),
+        ("scopes", compiled.scopes.len()),
+    ] {
+        assert!(n > 0, "the fixture registers no {slice}");
+    }
+
+    let cfg = catalog_scan::Cfg::host_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))).expect("rustc --print cfg");
+    let krate = catalog_scan::ScanCrate { name: CRATE.into(), root: fixture.into(), cfg };
+    let scanned = catalog_scan::scan(&[krate], &[]);
+    assert!(scanned.refused.is_empty() && scanned.skipped.is_empty(), "{:?} {:?}", scanned.refused, scanned.skipped);
+    let scanned = scanned.parts;
+
+    let pretty = |p: &CatalogParts| serde_json::to_string_pretty(&p.to_json()).unwrap();
+    let (compiled, scanned) = (pretty(&compiled), pretty(&scanned));
+    if compiled != scanned {
+        let first = compiled.lines().zip(scanned.lines()).position(|(a, b)| a != b).unwrap_or(0);
+        let window = |s: &str| s.lines().skip(first.saturating_sub(8)).take(16).collect::<Vec<_>>().join("\n");
+        panic!(
+            "scan differs from the compiled registrations at line {first}\n--- compiled ---\n{}\n--- scanned ---\n{}",
+            window(&compiled),
+            window(&scanned)
+        );
+    }
+}

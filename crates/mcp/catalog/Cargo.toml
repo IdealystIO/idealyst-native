@@ -41,3 +41,9 @@ runtime-core = { path = "../../runtime/core", features = ["catalog"] }
 # from the test crate's extern prelude.
 runtime-vocabulary = { path = "../../runtime/vocabulary", features = ["catalog"] }
 runtime-macros = { path = "../../runtime/macros", features = ["catalog"] }
+# The scanner parity test (`tests/registers_component.rs`): the suite's
+# fixture is compiled into this test binary AND read from source by the
+# scanner, and the two entry sets must match. Another dev-dependency cycle
+# (`catalog-scan` → `mcp-catalog`), permitted for the same reason as the
+# one above.
+catalog-scan = { path = "../catalog-scan" }

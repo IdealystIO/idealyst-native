@@ -24,6 +24,9 @@ pub use resolve::{
 pub mod slice;
 pub use slice::{CatalogSlice, LeakFromJson};
 
+mod parts;
+pub use parts::CatalogParts;
+
 mod primitives;
 mod utilities;
 mod macros;
@@ -967,11 +970,42 @@ pub fn schemas() -> impl Iterator<Item = &'static PropsSchemaEntry> {
 }
 
 /// Look up a props schema by its struct's bare ident. Returns the
-/// first match — `(module_path, short_name)` is the canonical
-/// identity, but in practice projects don't reuse the name across
-/// modules. If no struct declared the derive, returns `None`.
+/// first match in link order — `(module_path, short_name)` is the
+/// canonical identity, so where a name is reused across modules this is
+/// arbitrary. Joining a component's param to its props struct goes
+/// through [`nearest_schema`] instead. If no struct declared the derive,
+/// returns `None`.
 pub fn lookup_schema(short_name: &str) -> Option<&'static PropsSchemaEntry> {
     schemas().find(|e| e.short_name == short_name)
+}
+
+/// The props schema named `short_name` registered nearest `near` (the
+/// module path of the component whose param names it). See
+/// [`nearest_by_module`].
+pub fn nearest_schema(short_name: &str, near: &str) -> Option<&'static PropsSchemaEntry> {
+    nearest_by_module(schemas().filter(|s| s.short_name == short_name), |s| s.module_path, near)
+}
+
+/// Of `candidates` (entries sharing a short name), the one registered
+/// nearest the module path `near`: the most leading `::` segments in
+/// common, ties to the lexicographically first module path.
+///
+/// A param names its props struct by bare ident, and an app reuses those
+/// idents freely — CrewForge has `BlockerRowProps` in two crates, and 151
+/// components whose props struct shares its name with another one. The
+/// struct the code means is the one in scope, which is nearly always the
+/// one declared in, or closest to, the component's own module. The join
+/// used to take the first match in link order, so those components were
+/// documented with another crate's fields; nearest is also independent
+/// of link order, so a compiled catalog and one read from source agree.
+pub fn nearest_by_module<T: Copy>(candidates: impl IntoIterator<Item = T>, module_of: impl Fn(T) -> &'static str, near: &str) -> Option<T> {
+    let shared = |m: &str| m.split("::").zip(near.split("::")).take_while(|(a, b)| a == b).count();
+    candidates.into_iter().max_by(|a, b| {
+        let (ma, mb) = (module_of(*a), module_of(*b));
+        // Most shared segments wins; on a tie the smaller path does (so
+        // `max_by` must see it as the greater).
+        shared(ma).cmp(&shared(mb)).then_with(|| mb.cmp(ma))
+    })
 }
 
 /// Iterate every component the `#[component]` macro has registered. The
@@ -998,7 +1032,7 @@ pub fn externals() -> impl Iterator<Item = &'static ExternalEntry> {
 pub fn external_components_json() -> serde_json::Value {
     let mut components: Vec<serde_json::Value> = externals()
         .map(|e| {
-            let props: Vec<serde_json::Value> = lookup_schema(e.props_short_name)
+            let props: Vec<serde_json::Value> = nearest_schema(e.props_short_name, e.module_path)
                 .map(|s| {
                     s.fields
                         .iter()
@@ -1163,28 +1197,10 @@ pub fn lookup_type(short_name: &str) -> Option<&'static TypeEntry> {
 /// (`module_path::name`, slug, etc.) so JSON diffs are minimal.
 ///
 /// Each slice serializes through its [`CatalogSlice`] impl (see
-/// `slice.rs`); this function just names the key → type mapping.
+/// `slice.rs`), assembled by [`CatalogParts::to_json`] — the same writer
+/// a catalog merged from several sources goes through.
 pub fn catalog_json() -> serde_json::Value {
-    use slice::slice_array;
-    serde_json::json!({
-        "catalog_version": 2,
-        "components": slice_array::<ComponentEntry>(),
-        "primitives": slice_array::<PrimitiveEntry>(),
-        "utilities": slice_array::<UtilityEntry>(),
-        "macros": slice_array::<MacroEntry>(),
-        "states": slice_array::<StateEntry>(),
-        "style_tokens": slice_array::<StyleTokenEntry>(),
-        "guides": slice_array::<GuideEntry>(),
-        "methods": slice_array::<MethodEntry>(),
-        "animations": slice_array::<AnimationEntry>(),
-        "types": slice_array::<TypeEntry>(),
-        "values": slice_array::<ValueEntry>(),
-        "tools": slice_array::<ToolEntry>(),
-        "recipes": slice_array::<RecipeEntry>(),
-        "scopes": slice_array::<ScopeEntry>(),
-        "sdks": slice_array::<SdkEntry>(),
-        "icon_sets": slice_array::<IconSetEntry>(),
-    })
+    CatalogParts::registered().to_json()
 }
 
 /// Print the catalog as pretty-formatted JSON on stdout. The shape

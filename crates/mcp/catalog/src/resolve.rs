@@ -527,7 +527,7 @@ fn leak_str(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }
 
-fn leak_entry_from_json(c: &serde_json::Value) -> Result<&'static ComponentEntry, BuildFromJsonError> {
+pub(crate) fn leak_entry_from_json(c: &serde_json::Value) -> Result<&'static ComponentEntry, BuildFromJsonError> {
     fn req_str<'a>(v: &'a serde_json::Value, field: &'static str) -> Result<&'a str, BuildFromJsonError> {
         v[field].as_str().ok_or(BuildFromJsonError::MissingField(field))
     }
@@ -973,7 +973,7 @@ fn leak_icon_set_from_json(v: &serde_json::Value) -> Option<&'static IconSetEntr
 
 /// `value[S::KEY]` as a Vec of leaked entries, or empty when the key is
 /// absent / not an array. The generic reader half of `build_from_json`.
-fn slice_vec<S: LeakFromJson>(value: &serde_json::Value) -> Vec<&'static S> {
+pub(crate) fn slice_vec<S: LeakFromJson>(value: &serde_json::Value) -> Vec<&'static S> {
     value[S::KEY]
         .as_array()
         .map(|a| a.iter().filter_map(|v| S::from_json(v)).collect())

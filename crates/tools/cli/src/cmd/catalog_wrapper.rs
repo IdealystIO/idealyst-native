@@ -163,17 +163,27 @@ pub fn generate_for_roots(project_roots: &[PathBuf]) -> Result<PathBuf> {
 /// target dir with the full wrapper so compiled dependencies are cached
 /// once.
 pub fn generate_deps_only(project_roots: &[PathBuf]) -> Result<PathBuf> {
-    generate_with_link(project_roots, "catalog-deps", "catalog", "dump_catalog_json", Link::DepsOnly)
+    generate_deps_and(project_roots, &[])
+}
+
+/// [`generate_deps_only`], also linking the workspace members named in
+/// `also` (package names). `catalog-json --scan` compiles the members
+/// the source scan refused this way — one whose registrations exist only
+/// at run time, like idea-theme's style tokens — while every other
+/// member is still read from source.
+pub fn generate_deps_and(project_roots: &[PathBuf], also: &[String]) -> Result<PathBuf> {
+    generate_with_link(project_roots, "catalog-deps", "catalog", "dump_catalog_json", Link::DepsOnly { also: also.to_vec() })
 }
 
 /// What a generated wrapper links.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Link {
     /// The projects themselves plus their direct component-library deps.
     Projects,
     /// Only non-member crates reachable from the projects (see
-    /// [`generate_deps_only`]).
-    DepsOnly,
+    /// [`generate_deps_only`]), plus the members in `also`
+    /// ([`generate_deps_and`]).
+    DepsOnly { also: Vec<String> },
 }
 
 /// Directory name for a wrapper covering `projects`.
@@ -295,10 +305,14 @@ pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
 
 /// `cargo metadata` for the workspace `dir` belongs to. Cargo resolves
 /// `members` globs for us, which hand-globbing would get wrong.
+///
+/// `--no-deps`: the members and their `[package.metadata]` are all this
+/// reads, and skipping the dependency resolve takes it from ~0.4 s to
+/// ~0.04 s on a large workspace — it runs on every catalog refresh.
 fn workspace_metadata(dir: &Path) -> Result<Value> {
     let manifest_path = dir.join("Cargo.toml");
     let output = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version", "1"])
+        .args(["metadata", "--no-deps", "--format-version", "1"])
         .arg("--manifest-path")
         .arg(&manifest_path)
         .output()
@@ -436,7 +450,7 @@ fn generate_with_link(
     // target dir is — reused so placement costs no extra cargo call.
     let mut anchor_target: Option<PathBuf> = None;
     for (i, (root, manifest)) in projects.iter().enumerate() {
-        let (deps, target_dir) = discover_forced_deps(root, &source, &manifest.name, link);
+        let (deps, target_dir) = discover_forced_deps(root, &source, &manifest.name, &link);
         if i == 0 {
             anchor_target = target_dir;
         }
@@ -478,7 +492,7 @@ fn generate_with_link(
     // dependency set (see `generate_deps_only`).
     let linked_projects: &[(PathBuf, build_ios::Manifest)] = match link {
         Link::Projects => &projects,
-        Link::DepsOnly => &[],
+        Link::DepsOnly { .. } => &[],
     };
     let project_dep_lines = linked_projects
         .iter()
@@ -834,14 +848,22 @@ fn discover_forced_deps(
     project_root: &Path,
     source: &FrameworkSource,
     project_pkg_name: &str,
-    link: Link,
+    link: &Link,
 ) -> (Vec<ForcedDep>, Option<PathBuf>) {
     let manifest_path = project_root.join("Cargo.toml");
-    let output = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version", "1"])
-        .arg("--manifest-path")
-        .arg(&manifest_path)
-        .output();
+    // Resolved for the host the wrapper builds on: cargo then drops
+    // exactly the target-gated edges that don't apply here, and the walk
+    // can follow the rest — an app reaching its SDKs through
+    // `[target.'cfg(not(target_os = "linux"))'.dependencies]` has them
+    // force-linked on a Mac and not in a Linux container. Without a host
+    // triple the metadata is unfiltered and every gated edge is skipped.
+    let host = super::scan_plan::host_triple(project_root).ok();
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["metadata", "--format-version", "1"]);
+    if let Some(host) = &host {
+        cmd.args(["--filter-platform", host]);
+    }
+    let output = cmd.arg("--manifest-path").arg(&manifest_path).output();
     let output = match output {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
@@ -868,7 +890,7 @@ fn discover_forced_deps(
         }
     };
     let target_dir = metadata_target_dir(&json);
-    (collect_forced_deps(&json, source, &manifest_path, project_pkg_name, link), target_dir)
+    (collect_forced_deps(&json, source, &manifest_path, project_pkg_name, link, host.is_some()), target_dir)
 }
 
 /// Pure core of [`discover_forced_deps`], split out so it's unit-testable
@@ -887,7 +909,8 @@ fn collect_forced_deps(
     source: &FrameworkSource,
     project_manifest_path: &Path,
     project_pkg_name: &str,
-    link: Link,
+    link: &Link,
+    host_filtered: bool,
 ) -> Vec<ForcedDep> {
     let packages = match metadata.get("packages").and_then(|p| p.as_array()) {
         Some(p) => p,
@@ -927,7 +950,7 @@ fn collect_forced_deps(
             .and_then(|node| node.get("deps").and_then(|d| d.as_array()))
             .map(|deps| {
                 deps.iter()
-                    .filter(|dep| dep_has_normal_kind(dep))
+                    .filter(|dep| dep_has_normal_kind(dep, host_filtered))
                     .filter_map(|dep| dep.get("pkg").and_then(|p| p.as_str()).map(String::from))
                     .collect()
             })
@@ -935,11 +958,19 @@ fn collect_forced_deps(
     };
     let candidate_ids: Vec<String> = match link {
         Link::Projects => normal_deps_of(&root_id),
-        Link::DepsOnly => {
+        Link::DepsOnly { also } => {
+            let name_of = |id: &str| {
+                packages
+                    .iter()
+                    .find(|p| p.get("id").and_then(|i| i.as_str()) == Some(id))
+                    .and_then(|p| p.get("name").and_then(|n| n.as_str()))
+                    .unwrap_or_default()
+                    .to_string()
+            };
             let members: Vec<&str> = metadata
                 .get("workspace_members")
                 .and_then(|m| m.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).filter(|id| !also.contains(&name_of(id))).collect())
                 .unwrap_or_default();
             let mut seen: Vec<String> = Vec::new();
             let mut stack = normal_deps_of(&root_id);
@@ -978,8 +1009,12 @@ fn collect_forced_deps(
         {
             continue;
         }
-        // Only crates that depend on the framework core can host components.
-        if !pkg_depends_on_core(pkg) {
+        // Only crates that depend on the framework core can host
+        // components. A member linked through `also` is known to (the
+        // scan found catalog macros in it), whichever crate it reaches
+        // the macros through.
+        let also_linked = matches!(link, Link::DepsOnly { also } if also.iter().any(|a| a == name));
+        if !also_linked && !pkg_depends_on_core(pkg) {
             continue;
         }
         let Some(lib_ident) = pkg_lib_target_name(pkg) else {
@@ -1028,20 +1063,22 @@ fn collect_forced_deps(
 }
 
 /// True if a `resolve.nodes[].deps[]` entry includes a normal (non
-/// dev/build) dependency kind. Cargo encodes the normal kind as a
-/// `null` `kind`; older metadata without `dep_kinds` is treated as
-/// normal too.
-fn dep_has_normal_kind(dep: &Value) -> bool {
+/// dev/build) dependency kind that applies to the host. Cargo encodes the
+/// normal kind as a `null` `kind`; older metadata without `dep_kinds` is
+/// treated as normal too.
+///
+/// A target-gated edge (`[target.'cfg(…)'.dependencies]`) applies to the
+/// host only if cargo kept it in a `--filter-platform <host>` resolve
+/// (`host_filtered`), which removes the rest. In unfiltered metadata a
+/// gated edge may be for another target entirely
+/// (`cfg(target_arch = "wasm32")`), and force-linking it would compile a
+/// crate the project never compiles here, so it is skipped.
+fn dep_has_normal_kind(dep: &Value, host_filtered: bool) -> bool {
     match dep.get("dep_kinds").and_then(|k| k.as_array()) {
         None => true,
-        // A normal (not dev/build) edge with no `target` cfg. A
-        // target-gated one (`[target.'cfg(target_arch = "wasm32")'
-        // .dependencies] video = …`) is a dep only on that target; the
-        // wrapper builds for the host, where force-linking it would
-        // compile a crate the project itself never compiles here.
         Some(kinds) => kinds.iter().any(|k| {
             k.get("kind").map(|v| v.is_null()).unwrap_or(true)
-                && k.get("target").map(|v| v.is_null()).unwrap_or(true)
+                && (host_filtered || k.get("target").map(|v| v.is_null()).unwrap_or(true))
         }),
     }
 }
@@ -1796,7 +1833,8 @@ mod tests {
             &src,
             Path::new("/proj/Cargo.toml"),
             "my-app",
-            Link::Projects,
+            &Link::Projects,
+            false,
         );
         // Only idea-ui qualifies: serde lacks a runtime-core dep,
         // dev-tool is a dev-dependency, proc-mac is proc-macro-only,
@@ -1839,7 +1877,7 @@ mod tests {
             .push(json!({"pkg": "fc", "dep_kinds": [{"kind": null}]}));
 
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
 
         assert_eq!(deps.len(), 1, "got: {deps:?}");
         assert_eq!(deps[0].pkg_name, "idea-ui");
@@ -1873,7 +1911,7 @@ mod tests {
             .push(json!({"pkg": "icons", "dep_kinds": [{"kind": null}]}));
 
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
         assert_eq!(deps.len(), 2, "got: {deps:?}");
 
         let icons = deps.iter().find(|d| d.pkg_name == "icons-lucide").expect("icons-lucide forced");
@@ -1912,7 +1950,7 @@ mod tests {
             .unwrap()
             .push(json!({"pkg": "icons", "dep_kinds": [{"kind": null}]}));
 
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
         let icons = deps.iter().find(|d| d.pkg_name == "icons-lucide").expect("icons-lucide forced");
         assert_eq!(
             icons.dep_line,
@@ -1937,7 +1975,7 @@ mod tests {
         // can't re-declare it safely in git mode — must be skipped.
         meta["packages"][2]["dependencies"] = json!([{"name": "runtime-core", "kind": null}]);
 
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
         assert_eq!(deps.len(), 1, "got: {deps:?}");
         assert_eq!(deps[0].pkg_name, "idea-ui");
         assert_eq!(
@@ -1966,7 +2004,7 @@ mod tests {
         // depends on runtime-core — the shared-library shape.
         let meta = sample_metadata();
         for src in [&git, &registry] {
-            let deps = collect_forced_deps(&meta, src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+            let deps = collect_forced_deps(&meta, src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
             assert_eq!(deps.len(), 1, "{src:?}: got {deps:?}");
             assert_eq!(deps[0].pkg_name, "idea-ui");
             assert_eq!(
@@ -2021,7 +2059,7 @@ mod tests {
                 ]
             }
         });
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::DepsOnly);
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::DepsOnly { also: vec![] }, false);
         let names: Vec<&str> = deps.iter().map(|d| d.pkg_name.as_str()).collect();
         assert_eq!(names, vec!["idea-ui"], "reached through the member, member itself not linked, wasm-only dep skipped; got {deps:?}");
         // The registry line carries the crate's OWN resolved version.
@@ -2030,9 +2068,62 @@ mod tests {
         // The full mode still sees only direct deps: the member is a
         // direct dep here, and it is a project-side crate the wrapper
         // links by path.
-        let direct = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let direct = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
         let names: Vec<&str> = direct.iter().map(|d| d.pkg_name.as_str()).collect();
         assert_eq!(names, vec!["crewforge-ui-shared"]);
+
+        // A member the source scan refused is linked alongside the
+        // non-members (`catalog-json --scan` compiles just that crate),
+        // the other members still are not.
+        let also = Link::DepsOnly { also: vec!["crewforge-ui-shared".to_string()] };
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &also, false);
+        let names: Vec<&str> = deps.iter().map(|d| d.pkg_name.as_str()).collect();
+        assert_eq!(names, vec!["crewforge-ui-shared", "idea-ui"]);
+    }
+
+    /// Regression: an SDK reached through a target-gated edge that applies
+    /// to the host (`[target.'cfg(not(target_os = "linux"))'.dependencies]`
+    /// on a Mac — CrewForge's layout) was never force-linked, because
+    /// every gated edge was skipped; its registrations (the `permissions`
+    /// SDK's recipe) went missing from the dependency catalog. Metadata
+    /// resolved with `--filter-platform <host>` only keeps the gated edges
+    /// that apply, so those are followed; unfiltered metadata still skips
+    /// them all.
+    #[test]
+    fn regression_a_host_applicable_target_gated_dep_is_force_linked() {
+        let src = FrameworkSource::Registry {
+            registry: "idealyst".to_string(),
+            versions: build_ios::FrameworkVersions::default(),
+        };
+        let reg = "sparse+https://crates.idealyst.io/index/";
+        let meta = json!({
+            "workspace_members": ["app"],
+            "packages": [
+                {"id": "app", "name": "my-app", "manifest_path": "/proj/Cargo.toml", "source": null,
+                 "dependencies": [{"name": "runtime-core", "kind": null}, {"name": "notify", "kind": null}],
+                 "targets": [{"name": "my_app", "kind": ["lib"]}]},
+                {"id": "notify", "name": "notify", "version": "1.0.0", "manifest_path": "/reg/notify/Cargo.toml", "source": reg,
+                 "dependencies": [{"name": "runtime-core", "kind": null}, {"name": "permissions", "kind": null}],
+                 "targets": [{"name": "notify", "kind": ["lib"]}]},
+                {"id": "perm", "name": "permissions", "version": "1.6.0", "manifest_path": "/reg/permissions/Cargo.toml", "source": reg,
+                 "dependencies": [{"name": "runtime-core", "kind": null}],
+                 "targets": [{"name": "permissions", "kind": ["lib"]}]}
+            ],
+            "resolve": {
+                "root": "app",
+                "nodes": [
+                    {"id": "app", "deps": [{"pkg": "notify", "dep_kinds": [{"kind": null, "target": "cfg(not(target_os = \"linux\"))"}]}]},
+                    {"id": "notify", "deps": [{"pkg": "perm", "dep_kinds": [{"kind": null, "target": null}]}]},
+                    {"id": "perm", "deps": []}
+                ]
+            }
+        });
+        let link = Link::DepsOnly { also: vec![] };
+        let filtered = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &link, true);
+        let names: Vec<&str> = filtered.iter().map(|d| d.pkg_name.as_str()).collect();
+        assert_eq!(names, vec!["notify", "permissions"]);
+        let unfiltered = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &link, false);
+        assert!(unfiltered.is_empty(), "{unfiltered:?}");
     }
 
     #[test]
@@ -2042,7 +2133,7 @@ mod tests {
         let mut meta = sample_metadata();
         meta["resolve"]["root"] = Value::Null;
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects);
+        let deps = collect_forced_deps(&meta, &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false);
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].pkg_name, "idea-ui");
     }
@@ -2050,8 +2141,8 @@ mod tests {
     #[test]
     fn collect_returns_empty_on_malformed_metadata() {
         let src = FrameworkSource::Workspace { root: PathBuf::from("/ws") };
-        assert!(collect_forced_deps(&json!({}), &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects).is_empty());
-        assert!(collect_forced_deps(&json!({"packages": []}), &src, Path::new("/proj/Cargo.toml"), "my-app", Link::Projects).is_empty());
+        assert!(collect_forced_deps(&json!({}), &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false).is_empty());
+        assert!(collect_forced_deps(&json!({"packages": []}), &src, Path::new("/proj/Cargo.toml"), "my-app", &Link::Projects, false).is_empty());
     }
 
     #[test]

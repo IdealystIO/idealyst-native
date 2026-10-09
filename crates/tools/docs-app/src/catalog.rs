@@ -360,7 +360,7 @@ impl CatalogModel {
             for p in c.params {
                 let mut had_schema = false;
                 if !p.type_short_name.is_empty() {
-                    if let Some(schema) = mcp_catalog::lookup_schema(p.type_short_name) {
+                    if let Some(schema) = mcp_catalog::nearest_schema(p.type_short_name, c.module_path) {
                         for f in schema.fields {
                             fields.push(Field {
                                 name: f.name.to_string(),

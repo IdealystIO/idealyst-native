@@ -83,13 +83,16 @@ enum Command {
     Clean(cmd::clean::Args),
     /// Print the project's full catalog JSON to stdout (components,
     /// props schemas, primitives, docs) — the machine-facing entry for
-    /// editor tooling. First run compiles the catalog wrapper.
+    /// editor tooling. First run compiles the catalog wrapper; `--scan`
+    /// reads the workspace from source and compiles only its
+    /// dependencies.
     #[command(name = "catalog-json")]
     CatalogJson(cmd::catalog_json::Args),
-    /// Print the crate's OWN catalog entries (components, props, enums,
-    /// values) by parsing its source — no compile, sub-second, tolerant
-    /// of a file mid-edit. The fast half of editor tooling; dependencies
-    /// still come from `catalog-json`.
+    /// Print the crate's OWN catalog entries, read from its source by
+    /// running the catalog macros' own expansion — exactly what a compiled
+    /// catalog holds, with no compile, tolerant of a file mid-edit. The
+    /// fast half of editor tooling; dependencies still come from
+    /// `catalog-json`.
     #[command(name = "catalog-scan")]
     CatalogScan(cmd::catalog_scan::Args),
     /// Configure a project aspect. Currently: `devcontainer` (initialize or

@@ -86,7 +86,7 @@ are how you build a design system. You can have thousands.
 A **primitive** is the platform-bound substrate components are built
 on. The set the framework ships is intentionally narrow — these are the
 snake_case tags `ui!` / `jsx!` recognize
-(`crates/runtime/macros/src/primitives.rs::canonical_primitive`):
+(`crates/runtime/macros-parse/src/primitives.rs::canonical_primitive`):
 
 - **Layout / content**: `view`, `keyboard_avoiding_view`, `text`, `scroll_view`
 - **Controls**: `button`, `text_input`, `text_area`, `toggle`, `slider`
@@ -615,7 +615,7 @@ ui! { WebView(url = "https://example.com") }     // crates/sdk/client/webview
 `web_view` was never a first-party primitive tag, and the macro no
 longer special-cases it — the SDK ships `type WebView = WebViewProps`
 plus its `BuildElement` impl, so the tag is ordinary component dispatch
-(`crates/runtime/macros/src/primitives.rs`, the `web_view` note). The
+(`crates/runtime/macros-parse/src/primitives.rs`, the `web_view` note). The
 same is true of `maps`, `canvas`, `markdown`, `table`, `codeblock`, and
 `svg`. Per-SDK host coverage is tabulated in
 [`migrating-to-runtime-v2.md` § External SDKs](./migrating-to-runtime-v2.md#external-sdks-the-third-party-primitive-layer).

@@ -1,38 +1,35 @@
-//! `idealyst catalog-scan DIR` — the project's own catalog entries from
+//! `idealyst catalog-scan DIR` — one crate's own catalog entries from
 //! its SOURCE, without compiling anything.
 //!
-//! The compiled catalog (`catalog-json`) is authoritative: it links the
-//! real crates and reads the `inventory` registrations the macros emit.
-//! It is also slow to refresh (a cargo build of the app) and brittle
-//! while the author is mid-edit (one file that doesn't compile takes
-//! the whole catalog down). This command is the fast, forgiving half:
-//! it parses each `.rs` file under the crate's `src/` with `syn` and
-//! lifts the same facts the macros would register —
+//! The editor extension's fast half: it runs this on every save and
+//! merges the result over the compiled `catalog-json --deps-only`
+//! catalog, so the author's own components are there before (and
+//! whether or not) anything compiles. The entries are read by the
+//! `catalog-scan` library — the catalog macros' own expansion run over
+//! the source, so they are exactly what a compiled catalog would hold
+//! (see that crate's docs); `catalog-json --scan` and `idealyst mcp` read
+//! the workspace the same way.
 //!
-//! - `#[component] fn Name(…)` → a component with its params, or its
-//!   props struct's fields when the signature is `props: &NameProps`;
-//! - `#[derive(IdealystSchema)] enum` → a type with its variants;
-//! - `#[schema(value_of = …, via = …)] struct` → a value, spelled
-//!   through the catalog's own `value_route` so it matches the
-//!   compiled entry byte for byte —
+//! The document is the catalog JSON (`catalog-json`'s shape) holding only
+//! entries registered from this crate, plus `scanned_crate` (the crate's
+//! name as a module path root) so a consumer can replace that crate's
+//! entries with these. Workspace crates this one depends on are read too,
+//! so a component whose props struct lives in one of them still gets the
+//! struct's fields inlined; their own entries are left out.
 //!
-//! in the same JSON shape `catalog-json` emits for those slices, plus
-//! `scanned_crate` (the crate's name as a module path root) so a
-//! consumer can replace that crate's compiled entries with the fresh
-//! ones. A file that doesn't parse is reported on stderr and skipped;
-//! every other file still contributes. Sub-second on a large crate.
-//!
-//! What it deliberately does NOT do: dependencies (idea-ui's components
-//! come from the compiled catalog), `composes` edges, primitives,
-//! macros, utilities, tokens — none of which change when the author
-//! adds a component.
+//! Forgiving by design: a file that does not parse is reported on stderr
+//! and skipped, every other file still contributes. A crate the scan
+//! cannot read in full (a catalog entry registered by hand, say) yields
+//! what was read up to that point, with the reason on stderr — still more
+//! useful to completion than nothing.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use quote::ToTokens;
-use serde_json::{json, Value};
-use syn::{Attribute, Expr, Fields, Item, Lit, Meta, Type};
+use mcp_catalog::{origin_crate, CatalogParts};
+use serde_json::Value;
+
+use super::scan_plan::ScanPlan;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -44,438 +41,89 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let dir = std::fs::canonicalize(&args.dir)
         .with_context(|| format!("cannot resolve crate dir {}", args.dir.display()))?;
-    let json = scan_crate(&dir)?;
+    let plan = super::scan_plan::plan(std::slice::from_ref(&dir)).context("plan the source scan")?;
+    let json = crate_json(&plan, &dir)?;
     println!("{}", serde_json::to_string_pretty(&json)?);
     Ok(())
 }
 
-/// Scan one crate directory into the catalog-shaped JSON described in
-/// the module docs.
-pub fn scan_crate(dir: &Path) -> Result<Value> {
-    let crate_name = crate_name(dir)?;
-    let src = dir.join("src");
-    let mut files = Vec::new();
-    collect_rs_files(&src, &mut files);
-    files.sort();
-
-    let mut scan = Scan::default();
-    // Two passes: props structs first, so a component in an earlier
-    // file can resolve a props struct declared in a later one.
-    let mut parsed: Vec<(PathBuf, String, syn::File)> = Vec::new();
-    for file in &files {
-        let text = match std::fs::read_to_string(file) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("[catalog-scan] skipping {}: {e}", file.display());
-                continue;
-            }
-        };
-        match syn::parse_file(&text) {
-            Ok(ast) => parsed.push((file.clone(), module_path_for(&crate_name, &src, file), ast)),
-            Err(e) => eprintln!(
-                "[catalog-scan] skipping {} (does not parse: {e}); other files still scanned",
-                file.display()
-            ),
-        }
-    }
-    for (_, module, ast) in &parsed {
-        scan.collect_structs(module, &ast.items);
-    }
-    for (file, module, ast) in &parsed {
-        scan.collect_entries(file, module, &ast.items);
-    }
-
-    Ok(json!({
-        "catalog_version": 2,
-        "scanned_crate": crate_name,
-        "components": scan.components,
-        "types": scan.types,
-        "values": scan.values,
-    }))
-}
-
-/// `[package] name` of the crate, spelled as a module path root.
-fn crate_name(dir: &Path) -> Result<String> {
-    let manifest_path = dir.join("Cargo.toml");
-    let text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("read {}", manifest_path.display()))?;
-    let manifest: toml::Value = toml::from_str(&text)
-        .with_context(|| format!("parse {}", manifest_path.display()))?;
-    let name = manifest
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .with_context(|| format!("{} has no [package] name", manifest_path.display()))?;
-    Ok(name.replace('-', "_"))
-}
-
-pub(crate) fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// `module_path!()` as rustc would report it for a file, from its place
-/// under `src/`: `lib.rs` / `main.rs` → the crate, `a/mod.rs` → `a`,
-/// `a/b.rs` → `a::b`. Inline `mod x { … }` blocks extend it during the
-/// walk.
-fn module_path_for(crate_name: &str, src: &Path, file: &Path) -> String {
-    let rel = file.strip_prefix(src).unwrap_or(file);
-    let mut segs: Vec<String> = rel
+/// The document for the planned crate at `dir` (see the module docs).
+pub fn crate_json(plan: &ScanPlan, dir: &Path) -> Result<Value> {
+    let idx = plan
+        .member_dirs
         .iter()
-        .map(|s| s.to_string_lossy().to_string())
-        .collect();
-    if let Some(last) = segs.pop() {
-        let stem = last.trim_end_matches(".rs");
-        if stem != "lib" && stem != "main" && stem != "mod" {
-            segs.push(stem.to_string());
+        .position(|d| d == dir)
+        .with_context(|| format!("{} is not a crate that uses the framework", dir.display()))?;
+    let name = plan.crates[idx].name.clone();
+    let mut scanned = ::catalog_scan::scan(&plan.crates, &plan.macro_deps);
+    for skipped in &scanned.skipped {
+        eprintln!("[catalog-scan] {skipped}");
+    }
+    let mut parts = std::mem::take(&mut scanned.parts);
+    for refused in scanned.refused {
+        if refused.krate == idx {
+            eprintln!(
+                "[catalog-scan] {name} cannot be read in full ({}); its entries up to there are listed",
+                refused.error
+            );
         }
-    }
-    std::iter::once(crate_name.to_string())
-        .chain(segs)
-        .collect::<Vec<_>>()
-        .join("::")
-}
-
-#[derive(Default)]
-struct Scan {
-    /// Named structs by `module::Name` and by bare `Name` — the latter
-    /// for the common case of a props struct declared next to its fn.
-    structs: std::collections::HashMap<String, PropsStruct>,
-    components: Vec<Value>,
-    types: Vec<Value>,
-    values: Vec<Value>,
-}
-
-#[derive(Clone)]
-struct PropsStruct {
-    /// `#[props]` rewrites data fields to `Reactive<T>`; mirror that so
-    /// the scanned type reads like the compiled one.
-    props_attr: bool,
-    fields: Vec<(String, Type, Vec<Attribute>)>,
-}
-
-impl Scan {
-    fn collect_structs(&mut self, module: &str, items: &[Item]) {
-        for item in items {
-            match item {
-                Item::Struct(s) => {
-                    if let Fields::Named(named) = &s.fields {
-                        let ps = PropsStruct {
-                            props_attr: s.attrs.iter().any(|a| attr_is(a, "props")),
-                            fields: named
-                                .named
-                                .iter()
-                                .filter_map(|f| {
-                                    Some((f.ident.as_ref()?.to_string(), f.ty.clone(), f.attrs.clone()))
-                                })
-                                .collect(),
-                        };
-                        self.structs.insert(format!("{module}::{}", s.ident), ps.clone());
-                        self.structs.entry(s.ident.to_string()).or_insert(ps);
-                    }
-                }
-                Item::Mod(m) => {
-                    if let Some((_, inner)) = &m.content {
-                        self.collect_structs(&format!("{module}::{}", m.ident), inner);
-                    }
-                }
-                _ => {}
-            }
-        }
+        parts.extend(refused.partial);
     }
 
-    fn collect_entries(&mut self, file: &Path, module: &str, items: &[Item]) {
-        for item in items {
-            match item {
-                Item::Fn(f) if f.attrs.iter().any(|a| attr_is(a, "component")) => {
-                    let params = self.params_for(module, f);
-                    self.components.push(json!({
-                        "name": f.sig.ident.to_string(),
-                        "module_path": module,
-                        "file": file.display().to_string(),
-                        "line": 0,
-                        "docs": docs_of(&f.attrs),
-                        "params": params,
-                        "composes": [],
-                    }));
-                }
-                Item::Enum(e) if derives_schema(&e.attrs) => {
-                    let variants: Vec<Value> = e
-                        .variants
-                        .iter()
-                        .map(|v| {
-                            let payload: Vec<Value> = match &v.fields {
-                                Fields::Unit => Vec::new(),
-                                Fields::Named(n) => n
-                                    .named
-                                    .iter()
-                                    .map(|f| {
-                                        json!({
-                                            "name": f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default(),
-                                            "type": type_str(&f.ty),
-                                            "doc": docs_of(&f.attrs),
-                                            "constraint": "",
-                                        })
-                                    })
-                                    .collect(),
-                                Fields::Unnamed(u) => u
-                                    .unnamed
-                                    .iter()
-                                    .map(|f| json!({ "name": "", "type": type_str(&f.ty), "doc": docs_of(&f.attrs), "constraint": "" }))
-                                    .collect(),
-                            };
-                            json!({ "name": v.ident.to_string(), "docs": docs_of(&v.attrs), "payload": payload })
-                        })
-                        .collect();
-                    self.types.push(json!({
-                        "short_name": e.ident.to_string(),
-                        "module_path": module,
-                        "fqn": format!("{module}::{}", e.ident),
-                        "docs": docs_of(&e.attrs),
-                        "shape": { "kind": "enum", "variants": variants },
-                    }));
-                }
-                Item::Struct(s) => {
-                    if let Some((value_of, via)) = schema_value_of(&s.attrs) {
-                        let (import, prefix) = mcp_catalog::value_route(module, &via);
-                        let name = s.ident.to_string();
-                        let spelled = if prefix.is_empty() { name.clone() } else { format!("{prefix}::{name}") };
-                        self.values.push(json!({
-                            "short_name": name,
-                            "module_path": module,
-                            "docs": docs_of(&s.attrs),
-                            "value_of": value_of,
-                            "via": via,
-                            "spelled": spelled,
-                            "import": import,
-                        }));
-                    }
-                }
-                Item::Mod(m) => {
-                    if let Some((_, inner)) = &m.content {
-                        self.collect_entries(file, &format!("{module}::{}", m.ident), inner);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// A component's params as `ParamSpec`s; a lone `props: &XProps`
-    /// carries `schema` = the struct's fields, as the compiled catalog's
-    /// prop-field inliner would produce.
-    fn params_for(&self, module: &str, f: &syn::ItemFn) -> Vec<Value> {
-        let typed: Vec<(String, &Type)> = f
-            .sig
-            .inputs
-            .iter()
-            .filter_map(|arg| match arg {
-                syn::FnArg::Typed(pt) => {
-                    let name = match &*pt.pat {
-                        syn::Pat::Ident(p) => p.ident.to_string(),
-                        other => other.to_token_stream().to_string(),
-                    };
-                    Some((name, &*pt.ty))
-                }
-                syn::FnArg::Receiver(_) => None,
-            })
-            .collect();
-        typed
-            .iter()
-            .map(|(name, ty)| {
-                let short = type_short_name(ty);
-                let mut spec = json!({
-                    "name": name,
-                    "type": type_str(ty),
-                    "type_short_name": short,
-                });
-                if typed.len() == 1 {
-                    let props = self
-                        .structs
-                        .get(&format!("{module}::{short}"))
-                        .or_else(|| self.structs.get(&short));
-                    if let Some(ps) = props {
-                        spec["schema"] = Value::Array(
-                            ps.fields
-                                .iter()
-                                .map(|(fname, fty, attrs)| {
-                                    let ty = if ps.props_attr && !prop_forced_static(attrs) && should_wrap(fty) {
-                                        format!("Reactive<{}>", type_str(fty))
-                                    } else {
-                                        type_str(fty)
-                                    };
-                                    json!({
-                                        "name": fname,
-                                        "type": ty,
-                                        "doc": docs_of(attrs),
-                                        "constraint": schema_constraint(attrs),
-                                    })
-                                })
-                                .collect(),
-                        );
-                    }
-                }
-                spec
-            })
-            .collect()
-    }
-}
-
-fn attr_is(attr: &Attribute, name: &str) -> bool {
-    attr.path().segments.last().is_some_and(|s| s.ident == name)
-}
-
-fn derives_schema(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|a| {
-        attr_is(a, "derive") && a.to_token_stream().to_string().contains("IdealystSchema")
-    })
-}
-
-/// `///` lines, joined — what the macros capture as `docs`.
-fn docs_of(attrs: &[Attribute]) -> String {
-    let mut lines = Vec::new();
-    for attr in attrs {
-        if !attr_is(attr, "doc") {
-            continue;
-        }
-        if let Meta::NameValue(nv) = &attr.meta {
-            if let Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = &nv.value {
-                let raw = s.value();
-                lines.push(raw.strip_prefix(' ').unwrap_or(&raw).to_string());
-            }
-        }
-    }
-    lines.join("\n")
-}
-
-/// `#[schema(value_of = "…", via = "…")]` on a type.
-fn schema_value_of(attrs: &[Attribute]) -> Option<(String, String)> {
-    let mut target = None;
-    let mut via = String::new();
-    for attr in attrs.iter().filter(|a| attr_is(a, "schema")) {
-        let _ = attr.parse_nested_meta(|m| {
-            if m.path.is_ident("value_of") {
-                let s: syn::LitStr = m.value()?.parse()?;
-                target = Some(s.value());
-            } else if m.path.is_ident("via") {
-                let s: syn::LitStr = m.value()?.parse()?;
-                via = s.value();
-            }
-            Ok(())
-        });
-    }
-    target.map(|t| (t, via))
-}
-
-/// `#[schema(constraint = "…")]` on a field.
-fn schema_constraint(attrs: &[Attribute]) -> String {
-    let mut found = String::new();
-    for attr in attrs.iter().filter(|a| attr_is(a, "schema")) {
-        let _ = attr.parse_nested_meta(|m| {
-            if m.path.is_ident("constraint") {
-                let s: syn::LitStr = m.value()?.parse()?;
-                found = s.value();
-            }
-            Ok(())
-        });
-    }
-    found
-}
-
-/// `#[prop(static)]` keeps a `#[props]` field bare.
-fn prop_forced_static(attrs: &[Attribute]) -> bool {
-    attrs.iter().filter(|a| attr_is(a, "prop")).any(|a| {
-        let mut is_static = false;
-        let _ = a.parse_nested_meta(|m| {
-            if m.path.is_ident("static") {
-                is_static = true;
-            }
-            Ok(())
-        });
-        is_static
-    })
-}
-
-/// Mirror of `runtime_macros::props_attr::should_wrap` — the data-vs-not
-/// rule `#[props]` applies. Kept in sync by the test below against the
-/// same shapes that module's tests pin.
-fn should_wrap(ty: &Type) -> bool {
-    const SKIP: &[&str] = &[
-        "Rc", "Arc", "Box", "Signal", "ReadSignal", "WriteSignal", "Reactive", "Rx", "Ref",
-        "Bound", "Bindable", "RefFill", "Action", "Element", "ChildList", "Vec", "HashMap",
-        "BTreeMap", "HashSet", "PhantomData",
-    ];
-    match ty {
-        Type::Path(tp) => {
-            let Some(seg) = tp.path.segments.last() else {
-                return true;
-            };
-            let name = seg.ident.to_string();
-            if SKIP.contains(&name.as_str()) {
-                return false;
-            }
-            if name == "Option" {
-                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                    for arg in &args.args {
-                        if let syn::GenericArgument::Type(t) = arg {
-                            return should_wrap(t);
-                        }
-                    }
-                }
-                return true;
-            }
-            true
-        }
-        _ => false,
-    }
-}
-
-fn type_str(ty: &Type) -> String {
-    ty.to_token_stream().to_string()
-}
-
-/// Last path segment, through references: `&FooProps` → `FooProps`.
-fn type_short_name(ty: &Type) -> String {
-    match ty {
-        Type::Reference(r) => type_short_name(&r.elem),
-        Type::Path(tp) => tp
-            .path
-            .segments
-            .last()
-            .map(|s| s.ident.to_string())
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
+    // This crate's entries; every crate's props schemas, for the join.
+    let ours = |m: &str| origin_crate(m) == name;
+    let own = CatalogParts {
+        components: parts.components.into_iter().filter(|e| ours(e.module_path)).collect(),
+        props_schemas: parts.props_schemas,
+        methods: parts.methods.into_iter().filter(|e| ours(e.parent_module_path)).collect(),
+        animations: parts.animations.into_iter().filter(|e| ours(e.parent_module_path)).collect(),
+        types: parts.types.into_iter().filter(|e| ours(e.module_path)).collect(),
+        values: parts.values.into_iter().filter(|e| ours(e.module_path)).collect(),
+        tools: parts.tools.into_iter().filter(|e| ours(e.module_path)).collect(),
+        recipes: parts.recipes.into_iter().filter(|e| ours(e.module_path)).collect(),
+        scopes: parts.scopes.into_iter().filter(|e| ours(e.module_path)).collect(),
+        ..Default::default()
+    };
+    let mut json = own.to_json();
+    json["scanned_crate"] = Value::String(name);
+    Ok(json)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::catalog_scan::{Cfg, ScanCrate};
     use std::fs;
 
-    fn fake_crate(tag: &str) -> PathBuf {
+    /// A crate at a fresh temp dir, and the plan `run` would make for it
+    /// (built by hand: no `cargo metadata` for a fake crate).
+    fn fake_crate(tag: &str, files: &[(&str, &str)]) -> (PathBuf, ScanPlan) {
         let dir = std::env::temp_dir().join(format!("idealyst-scan-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("src/components")).unwrap();
-        fs::write(dir.join("Cargo.toml"), "[package]\nname = \"my-app\"\nversion = \"0.1.0\"\n").unwrap();
-        dir
+        for (path, text) in files {
+            let p = dir.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        }
+        let plan = ScanPlan {
+            crates: vec![ScanCrate { name: "my_app".into(), root: dir.join("src/lib.rs"), cfg: Cfg::default() }],
+            packages: vec!["my-app".into()],
+            macro_deps: Vec::new(),
+            member_dirs: vec![dir.clone()],
+            target_dir: dir.join("target"),
+            deps_inputs: None,
+        };
+        (dir, plan)
     }
 
     #[test]
     fn scans_components_props_enums_and_values_with_module_paths() {
-        let dir = fake_crate("basic");
-        fs::write(
-            dir.join("src/lib.rs"),
-            r#"
+        let (dir, plan) = fake_crate(
+            "basic",
+            &[
+                (
+                    "src/lib.rs",
+                    r#"
 pub mod components;
 
 /// Counts clicks.
@@ -495,17 +143,17 @@ pub enum Mode {
 #[schema(value_of = "ToneRef")]
 pub struct Hype;
 "#,
-        )
-        .unwrap();
-        fs::write(
-            dir.join("src/components/mod.rs"),
-            r#"
+                ),
+                (
+                    "src/components/mod.rs",
+                    r#"
 pub mod card;
 mod inner {
     /// Nested.
     #[component]
     fn Deep(props: &DeepProps) -> Element { todo!() }
     #[props]
+    #[derive(IdealystSchema)]
     pub struct DeepProps {
         /// Shown.
         pub title: String,
@@ -516,11 +164,10 @@ mod inner {
     }
 }
 "#,
-        )
-        .unwrap();
-        fs::write(
-            dir.join("src/components/card.rs"),
-            r#"
+                ),
+                (
+                    "src/components/card.rs",
+                    r#"
 /// A card.
 #[runtime_core::component]
 pub fn Card(props: &CardProps) -> Element { todo!() }
@@ -531,45 +178,55 @@ pub struct CardProps {
     pub title: String,
 }
 "#,
-        )
-        .unwrap();
+                ),
+            ],
+        );
 
-        let json = scan_crate(&dir).unwrap();
+        let json = crate_json(&plan, &dir).unwrap();
         assert_eq!(json["scanned_crate"], "my_app");
         let comps = json["components"].as_array().unwrap();
         let by_name = |n: &str| comps.iter().find(|c| c["name"] == n).unwrap_or_else(|| panic!("{n} scanned"));
 
-        // Inline props: the params are the props; attrs don't leak into types.
+        // Inline props: the params are the props, with the type the macro
+        // gives them (data wrapped `Reactive<…>`), spelled as a compiled
+        // catalog spells it — the param string is taken before the macro's
+        // `runtime_core` → `runtime_vocabulary::glue` retarget.
         let counter = by_name("Counter");
         assert_eq!(counter["module_path"], "my_app");
         assert_eq!(counter["docs"], "Counts clicks.");
         assert_eq!(counter["params"][1]["name"], "label");
-        assert_eq!(counter["params"][1]["type"], "String");
+        assert_eq!(counter["params"][1]["type"], ":: runtime_core :: Reactive < String >");
         assert!(counter["params"][0].get("schema").is_none());
 
-        // Explicit props in a nested inline mod, with #[props] wrapping mirrored.
+        // Explicit props in a nested inline mod, `#[props]` wrapping applied
+        // by the macro itself.
         let deep = by_name("Deep");
         assert_eq!(deep["module_path"], "my_app::components::inner");
         let schema = deep["params"][0]["schema"].as_array().unwrap();
         let field = |n: &str| schema.iter().find(|f| f["name"] == n).unwrap();
-        assert_eq!(field("title")["type"], "Reactive<String>");
+        assert_eq!(field("title")["type"], ":: runtime_vocabulary :: glue :: Reactive < String >");
         assert_eq!(field("title")["doc"], "Shown.");
         assert_eq!(field("fixed")["type"], "u32", "#[prop(static)] stays bare");
-        assert_eq!(field("on_click")["type"], "Rc < dyn Fn () >", "handlers never wrap");
-        assert_eq!(field("tone")["type"], "Reactive<Option < ToneRef >>", "Option<data> wraps");
+        assert_eq!(field("on_click")["type"], "Rc < dyn Fn() >", "handlers never wrap");
+        assert_eq!(
+            field("tone")["type"],
+            ":: runtime_vocabulary :: glue :: Reactive < Option < ToneRef > >",
+            "Option<data> wraps"
+        );
 
         // Path-qualified attribute, file-module path, constraint hint.
         let card = by_name("Card");
         assert_eq!(card["module_path"], "my_app::components::card");
+        assert_eq!(card["file"], dir.join("src/components/card.rs").to_string_lossy().as_ref());
+        assert_eq!(card["line"], 3);
         assert_eq!(card["params"][0]["type_short_name"], "CardProps");
         assert_eq!(card["params"][0]["schema"][0]["constraint"], "max 80 chars");
         assert_eq!(card["params"][0]["schema"][0]["type"], "String", "no #[props]: no wrapping");
 
         let types = json["types"].as_array().unwrap();
-        assert_eq!(types.len(), 1);
-        assert_eq!(types[0]["short_name"], "Mode");
-        assert_eq!(types[0]["shape"]["variants"][0]["docs"], "Plain.");
-        assert_eq!(types[0]["shape"]["variants"][1]["payload"].as_array().unwrap().len(), 1);
+        let mode = types.iter().find(|t| t["short_name"] == "Mode").unwrap();
+        assert_eq!(mode["shape"]["variants"][0]["docs"], "Plain.");
+        assert_eq!(mode["shape"]["variants"][1]["payload"].as_array().unwrap().len(), 1);
 
         let values = json["values"].as_array().unwrap();
         assert_eq!(values.len(), 1);
@@ -584,24 +241,34 @@ pub struct CardProps {
     /// others down with it.
     #[test]
     fn a_file_that_does_not_parse_is_skipped_and_the_rest_still_scan() {
-        let dir = fake_crate("broken");
-        fs::write(dir.join("src/lib.rs"), "mod ok; mod bad;\n").unwrap();
-        fs::write(dir.join("src/ok.rs"), "#[component]\nfn Fine() -> Element { todo!() }\n").unwrap();
-        fs::write(dir.join("src/bad.rs"), "#[component]\nfn Broken( -> Element {\n").unwrap();
-        let json = scan_crate(&dir).unwrap();
+        let (dir, plan) = fake_crate(
+            "broken",
+            &[
+                ("src/lib.rs", "mod ok; mod bad;\n"),
+                ("src/ok.rs", "#[component]\nfn Fine() -> Element { todo!() }\n"),
+                ("src/bad.rs", "#[component]\nfn Broken( -> Element {\n"),
+            ],
+        );
+        let json = crate_json(&plan, &dir).unwrap();
         let names: Vec<&str> = json["components"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["Fine"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A crate the scan cannot read in full still lists what it read
+    /// before the refusal: completion wants something, and the compiled
+    /// catalog will supply the rest.
     #[test]
-    fn module_paths_follow_file_layout() {
-        let src = Path::new("/c/src");
-        let mp = |f: &str| module_path_for("my_app", src, &src.join(f));
-        assert_eq!(mp("lib.rs"), "my_app");
-        assert_eq!(mp("main.rs"), "my_app");
-        assert_eq!(mp("a/mod.rs"), "my_app::a");
-        assert_eq!(mp("a/b.rs"), "my_app::a::b");
-        assert_eq!(mp("a.rs"), "my_app::a");
+    fn a_crate_the_scan_refuses_still_lists_what_it_read() {
+        let (dir, plan) = fake_crate(
+            "refused",
+            &[(
+                "src/lib.rs",
+                "#[component]\nfn Before() -> Element { todo!() }\ninventory::submit! { ::runtime_core::__mcp::IconSetEntry { name: \"x\", icons: ICONS } }\n",
+            )],
+        );
+        let json = crate_json(&plan, &dir).unwrap();
+        assert_eq!(json["components"][0]["name"], "Before");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

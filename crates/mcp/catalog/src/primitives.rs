@@ -8,7 +8,7 @@
 //! Most entries correspond 1:1 to an `Element` enum variant in
 //! `runtime-core::primitive`, but the table is keyed by the author-facing
 //! `ui!`/`jsx!` TAG (see `canonical_primitive` in
-//! `crates/runtime/macros/src/primitives.rs`), not by the variant. So it
+//! `crates/runtime/macros-parse/src/primitives.rs`), not by the variant. So it
 //! also carries COMPOSITIONS that are real tags yet have no dedicated
 //! variant — `overlay` / `anchored_overlay` lower to `Element::Portal`.
 //! Conversely, some `Element` variants (`Portal`, `Pressable`) are NOT
@@ -934,7 +934,7 @@ inventory::submit! {
 // `overlay` / `anchored_overlay` are COMPOSITIONS, not `Element` enum
 // variants: the `ui!` macro lowers them to `Element::Portal` (adding the
 // backdrop + focus-trap wiring around the caller's children — see
-// `emit_overlay`/`emit_anchored_overlay` in `crates/runtime/macros/src/ui.rs`
+// `emit_overlay`/`emit_anchored_overlay` in `crates/runtime/macros-expand/src/ui.rs`
 // and the builders in `crates/runtime/core/src/primitives/overlay.rs`). They
 // ARE first-class author `ui!`/`jsx!` tags (in `canonical_primitive`), which
 // is why they're catalogued here even though they have no dedicated variant.
