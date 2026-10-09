@@ -53,8 +53,7 @@ impl CanvasPrim {
     /// repaint effect instead of [`paint_scene`](crate::paint_scene): it reads
     /// the size the canvas last reported, so a resize re-runs the painter.
     pub fn paint(&self) -> Scene {
-        let size = self.sizing.inner.size.map(|s| s.get()).unwrap_or_default();
-        paint_scene_sized(&self.props, size)
+        paint_scene_sized(&self.props, self.sizing.size())
     }
 
     /// The handle a renderer reports this canvas's laid-out size through.
@@ -152,6 +151,9 @@ impl IntoElement for CanvasBound {
 ///
 /// A canvas built outside a world (a test, a wire snapshot) has no size
 /// signal; reporting is then a no-op and [`Scene::size`] stays `(0, 0)`.
+///
+/// Public so other drawing payloads (the `canvas3d` view) report and read
+/// their size through the same seam rather than a copy of it.
 #[derive(Clone)]
 pub struct SizeReporter {
     inner: Rc<SizeState>,
@@ -169,7 +171,9 @@ struct SizeState {
 const SIZE_EPSILON: f32 = 0.01;
 
 impl SizeReporter {
-    fn new() -> Self {
+    /// A reporter for a payload being built now: its size signal belongs to
+    /// the current scope (none outside a world).
+    pub fn new() -> Self {
         let in_world = runtime_world::is_entered();
         SizeReporter {
             inner: Rc::new(SizeState {
@@ -200,6 +204,19 @@ impl SizeReporter {
         });
         // Replacing the handle cancels a still-pending earlier report.
         *self.inner.pending.borrow_mut() = Some(task);
+    }
+
+    /// The last committed logical size — a reactive read, so a painter that
+    /// calls this re-runs on resize. `(0, 0)` before the first report and
+    /// outside a world.
+    pub fn size(&self) -> (f32, f32) {
+        self.inner.size.map(|s| s.get()).unwrap_or_default()
+    }
+}
+
+impl Default for SizeReporter {
+    fn default() -> Self {
+        SizeReporter::new()
     }
 }
 

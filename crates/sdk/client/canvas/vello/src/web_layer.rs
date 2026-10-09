@@ -26,8 +26,7 @@ use wasm_bindgen::JsCast;
 use web_glue::dom::MediaStream;
 use web_sys::{Document, HtmlVideoElement};
 
-/// The vello target is `Rgba8Unorm`; the compositor draws into it.
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+use gpu_surface::TARGET_FORMAT;
 // The blit shader, crop/fit geometry and uniform slots are shared with the
 // native compositors (`crate::layer_blit`), so web and native composite layers
 // the same way (and match the CPU renderers' `TextureLayer::source_rects`).

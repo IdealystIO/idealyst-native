@@ -1,0 +1,13 @@
+[package]
+name = "canvas3d"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Umbrella facade for the `canvas3d` 3D-drawing SDK — what screens import
+# (`canvas3d::Canvas3d`, `canvas3d::prelude::*`). Mirrors `canvas`:
+# `canvas3d-core` holds the model; the renderer crate (`canvas3d-wgpu`) is
+# imported separately by the app's boot seam to register it.
+
+[dependencies]
+canvas3d-core = { workspace = true }

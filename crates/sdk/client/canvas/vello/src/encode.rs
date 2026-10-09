@@ -310,7 +310,7 @@ pub(crate) fn encode_scene(ops: &[DrawOp], vs: &mut VelloScene, base: Affine) {
     }
 }
 
-fn bez_of(path: &Path) -> BezPath {
+pub(crate) fn bez_of(path: &Path) -> BezPath {
     let mut bp = BezPath::new();
     for seg in &path.segs {
         match seg {
@@ -330,7 +330,7 @@ fn pt(x: f32, y: f32) -> Point {
     Point::new(x as f64, y as f64)
 }
 
-fn affine_of(t: &canvas_core::Transform) -> Affine {
+pub(crate) fn affine_of(t: &canvas_core::Transform) -> Affine {
     // Canvas Transform (a,b,c,d,e,f) maps to kurbo's [a,b,c,d,e,f] coeffs.
     Affine::new([t.a as f64, t.b as f64, t.c as f64, t.d as f64, t.e as f64, t.f as f64])
 }
@@ -580,7 +580,7 @@ pub(crate) fn take_anim_uploads() -> (Vec<AnimUpload>, Vec<ImageData>) {
 /// `Normal` (drawn directly, no layer). DestinationOut is a Porter-Duff
 /// *compose* mode (the eraser); Multiply/Screen are separable *mix* modes
 /// composited source-over.
-fn peniko_blend(blend: CanvasBlend) -> Option<BlendMode> {
+pub(crate) fn peniko_blend(blend: CanvasBlend) -> Option<BlendMode> {
     // Each separable/non-separable mix is composited source-over; DestinationOut
     // is the Porter-Duff *compose* eraser. `Normal` returns `None` (drawn
     // directly, no wrapping layer).
@@ -608,7 +608,7 @@ fn peniko_blend(blend: CanvasBlend) -> Option<BlendMode> {
     Some(BlendMode::new(mix, Compose::SrcOver))
 }
 
-fn fill_of(rule: FillRule) -> Fill {
+pub(crate) fn fill_of(rule: FillRule) -> Fill {
     match rule {
         FillRule::NonZero => Fill::NonZero,
         FillRule::EvenOdd => Fill::EvenOdd,
@@ -619,7 +619,7 @@ fn color_of(c: CanvasColor) -> Color {
     Color::from_rgba8(c.r, c.g, c.b, c.a)
 }
 
-fn brush_of(paint: &Paint) -> Brush {
+pub(crate) fn brush_of(paint: &Paint) -> Brush {
     match &paint.kind {
         PaintKind::Solid(c) => Brush::Solid(color_of(*c)),
         PaintKind::Linear(g) => Brush::Gradient(
@@ -643,7 +643,7 @@ fn stops_of(stops: &[GradientStop]) -> Vec<ColorStop> {
         .collect()
 }
 
-fn kurbo_stroke(s: &CanvasStroke) -> KurboStroke {
+pub(crate) fn kurbo_stroke(s: &CanvasStroke) -> KurboStroke {
     let stroke = KurboStroke::new(s.width as f64)
         .with_caps(match s.cap {
             LineCap::Butt => Cap::Butt,

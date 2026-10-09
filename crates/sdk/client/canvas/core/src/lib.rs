@@ -622,7 +622,7 @@ fn strip_nested_textures(op: DrawOp) -> DrawOp {
 /// or `flex_grow` on the chain — the same rule every percentage-sized
 /// box follows. `flex_grow: 1` in this default covers the common
 /// "fill the remaining main-axis space" case without a definite parent.
-pub(crate) fn default_fill_style() -> Rc<StyleSheet> {
+pub fn default_fill_style() -> Rc<StyleSheet> {
     thread_local! {
         static SHEET: Rc<StyleSheet> = {
             let mut fill = StyleRules::default();

@@ -32,9 +32,7 @@
 use canvas_core::Transform;
 use wgpu::util::DeviceExt;
 
-/// The cached layer texture / target are `Rgba8Unorm`; the composite draws into
-/// the same format.
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+use gpu_surface::TARGET_FORMAT;
 
 const COMPOSE_WGSL: &str = r#"
 struct Params {

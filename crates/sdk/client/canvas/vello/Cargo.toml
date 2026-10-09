@@ -29,6 +29,10 @@ license.workspace = true
 # code-split). A `DrawOp::Glyphs` run is a no-op with this off.
 default = ["glyphs"]
 glyphs = []
+# `rasterize_cpu`: draw a canvas scene with vello_cpu (pure Rust, compiles to
+# wasm with SIMD) for GPUs vello's compute pipeline can't run on. Pulled in by
+# `canvas3d-wgpu` for its overlay on WebGL2 / simulators; ~130 KB brotli on web.
+cpu = ["dep:vello_cpu"]
 
 [dependencies]
 # The scene registry the renderer installs into, the graphics + style caps
@@ -43,6 +47,13 @@ canvas-core = { workspace = true }
 # Self-capture: read rendered frames back into the app's `MediaStream` via the
 # `CanvasProps.capture` `FrameWriter`. Thin, GPU-free currency crate.
 media-stream = { workspace = true }
+# CPU rasterizer behind the `cpu` feature. Same peniko 0.6 / kurbo 0.13 as
+# vello 0.9, so the encoder's conversions are shared. No multithreading (wasm
+# main thread; overlays are small).
+vello_cpu = { version = "0.3", optional = true, default-features = false, features = ["std", "u8_pipeline"] }
+# Surface bring-up, frame target, present blit and shared compositor (the
+# machinery this renderer shares with canvas3d-wgpu).
+gpu-surface = { workspace = true }
 log = "0.4"
 
 # vello/wgpu's Metal backend pulls `objc2-foundation 0.3` (the objc2 0.6-gen),
@@ -58,25 +69,14 @@ log = "0.4"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vello = "0.9"
 wgpu = "29"
-raw-window-handle = "0.6"
 pollster = "0.4"
 
-# Linux (GTK4): the backend can't hand out a per-widget window handle, so the
-# `graphics` primitive lends a live GL context (`GtkGLArea`) instead of a
-# swapchain surface. To render vello there, canvas-vello adopts that context
-# through wgpu's GLES HAL (`gles::Adapter::new_external` +
-# `create_adapter_from_hal`) and flip-blits its target into the lent
-# framebuffer — exactly the dance `host-linux-desktop`/`backend-linux` already
-# prove. wgpu 29's `default` features already include `gles` (and `vulkan`, so
-# the headless export path + the `gpu_can_run_vello` probe keep working); the
-# explicit `gles` here is belt-and-suspenders if defaults are ever trimmed.
-# `wgpu-hal` + `wgpu-types` are DIRECT deps because `wgpu::hal` re-exports only
-# the generic surface, not the backend-specific `gles::Adapter::new_external` /
-# `GlBackendOptions` this adoption needs. Matches backend-linux's versions.
+# Linux (GTK4): the GL-context adoption and present live in `gpu-surface`. This
+# crate's own Linux deps are for the zero-copy capture path below. wgpu 29's
+# `default` features include `gles`; the explicit feature is belt-and-suspenders.
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { version = "29", features = ["gles"] }
 wgpu-hal = { version = "29", features = ["gles"] }
-wgpu-types = "29"
 # Zero-copy GPU capture on Linux (the dma-buf analog of macOS's IOSurface path):
 # export the vello GL render target as a dma-buf via `EGL_MESA_image_dma_buf_export`
 # and publish it as the stream's native source (no per-frame CPU readback). wgpu's
@@ -96,17 +96,14 @@ libc = "0.2"
 # Web (wasm32): vello over wgpu's **WebGPU** backend. `default-features = false,
 # features = ["webgpu", "wgsl"]` selects the browser WebGPU path (NOT webgl —
 # vello needs compute shaders, which WebGL can't do; where WebGPU is absent the
-# renderer falls back to Canvas2D, not webgl). wgpu 29 vendors its WebGPU
-# `web-sys` bindings (`webgpu_sys`), so this needs NO `--cfg=web_sys_unstable_apis`
-# build flag. No `pollster` — blocking is illegal on the browser main thread;
-# adapter/device acquisition is awaited via `wasm-bindgen-futures::spawn_local`.
-# `canvas-native` is the Canvas2D fallback delegate (its `make_2d_rasterizer`),
-# reached on the same `<canvas>` when WebGPU is unavailable. Path dep (not
-# workspace) so this stays a delegate-only edge.
+# renderer falls back to Canvas2D, not webgl). The async bring-up (probe before
+# claiming the canvas, rAF pacing) lives in `gpu-surface`. `canvas-native` is
+# the Canvas2D fallback delegate (its `make_2d_rasterizer`), reached on the same
+# `<canvas>` when WebGPU is unavailable. Path dep (not workspace) so this stays
+# a delegate-only edge.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 vello = "0.9"
 wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
-raw-window-handle = "0.6"
 canvas-native = { path = "../native", default-features = false, features = ["web-sys-canvas"], version = "1.7.0", registry = "idealyst" }
 # A texture layer's native source is a `web_glue::dom::MediaStream` (what the
 # media SDKs publish). HYBRID-BRIDGE: wgpu — the layer `<video>` is a web-sys
@@ -114,35 +111,18 @@ canvas-native = { path = "../native", default-features = false, features = ["web
 # wasm-bindgen once per attach (`web_layer::LayerSlot::ensure_stream`).
 web-glue = { workspace = true, features = ["wasm-bindgen-bridge"] }
 wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
 web-sys = { version = "0.3", features = [
-    # `window().navigator()` for the synchronous `navigator.gpu` presence gate
-    # (read via `js_sys::Reflect` to avoid the unstable web-sys WebGPU bindings).
-    "Window",
-    "Navigator",
-    # Reconstructing the graphics primitive's `<canvas>` from its window
-    # handle (`data-raw-handle` lookup) for the Canvas2D fallback path.
-    "HtmlCanvasElement",
-    # `console.log` marker of which renderer engaged (GPU vs Canvas2D fallback).
-    "console",
     # GPU layer compositor (`web_layer`): a hidden `<video>` per texture layer
     # plays the camera `MediaStream` (crossed over from its web-glue handle);
     # its current frame is copied into a wgpu texture each frame via
     # `Queue::copy_external_image_to_texture`.
+    "Window",
     "Document",
     "Element",
     "HtmlVideoElement",
     "HtmlMediaElement",
     "MediaStream",
-    # TEMP: present-rate instrumentation (`performance.now()`).
-    "Performance",
 ] }
-
-# Deterministic gate-logic test (`js_truthy_prop`), run via `wasm-pack test`.
-# The async GPU bootstrap itself is E2E-only (Playwright + whiteboard demo).
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3"
 
 # Native GPU glyph test (`glyph_run_rasterizes_on_the_gpu`) maps a character to
 # its glyph id with the same skrifa vello uses internally, so the id it hands

@@ -18,14 +18,13 @@
 //! here, and the output ring this device produces is consumed by the recorder's
 //! encoder (see [[project_canvas_self_capture]]).
 
-use crate::compose::OverlayCompositor;
 use crate::encode::encode_scene;
 use crate::plan::split_segments;
 use crate::texture_runs::{composite_texture_runs, RunHost};
 use crate::native_capture::{LayerCompositor, NativeCapture};
-use crate::render::{
-    headless_device, make_target, new_vello_renderer, read_target_rgba, RenderedImage,
-};
+use crate::render::make_target;
+use crate::scene_renderer::new_vello_renderer;
+use gpu_surface::{headless_device, read_target_rgba, OverlayCompositor, RenderedImage};
 use canvas_core::{place_textures, DrawOp, Scene as CanvasScene, TextureLayer};
 use media_stream::FrameWriter;
 use vello::kurbo::Affine;
@@ -66,7 +65,7 @@ impl HeadlessCompositor {
         // Headless: a fresh native (non-GL) device, so parallel shader init is fine.
         let renderer = new_vello_renderer(&device, false)?;
         let layer_compositor = LayerCompositor::new(&device);
-        let overlay_compositor = OverlayCompositor::new(&device);
+        let overlay_compositor = crate::overlay_compositor(&device);
         Some(Self {
             device,
             queue,

@@ -1,0 +1,40 @@
+[package]
+name = "canvas3d-wgpu"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# `canvas3d-wgpu` — the GPU renderer for the `canvas3d` SDK: draws
+# `canvas3d_core::Scene3d` with wgpu on the `graphics` primitive's surface and
+# composites the view's 2D canvas overlay in the same frame. Surface bring-up,
+# the frame target and the present blit come from `gpu-surface`; the overlay is
+# drawn by `canvas-vello` (GPU vello, or vello_cpu where compute is missing).
+#
+# All pipelines stay inside WebGL2's limits, so one renderer covers WebGPU,
+# WebGL2, Metal, Vulkan, DX12 and GL.
+
+[dependencies]
+canvas3d-core = { workspace = true }
+canvas-core = { workspace = true }
+# `cpu`: vello_cpu fallback for the overlay on GPUs vello can't run on.
+canvas-vello = { workspace = true, features = ["cpu"] }
+gpu-surface = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-vocabulary = { workspace = true }
+glam = "0.34"
+bytemuck = { version = "1", features = ["derive"] }
+log = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = "29"
+
+# Web: WebGPU plus the WebGL2 fallback (`gpu-surface/webgl`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "29", default-features = false, features = ["webgpu", "webgl", "wgsl"] }
+gpu-surface = { workspace = true, features = ["webgl"] }
+
+[dev-dependencies]
+# Shader translation check: every WGSL entry point must compile to GLSL ES 3.00
+# (WebGL2) with the naga wgpu 29 uses.
+naga = { version = "29", features = ["wgsl-in", "glsl-out"] }
+pollster = "0.4"

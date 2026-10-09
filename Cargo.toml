@@ -219,6 +219,14 @@ members = [
     "crates/sdk/client/canvas/core",
     "crates/sdk/client/canvas/native",
     "crates/sdk/client/canvas/vello",
+    # Shared wgpu surface bring-up / frame target / present path for the GPU
+    # renderers (canvas-vello, canvas3d-wgpu).
+    "crates/sdk/client/gpu-surface",
+    # `canvas3d` 3D-drawing SDK: umbrella facade + renderer-agnostic core +
+    # the wgpu renderer (WebGPU / WebGL2 / Metal / Vulkan / DX12).
+    "crates/sdk/client/canvas3d",
+    "crates/sdk/client/canvas3d/core",
+    "crates/sdk/client/canvas3d/wgpu",
     # `charts` charting SDK: `charts-core` is standalone by contract
     # (zero idealyst deps, publishable on its own); the idealyst SDK
     # layer adapts its mark IR onto `canvas_core::Scene`.
@@ -369,6 +377,7 @@ members = [
     "crates/mcp/examples/mcp-demo",
     "crates/sdk/client/camera/examples/camera-demo",
     "crates/sdk/client/canvas/examples/canvas-demo",
+    "crates/sdk/client/canvas3d/examples/canvas3d-demo",
     "crates/sdk/client/charts/examples/charts-demo",
     "crates/sdk/client/denoise/examples/denoise-demo",
     "crates/sdk/client/dnd/examples/dnd-demo",
@@ -629,6 +638,10 @@ charts-core = { path = "crates/sdk/client/charts/core", version = "1.6.1", regis
 charts = { path = "crates/sdk/client/charts", version = "1.5.5", registry = "idealyst" }
 canvas-native = { path = "crates/sdk/client/canvas/native", features = ["self-register"], version = "1.7.0", registry = "idealyst" }
 canvas-vello = { path = "crates/sdk/client/canvas/vello", version = "2.0.0", registry = "idealyst" }
+gpu-surface = { path = "crates/sdk/client/gpu-surface", version = "1.0.0", registry = "idealyst" }
+canvas3d = { path = "crates/sdk/client/canvas3d", version = "0.1.0", registry = "idealyst" }
+canvas3d-core = { path = "crates/sdk/client/canvas3d/core", version = "0.1.0", registry = "idealyst" }
+canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "0.1.0", registry = "idealyst" }
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.4", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "1.6.1", registry = "idealyst" }
@@ -723,6 +736,7 @@ proc-macro2 = "1"
 camera-demo = { path = "crates/sdk/client/camera/examples/camera-demo", version = "1.5.2", registry = "idealyst" }
 camera-preview-demo = { path = "crates/sdk/client/video/examples/camera-preview-demo", version = "1.5.2", registry = "idealyst" }
 canvas-demo = { path = "crates/sdk/client/canvas/examples/canvas-demo", version = "1.5.2", registry = "idealyst" }
+canvas3d-demo = { path = "crates/sdk/client/canvas3d/examples/canvas3d-demo", version = "0.1.0", registry = "idealyst" }
 charts-demo = { path = "crates/sdk/client/charts/examples/charts-demo", version = "1.5.2", registry = "idealyst" }
 contact-form-lambda = { path = "crates/api/server-aws/examples/contact-form-lambda", version = "1.5.2", registry = "idealyst" }
 denoise-demo = { path = "crates/sdk/client/denoise/examples/denoise-demo", version = "1.5.2", registry = "idealyst" }

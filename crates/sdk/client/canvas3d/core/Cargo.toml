@@ -1,0 +1,44 @@
+[package]
+name = "canvas3d-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# `canvas3d-core` — the renderer-agnostic half of the `canvas3d` SDK: the
+# retained `Scene3d` model (models, lights, lines, camera), glTF loading,
+# camera math + the orbit controller, CPU picking, and the `Canvas3d` payload
+# a renderer registers a handler for. No GPU code — `canvas3d-wgpu` renders it.
+#
+# Same layering as `canvas`: this crate + an umbrella facade (`canvas3d`) +
+# a renderer crate selected at the app's registry seam.
+
+[dependencies]
+# Style vocabulary + `IdealystSchema` (aliased as `runtime_core` so the derive's
+# emission resolves), touch/wheel event types, signals.
+runtime-core = { workspace = true }
+runtime-scene = { workspace = true }
+runtime-world = { workspace = true }
+runtime-vocabulary = { workspace = true }
+# The 2D overlay is a `canvas_core::DrawFn` painting a `canvas_core::Scene`, and
+# the view reports its size through the same `SizeReporter` a canvas does.
+canvas-core = { workspace = true }
+# 3D math (vectors, matrices, quaternions).
+glam = "0.34"
+# glTF 2.0 parsing. `default-features = false` drops `import` (filesystem +
+# URL loading + its own image decoding): models are loaded from bytes the app
+# already has (embedded, fetched, picked), which is the only thing that works
+# on every target. `utils` provides the typed accessor reader;
+# `KHR_materials_unlit` exposes the unlit flag.
+gltf = { version = "1.4", default-features = false, features = ["utils", "KHR_materials_unlit"] }
+# Embedded `data:` buffer URIs in a .gltf.
+base64 = "0.22"
+# Texture decoding (PNG/JPEG — the two formats glTF core allows). Same crate,
+# version and features as canvas-core's `decode`, so an app using both links
+# one decoder.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+# Mount tests run the payload through the scene registry on the recording
+# host-mock substrate.
+host-mock = { path = "../../../../dev/host-mock" }
+runtime-shared = { path = "../../../../runtime/shared" }

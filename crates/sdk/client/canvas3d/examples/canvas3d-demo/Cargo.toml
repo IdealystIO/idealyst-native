@@ -1,0 +1,31 @@
+[package]
+name = "canvas3d-demo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "canvas3d SDK demo — a glTF model with an orbit camera, picking, a world-space grid and selection box, a 2D overlay marker composited in the same frame, and a HUD view naming the GPU path (WebGPU / WebGL2 / Metal)."
+# A runnable example, not a library.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The platform surface for `src/main.rs`.
+idealyst = { workspace = true }
+# Author surface (`ui!` emits `::runtime_vocabulary::glue::…` paths; the scene
+# `Registry` for the registration seam).
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+# The 3D SDK, its renderer (registered at the seam), and the 2D canvas types
+# the overlay painter draws with.
+canvas3d = { workspace = true }
+canvas3d-wgpu = { workspace = true }
+canvas = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Canvas3D Demo"
+bundle_id = "ai.truday.idealyst.canvas3ddemo"
+version   = "0.0.1"
+targets   = ["web", "macos", "ios", "android"]

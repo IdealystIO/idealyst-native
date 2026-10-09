@@ -37,8 +37,7 @@ const INSTANCE_SIZE: u64 = 40;
 /// Initial instance-buffer capacity (in instances). Grows on demand — no cap.
 const INITIAL_INSTANCES: u64 = 1024;
 
-/// The vello target is `Rgba8Unorm`; the pass draws into it directly.
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+use gpu_surface::TARGET_FORMAT;
 
 const SHAPE_WGSL: &str = r#"
 // Viewport: x = target width (physical px), y = height, z = dpr (physical/logical).

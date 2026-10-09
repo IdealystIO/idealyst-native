@@ -160,6 +160,17 @@ Pick **one** at the boot entry's registry seam (the scene registry is
 | [`canvas-native`](native/) | each platform's native 2D API — web Canvas2D, iOS/macOS CoreGraphics, Android `android.graphics`, Linux Cairo | everywhere with a native 2D API |
 | [`canvas-vello`](vello/) | GPU compute 2D via [`vello`](https://github.com/linebender/vello) on `wgpu` (Metal / Vulkan / DX12) | every native backend with a capable GPU |
 
+`canvas-vello` gets its surface setup, frame target and present step from
+[`gpu-surface`](../gpu-surface/), which the `canvas3d` renderer shares. The
+present step turns vello's straight-alpha output into the premultiplied colour
+the surface expects, so semi-transparent edges look right over dark UI. Two
+entry points exist for drawing canvas scenes inside another GPU renderer's frame
+(the `canvas3d` overlay uses both):
+
+- `canvas_vello::SceneRenderer` renders with vello on a device you already own.
+- `canvas_vello::rasterize_cpu` (crate feature `cpu`) uses vello_cpu, for GPUs
+  that can't run vello's compute shaders.
+
 Registering both (native first, then vello) is the recommended setup on
 GPU-capable platforms: `canvas-vello` **self-gates** — it wins on a real GPU and
 steps aside for `canvas-native` when the GPU can't run vello's compute pipeline

@@ -1,0 +1,89 @@
+[package]
+name = "gpu-surface"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+
+# `gpu-surface` — turns the framework's `graphics` primitive into a ready wgpu
+# device + presentable frame target, for SDK renderers that draw with wgpu
+# (`canvas-vello`, `canvas3d-wgpu`).
+#
+# What it owns, so each renderer doesn't re-derive it:
+# - the surface lifecycle (`on_ready` / `on_resize` / `on_lost` → a renderer
+#   state that exists exactly while the surface does), the reactive repaint
+#   effect, the first-frame retry (macOS CAMetalLayer), and web's rAF pacing;
+# - device bring-up: adapter capability checks, `request_device` with the
+#   adapter's own limits, surface format / alpha-mode choice, the GTK4 lent-GL
+#   adoption, and — on web — claiming the `<canvas>` for WebGPU (or WebGL2)
+#   only once the GPU is known to work;
+# - the frame target every renderer draws into (`Rgba8Unorm`, sRGB-encoded
+#   bytes) and the present blit that copies it to the screen, converting its
+#   alpha convention to the surface's (see `FrameAlpha`);
+# - small shared passes (`OverlayCompositor`) and headless helpers
+#   (`headless_device`, `read_target_rgba`) for tests and export.
+#
+# No renderer lives here: what gets drawn into the frame target is the
+# caller's.
+
+[features]
+# Compile wgpu's WebGL2 backend into wasm32 builds so `claim_webgpu_or_webgl`
+# can fall back to WebGL2 where WebGPU is unavailable. Off by default: it adds
+# wgpu-core + wgpu-hal + glow to the bundle, and a renderer that needs compute
+# shaders (vello) can't use WebGL2 anyway. `canvas3d-wgpu` turns it on.
+webgl = ["wgpu/webgl"]
+
+[dependencies]
+# The graphics event/surface vocabulary + scheduling (first-frame retry timer).
+runtime-shared = { workspace = true }
+# `GraphicsOps::create_graphics` — the surface this crate drives.
+runtime-vocabulary = { workspace = true }
+# `effect` for the reactive repaint.
+runtime-world = { workspace = true }
+log = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = "29"
+pollster = "0.4"
+
+# Linux (GTK4): the `graphics` primitive lends a GL context (`GtkGLArea`)
+# instead of a window handle. Adopting it needs `wgpu-hal`'s GLES
+# `Adapter::new_external` and `GlBackendOptions` from `wgpu-types`, which `wgpu`
+# does not re-export.
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "29", features = ["gles"] }
+wgpu-hal = { version = "29", features = ["gles"] }
+wgpu-types = "29"
+
+# Web: wgpu over the browser's WebGPU (plus WebGL2 with the `webgl` feature).
+# wgpu itself links wasm-bindgen/web-sys, so this crate is HYBRID-BRIDGE: wgpu
+# (see docs/proposals/own-web-bindings.md); keep it an opt-in dependency.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "29", default-features = false, features = ["webgpu", "wgsl"] }
+raw-window-handle = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    # `navigator.gpu` gate, rAF pacing, devicePixelRatio.
+    "Window",
+    "Navigator",
+    # The graphics primitive's `<canvas>` (data-raw-handle lookup), read for
+    # its backing-store size each frame.
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    # One-line marker of which GPU path engaged (E2E asserts on it).
+    "console",
+] }
+
+# Shader-variant validation tests parse + validate the generated WGSL with the
+# same naga major wgpu 29 uses.
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# `pop_error_scope` is async; tests block on it.
+pollster = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
