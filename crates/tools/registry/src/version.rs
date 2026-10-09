@@ -273,38 +273,43 @@ fn is_version_only_patch(patch: &str) -> bool {
     saw_a_release_line
 }
 
-/// Are two dependency-table values identical once each one's
-/// `version = "…"` field is blanked out?
+/// Is `added` the dependency `removed` with nothing changed but the fields
+/// a release writes?
 ///
-/// Compares the REST of the inline table, so a floor move reads as a
-/// release artifact while a features change, a renamed path or a new
-/// `default-features` key reads as a real edit.
-fn differs_only_in_version_field(a: &str, b: &str) -> bool {
-    fn blank_version(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s;
-        while let Some(i) = rest.find("version") {
-            let after = &rest[i + "version".len()..];
-            let trimmed = after.trim_start();
-            // `version = "x"` — blank the quoted literal that follows.
-            if let Some(eq) = trimmed.strip_prefix('=') {
-                let v = eq.trim_start();
-                if let Some(open) = v.strip_prefix('"') {
-                    if let Some(close) = open.find('"') {
-                        out.push_str(&rest[..i]);
-                        out.push_str("version=\"\"");
-                        rest = &open[close + 1..];
-                        continue;
-                    }
-                }
-            }
-            out.push_str(&rest[..i + "version".len()]);
-            rest = after;
-        }
-        out.push_str(rest);
-        out.split_whitespace().collect::<Vec<_>>().join(" ")
+/// A release writes two fields into an internal dependency (see
+/// `manifest::version_literal_path_deps`): it moves `version = "…"` to the
+/// sibling's new floor, and it gives a path-only dependency a `version`
+/// AND a `registry` it never had — cargo cannot package a path-only dep.
+/// So a `version` that moved or appeared, and a `registry` that appeared,
+/// are release artifacts. Everything else in the inline table must be
+/// identical: a features change, a renamed path, a new `default-features`
+/// key, or a `registry` changed from one name to another reads as a real
+/// edit.
+///
+/// Parsed rather than matched as text, because the release reformats the
+/// table it touches and key order is not significant.
+fn differs_only_in_version_field(removed: &str, added: &str) -> bool {
+    fn table(s: &str) -> Option<toml_edit::InlineTable> {
+        let doc: toml_edit::DocumentMut = format!("dep = {s}").parse().ok()?;
+        doc.get("dep")?.as_inline_table().cloned()
     }
-    !a.is_empty() && !b.is_empty() && blank_version(a) == blank_version(b)
+    let (Some(mut before), Some(mut after)) = (table(removed), table(added)) else {
+        return false;
+    };
+    let registry = |t: &toml_edit::InlineTable| t.get("registry").and_then(|v| v.as_str()).map(str::to_owned);
+    match (registry(&before), registry(&after)) {
+        (Some(a), Some(b)) if a != b => return false,
+        (Some(_), None) => return false,
+        _ => {}
+    }
+    for t in [&mut before, &mut after] {
+        t.remove("version");
+        t.remove("registry");
+    }
+    let fields = |t: &toml_edit::InlineTable| -> BTreeMap<String, String> {
+        t.iter().map(|(k, v)| (k.to_string(), v.to_string().trim().to_string())).collect()
+    };
+    fields(&before) == fields(&after)
 }
 
 /// Arguments for the "what changed in this crate?" git query.
@@ -512,6 +517,42 @@ mod tests {
             is_version_only_patch(patch),
             "a floor the release tool moved must not re-plan the dependent",
         );
+    }
+
+    /// Regression: the release tool also gives a PATH-ONLY dependency a
+    /// `version` and a `registry` before packaging (cargo refuses a path-only
+    /// dep), and git records that afterwards in the `chore(release):` commit.
+    /// Only floor MOVES were recognised, so every later release re-planned
+    /// the dependent. This is the real `crates/tools/build/remote/Cargo.toml`
+    /// patch from `0c19943b`, which made the canvas3d release plan
+    /// `build-remote` and `idealyst-cli` with no change to either.
+    #[test]
+    fn regression_a_floor_given_to_a_path_only_dependency_is_a_release_artifact() {
+        let patch = concat!(
+            "--- a/crates/tools/build/remote/Cargo.toml\n+++ b/crates/tools/build/remote/Cargo.toml\n",
+            "@@ -10 +10 @@ anyhow = \"1\"\n",
+            "-remote-bundle = { path = \"../../../streaming/bundle-format\" }\n",
+            "+remote-bundle = { path = \"../../../streaming/bundle-format\", version = \"1.2.0\", registry = \"idealyst\" }\n",
+        );
+        assert!(is_version_only_patch(patch), "a floor the release tool added must not re-plan the dependent");
+    }
+
+    /// The registry half of that stays strict: a dependency that LOSES its
+    /// registry, or switches to another, changes what cargo resolves.
+    #[test]
+    fn a_registry_removed_or_changed_still_republishes() {
+        let dropped = concat!(
+            "@@ -10 +10 @@\n",
+            "-x = { path = \"../x\", version = \"1.0.0\", registry = \"idealyst\" }\n",
+            "+x = { path = \"../x\", version = \"1.0.0\" }\n",
+        );
+        assert!(!is_version_only_patch(dropped), "dropping the registry is a real edit");
+        let switched = concat!(
+            "@@ -10 +10 @@\n",
+            "-x = { path = \"../x\", version = \"1.0.0\", registry = \"idealyst\" }\n",
+            "+x = { path = \"../x\", version = \"1.0.0\", registry = \"other\" }\n",
+        );
+        assert!(!is_version_only_patch(switched), "switching registries is a real edit");
     }
 
     /// The other half of that: a dependency line that changed in any way
