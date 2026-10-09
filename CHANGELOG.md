@@ -204,6 +204,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`SegmentedControl(size = …)`** (`idea-ui`) — `Sm`, `Md` (default) or
+  `Lg`. Each size is the same height and font size as a Select, Field or
+  outlined Button at that size, so the control lines up beside them in a
+  toolbar; segment icons scale with it as Field's adornments do.
 - **The CLI installs from the registry, and `idealyst update` updates it**
   (`idealyst-cli` 1.6.0, `registry`). `idealyst-cli` and the 35 tooling
   crates it builds on are now published to `crates.idealyst.io`:

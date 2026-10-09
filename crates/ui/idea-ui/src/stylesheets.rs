@@ -2127,6 +2127,34 @@ stylesheet! {
 /// selected key floated visibly loose inside the track.
 pub const SEGMENT_TRACK_INSET: f32 = 2.0;
 
+/// What a segment's height carries on each vertical side besides its own
+/// padding: the track's 1px border, the track inset, and the segment's 1px
+/// border.
+pub const SEGMENT_CHROME_V: f32 = 1.0 + SEGMENT_TRACK_INSET + 1.0;
+
+/// The border a bordered control (Select, Field, outlined Button) draws on
+/// each side — part of the height a segmented control has to match.
+const CONTROL_BORDER: f32 = 1.0;
+
+/// A segment's vertical padding at a control size whose padding is
+/// `control_pad` (the `spacing-*` token Select / Field / Button use at that
+/// size): that padding plus the control's own border, minus
+/// [`SEGMENT_CHROME_V`]. With it, a segmented
+/// control's outer height equals a bordered control's at the same size —
+/// `2 × padding + line height + 2px border` — so it lines up in a toolbar
+/// beside a Select or an outlined Button.
+///
+/// A literal resolved from the token, not the token itself: lengths have
+/// no arithmetic. It follows the theme installed before the sheet first
+/// resolves (the default scale, or an app's own); a spacing change made
+/// while the app runs would not reach it.
+fn segment_pad_v(control_pad: runtime_core::Tokenized<Length>) -> f32 {
+    match control_pad.resolve() {
+        Length::Px(v) => (v + CONTROL_BORDER - SEGMENT_CHROME_V).max(0.0),
+        _ => 0.0,
+    }
+}
+
 stylesheet! {
     // The track. Hugs its segments on both axes, so a control inside a
     // stretching column stays the width of its options.
@@ -2157,8 +2185,6 @@ stylesheet! {
             flex_shrink: 0.0,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            padding_vertical: t.spacing.xs(),
-            padding_horizontal: t.spacing.md(),
             // One step below the track's radius, so the selected fill reads
             // as nested inside the track's corners.
             border_radius: t.radius.sm(),
@@ -2169,8 +2195,29 @@ stylesheet! {
             background: Color("transparent".into()),
             color: t.color.text_muted(),
             font_weight: FontWeight::Medium,
-            font_size: t.typography.body_size(),
             cursor: Cursor::Pointer,
+        }
+        // Control size (`SegmentedControl(size = …)`): Select's and
+        // Button's horizontal padding and font per size, and a vertical
+        // padding that makes the whole control the same height as theirs —
+        // see `segment_pad_v`.
+        variant size {
+            sm(t) {
+                padding_vertical: segment_pad_v(t.spacing.xs()),
+                padding_horizontal: t.spacing.sm(),
+                font_size: t.typography.body_sm_size(),
+            }
+            #[default]
+            md(t) {
+                padding_vertical: segment_pad_v(t.spacing.sm()),
+                padding_horizontal: t.spacing.md(),
+                font_size: t.typography.body_size(),
+            }
+            lg(t) {
+                padding_vertical: segment_pad_v(t.spacing.md()),
+                padding_horizontal: t.spacing.lg(),
+                font_size: t.typography.body_lg_size(),
+            }
         }
         variant selected {
             #[default]

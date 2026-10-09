@@ -62,12 +62,20 @@ use runtime_core::{
 };
 
 use crate::components::field::{adornment_button_sheet, Adornment};
+use crate::components::ControlSize;
 use crate::stylesheets::{SegmentButton, SegmentInner, SegmentedGroup};
 use crate::Icon;
 
-/// Point size of an `Icon`/`Button` adornment in a segment — matches the
-/// segment label's body text size.
-const SEGMENT_ICON_PX: f32 = 16.0;
+/// Point size of an `Icon`/`Button` adornment in a segment at each control
+/// size — the same scale `Field` uses for its adornments, so an icon sits
+/// in proportion to the label beside it.
+fn segment_icon_px(size: ControlSize) -> f32 {
+    match size {
+        ControlSize::Sm => 14.0,
+        ControlSize::Md => 16.0,
+        ControlSize::Lg => 18.0,
+    }
+}
 
 thread_local! {
     static SEG_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
@@ -128,10 +136,9 @@ impl SegmentOption {
     }
 }
 
-// Reactive-by-default: `#[props]` auto-skips EVERY field here — `value` is
-// already `Reactive<String>`, `on_change` is a handler (`Rc`), and `options`
-// is a `Vec`. No scalar-DATA prop to wrap, so the struct/Default/body are
-// unchanged; the attribute is added for uniformity with the other controls.
+// Reactive-by-default: `value` is already `Reactive<String>`, `on_change` is a
+// handler (`Rc`) and `options` a `Vec`, all auto-skipped; `size` is wrapped
+// and routed into each segment's style, label and adornments.
 #[runtime_core::props]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
@@ -149,6 +156,10 @@ pub struct SegmentedControlProps {
     pub on_change: Rc<dyn Fn(String)>,
     /// The segments, left-to-right.
     pub options: Vec<SegmentOption>,
+    /// Control size — `Sm`, `Md` (default) or `Lg`. Each size is the same
+    /// height as a Select, Field or outlined Button at that size, with the
+    /// same font size, so the control lines up beside them in a toolbar.
+    pub size: ControlSize,
 }
 
 impl Default for SegmentedControlProps {
@@ -159,6 +170,7 @@ impl Default for SegmentedControlProps {
             value: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
+            size: Reactive::Static(ControlSize::Md),
         }
     }
 }
@@ -172,11 +184,12 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
     let options = props.options;
     let value = props.value;
     let on_change = props.on_change;
+    let size = props.size;
 
     ui! {
         view(style = SegmentedGroup()) {
             for option in options {
-                segment(option, value.clone(), on_change.clone())
+                segment(option, value.clone(), on_change.clone(), size.clone())
             }
         }
     }
@@ -188,7 +201,12 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
 /// `Pressable` isn't a ui!-level tag (the framework macro omits it so
 /// idea-ui owns the styled wrapper), so the segment is built with the
 /// builder fns — the same shape `Tabs::tab_button` uses.
-fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(String)>) -> Element {
+fn segment(
+    option: SegmentOption,
+    value: Reactive<String>,
+    on_change: Rc<dyn Fn(String)>,
+    size: Reactive<ControlSize>,
+) -> Element {
     let id = option.id;
 
     // The press commits this segment's own `id`.
@@ -200,22 +218,27 @@ fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(
     // this segment's state alone wakes none of them.
     let selected = memo(move || value.get() == id);
 
-    // Reactive style: re-runs whenever `selected` flips, switching the
-    // `selected` axis between `on` and `off`.
-    let seg_style = move || StyleApplication::new(SegmentButton::sheet()).with("selected", selected_arm(selected.get()));
+    // Reactive style: re-runs whenever `selected` flips (or a live `size`
+    // changes), switching the `selected` and `size` axes.
+    let size_style = size.clone();
+    let seg_style = move || {
+        StyleApplication::new(SegmentButton::sheet())
+            .with("selected", selected_arm(selected.get()))
+            .with("size", size_style.get().as_variant_str())
+    };
 
     let label = option.label;
-    let leading = render_adornment(&option.leading, selected);
-    let trailing = render_adornment(&option.trailing, selected);
+    let leading = render_adornment(&option.leading, selected, size.clone());
+    let trailing = render_adornment(&option.trailing, selected, size.clone());
     let content = if leading.is_empty() && trailing.is_empty() {
-        ui! { SegmentLabel(text = label, selected = selected) }
+        ui! { SegmentLabel(text = label, selected = selected, size = size) }
     } else {
         // `leading` / `trailing` are the adornments the CALLER handed in,
         // already built — splatted, not authored here.
         ui! {
             view(style = SegmentInner()) {
                 leading
-                SegmentLabel(text = label, selected = selected)
+                SegmentLabel(text = label, selected = selected, size = size)
                 trailing
             }
         }
@@ -226,21 +249,25 @@ fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(
 /// Build an adornment for a segment (empty for `None` / an empty group).
 /// `Icon` and `Button` glyphs take the segment's own foreground, live on
 /// `selected`, so they recolor with the label; `Element` is left as built.
-fn render_adornment(adornment: &Adornment, selected: Memo<bool>) -> Vec<Element> {
+fn render_adornment(adornment: &Adornment, selected: Memo<bool>, size: Reactive<ControlSize>) -> Vec<Element> {
     // The plain segment's on/off foreground, from style tokens (no sheet
     // resolve, so this also holds on a `--premint-only` build).
     let glyph_color = move || -> Option<Color> {
         let c = idea_theme::tokens().color;
         Some(if selected.get() { c.text() } else { c.text_muted() }.resolve())
     };
+    let px = {
+        let size = size.clone();
+        move || segment_icon_px(size.get())
+    };
     match adornment {
         Adornment::None => Vec::new(),
         Adornment::Element(build) => vec![build()],
         Adornment::Icon(data) => {
-            vec![ui! { Icon(data = data.clone(), size = SEGMENT_ICON_PX, color = Reactive::Dynamic(Rc::new(glyph_color))) }]
+            vec![ui! { Icon(data = data.clone(), size = Reactive::Dynamic(Rc::new(px)), color = Reactive::Dynamic(Rc::new(glyph_color))) }]
         }
         Adornment::Button(data, on_press) => {
-            let glyph = ui! { Icon(data = data.clone(), size = SEGMENT_ICON_PX, color = Reactive::Dynamic(Rc::new(glyph_color))) };
+            let glyph = ui! { Icon(data = data.clone(), size = Reactive::Dynamic(Rc::new(px)), color = Reactive::Dynamic(Rc::new(glyph_color))) };
             let on_press = on_press.clone();
             // An icon-sized pressable inside the segment's: its recognizer
             // consumes the tap, so pressing it does not also select the
@@ -250,7 +277,7 @@ fn render_adornment(adornment: &Adornment, selected: Memo<bool>) -> Vec<Element>
                 .with_style(StyleApplication::new(adornment_button_sheet()))
                 .into_element()]
         }
-        Adornment::Group(items) => items.iter().flat_map(|a| render_adornment(a, selected)).collect(),
+        Adornment::Group(items) => items.iter().flat_map(|a| render_adornment(a, selected, size.clone())).collect(),
     }
 }
 
@@ -260,24 +287,28 @@ fn selected_arm(selected: bool) -> &'static str {
 }
 
 /// A segment's label text: the muted foreground at rest, the full text
-/// color when `selected`.
+/// color when `selected`, at the control size's font.
 ///
-/// The SegmentButton sheet's on/off foreground lives on the segment, but
-/// native TextView/UILabel/NSTextField don't inherit text color from their
-/// parent — only web's CSS cascade does. So this resolves that color and
-/// stamps it on the text node itself, reactively (re-runs on `selected` and
-/// on a theme swap). Without it a segment label renders in the widget
-/// default on native: it never flips on selection and never follows a
-/// light/dark swap. Same as `Tabs`.
+/// The SegmentButton sheet's on/off foreground and per-size font live on
+/// the segment, but native TextView/UILabel/NSTextField don't inherit text
+/// color or font from their parent — only web's CSS cascade does. So this
+/// resolves them and stamps them on the text node itself, reactively
+/// (re-runs on `selected`, `size` and a theme swap). Without it a segment
+/// label renders in the widget default on native: it never flips on
+/// selection, never follows a light/dark swap, and ignores the size. Same
+/// as `Tabs`.
 ///
 /// ```ignore
-/// SegmentLabel(text = label, selected = selected)
+/// SegmentLabel(text = label, selected = selected, size = size)
 /// ```
 #[component]
-fn SegmentLabel(text: String, selected: bool) -> Element {
+fn SegmentLabel(text: String, selected: bool, size: ControlSize) -> Element {
     let label_style = move || {
         let arm = selected_arm(selected.get());
-        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", arm);
+        let size_arm = size.get().as_variant_str();
+        let app = StyleApplication::new(SegmentButton::sheet())
+            .with("selected", arm)
+            .with("size", size_arm);
         let base = StyleApplication::new(seg_label_base_sheet());
         if app.attaches_preminted() {
             // Premint web build: the segment pressable's preminted class
@@ -287,14 +318,26 @@ fn SegmentLabel(text: String, selected: bool) -> Element {
             // would panic (sheets carry no rule closures). Same as `Tabs`.
             return base;
         }
-        let color = resolve_style(&app).color.clone();
-        let key = if arm == "on" { "seg_label_on" } else { "seg_label_off" };
+        let rules = resolve_style(&app);
+        let (color, font_size, font_weight) =
+            (rules.color.clone(), rules.font_size.clone(), rules.font_weight);
+        // The computed layer's cache key must name every input it bakes.
+        let key = match (arm, size_arm) {
+            ("on", "sm") => "seg_label_on_sm",
+            ("on", "lg") => "seg_label_on_lg",
+            ("on", _) => "seg_label_on_md",
+            (_, "sm") => "seg_label_off_sm",
+            (_, "lg") => "seg_label_off_lg",
+            _ => "seg_label_off_md",
+        };
         // ENGINE-PATH ONLY: the `attaches_preminted()` early return
         // above guarantees this layer never runs on a premint build,
         // so the computed-layer disqualifier can't fire.
         // idealyst-lint-disable-next-line premint-computed-layer
         base.with_computed(key, move || StyleRules {
             color: color.clone(),
+            font_size: font_size.clone(),
+            font_weight,
             ..Default::default()
         })
     };
@@ -505,7 +548,11 @@ mod tests {
 
             let seg = SegmentButton::sheet();
             let axes: Vec<_> = seg.premint_author_axes().iter().map(|(a, d)| (a.as_str(), d.as_deref())).collect();
-            assert_eq!(axes, vec![("selected", Some("off"))], "one `selected` axis, resting off");
+            assert_eq!(
+                axes,
+                vec![("selected", Some("off")), ("size", Some("md"))],
+                "a `selected` axis resting off, and a `size` axis resting md"
+            );
             let mut arms: Vec<_> = seg
                 .variant_keys()
                 .into_iter()
@@ -678,6 +725,132 @@ mod tests {
                     assert!(matches!(classify(children.remove(0)), P::Text { .. }))
                 }
                 _ => panic!("pressable"),
+            }
+        });
+    }
+
+    /// px of a resolved length, 0 when absent.
+    fn px(l: &Option<runtime_core::Tokenized<runtime_core::Length>>) -> f32 {
+        match l.as_ref().map(|t| t.resolve()) {
+            Some(runtime_core::Length::Px(v)) => v,
+            _ => 0.0,
+        }
+    }
+
+    fn width(w: &Option<runtime_core::Tokenized<f32>>) -> f32 {
+        w.as_ref().map_or(0.0, |w| w.resolve())
+    }
+
+    /// `size` makes the control the SAME HEIGHT as a Select (and a Field or
+    /// an outlined Button, which share Select's per-size padding, font and
+    /// 1px border) at every size. Height is `vertical chrome + line height`;
+    /// equal font sizes give equal line heights, so the check is that the
+    /// segmented control's vertical padding + borders — track border, track
+    /// inset, segment border, segment padding — sum to Select's padding +
+    /// border, and that the fonts match.
+    #[test]
+    fn each_size_matches_a_select_of_the_same_size() {
+        use crate::stylesheets::SelectTrigger;
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let group = resolve_style(&StyleApplication::new(SegmentedGroup::sheet()));
+            for size in ["sm", "md", "lg"] {
+                let seg = resolve_style(
+                    &StyleApplication::new(SegmentButton::sheet()).with("size", size.to_string()),
+                );
+                let select = resolve_style(
+                    &StyleApplication::new(SelectTrigger::sheet()).with("size", size.to_string()),
+                );
+                let seg_chrome = width(&group.border_top_width)
+                    + width(&group.border_bottom_width)
+                    + px(&group.padding_top)
+                    + px(&group.padding_bottom)
+                    + width(&seg.border_top_width)
+                    + width(&seg.border_bottom_width)
+                    + px(&seg.padding_top)
+                    + px(&seg.padding_bottom);
+                let select_chrome = width(&select.border_top_width)
+                    + width(&select.border_bottom_width)
+                    + px(&select.padding_top)
+                    + px(&select.padding_bottom);
+                assert_eq!(seg_chrome, select_chrome, "{size}: same vertical chrome as Select");
+                assert_eq!(
+                    px(&seg.font_size),
+                    px(&select.font_size),
+                    "{size}: same font, so the same line height"
+                );
+                assert_eq!(
+                    px(&seg.padding_left),
+                    px(&select.padding_left),
+                    "{size}: same horizontal padding as Select"
+                );
+            }
+        });
+    }
+
+    /// The label stamps the size's font on its OWN text node (and its
+    /// weight): native text never inherits font from the segment, so a
+    /// `Lg` control would otherwise render its labels at the widget default.
+    #[test]
+    fn label_carries_the_size_font_on_its_own_node() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let sizes = [(ControlSize::Sm, "sm"), (ControlSize::Md, "md"), (ControlSize::Lg, "lg")];
+            for (size, arm) in sizes {
+                let el = SegmentLabel(
+                    Reactive::Static("x".into()),
+                    Reactive::Static(true),
+                    Reactive::Static(size),
+                );
+                let rules = match classify(el) {
+                    P::Text { style, .. } => style.expect("styled").resolve(),
+                    _ => panic!("text"),
+                };
+                let seg = resolve_style(
+                    &StyleApplication::new(SegmentButton::sheet()).with("size", arm.to_string()),
+                );
+                assert_eq!(px(&rules.font_size), px(&seg.font_size), "{arm} label font");
+                assert_eq!(rules.font_weight, seg.font_weight, "{arm} label weight");
+            }
+        });
+    }
+
+    /// The control's `size` reaches the segments' style and their icon
+    /// adornments (Field's 14/16/18 scale).
+    #[test]
+    fn size_reaches_segments_and_icon_adornments() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            for (size, arm, icon_px) in
+                [(ControlSize::Sm, "sm", 14.0), (ControlSize::Md, "md", 16.0), (ControlSize::Lg, "lg", 18.0)]
+            {
+                let el = SegmentedControl(SegmentedControlProps {
+                    options: vec![SegmentOption::new("a", "A")
+                        .leading(Adornment::Icon(crate::components::icon::EMPTY_ICON))],
+                    size: Reactive::Static(size),
+                    ..Default::default()
+                });
+                let seg = match classify(el) {
+                    P::View { mut children, .. } => children.remove(0),
+                    _ => panic!("row"),
+                };
+                let (style, mut children) = match classify(seg) {
+                    P::Pressable { style, children, .. } => (style.expect("styled"), children),
+                    _ => panic!("pressable"),
+                };
+                let expect = resolve_style(
+                    &StyleApplication::new(SegmentButton::sheet()).with("size", arm.to_string()),
+                );
+                assert_eq!(px(&style.resolve().padding_top), px(&expect.padding_top), "{arm} segment");
+                let row = match classify(children.remove(0)) {
+                    P::View { children, .. } => children,
+                    _ => panic!("adorned row"),
+                };
+                let icon_style = match classify(row.into_iter().next().unwrap()) {
+                    P::Icon { style, .. } => style.expect("icon styled").resolve(),
+                    _ => panic!("icon"),
+                };
+                assert_eq!(px(&icon_style.width), icon_px, "{arm} icon size");
             }
         });
     }

@@ -14,7 +14,7 @@ use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, LAYOUT_GRID, LIST, MAP, SEARCH, S
 use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, Signal};
 use idea_ui::{
     date::{format_date, format_datetime, format_time},
-    tone, Adornment, Autocomplete, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
+    tone, Adornment, Autocomplete, Button, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
     ControlSize, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Field,
     FieldSize, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
     Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput, Typography,
@@ -821,6 +821,34 @@ pub fn segmented_control() -> Element {
         })
     };
 
+    // One row per control size: a segmented control beside a Select and an
+    // outlined Button of the same size, so the shared heights are visible.
+    let size_row = |seg: ControlSize, sel: idea_ui::SelectSize, btn: idea_ui::ButtonSizeRef, label: &str| {
+        let picked = signal("day".to_string());
+        let on_pick: Rc<dyn Fn(String)> = Rc::new(move |v| picked.set(v));
+        let choice = signal("a".to_string());
+        let on_choice: Rc<dyn Fn(String)> = Rc::new(move |v| choice.set(v));
+        let noop: Rc<dyn Fn()> = Rc::new(|| {});
+        let label = label.to_string();
+        ui! {
+            Stack(axis = idea_ui::StackAxis::Row, gap = StackGap::Sm, align = idea_ui::StackAlign::Center) {
+                SegmentedControl(
+                    value = picked,
+                    on_change = on_pick,
+                    size = seg,
+                    options = vec![SegmentOption::new("day", "Day"), SegmentOption::new("night", "Night")],
+                )
+                Select(
+                    value = choice,
+                    on_change = on_choice,
+                    size = sel,
+                    options = vec![SelectOption::new("a", "Select")],
+                )
+                Button(label = label, on_click = noop, size = btn, variant = idea_ui::variant::Outlined)
+            }
+        }
+    };
+
     let theme = signal("light".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
 
@@ -891,6 +919,19 @@ ui! {
     .leading(Adornment::element(|| ui! { view(style = ShiftDot().shift(ShiftDotShift::Day)) }))"##.to_string())
         }
     }, ui! {
+        Section(title = "Sizes".to_string()) {
+            P(content = "`size` takes `ControlSize::Sm`, `Md` (default) or `Lg`. Each size is the \
+                same height as a Select, a Field or an outlined Button at that size, with the same \
+                font, so a segmented control lines up beside them in a toolbar.".to_string())
+            DemoSurface {
+                Stack(gap = StackGap::Md) {
+                    { size_row(ControlSize::Sm, idea_ui::SelectSize::Sm, idea_ui::size::Sm.into(), "Small") }
+                    { size_row(ControlSize::Md, idea_ui::SelectSize::Md, idea_ui::size::Md.into(), "Medium") }
+                    { size_row(ControlSize::Lg, idea_ui::SelectSize::Lg, idea_ui::size::Lg.into(), "Large") }
+                }
+            }
+        }
+    }, ui! {
         Section(title = "Two options".to_string()) {
             P(content = "A two-segment control is the compact alternative to a Switch when \
                 both states deserve an explicit label.".to_string())
@@ -925,6 +966,7 @@ ui! {
             PropsTable(rows = vec![
                 Prop { name: "value",     ty: "Reactive<String>",   desc: "Selected segment's id — a Signal<String> or a model-derived rx!(...)." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(String)>", desc: "Fires with the chosen segment's id when the user taps a segment." },
+                Prop { name: "size",      ty: "Reactive<ControlSize>", desc: "Sm, Md (default) or Lg — the height and font of a Select / Field / outlined Button of the same size." },
                 Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label), plus .leading(Adornment) / .trailing(Adornment) beside the label (Icon recolors with selection; Element is any component)." },
             ])
         }
