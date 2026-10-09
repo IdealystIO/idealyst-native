@@ -4,32 +4,80 @@
 //! ui! {
 //!     Table {
 //!         TableRow {
-//!             TableCell(header = true) { text { "Prop".to_string() } }
-//!             TableCell(header = true) { text { "Type".to_string() } }
-//!             TableCell(header = true) { text { "Description".to_string() } }
+//!             TableCell(header = true, width = Some(160.0), truncate = true) { text { "Name".to_string() } }
+//!             TableCell(header = true) { text { "Notes".to_string() } }
+//!             TableCell(header = true, align = CellAlign::Right) { text { "Hours".to_string() } }
 //!         }
 //!         for row in rows {
+//!             TableRow(tone = row.tone()) {
+//!                 TableCell(width = Some(160.0), truncate = true, text = Some(row.name.clone()))
+//!                 TableCell(text = Some(row.notes.clone()))
+//!                 TableCell(align = CellAlign::Right, text = Some(row.hours.clone()))
+//!             }
+//!         }
+//!         if rows.is_empty() {
+//!             TableRow { TableCell(span = ColSpan::Rest, text = Some("Nobody yet".into())) }
+//!         }
+//!         TableFooter {
 //!             TableRow {
-//!                 TableCell { text { row.name.clone() } }
-//!                 TableCell { text { row.ty.clone() } }
-//!                 TableCell { text { row.desc.clone() } }
+//!                 TableCell(span = ColSpan::Columns(2), text = Some("Crew totals".into()))
+//!                 TableCell(align = CellAlign::Right, text = Some(total.clone()))
 //!             }
 //!         }
 //!     }
 //! }
 //! ```
 //!
-//! Three components mirror the SDK's shape:
+//! Four components mirror the SDK's shape:
 //! - [`Table`] wraps the SDK's `<table>` with the themed surface
-//!   (rounded corners, hairline border, theme background).
-//! - [`TableRow`] is a thin passthrough over the SDK's `<tr>` — present
-//!   for symmetry and future row-level affordances (hover, zebra).
+//!   (rounded corners, hairline border, theme background), and owns the
+//!   table-wide settings: `scroll_x`, `density`, and the frame slots.
+//! - [`TableRow`] is a `<tr>`: `on_row_click` for a clickable row,
+//!   `tone` for a whole-row tint, `bind_to` for the row's handle.
 //! - [`TableCell`] wraps `<td>` (or `<th>` when `header = true`) with
 //!   the cell-level padding + row divider, and wraps cell contents in
 //!   a themed `text` node so values without explicit Typography pick
-//!   up the right column treatment.
+//!   up the right column treatment. Column layout lives here too —
+//!   `width`, `min_width`, `align`, `truncate`, `span`, `pinned`.
+//! - [`TableFooter`] holds footer rows (`<tfoot>` on web).
 //!
-//! See [Table] / [TableRow] / [TableCell] for the full prop surface.
+//! See [Table] / [TableRow] / [TableCell] / [TableFooter] for the full
+//! prop surface.
+//!
+//! # Columns: width, alignment, truncation
+//!
+//! A column is the cells at one position in every row, so its settings
+//! go on EVERY cell of it, header included — header and body cells that
+//! disagree about a width break the column on both lowerings. An app
+//! with many tables usually keeps one column definition and spreads it
+//! into each cell.
+//!
+//! - `width = Some(px)` holds the column at exactly that width. The
+//!   table's spare width goes to the columns WITHOUT one, so a table
+//!   whose columns are all sized but one makes that one fill the rest —
+//!   which is also what a browser does, and why there is no separate
+//!   "fill" setting (`width: 100%` on a cell, the CSS spelling, squeezes
+//!   every other column down to its narrowest). Both props are
+//!   reactive, so a column can follow a resize drag.
+//! - `min_width = Some(px)` floors a column without fixing it.
+//! - `align` sets the header's and body's alignment together when every
+//!   cell of the column carries it.
+//! - `truncate = true` keeps the content to one line ending in "…" —
+//!   meaningful in a column with a `width` (an unsized column widens to
+//!   fit the line instead).
+//!
+//! There is deliberately no `max_width`: a browser ignores `max-width`
+//! on a table cell unless the cell also has a `width`, so it could not
+//! mean the same thing on web as on native.
+//!
+//! # Spanning cells
+//!
+//! `TableCell(span = ColSpan::Columns(n))` covers `n` columns;
+//! `ColSpan::Rest` covers every column to the end of the row — the blank
+//! row, an "Add entry" row, a group title. On web it is `colspan`; on
+//! native, a multi-track grid placement. A spanning cell's content does
+//! not widen the columns it covers on native (it wraps in the width they
+//! already have).
 //!
 //! # Horizontal scrolling & frozen columns
 //!
@@ -38,12 +86,40 @@
 //! still fills the scroller when narrow). `TableCell(pinned =
 //! ColumnPin::Left)` / `Right` freezes that cell's column against the
 //! scroller edge — a `pinned` axis on the cell stylesheets
-//! (`position: Sticky` + a zero inset + an opaque background), which
+//! (`position: Sticky` + an inset + an opaque background), which
 //! the browser pins natively on web and the shared sticky registry
 //! pins on native. Every backend raises the frozen cells above the
 //! content sliding beneath them, including cells an app positions
 //! itself (web lowers sticky with `z-index: 1`). Pin the SAME cell in every row (header included) or
 //! the column freezes only partially.
+//!
+//! To freeze SEVERAL leading columns, give each column a `width` and set
+//! `pin_offset` on the later ones to the summed widths of the pinned
+//! columns before it (a select column 48 wide, then the name column at
+//! `pin_offset = Some(48.0)`). Without the offset they all stick at the edge
+//! and overlap.
+//!
+//! # Frame slots
+//!
+//! `header_slot` / `footer_slot` draw content inside the table's frame,
+//! above and below the rows, OUTSIDE the horizontal scroller: a notice
+//! strip that must not scroll away with the columns, a blank-state
+//! sentence, an "Add entry" action. Slot content gets the cells'
+//! padding, and the header slot a divider under it.
+//!
+//! # Footer rows, row tones, density
+//!
+//! - `TableFooter { TableRow { … } }` — a totals row: `<tfoot>` on web
+//!   (announced as the table's footer), the header band's tint, and
+//!   always after the body rows wherever it is written.
+//! - `TableRow(tone = RowTone::Warning)` — a whole-row tint
+//!   (`Highlight` / `Warning` / `Danger`) that composes with the
+//!   clickable-row hover (a toned row darkens its own tint) and with a
+//!   frozen column (the `color-table-row-*` tokens are opaque). Applies
+//!   to body cells.
+//! - `Table(density = TableDensity::Comfortable)` — row padding:
+//!   `Compact`, `Standard` (default) or `Comfortable`, which puts a
+//!   single-line row in the 44–52pt touch-target band.
 //!
 //! # Theming the header band
 //!
@@ -52,7 +128,8 @@
 //! own. It ships with the same value as `color-surface-alt`, so the
 //! default look is unchanged, but retinting table headers is now a
 //! one-token override that leaves cards, field wells, and row hover
-//! alone.
+//! alone. Row tones read `color-table-row-{highlight,warning,danger}`
+//! and their `-hover` variants.
 //!
 //! # Row drag & drop — bring your own
 //!
@@ -60,9 +137,10 @@
 //! it (and the `table` SDK underneath) exposes are the HANDLES a
 //! custom implementation needs, so apps own the interaction:
 //!
-//! - `table::bind_row(&row, fill)` — the row's proxy surface handle
-//!   (the `<tr>` on web, a row-spanning backdrop view on native):
-//!   row geometry for drop targeting / frame reads.
+//! - `TableRow(bind_to = Some(r))` (or `table::bind_row(&row, fill)`) —
+//!   the row's proxy surface handle (the `<tr>` on web, a row-spanning
+//!   backdrop view on native): row geometry for drop targeting / frame
+//!   reads, or an anchor for a hover card.
 //! - `table::visit_row_cells` + `table::set_cell_touch` — fan a drag
 //!   recognizer across a row's cells (row-level touch must live
 //!   per-cell; see the SDK docs for why).
@@ -87,15 +165,21 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, signal, text as text_node, ui, ChildList, Color, Cursor, Element, IdealystSchema,
-    IntoElement, Reactive, Signal, StyleRules, Tokenized,
+    component, signal, text as text_node, ui, ChildList, Element, IdealystSchema,
+    IntoElement, Length, Reactive, Ref, Signal, StyleApplication, StyleRules, Tokenized,
+    VariantEnum, ViewHandle,
 };
 use runtime_vocabulary::StyleProp;
-use table::{table as sdk_table, table_cell as sdk_cell, table_row as sdk_row};
-use table::{TableCellProps as SdkTableCellProps, TableProps as SdkTableProps, TableRowProps as SdkTableRowProps};
+pub use table::ColSpan;
+use table::{table as sdk_table, table_cell as sdk_cell, table_foot as sdk_foot, table_row as sdk_row};
+use table::{
+    TableCellProps as SdkTableCellProps, TableFootProps as SdkTableFootProps,
+    TableProps as SdkTableProps, TableRowProps as SdkTableRowProps,
+};
 
 use crate::stylesheets::{
     Table as TableStyle, TableBodyCell, TableBodyText, TableCellInner, TableHeadCell, TableHeadText,
+    TableSlot,
 };
 
 /// Which edge a [`TableCell`] freezes against in a
@@ -109,6 +193,93 @@ pub enum ColumnPin {
     Right,
 }
 
+/// How a [`TableCell`]'s content sits in its column. Give every cell of
+/// a column the same value, header included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+pub enum CellAlign {
+    /// Hug the leading edge (the default — text, names).
+    #[default]
+    Left,
+    /// Centre — constant-width content: a status chip, a count, an icon.
+    Center,
+    /// Hug the trailing edge — figures a reader sums by eye (hours,
+    /// money), so they end on one line like the totals row under them.
+    Right,
+}
+
+// The variant string IS the stylesheet arm the value selects.
+impl VariantEnum for CellAlign {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            CellAlign::Left => "left",
+            CellAlign::Center => "center",
+            CellAlign::Right => "right",
+        }
+    }
+
+    fn all_variants() -> &'static [Self] {
+        &[CellAlign::Left, CellAlign::Center, CellAlign::Right]
+    }
+}
+
+/// A whole-row tint for [`TableRow`]. Composes with the clickable-row
+/// hover and with frozen columns — see the module docs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+pub enum RowTone {
+    /// No tint.
+    #[default]
+    None,
+    /// A row picked out for attention — the selected or current item.
+    Highlight,
+    /// A row that needs a look — a flagged timesheet line.
+    Warning,
+    /// A row in trouble — an alarm, a failed check.
+    Danger,
+}
+
+// The variant string IS the stylesheet arm the value selects.
+impl VariantEnum for RowTone {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            RowTone::None => "none",
+            RowTone::Highlight => "highlight",
+            RowTone::Warning => "warning",
+            RowTone::Danger => "danger",
+        }
+    }
+
+    fn all_variants() -> &'static [Self] {
+        &[RowTone::None, RowTone::Highlight, RowTone::Warning, RowTone::Danger]
+    }
+}
+
+/// Row padding for a whole [`Table`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+pub enum TableDensity {
+    /// Tight rows for dense grids.
+    Compact,
+    /// The default.
+    #[default]
+    Standard,
+    /// Roomy rows — a single line of text lands in the 44–52pt touch
+    /// target band, for clickable rows and phone lists.
+    Comfortable,
+}
+
+// The variant string IS the stylesheet arm the value selects.
+impl VariantEnum for TableDensity {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            TableDensity::Compact => "compact",
+            TableDensity::Standard => "standard",
+            TableDensity::Comfortable => "comfortable",
+        }
+    }
+
+    fn all_variants() -> &'static [Self] {
+        &[TableDensity::Compact, TableDensity::Standard, TableDensity::Comfortable]
+    }
+}
 
 // =============================================================================
 // Table
@@ -116,14 +287,14 @@ pub enum ColumnPin {
 
 /// Themed table container. Wraps the `table` SDK's `<table>` with
 /// idea-ui's surface tokens (rounded corners + hairline border + theme
-/// background). Pass `TableRow`s as children.
-// Reactive-by-default: only field is `children` (a LIST, auto-skipped);
-// `#[props]` is a no-op here but kept for uniformity with the family.
+/// background). Pass `TableRow`s (and optionally a `TableFooter`) as
+/// children.
 #[runtime_core::props]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct TableProps {
-    /// Table rows. Pass `TableRow`s (a header row plus body rows).
+    /// Table rows. Pass `TableRow`s (a header row plus body rows), and
+    /// optionally a `TableFooter`.
     pub children: Vec<Element>,
     /// Horizontal-scroll mode: columns lay out at natural width and
     /// overflow sideways inside a horizontal scroller instead of
@@ -132,6 +303,24 @@ pub struct TableProps {
     // STRUCTURAL — selects the SDK's scroller wrapper at build time.
     #[prop(static)]
     pub scroll_x: bool,
+    /// Row padding for every cell — `Compact`, `Standard` or
+    /// `Comfortable`.
+    // STATIC — selected onto every built cell's sheet when the table is
+    // built (the cells already exist by then; see `Table`).
+    #[prop(static)]
+    pub density: TableDensity,
+    /// Content drawn inside the table's frame ABOVE the rows and
+    /// outside the horizontal scroller — it keeps still while a
+    /// `scroll_x` table's columns scroll, and shares the table's border.
+    /// Gets the cells' padding and a divider beneath it.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub header_slot: Option<Element>,
+    /// Content drawn inside the frame BELOW the rows, outside the
+    /// scroller — a blank-state sentence, an "Add entry" action.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub footer_slot: Option<Element>,
 }
 
 /// A themed data table — a header row plus body rows. Wraps the
@@ -140,13 +329,15 @@ pub struct TableProps {
 /// the same way on every platform. Pass `TableRow`s as children.
 #[component(children)]
 pub fn Table(props: TableProps) -> Element {
-    // Scroll-x selects the sheet's `scrolling` axis (the overflow
-    // clip): in that mode the style lands on the surface WRAPPER
-    // around the scroller, which must clip the scrolling columns to
-    // its rounded frame. A plain table keeps the axis off — its style
-    // lands on the `<table>` itself, where a clip would shave the
-    // outer half of the collapsed border (see the sheet).
-    let style = if props.scroll_x {
+    // The style lands on a surface WRAPPER around the table whenever
+    // there is one (scroll-x, or a slot to draw inside the frame), and
+    // that wrapper must clip its contents to the rounded frame — the
+    // `scrolling` axis (named for its first use; renaming it would churn
+    // every table's preminted class). A plain table keeps the axis off —
+    // its style lands on the `<table>` itself, where a clip would shave
+    // the outer half of the collapsed border (see the sheet).
+    let wrapped = props.scroll_x || props.header_slot.is_some() || props.footer_slot.is_some();
+    let style = if wrapped {
         TableStyle().into_style_application().with("scrolling", "on")
     } else {
         TableStyle().into_style_application()
@@ -155,12 +346,40 @@ pub fn Table(props: TableProps) -> Element {
     for c in props.children {
         ChildList::append_to(c, &mut children);
     }
+    // Density is a table-wide setting, but the cells are already built
+    // when this body runs (the `ui!` children block builds them first),
+    // so it is selected onto each built cell. A static selection keeps a
+    // static sheet static — it still premints. `Standard` is every
+    // sheet's default arm, so it needs no pass at all.
+    if props.density != TableDensity::Standard {
+        let arm = props.density.as_variant_str();
+        for child in &children {
+            table::visit_rows(child, |row| {
+                table::visit_row_cells(row, |cell| {
+                    table::map_cell_application(cell, Rc::new(move |app| app.with("density", arm)));
+                });
+            });
+        }
+    }
+    let header_slot = props.header_slot.map(|slot| {
+        let style = TableSlot().into_style_application().with("edge", "top");
+        ui! { view(style = style) { slot } }
+    });
+    let footer_slot = props.footer_slot.map(|slot| {
+        let style = TableSlot().into_style_application().with("edge", "bottom");
+        ui! { view(style = style) { slot } }
+    });
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
     // `.with_style(...)` to land the themed style on the `<table>`
-    // itself (or the scroll surface), then convert to Element.
-    sdk_table(SdkTableProps { children, scroll_x: props.scroll_x })
-        .with_style(style)
-        .into_element()
+    // itself (or the surface wrapper), then convert to Element.
+    sdk_table(SdkTableProps {
+        children,
+        scroll_x: props.scroll_x,
+        header_slot,
+        footer_slot,
+    })
+    .with_style(style)
+    .into_element()
 }
 
 // =============================================================================
@@ -169,17 +388,14 @@ pub fn Table(props: TableProps) -> Element {
 
 /// Themed table row. A thin passthrough by default; set `on_row_click`
 /// to make the whole row interactive (pointer cursor + a themed hover
-/// highlight across every cell + a tap callback).
+/// highlight across every cell + a tap callback), `tone` to tint it.
 ///
 /// Note: on native the SDK lowers a row to a layout-transparent fragment
 /// (its cells become direct children of the table's grid — Taffy has no
 /// subgrid), so a row has no box of its own there. Row-level visuals and
 /// interaction must therefore be applied per-cell rather than to a single
-/// row element — which is exactly what `on_row_click` does (see
+/// row element — which is exactly what `on_row_click` and `tone` do (see
 /// [`make_row_cell_interactive`]).
-// Reactive-by-default: `children` is a LIST (auto-skipped) and
-// `on_row_click` is a callback (auto-skipped); `#[props]` is a no-op here
-// but kept for uniformity with the family.
 #[runtime_core::props]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -205,6 +421,15 @@ pub struct TableRowProps {
     /// pattern). Taps on plain content or empty cell space fall through to
     /// the row callback.
     pub on_row_click: Option<Rc<dyn Fn()>>,
+    /// Whole-row tint — `Highlight`, `Warning` or `Danger`. Reactive: a
+    /// row can change tone in place. Composes with the clickable-row
+    /// hover (a toned row hovers to a deeper shade of its own tint) and
+    /// with frozen columns. Applies to body cells.
+    pub tone: RowTone,
+    /// When `Some`, filled with the row's handle on mount — the `<tr>` on
+    /// web, a row-spanning backdrop view on native. Anchor a hover card
+    /// or popover to a row with it, or read the row's frame.
+    pub bind_to: Option<Ref<ViewHandle>>,
 }
 
 /// A row within a [`Table`] — holds `TableCell`s. Use the first row as
@@ -216,6 +441,25 @@ pub fn TableRow(props: TableRowProps) -> Element {
         ChildList::append_to(c, &mut children);
     }
 
+    // Tone first, so a clickable row's hover axes compose OVER it. A
+    // static tone is a static selection (the sheet stays preminted); a
+    // live one wraps each cell's style so the row re-tints in place.
+    match props.tone {
+        Reactive::Static(RowTone::None) => {}
+        Reactive::Static(tone) => {
+            let arm = tone.as_variant_str();
+            for cell in &children {
+                table::map_cell_application(cell, Rc::new(move |app| app.with("tone", arm)));
+            }
+        }
+        Reactive::Dynamic(f) => {
+            for cell in &children {
+                let f = f.clone();
+                table::map_cell_style(cell, Rc::new(move |app| app.with("tone", f().as_variant_str())));
+            }
+        }
+    }
+
     // A clickable row shares ONE hover flag across all its cells so
     // hovering any cell highlights the whole row. The cells arrive here
     // already built (the `ui!` children block builds them before the row
@@ -223,7 +467,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // + pointer cursor onto its themed style and attach the tap/hover
     // handlers. The signal is created in this row's scope, so it lives as
     // long as the cells that subscribe to it.
-    if let Some(cb) = props.on_row_click {
+    let children = if let Some(cb) = props.on_row_click {
         // TWO flags, not one. A pointer backend drives both — hover on
         // enter/leave, press on down/up — and folding them into a single
         // bool means whichever fires last wins: releasing a click would
@@ -234,14 +478,19 @@ pub fn TableRow(props: TableRowProps) -> Element {
         // their OR.
         let hovered = signal(false);
         let pressed = signal(false);
-        let cells: Vec<Element> = children
+        children
             .into_iter()
             .map(|cell| make_row_cell_interactive(cell, hovered, pressed, cb.clone()))
-            .collect();
-        return sdk_row(SdkTableRowProps { children: cells }).into_element();
-    }
+            .collect()
+    } else {
+        children
+    };
 
-    sdk_row(SdkTableRowProps { children }).into_element()
+    let row = sdk_row(SdkTableRowProps { children }).into_element();
+    if let Some(r) = props.bind_to {
+        table::bind_row(&row, move |h| r.fill(h));
+    }
+    row
 }
 
 /// Attach whole-row click + hover to a single cell.
@@ -329,6 +578,48 @@ fn make_row_cell_interactive(
 }
 
 // =============================================================================
+// TableFooter
+// =============================================================================
+
+/// Props for [`TableFooter`].
+#[runtime_core::props]
+#[derive(Default, IdealystSchema)]
+#[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
+pub struct TableFooterProps {
+    /// The footer rows — `TableRow`s, typically one totals row.
+    pub children: Vec<Element>,
+}
+
+/// The table's footer — a totals row. `<tfoot>` on web, so assistive
+/// tech announces it as the footer rather than as another row of data;
+/// its cells take the header band's tint; and it renders after the body
+/// rows wherever it is written among the table's children.
+///
+/// ```ignore
+/// TableFooter {
+///     TableRow {
+///         TableCell(span = ColSpan::Columns(2), text = Some("Crew totals · 4".into()))
+///         TableCell(align = CellAlign::Right, text = Some("38.5".into()))
+///     }
+/// }
+/// ```
+#[component(children)]
+pub fn TableFooter(props: TableFooterProps) -> Element {
+    let mut rows: Vec<Element> = Vec::with_capacity(props.children.len());
+    for c in props.children {
+        ChildList::append_to(c, &mut rows);
+    }
+    // Footer rows are ordinary rows; what makes them a footer is the
+    // section, selected onto each built cell (static — still preminted).
+    for row in &rows {
+        table::visit_row_cells(row, |cell| {
+            table::map_cell_application(cell, Rc::new(|app| app.with("section", "foot")));
+        });
+    }
+    sdk_foot(SdkTableFootProps { children: rows })
+}
+
+// =============================================================================
 // TableCell
 // =============================================================================
 
@@ -342,11 +633,10 @@ fn make_row_cell_interactive(
 /// using the header/body typography token. To compose richer content
 /// (links, badges, multiple inline pieces) pass `text = None` and
 /// use the `children` block instead.
-// Reactive-by-default: `text` is already reactive and `children` is a LIST
-// (auto-skipped). `header` is STRUCTURAL — it selects the `<th>`/`<td>` SDK
-// element AND the head/body style + text branch; it can't be a single style
-// sink, so it stays bare via `#[prop(static)]` (TODO below) rather than a
-// guessed reactive route.
+// Reactive-by-default: `text`, `width` and `min_width` are reactive and
+// `children` is a LIST (auto-skipped). The `#[prop(static)]` fields are
+// STRUCTURAL — each picks an SDK element, a grid placement, or a style
+// arm on several nodes at build time (see each field).
 #[runtime_core::props]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
@@ -378,6 +668,38 @@ pub struct TableCellProps {
     // STRUCTURAL — selects the `pinned` stylesheet arm at build time.
     #[prop(static)]
     pub pinned: Option<ColumnPin>,
+    /// Inset from the pinned edge, in px — how a SECOND (third, …)
+    /// frozen column clears the ones before it: set it to the summed
+    /// `width`s of the pinned columns between this one and the edge.
+    /// `None` (the default) pins at the edge. Ignored unless `pinned` is
+    /// set. (An `Option` rather than a bare `f32` so a `ui!` literal —
+    /// `pin_offset = Some(48.0)` — infers `f32` instead of tripping the
+    /// float-literal fallback a bare `48.0.into()` hits.)
+    // STRUCTURAL — part of the pinned arm's geometry, fixed at build.
+    #[prop(static)]
+    pub pin_offset: Option<f32>,
+    /// Hold this cell's column at exactly this width (px). Spare table
+    /// width goes to the columns without one. Give every cell of the
+    /// column the same value, header included.
+    pub width: Option<f32>,
+    /// Never let this cell's column be narrower than this (px).
+    pub min_width: Option<f32>,
+    /// How the content sits in the column — `Left` (default), `Center`
+    /// or `Right`. Give every cell of the column the same value.
+    // STRUCTURAL — selects the `align` arm on three nodes (the cell, its
+    // text node, the rich-children wrapper) at build time.
+    #[prop(static)]
+    pub align: CellAlign,
+    /// Keep the content to one line ending in "…". Pair with `width`.
+    // STRUCTURAL — selects the `truncate` arm on the cell and its text.
+    #[prop(static)]
+    pub truncate: bool,
+    /// How many columns this cell covers: `ColSpan::Columns(n)`, or
+    /// `ColSpan::Rest` for every column to the end of the row.
+    // STRUCTURAL — a `colspan` attribute / grid placement fixed at build.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    #[prop(static)]
+    pub span: ColSpan,
 }
 
 impl Default for TableCellProps {
@@ -387,6 +709,12 @@ impl Default for TableCellProps {
             text: Reactive::Static(None),
             children: Vec::new(),
             pinned: None,
+            pin_offset: None,
+            width: Reactive::Static(None),
+            min_width: Reactive::Static(None),
+            align: CellAlign::Left,
+            truncate: false,
+            span: ColSpan::default(),
         }
     }
 }
@@ -396,6 +724,8 @@ impl Default for TableCellProps {
 #[component(children)]
 pub fn TableCell(props: TableCellProps) -> Element {
     let header = props.header;
+    let align = props.align.as_variant_str();
+    let truncate = if props.truncate { "on" } else { "off" };
 
     // Resolve the cell contents. When the author supplied `children`,
     // wrap them in a row-flex inner container so flex-grow items
@@ -407,17 +737,13 @@ pub fn TableCell(props: TableCellProps) -> Element {
         for c in props.children {
             ChildList::append_to(c, &mut inner);
         }
-        let inner_style = TableCellInner();
+        let inner_style = TableCellInner().into_style_application().with("align", align);
         vec![ui! { view(style = inner_style) { inner } }]
     } else {
-        cell_text_children(header, props.text)
+        cell_text_children(header, props.text, align, truncate)
     };
 
-    let bound = sdk_cell(SdkTableCellProps { header, children: cell_children });
-    // Cell-level styling (padding + border-bottom) on the `<td>` /
-    // `<th>` itself. Branching here keeps each style concrete so
-    // `IntoStyleSource` resolves on the call (not on a `Box<dyn>`,
-    // which the trait doesn't support).
+    let bound = sdk_cell(SdkTableCellProps { header, span: props.span, children: cell_children });
     // A cell's style is handed over as an EXPLICIT `StyleProp::Sheet`, not
     // as a bare application. A clickable row composes the `interactive` /
     // `row_hovered` axes onto each cell's own style
@@ -451,42 +777,98 @@ pub fn TableCell(props: TableCellProps) -> Element {
         ColumnPin::Left => "left",
         ColumnPin::Right => "right",
     });
-    if header {
+    let app = if header {
         let app = TableHeadCell().into_style_application();
-        let app = match pin_arm {
-            Some(arm) => app.with("pinned", arm),
-            None => app,
-        };
-        bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()
+        select_cell_axes(app, pin_arm, align, truncate)
     } else {
         let app = TableBodyCell().into_style_application();
-        let app = match pin_arm {
-            Some(arm) => app.with("pinned", arm),
-            None => app,
-        };
-        bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()
+        select_cell_axes(app, pin_arm, align, truncate)
+    };
+
+    // Geometry the sheet cannot enumerate — a column width, a pin inset —
+    // rides `with_overrides` on top of the selected arms. Overrides take
+    // a cell off the premint path, so a cell that sets none keeps the
+    // pure axis selection (and the `Sheet` hand-off above).
+    let pinned = props.pinned;
+    let pin_offset = props.pin_offset;
+    let geometry = move |width: Option<f32>, min_width: Option<f32>| -> Option<StyleRules> {
+        let px = |v: f32| Tokenized::Literal(Length::Px(v));
+        let inset = pin_offset.filter(|o| pinned.is_some() && *o != 0.0).map(px);
+        if width.is_none() && min_width.is_none() && inset.is_none() {
+            return None;
+        }
+        Some(StyleRules {
+            // An EXACT column: `width` alone is only a floor in a
+            // browser's auto table (a long unwrapped value widens the
+            // column past it); `max-width` at the same value is what holds
+            // it — measured, see `runtime-layout`'s `table_column_widths`.
+            width: width.map(px),
+            max_width: width.map(px),
+            min_width: min_width.map(px),
+            left: inset.clone().filter(|_| pinned == Some(ColumnPin::Left)),
+            right: inset.filter(|_| pinned == Some(ColumnPin::Right)),
+            ..Default::default()
+        })
+    };
+    match (props.width, props.min_width) {
+        (Reactive::Static(width), Reactive::Static(min_width)) => {
+            let app = match geometry(width, min_width) {
+                Some(rules) => app.with_overrides(rules),
+                None => app,
+            };
+            bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()
+        }
+        (width, min_width) => {
+            // A live width (a column following a resize drag): one style
+            // closure reading both, composing over the same selected arms.
+            let width = Rc::new(width);
+            let min_width = Rc::new(min_width);
+            let style = move || -> StyleApplication {
+                match geometry(width.get(), min_width.get()) {
+                    Some(rules) => app.clone().with_overrides(rules),
+                    None => app.clone(),
+                }
+            };
+            bound.with_style(StyleProp::SheetDynamic(Box::new(style))).into_element()
+        }
+    }
+}
+
+/// Select the build-time axes every cell carries, on either sheet.
+fn select_cell_axes(
+    app: StyleApplication,
+    pin_arm: Option<&'static str>,
+    align: &'static str,
+    truncate: &'static str,
+) -> StyleApplication {
+    let app = app.with("align", align).with("truncate", truncate);
+    match pin_arm {
+        Some(arm) => app.with("pinned", arm),
+        None => app,
     }
 }
 
 /// Render a cell's `text` prop with the role-appropriate themed
 /// stylesheet. Split out so the `header` branch can pick its
 /// concrete style without needing `Box<dyn IntoStyleSource>`.
-fn cell_text_children(header: bool, content: Reactive<Option<String>>) -> Vec<Element> {
-    if header {
-        match content {
-            Reactive::Static(None) => Vec::new(),
-            Reactive::Static(Some(s)) => vec![text_node(s).with_style(TableHeadText()).into_element()],
-            Reactive::Dynamic(f) => vec![text_node(move || f().unwrap_or_default())
-                .with_style(TableHeadText())
-                .into_element()],
-        }
+fn cell_text_children(
+    header: bool,
+    content: Reactive<Option<String>>,
+    align: &'static str,
+    truncate: &'static str,
+) -> Vec<Element> {
+    let style = if header {
+        TableHeadText().into_style_application()
     } else {
-        match content {
-            Reactive::Static(None) => Vec::new(),
-            Reactive::Static(Some(s)) => vec![text_node(s).with_style(TableBodyText()).into_element()],
-            Reactive::Dynamic(f) => vec![text_node(move || f().unwrap_or_default())
-                .with_style(TableBodyText())
-                .into_element()],
+        TableBodyText().into_style_application()
+    }
+    .with("align", align)
+    .with("truncate", truncate);
+    match content {
+        Reactive::Static(None) => Vec::new(),
+        Reactive::Static(Some(s)) => vec![text_node(s).with_style(style).into_element()],
+        Reactive::Dynamic(f) => {
+            vec![text_node(move || f().unwrap_or_default()).with_style(style).into_element()]
         }
     }
 }
@@ -500,6 +882,7 @@ fn cell_text_children(header: bool, content: Reactive<Option<String>>) -> Vec<El
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use runtime_core::Cursor;
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
 
@@ -626,6 +1009,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![body_cell("x")],
                 on_row_click: Some(Rc::new(|| {})),
+                ..Default::default()
             });
             let mut cells = row_cells(row);
             let style = match classify(cells.remove(0)) {
@@ -737,6 +1121,7 @@ mod tests {
             let width_pinned = table::table_cell(table::TableCellProps {
                 header: false,
                 children: Vec::new(),
+                ..Default::default()
             })
             .with_style(|| {
                 TableBodyCell().into_style_application().with_overrides(StyleRules {
@@ -751,6 +1136,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![width_pinned],
                 on_row_click: Some(Rc::new(|| {})),
+                ..Default::default()
             });
             let mut cells = row_cells(row);
             let style = match classify(cells.remove(0)) {
@@ -777,6 +1163,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![body_cell("a"), body_cell("b")],
                 on_row_click: Some(Rc::new(|| {})),
+                ..Default::default()
             });
             let cells = row_cells(row);
             assert_eq!(cells.len(), 2, "both cells survive post-processing");
@@ -1007,6 +1394,7 @@ mod tests {
             let row = TableRow(TableRowProps {
                 children: vec![body_cell("a")],
                 on_row_click: None,
+                ..Default::default()
             });
             let mut cells = row_cells(row);
             match classify(cells.remove(0)) {
@@ -1024,6 +1412,434 @@ mod tests {
                     );
                 }
                 _ => panic!("native cell must classify as a View"),
+            }
+        });
+    }
+
+    // =========================================================================
+    // CrewForge 10-09 table gaps — one regression per gap.
+    // =========================================================================
+
+    fn cell_app(cell: Element) -> runtime_core::StyleApplication {
+        match classify(cell) {
+            P::View { style, .. } => style.expect("cell keeps a style").application(),
+            _ => panic!("native cell must classify as a View"),
+        }
+    }
+
+    fn rules_of(cell: Element) -> Rc<StyleRules> {
+        runtime_core::resolve_style(&cell_app(cell))
+    }
+
+    fn bg_token(rules: &StyleRules) -> Option<String> {
+        rules.background.as_ref().and_then(|b| b.name().map(str::to_string))
+    }
+
+    /// The text node a `text = Some(..)` cell renders, classified.
+    fn cell_text_rules(cell: Element) -> Rc<StyleRules> {
+        let children = match classify(cell) {
+            P::View { children, .. } => children,
+            _ => panic!("native cell must classify as a View"),
+        };
+        match classify(children.into_iter().next().expect("cell has its text")) {
+            P::Text { style, .. } => {
+                runtime_core::resolve_style(&style.expect("text is styled").application())
+            }
+            _ => panic!("cell content must be its text node"),
+        }
+    }
+
+    fn px_of(t: &Option<Tokenized<Length>>) -> Option<f32> {
+        match t.as_ref().map(|t| t.resolve()) {
+            Some(Length::Px(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Gap #1: `TableCell` had no width or alignment, so CrewForge rebuilt
+    /// every sized column a layer below idea-ui and copied the themed
+    /// sheets by hand. A sized cell must carry the EXACT-column pair
+    /// (`width` + `max-width`: `width` alone is a floor in a browser's auto
+    /// table), a floor, and the alignment on the cell AND its text.
+    #[test]
+    fn regression_cell_width_floor_and_alignment() {
+        with_test_world(|| {
+            let make = || {
+                TableCell(TableCellProps {
+                    text: Reactive::Static(Some("12.5".into())),
+                    width: Reactive::Static(Some(120.0)),
+                    min_width: Reactive::Static(Some(80.0)),
+                    align: CellAlign::Right,
+                    ..Default::default()
+                })
+            };
+            let rules = rules_of(make());
+            assert_eq!(px_of(&rules.width), Some(120.0));
+            assert_eq!(px_of(&rules.max_width), Some(120.0), "exact column needs max-width too");
+            assert_eq!(px_of(&rules.min_width), Some(80.0));
+            assert_eq!(rules.text_align, Some(runtime_core::TextAlign::Right));
+            assert_eq!(
+                cell_text_rules(make()).text_align,
+                Some(runtime_core::TextAlign::Right),
+                "the text node (what native reads) aligns too"
+            );
+            // A cell with no geometry keeps the pure axis selection — it
+            // still premints.
+            let plain = cell_app(body_cell("x"));
+            assert!(plain.preminted_class_list().is_some());
+        });
+    }
+
+    /// Gap #1, resize half: a LIVE width re-styles the cell in place (the
+    /// column follows a drag) rather than being snapshotted at build.
+    #[test]
+    fn reactive_cell_width_follows_its_signal() {
+        with_test_world(|| {
+            let w = signal(Some(100.0_f32));
+            let cell = TableCell(TableCellProps {
+                width: Reactive::Dynamic(Rc::new(move || w.get())),
+                ..Default::default()
+            });
+            let style = match classify(cell) {
+                P::View { style, .. } => style.expect("styled"),
+                _ => panic!("view"),
+            };
+            assert!(style.is_reactive(), "a live width is a reactive style");
+            let at = |s: &crate::test_support::TStyle| {
+                px_of(&runtime_core::resolve_style(&s.application()).width)
+            };
+            assert_eq!(at(&style), Some(100.0));
+            w.set(Some(240.0));
+            idea_theme::testing::commit();
+            assert_eq!(at(&style), Some(240.0));
+        });
+    }
+
+    /// Truncation (gap #1's "ends in …"): `max_lines: 1` on the cell —
+    /// what truncates on web, where the text is an inline span — and on
+    /// the text node, what truncates on native.
+    #[test]
+    fn truncate_limits_cell_and_text_to_one_line() {
+        with_test_world(|| {
+            let make = || {
+                TableCell(TableCellProps {
+                    text: Reactive::Static(Some("A long crew member name".into())),
+                    width: Reactive::Static(Some(120.0)),
+                    truncate: true,
+                    ..Default::default()
+                })
+            };
+            assert_eq!(rules_of(make()).max_lines, Some(1));
+            assert_eq!(cell_text_rules(make()).max_lines, Some(1));
+            assert_eq!(rules_of(body_cell("x")).max_lines, None, "off by default");
+        });
+    }
+
+    /// The native grid a `Table` lowers to, and its cells.
+    fn grid_cells(t: Element) -> Vec<Element> {
+        let outer = match peel_owned_keepalive(t) {
+            Element::Item { children, .. } => children,
+            _ => panic!("table lowers to its outer view"),
+        };
+        match peel_owned_keepalive(outer.into_iter().next().expect("outer wraps the grid")) {
+            Element::Item { children, .. } => children,
+            _ => panic!("grid view"),
+        }
+    }
+
+    /// Gap #2: no colspan, so a "Nobody yet" message got column 1's width
+    /// and wrapped inside it. `ColSpan::Rest` must cover every column.
+    #[test]
+    fn regression_rest_span_covers_the_row() {
+        with_test_world(|| {
+            let head = TableRow(TableRowProps {
+                children: (0..4).map(|_| body_cell("h")).collect(),
+                ..Default::default()
+            });
+            let blank = TableRow(TableRowProps {
+                children: vec![TableCell(TableCellProps {
+                    text: Reactive::Static(Some("Nobody yet".into())),
+                    span: ColSpan::Rest,
+                    ..Default::default()
+                })],
+                ..Default::default()
+            });
+            let cells = grid_cells(Table(TableProps {
+                children: vec![head, blank],
+                ..Default::default()
+            }));
+            assert_eq!(cells.len(), 5);
+            let rules = rules_of(cells.into_iter().nth(4).unwrap());
+            assert_eq!(
+                rules.grid_column,
+                Some(runtime_core::GridPlacement::Lines(1, 5)),
+                "the blank message spans all four columns"
+            );
+        });
+    }
+
+    fn tone_row(tone: RowTone, clickable: bool, pinned: Option<ColumnPin>) -> Vec<Element> {
+        row_cells(TableRow(TableRowProps {
+            children: vec![TableCell(TableCellProps {
+                text: Reactive::Static(Some("x".into())),
+                pinned,
+                ..Default::default()
+            })],
+            tone: Reactive::Static(tone),
+            on_row_click: clickable.then(|| Rc::new(|| {}) as Rc<dyn Fn()>),
+            ..Default::default()
+        }))
+    }
+
+    /// Gap #3: tinting a row by overriding each cell's background beat the
+    /// hover axis, so a warning row stopped responding to the pointer, and
+    /// it was not preminted. A tone must be an axis that premints, keeps
+    /// the hover (as a deeper shade of its own tint), and stays opaque on
+    /// a frozen column.
+    #[test]
+    fn regression_row_tone_composes_with_hover_and_pin() {
+        with_test_world(|| {
+            // Static tone on a plain row: a static, preminted selection.
+            let app = cell_app(tone_row(RowTone::Warning, false, None).remove(0));
+            assert!(app.preminted_class_list().is_some(), "a row tone premints");
+            assert_eq!(
+                bg_token(&runtime_core::resolve_style(&app)).as_deref(),
+                Some("color-table-row-warning")
+            );
+
+            // Clickable + toned: resting shows the tone, hovered the tone's
+            // hover shade — the hover is not lost.
+            let resting = cell_app(tone_row(RowTone::Danger, true, None).remove(0));
+            assert_eq!(
+                bg_token(&runtime_core::resolve_style(&resting)).as_deref(),
+                Some("color-table-row-danger")
+            );
+            let hovered = resting.clone().with("row_hovered", "on");
+            assert_eq!(
+                bg_token(&runtime_core::resolve_style(&hovered)).as_deref(),
+                Some("color-table-row-danger-hover"),
+                "a toned row still answers the pointer"
+            );
+
+            // Frozen + toned: the tone, not the pinned surface — and the
+            // tone tokens are opaque in both themes.
+            let pinned = cell_app(tone_row(RowTone::Highlight, true, Some(ColumnPin::Left)).remove(0));
+            assert_eq!(
+                bg_token(&runtime_core::resolve_style(&pinned)).as_deref(),
+                Some("color-table-row-highlight")
+            );
+            for theme in [crate::light_theme(), crate::dark_theme()] {
+                let c = &theme.colors;
+                for tok in [
+                    &c.table_row_highlight, &c.table_row_highlight_hover,
+                    &c.table_row_warning, &c.table_row_warning_hover,
+                    &c.table_row_danger, &c.table_row_danger_hover,
+                ] {
+                    let v = tok.value().0.to_ascii_lowercase();
+                    assert!(
+                        v.starts_with('#') && v.len() == 7,
+                        "row tone tokens must be opaque hex (a frozen column covers \
+                         content with them), got {v}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// Gap #3, live half: a reactive tone re-tints the row in place.
+    #[test]
+    fn reactive_row_tone_retints_in_place() {
+        with_test_world(|| {
+            let tone = signal(RowTone::None);
+            let cells = row_cells(TableRow(TableRowProps {
+                children: vec![body_cell("x")],
+                tone: Reactive::Dynamic(Rc::new(move || tone.get())),
+                ..Default::default()
+            }));
+            let style = match classify(cells.into_iter().next().unwrap()) {
+                P::View { style, .. } => style.expect("styled"),
+                _ => panic!("view"),
+            };
+            let bg = |s: &crate::test_support::TStyle| {
+                bg_token(&runtime_core::resolve_style(&s.application()))
+            };
+            assert_ne!(bg(&style).as_deref(), Some("color-table-row-warning"));
+            tone.set(RowTone::Warning);
+            idea_theme::testing::commit();
+            assert_eq!(bg(&style).as_deref(), Some("color-table-row-warning"));
+        });
+    }
+
+    /// Gap #4: no footer row — a totals row read as data. `TableFooter`
+    /// lowers to the SDK's footer section and tints its cells with the
+    /// header band, frozen ones included.
+    #[test]
+    fn regression_footer_row_is_a_section_with_the_band_tint() {
+        with_test_world(|| {
+            let footer = TableFooter(TableFooterProps {
+                children: vec![TableRow(TableRowProps {
+                    children: vec![
+                        TableCell(TableCellProps {
+                            text: Reactive::Static(Some("Totals".into())),
+                            pinned: Some(ColumnPin::Left),
+                            ..Default::default()
+                        }),
+                        body_cell("38.5"),
+                    ],
+                    ..Default::default()
+                })],
+            });
+            let rows = match peel_owned_keepalive(footer) {
+                Element::Item { data, children, .. } => {
+                    assert!(
+                        data.downcast_ref::<runtime_vocabulary::prims::PrimCell<table::TableFootPrim>>()
+                            .is_some(),
+                        "TableFooter lowers to the SDK footer section"
+                    );
+                    children
+                }
+                _ => panic!("footer section item"),
+            };
+            for cell in row_cells(rows.into_iter().next().unwrap()) {
+                assert_eq!(bg_token(&rules_of(cell)).as_deref(), Some("color-table-header"));
+            }
+        });
+    }
+
+    /// Gap #5: content that must not scroll sideways with the columns had
+    /// to sit outside the table's frame. The slots land inside the clipped
+    /// surface, either side of the scroller, with the cells' padding.
+    #[test]
+    fn regression_frame_slots_sit_inside_the_surface() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![TableRow(TableRowProps {
+                    children: vec![body_cell("a")],
+                    ..Default::default()
+                })],
+                scroll_x: true,
+                header_slot: Some(runtime_core::text("Holiday").into_element()),
+                footer_slot: Some(runtime_core::text("Add entry").into_element()),
+                ..Default::default()
+            });
+            let (style, kids) = match peel_owned_keepalive(t) {
+                Element::Item { data, children, .. } => (
+                    data.downcast_ref::<runtime_vocabulary::prims::PrimCell<
+                        runtime_vocabulary::prims::ViewPrim,
+                    >>()
+                    .expect("surface view")
+                    .take()
+                    .style,
+                    children,
+                ),
+                _ => panic!("surface"),
+            };
+            let surface = match style {
+                Some(StyleProp::Sheet(app)) => runtime_core::resolve_style(&app),
+                _ => panic!("themed surface sheet"),
+            };
+            assert_eq!(surface.overflow, Some(runtime_core::Overflow::Hidden), "surface clips");
+            assert_eq!(kids.len(), 3, "header slot, scroller, footer slot");
+            let mut kids = kids.into_iter();
+            let header = rules_of(kids.next().unwrap());
+            assert!(header.border_bottom_width.is_some(), "header slot draws its divider");
+            assert!(header.padding_left.is_some(), "slot content gets the cells' padding");
+        });
+    }
+
+    /// Gap #6: two pinned columns both stuck at `left: 0` and overlapped.
+    /// `pin_offset` insets the second; the first keeps the preminted zero.
+    #[test]
+    fn regression_second_pinned_column_insets_by_its_offset() {
+        with_test_world(|| {
+            let second = rules_of(TableCell(TableCellProps {
+                pinned: Some(ColumnPin::Left),
+                pin_offset: Some(48.0),
+                ..Default::default()
+            }));
+            assert_eq!(second.position, Some(runtime_core::Position::Sticky));
+            assert_eq!(px_of(&second.left), Some(48.0));
+            let right = rules_of(TableCell(TableCellProps {
+                pinned: Some(ColumnPin::Right),
+                pin_offset: Some(30.0),
+                ..Default::default()
+            }));
+            assert_eq!(px_of(&right.right), Some(30.0));
+            assert!(right.left.is_none());
+            let first = cell_app(TableCell(TableCellProps {
+                pinned: Some(ColumnPin::Left),
+                ..Default::default()
+            }));
+            assert!(first.preminted_class_list().is_some(), "offset 0 stays preminted");
+        });
+    }
+
+    /// Gap #7: no ref on `TableRow`. `bind_to` routes to the SDK's row
+    /// proxy slot — the `<tr>` on web, the row backdrop on native.
+    #[test]
+    fn regression_row_bind_to_fills_the_row_proxy() {
+        with_test_world(|| {
+            let r: Ref<ViewHandle> = Ref::new();
+            let mut row = TableRow(TableRowProps {
+                children: vec![body_cell("x")],
+                bind_to: Some(r),
+                ..Default::default()
+            });
+            loop {
+                match row {
+                    Element::Owned { element, owned, .. } => {
+                        ROW_SCOPES.with(|k| k.borrow_mut().push(owned));
+                        row = *element;
+                    }
+                    Element::Item { data, .. } => {
+                        let prim = data
+                            .downcast_ref::<runtime_vocabulary::prims::PrimCell<table::TableRowPrim>>()
+                            .expect("row marker")
+                            .take();
+                        assert!(prim.ref_fill.is_some(), "bind_to sets the row proxy slot");
+                        break;
+                    }
+                    _ => panic!("row marker item"),
+                }
+            }
+        });
+    }
+
+    /// Gap #8: row padding was fixed at `spacing.md`. `density` reaches
+    /// every cell — head and body — as a static (preminted) selection.
+    #[test]
+    fn regression_table_density_reaches_every_cell() {
+        with_test_world(|| {
+            let spacing = &crate::light_theme().spacing;
+            for (density, expect) in [
+                (TableDensity::Compact, spacing.sm),
+                (TableDensity::Standard, spacing.md),
+                (TableDensity::Comfortable, spacing.lg),
+            ] {
+                let head = TableRow(TableRowProps {
+                    children: vec![TableCell(TableCellProps {
+                        header: true,
+                        text: Reactive::Static(Some("h".into())),
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                });
+                let body = TableRow(TableRowProps {
+                    children: vec![body_cell("b")],
+                    ..Default::default()
+                });
+                let cells = grid_cells(Table(TableProps {
+                    children: vec![head, body],
+                    density,
+                    ..Default::default()
+                }));
+                for cell in cells {
+                    let app = cell_app(cell);
+                    assert!(app.preminted_class_list().is_some(), "density premints");
+                    let rules = runtime_core::resolve_style(&app);
+                    let pad = px_of(&rules.padding_top);
+                    assert_eq!(pad, Some(expect), "{density:?}");
+                }
             }
         });
     }

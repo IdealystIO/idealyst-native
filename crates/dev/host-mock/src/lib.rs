@@ -1356,6 +1356,13 @@ impl caps::DocumentOps for HostMock {
         );
     }
 
+    fn attach_html_attribute(&self, node: &Node, name: &str, value: &str) {
+        self.s.rec_v(
+            "attach_html_attribute",
+            format!("attach_html_attribute n{node} {name}={value}"),
+        );
+    }
+
     fn register_raw_css(&mut self, css: &str) {
         self.s
             .rec_v("register_raw_css", format!("register_raw_css {} bytes", css.len()));

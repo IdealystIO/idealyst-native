@@ -139,13 +139,14 @@ That only works if your payload type is public — and for most SDKs it isn't an
 shouldn't be. `svg`'s `SvgPrim` is private today, which means **no app can defer
 it**, no matter how much they want to.
 
-It gets worse for multi-payload SDKs. `table` registers three, keyed on a
+It gets worse for multi-payload SDKs. `table` registers four, keyed on a
 framework wrapper type. Without a seam, an app would have to write:
 
 ```rust
 registry.defer::<PrimCell<TablePrim>>();
 registry.defer::<PrimCell<TableRowPrim>>();
 registry.defer::<PrimCell<TableCellPrim>>();
+registry.defer::<PrimCell<TableFootPrim>>();
 ```
 
 — importing framework internals to do it. Nobody will get that right.

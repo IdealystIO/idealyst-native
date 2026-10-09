@@ -2386,6 +2386,15 @@ impl WebBackend {
         }
     }
 
+    /// Set a structural attribute (`colspan` on a `<td>`) — see
+    /// `DocumentOps::attach_html_attribute`.
+    pub(crate) fn attach_html_attribute_impl(&self, node: &Node, name: &str, value: &str) {
+        use web_glue::JsCast;
+        if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
+            let _ = el.set_attribute(name, value);
+        }
+    }
+
     pub(crate) fn attach_html_style_impl(&self, node: &Node, prop: &str, value: &str) {
         use web_glue::JsCast;
         // `set_property` handles CSS custom properties (`--drawer-width`)

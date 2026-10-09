@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, SEARCH, STAR};
+use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, LAYOUT_GRID, LIST, MAP, SEARCH, STAR};
 use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, Signal};
 use idea_ui::{
     date::{format_date, format_datetime, format_time},
@@ -807,10 +807,19 @@ pub fn autocomplete() -> Element {
 // =============================================================================
 
 pub fn segmented_control() -> Element {
-    // "With icons" — SegmentOption.label is a string, so prefix glyphs in the
-    // label to convey the icon-and-text segmented picker shape.
     let view = signal("list".to_string());
     let on_view: Rc<dyn Fn(String)> = Rc::new(move |v| view.set(v));
+
+    let shift = signal("day".to_string());
+    let on_shift: Rc<dyn Fn(String)> = Rc::new(move |v| shift.set(v));
+    // A tinted status dot as each segment's leading adornment; the control
+    // renders the label after it.
+    let shift_dot = |dot: crate::styles::ShiftDotShift| {
+        Adornment::element(move || {
+            let style = crate::styles::ShiftDot().shift(dot);
+            ui! { view(style = style) }
+        })
+    };
 
     let theme = signal("light".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
@@ -828,16 +837,18 @@ pub fn segmented_control() -> Element {
                 pattern. Controlled by value: the host owns a `Signal<String>` holding the \
                 selected segment's `id`, and the segment whose `id` equals the value is \
                 filled in inside a bordered track (distinct from the underlined Tabs \
-                strip, so a value choice never reads as navigation). Build segments with `SegmentOption::new(id, label)`.".to_string())
+                strip, so a value choice never reads as navigation). Build segments with \
+                `SegmentOption::new(id, label)`; `.leading(Adornment::Icon(…))` puts an icon \
+                before the label, and it recolors with the segment's selection.".to_string())
             DemoSurface {
                 Stack(gap = StackGap::Md) {
                     SegmentedControl(
                         value = view,
                         on_change = on_view,
                         options = vec![
-                            SegmentOption::new("list", "☰  List"),
-                            SegmentOption::new("grid", "▦  Grid"),
-                            SegmentOption::new("map", "◎  Map"),
+                            SegmentOption::new("list", "List").leading(Adornment::Icon(LIST)),
+                            SegmentOption::new("grid", "Grid").leading(Adornment::Icon(LAYOUT_GRID)),
+                            SegmentOption::new("map", "Map").leading(Adornment::Icon(MAP)),
                         ],
                     )
                     current
@@ -851,12 +862,33 @@ ui! {
         value = view,
         on_change = on_change,
         options = vec![
-            SegmentOption::new("list", "List"),
-            SegmentOption::new("grid", "Grid"),
-            SegmentOption::new("map",  "Map"),
+            SegmentOption::new("list", "List").leading(Adornment::Icon(LIST)),
+            SegmentOption::new("grid", "Grid").leading(Adornment::Icon(LAYOUT_GRID)),
+            SegmentOption::new("map",  "Map").leading(Adornment::Icon(MAP)),
         ],
     )
 }"##.to_string())
+        }
+    }, ui! {
+        Section(title = "Adornments".to_string()) {
+            P(content = "Each segment takes a `leading` and a `trailing` `Adornment` — the \
+                same type `Field` uses — and the control renders the label between them, so \
+                the text is written once. `Adornment::Icon` takes the segment's own muted or \
+                selected color; `Adornment::element(|| ui! { … })` is any component (a status \
+                dot, a count badge); `Adornment::Button` is a tappable icon that eats its own \
+                tap; `Adornment::Group` sits several side by side.".to_string())
+            DemoSurface {
+                SegmentedControl(
+                    value = shift,
+                    on_change = on_shift,
+                    options = vec![
+                        SegmentOption::new("day", "Day shift").leading(shift_dot(crate::styles::ShiftDotShift::Day)),
+                        SegmentOption::new("night", "Night shift").leading(shift_dot(crate::styles::ShiftDotShift::Night)),
+                    ],
+                )
+            }
+            CodePanel(src = r##"SegmentOption::new("day", "Day shift")
+    .leading(Adornment::element(|| ui! { view(style = ShiftDot().shift(ShiftDotShift::Day)) }))"##.to_string())
         }
     }, ui! {
         Section(title = "Two options".to_string()) {
@@ -893,7 +925,7 @@ ui! {
             PropsTable(rows = vec![
                 Prop { name: "value",     ty: "Reactive<String>",   desc: "Selected segment's id — a Signal<String> or a model-derived rx!(...)." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(String)>", desc: "Fires with the chosen segment's id when the user taps a segment." },
-                Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label)." },
+                Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label), plus .leading(Adornment) / .trailing(Adornment) beside the label (Icon recolors with selection; Element is any component)." },
             ])
         }
     }])

@@ -8,7 +8,9 @@ use idea_ui::{
     tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Tag,
     Typography,
 };
-use idea_ui::{ColumnPin, Table, TableCell, TableRow};
+use idea_ui::{
+    CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableDensity, TableFooter, TableRow,
+};
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
 use idea_ui::components::card::variant as card_variant;
@@ -239,6 +241,76 @@ TableCell {
             }
         },
         ui! {
+            Section(title = "Column widths, alignment, truncation".to_string()) {
+                P(content = "Column settings go on EVERY cell of the column, header included. \
+                    `width` holds a column at exactly that width; the spare width goes to the \
+                    columns without one — so size every column but one and that one fills the \
+                    rest (the browser works the same way, which is why there is no separate \
+                    \"fill\" setting). `min_width` floors a column without fixing it. `align` \
+                    sets header and body alignment together. `truncate` keeps a sized column \
+                    to one line ending in \"…\". `width` and `min_width` are reactive, so a \
+                    column can follow a resize drag.".to_string())
+                columns_table()
+                CodePanel(src = r##"TableRow {
+    TableCell(header = true, width = Some(140.0), truncate = true, text = Some("Crew".into()))
+    TableCell(header = true, text = Some("Notes".into()))            // no width → fills
+    TableCell(header = true, width = Some(96.0), align = CellAlign::Center, text = Some("Status".into()))
+    TableCell(header = true, width = Some(80.0), align = CellAlign::Right, text = Some("Hours".into()))
+}
+TableRow {
+    TableCell(width = Some(140.0), truncate = true, text = Some(name))
+    TableCell(text = Some(notes))
+    TableCell(width = Some(96.0), align = CellAlign::Center) { Tag(..) }
+    TableCell(width = Some(80.0), align = CellAlign::Right, text = Some(hours))
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Spanning cells, row tones, footer".to_string()) {
+                P(content = "`span = ColSpan::Columns(n)` covers n columns; `ColSpan::Rest` covers \
+                    every column to the end of the row — the blank row, an add row, a group \
+                    title. `TableRow(tone = …)` tints a whole row (`Highlight`, `Warning`, \
+                    `Danger`); the tint keeps the clickable-row hover (it deepens) and stays \
+                    opaque on frozen columns. `TableFooter` holds a totals row: a real \
+                    `<tfoot>` on web, the header band's tint, and always after the body rows. \
+                    The demo above uses all three.".to_string())
+                CodePanel(src = r##"TableRow(tone = RowTone::Warning, on_row_click = Some(open)) { … }
+if crew.is_empty() {
+    TableRow { TableCell(span = ColSpan::Rest, text = Some("Nobody yet".into())) }
+}
+TableFooter {
+    TableRow {
+        TableCell(span = ColSpan::Columns(3), text = Some("Crew totals · 4".into()))
+        TableCell(width = Some(80.0), align = CellAlign::Right, text = Some("38.5".into()))
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Frame slots, stacked frozen columns, density".to_string()) {
+                P(content = "`header_slot` and `footer_slot` draw inside the table's frame but \
+                    outside its horizontal scroller, so a notice strip or an \"Add entry\" \
+                    action keeps still while the columns scroll and shares the table's border. \
+                    To freeze two leading columns, size them and give the second \
+                    `pin_offset = Some(<first width>)`. `density` sets row padding for the whole \
+                    table — `Comfortable` puts a one-line row in the 44–52pt touch band.".to_string())
+                slots_table()
+                CodePanel(src = r##"Table(
+    scroll_x = true,
+    density = TableDensity::Comfortable,
+    header_slot = Some(ui! { Typography(content = "Mon 13 is a public holiday".into()) }),
+    footer_slot = Some(ui! { Button(label = "Add entry".into(), on_click = add, ..) }),
+) {
+    TableRow {
+        TableCell(header = true, width = Some(48.0), pinned = Some(ColumnPin::Left))
+        TableCell(header = true, width = Some(160.0), pinned = Some(ColumnPin::Left),
+                  pin_offset = Some(48.0), text = Some("Name".into()))
+        // …hour columns scroll beneath both…
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Row drag & drop — bring your own".to_string()) {
                 P(content = "idea-ui ships no drag-and-drop behavior; the `table` SDK exposes the \
                     handles a custom implementation needs, and you own the interaction. Per row: \
@@ -289,6 +361,21 @@ table::visit_row_cells(&row, |cell| {
                         ty: "bool",
                         desc: "Horizontal-scroll mode: columns at natural width inside a horizontal scroller. Required for pinned columns. Default false.",
                     },
+                    Prop {
+                        name: "density",
+                        ty: "TableDensity",
+                        desc: "Row padding for every cell: Compact, Standard (default) or Comfortable (a one-line row lands in the 44–52pt touch band).",
+                    },
+                    Prop {
+                        name: "header_slot",
+                        ty: "Option<Element>",
+                        desc: "Content inside the frame above the rows, outside the horizontal scroller (stays put while columns scroll). Gets cell padding and a divider. Default None.",
+                    },
+                    Prop {
+                        name: "footer_slot",
+                        ty: "Option<Element>",
+                        desc: "Content inside the frame below the rows, outside the scroller — a blank-state sentence, an Add action. Default None.",
+                    },
                 ])
             }
         },
@@ -304,6 +391,16 @@ table::visit_row_cells(&row, |cell| {
                         name: "on_row_click",
                         ty: "Option<Rc<dyn Fn()>>",
                         desc: "Whole-row tap target + hover highlight. Buttons inside cells still eat their own clicks. Default None.",
+                    },
+                    Prop {
+                        name: "tone",
+                        ty: "Reactive<RowTone>",
+                        desc: "Whole-row tint: None (default), Highlight, Warning or Danger. Keeps the clickable-row hover and stays opaque on frozen columns. Applies to body cells.",
+                    },
+                    Prop {
+                        name: "bind_to",
+                        ty: "Option<Ref<ViewHandle>>",
+                        desc: "Filled with the row's handle on mount (the <tr> on web, a row-spanning backdrop on native) — anchor a hover card or read the row frame. Default None.",
                     },
                 ])
             }
@@ -330,6 +427,36 @@ table::visit_row_cells(&row, |cell| {
                         name: "pinned",
                         ty: "Option<ColumnPin>",
                         desc: "Freeze this column against the Left or Right scroller edge (requires Table(scroll_x = true)). Pin the same cell in every row. Default None.",
+                    },
+                    Prop {
+                        name: "pin_offset",
+                        ty: "Option<f32>",
+                        desc: "Inset from the pinned edge, px — set a second frozen column's to the summed widths of the pinned columns before it. Default None (at the edge).",
+                    },
+                    Prop {
+                        name: "width",
+                        ty: "Reactive<Option<f32>>",
+                        desc: "Hold the column at exactly this width (px); spare width goes to unsized columns. Same value on every cell of the column. Default None.",
+                    },
+                    Prop {
+                        name: "min_width",
+                        ty: "Reactive<Option<f32>>",
+                        desc: "Floor for the column's width (px). Default None.",
+                    },
+                    Prop {
+                        name: "align",
+                        ty: "CellAlign",
+                        desc: "Left (default), Center or Right — on the cell, its text, and rich children. Same value on every cell of the column.",
+                    },
+                    Prop {
+                        name: "truncate",
+                        ty: "bool",
+                        desc: "One line ending in \"…\". Pair with `width`. Default false.",
+                    },
+                    Prop {
+                        name: "span",
+                        ty: "ColSpan",
+                        desc: "Columns covered: ColSpan::Columns(n), or ColSpan::Rest for every column to the end of the row. Default one column.",
                     },
                 ])
             }
@@ -371,6 +498,93 @@ fn wide_table() -> Element {
                     TableCell(text = Some(errs.to_string()))
                     TableCell(pinned = Some(ColumnPin::Right)) {
                         Tag(label = status.to_string(), tone = status_tone(status), variant = variant::Soft)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Column layout demo: sized + aligned + truncated columns around one
+/// fill column, a toned clickable row, a full-row blank message, and a
+/// footer totals row.
+fn columns_table() -> Element {
+    let crew = [
+        ("Ana Lucía Fernández-Whitmore", "Night shift lead", "On site", "11.5", RowTone::None),
+        ("Bo Chen", "Flagged: missing sign-out", "Review", "9.0", RowTone::Warning),
+        ("Chidi Okafor", "", "On site", "10.0", RowTone::None),
+        ("Dana Ruiz", "Gas alarm, level 3", "Stopped", "6.5", RowTone::Danger),
+    ];
+    let status_tone = |s: &str| -> idea_ui::ToneRef {
+        match s {
+            "On site" => tone::Success.into(),
+            "Review" => tone::Warning.into(),
+            _ => tone::Danger.into(),
+        }
+    };
+    ui! {
+        Table {
+            TableRow {
+                TableCell(header = true, width = Some(150.0), truncate = true, text = Some("Crew".to_string()))
+                TableCell(header = true, text = Some("Notes".to_string()))
+                TableCell(header = true, width = Some(110.0), align = CellAlign::Center, text = Some("Status".to_string()))
+                TableCell(header = true, width = Some(80.0), align = CellAlign::Right, text = Some("Hours".to_string()))
+            }
+            for (name, notes, status, hours, row_tone) in crew {
+                TableRow(tone = row_tone, on_row_click = Some(Rc::new(|| {}) as Rc<dyn Fn()>)) {
+                    TableCell(width = Some(150.0), truncate = true, text = Some(name.to_string()))
+                    TableCell(text = Some(notes.to_string()))
+                    TableCell(width = Some(110.0), align = CellAlign::Center) {
+                        Tag(label = status.to_string(), tone = status_tone(status), variant = variant::Soft)
+                    }
+                    TableCell(width = Some(80.0), align = CellAlign::Right, text = Some(hours.to_string()))
+                }
+            }
+            TableRow {
+                TableCell(span = ColSpan::Rest, text = Some("No visitors signed in today.".to_string()))
+            }
+            TableFooter {
+                TableRow {
+                    TableCell(span = ColSpan::Columns(3), text = Some("Crew totals · 4".to_string()))
+                    TableCell(width = Some(80.0), align = CellAlign::Right, text = Some("37.0".to_string()))
+                }
+            }
+        }
+    }
+}
+
+/// Frame slots + two stacked frozen columns + comfortable density in a
+/// scroll-x table.
+fn slots_table() -> Element {
+    let days = ["Mon 13", "Tue 14", "Wed 15", "Thu 16", "Fri 17", "Sat 18", "Sun 19"];
+    let people = [("Ana Fernández", "8 · 0 · 10 · 10 · 9 · 0 · 0"), ("Bo Chen", "10 · 0 · 8 · 8 · 8 · 6 · 0")];
+    let header_slot = ui! {
+        Typography(content = "Mon 13 is a public holiday — hours count double.".to_string(), kind = typography_kind::Caption, muted = true)
+    };
+    let add: Rc<dyn Fn()> = Rc::new(|| {});
+    let footer_slot = ui! {
+        Button(label = "Add entry".to_string(), on_click = add, tone = tone::Primary, variant = variant::Soft)
+    };
+    ui! {
+        Table(
+            scroll_x = true,
+            density = TableDensity::Comfortable,
+            header_slot = Some(header_slot),
+            footer_slot = Some(footer_slot),
+        ) {
+            TableRow {
+                TableCell(header = true, width = Some(48.0), pinned = Some(ColumnPin::Left), text = Some("#".to_string()))
+                TableCell(header = true, width = Some(160.0), pinned = Some(ColumnPin::Left), pin_offset = Some(48.0), text = Some("Name".to_string()))
+                for day in days {
+                    TableCell(header = true, width = Some(96.0), align = CellAlign::Right, text = Some(day.to_string()))
+                }
+            }
+            for (i, (name, hours)) in people.into_iter().enumerate() {
+                TableRow {
+                    TableCell(width = Some(48.0), pinned = Some(ColumnPin::Left), text = Some((i + 1).to_string()))
+                    TableCell(width = Some(160.0), pinned = Some(ColumnPin::Left), pin_offset = Some(48.0), text = Some(name.to_string()))
+                    for h in hours.split(" · ") {
+                        TableCell(width = Some(96.0), align = CellAlign::Right, text = Some(h.to_string()))
                     }
                 }
             }

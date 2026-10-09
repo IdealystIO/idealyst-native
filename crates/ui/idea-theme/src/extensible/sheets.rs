@@ -2508,6 +2508,12 @@ mod selection_sheet_tests {
                 focus_ring: lit("#6366f1"),
                 overlay: lit("rgba(0,0,0,0.45)"),
                 table_header: lit("#f4f4f5"),
+                table_row_highlight: lit("#eef2ff"),
+                table_row_highlight_hover: lit("#e0e7ff"),
+                table_row_warning: lit("#fffbeb"),
+                table_row_warning_hover: lit("#fef3c7"),
+                table_row_danger: lit("#fef2f2"),
+                table_row_danger_hover: lit("#fee2e2"),
             };
             let intent = || IntentColors {
                 solid_bg: lit("#4f46e5"),

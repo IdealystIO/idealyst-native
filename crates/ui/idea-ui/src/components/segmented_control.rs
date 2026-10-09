@@ -29,6 +29,24 @@
 //! current `value` paints selected; mutual exclusivity is automatic
 //! because exactly one `id` can equal `value`.
 //!
+//! ## Adornments
+//!
+//! A segment can carry a `leading` and a `trailing` [`Adornment`] beside its
+//! label — the same type `Field` uses. The control lays out the row and
+//! renders the label, so the text is written once:
+//!
+//! ```ignore
+//! SegmentOption::new("day", "Day shift")
+//!     .leading(Adornment::element(|| ui! { view(style = ShiftDot()) }))
+//! SegmentOption::new("map", "Map").leading(Adornment::Icon(icons_lucide::MAP))
+//! ```
+//!
+//! An `Icon` adornment takes the segment's own foreground — muted at rest,
+//! full text color when selected — exactly like the label. `Element` is any
+//! component, rendered as built; `Button` is a tappable icon that eats its
+//! own tap (the segment is not selected by it); `Group` sits several side
+//! by side.
+//!
 //! ## Appearance
 //! A bordered, tinted track (`SegmentedGroup`) holding one `SegmentButton`
 //! per option; the selected segment is filled in (the `selected` axis flips
@@ -39,10 +57,17 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, resolve_style, text, ui, Element, IdealystSchema, Reactive, StyleApplication, StyleRules, StyleSheet,
+    component, memo, pressable, recipe, resolve_style, ui, Color, Element, IdealystSchema, IntoElement,
+    Memo, Reactive, StyleApplication, StyleRules, StyleSheet,
 };
 
-use crate::stylesheets::{SegmentButton, SegmentedGroup};
+use crate::components::field::{adornment_button_sheet, Adornment};
+use crate::stylesheets::{SegmentButton, SegmentInner, SegmentedGroup};
+use crate::Icon;
+
+/// Point size of an `Icon`/`Button` adornment in a segment — matches the
+/// segment label's body text size.
+const SEGMENT_ICON_PX: f32 = 16.0;
 
 thread_local! {
     static SEG_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
@@ -64,7 +89,7 @@ fn seg_label_base_sheet() -> Rc<StyleSheet> {
 
 /// One segment in a [`SegmentedControl`]. `id` is the value committed to
 /// the bound signal when this segment is chosen; `label` is what the user
-/// sees.
+/// sees, with optional `leading` / `trailing` adornments beside it.
 #[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct SegmentOption {
     /// Stable value committed to the control's `value` signal when this
@@ -73,11 +98,33 @@ pub struct SegmentOption {
     pub id: String,
     /// Segment label. `Reactive<String>` — static or live (signal/`rx!`).
     pub label: Reactive<String>,
+    /// Adornment before the label — an icon, a status dot, any component.
+    pub leading: Adornment,
+    /// Adornment after the label — a count badge, a trailing icon.
+    pub trailing: Adornment,
 }
 
 impl SegmentOption {
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            leading: Adornment::None,
+            trailing: Adornment::None,
+        }
+    }
+
+    /// Put `adornment` before the label: `.leading(Adornment::Icon(MAP))`,
+    /// or `.leading(Adornment::element(|| ui! { … }))` for any component.
+    pub fn leading(mut self, adornment: Adornment) -> Self {
+        self.leading = adornment;
+        self
+    }
+
+    /// Put `adornment` after the label.
+    pub fn trailing(mut self, adornment: Adornment) -> Self {
+        self.trailing = adornment;
+        self
     }
 }
 
@@ -148,22 +195,89 @@ fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(
     let id_for_press = id.clone();
     let press = move || on_change(id_for_press.clone());
 
-    // Reactive style: re-runs whenever `value` fires, flipping the
-    // `selected` axis between `on` and `off`.
-    let id_for_style = id.clone();
-    let value_style = value.clone();
-    let seg_style = move || StyleApplication::new(SegmentButton::sheet()).with("selected", selected_variant(&value_style, &id_for_style));
+    // One derived flag per segment, shared by the segment's own style, its
+    // label, and its adornments' glyphs — a memo, so a value change that leaves
+    // this segment's state alone wakes none of them.
+    let selected = memo(move || value.get() == id);
 
-    // The SegmentButton sheet's on/off foreground lives on the pressable, but
-    // native TextView/UILabel/NSTextField don't inherit text color from their
-    // parent — only web's CSS cascade does. So resolve that color and stamp it
-    // on the label NODE itself, reactively (re-runs on `value` + theme).
-    // Without this the segment label renders in the widget-default color on
-    // native: it never flips on selection AND never follows a light/dark swap.
-    // Same as `Tabs`.
+    // Reactive style: re-runs whenever `selected` flips, switching the
+    // `selected` axis between `on` and `off`.
+    let seg_style = move || StyleApplication::new(SegmentButton::sheet()).with("selected", selected_arm(selected.get()));
+
+    let label = option.label;
+    let leading = render_adornment(&option.leading, selected);
+    let trailing = render_adornment(&option.trailing, selected);
+    let content = if leading.is_empty() && trailing.is_empty() {
+        ui! { SegmentLabel(text = label, selected = selected) }
+    } else {
+        // `leading` / `trailing` are the adornments the CALLER handed in,
+        // already built — splatted, not authored here.
+        ui! {
+            view(style = SegmentInner()) {
+                leading
+                SegmentLabel(text = label, selected = selected)
+                trailing
+            }
+        }
+    };
+    pressable(vec![content], press).with_style(seg_style).into()
+}
+
+/// Build an adornment for a segment (empty for `None` / an empty group).
+/// `Icon` and `Button` glyphs take the segment's own foreground, live on
+/// `selected`, so they recolor with the label; `Element` is left as built.
+fn render_adornment(adornment: &Adornment, selected: Memo<bool>) -> Vec<Element> {
+    // The plain segment's on/off foreground, from style tokens (no sheet
+    // resolve, so this also holds on a `--premint-only` build).
+    let glyph_color = move || -> Option<Color> {
+        let c = idea_theme::tokens().color;
+        Some(if selected.get() { c.text() } else { c.text_muted() }.resolve())
+    };
+    match adornment {
+        Adornment::None => Vec::new(),
+        Adornment::Element(build) => vec![build()],
+        Adornment::Icon(data) => {
+            vec![ui! { Icon(data = data.clone(), size = SEGMENT_ICON_PX, color = Reactive::Dynamic(Rc::new(glyph_color))) }]
+        }
+        Adornment::Button(data, on_press) => {
+            let glyph = ui! { Icon(data = data.clone(), size = SEGMENT_ICON_PX, color = Reactive::Dynamic(Rc::new(glyph_color))) };
+            let on_press = on_press.clone();
+            // An icon-sized pressable inside the segment's: its recognizer
+            // consumes the tap, so pressing it does not also select the
+            // segment — the same "button in a clickable row" contract as
+            // `TableRow`. Shares `Field`'s icon-button sheet.
+            vec![pressable(vec![glyph], move || on_press())
+                .with_style(StyleApplication::new(adornment_button_sheet()))
+                .into_element()]
+        }
+        Adornment::Group(items) => items.iter().flat_map(|a| render_adornment(a, selected)).collect(),
+    }
+}
+
+/// The `selected` axis arm for a segment's state.
+fn selected_arm(selected: bool) -> &'static str {
+    if selected { "on" } else { "off" }
+}
+
+/// A segment's label text: the muted foreground at rest, the full text
+/// color when `selected`.
+///
+/// The SegmentButton sheet's on/off foreground lives on the segment, but
+/// native TextView/UILabel/NSTextField don't inherit text color from their
+/// parent — only web's CSS cascade does. So this resolves that color and
+/// stamps it on the text node itself, reactively (re-runs on `selected` and
+/// on a theme swap). Without it a segment label renders in the widget
+/// default on native: it never flips on selection and never follows a
+/// light/dark swap. Same as `Tabs`.
+///
+/// ```ignore
+/// SegmentLabel(text = label, selected = selected)
+/// ```
+#[component]
+fn SegmentLabel(text: String, selected: bool) -> Element {
     let label_style = move || {
-        let variant = selected_variant(&value, &id);
-        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", variant.clone());
+        let arm = selected_arm(selected.get());
+        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", arm);
         let base = StyleApplication::new(seg_label_base_sheet());
         if app.attaches_preminted() {
             // Premint web build: the segment pressable's preminted class
@@ -174,7 +288,7 @@ fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(
             return base;
         }
         let color = resolve_style(&app).color.clone();
-        let key = if variant == "on" { "seg_label_on" } else { "seg_label_off" };
+        let key = if arm == "on" { "seg_label_on" } else { "seg_label_off" };
         // ENGINE-PATH ONLY: the `attaches_preminted()` early return
         // above guarantees this layer never runs on a premint build,
         // so the computed-layer disqualifier can't fire.
@@ -184,14 +298,7 @@ fn segment(option: SegmentOption, value: Reactive<String>, on_change: Rc<dyn Fn(
             ..Default::default()
         })
     };
-
-    let label_el: Element = text(option.label).with_style(label_style).into();
-    pressable(vec![label_el], press).with_style(seg_style).into()
-}
-
-/// `"on"` for the segment whose `id` is the current value, else `"off"`.
-fn selected_variant(value: &Reactive<String>, id: &str) -> String {
-    if value.get() == id { "on" } else { "off" }.to_string()
+    ui! { text(style = label_style) { text } }
 }
 
 recipe!(
@@ -435,7 +542,14 @@ mod tests {
             assert_eq!(name(&group.background), Some("color-surface-alt"), "the track is tinted");
             assert_eq!(name(&group.border_left_color), Some("color-border"), "and bordered");
             assert!(group.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some(), "track radius is a token");
-            assert!(group.padding_left.as_ref().and_then(|p| p.name()).is_some(), "track padding is a token");
+            // The inset is a named hairline constant, not a spacing token
+            // (the scale's smallest step, `xs` = 4, left the selected key
+            // floating loose inside the track).
+            assert_eq!(
+                group.padding_left.as_ref().map(|p| p.resolve()),
+                Some(runtime_core::Length::Px(crate::stylesheets::SEGMENT_TRACK_INSET)),
+                "the selected segment sits SEGMENT_TRACK_INSET inside the track"
+            );
 
             let seg = |selected: &str| {
                 resolve_style(&StyleApplication::new(SegmentButton::sheet()).with("selected", selected.to_string()))
@@ -472,5 +586,99 @@ mod tests {
                 "each segment must be a pressable"
             );
     });
+    }
+
+    /// The segment's row: leading adornments, the label, trailing ones.
+    fn segment_row(seg: Element) -> Vec<Element> {
+        let inner = match classify(seg) {
+            P::Pressable { mut children, .. } => children.remove(0),
+            _ => panic!("a segment is a Pressable"),
+        };
+        match classify(inner) {
+            P::View { children, .. } => children,
+            _ => panic!("an adorned segment lays out a row view"),
+        }
+    }
+
+    /// Adornments: the label is rendered ONCE by the control, between the
+    /// leading and trailing adornments — the caller never restates it.
+    #[test]
+    fn adornments_sit_either_side_of_the_label() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = SegmentedControl(SegmentedControlProps {
+                options: vec![SegmentOption::new("day", "Day shift")
+                    .leading(Adornment::element(|| ui! { view() }))
+                    .trailing(Adornment::Icon(crate::components::icon::EMPTY_ICON))],
+                value: runtime_core::signal("day".to_string()).into(),
+                ..Default::default()
+            });
+            let seg = match classify(el) {
+                P::View { mut children, .. } => children.remove(0),
+                _ => panic!("row view"),
+            };
+            let mut row = segment_row(seg).into_iter();
+            assert!(matches!(classify(row.next().unwrap()), P::View { .. }), "leading element first");
+            match classify(row.next().unwrap()) {
+                P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Day shift")),
+                _ => panic!("the label sits between the adornments"),
+            }
+            assert!(matches!(classify(row.next().unwrap()), P::Icon { .. }), "trailing icon last");
+            assert!(row.next().is_none());
+        });
+    }
+
+    /// An `Icon` adornment recolors with its segment, like the label:
+    /// muted at rest, the text color when selected.
+    #[test]
+    fn icon_adornment_follows_the_selected_color() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let c = idea_theme::tokens().color;
+            let (on, off) = (Some(c.text().resolve()), Some(c.text_muted().resolve()));
+            for (picked, expect) in [("a", [on.clone(), off.clone()]), ("b", [off.clone(), on.clone()])] {
+                let opt = |id: &str| SegmentOption::new(id, id).leading(Adornment::Icon(crate::components::icon::EMPTY_ICON));
+                let el = SegmentedControl(SegmentedControlProps {
+                    options: vec![opt("a"), opt("b")],
+                    value: runtime_core::signal(picked.to_string()).into(),
+                    ..Default::default()
+                });
+                let segs = match classify(el) {
+                    P::View { children, .. } => children,
+                    _ => panic!("row view"),
+                };
+                let colors: Vec<Option<runtime_core::Color>> = segs
+                    .into_iter()
+                    .map(|seg| match classify(segment_row(seg).remove(0)) {
+                        P::Icon { color, .. } => color,
+                        _ => panic!("leading icon"),
+                    })
+                    .collect();
+                assert_eq!(colors, expect.to_vec(), "picked {picked}");
+            }
+        });
+    }
+
+    /// No adornment keeps the bare label (no wrapper row), exactly as
+    /// before adornments existed.
+    #[test]
+    fn unadorned_segment_is_just_its_label() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let el = SegmentedControl(SegmentedControlProps {
+                options: vec![SegmentOption::new("a", "A")],
+                ..Default::default()
+            });
+            let seg = match classify(el) {
+                P::View { mut children, .. } => children.remove(0),
+                _ => panic!("row view"),
+            };
+            match classify(seg) {
+                P::Pressable { mut children, .. } => {
+                    assert!(matches!(classify(children.remove(0)), P::Text { .. }))
+                }
+                _ => panic!("pressable"),
+            }
+        });
     }
 }

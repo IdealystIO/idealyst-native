@@ -104,6 +104,19 @@ pub trait DocumentOps: ViewOps {
     #[allow(unused_variables)]
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {}
 
+    /// Set a structural HTML attribute on `node` — one whose meaning is
+    /// the DOCUMENT's, not a style's: `colspan` on a `<td>`, `scope` on
+    /// a `<th>`. The table SDK's spanning cells are the first caller; a
+    /// cell's span is a table-layout input the browser reads from the
+    /// attribute alone (there is no CSS spelling of it).
+    ///
+    /// Not for anything a style can express — that belongs in
+    /// `StyleRules`, where every backend sees it. Backends with no
+    /// document keep the no-op: a native table expresses the same span
+    /// as grid placement, decided before mount.
+    #[allow(unused_variables)]
+    fn attach_html_attribute(&self, node: &Self::Node, name: &str, value: &str) {}
+
     /// Register a raw CSS stylesheet to ship once (paired with
     /// [`attach_html_class`](Self::attach_html_class)).
     #[allow(unused_variables)]

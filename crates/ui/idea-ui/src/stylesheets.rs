@@ -2121,6 +2121,12 @@ stylesheet! {
 // filled in like a raised key. It used to reuse `TabBar`/`TabButton`, and a
 // three-way setting rendered as a second tab strip on the page.
 
+/// How far the selected segment sits inside the track's border, and the
+/// gap between segments. Below the spacing scale on purpose (`xs` is 4):
+/// it is a hairline-scale detail like a border width, and at `xs` the
+/// selected key floated visibly loose inside the track.
+pub const SEGMENT_TRACK_INSET: f32 = 2.0;
+
 stylesheet! {
     // The track. Hugs its segments on both axes, so a control inside a
     // stretching column stays the width of its options.
@@ -2130,8 +2136,8 @@ stylesheet! {
             align_items: AlignItems::Stretch,
             align_self: runtime_core::AlignSelf::FlexStart,
             flex_shrink: 0.0,
-            padding: t.spacing.xs(),
-            gap: t.spacing.xs(),
+            padding: SEGMENT_TRACK_INSET,
+            gap: SEGMENT_TRACK_INSET,
             background: t.color.surface_alt(),
             border_width: 1.0,
             border_color: t.color.border(),
@@ -2153,8 +2159,8 @@ stylesheet! {
             justify_content: JustifyContent::Center,
             padding_vertical: t.spacing.xs(),
             padding_horizontal: t.spacing.md(),
-            // The track's radius minus its padding, so the selected fill
-            // nests concentrically inside the track's corners.
+            // One step below the track's radius, so the selected fill reads
+            // as nested inside the track's corners.
             border_radius: t.radius.sm(),
             // A transparent 1px border at rest, so the selected segment's
             // border and the focus ring change color without changing size.
@@ -2191,6 +2197,18 @@ stylesheet! {
             color: 150ms EaseOut,
             background: 120ms EaseOut,
             border_color: 120ms EaseOut,
+        }
+    }
+}
+
+// The row a segment lays out when it carries a leading/trailing adornment:
+// adornment, label, adornment, centred on one line.
+stylesheet! {
+    pub SegmentInner<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: t.spacing.sm(),
         }
     }
 }
@@ -2263,6 +2281,12 @@ stylesheet! {
 // `TableBodyCell` are applied to `<th>` and `<td>` (padding + row
 // divider). Border-bottom on each cell + `border-collapse: collapse`
 // on the table merges into one continuous row boundary per row.
+//
+// Every table-wide or row-wide setting (density, tone, footer section,
+// clickable-row hover) is an AXIS on the cell sheets rather than an
+// override, because the cells are already built when `Table`/`TableRow`
+// run: they re-select arms on each built cell, which keeps the cells
+// preminted. `TableSlot` styles the frame slots.
 // =============================================================================
 
 stylesheet! {
@@ -2310,7 +2334,6 @@ stylesheet! {
             // without moving every other `surface_alt` consumer —
             // cards, field wells, row hover — with them.
             background: t.color.table_header(),
-            padding_vertical: t.spacing.md(),
             padding_horizontal: t.spacing.lg(),
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
@@ -2321,6 +2344,43 @@ stylesheet! {
             // match body cells on web (native is unaffected: there the
             // text node's alignment already applies). See `TableBodyCell`.
             text_align: TextAlign::Left,
+        }
+        // Row density (`Table(density = …)`). Vertical padding only — a
+        // row's height is its tallest cell, so padding is the one lever
+        // that moves every row on every backend the same way (`min-height`
+        // on a `<td>` is ignored by browsers, and `height` there means
+        // "at least", unlike a native box). `comfortable` puts a single-
+        // line row at the 44–52pt touch-target band.
+        variant density {
+            compact(t) { padding_vertical: t.spacing.sm() }
+            #[default]
+            standard(t) { padding_vertical: t.spacing.md() }
+            comfortable(t) { padding_vertical: t.spacing.lg() }
+        }
+        // Column alignment (`TableCell(align = …)`). On the CELL as well
+        // as on the inner text/content: the cell's `text-align` is what
+        // positions inline content on web (and overrides the UA `th {
+        // text-align: center }`), the inner node's is what a native text
+        // node reads.
+        variant align {
+            #[default]
+            left(_t) { text_align: TextAlign::Left }
+            center(_t) { text_align: TextAlign::Center }
+            right(_t) { text_align: TextAlign::Right }
+        }
+        // Single-line truncation (`TableCell(truncate = true)`). On the
+        // CELL for web — the text node is an inline span, which
+        // `text-overflow` never applies to, while a `<td>` is a block
+        // container that truncates its inline content (measured: a
+        // `width`+`max-width` cell stays at its width and ends in "…").
+        // The text sheets carry the same axis for native, where the
+        // text node itself is what truncates. Only meaningful in a
+        // column with an exact `width` — an auto column grows to fit an
+        // unwrapped line.
+        variant truncate {
+            #[default]
+            off(_t) {}
+            on(_t) { max_lines: 1u32 }
         }
         // Clickable-row axes — see `TableBodyCell` for the rationale.
         variant interactive {
@@ -2391,13 +2451,49 @@ stylesheet! {
 stylesheet! {
     pub TableBodyCell<IdeaThemeRef> {
         base(t) {
-            padding_vertical: t.spacing.md(),
             padding_horizontal: t.spacing.lg(),
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
             // Explicit (matches the UA `td` default) so head + body cells
             // share one alignment source of truth — see `TableHeadCell`.
             text_align: TextAlign::Left,
+        }
+        // Row density (`Table(density = …)`). Vertical padding only — a
+        // row's height is its tallest cell, so padding is the one lever
+        // that moves every row on every backend the same way (`min-height`
+        // on a `<td>` is ignored by browsers, and `height` there means
+        // "at least", unlike a native box). `comfortable` puts a single-
+        // line row at the 44–52pt touch-target band.
+        variant density {
+            compact(t) { padding_vertical: t.spacing.sm() }
+            #[default]
+            standard(t) { padding_vertical: t.spacing.md() }
+            comfortable(t) { padding_vertical: t.spacing.lg() }
+        }
+        // Column alignment (`TableCell(align = …)`). On the CELL as well
+        // as on the inner text/content: the cell's `text-align` is what
+        // positions inline content on web (and overrides the UA `th {
+        // text-align: center }`), the inner node's is what a native text
+        // node reads.
+        variant align {
+            #[default]
+            left(_t) { text_align: TextAlign::Left }
+            center(_t) { text_align: TextAlign::Center }
+            right(_t) { text_align: TextAlign::Right }
+        }
+        // Single-line truncation (`TableCell(truncate = true)`). On the
+        // CELL for web — the text node is an inline span, which
+        // `text-overflow` never applies to, while a `<td>` is a block
+        // container that truncates its inline content (measured: a
+        // `width`+`max-width` cell stays at its width and ends in "…").
+        // The text sheets carry the same axis for native, where the
+        // text node itself is what truncates. Only meaningful in a
+        // column with an exact `width` — an auto column grows to fit an
+        // unwrapped line.
+        variant truncate {
+            #[default]
+            off(_t) {}
+            on(_t) { max_lines: 1u32 }
         }
         // Clickable-row axes (`TableRow` with `on_row_click`). Enumerated
         // variants rather than runtime `with_overrides` so every arm has
@@ -2468,6 +2564,63 @@ stylesheet! {
         compound (pinned: right, row_hovered: on)(t) {
             background: t.color.surface_alt(),
         }
+        // Footer section (`TableFooter`): the header band's tint, so a
+        // totals row reads as the table's footer rather than as data.
+        // The axis sorts after `row_hovered`, so it already beats the
+        // resting `transparent`; the compounds beat the PINNED compounds
+        // above, which would otherwise repaint a frozen footer cell with
+        // the plain surface.
+        variant section {
+            #[default]
+            body(_t) {}
+            foot(t) { background: t.color.table_header() }
+        }
+        compound (section: foot, pinned: left)(t) {
+            background: t.color.table_header(),
+        }
+        compound (section: foot, pinned: right)(t) {
+            background: t.color.table_header(),
+        }
+        // Row tone (`TableRow(tone = …)`). A whole-row tint that must
+        // COMPOSE with the clickable-row hover and with a frozen column:
+        //
+        // - The axis alone would decide nothing reliably: `tone` sorts
+        //   after `row_hovered`, so a resting tone would also beat the
+        //   hover (a toned row stopped responding to the pointer — the
+        //   reported bug with the old `with_overrides` workaround), and
+        //   the pinned compounds above would repaint frozen cells.
+        // - So every (tone, row_hovered) pair is stated as a compound,
+        //   declared AFTER the pinned and footer compounds. Compounds
+        //   resolve in declaration order and premint as equal-specificity
+        //   selectors emitted in that same order, so these win on both
+        //   paths.
+        // - The tints are the `table-row-*` tokens, OPAQUE by contract:
+        //   a frozen toned cell covers the columns sliding beneath it.
+        variant tone {
+            #[default]
+            none(_t) {}
+            highlight(t) { background: t.color.table_row_highlight() }
+            warning(t) { background: t.color.table_row_warning() }
+            danger(t) { background: t.color.table_row_danger() }
+        }
+        compound (tone: highlight, row_hovered: off)(t) {
+            background: t.color.table_row_highlight(),
+        }
+        compound (tone: highlight, row_hovered: on)(t) {
+            background: t.color.table_row_highlight_hover(),
+        }
+        compound (tone: warning, row_hovered: off)(t) {
+            background: t.color.table_row_warning(),
+        }
+        compound (tone: warning, row_hovered: on)(t) {
+            background: t.color.table_row_warning_hover(),
+        }
+        compound (tone: danger, row_hovered: off)(t) {
+            background: t.color.table_row_danger(),
+        }
+        compound (tone: danger, row_hovered: on)(t) {
+            background: t.color.table_row_danger_hover(),
+        }
         // Author-wired drag-and-drop feedback vocabulary — see
         // `TableHeadCell`.
         variant dragging {
@@ -2505,6 +2658,19 @@ stylesheet! {
             color: t.color.text_muted(),
             text_align: TextAlign::Left,
         }
+        // Mirrors the cell's `align` axis — see `TableHeadCell`.
+        variant align {
+            #[default]
+            left(_t) { text_align: TextAlign::Left }
+            center(_t) { text_align: TextAlign::Center }
+            right(_t) { text_align: TextAlign::Right }
+        }
+        // Single-line truncation — see `TableBodyCell`'s `truncate`.
+        variant truncate {
+            #[default]
+            off(_t) {}
+            on(_t) { max_lines: 1u32 }
+        }
         transitions {
             color: 250ms EaseInOut,
         }
@@ -2517,6 +2683,19 @@ stylesheet! {
             font_size: 14.0,
             color: t.color.text(),
             text_align: TextAlign::Left,
+        }
+        // Mirrors the cell's `align` axis — see `TableHeadCell`.
+        variant align {
+            #[default]
+            left(_t) { text_align: TextAlign::Left }
+            center(_t) { text_align: TextAlign::Center }
+            right(_t) { text_align: TextAlign::Right }
+        }
+        // Single-line truncation — see `TableBodyCell`'s `truncate`.
+        variant truncate {
+            #[default]
+            off(_t) {}
+            on(_t) { max_lines: 1u32 }
         }
         transitions {
             color: 250ms EaseInOut,
@@ -2538,6 +2717,41 @@ stylesheet! {
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
             gap: t.spacing.sm(),
+        }
+        // The cell's `align` axis, for rich children: the row-flex
+        // wrapper places its children, which `text-align` cannot move.
+        // Same justification as before for `left` — children keep their
+        // natural width (a status chip must not stretch its column).
+        variant align {
+            #[default]
+            left(_t) { justify_content: JustifyContent::FlexStart }
+            center(_t) { justify_content: JustifyContent::Center }
+            right(_t) { justify_content: JustifyContent::FlexEnd }
+        }
+    }
+}
+
+// Frame slots (`Table(header_slot = …, footer_slot = …)`): content drawn
+// inside the table's frame but outside its horizontal scroller. Cell
+// padding, so slot content lines up with the first column's text; the
+// header slot draws the hairline between itself and the rows (the
+// footer slot needs none — the last row's own divider is above it).
+stylesheet! {
+    pub TableSlot<IdeaThemeRef> {
+        base(t) {
+            padding_vertical: t.spacing.md(),
+            padding_horizontal: t.spacing.lg(),
+        }
+        variant edge {
+            #[default]
+            top(t) {
+                border_bottom_width: 1.0,
+                border_bottom_color: t.color.border(),
+            }
+            bottom(_t) {}
+        }
+        transitions {
+            border_bottom_color: 250ms EaseInOut,
         }
     }
 }

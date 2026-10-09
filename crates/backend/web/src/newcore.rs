@@ -1754,6 +1754,10 @@ impl caps::DocumentOps for WebBackend {
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
         WebBackend::attach_html_style_impl(self, node, prop, value)
     }
+
+    fn attach_html_attribute(&self, node: &Self::Node, name: &str, value: &str) {
+        WebBackend::attach_html_attribute_impl(self, node, name, value)
+    }
 }
 
 // ---------------------------------------------------------------------------

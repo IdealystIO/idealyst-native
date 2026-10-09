@@ -67,7 +67,7 @@ impl Default for IconProps {
 /// A zero-path placeholder so `IconProps` can derive a `Default` (the
 /// `#[component]` dispatch requires it). A real call site always passes
 /// `data`; this never renders anything visible.
-const EMPTY_ICON: IconData = IconData {
+pub(crate) const EMPTY_ICON: IconData = IconData {
     view_box: (24, 24),
     paths: &[],
     fill_rule: runtime_core::FillRule::NonZero,

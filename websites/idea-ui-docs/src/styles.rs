@@ -1599,3 +1599,23 @@ mod tests {
         });
     }
 }
+
+// ---- SegmentedControl custom-content demo ---------------------------------
+
+stylesheet! {
+    // The small square status dot beside a segment's label (the shift
+    // picker on the SegmentedControl page). Tinted from intent tokens so
+    // it follows a theme swap.
+    pub ShiftDot<IdeaThemeRef> {
+        base(t) {
+            width: 8.0,
+            height: 8.0,
+            border_radius: t.radius.sm(),
+        }
+        variant shift {
+            #[default]
+            day(t) { background: t.intent.warning.fg() }
+            night(t) { background: t.intent.primary.fg() }
+        }
+    }
+}

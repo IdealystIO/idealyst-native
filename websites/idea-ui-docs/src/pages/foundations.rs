@@ -40,8 +40,15 @@ pub fn colors() -> Element {
     // Component-scoped tokens: not part of the neutral canvas, but
     // still theme-bound. One entry per component that owns a surface
     // the neutrals can't express without collateral damage.
-    let component_tokens: [(&str, &str, &str); 1] =
-        [("Table header", "color-table-header", "#f1f5f9")];
+    let component_tokens: [(&str, &str, &str); 7] = [
+        ("Table header", "color-table-header", "#f1f5f9"),
+        ("Table row · highlight", "color-table-row-highlight", "#eef2ff"),
+        ("Table row · highlight hover", "color-table-row-highlight-hover", "#e0e7ff"),
+        ("Table row · warning", "color-table-row-warning", "#fffbeb"),
+        ("Table row · warning hover", "color-table-row-warning-hover", "#fef3c7"),
+        ("Table row · danger", "color-table-row-danger", "#fef2f2"),
+        ("Table row · danger hover", "color-table-row-danger-hover", "#fee2e2"),
+    ];
     let component_cards: Vec<Element> = component_tokens
         .iter()
         .map(|&(name, token, fallback)| swatch(name, token, fallback))
@@ -61,7 +68,10 @@ pub fn colors() -> Element {
                 P(content = "A few surfaces get a token of their own because sharing a neutral \
                     would make them un-retintable. Table headers ship with the surface-alt value, \
                     so the default look is identical — but overriding color-table-header repaints \
-                    the header band alone, leaving cards, field wells and row hover untouched.".to_string())
+                    the header band alone, leaving cards, field wells and row hover untouched. \
+                    The table-row tokens tint `TableRow(tone = …)`; unlike the intent soft \
+                    tints they are opaque in every theme, because a frozen column slides over \
+                    the columns behind it.".to_string())
                 Grid(columns = 3u32, gap = StackGap::Md) { component_cards }
             }
         },

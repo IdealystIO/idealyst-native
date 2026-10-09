@@ -920,6 +920,7 @@ impl caps::DocumentOps for SsrBackend {
             "table" => "table",
             "thead" => "thead",
             "tbody" => "tbody",
+            "tfoot" => "tfoot",
             "tr" => "tr",
             "td" => "td",
             "th" => "th",
@@ -949,6 +950,32 @@ impl caps::DocumentOps for SsrBackend {
 
     fn attach_html_style(&self, node: &Self::Node, prop: &str, value: &str) {
         add_inline_style(node, prop, value);
+    }
+
+    fn attach_html_attribute(&self, node: &Self::Node, name: &str, value: &str) {
+        // `HtmlNode.attrs` keys are `&'static str`; intern the structural
+        // attributes a handler might set, as `create_element` interns
+        // tags. An unknown name is dropped LOUDLY — silently losing a
+        // `colspan` would serialize a table whose columns no longer line
+        // up, with nothing to say why.
+        let name: &'static str = match name {
+            "colspan" => "colspan",
+            "rowspan" => "rowspan",
+            "scope" => "scope",
+            "headers" => "headers",
+            "abbr" => "abbr",
+            other => {
+                runtime_shared::unsupported::warn_once(
+                    "ssr.attach_html_attribute",
+                    &format!(
+                        "SSR backend: attribute `{other}` is not interned in \
+                         `attach_html_attribute`; it was not serialized"
+                    ),
+                );
+                return;
+            }
+        };
+        set_attr(node, name, value.to_string());
     }
 
     fn register_raw_css(&mut self, css: &str) {

@@ -157,6 +157,28 @@ pub struct Colors {
     /// `surface_alt` consumer — cards, field wells, row hover — along
     /// with it.
     pub table_header: Tokenized<Color>,
+
+    /// Row tones on a `Table` (`TableRow(tone = …)`): the resting tint
+    /// of a highlighted / warning / danger row, and the tint it takes
+    /// while hovered or pressed.
+    ///
+    /// Component-scoped, and OPAQUE by contract — unlike the intent
+    /// `soft_bg` slots they resemble, which are translucent in the dark
+    /// theme. A frozen (`pinned`) column slides over the columns behind
+    /// it, so a translucent tint on a toned row would show their content
+    /// through. The dark defaults are the intent tints precomposited
+    /// over the dark `surface`.
+    pub table_row_highlight: Tokenized<Color>,
+    /// Hovered/pressed tint of a `highlight` row.
+    pub table_row_highlight_hover: Tokenized<Color>,
+    /// Resting tint of a `warning` row.
+    pub table_row_warning: Tokenized<Color>,
+    /// Hovered/pressed tint of a `warning` row.
+    pub table_row_warning_hover: Tokenized<Color>,
+    /// Resting tint of a `danger` row.
+    pub table_row_danger: Tokenized<Color>,
+    /// Hovered/pressed tint of a `danger` row.
+    pub table_row_danger_hover: Tokenized<Color>,
 }
 
 #[derive(Clone)]
@@ -386,6 +408,12 @@ fn canonicalize_colors(c: &Colors) -> Colors {
         focus_ring: canonicalize_color("color-focus-ring", &c.focus_ring),
         overlay: canonicalize_color("color-overlay", &c.overlay),
         table_header: canonicalize_color("color-table-header", &c.table_header),
+        table_row_highlight: canonicalize_color("color-table-row-highlight", &c.table_row_highlight),
+        table_row_highlight_hover: canonicalize_color("color-table-row-highlight-hover", &c.table_row_highlight_hover),
+        table_row_warning: canonicalize_color("color-table-row-warning", &c.table_row_warning),
+        table_row_warning_hover: canonicalize_color("color-table-row-warning-hover", &c.table_row_warning_hover),
+        table_row_danger: canonicalize_color("color-table-row-danger", &c.table_row_danger),
+        table_row_danger_hover: canonicalize_color("color-table-row-danger-hover", &c.table_row_danger_hover),
     }
 }
 
@@ -430,7 +458,7 @@ fn canonicalize_intents(i: &Intents) -> Intents {
 /// Canonical token names for the non-intent neutral colors, in the same
 /// field order as [`Colors`]. The Nth entry is the canonical key for the
 /// Nth `Colors` field.
-pub const CANONICAL_NEUTRAL_TOKENS: [&str; 12] = [
+pub const CANONICAL_NEUTRAL_TOKENS: [&str; 18] = [
     "color-background",
     "color-surface",
     "color-surface-alt",
@@ -443,6 +471,12 @@ pub const CANONICAL_NEUTRAL_TOKENS: [&str; 12] = [
     "color-focus-ring",
     "color-overlay",
     "color-table-header",
+    "color-table-row-highlight",
+    "color-table-row-highlight-hover",
+    "color-table-row-warning",
+    "color-table-row-warning-hover",
+    "color-table-row-danger",
+    "color-table-row-danger-hover",
 ];
 
 /// The seven built-in intent names, in [`Intents`] field order.
@@ -787,6 +821,12 @@ impl ThemeTokens for IdeaThemeRef {
             entry("color-focus-ring", &c.focus_ring),
             entry("color-overlay", &c.overlay),
             entry("color-table-header", &c.table_header),
+            entry("color-table-row-highlight", &c.table_row_highlight),
+            entry("color-table-row-highlight-hover", &c.table_row_highlight_hover),
+            entry("color-table-row-warning", &c.table_row_warning),
+            entry("color-table-row-warning-hover", &c.table_row_warning_hover),
+            entry("color-table-row-danger", &c.table_row_danger),
+            entry("color-table-row-danger-hover", &c.table_row_danger_hover),
         ];
         intent_entries("primary", &i.primary, &mut out);
         intent_entries("secondary", &i.secondary, &mut out);
@@ -952,6 +992,15 @@ pub fn light_theme() -> IdeaThemeDefaults {
             // Defaults to the `surface_alt` value — table headers keep
             // the exact tint they had before the token existed.
             table_header: tok("color-table-header", "#f1f5f9"),
+
+            // Table row tones — the intent soft tints, which are already
+            // opaque in this theme; hover steps one shade deeper.
+            table_row_highlight: tok("color-table-row-highlight", "#eef2ff"),
+            table_row_highlight_hover: tok("color-table-row-highlight-hover", "#e0e7ff"),
+            table_row_warning: tok("color-table-row-warning", "#fffbeb"),
+            table_row_warning_hover: tok("color-table-row-warning-hover", "#fef3c7"),
+            table_row_danger: tok("color-table-row-danger", "#fef2f2"),
+            table_row_danger_hover: tok("color-table-row-danger-hover", "#fee2e2"),
         },
         intents: Intents {
             // primary: indigo
@@ -1029,6 +1078,16 @@ pub fn dark_theme() -> IdeaThemeDefaults {
 
             // Matches dark `surface_alt` — see `light_theme`.
             table_header: tok("color-table-header", "#1a2336"),
+
+            // Table row tones — the dark intent tints (rgba over the
+            // surface) precomposited onto `surface` #0f1625, so they stay
+            // opaque over a frozen column (see `Colors::table_row_highlight`).
+            table_row_highlight: tok("color-table-row-highlight", "#1c2346"),
+            table_row_highlight_hover: tok("color-table-row-highlight-hover", "#252b5a"),
+            table_row_warning: tok("color-table-row-warning", "#322a21"),
+            table_row_warning_hover: tok("color-table-row-warning-hover", "#46371f"),
+            table_row_danger: tok("color-table-row-danger", "#311d2a"),
+            table_row_danger_hover: tok("color-table-row-danger-hover", "#45212c"),
         },
         intents: Intents {
             primary: intent_colors!(
@@ -1742,6 +1801,12 @@ mod tests {
             border: lit(), border_hover: lit(), border_strong: lit(),
             focus_ring: lit(), overlay: lit(),
             table_header: lit(),
+            table_row_highlight: lit(),
+            table_row_highlight_hover: lit(),
+            table_row_warning: lit(),
+            table_row_warning_hover: lit(),
+            table_row_danger: lit(),
+            table_row_danger_hover: lit(),
         };
         t.intents = Intents {
             primary: intent(), secondary: intent(), neutral: intent(),
@@ -1760,6 +1825,12 @@ mod tests {
             ("border", &c.border), ("border_hover", &c.border_hover),
             ("border_strong", &c.border_strong), ("focus_ring", &c.focus_ring),
             ("overlay", &c.overlay), ("table_header", &c.table_header),
+            ("table_row_highlight", &c.table_row_highlight),
+            ("table_row_highlight_hover", &c.table_row_highlight_hover),
+            ("table_row_warning", &c.table_row_warning),
+            ("table_row_warning_hover", &c.table_row_warning_hover),
+            ("table_row_danger", &c.table_row_danger),
+            ("table_row_danger_hover", &c.table_row_danger_hover),
         ] {
             let name = field.name().unwrap_or_else(|| {
                 panic!("Colors::{label} read back as a literal — add it to canonicalize_colors")

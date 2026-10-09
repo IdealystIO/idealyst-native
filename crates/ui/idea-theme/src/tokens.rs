@@ -392,6 +392,14 @@ color_namespace! {
         // `surface_alt` value so it is invisible until an app overrides
         // it — see `theme::Colors::table_header`.
         table_header => "color-table-header",
+        // Component-scoped: `Table` row tones, opaque by contract — see
+        // `theme::Colors::table_row_highlight`.
+        table_row_highlight => "color-table-row-highlight",
+        table_row_highlight_hover => "color-table-row-highlight-hover",
+        table_row_warning => "color-table-row-warning",
+        table_row_warning_hover => "color-table-row-warning-hover",
+        table_row_danger => "color-table-row-danger",
+        table_row_danger_hover => "color-table-row-danger-hover",
     }
 }
 
@@ -615,6 +623,12 @@ mod tests {
             t.color.focus_ring(),
             t.color.overlay(),
             t.color.table_header(),
+            t.color.table_row_highlight(),
+            t.color.table_row_highlight_hover(),
+            t.color.table_row_warning(),
+            t.color.table_row_warning_hover(),
+            t.color.table_row_danger(),
+            t.color.table_row_danger_hover(),
         ];
         macro_rules! slots {
             ($($ns:expr),+ $(,)?) => {

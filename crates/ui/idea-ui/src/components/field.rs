@@ -181,7 +181,7 @@ fn render_adornment(adornment: &Adornment, size: FieldSize, disabled: &Reactive<
 
 /// Lazy stylesheet for [`Adornment::Button`]: a pointer cursor, centered glyph,
 /// and a subtle hover/press dim. No padding — it stays icon-sized.
-fn adornment_button_sheet() -> Rc<StyleSheet> {
+pub(crate) fn adornment_button_sheet() -> Rc<StyleSheet> {
     AdornmentButtonSheet::sheet()
 }
 

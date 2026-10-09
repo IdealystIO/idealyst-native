@@ -34,7 +34,12 @@ NOT an idea-ui-only facility:
   color: the `Table` header band (`<th>` cells). It defaults to the
   `surface_alt` value, so the stock look is unchanged, but it exists as its own
   token so retinting table headers doesn't drag cards, field wells, and row
-  hover along with it.
+  hover along with it. The `Table` row tones are component-scoped too:
+  `table_row_highlight`, `table_row_warning`, `table_row_danger` and a
+  `_hover` variant of each (`color-table-row-warning-hover`, …), read by
+  `TableRow(tone = …)`. They are opaque by contract — unlike the dark
+  theme's translucent intent `soft_bg` slots — because a frozen column slides
+  over the columns behind it; keep any override opaque.
 - `intents` — the seven semantic palettes (`primary`, `secondary`, `neutral`,
   `success`, `danger`, `warning`, `info`), each an `IntentColors` with six slots
   (`solid_bg`, `solid_text`, `soft_bg`, `soft_text`, `fg`, `border`).

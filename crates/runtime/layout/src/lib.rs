@@ -246,6 +246,16 @@ pub struct LayoutTree {
     /// weights proportional to it — uniform `auto`/`fr` tracks can only
     /// split evenly. See [`compute`](Self::compute).
     table_grids: HashMap<NodeId, usize>,
+    /// Each node's author-declared px `width`, when it has one. Read by
+    /// the table-grid column sizing in [`compute`](Self::compute): a cell
+    /// that declares a width holds its column at it (an "exact" column —
+    /// it takes none of the spare width), the way a browser's auto table
+    /// treats a cell `width`. Recorded here rather than read back off the
+    /// Taffy style because the column pass REWRITES an exact cell's Taffy
+    /// width when it stretches the column (see the stretch note there),
+    /// and measuring the rewritten value would feed each compute's
+    /// stretch into the next.
+    declared_width: HashMap<NodeId, f32>,
     /// `display: contents` nodes — see [`Self::new_contents_node`]. A
     /// contents node has a Taffy slot (so it has a stable id) but is
     /// NEVER linked into the Taffy tree: its children link into the
@@ -284,6 +294,7 @@ impl LayoutTree {
             keyboard_padding: HashMap::new(),
             grid_items: HashSet::new(),
             table_grids: HashMap::new(),
+            declared_width: HashMap::new(),
             contents: HashSet::new(),
             logical_children: HashMap::new(),
             logical_parent: HashMap::new(),
@@ -713,6 +724,7 @@ impl LayoutTree {
         self.keyboard_padding.remove(&node.0);
         self.grid_items.remove(&node.0);
         self.table_grids.remove(&node.0);
+        self.declared_width.remove(&node.0);
         self.dropped.insert(node.0);
     }
 
@@ -1064,6 +1076,16 @@ impl LayoutTree {
         if let Some(w) = rules.width.as_ref().map(|t| *t.value()) {
             style.size.width = length_to_dim(w);
             self.auto_width.remove(&node.0);
+            // Same merge policy as the Taffy slot: an absent `width`
+            // leaves the previous declaration standing.
+            match Self::definite_length_of(rules.width.as_ref()) {
+                Some(px) => {
+                    self.declared_width.insert(node.0, px);
+                }
+                None => {
+                    self.declared_width.remove(&node.0);
+                }
+            }
         }
         if let Some(h) = rules.height.as_ref().map(|t| *t.value()) {
             style.size.height = length_to_dim(h);
@@ -1636,19 +1658,25 @@ impl LayoutTree {
                 // min-content for long/unbreakable strings, so the CSS
                 // min/max formula collapses short columns. max-content alone
                 // is reliable and drives the water-fill below.
-                let mut max_cw = vec![0.0_f32; n];
+                let mut cols = vec![TableColumnInput::default(); n];
+                // Exact cells, with the column each one sits in — their
+                // Taffy width is rewritten to the final track below.
+                let mut exact_cells: Vec<(NodeId, usize)> = Vec::new();
                 // Column attribution. Auto-flow children map to columns
                 // in document order (`auto_idx % n` — one grid row per
                 // table row). An EXPLICITLY placed child (`grid_column:
                 // Line(l)`) belongs to the column its start line names —
                 // the table SDK places every cell explicitly the moment
-                // a row carries a proxy backdrop, and index-order
-                // attribution would smear those cells across the wrong
-                // columns (the backdrops occupy child slots too). A
-                // child spanning multiple tracks (the `1 / -1` row
-                // backdrop) belongs to no single column: it's skipped —
-                // both from attribution and from the isolation measure,
-                // which would be wasted work on an empty proxy.
+                // a row carries a proxy backdrop or a spanning cell, and
+                // index-order attribution would smear those cells across
+                // the wrong columns (the backdrops occupy child slots
+                // too). A child spanning multiple tracks (the `1 / -1`
+                // row backdrop, a `colspan` cell) belongs to no single
+                // column: it's skipped — both from attribution and from
+                // the isolation measure. A browser spreads a spanning
+                // cell's content over the columns it covers; the SDK
+                // documents that a native spanning cell wraps inside the
+                // width its columns already have instead.
                 let mut auto_idx = 0usize;
                 for c in children.iter() {
                     use taffy::style::GridPlacement as Gp;
@@ -1680,6 +1708,23 @@ impl LayoutTree {
                         Err(_) => None,
                     };
                     let Some(col) = col else { continue };
+                    // An author `min_width` floors its column (a browser
+                    // honours `min-width` on a cell the same way).
+                    if let Ok(Dimension::Length(min)) =
+                        self.tree.style(*c).map(|s| s.min_size.width)
+                    {
+                        cols[col].floor = cols[col].floor.max(min);
+                    }
+                    // A declared width is the column's content width, and
+                    // marks it exact. No isolation measure: the Taffy
+                    // width may hold last compute's stretch (see below).
+                    if let Some(dw) = self.declared_width.get(c).copied() {
+                        let e = cols[col].exact.get_or_insert(0.0);
+                        *e = e.max(dw);
+                        cols[col].max_content = cols[col].max_content.max(dw);
+                        exact_cells.push((*c, col));
+                        continue;
+                    }
                     let _ = self.tree.compute_layout_with_measure(
                         *c,
                         Size {
@@ -1691,53 +1736,32 @@ impl LayoutTree {
                             None => Size::ZERO,
                         },
                     );
-                    max_cw[col] =
-                        max_cw[col].max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
+                    cols[col].max_content = cols[col]
+                        .max_content
+                        .max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
                 }
-                let sum_max: f32 = max_cw.iter().sum();
-                let widths: Vec<f32> = if sum_max <= w {
-                    // Fits: every column gets its content, the leftover is
-                    // shared in proportion to content (a browser's auto
-                    // table gives wider columns more of the extra).
-                    let extra = w - sum_max;
-                    max_cw
-                        .iter()
-                        .map(|m| {
-                            m + if sum_max > 0.0 { extra * m / sum_max } else { extra / n as f32 }
-                        })
-                        .collect()
-                } else {
-                    // Over-full: water-fill. Short columns keep their
-                    // content; the largest columns shrink to a common cap C
-                    // chosen so Σ min(max_i, C) = W. This matches a browser's
-                    // table-layout: auto for the common one-wide-column table
-                    // (the text column gives back the overflow, the rest stay
-                    // hugged to their content) and needs no min-content.
-                    let mut order: Vec<usize> = (0..n).collect();
-                    order.sort_by(|a, b| {
-                        max_cw[*a]
-                            .partial_cmp(&max_cw[*b])
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    let mut widths = vec![0.0_f32; n];
-                    let mut remaining = w;
-                    let mut left = n;
-                    for (rank, &i) in order.iter().enumerate() {
-                        let fair = remaining / left as f32;
-                        if max_cw[i] <= fair {
-                            widths[i] = max_cw[i];
-                            remaining -= max_cw[i];
-                            left -= 1;
-                        } else {
-                            let cap = remaining / left as f32;
-                            for &j in &order[rank..] {
-                                widths[j] = cap;
+                let widths = table_column_widths(w, &cols);
+                // Stretch exact cells to their final track. A column held
+                // at a declared width is wider than it only when EVERY
+                // column is exact and the table is wider than their sum —
+                // a browser then stretches the columns, and its `<td>`
+                // always fills its column. A native cell with a definite
+                // width would instead sit at that width inside a wider
+                // track (borders and background stopping short), so the
+                // cell's Taffy width follows the track. `declared_width`
+                // keeps the author value for the next compute.
+                for (cell, col) in exact_cells {
+                    if let Ok(mut cs) = self.tree.style(cell).cloned() {
+                        let track = widths[col];
+                        cs.size.width = Dimension::Length(track);
+                        if let Dimension::Length(m) = cs.max_size.width {
+                            if m < track {
+                                cs.max_size.width = Dimension::Length(track);
                             }
-                            break;
                         }
+                        let _ = self.tree.set_style(cell, cs);
                     }
-                    widths
-                };
+                }
                 if let Ok(mut s) = self.tree.style(*grid).cloned() {
                     s.grid_template_columns = widths
                         .iter()
@@ -2062,6 +2086,119 @@ fn length_to_lp(l: FwLength) -> LengthPercentage {
         // Taffy. Treated as the same "not a layout length" as `Auto`.
         FwLength::Auto | FwLength::Full => LengthPercentage::Length(0.0),
     }
+}
+
+/// One table column's sizing inputs, gathered from its cells by the
+/// table-grid pass in [`LayoutTree::compute`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TableColumnInput {
+    /// Widest max-content (unwrapped) width of the column's cells. For
+    /// an exact column this includes the declared width.
+    max_content: f32,
+    /// The largest declared `width` among the column's cells. `Some`
+    /// makes the column EXACT: held at this width, taking none of the
+    /// table's spare width while any non-exact column can take it.
+    exact: Option<f32>,
+    /// The largest `min_width` among the column's cells — the column
+    /// never resolves narrower (unless the table is over-full of floors,
+    /// in which case the grid overflows exactly as a browser table does).
+    floor: f32,
+}
+
+/// Resolve a `table-layout: auto` column set into px widths for a grid
+/// `w` wide. Pure, so the arithmetic is unit-tested on its own.
+///
+/// Mirrors what Chrome's auto table layout does with the inputs the
+/// framework can express (measured against a real `<table>` when this
+/// was written):
+///
+/// - An EXACT column (a cell with a px `width`) sits at that width.
+///   Spare width goes to the other columns, so a table whose columns are
+///   all exact but one makes that one FILL — no separate "fill" concept
+///   is needed, and none exists on web either (`width: 100%` on a cell
+///   squeezes every other column down to its min-content).
+/// - Every other column gets its max-content plus a share of what is
+///   left, proportional to its content (wider columns get more).
+/// - Over-full: water-fill the non-exact columns. Each resolves to
+///   `max(floor, min(max_content, C))` for the one cap `C` that makes
+///   them fit — short columns keep their content, the widest give width
+///   back and wrap. With no floors this is exactly the earlier
+///   sort-based water-fill.
+/// - When every column is exact and they don't fill `w`, the browser
+///   stretches them in proportion; so does this.
+///
+/// We deliberately avoid min-content (the GPU text engine reports ~0
+/// for long unbreakable strings — see the call site), which is why the
+/// over-full case does not reproduce the browser's min-content floor.
+/// One known divergence: when the exact columns ALONE exceed `w`, a
+/// browser shrinks them; this keeps them and lets the grid overflow,
+/// because the alternative needs that same min-content.
+fn table_column_widths(w: f32, cols: &[TableColumnInput]) -> Vec<f32> {
+    let n = cols.len();
+    let mut widths = vec![0.0_f32; n];
+    let is_auto = |c: &TableColumnInput| c.exact.is_none();
+    // Exact columns first: held at max(declared, floor).
+    let mut exact_sum = 0.0;
+    for (i, c) in cols.iter().enumerate() {
+        if let Some(e) = c.exact {
+            widths[i] = e.max(c.floor);
+            exact_sum += widths[i];
+        }
+    }
+    let autos: Vec<usize> = (0..n).filter(|i| is_auto(&cols[*i])).collect();
+    let remaining = w - exact_sum;
+    if autos.is_empty() {
+        // Every column exact. Stretch proportionally when there is room
+        // (browser behaviour); never shrink (see the divergence note).
+        if remaining > 0.0 && exact_sum > 0.0 {
+            for wi in widths.iter_mut() {
+                *wi += remaining * *wi / exact_sum;
+            }
+        }
+        return widths;
+    }
+    let content = |i: usize| cols[i].max_content.max(cols[i].floor);
+    let sum_auto: f32 = autos.iter().map(|i| content(*i)).sum();
+    if sum_auto <= remaining {
+        // Fits: content plus a share of the leftover in proportion to
+        // content (equal shares when every auto column is empty).
+        let extra = remaining - sum_auto;
+        for &i in &autos {
+            widths[i] = content(i)
+                + if sum_auto > 0.0 {
+                    extra * content(i) / sum_auto
+                } else {
+                    extra / autos.len() as f32
+                };
+        }
+        return widths;
+    }
+    // Over-full: find the cap C with Σ max(floor, min(content, C)) =
+    // remaining. The sum is monotone in C, so bisect. When the floors
+    // alone exceed what remains, C = 0 and every column sits at its floor.
+    let at = |cap: f32| -> f32 {
+        autos
+            .iter()
+            .map(|&i| cols[i].floor.max(content(i).min(cap)))
+            .sum()
+    };
+    let (mut lo, mut hi) = (0.0_f32, autos.iter().map(|&i| content(i)).fold(0.0, f32::max));
+    if at(lo) < remaining {
+        // 48 halvings take any realistic table width below 1e-9 px.
+        for _ in 0..48 {
+            let mid = (lo + hi) / 2.0;
+            if at(mid) > remaining {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+    }
+    let cap = lo;
+    for &i in &autos {
+        widths[i] = cols[i].floor.max(content(i).min(cap));
+    }
+    widths
 }
 
 fn length_to_lpa(l: Option<FwLength>) -> LengthPercentageAuto {
@@ -3275,6 +3412,196 @@ mod tests {
                 bf.y,
             );
         }
+    }
+
+    /// Pure column arithmetic — each case is a Chrome `<table>`
+    /// measurement it mirrors (see `table_column_widths`).
+    #[test]
+    fn table_column_widths_matches_browser_auto_table() {
+        let auto = |m: f32| TableColumnInput { max_content: m, exact: None, floor: 0.0 };
+        let exact = |e: f32| TableColumnInput { max_content: e, exact: Some(e), floor: 0.0 };
+        let close = |a: &[f32], b: &[f32]| {
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(b) {
+                assert!((x - y).abs() < 0.01, "{a:?} != {b:?}");
+            }
+        };
+        // No exact columns: unchanged from the earlier algorithm —
+        // proportional extra when it fits…
+        close(&table_column_widths(400.0, &[auto(100.0), auto(100.0)]), &[200.0, 200.0]);
+        // …and water-fill when over-full (short column keeps content).
+        close(&table_column_widths(300.0, &[auto(50.0), auto(500.0)]), &[50.0, 250.0]);
+        // An exact column holds; the spare goes to the auto ones.
+        close(
+            &table_column_widths(600.0, &[exact(100.0), auto(50.0), auto(150.0)]),
+            &[100.0, 125.0, 375.0],
+        );
+        // All exact but one → that one fills.
+        close(
+            &table_column_widths(600.0, &[exact(100.0), exact(120.0), auto(10.0)]),
+            &[100.0, 120.0, 380.0],
+        );
+        // Every column exact and room to spare → stretch in proportion.
+        close(&table_column_widths(600.0, &[exact(100.0), exact(200.0)]), &[200.0, 400.0]);
+        // A floor holds against the water-fill.
+        let floored = TableColumnInput { max_content: 400.0, exact: None, floor: 220.0 };
+        close(&table_column_widths(300.0, &[floored, auto(400.0)]), &[220.0, 80.0]);
+        // Over-full of exact columns: kept (documented divergence).
+        close(&table_column_widths(100.0, &[exact(80.0), exact(80.0)]), &[80.0, 80.0]);
+    }
+
+    fn table_grid(t: &mut LayoutTree, root: LayoutNode, n: usize) -> LayoutNode {
+        let grid = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.display = Some(runtime_shared::DisplayKind::Grid);
+        gr.grid_template_columns = Some(vec![runtime_shared::TrackSize::Auto; n]);
+        t.set_style(grid, &gr);
+        t.add_child(root, grid);
+        grid
+    }
+
+    fn tpx(v: f32) -> Option<runtime_shared::Tokenized<runtime_shared::Length>> {
+        Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(v)))
+    }
+
+    /// Regression (idea-ui `TableCell(width = …)`): a cell with a declared
+    /// width must hold its column at it on native, and the spare width
+    /// must go to the other columns — what a browser does with a `<td
+    /// style="width">`. Before, the declared width only fed the
+    /// max-content measure and the column then took a proportional share
+    /// of the leftover like any other, so a "fixed" 100px column rendered
+    /// ~200px wide on native and exactly 100px on web.
+    #[test]
+    fn regression_table_exact_width_column_holds_and_others_fill() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = table_grid(&mut t, root, 2);
+        let mut cells = Vec::new();
+        for _ in 0..2 {
+            let fixed = t.new_node();
+            let mut r = StyleRules::default();
+            r.width = tpx(100.0);
+            r.max_width = tpx(100.0);
+            t.set_style(fixed, &r);
+            t.set_intrinsic_size(fixed, 30.0, 12.0);
+            t.add_child(grid, fixed);
+            let fill = t.new_node();
+            t.set_intrinsic_size(fill, 60.0, 12.0);
+            t.add_child(grid, fill);
+            cells.push((fixed, fill));
+        }
+        t.compute(root, 500.0, 0.0);
+        for (fixed, fill) in cells {
+            assert!((t.frame_of(fixed).width - 100.0).abs() < 0.5, "exact column holds 100");
+            assert!((t.frame_of(fill).width - 400.0).abs() < 0.5, "auto column takes the rest");
+        }
+        // Stable across recomputes — the stretch rewrite must not feed
+        // back into the next measure.
+        t.compute(root, 500.0, 0.0);
+        t.compute(root, 500.0, 0.0);
+        assert!((t.frame_of(cells_first(&t, grid)).width - 100.0).abs() < 0.5);
+    }
+
+    /// A wrapping-text leaf: `single_line` wide unwrapped, taking any
+    /// narrower definite width it is given (it wraps).
+    fn wrapping_text(single_line: f32) -> MeasureFn {
+        Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| {
+            let w = known.width.unwrap_or(match avail.width {
+                AvailableSpace::MinContent => 0.0,
+                AvailableSpace::MaxContent => single_line,
+                AvailableSpace::Definite(aw) => single_line.min(aw),
+            });
+            Size { width: w, height: 12.0 * (single_line / w.max(1.0)).ceil().max(1.0) }
+        })
+    }
+
+    fn cells_first(t: &LayoutTree, grid: LayoutNode) -> LayoutNode {
+        LayoutNode(t.tree.children(grid.0).unwrap()[0])
+    }
+
+    /// When every column is exact and the table is wider than their sum,
+    /// a browser stretches the columns and each `<td>` fills its column.
+    /// The native CELLS must fill their stretched tracks too — a cell
+    /// left at its declared width inside a wider track drew its divider
+    /// and background short of the column edge.
+    #[test]
+    fn regression_table_all_exact_columns_stretch_with_their_cells() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = table_grid(&mut t, root, 2);
+        let mut cells = Vec::new();
+        for w in [100.0, 200.0] {
+            let c = t.new_node();
+            let mut r = StyleRules::default();
+            r.width = tpx(w);
+            r.max_width = tpx(w);
+            t.set_style(c, &r);
+            t.add_child(grid, c);
+            cells.push(c);
+        }
+        t.compute(root, 600.0, 0.0);
+        assert!((t.frame_of(cells[0]).width - 200.0).abs() < 0.5);
+        assert!((t.frame_of(cells[1]).width - 400.0).abs() < 0.5);
+        // Recompute at a narrower width: the stretched value from the
+        // first compute must not be mistaken for the declaration.
+        t.compute(root, 300.0, 0.0);
+        assert!((t.frame_of(cells[0]).width - 100.0).abs() < 0.5);
+        assert!((t.frame_of(cells[1]).width - 200.0).abs() < 0.5);
+    }
+
+    /// A cell `min_width` floors its column through the over-full
+    /// water-fill (a browser honours `min-width` on a cell).
+    #[test]
+    fn regression_table_min_width_floors_column_when_overfull() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = table_grid(&mut t, root, 2);
+        let a = t.new_node();
+        let mut r = StyleRules::default();
+        r.min_width = tpx(220.0);
+        t.set_style(a, &r);
+        t.set_measure_fn(a, wrapping_text(400.0));
+        t.add_child(grid, a);
+        let b = t.new_node();
+        t.set_measure_fn(b, wrapping_text(400.0));
+        t.add_child(grid, b);
+        t.compute(root, 300.0, 0.0);
+        assert!((t.frame_of(a).width - 220.0).abs() < 0.5, "floored at 220: a={:?} b={:?}", t.frame_of(a), t.frame_of(b));
+        assert!((t.frame_of(b).width - 80.0).abs() < 0.5, "the other column gives way");
+    }
+
+    /// A spanning cell (the table SDK's `colspan`) is placed across its
+    /// columns and never drives a single column's width.
+    #[test]
+    fn table_spanning_cell_covers_its_columns_without_sizing_them() {
+        use runtime_shared::GridPlacement as Gp;
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let grid = table_grid(&mut t, root, 3);
+        let mut head = Vec::new();
+        for (c, w) in [40.0, 40.0, 40.0].iter().enumerate() {
+            let cell = t.new_node();
+            let mut r = StyleRules::default();
+            r.grid_row = Some(Gp::Line(1));
+            r.grid_column = Some(Gp::Line(c as i16 + 1));
+            t.set_style(cell, &r);
+            t.set_intrinsic_size(cell, *w, 12.0);
+            t.add_child(grid, cell);
+            head.push(cell);
+        }
+        let span = t.new_node();
+        let mut r = StyleRules::default();
+        r.grid_row = Some(Gp::Line(2));
+        r.grid_column = Some(Gp::Lines(1, 4));
+        t.set_style(span, &r);
+        t.set_measure_fn(span, wrapping_text(2000.0));
+        t.add_child(grid, span);
+        t.compute(root, 300.0, 0.0);
+        for c in &head {
+            assert!((t.frame_of(*c).width - 100.0).abs() < 0.5, "columns share evenly");
+        }
+        assert!((t.frame_of(span).width - 300.0).abs() < 0.5, "span covers every column: {:?} head0={:?}", t.frame_of(span), t.frame_of(head[0]));
+        assert!(t.frame_of(span).y > t.frame_of(head[0]).y, "span sits in its own row");
     }
 
     /// The table SDK's scroll-x width strategy at the layout level: a
