@@ -36,6 +36,21 @@
 //! its own; idea-ui's `TableCell(pinned = …)` axis is the author
 //! surface.
 //!
+//! # Spans, footer sections, frame slots
+//!
+//! - [`TableCellProps::span`] ([`ColSpan`]) covers several columns:
+//!   `colspan` on web (a `Rest` span resolved to a number before mount),
+//!   a multi-track grid placement on native. A spanning native cell is
+//!   carried in a [`CellSpanMarker`] that [`table`] unwraps, and its
+//!   presence switches the grid to explicit placement — the same switch a
+//!   row proxy makes, for the same reason.
+//! - [`table_foot`] is a footer section: `<tfoot>` on web; on native its
+//!   rows flatten after every body row, wherever the section was written.
+//! - [`TableProps::header_slot`] / [`TableProps::footer_slot`] put
+//!   content inside the styled surface but outside the horizontal
+//!   scroller. Either one gives a plain table the surface wrapper, so the
+//!   author style lands on the wrapper rather than the `<table>`.
+//!
 //! # Row proxies (drag & drop geometry)
 //!
 //! A dissolved row has no node of its own, which made row-level
@@ -161,6 +176,76 @@ pub struct TableProps {
     /// registry, which also raises pinned cells above the content
     /// sliding beneath them.
     pub scroll_x: bool,
+    /// Content drawn INSIDE the table's frame, above the rows and
+    /// OUTSIDE the horizontal scroller — a caption, a strip of notices,
+    /// a toolbar. It keeps still while a `scroll_x` table's columns
+    /// scroll sideways beneath it, and it shares the table's border.
+    /// Setting either slot gives a plain table the same surface wrapper
+    /// scroll-x uses (styled surface > content), so the author style
+    /// lands on that wrapper rather than on the `<table>`.
+    pub header_slot: Option<Element>,
+    /// Content drawn inside the frame BELOW the rows, outside the
+    /// horizontal scroller — a blank-state sentence, an "Add entry"
+    /// action, a pager. See [`header_slot`](Self::header_slot).
+    pub footer_slot: Option<Element>,
+}
+
+/// Props for a footer section (`<tfoot>` on web). Holds one or more
+/// rows — a totals row — that assistive tech announces as the table's
+/// footer rather than as another row of data. A footer section always
+/// renders after the body rows, wherever it sits among the table's
+/// children (the browser does this for `<tfoot>`; native moves the rows
+/// to the end of the grid to match).
+#[derive(Default)]
+pub struct TableFootProps {
+    /// The footer rows. Populated by the `ui!` children block.
+    pub children: Vec<Element>,
+}
+
+/// How many columns a cell covers — `colspan` on web, a multi-track
+/// grid placement on native.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColSpan {
+    /// Cover this many columns (`0` is treated as `1`).
+    Columns(u16),
+    /// Cover every column from this cell to the end of the row — the
+    /// "blank row" / "add row" / group-title shape. Resolved against the
+    /// table's column count (its widest row) when the table is built.
+    Rest,
+}
+
+impl Default for ColSpan {
+    fn default() -> Self {
+        ColSpan::Columns(1)
+    }
+}
+
+impl From<u16> for ColSpan {
+    fn from(n: u16) -> Self {
+        ColSpan::Columns(n)
+    }
+}
+
+impl ColSpan {
+    /// The column count this span covers given `remaining` columns to the
+    /// end of the row. Never zero.
+    pub fn resolve(self, remaining: usize) -> usize {
+        match self {
+            ColSpan::Columns(n) => (n as usize).max(1),
+            ColSpan::Rest => remaining.max(1),
+        }
+    }
+
+    /// The span's contribution to a row's column count before the
+    /// table's width is known: `Rest` counts as one column (it stretches
+    /// to fit whatever the other rows establish).
+    fn min_columns(self) -> usize {
+        self.resolve(1)
+    }
+
+    fn is_single(self) -> bool {
+        self == ColSpan::Columns(1) || self == ColSpan::Columns(0)
+    }
 }
 
 /// Props for a single row (`<tr>`).
@@ -182,6 +267,8 @@ pub struct TableCellProps {
     /// cell is a grid item); the caller styles header cells via
     /// `.with_style(...)`.
     pub header: bool,
+    /// How many columns this cell covers. See [`ColSpan`].
+    pub span: ColSpan,
     /// The cell's contents (typically a `text`). Populated by the
     /// `ui!` children block.
     pub children: Vec<Element>,
@@ -241,6 +328,10 @@ pub struct TableRowPrim {
 pub struct TableCellPrim {
     /// `<th>` when `true`, `<td>` otherwise.
     pub header: bool,
+    /// Columns covered. [`table`] resolves a [`ColSpan::Rest`] to a
+    /// count against the table's column count before mount; the mount
+    /// writes `colspan` when it is more than one.
+    pub span: ColSpan,
     /// Author style, attached to the cell node.
     pub style: Option<StyleProp>,
     /// Touch handler installed on the cell node (clickable rows).
@@ -250,6 +341,23 @@ pub struct TableCellPrim {
     /// Filled with the `<td>`/`<th>`'s handle at mount ([`bind_cell`]) —
     /// the anchor animated drag offsets attach to.
     pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
+}
+
+/// Scene payload for a footer section — `<tfoot>` on web, and on native
+/// a pre-flatten MARKER that [`table`] consumes (its rows are flattened
+/// into the grid after every body row).
+pub struct TableFootPrim;
+
+/// Native-only marker carried by a cell that covers more than one
+/// column: the cell's view is its single child. [`table`] unwraps it
+/// while flattening and turns the span into grid placement, so it never
+/// reaches realize (a spanning `table_cell` used outside a `table`
+/// panics there as an unregistered payload — the loud failure the
+/// registry promises). The cell helpers ([`map_cell_style`] & co.) look
+/// through it.
+pub struct CellSpanMarker {
+    /// The cell's span, resolved by [`table`].
+    pub span: ColSpan,
 }
 
 // ============================================================================
@@ -290,12 +398,20 @@ pub struct TableBound {
     children: Vec<Element>,
     style: Option<StyleProp>,
     scroll_x: bool,
+    header_slot: Option<Element>,
+    footer_slot: Option<Element>,
 }
 table_wrapper_common!(TableBound);
 
 impl IntoElement for TableBound {
     fn into_element(self) -> Element {
-        build_table(self.children, self.style, self.scroll_x)
+        build_table(TableParts {
+            rows: self.children,
+            style: self.style,
+            scroll_x: self.scroll_x,
+            header_slot: self.header_slot,
+            footer_slot: self.footer_slot,
+        })
     }
 }
 
@@ -315,6 +431,7 @@ impl IntoElement for TableRowBound {
 /// Deferred `TableCell` build.
 pub struct TableCellBound {
     header: bool,
+    span: ColSpan,
     children: Vec<Element>,
     style: Option<StyleProp>,
 }
@@ -322,7 +439,7 @@ table_wrapper_common!(TableCellBound);
 
 impl IntoElement for TableCellBound {
     fn into_element(self) -> Element {
-        build_cell(self.header, self.children, self.style)
+        build_cell(self.header, self.span, self.children, self.style)
     }
 }
 
@@ -338,6 +455,8 @@ pub fn table(mut props: TableProps) -> TableBound {
         children: std::mem::take(&mut props.children),
         style: None,
         scroll_x: props.scroll_x,
+        header_slot: props.header_slot.take(),
+        footer_slot: props.footer_slot.take(),
     }
 }
 
@@ -358,9 +477,142 @@ pub fn table_row(mut props: TableRowProps) -> TableRowBound {
 pub fn table_cell(mut props: TableCellProps) -> TableCellBound {
     TableCellBound {
         header: props.header,
+        span: props.span,
         children: std::mem::take(&mut props.children),
         style: None,
     }
+}
+
+/// Build a footer section — `<tfoot>` on web; on native its rows are
+/// flattened into the grid after every body row. Pass it as a child of
+/// [`table`], holding [`table_row`]s.
+pub fn table_foot(mut props: TableFootProps) -> Element {
+    item(PrimCell::new(TableFootPrim), std::mem::take(&mut props.children))
+}
+
+/// The author-facing pieces of a table, gathered by [`TableBound`].
+struct TableParts {
+    rows: Vec<Element>,
+    style: Option<StyleProp>,
+    scroll_x: bool,
+    header_slot: Option<Element>,
+    footer_slot: Option<Element>,
+}
+
+impl TableParts {
+    /// Whether the author style lands on a surface WRAPPER around the
+    /// table (scroll-x, or a slot to draw inside the frame) rather than
+    /// on the table node itself.
+    fn wrapped(&self) -> bool {
+        self.scroll_x || self.header_slot.is_some() || self.footer_slot.is_some()
+    }
+}
+
+/// Wrap `content` in the styled surface with the slots either side —
+/// shared by both lowerings. The slots sit OUTSIDE `content` (which,
+/// in scroll-x mode, is the horizontal scroller), so they keep still
+/// while columns scroll and share the surface's border.
+fn surface_with_slots(
+    content: Element,
+    style: Option<StyleProp>,
+    header_slot: Option<Element>,
+    footer_slot: Option<Element>,
+) -> Element {
+    let mut kids = Vec::with_capacity(3);
+    kids.extend(header_slot);
+    kids.push(content);
+    kids.extend(footer_slot);
+    let surface = glue::view(kids);
+    match style {
+        Some(style) => surface.with_style(style).into_element(),
+        None => surface.into_element(),
+    }
+}
+
+/// Every row a table child holds: the row itself, or a footer
+/// section's rows (Owned-peeled). Rows come back in order.
+fn for_each_row<'a>(el: &'a Element, f: &mut dyn FnMut(&'a Element)) {
+    match el {
+        Element::Owned { element, .. } => for_each_row(element, f),
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<TableFootPrim>>().is_some() =>
+        {
+            for r in children {
+                for_each_row(r, f);
+            }
+        }
+        other => f(other),
+    }
+}
+
+/// The span a built cell declares (Owned-peeled; either lowering).
+fn cell_span(cell: &Element) -> ColSpan {
+    match cell {
+        Element::Owned { element, .. } => cell_span(element),
+        Element::Item { data, .. } => {
+            if let Some(m) = data.downcast_ref::<PrimCell<CellSpanMarker>>() {
+                let mut span = ColSpan::default();
+                m.with_mut(|m| span = m.span);
+                span
+            } else if let Some(c) = data.downcast_ref::<PrimCell<TableCellPrim>>() {
+                let mut span = ColSpan::default();
+                c.with_mut(|c| span = c.span);
+                span
+            } else {
+                ColSpan::default()
+            }
+        }
+        _ => ColSpan::default(),
+    }
+}
+
+/// Overwrite a built cell's span (either lowering) — how [`table`]
+/// resolves [`ColSpan::Rest`] to a count before mount.
+fn set_cell_span(cell: &Element, span: ColSpan) {
+    match cell {
+        Element::Owned { element, .. } => set_cell_span(element, span),
+        Element::Item { data, .. } => {
+            if let Some(m) = data.downcast_ref::<PrimCell<CellSpanMarker>>() {
+                m.with_mut(|m| m.span = span);
+            } else if let Some(c) = data.downcast_ref::<PrimCell<TableCellPrim>>() {
+                c.with_mut(|c| c.span = span);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The table's column count — its widest row, counting each cell's span
+/// (a [`ColSpan::Rest`] counts one) — after which every `Rest` span is
+/// rewritten to the count it covers in its row. Both lowerings run
+/// this before mount: the browser needs a number in `colspan`, the grid
+/// needs a line.
+///
+/// Rows the table cannot see at build time (a reactive row region) are
+/// not counted, the same limit the native grid flattening already has.
+fn resolve_spans(rows: &[Element]) -> usize {
+    let mut columns = 0usize;
+    for r in rows {
+        for_each_row(r, &mut |row| {
+            let mut n = 0usize;
+            visit_row_cells(row, |c| n += cell_span(c).min_columns());
+            columns = columns.max(n);
+        });
+    }
+    for r in rows {
+        for_each_row(r, &mut |row| {
+            let mut at = 0usize;
+            visit_row_cells(row, |c| {
+                let span = cell_span(c);
+                let n = span.resolve(columns.saturating_sub(at));
+                if span == ColSpan::Rest {
+                    set_cell_span(c, ColSpan::Columns(n as u16));
+                }
+                at += n;
+            });
+        });
+    }
+    columns
 }
 
 // ============================================================================
@@ -377,9 +629,53 @@ pub fn table_cell(mut props: TableCellProps) -> TableCellBound {
 pub mod item_lowering {
     use super::*;
 
-    /// `<table>` item.
+    /// `<table>` item. The caller resolves cell spans first
+    /// ([`table`] does, through `resolve_spans`).
     pub fn table_item(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
         item(PrimCell::new(TablePrim { style, scroll_x }), children)
+    }
+
+    /// The whole web table element — span resolution, the `<table>`
+    /// item, and (scroll-x or a slot) the surface wrapper. What
+    /// [`table`] builds on wasm32; always compiled so host tests can
+    /// render the real web shape through the SSR backend.
+    pub fn web_table(
+        rows: Vec<Element>,
+        style: Option<StyleProp>,
+        scroll_x: bool,
+        header_slot: Option<Element>,
+        footer_slot: Option<Element>,
+    ) -> Element {
+        let parts = TableParts { rows, style, scroll_x, header_slot, footer_slot };
+        resolve_spans(&parts.rows);
+        if !parts.wrapped() {
+            return item_lowering::table_item(parts.rows, parts.style, false);
+        }
+        // Structure: styled SURFACE > [header slot, content, footer slot],
+        // where content is the horizontal scroller > `<table>` in scroll-x
+        // mode and the bare `<table>` otherwise. The author style
+        // (border/radius/background — idea-ui's themed surface) sits
+        // OUTSIDE the scroller so the frame stays put while the columns
+        // scroll inside it; a surface inside the scroller rode along with
+        // the content and clipped its own border at the viewport edge.
+        // Sticky-pinned cells still pin against the scroller (their NEAREST
+        // scroll ancestor — the surface's own overflow clip is further out).
+        let table = item_lowering::table_item(parts.rows, None, parts.scroll_x);
+        let content = if parts.scroll_x {
+            // `bounces(false)`: a table's column scroller is a bounded pane
+            // INSIDE a page, and an overscroll spring there has no end to
+            // signal — the thing that springs is not the thing the gesture
+            // appears to grab, so it reads as a glitch rather than as a
+            // boundary. On web this also stops the swipe chaining into the
+            // page behind the table once the columns run out.
+            glue::scroll_view(vec![table])
+                .horizontal(true)
+                .bounces(false)
+                .into_element()
+        } else {
+            table
+        };
+        surface_with_slots(content, parts.style, parts.header_slot, parts.footer_slot)
     }
 
     /// `<tr>` item.
@@ -388,10 +684,16 @@ pub mod item_lowering {
     }
 
     /// `<td>` / `<th>` item.
-    pub fn cell_item(header: bool, children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    pub fn cell_item(
+        header: bool,
+        span: ColSpan,
+        children: Vec<Element>,
+        style: Option<StyleProp>,
+    ) -> Element {
         item(
             PrimCell::new(TableCellPrim {
                 header,
+                span,
                 style,
                 on_touch: None,
                 on_hover: None,
@@ -403,35 +705,14 @@ pub mod item_lowering {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn build_table(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
-    if scroll_x {
-        // Structure: styled SURFACE > horizontal scroller > `<table>`.
-        // The author style (border/radius/background — idea-ui's
-        // themed surface) sits OUTSIDE the scroller so the frame stays
-        // put while the columns scroll inside it; a surface inside the
-        // scroller rode along with the content and clipped its own
-        // border at the viewport edge. Sticky-pinned cells still pin
-        // against the scroller (their NEAREST scroll ancestor — the
-        // surface's own overflow clip is further out).
-        let table = item_lowering::table_item(children, None, scroll_x);
-        // `bounces(false)`: a table's column scroller is a bounded pane
-        // INSIDE a page, and an overscroll spring there has no end to
-        // signal — the thing that springs is not the thing the gesture
-        // appears to grab, so it reads as a glitch rather than as a
-        // boundary. On web this also stops the swipe chaining into the
-        // page behind the table once the columns run out.
-        let scroller = glue::scroll_view(vec![table])
-            .horizontal(true)
-            .bounces(false)
-            .into_element();
-        let surface = glue::view(vec![scroller]);
-        match style {
-            Some(style) => surface.with_style(style).into_element(),
-            None => surface.into_element(),
-        }
-    } else {
-        item_lowering::table_item(children, style, scroll_x)
-    }
+fn build_table(parts: TableParts) -> Element {
+    item_lowering::web_table(
+        parts.rows,
+        parts.style,
+        parts.scroll_x,
+        parts.header_slot,
+        parts.footer_slot,
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -440,8 +721,8 @@ fn build_row(children: Vec<Element>, style: Option<StyleProp>) -> Element {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn build_cell(header: bool, children: Vec<Element>, style: Option<StyleProp>) -> Element {
-    item_lowering::cell_item(header, children, style)
+fn build_cell(header: bool, span: ColSpan, children: Vec<Element>, style: Option<StyleProp>) -> Element {
+    item_lowering::cell_item(header, span, children, style)
 }
 
 // ============================================================================
@@ -465,21 +746,38 @@ fn build_cell(header: bool, children: Vec<Element>, style: Option<StyleProp>) ->
 /// either way (`regression_table_grid_with_row_backdrops_keeps_column_sizing`
 /// pins this).
 #[cfg(not(target_arch = "wasm32"))]
-fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
+fn build_table(parts: TableParts) -> Element {
+    let wrapped = parts.wrapped();
+    let TableParts { rows, style, scroll_x, header_slot, footer_slot } = parts;
+    let columns_from_spans = resolve_spans(&rows);
     let mut owneds: Vec<glue::Owned> = Vec::new();
-    let mut extracted: Vec<NativeRow> = Vec::new();
-    let mut columns = 0usize;
+    let mut body: Vec<NativeRow> = Vec::new();
+    let mut foot: Vec<NativeRow> = Vec::new();
     for row in rows {
-        let row_data = extract_row(row, &mut owneds);
-        columns = columns.max(row_data.cells.len());
-        extracted.push(row_data);
+        extract_rows(row, &mut owneds, &mut body, &mut foot, false);
     }
+    // A footer section renders after every body row wherever the author
+    // put it — what the browser does with `<tfoot>`.
+    let mut extracted = body;
+    extracted.extend(foot);
+    let columns = extracted
+        .iter()
+        .map(|r| r.spans.iter().sum::<usize>())
+        .max()
+        .unwrap_or(0)
+        .max(columns_from_spans);
     let any_proxy = extracted
         .iter()
         .any(|r| r.slots.as_ref().is_some_and(|s| s.style.is_some() || s.ref_fill.is_some()));
+    // A spanning cell is a multi-track grid item, and auto-flow cannot
+    // carry one safely: the layout's column attribution counts auto-flow
+    // children in document order, and a span occupies several tracks
+    // while counting as one child. Explicit placement throughout, as
+    // for row proxies.
+    let any_span = extracted.iter().any(|r| r.spans.iter().any(|s| *s != 1));
 
     let mut grid_children: Vec<Element> = Vec::new();
-    if !any_proxy {
+    if !any_proxy && !any_span {
         // Fast path — auto-flow, exactly the pre-proxy lowering.
         for row in extracted {
             grid_children.extend(row.cells);
@@ -492,8 +790,10 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> 
                     grid_children.push(build_row_backdrop(row_line, slots));
                 }
             }
-            for (c, cell) in row.cells.into_iter().enumerate() {
-                place_cell(&cell, row_line, (c + 1) as i16);
+            let mut col_line = 1i16;
+            for (cell, span) in row.cells.into_iter().zip(row.spans) {
+                place_cell(&cell, row_line, col_line, span as i16);
+                col_line += span as i16;
                 grid_children.push(cell);
             }
         }
@@ -505,16 +805,15 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> 
     let inner = glue::view(grid_children)
         .with_style(native_styles::grid_sheet(columns))
         .into_element();
-    let mut el;
-    if scroll_x {
-        // Structure: styled SURFACE > horizontal scroll_view > content
-        // (width-floored) > grid — the web lowering's mirror. The
-        // author-style surface stays OUTSIDE the scroller so its
-        // border/radius don't ride along with the scrolled columns;
-        // the content node carries the "at least the scroller's width"
-        // floor so a narrow table still fills while a wide one
-        // overflows and scrolls. Sticky-pinned cells register against
-        // this scroll view.
+    let mut el = if scroll_x {
+        // Structure: styled SURFACE > [header slot, horizontal
+        // scroll_view > content (width-floored) > grid, footer slot] —
+        // the web lowering's mirror. The author-style surface stays
+        // OUTSIDE the scroller so its border/radius don't ride along
+        // with the scrolled columns; the content node carries the "at
+        // least the scroller's width" floor so a narrow table still
+        // fills while a wide one overflows and scrolls. Sticky-pinned
+        // cells register against this scroll view.
         let content = glue::view(vec![inner])
             .with_style(StyleProp::Static(Rc::new(native_styles::scroll_floor_rules())))
             .into_element();
@@ -524,20 +823,22 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> 
             .bounces(false)
             .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules())))
             .into_element();
-        let surface = glue::view(vec![scroller]);
-        el = match style {
-            Some(style) => surface.with_style(style).into_element(),
-            None => surface.into_element(),
-        };
+        surface_with_slots(scroller, style, header_slot, footer_slot)
+    } else if wrapped {
+        // Slots without scroll-x: surface > [header, grid holder,
+        // footer]. The holder mirrors the plain table's outer node so
+        // the grid still fills the surface's width.
+        let holder = glue::view(vec![inner]).into_element();
+        surface_with_slots(holder, style, header_slot, footer_slot)
     } else {
         // Outer node: the author-style target. The framework's default
         // cross-axis stretch makes the inner grid fill this node's width.
         let outer = glue::view(vec![inner]);
-        el = match style {
+        match style {
             Some(style) => outer.with_style(style).into_element(),
             None => outer.into_element(),
-        };
-    }
+        }
+    };
     // Re-attach every peeled row scope: the cells' reactive props (the
     // clickable-row hover style) read signals those scopes own, so they
     // must live exactly as long as the flattened subtree.
@@ -552,6 +853,8 @@ fn build_table(rows: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> 
 #[cfg(not(target_arch = "wasm32"))]
 struct NativeRow {
     cells: Vec<Element>,
+    /// Columns each cell covers (parallel to `cells`, spans resolved).
+    spans: Vec<usize>,
     slots: Option<TableRowPrim>,
 }
 
@@ -588,27 +891,76 @@ fn build_row(children: Vec<Element>, style: Option<StyleProp>) -> Element {
 
 /// Native `TableCell`: a plain view that becomes a grid item; the
 /// column track sizes its width. Author style REPLACES the SDK's
-/// default cell sheet.
+/// default cell sheet. A cell covering more than one column is wrapped
+/// in a [`CellSpanMarker`] that [`table`] unwraps into grid placement.
 #[cfg(not(target_arch = "wasm32"))]
-fn build_cell(_header: bool, children: Vec<Element>, style: Option<StyleProp>) -> Element {
+fn build_cell(_header: bool, span: ColSpan, children: Vec<Element>, style: Option<StyleProp>) -> Element {
     let styled = match style {
         Some(style) => glue::view(children).with_style(style),
         None => glue::view(children).with_style(native_styles::cell_sheet()),
     };
-    styled.into_element()
+    let cell = styled.into_element();
+    if span.is_single() {
+        cell
+    } else {
+        item(PrimCell::new(CellSpanMarker { span }), vec![cell])
+    }
 }
 
-/// Pull a row's cells + marker slots out so the cells can be parented
-/// directly under the grid. `table_row` lowers a row to a
-/// [`TableRowPrim`] marker item (whose children are the cells); a
-/// `#[component]` row body that created reactive state arrives
-/// `Owned`-wrapped — peel it and KEEP the scope (pushed into `owneds`,
-/// re-attached by the caller). A bare fragment (legacy shape) is a
-/// slotless row; any other stray element is treated as a single
-/// one-cell row so nothing silently vanishes.
+/// Unwrap a native cell's [`CellSpanMarker`] (Owned-peeled, scope
+/// re-attached), returning the bare cell view and its column count.
 #[cfg(not(target_arch = "wasm32"))]
-fn extract_row(row: Element, owneds: &mut Vec<glue::Owned>) -> NativeRow {
-    match row {
+fn unwrap_cell(cell: Element) -> (Element, usize) {
+    match cell {
+        Element::Owned { element, owned } => {
+            let (inner, span) = unwrap_cell(*element);
+            (runtime_scene::owned(inner, owned), span)
+        }
+        Element::Item { data, mut children, .. }
+            if data.downcast_ref::<PrimCell<CellSpanMarker>>().is_some() =>
+        {
+            let span = data
+                .downcast_ref::<PrimCell<CellSpanMarker>>()
+                .expect("guard just checked this downcast")
+                .take()
+                .span
+                .resolve(1);
+            let inner = children.pop().expect("a span marker wraps exactly one cell");
+            (inner, span)
+        }
+        other => (other, 1),
+    }
+}
+
+/// Pull a table child's rows out so their cells can be parented
+/// directly under the grid, sorting them into body and footer. A row
+/// lowers to a [`TableRowPrim`] marker item (whose children are the
+/// cells); a [`TableFootPrim`] section holds rows; a `#[component]` body
+/// that created reactive state arrives `Owned`-wrapped — peel it and
+/// KEEP the scope (pushed into `owneds`, re-attached by the caller). A
+/// bare fragment (legacy shape) is a slotless row; any other stray
+/// element is treated as a single one-cell row so nothing silently
+/// vanishes.
+#[cfg(not(target_arch = "wasm32"))]
+fn extract_rows(
+    el: Element,
+    owneds: &mut Vec<glue::Owned>,
+    body: &mut Vec<NativeRow>,
+    foot: &mut Vec<NativeRow>,
+    in_foot: bool,
+) {
+    let push = |row: NativeRow, body: &mut Vec<NativeRow>, foot: &mut Vec<NativeRow>| {
+        if in_foot {
+            foot.push(row)
+        } else {
+            body.push(row)
+        }
+    };
+    let row_of = |cells: Vec<Element>, slots: Option<TableRowPrim>| {
+        let (cells, spans): (Vec<Element>, Vec<usize>) = cells.into_iter().map(unwrap_cell).unzip();
+        NativeRow { cells, spans, slots }
+    };
+    match el {
         // Guarded rather than destructure-and-rebuild: rebuilding an
         // `Element::Item` from its parts DROPS anything else the variant
         // carries (under `ui-overlay`, the node's origin tag), so a
@@ -620,14 +972,21 @@ fn extract_row(row: Element, owneds: &mut Vec<glue::Owned>) -> NativeRow {
             let cell = data
                 .downcast_ref::<PrimCell<TableRowPrim>>()
                 .expect("guard just checked this downcast");
-            NativeRow { cells: children, slots: Some(cell.take()) }
+            push(row_of(children, Some(cell.take())), body, foot);
         }
-        Element::Fragment(children) => NativeRow { cells: children, slots: None },
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<TableFootPrim>>().is_some() =>
+        {
+            for r in children {
+                extract_rows(r, owneds, body, foot, true);
+            }
+        }
+        Element::Fragment(children) => push(row_of(children, None), body, foot),
         Element::Owned { element, owned } => {
             owneds.push(owned);
-            extract_row(*element, owneds)
+            extract_rows(*element, owneds, body, foot, in_foot);
         }
-        other => NativeRow { cells: vec![other], slots: None },
+        other => push(row_of(vec![other], None), body, foot),
     }
 }
 
@@ -677,11 +1036,15 @@ fn compose_rules(prop: Option<StyleProp>, overlay: StyleRules) -> StyleProp {
 /// Reaches through the payload cell like [`set_cell_style`]; sound for
 /// the same reason (pre-mount, taken exactly once by realize).
 #[cfg(not(target_arch = "wasm32"))]
-fn place_cell(cell: &Element, row_line: i16, col_line: i16) {
+fn place_cell(cell: &Element, row_line: i16, col_line: i16, span: i16) {
     use runtime_shared::GridPlacement;
     let placement = StyleRules {
         grid_row: Some(GridPlacement::Line(row_line)),
-        grid_column: Some(GridPlacement::Line(col_line)),
+        grid_column: Some(if span > 1 {
+            GridPlacement::Lines(col_line, col_line + span)
+        } else {
+            GridPlacement::Line(col_line)
+        }),
         ..Default::default()
     };
     let mut placement = Some(placement);
@@ -695,34 +1058,6 @@ fn place_cell(cell: &Element, row_line: i16, col_line: i16) {
             placement.take();
         }
     });
-}
-
-/// Rewrite a built native VIEW element's style in place (Owned-peeled).
-/// Used by the scroll-x path to give the outer table surface its
-/// width floor without disturbing the author's style.
-#[cfg(not(target_arch = "wasm32"))]
-fn set_view_style(
-    el: &Element,
-    f: impl FnOnce(Option<StyleProp>) -> Option<StyleProp> + 'static,
-) {
-    fn walk(el: &Element, f: &mut Option<Box<dyn FnOnce(Option<StyleProp>) -> Option<StyleProp>>>) {
-        match el {
-            Element::Owned { element, .. } => walk(element, f),
-            Element::Item { data, .. } => {
-                if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
-                    c.with_mut(|p| {
-                        if let Some(f) = f.take() {
-                            p.style = f(p.style.take());
-                        }
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut boxed: Option<Box<dyn FnOnce(Option<StyleProp>) -> Option<StyleProp>>> =
-        Some(Box::new(f));
-    walk(el, &mut boxed);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -897,6 +1232,54 @@ pub fn map_cell_style(
     wrapped
 }
 
+/// Re-select a built cell's sheet application WITHOUT making it
+/// reactive: a static [`StyleProp::Sheet`] stays a static sheet (so it
+/// can still premint), a reactive [`StyleProp::SheetDynamic`] has `f`
+/// composed around it. Returns whether a cell style was mapped.
+///
+/// The static counterpart of [`map_cell_style`], for row- and
+/// table-level settings that are fixed when the table is built — a
+/// row's tone, a footer section, a table's density. Reaching for
+/// [`map_cell_style`] there would turn every cell's style into a
+/// closure for a selection that never changes.
+pub fn map_cell_application(
+    cell: &Element,
+    f: Rc<dyn Fn(StyleApplication) -> StyleApplication>,
+) -> bool {
+    let mut f = Some(f);
+    let mut mapped = false;
+    visit_cell(cell, &mut |view, table_cell| {
+        let slot = if let Some(p) = view {
+            &mut p.style
+        } else if let Some(p) = table_cell {
+            &mut p.style
+        } else {
+            return;
+        };
+        let Some(f) = f.take() else { return };
+        match slot.take() {
+            Some(StyleProp::Sheet(app)) => {
+                *slot = Some(StyleProp::Sheet(Box::new(f(*app))));
+                mapped = true;
+            }
+            Some(StyleProp::SheetDynamic(g)) => {
+                *slot = Some(StyleProp::SheetDynamic(Box::new(move || f(g()))));
+                mapped = true;
+            }
+            other => *slot = other,
+        }
+    });
+    mapped
+}
+
+/// Visit every row a table child holds — the row itself, or each row
+/// of a footer section ([`table_foot`]) — in order, Owned-peeled.
+/// Combine with [`visit_row_cells`] to reach every cell of a table
+/// before it is built (idea-ui's table density does).
+pub fn visit_rows(el: &Element, mut f: impl FnMut(&Element)) {
+    for_each_row(el, &mut |r| f(r));
+}
+
 /// Replace a built cell's style in place (no-op for non-cells, so a
 /// caller that hands over an unexpected element shape is harmless).
 /// Sound because the payload is not yet mounted: realization takes it
@@ -1041,6 +1424,14 @@ fn visit_cell(
 ) {
     match cell {
         Element::Owned { element, .. } => visit_cell(element, f),
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<CellSpanMarker>>().is_some() =>
+        {
+            // A spanning native cell: the view is the marker's child.
+            if let Some(inner) = children.first() {
+                visit_cell(inner, f);
+            }
+        }
         Element::Item { data, .. } => {
             if let Some(c) = data.downcast_ref::<PrimCell<prims::ViewPrim>>() {
                 c.with_mut(|p| f(Some(p), None));
@@ -1153,6 +1544,11 @@ where
     let backend = cx.backend().clone();
     let tag = if data.header { "th" } else { "td" };
     let mut node = backend.borrow_mut().create_element(tag);
+    // `table` resolved any `Rest` span to a count before mount.
+    let span = data.span.resolve(1);
+    if span > 1 {
+        backend.borrow().attach_html_attribute(&node, "colspan", &span.to_string());
+    }
     cx.realize_children_into(&mut node, children);
     if let Some(style) = data.style {
         attach_style(&backend, &node, style);
@@ -1170,6 +1566,24 @@ where
     node
 }
 
+/// Mount a `<tfoot>`: the footer section's rows. The browser lays a
+/// footer group out after every body row, wherever it sits among the
+/// table's children.
+fn mount_foot<H>(
+    cx: &mut MountCx<'_, H>,
+    prim: &Rc<PrimCell<TableFootPrim>>,
+    children: Vec<Element>,
+) -> H::Node
+where
+    H: StyleServices + InputOps,
+{
+    let _ = prim.take();
+    let backend = cx.backend().clone();
+    let mut node = backend.borrow_mut().create_element("tfoot");
+    cx.realize_children_into(&mut node, children);
+    node
+}
+
 /// Register the Table SDK's payload handlers on a scene registry — the
 /// boot registration seam. Web boots pass this to
 /// `backend_web::newcore::start_in`'s `register` argument; SSR renders
@@ -1183,6 +1597,7 @@ where
     registry.register::<PrimCell<TablePrim>, _>(mount_table::<H>);
     registry.register::<PrimCell<TableRowPrim>, _>(mount_row::<H>);
     registry.register::<PrimCell<TableCellPrim>, _>(mount_cell::<H>);
+    registry.register::<PrimCell<TableFootPrim>, _>(mount_foot::<H>);
 }
 
 /// Declare this SDK's payload kinds **late-bound** instead of installing
@@ -1192,7 +1607,7 @@ where
 /// chunk lands, rather than panicking on it.
 ///
 /// This exists so an app never has to spell the registry keys: there are
-/// three of them and each is wrapped in [`PrimCell`], a framework
+/// four of them and each is wrapped in [`PrimCell`], a framework
 /// internal an app would otherwise have to import to write
 /// `registry.defer::<PrimCell<TablePrim>>()`.
 ///
@@ -1211,6 +1626,7 @@ where
         registry.defer::<PrimCell<TablePrim>>();
         registry.defer::<PrimCell<TableRowPrim>>();
         registry.defer::<PrimCell<TableCellPrim>>();
+        registry.defer::<PrimCell<TableFootPrim>>();
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1242,6 +1658,7 @@ where
             registry.register_deferred::<PrimCell<TablePrim>, _>(mount_table::<H>);
             registry.register_deferred::<PrimCell<TableRowPrim>, _>(mount_row::<H>);
             registry.register_deferred::<PrimCell<TableCellPrim>, _>(mount_cell::<H>);
+            registry.register_deferred::<PrimCell<TableFootPrim>, _>(mount_foot::<H>);
         });
     }
 }
@@ -1257,6 +1674,14 @@ pub type Table = TableProps;
 pub type TableRow = TableRowProps;
 /// `ui!` tag alias for a table cell.
 pub type TableCell = TableCellProps;
+/// `ui!` tag alias for a footer section.
+pub type TableFoot = TableFootProps;
+
+impl BuildElement for TableFootProps {
+    fn build(self) -> Element {
+        table_foot(self)
+    }
+}
 
 impl BuildElement for TableProps {
     fn build(self) -> Element {
@@ -1284,7 +1709,8 @@ impl BuildElement for TableCellProps {
 /// for use at `ui!` call sites.
 pub mod prelude {
     pub use super::{
-        table, table_cell, table_row, Table, TableBound, TableCell, TableCellBound, TableCellProps,
-        TableProps, TableRow, TableRowBound, TableRowProps,
+        table, table_cell, table_foot, table_row, ColSpan, Table, TableBound, TableCell,
+        TableCellBound, TableCellProps, TableFoot, TableFootProps, TableProps, TableRow,
+        TableRowBound, TableRowProps,
     };
 }

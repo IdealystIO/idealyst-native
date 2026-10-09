@@ -20,7 +20,7 @@ use runtime_vocabulary::style_attach::StyleProp;
 use runtime_world::World;
 use table::{
     bind_row, item_lowering, map_cell_style, set_cell_interaction, set_cell_style, table,
-    table_cell, table_row, TableCellPrim, TableCellProps, TableProps, TableRowPrim,
+    table_cell, table_row, ColSpan, TableCellPrim, TableCellProps, TableProps, TableRowPrim,
     TableRowProps,
 };
 
@@ -52,6 +52,7 @@ fn take_view_prim(el: &Element) -> ViewPrim {
 fn item_children(el: Element) -> Vec<Element> {
     match el {
         Element::Item { children, .. } => children,
+        Element::Fragment(children) => children,
         _ => panic!("expected an Element::Item"),
     }
 }
@@ -240,6 +241,7 @@ fn cell_helpers_reach_both_lowerings() {
     }));
     let web_cell = item_lowering::cell_item(
         false,
+        ColSpan::default(),
         Vec::new(),
         Some(StyleProp::Sheet(Box::new(glue::StyleApplication::new(
             sheet.clone(),
@@ -284,6 +286,7 @@ fn map_cell_style_composes_over_a_reactive_cell_style() {
     let pinned = glue::StyleApplication::new(sheet).with("pinned", "left");
     let cell = item_lowering::cell_item(
         false,
+        ColSpan::default(),
         Vec::new(),
         Some(StyleProp::SheetDynamic(Box::new(move || pinned.clone()))),
     );
@@ -348,6 +351,7 @@ fn map_cell_style_composes_over_a_static_cell_style() {
 fn map_cell_style_leaves_a_non_application_style_alone() {
     let cell = item_lowering::cell_item(
         false,
+        ColSpan::default(),
         Vec::new(),
         Some(StyleProp::Static(Rc::new(glue::StyleRules::default()))),
     );
@@ -389,11 +393,13 @@ fn web_handlers_emit_real_table_markup() {
                     vec![
                         item_lowering::cell_item(
                             true,
+                            ColSpan::default(),
                             vec![glue::text("Prop").into_element()],
                             None,
                         ),
                         item_lowering::cell_item(
                             true,
+                            ColSpan::default(),
                             vec![glue::text("Type").into_element()],
                             None,
                         ),
@@ -404,11 +410,13 @@ fn web_handlers_emit_real_table_markup() {
                     vec![
                         item_lowering::cell_item(
                             false,
+                            ColSpan::default(),
                             vec![glue::text("children").into_element()],
                             None,
                         ),
                         item_lowering::cell_item(
                             false,
+                            ColSpan::default(),
                             vec![glue::text("Vec<Element>").into_element()],
                             None,
                         ),
@@ -448,7 +456,7 @@ fn web_handlers_emit_real_table_markup() {
 fn interactive_cell_mounts_through_the_registry() {
     let fired = Rc::new(Cell::new(false));
     let page = backend_ssr::newcore::render_path_with("/", table::register, || {
-        let cell = item_lowering::cell_item(false, vec![glue::text("go").into_element()], None);
+        let cell = item_lowering::cell_item(false,ColSpan::default(), vec![glue::text("go").into_element()], None);
         let fired = fired.clone();
         set_cell_interaction(
             &cell,
@@ -513,6 +521,7 @@ fn defer_registers_eagerly_off_web() {
             vec![item_lowering::row_item(
                 vec![item_lowering::cell_item(
                     true,
+                    ColSpan::default(),
                     vec![glue::text("Prop").into_element()],
                     None,
                 )],
@@ -556,6 +565,7 @@ fn register_from_chunk_is_inert_off_web() {
             vec![item_lowering::row_item(
                 vec![item_lowering::cell_item(
                     false,
+                    ColSpan::default(),
                     vec![glue::text("cell").into_element()],
                     None,
                 )],
@@ -588,6 +598,7 @@ fn scroll_x_lowers_to_surface_wrapping_horizontal_scroller() {
     let t = table(TableProps {
         children: vec![row(2)],
         scroll_x: true,
+        ..Default::default()
     })
     .into_element();
     // Surface (the author-style target — unstyled here, no style passed).
@@ -741,6 +752,7 @@ fn scroll_x_web_width_strategy_and_wrapper() {
             vec![item_lowering::row_item(
                 vec![item_lowering::cell_item(
                     false,
+                    ColSpan::default(),
                     vec![glue::text("wide").into_element()],
                     None,
                 )],
@@ -787,6 +799,7 @@ fn bound_row_fills_handle_on_web_mount() {
         let r = item_lowering::row_item(
             vec![item_lowering::cell_item(
                 false,
+                ColSpan::default(),
                 vec![glue::text("x").into_element()],
                 None,
             )],
@@ -801,4 +814,261 @@ fn bound_row_fills_handle_on_web_mount() {
         filled.get(),
         "mount must hand the <tr> handle to the row binding"
     );
+}
+
+// ===========================================================================
+// Column spans, footer sections, frame slots
+// ===========================================================================
+
+fn text_cell(label: &str) -> Element {
+    table_cell(TableCellProps {
+        children: vec![glue::text(label.to_string()).into_element()],
+        ..Default::default()
+    })
+    .into_element()
+}
+
+fn span_cell(span: ColSpan) -> Element {
+    table_cell(TableCellProps { span, ..Default::default() }).into_element()
+}
+
+fn row_of(cells: Vec<Element>) -> Element {
+    table_row(TableRowProps { children: cells }).into_element()
+}
+
+/// The grid placement a native cell ended up with.
+fn placement(cell: &Element) -> (Option<GridPlacement>, Option<GridPlacement>) {
+    let prim = take_view_prim(cell);
+    let app = match prim.style {
+        Some(StyleProp::Sheet(app)) => *app,
+        _ => panic!("cell keeps its sheet (placement rides overrides)"),
+    };
+    let rules = resolve_style(&app);
+    (rules.grid_row, rules.grid_column)
+}
+
+use runtime_shared::GridPlacement;
+
+/// Regression (CrewForge 10-09 table gaps #2): a cell could only ever
+/// cover one column, so a "No entries for this day." row squeezed into
+/// column 1's width and wrapped there. A spanning cell must lower to a
+/// multi-track grid placement, and every cell of the table must be
+/// explicitly placed — the layout attributes auto-flow children to
+/// columns in document order, which a multi-track child breaks.
+#[test]
+fn regression_spanning_cell_covers_its_columns_on_native() {
+    let t = table(TableProps {
+        children: vec![row(3), row_of(vec![span_cell(ColSpan::Columns(2)), cell()])],
+        ..Default::default()
+    })
+    .into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let rules = resolve_style(&match take_view_prim(&inner).style {
+        Some(StyleProp::Sheet(app)) => *app,
+        _ => panic!("grid sheet"),
+    });
+    assert_eq!(rules.grid_template_columns.as_ref().map(|c| c.len()), Some(3));
+    let cells = item_children(inner);
+    assert_eq!(cells.len(), 5, "the span marker is unwrapped, not a grid child");
+    let expect = [
+        (1, GridPlacement::Line(1)),
+        (1, GridPlacement::Line(2)),
+        (1, GridPlacement::Line(3)),
+        (2, GridPlacement::Lines(1, 3)),
+        (2, GridPlacement::Line(3)),
+    ];
+    for (i, (r, c)) in expect.iter().enumerate() {
+        assert_eq!(placement(&cells[i]), (Some(GridPlacement::Line(*r)), Some(*c)), "cell {i}");
+    }
+}
+
+/// `ColSpan::Rest` covers every column to the end of its row, resolved
+/// against the widest row — the "blank row" shape needs no column count.
+#[test]
+fn rest_span_resolves_to_the_remaining_columns() {
+    let t = table(TableProps {
+        children: vec![row(4), row_of(vec![cell(), span_cell(ColSpan::Rest)])],
+        ..Default::default()
+    })
+    .into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let cells = item_children(inner);
+    assert_eq!(
+        placement(&cells[5]),
+        (Some(GridPlacement::Line(2)), Some(GridPlacement::Lines(2, 5))),
+        "Rest after one cell of four covers columns 2-4"
+    );
+}
+
+/// Regression (gap #4): a footer section's rows land after every body
+/// row on native, wherever the section sits among the children — the
+/// browser lays out `<tfoot>` that way, so the native grid must too.
+#[test]
+fn regression_footer_rows_render_after_body_rows_on_native() {
+    let foot = table::table_foot(table::TableFootProps {
+        children: vec![row_of(vec![text_cell("total"), cell()])],
+    });
+    let t = table(TableProps {
+        children: vec![row(2), foot, row(2)],
+        ..Default::default()
+    })
+    .into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let cells = item_children(inner);
+    assert_eq!(cells.len(), 6, "the footer's rows flatten into the grid");
+    // Auto-flow (no spans or proxies): order IS position. Only the
+    // footer's first cell holds content, and it must open the last row.
+    let with_content: Vec<usize> = cells
+        .into_iter()
+        .enumerate()
+        .filter(|(_, c)| !item_children(clone_shallow(c)).is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(with_content, vec![4], "the footer row is the grid's last row");
+}
+
+/// A cheap stand-in carrying `el`'s child count, so a test can count
+/// children without taking the (single-use) payload.
+fn clone_shallow(el: &Element) -> Element {
+    match el {
+        Element::Item { children, .. } => {
+            Element::Fragment(children.iter().map(|_| Element::Fragment(Vec::new())).collect())
+        }
+        _ => panic!("expected a cell item"),
+    }
+}
+
+/// Web: a span becomes a real `colspan` attribute (a `Rest` span
+/// resolved to a number — the browser accepts nothing else), and a
+/// footer section mounts as a real `<tfoot>`.
+#[test]
+fn web_handlers_emit_colspan_and_tfoot() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        let head = item_lowering::row_item(
+            (0..3)
+                .map(|_| item_lowering::cell_item(true, ColSpan::default(), Vec::new(), None))
+                .collect(),
+            None,
+        );
+        let blank = item_lowering::row_item(
+            vec![item_lowering::cell_item(
+                false,
+                ColSpan::Rest,
+                vec![glue::text("Nobody yet").into_element()],
+                None,
+            )],
+            None,
+        );
+        let foot = table::table_foot(table::TableFootProps {
+            children: vec![item_lowering::row_item(
+                vec![
+                    item_lowering::cell_item(false, ColSpan::Columns(2), Vec::new(), None),
+                    item_lowering::cell_item(false, ColSpan::default(), Vec::new(), None),
+                ],
+                None,
+            )],
+        });
+        // The web lowering `table()` builds on wasm32 — spans resolve
+        // exactly as an app's do.
+        item_lowering::web_table(vec![head, blank, foot], None, false, None, None)
+    });
+    let html = &page.html;
+    assert!(html.contains(r#"colspan="3""#), "Rest resolves to 3 columns: {html}");
+    assert!(html.contains(r#"colspan="2""#), "explicit span: {html}");
+    assert!(html.contains("<tfoot"), "footer section is a real <tfoot>: {html}");
+    let tfoot_at = html.find("<tfoot").unwrap();
+    assert!(
+        html[tfoot_at..].contains(r#"colspan="2""#),
+        "the footer row mounts inside the <tfoot>: {html}"
+    );
+}
+
+/// Regression (gap #5): content that must keep still while a scroll-x
+/// table's columns scroll — and share the table's frame — had nowhere
+/// to go. The slots sit inside the styled surface, either side of the
+/// scroller.
+#[test]
+fn regression_slots_sit_inside_the_surface_outside_the_scroller() {
+    use runtime_vocabulary::prims::ScrollViewPrim;
+    let t = table(TableProps {
+        children: vec![row(2)],
+        scroll_x: true,
+        header_slot: Some(glue::text("holiday").into_element()),
+        footer_slot: Some(glue::text("add").into_element()),
+    })
+    .into_element();
+    let kids = item_children(t);
+    assert_eq!(kids.len(), 3, "surface holds header slot, scroller, footer slot");
+    match &kids[1] {
+        Element::Item { data, .. } => assert!(
+            data.downcast_ref::<PrimCell<ScrollViewPrim>>().is_some(),
+            "the scroller sits between the slots"
+        ),
+        _ => panic!("middle child must be the scroller"),
+    }
+    for i in [0, 2] {
+        if let Element::Item { data, .. } = &kids[i] {
+            assert!(
+                data.downcast_ref::<PrimCell<ScrollViewPrim>>().is_none(),
+                "slot {i} is outside the scroller"
+            );
+        }
+    }
+}
+
+/// A plain (non-scroll) table with a slot moves the author style onto a
+/// surface wrapper, on web too: the slot then shares the frame instead
+/// of floating outside the `<table>`'s border.
+#[test]
+fn slots_on_a_plain_table_wrap_it_in_the_styled_surface_on_web() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        let style = glue::StyleRules {
+            border_top_width: Some(glue::Tokenized::Literal(7.0)),
+            ..Default::default()
+        };
+        item_lowering::web_table(
+            vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(false, ColSpan::default(), Vec::new(), None)],
+                None,
+            )],
+            Some(StyleProp::Static(Rc::new(style))),
+            false,
+            Some(glue::text("caption text").into_element()),
+            None,
+        )
+    });
+    let html = &page.html;
+    let caption = html.find("caption text").expect("slot renders");
+    let table_at = html.find("<table").expect("table renders");
+    assert!(caption < table_at, "header slot precedes the table: {html}");
+    let table_tag_end = table_at + html[table_at..].find('>').unwrap();
+    assert!(
+        !html[table_at..table_tag_end].contains("border-top-width"),
+        "the author style moved off the <table> onto the surface: {html}"
+    );
+}
+
+/// `map_cell_application` re-selects a STATIC sheet without turning it
+/// reactive (row tone / footer / density must not cost every cell a
+/// style closure), reaches through a span marker, and composes around a
+/// reactive one.
+#[test]
+fn map_cell_application_keeps_static_sheets_static() {
+    let cell = table_cell(TableCellProps { span: ColSpan::Columns(2), ..Default::default() })
+        .with_style(StyleProp::Sheet(Box::new(glue::StyleApplication::new(Rc::new(
+            glue::StyleSheet::new(|_| glue::StyleRules::default()),
+        )))))
+        .into_element();
+    assert!(table::map_cell_application(&cell, Rc::new(|a| a.with("tone", "warning"))));
+    let inner = match &cell {
+        Element::Item { children, .. } => &children[0],
+        _ => panic!("span marker"),
+    };
+    match take_view_prim(inner).style {
+        Some(StyleProp::Sheet(app)) => assert_eq!(
+            format!("{:?}", app.variants),
+            format!("{:?}", glue::VariantSet::new().with("tone", "warning")),
+        ),
+        _ => panic!("a static sheet must stay a static sheet"),
+    }
 }

@@ -41,8 +41,12 @@ ui! {
 `runtime-layout` treats `auto` tracks as the `table-layout: auto`
 signal — it measures each column's content, then short columns hug their
 content while a text-heavy column absorbs the remaining width and wraps,
-matching the browser. Authors that need explicit per-column widths attach
-a `width` style to individual cells via `.with_style(...)`.
+matching the browser. It follows the browser on cell sizing too: a cell
+with a px `width` holds its column at that width (the spare width goes to
+the other columns, so one unsized column among sized ones fills the rest),
+and a cell `min_width` floors its column. On web, pair `width` with an
+equal `max-width` — a browser treats a lone `width` on a cell as a floor.
+idea-ui's `TableCell(width = …)` emits both.
 
 ## Why this is an SDK and not a core primitive
 
@@ -56,14 +60,25 @@ of the framework's own layout primitives.
 
 ## Structure
 
-Three primitives, each its own scene payload type on web:
+Four primitives, each its own scene payload type on web:
 
-- [`Table`] — the outer container (`<table>` on web; an implicit
-  `<tbody>` wraps all rows, since we don't yet surface a
-  `TableHead`/`TableBody` distinction).
-- [`TableRow`] — `<tr>` on web, a flex row of cells on native.
-- [`TableCell`] — `<td>` (or `<th>` when `header = true`) on web, a flex
-  item on native.
+- [`Table`] — the outer container (`<table>` on web). Body rows are
+  direct children of the table (the browser treats them as one implicit
+  body). `scroll_x` wraps it in a horizontal scroller; `header_slot` /
+  `footer_slot` draw content inside the styled surface, above and below
+  the rows and OUTSIDE that scroller.
+- [`TableRow`] — `<tr>` on web; on native a marker the table dissolves
+  into the shared grid.
+- [`TableCell`] — `<td>` (or `<th>` when `header = true`) on web, a grid
+  item on native. `span: ColSpan` covers several columns —
+  `ColSpan::Columns(n)` or `ColSpan::Rest` (to the end of the row,
+  resolved against the widest row when the table is built). On web it is
+  `colspan`; on native a multi-track grid placement, and every cell is
+  then placed explicitly. A native spanning cell does not widen the
+  columns it covers.
+- [`TableFoot`] (`table_foot`) — a footer section holding rows: `<tfoot>`
+  on web, announced as the footer; always rendered after the body rows,
+  wherever it is written (native moves its rows to the end of the grid).
 
 ## Styling
 
@@ -89,7 +104,7 @@ into one continuous boundary.
 ## Registration
 
 `table::register(&mut registry)` is the one-line bootstrap call. On web it
-installs the three mount handlers; on every native target it's a no-op
+installs the four mount handlers (table, row, cell, footer section); on every native target it's a no-op
 (the grid lowering needs no handler).
 
 To ship those handlers in a lazy chunk instead, call `table::defer(&mut
@@ -100,6 +115,7 @@ a chunk that registers leaves every table permanently invisible.
 [`Table`]: src/lib.rs
 [`TableRow`]: src/lib.rs
 [`TableCell`]: src/lib.rs
+[`TableFoot`]: src/lib.rs
 
 ## Testing checklist
 
