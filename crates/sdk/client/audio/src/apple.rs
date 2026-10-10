@@ -25,12 +25,20 @@ use objc2_foundation::{NSObject, NSString};
 
 use crate::{AudioError, AudioSource};
 
+// AVAudioPlayer is reached by name at runtime, so nothing references the
+// framework at link time — without this empty extern block the linker drops
+// AVFoundation, the class lookup below fails, and every `load` returns
+// `NotSupported` unless some OTHER crate in the app happens to link it (the
+// sibling media SDKs — camera, video, media-writer — all carry this same
+// block). Pinned by `synth`'s `load_hands_wav_to_the_platform_player`, which
+// requires `Ok` on Apple targets.
+#[link(name = "AVFoundation", kind = "framework")]
+extern "C" {}
+
 /// Resolve an Obj-C class by name at runtime, returning `None` if it isn't
 /// registered. Unlike `class!(...)` (which panics on a missing class), this
-/// lets a host where AVFoundation isn't linked — e.g. the `cargo test`
-/// binary on a CI macOS box — surface a typed error instead of aborting the
-/// process. On a real app the frameworks are linked (the CLI adds
-/// `AVFoundation`), so this always resolves.
+/// surfaces a typed error instead of aborting the process. AVFoundation is
+/// linked by the block above, so on Apple targets this resolves.
 fn class_named(name: &str) -> Option<&'static AnyClass> {
     AnyClass::get(name)
 }
