@@ -1,6 +1,6 @@
 [package]
 name = "dev-tui"
-version = "1.5.3"
+version = "1.5.4"
 edition.workspace = true
 license.workspace = true
 description = "The interactive panel for `idealyst dev`: a live view of the session (per-target state, cargo progress, recent saves, build errors, the log), built as an idealyst app on the framework's terminal backend."

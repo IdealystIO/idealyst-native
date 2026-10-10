@@ -4,7 +4,7 @@
 
 [package]
 name = "remote-host"
-version = "2.0.0"
+version = "2.0.1"
 edition.workspace = true
 license.workspace = true
 description = "The app side of idealyst remote components: loads, checks and runs remote-component bundles (wasm, interpreted by wasmi)"

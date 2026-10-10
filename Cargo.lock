@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "android-navigator-helpers"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -735,7 +735,7 @@ checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
 
 [[package]]
 name = "audio"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "gio",
  "glib",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "auto-update"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "ed25519-dalek",
  "net",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.10.4"
+version = "1.11.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-tv"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cpu"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "parity-goldens",
  "pico-args",
@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "backend-email"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.15.1"
+version = "1.16.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1453,14 +1453,14 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-rs-shell"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-ios-mobile",
 ]
 
 [[package]]
 name = "backend-ios-tv"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-ios-core",
  "block2 0.5.1",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "gtk4",
  "inventory",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.12.2"
+version = "1.13.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "backend-roku"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-roku-macros",
  "parity-goldens",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "backend-terminal"
-version = "1.7.1"
+version = "2.0.0"
 dependencies = [
  "parity-goldens",
  "runtime-layout",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.6.0"
+version = "2.7.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "raw-window-handle",
  "runtime-layout",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "build-windows"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "cache"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "redis",
  "serde",
@@ -2178,7 +2178,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "futures-channel",
  "glib",
@@ -2225,14 +2225,14 @@ dependencies = [
 
 [[package]]
 name = "canvas"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "canvas-core",
 ]
 
 [[package]]
 name = "canvas-core"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "host-mock",
  "image",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-native"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-vello"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "backend-linux",
  "canvas-core",
@@ -2327,14 +2327,14 @@ dependencies = [
 
 [[package]]
 name = "canvas3d"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "canvas3d-core",
 ]
 
 [[package]]
 name = "canvas3d-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "canvas-core",
@@ -2364,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "canvas3d-wgpu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "canvas-core",
@@ -2458,7 +2458,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "charts"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "canvas-core",
  "charts-core",
@@ -2571,7 +2571,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clipboard"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "arboard",
  "jni 0.21.1",
@@ -2620,7 +2620,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -2737,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "connectivity"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "deep-link"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "runtime-core",
  "runtime-shared",
@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3547,7 +3547,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -3676,7 +3676,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "host-mock",
  "runtime-core",
@@ -3926,7 +3926,7 @@ dependencies = [
 
 [[package]]
 name = "email"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -4227,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -4407,7 +4407,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -4976,7 +4976,7 @@ dependencies = [
 
 [[package]]
 name = "gpu-surface"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "js-sys",
  "log",
@@ -5020,7 +5020,7 @@ dependencies = [
 
 [[package]]
 name = "graphql"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "async-graphql",
  "graphql_client",
@@ -5438,7 +5438,7 @@ dependencies = [
 
 [[package]]
 name = "haptics"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -5608,7 +5608,7 @@ dependencies = [
 
 [[package]]
 name = "headless-screenshot"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "base64",
  "dev-client",
@@ -5697,7 +5697,7 @@ dependencies = [
 
 [[package]]
 name = "host-android-mobile"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-android-mobile",
  "log",
@@ -5711,7 +5711,7 @@ dependencies = [
 
 [[package]]
 name = "host-appkit"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "backend-apple-core",
  "backend-macos",
@@ -5724,7 +5724,7 @@ dependencies = [
 
 [[package]]
 name = "host-gtk"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-linux",
  "gtk4",
@@ -5735,7 +5735,7 @@ dependencies = [
 
 [[package]]
 name = "host-ios-mobile"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -5752,7 +5752,7 @@ dependencies = [
 
 [[package]]
 name = "host-linux-desktop"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-linux",
  "log",
@@ -5767,7 +5767,7 @@ dependencies = [
 
 [[package]]
 name = "host-macos-desktop"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-macos",
  "log",
@@ -5783,7 +5783,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -5793,7 +5793,7 @@ dependencies = [
 
 [[package]]
 name = "host-terminal"
-version = "1.5.4"
+version = "1.6.0"
 dependencies = [
  "backend-terminal",
  "crossterm",
@@ -5805,7 +5805,7 @@ dependencies = [
 
 [[package]]
 name = "host-web"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "backend-web",
  "js-sys",
@@ -5823,7 +5823,7 @@ dependencies = [
 
 [[package]]
 name = "host-wgpu"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "host-android-mobile",
  "host-ios-mobile",
@@ -5839,7 +5839,7 @@ dependencies = [
 
 [[package]]
 name = "host-wgpu-accesskit"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -5850,7 +5850,7 @@ dependencies = [
 
 [[package]]
 name = "host-win32"
-version = "1.5.2"
+version = "2.0.0"
 dependencies = [
  "backend-windows",
  "runtime-core",
@@ -5862,7 +5862,7 @@ dependencies = [
 
 [[package]]
 name = "host-windows-desktop"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "log",
  "raw-window-handle",
@@ -5875,7 +5875,7 @@ dependencies = [
 
 [[package]]
 name = "host-winit"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "host-wgpu-accesskit",
  "log",
@@ -6101,7 +6101,7 @@ dependencies = [
 
 [[package]]
 name = "i18n"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "i18n-macros",
  "net",
@@ -6214,7 +6214,7 @@ dependencies = [
 
 [[package]]
 name = "icons-lucide"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6313,7 +6313,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6322,7 +6322,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6333,7 +6333,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "3.7.0"
+version = "3.7.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6351,7 +6351,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.12.0"
+version = "1.12.1"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6391,7 +6391,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.8"
+version = "1.5.9"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6401,7 +6401,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.7"
+version = "1.5.8"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6412,7 +6412,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-mail"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-email",
  "runtime-core",
@@ -6421,7 +6421,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "1.5.6"
+version = "1.5.7"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6432,7 +6432,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6447,7 +6447,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6514,7 +6514,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-config"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "aws-config",
  "cache",
@@ -6699,7 +6699,7 @@ dependencies = [
 
 [[package]]
 name = "ios-navigator-helpers"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -6877,7 +6877,7 @@ dependencies = [
 
 [[package]]
 name = "jobs"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -7378,7 +7378,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "location"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-io",
  "futures-channel",
@@ -7480,7 +7480,7 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "maps"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "backend-ios-mobile",
  "backend-web",
@@ -7497,14 +7497,14 @@ dependencies = [
 
 [[package]]
 name = "maps-core"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-core",
 ]
 
 [[package]]
 name = "maps-ios"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-ios-mobile",
  "maps-core",
@@ -7515,7 +7515,7 @@ dependencies = [
 
 [[package]]
 name = "maps-web"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "maps-core",
  "web-glue",
@@ -7524,7 +7524,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -7748,7 +7748,7 @@ dependencies = [
 
 [[package]]
 name = "menu"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-ios-mobile",
  "backend-linux",
@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "microphone"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "cpal",
  "futures-channel",
@@ -8241,7 +8241,7 @@ dependencies = [
 
 [[package]]
 name = "notifications"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -8881,7 +8881,7 @@ dependencies = [
 
 [[package]]
 name = "ota"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "files",
  "net",
@@ -9039,7 +9039,7 @@ dependencies = [
 
 [[package]]
 name = "pan"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-core",
  "runtime-shared",
@@ -9125,7 +9125,7 @@ checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
 name = "pdf"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "canvas-core",
  "hayro-interpret",
@@ -9184,7 +9184,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissions"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "block2 0.5.1",
  "jni 0.21.1",
@@ -9710,7 +9710,7 @@ dependencies = [
 
 [[package]]
 name = "pubsub"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -9765,7 +9765,7 @@ checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
 
 [[package]]
 name = "qr"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "canvas",
  "canvas-vello",
@@ -10243,7 +10243,7 @@ dependencies = [
 
 [[package]]
 name = "remote-host"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "remote-abi",
  "remote-bundle",
@@ -10282,14 +10282,14 @@ dependencies = [
 
 [[package]]
 name = "render-api"
-version = "1.5.2"
+version = "2.0.0"
 dependencies = [
  "runtime-shared",
 ]
 
 [[package]]
 name = "render-wgpu"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -10591,7 +10591,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10646,7 +10646,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-server-shell-native"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "dev-client",
  "runtime-shared",
@@ -10658,7 +10658,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.19.0"
+version = "1.20.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10687,7 +10687,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "1.26.0"
+version = "2.0.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -11002,7 +11002,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screen-recorder"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -11290,7 +11290,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "1.9.1"
+version = "1.9.2"
 dependencies = [
  "axum",
  "futures-channel",
@@ -11314,7 +11314,7 @@ dependencies = [
 
 [[package]]
 name = "server-aws"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "axum",
  "lambda_http",
@@ -11345,7 +11345,7 @@ dependencies = [
 
 [[package]]
 name = "server-kit"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "axum",
  "cache",
@@ -11418,7 +11418,7 @@ dependencies = [
 
 [[package]]
 name = "share"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -11964,7 +11964,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
@@ -12012,7 +12012,7 @@ checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
 
 [[package]]
 name = "storage"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "jni 0.21.1",
  "ndk-context",
@@ -12187,7 +12187,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -12245,7 +12245,7 @@ dependencies = [
 
 [[package]]
 name = "swap-navigator"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -12409,7 +12409,7 @@ dependencies = [
 
 [[package]]
 name = "sync"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
  "runtime-core",
  "serde",
@@ -12478,7 +12478,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
@@ -12936,7 +12936,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "toolbar"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "backend-linux",
  "backend-macos",
@@ -13745,7 +13745,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -13773,7 +13773,7 @@ dependencies = [
 
 [[package]]
 name = "video-compose"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "canvas-core",
  "canvas-vello",
@@ -13824,7 +13824,7 @@ dependencies = [
 
 [[package]]
 name = "virtualized"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-core",
  "runtime-shared",
@@ -14413,7 +14413,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -15713,7 +15713,7 @@ dependencies = [
 
 [[package]]
 name = "zoom"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "runtime-core",
  "runtime-shared",

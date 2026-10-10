@@ -1,6 +1,6 @@
 [package]
 name = "idea-ui-mail"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "Email-safe component set for the idealyst framework — the opinion layer for `backend-email`."
