@@ -101,8 +101,6 @@ docs! {
           code("render_api"), ":"),
 
         code(rust, r##"
-            use std::time::Instant;
-
             pub trait EventSink {
                 fn pointer_down(&mut self, ev: PointerEvent);
                 fn pointer_move(&mut self, ev: PointerEvent);
@@ -110,12 +108,13 @@ docs! {
                 fn pointer_cancel(&mut self);
                 fn scroll(&mut self, ev: ScrollEvent);
                 fn key(&mut self, ev: &KeyEvent) -> bool;
+                fn focus_lost(&mut self);
                 fn set_viewport(&mut self, w: f32, h: f32);
-                fn tick(&mut self, now: Instant) -> bool;
+                fn tick(&mut self) -> bool;
             }
         "##),
 
-        p("Eight methods. That's the entire contract a shell drives. \
+        p("Nine methods. That's the entire contract a shell drives. \
            Coordinates are always in logical CSS pixels — the shell \
            does the physical-to-logical conversion (divide by the \
            platform's scale factor, normalize wheel-line deltas to \
@@ -207,6 +206,8 @@ docs! {
                 pub text: Option<String>,
                 pub modifiers: KeyModifiers,
                 pub pressed: bool,
+                pub code: String,   // physical key, Web KeyboardEvent.code ("KeyW")
+                pub repeat: bool,   // auto-repeat of a held key; false on release
             }
 
             pub struct KeyModifiers {
@@ -220,7 +221,9 @@ docs! {
                 Character,
                 Backspace, Delete, Enter, Escape, Tab,
                 ArrowLeft, ArrowRight, ArrowUp, ArrowDown,
-                Home, End,
+                Home, End, PageUp, PageDown, Insert,
+                Shift, Control, Alt, Meta, CapsLock,
+                F(u8),
                 Unknown,
             }
         "##),
@@ -234,10 +237,18 @@ docs! {
           " when it cares about intent (Backspace deletes a glyph; \
            ArrowLeft moves the caret) and reads ", code("text"),
           " when it needs the characters to insert."),
-        p(code("pressed"), " distinguishes key-down from key-up. \
-           Shells that only emit one of the two (UIKit's ",
-          code("pressesBegan"),
-          " fires for both) can always set ", code("true"), "."),
+        p(code("pressed"), " distinguishes key-down from key-up. Shells \
+           deliver both: releases reach the app-level keyboard listeners \
+           (held-key game controls need them), presses also reach a \
+           focused text input. A shell whose platform reports only \
+           presses sends a release right after each press, so no key \
+           is ever stuck down. ", code("code"), " is the physical key \
+           in Web ", code("KeyboardEvent.code"), " vocabulary (empty \
+           when unknown); ", code("repeat"), " passes the platform's \
+           auto-repeat flag where it has one. Call ", code("focus_lost"),
+          " when the window loses focus, alongside ", code("pointer_cancel"),
+          ": the platform won't deliver releases for keys held at that \
+           moment, so the render side releases them."),
         p("The ", code("Key"), " enum is open-ended in spirit: add \
            variants as more shells need them. The render side matches \
            exhaustively so a missing case fails loudly at compile time."),
@@ -350,7 +361,6 @@ docs! {
         p("Minimal skeleton:"),
 
         code(rust, r##"
-            use std::time::Instant;
             use render_api::DeviceProfile;
             use render_wgpu::{install_redraw_hook, Host, Renderer};
             use runtime_core::Element;
@@ -380,11 +390,12 @@ docs! {
                 //    on touch-moved:  host.pointer_move(...)
                 //    on touch-ended:  host.pointer_up(...)
                 //    on scroll:       host.scroll(ScrollEvent { ... })
-                //    on key press:    host.key(&KeyEvent { ... })
+                //    on key down/up:  host.key(&KeyEvent { pressed, .. })
+                //    on window blur:  host.pointer_cancel(); host.focus_lost()
                 //    on resize:       host.set_viewport(w, h)
                 //
                 //    Each frame: renderer.render(&host, ...); then
-                //    if host.tick(Instant::now()) { request_redraw(); }
+                //    if host.tick() { request_redraw(); }
             }
         "##),
 

@@ -931,16 +931,25 @@ impl caps::AppEnvOps for WebBackend {
         WebBackend::set_scrollbar_theme_impl(self, thumb, track)
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: app-level key handlers run author code.
-        let handler = handler.map(|f| -> primitives::key::KeyDownHandler {
-            Rc::new(move |ev| {
-                let outcome = f(ev);
-                schedule_flush();
-                outcome
-            })
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+        // Dispatch-site glue: app-level key listeners run author code, so
+        // flush staged writes after each delivery (same as every other
+        // native event entry).
+        let sink = sink.map(|s| {
+            let blur = s.clone();
+            primitives::key::KeyboardSink::new(
+                move |ev| {
+                    let outcome = s.key(ev);
+                    schedule_flush();
+                    outcome
+                },
+                move || {
+                    blur.focus_lost();
+                    schedule_flush();
+                },
+            )
         });
-        WebBackend::set_app_key_handler_impl(self, handler)
+        WebBackend::set_keyboard_sink_impl(self, sink)
     }
 }
 

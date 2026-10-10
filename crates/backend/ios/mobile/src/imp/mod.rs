@@ -124,10 +124,11 @@ pub struct IosBackend {
     mtm: MainThreadMarker,
     host_root: Option<Retained<UIView>>,
     callback_targets: Vec<Retained<NSObject>>,
-    /// The app-level key responder installed by `set_app_key_handler` (an
-    /// invisible first-responder view overriding `pressesBegan:`). Retained here;
-    /// removed + resigned when the handler is replaced or cleared.
-    app_key_responder: Option<Retained<keyboard::IdealystKeyResponder>>,
+    /// The app-level key source installed by `set_keyboard_sink` (an
+    /// invisible first-responder view overriding the four `presses*`
+    /// methods, plus its app-resign-active observer). Retained here;
+    /// resigned, unobserved and removed when the sink is cleared.
+    app_keyboard: Option<keyboard::AppKeyboard>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -733,7 +734,7 @@ impl IosBackend {
             mtm,
             host_root: None,
             callback_targets: Vec::new(),
-            app_key_responder: None,
+            app_keyboard: None,
             scroll_views: std::collections::HashSet::new(),
             external_content_measures: HashMap::new(),
             icon_image_cache: HashMap::new(),
@@ -1462,8 +1463,8 @@ impl IosBackend {
         crate::imp::schedule_layout_pass();
     }
 
-    pub(crate) fn set_app_key_handler_impl(&mut self, handler: Option<runtime_shared::primitives::key::KeyDownHandler>) {
-        keyboard::set_app_key_handler(self, handler);
+    pub(crate) fn set_keyboard_sink_impl(&mut self, sink: Option<runtime_shared::primitives::key::KeyboardSink>) {
+        keyboard::set_keyboard_sink(self, sink);
     }
 
     pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {

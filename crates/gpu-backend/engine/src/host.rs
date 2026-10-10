@@ -1157,8 +1157,12 @@ impl Host {
                 if let Some(label) = label_for_action(self.skin.as_ref(), action) {
                     self.flash_key_press(label);
                 }
+                // A tap is a press immediately followed by a release:
+                // the app-level keyboard sink sees both, so an on-screen
+                // key never stays "held" in the key dispatcher.
                 let ke = keyboard::action_to_key_event(action);
                 self.key(&ke);
+                self.key(&KeyEvent { pressed: false, ..ke });
                 return;
             }
             // Inside keyboard frame but no key → swallow.
@@ -1584,25 +1588,39 @@ impl Host {
         Rc::ptr_eq(&hit, node)
     }
 
-    /// Process a key event against the currently focused input.
-    /// No-op if nothing is focused. Returns `true` if the event
-    /// produced a state change (useful for shells that want to
-    /// decide whether to redraw).
+    /// Process a key event: the app-level keyboard sink sees every
+    /// press AND release; a press the sink doesn't claim then goes to
+    /// the currently focused input. Returns `true` if the event was
+    /// consumed or produced a state change (useful for shells that
+    /// want to decide whether to redraw / propagate).
     pub fn key(&mut self, event: &KeyEvent) -> bool {
-        if !event.pressed {
-            return false;
-        }
-        // App-level key handler FIRST — it fires regardless of focus (arrow /
-        // shortcut keys for app navigation). Claiming the key
-        // (`PreventDefault`) stops the focused-input path below.
-        if let Some(handler) = self.backend.borrow().app_key_handler.clone() {
+        // App-level keyboard sink FIRST — it fires regardless of focus
+        // (WASD / arrow game controls, app shortcuts) and for releases
+        // too. Claiming the key (`PreventDefault`) stops the
+        // focused-input path below.
+        //
+        // The clone is bound in its own `let` so the `Ref` from
+        // `borrow()` is dropped BEFORE the sink runs. In an
+        // `if let Some(s) = self.backend.borrow()....clone() { .. }`
+        // the temporary `Ref` lives to the end of the whole if-let
+        // block (Rust 2021 temporary scope), so a listener that adds or
+        // removes listeners mid-dispatch — which re-enters
+        // `set_keyboard_sink` through `try_borrow_mut` — would always
+        // find the backend borrowed and its install change would be
+        // deferred instead of applied.
+        let sink = self.backend.borrow().keyboard_sink.clone();
+        if let Some(sink) = sink {
             let ev = app_key_event(event);
             if matches!(
-                handler(&ev),
+                sink.key(&ev),
                 runtime_shared::primitives::key::KeyOutcome::PreventDefault
             ) {
                 return true;
             }
+        }
+        // Releases stop here: a text input only acts on presses.
+        if !event.pressed {
+            return false;
         }
         // Flash the corresponding on-screen key (if any) so
         // physical-keyboard typing animates the virtual keys
@@ -1670,6 +1688,15 @@ impl Host {
             | Key::ArrowDown
             | Key::Home
             | Key::End
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Insert
+            | Key::Shift
+            | Key::Control
+            | Key::Alt
+            | Key::Meta
+            | Key::CapsLock
+            | Key::F(_)
             | Key::Delete
             | Key::Enter
             | Key::Tab
@@ -1681,6 +1708,17 @@ impl Host {
             true
         } else {
             false
+        }
+    }
+
+    /// The window stopped receiving keys (blur / app deactivation).
+    /// Releases for keys still held won't arrive, so the app-level
+    /// keyboard sink synthesizes them. Sink cloned out of the backend
+    /// borrow first — same re-entrancy rule as [`Self::key`].
+    pub fn focus_lost(&mut self) {
+        let sink = self.backend.borrow().keyboard_sink.clone();
+        if let Some(sink) = sink {
+            sink.focus_lost();
         }
     }
 
@@ -2334,6 +2372,9 @@ impl EventSink for Host {
     fn key(&mut self, ev: &KeyEvent) -> bool {
         Host::key(self, ev)
     }
+    fn focus_lost(&mut self) {
+        Host::focus_lost(self)
+    }
     fn set_viewport(&mut self, w: f32, h: f32) {
         Host::set_viewport(self, w, h)
     }
@@ -2377,36 +2418,77 @@ fn label_for_action(skin: &dyn Painter, action: keyboard::KeyAction) -> Option<&
         .map(|spec| spec.label)
 }
 
-/// Same lookup, but starting from a physical [`KeyEvent`].
 /// Convert a render-API [`KeyEvent`] into the framework's app-level
-/// `KeyEvent` (Web `KeyboardEvent.key` vocabulary). Named keys map to their
-/// Web names; `Character` uses the event's `text` payload (so `+`/`-`/`=` and
-/// letters are themselves). Selection fields are 0 — an app handler has no
-/// associated text field.
-fn app_key_event(event: &KeyEvent) -> runtime_shared::primitives::key::KeyEvent {
-    let key = match event.key {
-        Key::ArrowLeft => "ArrowLeft".to_string(),
-        Key::ArrowRight => "ArrowRight".to_string(),
-        Key::ArrowUp => "ArrowUp".to_string(),
-        Key::ArrowDown => "ArrowDown".to_string(),
-        Key::Enter => "Enter".to_string(),
-        Key::Backspace => "Backspace".to_string(),
-        Key::Delete => "Delete".to_string(),
-        Key::Escape => "Escape".to_string(),
-        Key::Tab => "Tab".to_string(),
-        Key::Home => "Home".to_string(),
-        Key::End => "End".to_string(),
-        Key::Character | Key::Unknown => event.text.clone().unwrap_or_default(),
-    };
-    runtime_shared::primitives::key::KeyEvent {
-        key,
+/// [`AppKeyEvent`](runtime_shared::primitives::key::AppKeyEvent) (Web
+/// `KeyboardEvent.key` / `.code` vocabulary). Named keys map to their Web
+/// names; `Character` / `Unknown` use the event's `text` payload (so
+/// `+`/`-`/`=`, letters and `" "` are themselves). `code` and `repeat` pass
+/// through from the shell.
+fn app_key_event(event: &KeyEvent) -> runtime_shared::primitives::key::AppKeyEvent {
+    use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
+    AppKeyEvent {
+        phase: if event.pressed { KeyPhase::Down } else { KeyPhase::Up },
+        key: web_key_name(event),
+        code: event.code.clone(),
+        repeat: event.pressed && event.repeat,
         shift: event.modifiers.shift,
         ctrl: event.modifiers.ctrl,
         alt: event.modifiers.alt,
         meta: event.modifiers.meta,
-        selection_start: 0,
-        selection_end: 0,
     }
+}
+
+/// Web `KeyboardEvent.key` for a render-API key.
+fn web_key_name(event: &KeyEvent) -> String {
+    let named = match event.key {
+        Key::ArrowLeft => "ArrowLeft",
+        Key::ArrowRight => "ArrowRight",
+        Key::ArrowUp => "ArrowUp",
+        Key::ArrowDown => "ArrowDown",
+        Key::Enter => "Enter",
+        Key::Backspace => "Backspace",
+        Key::Delete => "Delete",
+        Key::Escape => "Escape",
+        Key::Tab => "Tab",
+        Key::Home => "Home",
+        Key::End => "End",
+        Key::PageUp => "PageUp",
+        Key::PageDown => "PageDown",
+        Key::Insert => "Insert",
+        Key::Shift => "Shift",
+        Key::Control => "Control",
+        Key::Alt => "Alt",
+        Key::Meta => "Meta",
+        Key::CapsLock => "CapsLock",
+        Key::F(n) => return format!("F{n}"),
+        Key::Character | Key::Unknown => {
+            return match event.text.as_deref() {
+                Some(t) if !t.is_empty() => t.to_string(),
+                _ => key_from_code(&event.code, event.modifiers.shift),
+            }
+        }
+    };
+    named.to_string()
+}
+
+/// `key` for a character press the shell delivered with no text. winit
+/// does that for Ctrl/Cmd chords (the OS produces no character), which left
+/// `key == ""` here while every other backend reports `"s"` for Ctrl+S —
+/// app shortcuts matched on `key` silently never fired on wgpu. Derived
+/// from the physical code (US layout, the same fallback Android uses when
+/// its `unicodeChar` is 0). App-level event only: the focused-input path
+/// keeps using `text`, so a chord still types nothing into a field.
+fn key_from_code(code: &str, shift: bool) -> String {
+    if let Some(letter) = code.strip_prefix("Key").filter(|l| l.len() == 1) {
+        return if shift { letter.to_string() } else { letter.to_ascii_lowercase() };
+    }
+    if let Some(digit) = code.strip_prefix("Digit").filter(|d| d.len() == 1) {
+        return digit.to_string();
+    }
+    if code == "Space" {
+        return " ".to_string();
+    }
+    String::new()
 }
 
 /// `Key::Character` resolves through the event's `text` payload
@@ -2724,6 +2806,8 @@ mod tests {
             text: Some(c.to_string()),
             modifiers: Default::default(),
             pressed: true,
+            code: String::new(),
+            repeat: false,
         }
     }
 
@@ -3099,5 +3183,198 @@ mod tests {
         // Wraps across midnight both ways.
         assert_eq!(super::clock_minute_of(t, 12 * 60), 5);
         assert_eq!(super::clock_minute_of(t, -13 * 60), 23 * 60 + 5);
+    }
+
+    // -------------------------------------------------------------
+    // App-level keyboard sink (key down + up, focus loss)
+    // -------------------------------------------------------------
+
+    use runtime_shared::primitives::key::{AppKeyEvent, KeyOutcome, KeyPhase, KeyboardSink};
+    use runtime_vocabulary::caps;
+
+    /// A sink that records every event (and focus losses) it receives.
+    fn recording_sink(
+        outcome: KeyOutcome,
+    ) -> (KeyboardSink, Rc<RefCell<Vec<AppKeyEvent>>>, Rc<std::cell::Cell<u32>>) {
+        let events: Rc<RefCell<Vec<AppKeyEvent>>> = Rc::new(RefCell::new(Vec::new()));
+        let lost = Rc::new(std::cell::Cell::new(0u32));
+        let (e, l) = (events.clone(), lost.clone());
+        let sink = KeyboardSink::new(
+            move |ev| {
+                e.borrow_mut().push(ev.clone());
+                outcome
+            },
+            move || l.set(l.get() + 1),
+        );
+        (sink, events, lost)
+    }
+
+    fn physical(key: Key, text: Option<&str>, code: &str, pressed: bool) -> KeyEvent {
+        KeyEvent {
+            key,
+            text: text.map(str::to_string),
+            modifiers: Default::default(),
+            pressed,
+            code: code.to_string(),
+            repeat: false,
+        }
+    }
+
+    /// Regression: `Host::key` returned early for every release, so the
+    /// app-level key hook only ever saw key-DOWN — a game could never
+    /// tell a held "W" had been let go. Both phases must reach the sink,
+    /// with the shell's physical `code` and repeat flag.
+    #[test]
+    fn regression_wgpu_app_key_sink_never_saw_key_releases() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let (sink, events, _) = recording_sink(KeyOutcome::Default);
+        caps::AppEnvOps::set_keyboard_sink(&mut *host.backend().borrow_mut(), Some(sink));
+
+        host.key(&physical(Key::Character, Some("w"), "KeyW", true));
+        host.key(&KeyEvent { repeat: true, ..physical(Key::Character, Some("w"), "KeyW", true) });
+        host.key(&physical(Key::Character, Some("w"), "KeyW", false));
+        host.key(&physical(Key::Shift, None, "ShiftLeft", true));
+        host.key(&physical(Key::Shift, None, "ShiftLeft", false));
+
+        let got: Vec<(KeyPhase, String, String, bool)> = events
+            .borrow()
+            .iter()
+            .map(|e| (e.phase, e.key.clone(), e.code.clone(), e.repeat))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (KeyPhase::Down, "w".into(), "KeyW".into(), false),
+                (KeyPhase::Down, "w".into(), "KeyW".into(), true),
+                (KeyPhase::Up, "w".into(), "KeyW".into(), false),
+                (KeyPhase::Down, "Shift".into(), "ShiftLeft".into(), false),
+                (KeyPhase::Up, "Shift".into(), "ShiftLeft".into(), false),
+            ],
+        );
+    }
+
+    /// The focused-input path stays press-only: a release must not type
+    /// the character a second time.
+    #[test]
+    fn key_release_reaches_sink_but_not_focused_input() {
+        let (mut host, _input, edits) = host_with_text_input();
+        let (sink, events, _) = recording_sink(KeyOutcome::Default);
+        caps::AppEnvOps::set_keyboard_sink(&mut *host.backend().borrow_mut(), Some(sink));
+        host.pointer_down(primary_press((50.0, 50.0)));
+        assert!(host.focused_input.is_some());
+
+        host.key(&physical(Key::Character, Some("a"), "KeyA", true));
+        host.key(&physical(Key::Character, Some("a"), "KeyA", false));
+        assert_eq!(edits.borrow().as_slice(), &["a".to_string()], "one press → one edit");
+        assert_eq!(events.borrow().len(), 2, "the sink still saw down AND up");
+    }
+
+    /// `PreventDefault` from the sink claims the key: the focused input
+    /// never sees it. `None` removes the sink: nothing is delivered.
+    #[test]
+    fn sink_prevent_default_claims_key_and_none_uninstalls() {
+        let (mut host, _input, edits) = host_with_text_input();
+        let (sink, events, _) = recording_sink(KeyOutcome::PreventDefault);
+        caps::AppEnvOps::set_keyboard_sink(&mut *host.backend().borrow_mut(), Some(sink));
+        host.pointer_down(primary_press((50.0, 50.0)));
+        assert!(host.key(&char_key("a")), "claimed key reports consumed");
+        assert!(edits.borrow().is_empty(), "claimed key never reaches the input");
+
+        caps::AppEnvOps::set_keyboard_sink(&mut *host.backend().borrow_mut(), None);
+        host.key(&char_key("b"));
+        host.focus_lost();
+        assert_eq!(events.borrow().len(), 1, "no delivery after the sink is removed");
+        assert_eq!(edits.borrow().as_slice(), &["b".to_string()]);
+    }
+
+    /// Window blur → `EventSink::focus_lost` → the sink's `focus_lost`,
+    /// so the dispatcher can synthesize releases for held keys.
+    #[test]
+    fn focus_lost_reaches_the_keyboard_sink() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let (sink, _, lost) = recording_sink(KeyOutcome::Default);
+        caps::AppEnvOps::set_keyboard_sink(&mut *host.backend().borrow_mut(), Some(sink));
+        render_api::EventSink::focus_lost(&mut host);
+        assert_eq!(lost.get(), 1);
+    }
+
+    /// Regression: `Host::key` read the sink with
+    /// `if let Some(h) = self.backend.borrow().app_key_handler.clone() { .. }`
+    /// — the temporary `Ref` lives for the whole if-let block (Rust 2021),
+    /// so a listener that added or removed a listener mid-dispatch (which
+    /// re-enters `set_keyboard_sink` through `try_borrow_mut`) always found
+    /// the backend borrowed. Fails pre-fix: `try_borrow_mut` errs inside
+    /// the sink.
+    #[test]
+    fn regression_wgpu_key_dispatch_held_backend_borrow_during_sink() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let backend = host.backend().clone();
+        let reinstalled = Rc::new(std::cell::Cell::new(false));
+        let (b, r) = (Rc::downgrade(&backend), reinstalled.clone());
+        let sink = KeyboardSink::new(
+            move |_ev| {
+                // What the boot-wired keyboard host does when the last
+                // listener drops mid-dispatch.
+                let backend = b.upgrade().unwrap();
+                if let Ok(mut be) = backend.try_borrow_mut() {
+                    caps::AppEnvOps::set_keyboard_sink(&mut *be, None);
+                    r.set(true);
+                }
+                KeyOutcome::Default
+            },
+            || {},
+        );
+        caps::AppEnvOps::set_keyboard_sink(&mut *backend.borrow_mut(), Some(sink));
+        host.key(&physical(Key::Escape, None, "Escape", true));
+        assert!(reinstalled.get(), "the sink must run with the backend unborrowed");
+        assert!(backend.borrow().keyboard_sink.is_none());
+
+        // Same for the focus-loss entry point.
+        let r2 = Rc::new(std::cell::Cell::new(false));
+        let (b, r) = (Rc::downgrade(&backend), r2.clone());
+        let sink = KeyboardSink::new(
+            |_| KeyOutcome::Default,
+            move || r.set(b.upgrade().unwrap().try_borrow_mut().is_ok()),
+        );
+        caps::AppEnvOps::set_keyboard_sink(&mut *backend.borrow_mut(), Some(sink));
+        host.focus_lost();
+        assert!(r2.get(), "focus_lost runs the sink with the backend unborrowed");
+    }
+
+    #[test]
+    fn regression_wgpu_ctrl_chord_key_was_empty() {
+        let mut ev = KeyEvent {
+            key: Key::Character,
+            text: None,
+            modifiers: Default::default(),
+            pressed: true,
+            code: "KeyS".to_string(),
+            repeat: false,
+        };
+        ev.modifiers.ctrl = true;
+        assert_eq!(app_key_event(&ev).key, "s");
+        ev.modifiers.shift = true;
+        assert_eq!(app_key_event(&ev).key, "S");
+        ev.code = "Digit4".to_string();
+        assert_eq!(app_key_event(&ev).key, "4");
+        // Real text always wins over the code fallback.
+        ev.text = Some("$".to_string());
+        assert_eq!(app_key_event(&ev).key, "$");
+    }
+
+    #[test]
+    fn app_key_event_web_names() {
+        let ev = |key, text: Option<&str>| app_key_event(&physical(key, text, "", true)).key;
+        assert_eq!(ev(Key::F(5), None), "F5");
+        assert_eq!(ev(Key::Shift, None), "Shift");
+        assert_eq!(ev(Key::Control, None), "Control");
+        assert_eq!(ev(Key::Alt, None), "Alt");
+        assert_eq!(ev(Key::Meta, None), "Meta");
+        assert_eq!(ev(Key::PageDown, None), "PageDown");
+        assert_eq!(ev(Key::Character, Some(" ")), " ");
+        assert_eq!(ev(Key::Unknown, None), "");
+        let up = app_key_event(&KeyEvent { repeat: true, ..physical(Key::Enter, None, "Enter", false) });
+        assert_eq!(up.phase, KeyPhase::Up);
+        assert!(!up.repeat, "a release is never a repeat");
     }
 }

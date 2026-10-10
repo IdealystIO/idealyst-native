@@ -86,7 +86,18 @@ pub trait EventSink {
     /// a focused TextInput accepted the character or handled
     /// Backspace). Shells can use this to decide whether to let
     /// the key propagate to platform shortcuts.
+    ///
+    /// Called for presses AND releases ([`KeyEvent::pressed`]): every
+    /// key reaches the app-level keyboard sink; only presses reach a
+    /// focused text input.
     fn key(&mut self, ev: &KeyEvent) -> bool;
+    /// The window / app stopped receiving keys (window blur, app
+    /// deactivation, terminal focus-out). The platform will not deliver
+    /// the releases of keys still held at that moment, so the render
+    /// side tells the app-level keyboard sink to release them. Shells
+    /// call this alongside [`pointer_cancel`](Self::pointer_cancel) on
+    /// focus loss.
+    fn focus_lost(&mut self);
     /// Tell the render side how big the viewport is, in logical
     /// CSS pixels. Called by the shell on startup and on resize.
     /// The render side uses this for layout + on-screen

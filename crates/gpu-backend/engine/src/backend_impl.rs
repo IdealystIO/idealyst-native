@@ -142,10 +142,13 @@ pub struct WgpuBackend {
     /// native, where `face!` carries the bytes inline (`BundledEmbedded`)
     /// and they're loaded synchronously below.
     pub(crate) pending_font_urls: Vec<String>,
-    /// App-level key handler (fires for every key press regardless of focus),
-    /// installed by `set_app_key_handler`. Read by `Host::key` before the
-    /// focused-input path.
-    pub(crate) app_key_handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
+    /// App-level keyboard sink (receives every key down AND up regardless
+    /// of focus, plus `focus_lost`), installed by `set_keyboard_sink` while
+    /// at least one app key listener is live. Read by `Host::key` before
+    /// the focused-input path and by `Host::focus_lost`. Callers clone it
+    /// out and drop the backend borrow before calling it — listeners can
+    /// add/remove listeners, which re-enters `set_keyboard_sink`.
+    pub(crate) keyboard_sink: Option<runtime_shared::primitives::key::KeyboardSink>,
 }
 
 /// Per-node presence interpolation entry. `node` is a strong ref so
@@ -214,7 +217,7 @@ impl WgpuBackend {
             sticky_registry: crate::sticky::StickyRegistry::new(),
             image_asset_bytes: std::collections::HashMap::new(),
             pending_font_urls: Vec::new(),
-            app_key_handler: None,
+            keyboard_sink: None,
         }
     }
 
@@ -1252,13 +1255,15 @@ impl WgpuBackend {
         request_redraw();
     }
 
-    pub(crate) fn set_app_key_handler_impl(
+    pub(crate) fn set_keyboard_sink_impl(
         &mut self,
-        handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        sink: Option<runtime_shared::primitives::key::KeyboardSink>,
     ) {
-        // Stored here; `Host::key` reads it on each key press (before the
-        // focused-input path) since the winit event loop routes through Host.
-        self.app_key_handler = handler;
+        // Stored here; the shell's key events already flow through
+        // `Host::key` / `Host::focus_lost`, which read it. There is no
+        // separate native source to install or tear down — `None` simply
+        // stops delivery.
+        self.keyboard_sink = sink;
     }
 
     pub(crate) fn finish_impl(&mut self, root: WgpuNode) {

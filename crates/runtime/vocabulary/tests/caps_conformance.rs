@@ -108,7 +108,7 @@ fn app_env_and_lifecycle() {
         <HostMock as caps::AppEnvOps>::platform(&m),
         Platform::Custom("host-mock")
     );
-    <HostMock as caps::AppEnvOps>::set_app_key_handler(&mut m, None);
+    <HostMock as caps::AppEnvOps>::set_keyboard_sink(&mut m, None);
 
     // LifecycleOps: finish + the policy flags (both live Cells).
     let root = <HostMock as caps::ViewOps>::create_view(&mut m, &a11y());
@@ -123,7 +123,7 @@ fn app_env_and_lifecycle() {
     assert_eq!(
         take(&s),
         vec![
-            "set_app_key_handler none",
+            "set_keyboard_sink none",
             "create n0 view",
             "finish n0",
         ]

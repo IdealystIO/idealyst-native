@@ -413,6 +413,25 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
     })
 }
 
+/// Wrap the app-level keyboard sink: both entry points (key, focus loss)
+/// run author listeners, so each queues the flush after it returns. The
+/// key outcome passes through unchanged.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::key::KeyboardSink {
+    let on_lost = sink.clone();
+    primitives::key::KeyboardSink::new(
+        move |ev| {
+            let outcome = sink.key(ev);
+            schedule_flush();
+            outcome
+        },
+        move || {
+            on_lost.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // iOS-only half: boot path + Host + capability-trait delegation
 // ===========================================================================
@@ -453,7 +472,7 @@ mod ios_impl {
     use runtime_world::World;
 
     use super::{
-        flushing0, flushing1, flushing_key, schedule_flush, set_flush_world, set_viewport_sink,
+        flushing0, flushing1, flushing_key, flushing_keyboard_sink, schedule_flush, set_flush_world, set_viewport_sink,
     };
     use crate::imp::{IosBackend, IosNode};
 
@@ -782,11 +801,12 @@ mod ios_impl {
             IosBackend::fullscreen_setter_impl(self)
         }
 
-        fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-            // Dispatch-site glue: app-level key handlers run author code
-            // (hardware-keyboard events on iPad, simulator keyboards).
-            let handler = handler.map(flushing_key);
-            IosBackend::set_app_key_handler_impl(self, handler)
+        fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+            // Dispatch-site glue: the sink runs author listeners
+            // (hardware-keyboard presses on iPad, simulator keyboards, and
+            // the releases synthesized on focus loss).
+            let sink = sink.map(flushing_keyboard_sink);
+            IosBackend::set_keyboard_sink_impl(self, sink)
         }
     }
 

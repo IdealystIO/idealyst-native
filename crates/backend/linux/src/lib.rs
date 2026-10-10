@@ -96,6 +96,7 @@ use runtime_shared::{Length, Overflow, Tokenized};
 use runtime_shared::{Action, Color, ColorScheme, Platform, PointerEvents, StyleRules};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 
+mod app_keys;
 mod border_stroke;
 mod color;
 mod cursor;
@@ -122,6 +123,7 @@ mod sticky;
 mod touch;
 mod virtualizer;
 mod icon;
+mod keymap;
 mod text;
 mod text_area;
 mod transform;
@@ -531,25 +533,10 @@ fn warn_once_portal(portal_id: u64, msg: std::fmt::Arguments<'_>) {
 }
 
 fn key_name(keyval: gtk4::gdk::Key) -> String {
-    use gtk4::gdk::Key;
-    let named = match keyval {
-        Key::Return | Key::KP_Enter => "Enter",
-        Key::Escape => "Escape",
-        Key::Tab | Key::ISO_Left_Tab => "Tab",
-        Key::BackSpace => "Backspace",
-        Key::Delete | Key::KP_Delete => "Delete",
-        Key::Up | Key::KP_Up => "ArrowUp",
-        Key::Down | Key::KP_Down => "ArrowDown",
-        Key::Left | Key::KP_Left => "ArrowLeft",
-        Key::Right | Key::KP_Right => "ArrowRight",
-        Key::Home | Key::KP_Home => "Home",
-        Key::End | Key::KP_End => "End",
-        Key::Page_Up | Key::KP_Page_Up => "PageUp",
-        Key::Page_Down | Key::KP_Page_Down => "PageDown",
-        Key::space | Key::KP_Space => " ",
-        _ => "",
-    };
-    if !named.is_empty() {
+    // Named (non-printing) keys come from the pure keysym table shared
+    // with the app-level keyboard sink (`keymap::named_key`), so a focused
+    // input's `on_key_down` and an app key listener name a key the same way.
+    if let Some(named) = keymap::named_key(gtk4::glib::translate::IntoGlib::into_glib(keyval)) {
         return named.to_string();
     }
     keyval
@@ -756,6 +743,10 @@ pub struct LinuxBackend {
     /// move the backdrop and leave the popover at the container's
     /// top-left — the exact bug macOS's `portal_policy` documents.)
     portal_anchor_child: HashMap<u64, u64>,
+    /// The app-level keyboard source (capture-phase key controller + the
+    /// window's `is-active` watcher), present only while the framework has
+    /// a keyboard sink installed. See `app_keys.rs`.
+    app_keys: Option<app_keys::AppKeySource>,
 }
 
 // The `LinuxExternalRegistrar` / `LinuxNavigatorRegistrar` inventory
@@ -798,6 +789,22 @@ impl LinuxBackend {
             state_controllers: HashMap::new(),
             portal_anchors: HashMap::new(),
             portal_anchor_child: HashMap::new(),
+            app_keys: None,
+        }
+    }
+
+    /// Install (or with `None` remove) the app-level keyboard source on the
+    /// host window. A replacement tears the previous source down first, so
+    /// there is never more than one controller delivering into a sink.
+    pub(crate) fn set_keyboard_sink_impl(
+        &mut self,
+        sink: Option<runtime_shared::primitives::key::KeyboardSink>,
+    ) {
+        if let Some(old) = self.app_keys.take() {
+            old.remove(&self.host_window);
+        }
+        if let Some(sink) = sink {
+            self.app_keys = Some(app_keys::AppKeySource::install(&self.host_window, sink));
         }
     }
 

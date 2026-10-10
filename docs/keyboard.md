@@ -1,5 +1,8 @@
 # Soft keyboard
 
+> For hardware key presses and releases (game controls, shortcuts), see
+> [`keyboard-input.md`](keyboard-input.md).
+
 Two pieces:
 
 - **`keyboard_avoiding_view`** is a core primitive. Content inside it stays

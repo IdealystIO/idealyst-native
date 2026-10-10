@@ -1,17 +1,26 @@
-//! Win32 window + message pump + `runtime_core::mount` driver.
+//! Win32 window + message pump + `backend_windows::newcore::start` driver.
 //!
 //! `run_with` registers a window class, opens one top-level window,
 //! constructs a [`WindowsBackend`] rooted at its HWND, installs the
 //! scheduler, mounts the app, and pumps messages until the window
-//! closes. Per-window state (the shared backend + the reactive
-//! [`Owner`]) lives in a heap [`HostState`] whose pointer is stashed
+//! closes. Per-window state (the shared backend + the mounted
+//! [`NewCoreApp`]) lives in a heap [`HostState`] whose pointer is stashed
 //! in the window's `GWLP_USERDATA` so the `WndProc` can reach it.
+//!
+//! The pump also feeds the app-level keyboard: every retrieved message is
+//! offered to the backend's [`KeyboardSlot`] before
+//! `TranslateMessage`/`DispatchMessageW` (keys addressed to a focused
+//! child control never reach this window's `WndProc`), and
+//! `WM_ACTIVATE(WA_INACTIVE)` reports focus loss. See
+//! `backend_windows::app_keys`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use backend_windows::app_keys::KeyboardSlot;
+use backend_windows::newcore::{self, NewCoreApp};
 use backend_windows::WindowsBackend;
-use runtime_core::{Element, Owner};
+use runtime_core::Element;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -25,7 +34,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
     GetMessageW, GetWindowLongPtrW, LoadCursorW, RegisterClassExW,
     SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    IDC_ARROW, MSG, SW_SHOW, WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND,
+    IDC_ARROW, MSG, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
+    WM_DESTROY, WM_ERASEBKGND,
     WM_HSCROLL, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
     WS_OVERLAPPEDWINDOW,
 };
@@ -43,17 +53,19 @@ const HOST_CLASS_NAME: PCWSTR = PCWSTR(windows::core::w!("IdealystHostWindow").a
 
 /// Per-window state reachable from the `WndProc` via `GWLP_USERDATA`.
 /// Boxed on the heap; the raw pointer is stored on the window and the
-/// box is reclaimed in `WM_NCDESTROY`. Dropping it disposes the
-/// reactive tree (`owner`) and then the backend (whose own `Drop`
-/// releases any child HWNDs Windows hasn't already torn down).
+/// box is never reclaimed: the process `TerminateProcess`es from
+/// `WM_DESTROY` (see `hard_exit`), so nothing here is dropped.
 struct HostState {
     backend: Rc<RefCell<WindowsBackend>>,
-    /// The reactive owner returned by `mount`. Kept alive so the UI
-    /// stays reactive; dropped on window teardown. `RefCell<Option<>>`
-    /// because the pointer is published to the window *before* mount
-    /// runs (so a `WM_SIZE` during `ShowWindow` finds the backend),
-    /// and the owner is slotted in afterwards.
-    owner: RefCell<Option<Owner>>,
+    /// The mounted app returned by `newcore::start`. Kept alive so the UI
+    /// stays reactive. `RefCell<Option<>>` because the pointer is
+    /// published to the window *before* mount runs (so a `WM_SIZE` during
+    /// `ShowWindow` finds the backend), and the app is slotted in
+    /// afterwards.
+    app: RefCell<Option<NewCoreApp>>,
+    /// The backend's app-level keyboard slot, cloned once so the
+    /// `WndProc` reports focus loss without borrowing the backend.
+    keyboard: KeyboardSlot,
 }
 
 /// Run `app` on the Win32 backend with no extension registration —
@@ -66,14 +78,14 @@ where
     run_with(opts, |_| {}, build_ui)
 }
 
-/// As [`run`], but invokes `register` on the freshly constructed
-/// [`WindowsBackend`] before the app mounts — third-party SDKs whose
-/// `register(&mut B)` installs `Element::External` handlers must run
-/// before the first tree walk. Mirrors the winit / AppKit / GTK hosts'
-/// `run_with`.
+/// As [`run`], but invokes `register` on the scene [`Registry`] before the
+/// tree realizes — the seam where an app installs its SDK payload handlers.
+/// Runs after `register_builtins`. Mirrors `host_gtk::run_with`.
+///
+/// [`Registry`]: runtime_scene::Registry
 pub fn run_with<R, F>(opts: RunOptions, register: R, build_ui: F) -> i32
 where
-    R: FnOnce(&mut WindowsBackend) + 'static,
+    R: FnOnce(&mut runtime_scene::Registry<WindowsBackend>) + 'static,
     F: FnOnce() -> Element + 'static,
 {
     match unsafe { run_inner(opts, register, build_ui) } {
@@ -87,7 +99,7 @@ where
 
 unsafe fn run_inner<R, F>(opts: RunOptions, register: R, build_ui: F) -> Result<i32, String>
 where
-    R: FnOnce(&mut WindowsBackend),
+    R: FnOnce(&mut runtime_scene::Registry<WindowsBackend>),
     F: FnOnce() -> Element,
 {
     // hInstance for the window class — the current executable's module.
@@ -97,13 +109,11 @@ where
     register_host_class(hinstance)?;
     let hwnd = create_host_window(hinstance, &opts)?;
 
-    // Build the backend rooted at the window, run extension
-    // registration, then share it behind an Rc<RefCell<>> — the
-    // WndProc, the scheduler drains, and the reactive effects all
-    // borrow the same instance.
-    let mut backend = WindowsBackend::new(hwnd);
-    register(&mut backend);
-    let backend = Rc::new(RefCell::new(backend));
+    // Build the backend rooted at the window and share it behind an
+    // Rc<RefCell<>> — the WndProc, the scheduler drains, and the reactive
+    // effects all borrow the same instance.
+    let backend = Rc::new(RefCell::new(WindowsBackend::new(hwnd)));
+    let keyboard = backend.borrow().keyboard_slot();
     // Node handles (animation writes, frame reads) reach the backend
     // through a weak self-reference — install it before mount so
     // handles built during the first walk are live.
@@ -113,7 +123,8 @@ where
     // dispatch a message to this window.
     let state = Box::new(HostState {
         backend: backend.clone(),
-        owner: RefCell::new(None),
+        app: RefCell::new(None),
+        keyboard: keyboard.clone(),
     });
     let state_ptr = Box::into_raw(state);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -135,16 +146,19 @@ where
     {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
-        runtime_core::set_viewport_size(runtime_core::ViewportSize {
+        runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
             width: (rc.right - rc.left).max(0) as f32,
             height: (rc.bottom - rc.top).max(0) as f32,
         });
     }
 
-    // Mount: the walker builds the scene tree and calls `finish(root)`,
-    // laying it out against the shown window.
-    let owner = runtime_core::mount(backend.clone(), build_ui);
-    (*state_ptr).owner.borrow_mut().replace(owner);
+    // Mount: `newcore::start` installs the time source, builds the scene
+    // `Registry` (builtins, then the app's `register`), realizes the tree
+    // and calls `finish(root)`, laying it out against the shown window.
+    // It replaces `runtime_core::mount`, which went away with the old
+    // walker.
+    let app = newcore::start(backend.clone(), register, build_ui);
+    (*state_ptr).app.borrow_mut().replace(app);
 
     // Belt-and-suspenders initial layout in case the show-time
     // `WM_SIZE` raced ahead of mount.
@@ -154,6 +168,14 @@ where
     // returns 0 on WM_QUIT and -1 on error; `> 0` exits on both.
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+        // App-level keyboard first, for EVERY window of the thread: a key
+        // addressed to a focused child control (the `EDIT` behind
+        // `text_input`) never reaches the host `WndProc`. A swallowed key
+        // (`PreventDefault`) skips translation too, so no `WM_CHAR` types
+        // it. No backend borrow is held here — the slot is shared.
+        if keyboard.pre_dispatch(&msg) {
+            continue;
+        }
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
@@ -396,7 +418,7 @@ unsafe extern "system" fn wnd_proc(
             // effects that may re-borrow the backend.
             let w = (lparam.0 & 0xffff) as u16 as f32;
             let h = ((lparam.0 >> 16) & 0xffff) as u16 as f32;
-            runtime_core::set_viewport_size(runtime_core::ViewportSize {
+            runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
                 width: w,
                 height: h,
             });
@@ -432,6 +454,22 @@ unsafe extern "system" fn wnd_proc(
                 action();
             }
             LRESULT(0)
+        }
+        WM_ACTIVATE => {
+            // LOWORD(wParam) == WA_INACTIVE: the window stopped being the
+            // active window and will get no further key messages — not even
+            // the releases of keys held right now. Report it so the
+            // keyboard dispatcher synthesizes those releases (no stuck
+            // movement keys after Alt+Tab). WM_KILLFOCUS is NOT used: it
+            // also fires when focus moves into one of our own child
+            // controls. DefWindowProc still runs — it restores focus on
+            // activation.
+            if (wparam.0 & 0xffff) as u32 == WA_INACTIVE {
+                if let Some(state) = host_state(hwnd) {
+                    state.keyboard.focus_lost();
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_IDEALYST_SCHED => {
             // Scheduler worker woke us: run every due timer + one raf

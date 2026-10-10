@@ -239,3 +239,18 @@ pub fn session_after_ms(at_session_ms: u64, body: impl FnOnce() + 'static) {
     let delay_ms_i32 = delay_ms.min(i32::MAX as u64) as i32;
     after_ms_scoped(delay_ms_i32, body);
 }
+
+/// Tie `handle`'s lifetime to the registering scope, by the same capture
+/// rules as [`after_ms_scoped`] (effect re-run / component unmount /
+/// enclosing deferred body). `Err(handle)` hands it back when called
+/// outside any scope, so the caller picks its own fallback. Used by
+/// `key_input::on_key` to make a key listener die with its component.
+pub(crate) fn own_in_scope<T: Any>(handle: T) -> Result<(), T> {
+    match current_anchor() {
+        Some(anchor) => {
+            anchor.own(handle);
+            Ok(())
+        }
+        None => Err(handle),
+    }
+}

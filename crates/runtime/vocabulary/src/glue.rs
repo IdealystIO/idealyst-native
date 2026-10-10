@@ -925,9 +925,13 @@ pub use runtime_shared::host;
 // shared substrate used by the canvas SDK's scene lowering. Module
 // re-export, matching the old root's glob.
 pub use runtime_shared::color;
-// The app-level key-down handler installer. The caps plumbing
-// (`AppEnvOps::set_app_key_handler`) was always mirrored; the free
-// function that author code calls was not.
+// App-level keyboard input (key down + up, regardless of focus): the
+// scoped `on_key` / `key_state` author surface, the guard-returning
+// `add_key_listener`, and the event types. `set_app_key_handler` is the
+// older single-slot key-down hook, now a wrapper over a listener.
+pub use crate::key_input::{add_key_listener, key_state, on_key, KeyState};
+pub use runtime_shared::key_input::KeyListener;
+pub use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
 pub use runtime_shared::set_app_key_handler;
 // `driver` (spawn_async + render_loop) is feature-gated in runtime-core
 // itself (`async-driver`); this crate's same-named forwarding feature

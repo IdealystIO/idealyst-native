@@ -103,6 +103,7 @@ pub mod reactive_value;
 #[doc(hidden)]
 pub mod safe_area;
 pub mod keyboard;
+pub mod key_input;
 pub mod num;
 pub mod page_meta;
 #[doc(hidden)]
@@ -315,7 +316,8 @@ pub use primitives::icon::{FillRule, IconData, IconHandle, IconOps, StrokeAnimat
 pub use primitives::image::{
     ImageErrorHandler, ImageHandle, ImageLoadEvent, ImageLoadHandler, ImageOps, ImageSource,
 };
-pub use primitives::key::{KeyEvent, KeyOutcome};
+pub use primitives::key::{AppKeyEvent, KeyEvent, KeyOutcome, KeyPhase, KeyboardSink};
+pub use key_input::set_app_key_handler;
 pub use primitives::text_input::{TextInputHandle, TextInputOps};
 pub use primitives::text_area::{TextAreaHandle, TextAreaOps};
 pub use primitives::toggle::{ToggleHandle, ToggleOps};
@@ -398,7 +400,7 @@ pub use style::{
     empty_absolute_sheet, install_minted_classes, minted_class_known, premint_class_name,
     scan_minted_classes,
     resolve as resolve_style, set_app_background,
-    set_app_key_handler, take_pending_app_key_handler, EMPTY_ABSOLUTE_CLASS,
+    EMPTY_ABSOLUTE_CLASS,
     PREMINT_FONT_INHERIT_CLASS,
     set_default_text_font, set_scrollbar_theme, take_pending_token_updates, update_tokens,
     AlignContent, AlignItems, AlignSelf, BorderStyle, Color, Cursor, Derive, DisplayKind, Easing, FlexDirection, FlexWrap,

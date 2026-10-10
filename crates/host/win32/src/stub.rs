@@ -13,7 +13,9 @@ use runtime_core::Element;
 use crate::RunOptions;
 
 pub fn run<F: FnOnce() -> Element + 'static>(opts: RunOptions, build_ui: F) -> i32 {
-    run_with(opts, |_| {}, build_ui)
+    // Off-Windows there is no registry type to name; any concrete
+    // closure type satisfies the unconstrained `R`.
+    run_with(opts, |_: &mut ()| {}, build_ui)
 }
 
 pub fn run_with<R, F>(_opts: RunOptions, _register: R, _build_ui: F) -> i32

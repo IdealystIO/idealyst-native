@@ -634,6 +634,24 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
     })
 }
 
+/// Wrap the app-level keyboard sink: both entry points (key, focus loss)
+/// run author listeners, so each queues the flush after it returns. The
+/// key outcome passes through unchanged.
+fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::key::KeyboardSink {
+    let on_lost = sink.clone();
+    primitives::key::KeyboardSink::new(
+        move |ev| {
+            let outcome = sink.key(ev);
+            schedule_flush();
+            outcome
+        },
+        move || {
+            on_lost.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // runtime_vocabulary::bridge — keep mechanically in sync; the scene-parity
@@ -701,11 +719,12 @@ impl caps::AppEnvOps for MacosBackend {
         MacosBackend::set_app_background_impl(self, color)
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: app-level key handlers run author code
-        // (the imp/keyboard.rs NSEvent monitor dispatches into them).
-        let handler = handler.map(flushing_key);
-        MacosBackend::set_app_key_handler_impl(self, handler)
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+        // Dispatch-site glue: the sink runs author listeners (the
+        // imp/keyboard.rs NSEvent monitor + focus-loss observers dispatch
+        // into it), so both entry points queue the flush afterwards.
+        let sink = sink.map(flushing_keyboard_sink);
+        MacosBackend::set_keyboard_sink_impl(self, sink)
     }
 }
 

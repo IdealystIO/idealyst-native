@@ -66,15 +66,29 @@ pub struct ScrollEvent {
 /// Keyboard input. `text` is filled when the press produced
 /// printable text (after IME / dead-key processing). Named keys
 /// carry their semantic identity in `key`.
+///
+/// Shells deliver BOTH presses and releases: the render side routes
+/// releases to the app-level keyboard sink (held-key game controls
+/// need them) and only presses to a focused text input.
 #[derive(Clone, Debug)]
 pub struct KeyEvent {
     pub key: Key,
     pub text: Option<String>,
     pub modifiers: KeyModifiers,
-    /// `true` for a key-down, `false` for a key-up. Shells that
-    /// only emit one of the two (e.g. UIKit's `pressesBegan`) can
-    /// always set `true`.
+    /// `true` for a key-down, `false` for a key-up. A shell whose
+    /// platform reports only presses must send a release right after
+    /// each press (a tap) so the app never sees a key stuck down.
     pub pressed: bool,
+    /// The PHYSICAL key in Web `KeyboardEvent.code` vocabulary
+    /// (`"KeyW"`, `"Digit1"`, `"ArrowUp"`, `"Space"`, `"ShiftLeft"`),
+    /// independent of layout and modifiers. Empty when the shell
+    /// can't identify the key.
+    pub code: String,
+    /// `true` when the platform flags this press as an auto-repeat
+    /// of a held key. Always `false` on a release. (The framework's
+    /// key dispatcher also normalizes repeats, so a shell without a
+    /// repeat flag can pass `false`.)
+    pub repeat: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -107,6 +121,17 @@ pub enum Key {
     ArrowDown,
     Home,
     End,
+    PageUp,
+    PageDown,
+    Insert,
+    Shift,
+    Control,
+    Alt,
+    /// Command on macOS / Win key on Windows / Super on X11.
+    Meta,
+    CapsLock,
+    /// Function key `F1`..=`F24` (the payload is the number).
+    F(u8),
     /// Anything we haven't named yet. Shells should map exotic
     /// keys here rather than inventing private variants.
     Unknown,

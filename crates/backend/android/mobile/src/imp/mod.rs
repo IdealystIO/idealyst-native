@@ -434,11 +434,12 @@ pub struct AndroidBackend {
     /// `release_private_layer_window` tears the window down.
     pub(crate) detached_window_roots:
         HashMap<usize, jni::objects::GlobalRef>,
-    /// Leaked `KeyDownCallback` pointer for the app-level key handler installed
-    /// by `set_app_key_handler` (a `RustGlobalKeyListener` on the root view holds
-    /// the same value and trampolines into `nativeGlobalKey`). `Some` while a
-    /// handler is installed; freed + detached when replaced or cleared.
-    pub(crate) app_key_ptr: Option<jlong>,
+    /// The app-level keyboard source installed by `set_keyboard_sink`: the
+    /// leaked `KeyboardSinkCallback` box plus the `RustGlobalKeyListener` on
+    /// the root view that holds its pointer and trampolines into
+    /// `nativeGlobalKey` / `nativeKeyFocusLost`. `Some` while a sink is
+    /// installed; detached + freed when replaced or cleared.
+    pub(crate) app_key: Option<keyboard::AppKeySource>,
     /// Decoded `image_asset` sources by id (`register_asset`,
     /// `AssetTag::Image`). See `primitives::image`.
     pub(crate) image_cache: primitives::image::ImageCache,
@@ -892,7 +893,7 @@ impl AndroidBackend {
             virtual_grid_registry: HashMap::new(),
             pending_reveal: Vec::new(),
             detached_window_roots: HashMap::new(),
-            app_key_ptr: None,
+            app_key: None,
         };
         backend.install_viewport_resize_listener();
         soft_keyboard::install(&backend);
@@ -915,7 +916,7 @@ impl AndroidBackend {
     /// Best-effort: if the staged Kotlin runtime lacks the class (e.g. the
     /// CLI wasn't reinstalled after this feature landed), `find_class`
     /// throws — we clear the pending JNI exception and no-op so boot never
-    /// breaks, mirroring [`keyboard::set_app_key_handler`]. The view holds a
+    /// breaks, mirroring [`keyboard::set_keyboard_sink`]. The view holds a
     /// strong ref to the listener, so there's nothing to retain or free on
     /// the Rust side.
     fn install_viewport_resize_listener(&self) {
@@ -2948,11 +2949,11 @@ impl AndroidBackend {
         primitives::toggle::update_value(node, value)
     }
 
-    pub(crate) fn set_app_key_handler_impl(
+    pub(crate) fn set_keyboard_sink_impl(
         &mut self,
-        handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        sink: Option<runtime_shared::primitives::key::KeyboardSink>,
     ) {
-        keyboard::set_app_key_handler(self, handler);
+        keyboard::set_keyboard_sink(self, sink);
     }
 
     pub(crate) fn set_app_background_impl(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {

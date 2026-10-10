@@ -549,17 +549,6 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     if let Some((thumb, track)) = scrollbar {
         backend.borrow_mut().set_scrollbar_theme(&thumb, &track);
     }
-    // The app-level key handler drains LAST, mirroring the old core's
-    // flush order. Unlike the slots above, its pending queue still lives
-    // in `runtime_shared` (thread-global, not per-world): the author
-    // entry point is the shared free fn `set_app_key_handler`, which
-    // `glue` re-exports verbatim. This drain is that queue's ONLY
-    // new-core consumer — without it the handler sits queued forever
-    // and app-level keys (⌘K, Ctrl-Z) never fire on any backend, while
-    // every call site keeps compiling through the re-export.
-    if let Some(handler) = runtime_shared::take_pending_app_key_handler() {
-        backend.borrow_mut().set_app_key_handler(handler);
-    }
 }
 
 /// Register a static-styled node's reapply closure with the ambient

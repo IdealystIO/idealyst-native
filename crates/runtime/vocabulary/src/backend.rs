@@ -63,7 +63,8 @@ pub use runtime_shared;
 /// thread-locals that author code reads.
 ///
 /// Five author-facing free functions — `platform()`, `color_scheme()`,
-/// `open_url()`, `set_fullscreen()`, `announce()` — are readable from any
+/// `open_url()`, `set_fullscreen()`, `announce()` — plus the app-level
+/// keyboard listeners (`on_key`, `key_state`) are usable from any
 /// component body, effect, or event handler without a backend reference.
 /// They read thread-local slots, and this is what fills those slots from
 /// the backend's own [`caps::AppEnvOps`] / [`caps::A11yOps`] impls.
@@ -119,6 +120,28 @@ where
         runtime_shared::host::install_url_opener(caps::AppEnvOps::url_opener(&*b));
         runtime_shared::host::install_fullscreen_setter(caps::AppEnvOps::fullscreen_setter(&*b));
     }
+
+    // App-level keyboard: `runtime_shared::key_input` installs/removes the
+    // backend's key source through this as listeners come and go. Weak for
+    // the same reason as the announcer below. `try_borrow_mut`, not
+    // `borrow_mut`: a listener can be added or dropped from inside a key
+    // event the backend is dispatching while it holds its own borrow (the
+    // terminal backend dispatches from `&mut self`); reporting "busy" makes
+    // the dispatcher retry on the next microtask instead of panicking.
+    // A dead backend reports success — there is nothing left to install on.
+    let weak_kb = Rc::downgrade(backend);
+    runtime_shared::key_input::install_keyboard_host(Some(Rc::new(
+        move |sink: Option<runtime_shared::primitives::key::KeyboardSink>| {
+            let Some(backend) = weak_kb.upgrade() else {
+                return true;
+            };
+            let Ok(mut b) = backend.try_borrow_mut() else {
+                return false;
+            };
+            caps::AppEnvOps::set_keyboard_sink(&mut *b, sink);
+            true
+        },
+    )));
 
     // Weak, and re-entrancy-safe: the borrow is confined to the forward
     // call. An announcer that re-entered framework code while we held a

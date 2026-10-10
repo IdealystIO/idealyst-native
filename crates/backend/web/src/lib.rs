@@ -407,10 +407,11 @@ pub struct WebBackend {
     /// into it (the children belong to the screen, already adopted).
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_consumed_outlets: Vec<web_glue::dom::Node>,
-    /// The single APP-LEVEL `keydown` listener installed on `document` by
-    /// `set_app_key_handler` (fires regardless of focus). Held so JS keeps it
-    /// alive; removing + dropping it tears the listener down.
-    pub(crate) _app_key_closure: Option<web_glue::dom::Listener>,
+    /// The APP-LEVEL key source installed by `set_keyboard_sink`: `keydown` +
+    /// `keyup` on `document` (fire regardless of focus) and `blur` on the
+    /// window (focus loss). Held so JS keeps them alive; clearing the vec
+    /// tears them down.
+    pub(crate) _app_key_listeners: Vec<web_glue::dom::Listener>,
     /// Per-node interaction-event closures. Keyed by node-id so we
     /// can drop them when `on_node_unstyled` fires. Each entry holds
     /// the listeners for one node (pointerenter, pointerleave,
@@ -1304,7 +1305,7 @@ impl WebBackend {
             hydration_nav_saved: Vec::new(),
             #[cfg(feature = "hydrate")]
             hydration_consumed_outlets: Vec::new(),
-            _app_key_closure: None,
+            _app_key_listeners: Vec::new(),
             state_listeners: FxHashMap::default(),
             inline_props: FxHashMap::default(),
             spinner_keyframes_injected: false,
@@ -3150,11 +3151,11 @@ impl WebBackend {
         self.impl_set_scrollbar_theme(thumb, track)
     }
 
-    pub(crate) fn set_app_key_handler_impl(
+    pub(crate) fn set_keyboard_sink_impl(
         &mut self,
-        handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        sink: Option<runtime_shared::primitives::key::KeyboardSink>,
     ) {
-        crate::primitives::keyboard::install_app_key_handler(self, handler)
+        crate::primitives::keyboard::install_keyboard_sink(self, sink)
     }
 
     pub(crate) fn register_asset_impl(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {

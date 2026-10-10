@@ -4388,3 +4388,80 @@ fn disabled_toggle_and_slider_are_native_disabled_and_drop_focus() {
         el.remove();
     }
 }
+
+/// Dispatch a bubbling, cancelable `ty` ("keydown"/"keyup") on `target` with
+/// the given `key`/`code`/`repeat`; returns whether the default was prevented.
+fn dispatch_key(target: &web_glue::dom::Element, ty: &str, key: &str, code: &str, repeat: bool) -> bool {
+    let init = web_glue::dom::KeyboardEventInit::new();
+    init.set_key(key);
+    init.set_code(code);
+    init.set_repeat(repeat);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let ev = web_glue::dom::KeyboardEvent::new_with_keyboard_event_init_dict(ty, &init)
+        .expect("construct keyboard event");
+    target.dispatch_event(&ev).expect("dispatch keyboard event");
+    ev.default_prevented()
+}
+
+/// REGRESSION TEST (game controls): the app-level key source delivered only
+/// `keydown`, so a game could never see a key RELEASE and held-key movement
+/// was impossible. The sink must receive keydown AND keyup — with the DOM's
+/// physical `code` and `repeat` — from keys bubbling out of any element,
+/// honor `PreventDefault` (no page scroll on Space), report window `blur` as
+/// focus loss, and detach everything on `None`.
+#[wasm_bindgen_test]
+fn regression_web_app_keyboard_delivers_down_up_and_blur() {
+    use runtime_shared::primitives::key::{AppKeyEvent, KeyOutcome, KeyPhase, KeyboardSink};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let seen: Rc<RefCell<Vec<AppKeyEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let blurs = Rc::new(Cell::new(0u32));
+    let (s, b) = (seen.clone(), blurs.clone());
+    let sink = KeyboardSink::new(
+        move |e| {
+            s.borrow_mut().push(e.clone());
+            if e.code == "Space" { KeyOutcome::PreventDefault } else { KeyOutcome::Default }
+        },
+        move || b.set(b.get() + 1),
+    );
+    backend.set_keyboard_sink_impl(Some(sink));
+
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+
+    assert!(!dispatch_key(&el, "keydown", "w", "KeyW", false));
+    assert!(!dispatch_key(&el, "keydown", "w", "KeyW", true));
+    assert!(!dispatch_key(&el, "keyup", "w", "KeyW", false));
+    assert!(dispatch_key(&el, "keydown", " ", "Space", false), "PreventDefault must cancel the event");
+
+    {
+        let seen = seen.borrow();
+        let got: Vec<(KeyPhase, &str, bool)> =
+            seen.iter().map(|e| (e.phase, e.code.as_str(), e.repeat)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (KeyPhase::Down, "KeyW", false),
+                (KeyPhase::Down, "KeyW", true),
+                (KeyPhase::Up, "KeyW", false),
+                (KeyPhase::Down, "Space", false),
+            ]
+        );
+    }
+
+    let win = web_glue::dom::window().unwrap();
+    win.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
+    assert_eq!(blurs.get(), 1, "window blur must report focus loss");
+
+    backend.set_keyboard_sink_impl(None);
+    dispatch_key(&el, "keydown", "a", "KeyA", false);
+    win.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
+    assert_eq!(seen.borrow().len(), 4, "None must detach the key listeners");
+    assert_eq!(blurs.get(), 1, "None must detach the blur listener");
+    el.remove();
+}

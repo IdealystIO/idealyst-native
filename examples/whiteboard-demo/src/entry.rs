@@ -278,8 +278,8 @@ pub fn app() -> Element {
         let canvas_ids = state.canvas_ids;
         let next_id = state.next_id;
         let keys_enabled = state.keys_enabled;
-        // Shared host slot (the backends' caps drain it); not mirrored on the
-        // facade root yet, hence the substrate path.
+        // The single-slot key-down hook (a wrapper over an app-level key
+        // listener — see docs/keyboard-input.md for the down/up `on_key` API).
         runtime_shared::set_app_key_handler(Some(Rc::new(move |ev: &runtime_core::KeyEvent| {
             if !keys_enabled.get() {
                 return runtime_core::KeyOutcome::Default;

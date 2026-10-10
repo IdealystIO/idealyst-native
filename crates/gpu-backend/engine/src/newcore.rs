@@ -706,6 +706,23 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
     })
 }
 
+/// Wrap the app-level keyboard sink: both entry points run author
+/// listeners, so each queues one flush (outcome passes through).
+fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::key::KeyboardSink {
+    let on_key = sink.clone();
+    primitives::key::KeyboardSink::new(
+        move |ev| {
+            let outcome = on_key.key(ev);
+            schedule_flush();
+            outcome
+        },
+        move || {
+            sink.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // backend-macos/src/newcore.rs / runtime_vocabulary::bridge — keep
@@ -791,11 +808,12 @@ impl caps::AppEnvOps for WgpuBackend {
         WgpuBackend::platform_impl(self)
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: app-level key handlers run author code
-        // (Host::key routes here before the focused-input path).
-        let handler = handler.map(flushing_key);
-        WgpuBackend::set_app_key_handler_impl(self, handler)
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+        // Dispatch-site glue: the sink runs author listeners (Host::key
+        // routes here before the focused-input path; Host::focus_lost
+        // synthesizes releases), so both entry points queue a flush.
+        let sink = sink.map(flushing_keyboard_sink);
+        WgpuBackend::set_keyboard_sink_impl(self, sink)
     }
 }
 

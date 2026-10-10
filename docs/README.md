@@ -63,6 +63,9 @@ If you're new to the codebase, read the docs in this order:
    [`accessibility-design.md`](./accessibility-design.md) has the
    internals: per-platform mapping tables and the GPU-backend semantics
    tree (its trait signatures predate runtime v2).
+   [`keyboard-input.md`](./keyboard-input.md) covers app-level keyboard
+   input (key presses and releases for games and shortcuts);
+   [`keyboard.md`](./keyboard.md) covers the on-screen keyboard.
 
 9. [`server-functions.md`](./server-functions.md). The full-stack layer:
    `#[server]` fns (one function, two compilations), the `server` cargo

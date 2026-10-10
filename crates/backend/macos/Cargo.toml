@@ -134,3 +134,10 @@ raw-window-handle = "0.6"
 [[test]]
 name = "focus_attach"
 harness = false
+
+# Real-AppKit test of the app-level keyboard source (`src/imp/keyboard.rs`):
+# the NSEvent monitor, focus-loss observers and teardown. Main-thread only, for
+# the same reason as `focus_attach`.
+[[test]]
+name = "app_keyboard"
+harness = false

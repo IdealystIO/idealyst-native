@@ -127,10 +127,8 @@ fn glue_reexports_the_color_module() {
     let _: runtime_shared::color::Rgba = parsed;
 }
 
-/// `runtime_shared::set_app_key_handler(..)` — the free function that
-/// installs the app-level key-down handler. The caps side
-/// (`AppEnvOps::set_app_key_handler`) was always mirrored; the author
-/// entry point was not.
+/// `glue::set_app_key_handler` IS the shared single-slot installer, so
+/// existing author code keeps one behavior regardless of import path.
 #[test]
 fn glue_reexports_set_app_key_handler() {
     let via_glue: fn(Option<runtime_shared::primitives::key::KeyDownHandler>) =
@@ -141,76 +139,106 @@ fn glue_reexports_set_app_key_handler() {
         via_glue as usize, via_shared as usize,
         "glue::set_app_key_handler must BE the shared installer"
     );
-
-    // Install-then-clear must not panic and must leave no handler behind.
-    glue::set_app_key_handler(None);
-    let _ = runtime_shared::take_pending_app_key_handler();
 }
 
-/// The handler installed through `glue::set_app_key_handler` must reach
-/// the backend (`AppEnvOps::set_app_key_handler`) on the next host-state
-/// flush — the sheet-attach / theme-driver drain.
-///
-/// The regression: the free fn queues into `runtime_shared`'s pending
-/// slot, and under the old core `style::flush_pending_host_state`
-/// drained it. The new-core port of that flush
-/// (`runtime_vocabulary::theme::flush_pending_host_state`) drained
-/// tokens, token updates, default font, app background, and scrollbar —
-/// everything EXCEPT the key handler. The caps plumbing existed and was
-/// correct on every backend; nothing ever invoked it. Net effect: every
-/// app-level shortcut (⌘K, Ctrl-Z, …) was silently dead on every
-/// backend, with a clean console — the re-export kept call sites
-/// compiling while the queue lost its consumer.
-#[test]
-fn regression_app_key_handler_installed_through_glue_reaches_the_backend() {
-    use std::rc::Rc;
-
-    use host_mock::Harness;
-    use runtime_shared::{StyleRules, StyleSheet};
-    use runtime_vocabulary::builders::view;
-
-    fn styled() -> runtime_scene::Element {
-        let sheet = Rc::new(StyleSheet::r#static(StyleRules::default()));
-        view().style(sheet).build()
-    }
-
-    let h = Harness::new();
-    // `set_app_key_handler` records on the verbose tier.
+/// Boot a harness the way a real backend's entry does: `install_env_services`
+/// wires the keyboard host. Returns the harness with key ops recorded.
+fn keyboard_harness() -> host_mock::Harness {
+    runtime_shared::key_input::reset_for_tests();
+    let h = host_mock::Harness::new();
     h.record_all();
+    runtime_vocabulary::backend::install_env_services(&h.backend);
+    h
+}
 
-    // Install BEFORE anything mounts — the documented "call once near
-    // app start" shape, exactly what the live bug silently dropped.
+fn send_key(h: &host_mock::Harness, ev: runtime_shared::AppKeyEvent) -> runtime_shared::KeyOutcome {
+    let sink = h.shared.keyboard_sink.borrow().clone().expect("keyboard sink not installed");
+    sink.key(&ev)
+}
+
+/// Regression: a handler set from an EVENT CALLBACK (not during a build)
+/// never reached the backend. The old single-slot handler was queued and
+/// only forwarded by the next style/theme host-state flush; an app whose
+/// "Start" button installed key controls and mounted nothing new with a
+/// fresh stylesheet got no keys at all, silently. Now installation is
+/// immediate — no mount, no flush.
+#[test]
+fn regression_app_key_handler_installs_without_a_style_flush() {
+    use std::rc::Rc;
+    let h = keyboard_harness();
+    assert!(h.shared.keyboard_sink.borrow().is_none(), "no listener → no key source");
+
     let handler: runtime_shared::primitives::key::KeyDownHandler =
         Rc::new(|_e| runtime_shared::primitives::key::KeyOutcome::Default);
     glue::set_app_key_handler(Some(handler));
-
-    // First styled mount runs the host-state flush (sheet attach).
-    let _r = h.mount(styled());
     assert!(
-        h.ops().iter().any(|op| op == "set_app_key_handler some"),
-        "installed handler must be forwarded to AppEnvOps::set_app_key_handler \
-         by the first host-state flush; ops: {:?}",
+        h.ops().iter().any(|op| op == "set_keyboard_sink some"),
+        "installing must reach AppEnvOps::set_keyboard_sink immediately; ops: {:?}",
         h.ops()
     );
 
-    // Single-slot: a second flush with nothing queued must not re-send.
-    h.clear_ops();
-    let _r2 = h.mount(styled());
-    assert!(
-        !h.ops().iter().any(|op| op.starts_with("set_app_key_handler")),
-        "no pending handler → no second backend call; ops: {:?}",
-        h.ops()
-    );
-
-    // Clearing (`None`) routes through the same drain.
     glue::set_app_key_handler(None);
-    h.clear_ops();
-    let _r3 = h.mount(styled());
     assert!(
-        h.ops().iter().any(|op| op == "set_app_key_handler none"),
-        "clearing the handler must also reach the backend; ops: {:?}",
+        h.ops().iter().any(|op| op == "set_keyboard_sink none"),
+        "clearing the last listener must uninstall the source; ops: {:?}",
         h.ops()
     );
+    runtime_shared::key_input::reset_for_tests();
+}
+
+/// `on_key` inside a component scope lives exactly as long as the scope:
+/// it receives downs AND ups while alive, and dropping the scope removes
+/// it (and uninstalls the backend key source).
+#[test]
+fn on_key_is_scoped_and_sees_up_events() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use runtime_shared::{AppKeyEvent, KeyOutcome, KeyPhase};
+
+    let h = keyboard_harness();
+    let seen: Rc<RefCell<Vec<(KeyPhase, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let s = seen.clone();
+    h.world.enter(|| {
+        let (_, owned) = runtime_world::collect_owned(|| {
+            glue::on_key(move |e| {
+                s.borrow_mut().push((e.phase, e.code.clone()));
+                KeyOutcome::Default
+            });
+        });
+        send_key(&h, AppKeyEvent::down("w", "KeyW"));
+        send_key(&h, AppKeyEvent::up("w", "KeyW"));
+        assert_eq!(
+            *seen.borrow(),
+            vec![(KeyPhase::Down, "KeyW".to_string()), (KeyPhase::Up, "KeyW".to_string())]
+        );
+        drop(owned);
+    });
+    assert!(
+        h.shared.keyboard_sink.borrow().is_none(),
+        "dropping the only listener's scope must uninstall the source; ops: {:?}",
+        h.ops()
+    );
+    runtime_shared::key_input::reset_for_tests();
+}
+
+/// `key_state()` polls held keys by physical code for the scope's life.
+#[test]
+fn key_state_polls_held_keys() {
+    use runtime_shared::AppKeyEvent;
+
+    let h = keyboard_harness();
+    h.world.enter(|| {
+        let (keys, owned) = runtime_world::collect_owned(glue::key_state);
+        send_key(&h, AppKeyEvent::down("A", "KeyA"));
+        assert!(keys.is_down("KeyA"));
+        assert!(keys.any_down(&["ArrowLeft", "KeyA"]));
+        send_key(&h, AppKeyEvent::up("a", "KeyA"));
+        assert!(!keys.is_down("KeyA"));
+        drop(owned);
+        drop(keys);
+    });
+    assert!(h.shared.keyboard_sink.borrow().is_none());
+    runtime_shared::key_input::reset_for_tests();
 }
 
 /// `keyboard_inset()` — the soft-keyboard author surface. Path pin: the

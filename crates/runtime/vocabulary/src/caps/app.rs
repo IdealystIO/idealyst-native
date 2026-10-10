@@ -9,11 +9,13 @@ use runtime_scene::Host;
 /// Mount-time app environment: platform identity, appearance, the
 /// self-contained closures `mount(...)` stashes in thread-locals
 /// (`open_url` / `set_fullscreen`), and app-level chrome (page metadata,
-/// host-surface background, scrollbar theme, app key handler).
+/// host-surface background, scrollbar theme, app keyboard sink).
 ///
 /// Serves `mount(...)` plus the app-level drains in `walker/style.rs`
-/// and `walker/view.rs` (`set_app_background`, `set_scrollbar_theme`,
-/// `set_app_key_handler`) and `walker.rs` (`set_page_metadata`).
+/// and `walker/view.rs` (`set_app_background`, `set_scrollbar_theme`)
+/// and `walker.rs` (`set_page_metadata`); `set_keyboard_sink` is driven by
+/// `runtime_shared::key_input` through the host wired in
+/// `install_env_services`.
 pub trait AppEnvOps: Host {
     /// The platform's current color scheme (default theme selection).
     fn color_scheme(&self) -> ColorScheme {
@@ -56,10 +58,30 @@ pub trait AppEnvOps: Host {
         // default: no-op
     }
 
-    /// Install (or remove, with `None`) the app-level keyboard handler
-    /// that fires regardless of focus.
+    /// Install (or remove, with `None`) the app-level keyboard sink.
+    ///
+    /// While a sink is installed the backend delivers EVERY key down and
+    /// key up the app receives — regardless of focus, including keys typed
+    /// into a focused text input where the platform routes them app-wide
+    /// (web + desktop; on iOS/Android a focused field owns its keys, and the
+    /// backend reports `focus_lost` when it takes them) — as
+    /// [`AppKeyEvent`]s through
+    /// [`KeyboardSink::key`], honoring a returned `PreventDefault` where the
+    /// platform allows; and calls [`KeyboardSink::focus_lost`] when the
+    /// app/window stops receiving keys (the platform won't deliver releases
+    /// for keys held at that moment). Fill `code` with the physical key in
+    /// Web `KeyboardEvent.code` vocabulary and `repeat` where the platform
+    /// reports it — the dispatcher normalizes repeats either way.
+    ///
+    /// Installed by `runtime_shared::key_input` only while at least one
+    /// listener is live, so a backend may take focus or install monitors
+    /// here without affecting apps that never listen.
+    ///
+    /// [`AppKeyEvent`]: primitives::key::AppKeyEvent
+    /// [`KeyboardSink::key`]: primitives::key::KeyboardSink::key
+    /// [`KeyboardSink::focus_lost`]: primitives::key::KeyboardSink::focus_lost
     #[allow(unused_variables)]
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
         // default: no-op
     }
 }

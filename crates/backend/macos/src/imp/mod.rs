@@ -131,11 +131,12 @@ pub struct MacosBackend {
     /// lifetime so they outlive any closures they back.
     #[allow(dead_code)]
     callback_targets: Vec<Retained<NSObject>>,
-    /// The app-level key-event monitor installed by `set_app_key_handler`
-    /// (`NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown`). The
-    /// returned monitor object is retained here and passed to
-    /// `NSEvent removeMonitor:` when the handler is replaced or cleared.
-    app_key_monitor: Option<Retained<NSObject>>,
+    /// The app-level keyboard source installed by `set_keyboard_sink`: the
+    /// `NSEvent` local monitor (key down / key up / flags changed) and the
+    /// focus-loss notification observers. Torn down (monitor removed,
+    /// observers unregistered) when the sink is cleared. See
+    /// `imp/keyboard.rs`.
+    app_keyboard: Option<keyboard::AppKeyboard>,
     /// Per-view cached animation state. Keyed by view pointer;
     /// holds the translate/scale/rotate components so writing one
     /// doesn't destroy the others (CALayer's `transform` is a single
@@ -599,7 +600,7 @@ impl MacosBackend {
             text_measure_sig: HashMap::new(),
             font_registry: backend_apple_core::font::FontRegistry::new(),
             callback_targets: Vec::new(),
-            app_key_monitor: None,
+            app_keyboard: None,
             animated_states: HashMap::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
@@ -2915,8 +2916,8 @@ impl MacosBackend {
         }
     }
 
-    pub(crate) fn set_app_key_handler_impl(&mut self, handler: Option<runtime_shared::primitives::key::KeyDownHandler>) {
-        keyboard::set_app_key_handler(self, handler);
+    pub(crate) fn set_keyboard_sink_impl(&mut self, sink: Option<runtime_shared::primitives::key::KeyboardSink>) {
+        keyboard::set_keyboard_sink(self, sink);
     }
 
     // Native render introspection (parity testing) — reads the live

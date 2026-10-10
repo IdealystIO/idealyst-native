@@ -48,31 +48,63 @@ pub enum KeyAction {
 /// the host shell hands us for physical keys. Goes straight
 /// into `Host::key`.
 pub fn action_to_key_event(action: KeyAction) -> KeyEvent {
+    let (key, text) = match action {
+        KeyAction::Character(c) => (Key::Character, Some(c.to_string())),
+        KeyAction::Space => (Key::Character, Some(" ".to_string())),
+        KeyAction::Backspace => (Key::Backspace, None),
+        KeyAction::Enter => (Key::Enter, None),
+    };
+    KeyEvent {
+        key,
+        text,
+        modifiers: KeyModifiers::default(),
+        pressed: true,
+        code: action_code(action).to_string(),
+        repeat: false,
+    }
+}
+
+/// Web `KeyboardEvent.code` for an on-screen key — the physical key a
+/// US-layout keyboard would use for the same action. Empty for
+/// characters with no dedicated key (punctuation on a symbols page).
+pub fn action_code(action: KeyAction) -> &'static str {
+    const LETTERS: [&str; 26] = [
+        "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK",
+        "KeyL", "KeyM", "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV",
+        "KeyW", "KeyX", "KeyY", "KeyZ",
+    ];
+    const DIGITS: [&str; 10] = [
+        "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
+        "Digit9",
+    ];
     match action {
-        KeyAction::Character(c) => KeyEvent {
-            key: Key::Character,
-            text: Some(c.to_string()),
-            modifiers: KeyModifiers::default(),
-            pressed: true,
-        },
-        KeyAction::Space => KeyEvent {
-            key: Key::Character,
-            text: Some(" ".to_string()),
-            modifiers: KeyModifiers::default(),
-            pressed: true,
-        },
-        KeyAction::Backspace => KeyEvent {
-            key: Key::Backspace,
-            text: None,
-            modifiers: KeyModifiers::default(),
-            pressed: true,
-        },
-        KeyAction::Enter => KeyEvent {
-            key: Key::Enter,
-            text: None,
-            modifiers: KeyModifiers::default(),
-            pressed: true,
-        },
+        KeyAction::Character(c) if c.is_ascii_alphabetic() => {
+            LETTERS[(c.to_ascii_lowercase() as u8 - b'a') as usize]
+        }
+        KeyAction::Character(c) if c.is_ascii_digit() => DIGITS[(c as u8 - b'0') as usize],
+        KeyAction::Character(_) => "",
+        KeyAction::Space => "Space",
+        KeyAction::Backspace => "Backspace",
+        KeyAction::Enter => "Enter",
+    }
+}
+
+#[cfg(test)]
+mod action_code_tests {
+    use super::*;
+
+    #[test]
+    fn on_screen_keys_carry_physical_codes() {
+        assert_eq!(action_code(KeyAction::Character('a')), "KeyA");
+        assert_eq!(action_code(KeyAction::Character('Z')), "KeyZ");
+        assert_eq!(action_code(KeyAction::Character('7')), "Digit7");
+        assert_eq!(action_code(KeyAction::Character('?')), "");
+        assert_eq!(action_code(KeyAction::Space), "Space");
+        assert_eq!(action_code(KeyAction::Backspace), "Backspace");
+        assert_eq!(action_code(KeyAction::Enter), "Enter");
+        let ev = action_to_key_event(KeyAction::Character('w'));
+        assert_eq!(ev.code, "KeyW");
+        assert!(ev.pressed && !ev.repeat);
     }
 }
 

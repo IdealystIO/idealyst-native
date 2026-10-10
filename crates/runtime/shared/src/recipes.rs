@@ -86,6 +86,14 @@ core_recipe!(
     uses: ["button", "overlay", "text", "view"]
 );
 
+core_recipe!(
+    "keyboard_game_controls",
+    "on_key",
+    "keyboard_game_controls.rs",
+    "Keyboard controls for a game: move a player with WASD / arrow keys\nwhile they're HELD, and jump on Space. Two complementary APIs:\n\n- `key_state()` returns a handle you POLL from a frame loop —\n  `is_down` / `any_down` take physical key codes (`\"KeyA\"`,\n  `\"ArrowLeft\"`, `\"Space\"`), so WASD stays in place on any keyboard\n  layout and a key released after Shift lets go still reads as up.\n- `on_key` delivers every key DOWN and UP as an event; `e.is_press()`\n  is \"down and not an auto-repeat\". Returning `PreventDefault` stops\n  the platform default (Space scrolling the page on web).\n\nBoth live exactly as long as the component (`raf_loop_scoped` too),\nand held keys are released automatically when the window loses\nfocus, so nothing stays stuck after an alt-tab.",
+    uses: ["text", "view"]
+);
+
 // ---------------------------------------------------------------------------
 // Navigation recipes.
 //
@@ -144,6 +152,7 @@ mod tests {
             "keyed_list_add_remove",
             "animated_toast",
             "confirm_dialog_overlay",
+            "keyboard_game_controls",
         ] {
             assert!(
                 names.contains(&expected),

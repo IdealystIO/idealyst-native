@@ -424,6 +424,23 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
     })
 }
 
+/// Wrap the app-level keyboard sink: both entry points run author
+/// listeners, so each queues one flush (outcome passes through).
+fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::key::KeyboardSink {
+    let on_key = sink.clone();
+    primitives::key::KeyboardSink::new(
+        move |ev| {
+            let outcome = on_key.key(ev);
+            schedule_flush();
+            outcome
+        },
+        move || {
+            sink.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // render_wgpu/src/newcore.rs / runtime_vocabulary::bridge — keep
@@ -557,11 +574,13 @@ impl caps::AppEnvOps for TerminalBackend {
         Platform::Custom("Terminal")
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-        // Dispatch-site glue: the app-level key handler runs author code
-        // (`dispatch_key` routes here before the focused-input path).
-        let handler = handler.map(flushing_key);
-        self.app_key_handler = handler;
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+        // Dispatch-site glue: the sink runs author listeners
+        // (`dispatch_key_in` routes here before the focused-input path;
+        // `focus_lost_in` synthesizes releases), so both entry points
+        // queue a flush. The host's crossterm loop IS the native source —
+        // nothing to install or tear down; `None` just stops delivery.
+        self.keyboard_sink = sink.map(flushing_keyboard_sink);
     }
 }
 

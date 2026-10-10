@@ -51,6 +51,12 @@ mod layout_drain_policy;
 // and overlap math are ios-only. See the module docs for the stuck
 // keyboard-height band it pins.
 mod keyboard_frame_policy;
+// Pure halves of the app-level keyboard source: HID usage → Web
+// `KeyboardEvent.code`/`.key`, UIKey → `AppKeyEvent`, and the per-press
+// forwarding ledger. Un-gated so the tests run from any host; the
+// `UIResponder` that feeds them is ios-only (`imp/keyboard.rs`).
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+mod key_input_policy;
 /// How the layout pass treats a root that is a `virtual_grid` cell.
 mod grid_cell_root_policy;
 

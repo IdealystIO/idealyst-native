@@ -4187,14 +4187,6 @@ thread_local! {
     static PENDING_SCROLLBAR: RefCell<Option<(Tokenized<Color>, Tokenized<Color>)>> =
         const { RefCell::new(None) };
 
-    /// Latest app-level key handler queued for `Backend::set_app_key_handler`.
-    /// Outer `Option` = "a `set_app_key_handler` call happened this cycle, drain
-    /// it"; inner = the handler (`Some` installs, `None` clears). Single slot
-    /// (latest wins) — there is exactly one app-level handler.
-    static PENDING_APP_KEY_HANDLER:
-        RefCell<Option<Option<crate::primitives::key::KeyDownHandler>>> =
-        const { RefCell::new(None) };
-
     /// The installed theme's default text [`FontFamily`], if any. A text
     /// node whose resolved style sets no `font_family` inherits this at
     /// apply time (see `walker::style::apply_one`) so the theme's font is
@@ -4648,48 +4640,6 @@ pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
     PENDING_SCROLLBAR.with(|p| *p.borrow_mut() = Some((thumb, track)));
 }
 
-/// Install (or, with `None`, remove) an APP-LEVEL keyboard handler that fires on
-/// every key press regardless of focus. Routes through
-/// [`Backend::set_app_key_handler`](crate::Backend::set_app_key_handler) on the
-/// next walker flush. Single-slot: a second call before the flush replaces the
-/// first (`Some(handler)` installs, `None` clears). Backends without an
-/// app-level key source ignore it.
-///
-/// Call once near app start, e.g.
-/// `set_app_key_handler(Some(Rc::new(|e| { /* … */ KeyOutcome::Default })))`.
-/// The handler sees EVERY key (including typing into a focused input), so act
-/// only on the keys you care about and return `KeyOutcome::Default` otherwise.
-pub fn set_app_key_handler(handler: Option<crate::primitives::key::KeyDownHandler>) {
-    // Born batched — every key the backend delivers runs the handler as one
-    // reactive cycle, so signal writes inside it coalesce. See `reactive::cycle`.
-    let handler = handler.map(|h| {
-        std::rc::Rc::new(move |e: &crate::primitives::key::KeyEvent| {
-            crate::cycle(|| h(e))
-        }) as crate::primitives::key::KeyDownHandler
-    });
-    PENDING_APP_KEY_HANDLER.with(|p| *p.borrow_mut() = Some(handler));
-}
-
-/// Drain the queued app-level key handler (outer `Some` = a
-/// [`set_app_key_handler`] call happened since the last drain; inner
-/// `Some` installs, `None` clears).
-///
-/// This slot is the one pending host-state queue that still lives in
-/// this crate: the author entry point ([`set_app_key_handler`]) is a
-/// shared free fn, so its queue must live where the fn does — unlike
-/// tokens / app background / scrollbar, whose new-core entry points
-/// moved per-world into `runtime_vocabulary::theme::ThemeCtx`. The
-/// vocabulary's `flush_pending_host_state` drains here and forwards
-/// through `AppEnvOps::set_app_key_handler`; the closure-based
-/// [`flush_pending_host_state`] in this crate drains the same slot for
-/// its remaining callers. Without a drain the handler queues forever
-/// and app-level keys never fire — the failure is silent because the
-/// re-export keeps every call site compiling.
-#[doc(hidden)]
-pub fn take_pending_app_key_handler(
-) -> Option<Option<crate::primitives::key::KeyDownHandler>> {
-    PENDING_APP_KEY_HANDLER.with(|p| p.borrow_mut().take())
-}
 
 
 /// Ensures the backend has been asked to pre-generate state for this
@@ -4963,18 +4913,16 @@ pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
 /// drain so the ordering invariant (tokens before host-surface
 /// settings, see the inline comment) can't diverge.
 #[doc(hidden)]
-pub fn flush_pending_host_state<I, UPD, SAB, SST, SAK>(
+pub fn flush_pending_host_state<I, UPD, SAB, SST>(
     install_tokens: I,
     update_tokens: UPD,
     set_app_background: SAB,
     set_scrollbar_theme: SST,
-    set_app_key_handler: SAK,
 ) where
     I: FnOnce(&[TokenEntry]),
     UPD: FnMut(&[TokenEntry]),
     SAB: FnOnce(&Tokenized<Color>),
     SST: FnOnce(&Tokenized<Color>, &Tokenized<Color>),
-    SAK: FnOnce(Option<crate::primitives::key::KeyDownHandler>),
 {
     // Flush pending tokens first — backends that emit `var(--…)` need
     // the variables installed before any rule that references them
@@ -5004,16 +4952,11 @@ pub fn flush_pending_host_state<I, UPD, SAB, SST, SAK>(
     if let Some((thumb, track)) = PENDING_SCROLLBAR.with(|p| p.borrow_mut().take()) {
         set_scrollbar_theme(&thumb, &track);
     }
-    // Drain the queued app-level key handler (outer Some = a call happened;
-    // inner Some installs, None clears). Single-slot, like the host bg above.
-    if let Some(handler) = PENDING_APP_KEY_HANDLER.with(|p| p.borrow_mut().take()) {
-        set_app_key_handler(handler);
-    }
 }
 
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
-pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
+pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
     sheet: &Rc<StyleSheet>,
     register: R,
     unregister: U,
@@ -5023,7 +4966,6 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
     register_typeface: RT,
     set_app_background: SAB,
     set_scrollbar_theme: SST,
-    set_app_key_handler: SAK,
 ) where
     R: FnOnce(&[Rc<StyleRules>]),
     U: Fn(&[Rc<StyleRules>]),
@@ -5038,14 +4980,12 @@ pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST, SAK>(
     ),
     SAB: FnOnce(&Tokenized<Color>),
     SST: FnOnce(&Tokenized<Color>, &Tokenized<Color>),
-    SAK: FnOnce(Option<crate::primitives::key::KeyDownHandler>),
 {
     flush_pending_host_state(
         install_tokens,
         update_tokens,
         set_app_background,
         set_scrollbar_theme,
-        set_app_key_handler,
     );
 
     let sheet_ptr = Rc::as_ptr(sheet);

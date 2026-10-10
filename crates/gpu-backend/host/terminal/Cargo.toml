@@ -45,3 +45,7 @@ libc = "0.2"
 # all native runtime-server clients (iOS, Android, macOS, sim)
 # consume.
 runtime-server-shell-native = { workspace = true, optional = true, features = ["runtime-server"] }
+
+[dev-dependencies]
+# Tests install a keyboard sink through `caps::AppEnvOps`.
+runtime-vocabulary = { workspace = true }

@@ -87,3 +87,143 @@ pub enum KeyOutcome {
 /// Shared handler type carried into the backend `create_text_*`
 /// methods. Aliased so the Backend trait signature stays readable.
 pub type KeyDownHandler = std::rc::Rc<dyn Fn(&KeyEvent) -> KeyOutcome>;
+
+// ---------------------------------------------------------------------------
+// App-level keyboard input (key down AND key up, regardless of focus).
+// ---------------------------------------------------------------------------
+
+/// Whether an [`AppKeyEvent`] is a press or a release.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyPhase {
+    /// The key went down (or auto-repeated while held — see
+    /// [`AppKeyEvent::repeat`]).
+    Down,
+    /// The key came back up. Also synthesized for every held key when the
+    /// app loses keyboard focus, so a game never sees a key stuck down.
+    Up,
+}
+
+/// One app-level keyboard event — what [`crate::key_input`] listeners
+/// receive. Unlike [`KeyEvent`] (a focused text input's key-down), this
+/// fires for presses AND releases anywhere in the app.
+///
+/// ## `key` vs `code`
+///
+/// - [`key`](Self::key) is the *meaning* of the key under the user's layout
+///   and modifiers — Web `KeyboardEvent.key` (`"a"`, `"A"`, `"ArrowUp"`,
+///   `" "`). Use it for shortcuts and text-ish handling.
+/// - [`code`](Self::code) is the *physical* key, independent of layout and
+///   modifiers — Web `KeyboardEvent.code` (`"KeyW"`, `"Digit1"`,
+///   `"ArrowUp"`, `"Space"`, `"ShiftLeft"`). Use it for game controls:
+///   WASD stays where it is on AZERTY, and a key pressed with Shift and
+///   released without it still has the same `code` (its `key` changed from
+///   `"W"` to `"w"`). Empty when the platform can't identify the key.
+///
+/// [mdn-code]: https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AppKeyEvent {
+    /// Press or release.
+    pub phase: KeyPhase,
+    /// Web `KeyboardEvent.key` — see the type docs.
+    pub key: String,
+    /// Web `KeyboardEvent.code` — the physical key. See the type docs.
+    pub code: String,
+    /// `true` for an auto-repeat key-down while the key is held. Always
+    /// `false` on [`KeyPhase::Up`]. Normalized by the dispatcher: a down
+    /// for a key that is already down is a repeat on every backend, even
+    /// where the platform doesn't flag repeats itself.
+    pub repeat: bool,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+impl AppKeyEvent {
+    /// A key-down with no modifiers. Convenience for backends and tests.
+    pub fn down(key: impl Into<String>, code: impl Into<String>) -> Self {
+        AppKeyEvent {
+            phase: KeyPhase::Down,
+            key: key.into(),
+            code: code.into(),
+            repeat: false,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
+        }
+    }
+
+    /// A key-up with no modifiers. Convenience for backends and tests.
+    pub fn up(key: impl Into<String>, code: impl Into<String>) -> Self {
+        AppKeyEvent { phase: KeyPhase::Up, ..AppKeyEvent::down(key, code) }
+    }
+
+    /// `true` for a fresh press (down, not an auto-repeat).
+    pub fn is_press(&self) -> bool {
+        self.phase == KeyPhase::Down && !self.repeat
+    }
+
+    /// The text-input-shaped [`KeyEvent`] view of this event (no selection).
+    /// Bridges the single-slot `set_app_key_handler` API, which predates
+    /// key-up delivery.
+    pub fn to_key_event(&self) -> KeyEvent {
+        KeyEvent {
+            key: self.key.clone(),
+            shift: self.shift,
+            ctrl: self.ctrl,
+            alt: self.alt,
+            meta: self.meta,
+            selection_start: 0,
+            selection_end: 0,
+        }
+    }
+}
+
+/// What a backend's app-level key source delivers into. Installed by
+/// `AppEnvOps::set_keyboard_sink` while at least one app-level key listener
+/// is live; removed (`None`) when the last one goes.
+///
+/// A backend calls [`key`](Self::key) for every key down/up it observes
+/// app-wide and honors the returned [`KeyOutcome`] where the platform lets
+/// it (`PreventDefault` → swallow the native event: no beep on macOS, no
+/// page scroll on web for arrow/space). It calls
+/// [`focus_lost`](Self::focus_lost) when the app/window stops receiving
+/// keys (window blur, app deactivation): the platform will NOT deliver the
+/// key-ups for keys still held at that moment, so the dispatcher
+/// synthesizes them.
+#[derive(Clone)]
+pub struct KeyboardSink {
+    key: std::rc::Rc<dyn Fn(&AppKeyEvent) -> KeyOutcome>,
+    focus_lost: std::rc::Rc<dyn Fn()>,
+}
+
+impl KeyboardSink {
+    /// Build a sink from its two entry points. The framework builds the
+    /// real one ([`crate::key_input`]); backends only call it. Public so
+    /// backend tests can build a recording sink.
+    pub fn new(
+        key: impl Fn(&AppKeyEvent) -> KeyOutcome + 'static,
+        focus_lost: impl Fn() + 'static,
+    ) -> Self {
+        KeyboardSink { key: std::rc::Rc::new(key), focus_lost: std::rc::Rc::new(focus_lost) }
+    }
+
+    /// Deliver one key event.
+    pub fn key(&self, event: &AppKeyEvent) -> KeyOutcome {
+        (self.key)(event)
+    }
+
+    /// The app stopped receiving keys; release everything held.
+    pub fn focus_lost(&self) {
+        (self.focus_lost)()
+    }
+}
+
+impl std::fmt::Debug for KeyboardSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeyboardSink")
+    }
+}

@@ -36,7 +36,7 @@ use crossterm::{
 };
 
 use crate::{
-    is_quit_key, paint_grid, scheduler, stderr_redirect, to_terminal_key, KeyEventKind,
+    dispatch_terminal_key, is_quit_key, paint_grid, scheduler, stderr_redirect, KeyEventKind,
     RunError, RunOptions, DEFAULT_RUNTIME_SERVER_CELL_SIZE, SCROLL_STEP,
 };
 
@@ -69,6 +69,7 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
         cursor::Hide,
         Clear(ClearType::All)
     )?;
+    let (releases_reported, kitty_pushed) = crate::enable_key_reporting(&mut stdout);
 
     scheduler::install();
 
@@ -177,11 +178,6 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
                         backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
                     }
                     Event::Key(key) => {
-                        if key.kind != KeyEventKind::Press
-                            && key.kind != KeyEventKind::Repeat
-                        {
-                            continue;
-                        }
                         // Focused TextInput gets first crack — the
                         // backend's TextInput primitive is local
                         // bookkeeping (focus, cursor, value); typing
@@ -190,10 +186,11 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
                         // as local-mount `run`: if dispatch_key returns
                         // true the input swallowed it, so don't let it
                         // also count as a quit shortcut.
-                        if let Some(tk) = to_terminal_key(&key) {
-                            if backend.borrow_mut().dispatch_key(&tk) {
-                                continue;
-                            }
+                        if dispatch_terminal_key(&backend, &key, releases_reported) {
+                            continue;
+                        }
+                        if key.kind == KeyEventKind::Release {
+                            continue;
                         }
                         if let Some(cb) = opts.on_key.as_ref() {
                             if cb(&key) {
@@ -242,6 +239,7 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
         Ok(())
     })();
 
+    crate::disable_key_reporting(&mut stdout, kitty_pushed);
     let _ = execute!(
         stdout,
         ResetColor,

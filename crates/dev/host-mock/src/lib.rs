@@ -237,6 +237,9 @@ pub struct Shared {
     pub scroll_offsets: RefCell<BTreeMap<Node, (f32, f32)>>,
     /// Frames served by `IntrospectionOps::{frame,absolute_frame,device_frame}`.
     pub frames: RefCell<BTreeMap<Node, ViewportRect>>,
+    /// The app-level keyboard sink currently installed
+    /// (`AppEnvOps::set_keyboard_sink`) — drive it like a native key source.
+    pub keyboard_sink: RefCell<Option<primitives::key::KeyboardSink>>,
 }
 
 impl Default for Shared {
@@ -285,6 +288,7 @@ impl Default for Shared {
             mint_class: RefCell::new(None),
             scroll_offsets: RefCell::new(BTreeMap::new()),
             frames: RefCell::new(BTreeMap::new()),
+            keyboard_sink: RefCell::new(None),
         }
     }
 }
@@ -661,11 +665,12 @@ impl caps::AppEnvOps for HostMock {
             .rec_v("set_scrollbar_theme", "set_scrollbar_theme".to_string());
     }
 
-    fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
         self.s.rec_v(
-            "set_app_key_handler",
-            format!("set_app_key_handler {}", if handler.is_some() { "some" } else { "none" }),
+            "set_keyboard_sink",
+            format!("set_keyboard_sink {}", if sink.is_some() { "some" } else { "none" }),
         );
+        *self.s.keyboard_sink.borrow_mut() = sink;
     }
 }
 

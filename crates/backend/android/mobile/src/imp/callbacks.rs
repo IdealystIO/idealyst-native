@@ -69,6 +69,15 @@ pub(crate) struct TextChangeCallback(pub(crate) Rc<dyn Fn(String)>);
 /// export itself.
 pub(crate) struct KeyDownCallback(pub(crate) runtime_shared::primitives::key::KeyDownHandler);
 
+/// The app-level keyboard sink (`AppEnvOps::set_keyboard_sink`). JVM-side
+/// `RustGlobalKeyListener` holds the pointer and calls `nativeGlobalKey`
+/// (key down / up) and `nativeKeyFocusLost`. Unlike most holders here it is
+/// FREED, not leaked: `keyboard::set_keyboard_sink` frees it when the sink is
+/// replaced or removed, after the listener's `detach()` has zeroed its copy
+/// of the pointer. The trampolines clone the sink out before calling it,
+/// because a call can itself trigger that free.
+pub(crate) struct KeyboardSinkCallback(pub(crate) runtime_shared::primitives::key::KeyboardSink);
+
 /// `Toggle.on_change`. JVM-side `RustToggleListener.onCheckedChanged`
 /// calls `nativeChanged(ptr, checked)`.
 pub(crate) struct ToggleChangeCallback(pub(crate) Rc<dyn Fn(bool)>);

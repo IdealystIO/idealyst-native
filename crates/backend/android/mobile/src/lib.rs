@@ -130,6 +130,13 @@ mod image_policy;
 /// `imp/primitives/overlay.rs`.
 mod anchored_portal_policy;
 
+/// Android `KeyEvent` → Web `key` / `code` / modifiers, and the app-level
+/// `AppKeyEvent` built from them. Un-gated like `sticky_compute` so the
+/// key tables' tests run on the host; the JNI trampolines that consume it
+/// live in `imp/jni_exports.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod app_key_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

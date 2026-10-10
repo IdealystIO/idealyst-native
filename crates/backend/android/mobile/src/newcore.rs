@@ -18,7 +18,7 @@
 //! | Trait | Status |
 //! |---|---|
 //! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct (+ dispatch-site glue on `set_app_key_handler`) |
+//! | `AppEnvOps` | direct (+ dispatch-site glue on `set_keyboard_sink`) |
 //! | `LifecycleOps` | direct (`is_hydrating` is always `false` on this backend — no hydration on native) |
 //! | `ViewOps` | direct |
 //! | `InputOps` | direct (+ glue on touch/wheel/hover/file-drop handlers) |
@@ -462,6 +462,26 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
     })
 }
 
+/// Wrap the app-level [`KeyboardSink`](primitives::key::KeyboardSink):
+/// both entry points (key down/up and focus loss — the latter synthesizes
+/// key-ups, which run listeners too) queue the flush after the listeners
+/// return; the key outcome passes through unchanged.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn flushing_sink(sink: primitives::key::KeyboardSink) -> primitives::key::KeyboardSink {
+    let on_focus = sink.clone();
+    primitives::key::KeyboardSink::new(
+        move |ev| {
+            let outcome = sink.key(ev);
+            schedule_flush();
+            outcome
+        },
+        move || {
+            on_focus.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Boot path + Host + capability-trait delegation (android-gated: the
 // real `AndroidBackend` only exists under `target_os = "android"`)
@@ -497,7 +517,7 @@ mod native {
     use runtime_world::World;
 
     use super::{
-        flushing0, flushing1, flushing_key, schedule_flush, set_flush_world, set_viewport_sink,
+        flushing0, flushing1, flushing_key, flushing_sink, schedule_flush, set_flush_world, set_viewport_sink,
     };
     use crate::imp::{self, AndroidBackend};
 
@@ -803,10 +823,11 @@ mod native {
             AndroidBackend::set_app_background_impl(self, color)
         }
 
-        fn set_app_key_handler(&mut self, handler: Option<primitives::key::KeyDownHandler>) {
-            // Dispatch-site glue: app-level key handlers run author code.
-            let handler = handler.map(flushing_key);
-            AndroidBackend::set_app_key_handler_impl(self, handler)
+        fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+            // Dispatch-site glue: the sink runs app-level key listeners
+            // (author code) for every key down/up and on focus loss.
+            let sink = sink.map(flushing_sink);
+            AndroidBackend::set_keyboard_sink_impl(self, sink)
         }
     }
 
@@ -1867,6 +1888,39 @@ mod tests {
             1,
             "staged update committed by the queued flush"
         );
+        set_flush_world(None);
+    }
+
+    /// `flushing_sink` (the `set_keyboard_sink` glue) passes the key
+    /// outcome through, and BOTH entry points — a key down/up and focus
+    /// loss (whose synthesized key-ups run listeners) — commit what the
+    /// listener staged. Without the flush on `focus_lost`, a game's
+    /// "stop moving" write from the synthesized release would sit staged
+    /// until some unrelated event.
+    #[test]
+    fn flushing_sink_commits_key_and_focus_lost_writes() {
+        use runtime_shared::primitives::key::{AppKeyEvent, KeyOutcome, KeyboardSink};
+        install_test_scheduler();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        let (keys, blurs) = world.enter(|| (signal(0i32), signal(0i32)));
+
+        let sink = flushing_sink(KeyboardSink::new(
+            move |_ev: &AppKeyEvent| {
+                keys.update(|n| n + 1);
+                KeyOutcome::PreventDefault
+            },
+            move || blurs.update(|n| n + 1),
+        ));
+
+        let outcome = sink.key(&AppKeyEvent::up("w", "KeyW"));
+        assert_eq!(outcome, KeyOutcome::PreventDefault, "outcome passes through");
+        pump();
+        assert_eq!(world.enter(|| keys.get()), 1, "key write committed by the queued flush");
+
+        sink.focus_lost();
+        pump();
+        assert_eq!(world.enter(|| blurs.get()), 1, "focus-lost write committed by the queued flush");
         set_flush_world(None);
     }
 

@@ -72,6 +72,7 @@ impl std::fmt::Debug for ClickOutcome {
     }
 }
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -109,9 +110,11 @@ pub struct TerminalBackend {
     /// `(8.0, 16.0)` so `width: px(14)` lands at a sane ~2 cells
     /// instead of overflowing the viewport.
     pub(crate) cell_size: (f32, f32),
-    /// App-level key handler (fires for every key before the focused-input path),
-    /// installed by `set_app_key_handler`.
-    pub(crate) app_key_handler: Option<runtime_shared::primitives::key::KeyDownHandler>,
+    /// App-level keyboard sink (every key down AND up before the
+    /// focused-input path, plus `focus_lost`), installed by
+    /// `set_keyboard_sink` while at least one app key listener is live.
+    /// Always cloned out before it's called — see [`Self::dispatch_key_in`].
+    pub(crate) keyboard_sink: Option<runtime_shared::primitives::key::KeyboardSink>,
 }
 
 impl Default for TerminalBackend {
@@ -130,7 +133,7 @@ impl TerminalBackend {
             viewport: (80, 24),
             focused_id: None,
             cell_size: (1.0, 1.0),
-            app_key_handler: None,
+            keyboard_sink: None,
         }
     }
 
@@ -682,26 +685,77 @@ impl TerminalBackend {
         }
     }
 
-    /// Dispatch a key event to the focused TextInput, if any.
-    /// Returns `true` if the key was consumed by an input — the host
-    /// should suppress its `on_key` callback in that case.
+    /// Dispatch a key event: the app-level keyboard sink sees every press
+    /// AND release; a press it doesn't claim then goes to the focused
+    /// TextInput, if any. Returns `true` if the key was consumed (claimed
+    /// by the sink or taken by an input) — the host should suppress its
+    /// `on_key` callback in that case.
+    ///
+    /// Hosts that hold the backend in a `RefCell` should call
+    /// [`Self::dispatch_key_in`] instead: it runs the sink with the
+    /// backend unborrowed. Through `&mut self` the sink runs while the
+    /// caller's borrow is live, so a listener added/removed mid-dispatch
+    /// finds the backend busy and the dispatcher applies the install
+    /// change on its next microtask (`try_borrow_mut` + retry) — correct,
+    /// just one tick later.
     pub fn dispatch_key(&mut self, key: &TerminalKey) -> bool {
-        // App-level handler first — it sees EVERY key regardless of focus.
-        // Claiming the key (`PreventDefault`) stops both the focused-input path
-        // and the host's own `on_key` callback.
-        if let Some(handler) = self.app_key_handler.clone() {
-            let ev = runtime_shared::primitives::key::KeyEvent {
-                key: key.key.clone(),
-                shift: key.shift,
-                ctrl: key.ctrl,
-                alt: key.alt,
-                meta: key.meta,
-                selection_start: 0,
-                selection_end: 0,
-            };
-            if matches!(handler(&ev), runtime_shared::KeyOutcome::PreventDefault) {
+        if let Some(sink) = self.keyboard_sink.clone() {
+            if Self::run_sink(&sink, key) {
                 return true;
             }
+        }
+        self.dispatch_key_to_input(key)
+    }
+
+    /// [`Self::dispatch_key`] for a `RefCell`-held backend (what the
+    /// terminal host has). The sink is cloned out under a short shared
+    /// borrow and called with NO borrow held: its listeners may add or
+    /// remove listeners, which re-enters `set_keyboard_sink` on this
+    /// backend through `try_borrow_mut`, and may write signals whose
+    /// effects touch the backend. Only the focused-input path then
+    /// borrows mutably.
+    pub fn dispatch_key_in(backend: &RefCell<Self>, key: &TerminalKey) -> bool {
+        let sink = backend.borrow().keyboard_sink.clone();
+        if let Some(sink) = sink {
+            if Self::run_sink(&sink, key) {
+                return true;
+            }
+        }
+        backend.borrow_mut().dispatch_key_to_input(key)
+    }
+
+    /// The terminal stopped receiving keys (focus-out). Releases for keys
+    /// still held won't arrive, so the sink synthesizes them. Same borrow
+    /// discipline as [`Self::dispatch_key_in`].
+    pub fn focus_lost_in(backend: &RefCell<Self>) {
+        let sink = backend.borrow().keyboard_sink.clone();
+        if let Some(sink) = sink {
+            sink.focus_lost();
+        }
+    }
+
+    /// Deliver one key to the app-level sink. `true` = claimed
+    /// (`PreventDefault`).
+    fn run_sink(sink: &runtime_shared::primitives::key::KeyboardSink, key: &TerminalKey) -> bool {
+        use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
+        let ev = AppKeyEvent {
+            phase: if key.pressed { KeyPhase::Down } else { KeyPhase::Up },
+            key: key.key.clone(),
+            code: key.code.clone(),
+            repeat: key.pressed && key.repeat,
+            shift: key.shift,
+            ctrl: key.ctrl,
+            alt: key.alt,
+            meta: key.meta,
+        };
+        matches!(sink.key(&ev), runtime_shared::KeyOutcome::PreventDefault)
+    }
+
+    /// The focused-input half of [`Self::dispatch_key`]. Press-only: a
+    /// release never edits.
+    fn dispatch_key_to_input(&mut self, key: &TerminalKey) -> bool {
+        if !key.pressed {
+            return false;
         }
         let Some(id) = self.focused_id else { return false };
         let Some(data) = self.nodes.get(&id) else { return false };
@@ -746,11 +800,131 @@ enum HitTarget {
 /// in `crossterm` as a dep. The host converts.
 #[derive(Clone, Debug)]
 pub struct TerminalKey {
+    /// Web `KeyboardEvent.key` vocabulary (`"a"`, `"Enter"`, `" "`).
     pub key: String,
+    /// Web `KeyboardEvent.code` vocabulary (`"KeyA"`, `"Digit1"`,
+    /// `"Space"`). Terminals report characters, not physical keys, so this
+    /// is a best-effort derivation from the key ([`code_for_key`]) — it
+    /// follows the layout (AZERTY "a" → `"KeyA"`) and can't tell left
+    /// from right modifiers. Empty when there's no sensible code.
+    pub code: String,
+    /// `true` for a press (or auto-repeat), `false` for a release.
+    /// Terminals only report releases under the kitty keyboard protocol;
+    /// elsewhere the host sends a release right after every press.
+    pub pressed: bool,
+    /// Auto-repeat of a held key (kitty protocol `Repeat`).
+    pub repeat: bool,
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
     pub meta: bool,
+}
+
+impl TerminalKey {
+    /// A fresh press of `key` with no modifiers; `code` derived via
+    /// [`code_for_key`].
+    pub fn press(key: impl Into<String>) -> Self {
+        let key = key.into();
+        TerminalKey {
+            code: code_for_key(&key).to_string(),
+            key,
+            pressed: true,
+            repeat: false,
+            shift: false,
+            ctrl: false,
+            alt: false,
+            meta: false,
+        }
+    }
+
+    /// The release matching this key (same key/code/modifiers).
+    pub fn released(&self) -> Self {
+        TerminalKey { pressed: false, repeat: false, ..self.clone() }
+    }
+}
+
+/// Best-effort Web `KeyboardEvent.code` for a Web `key` value, assuming a
+/// US layout — terminals don't report physical keys, so this is what a
+/// terminal-hosted game gets. Letters → `KeyX` (either case), digits →
+/// `DigitN`, US-layout punctuation → its key (shifted symbols map to the
+/// key that types them: `"!"` → `"Digit1"`), named keys → themselves.
+/// Empty when unknown.
+pub fn code_for_key(key: &str) -> &'static str {
+    const LETTERS: [&str; 26] = [
+        "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK",
+        "KeyL", "KeyM", "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV",
+        "KeyW", "KeyX", "KeyY", "KeyZ",
+    ];
+    const DIGITS: [&str; 10] = [
+        "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
+        "Digit9",
+    ];
+    const FKEYS: [&str; 24] = [
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14",
+        "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
+    ];
+    let mut chars = key.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        if c.is_ascii_alphabetic() {
+            return LETTERS[(c.to_ascii_lowercase() as u8 - b'a') as usize];
+        }
+        if c.is_ascii_digit() {
+            return DIGITS[(c as u8 - b'0') as usize];
+        }
+        return match c {
+            ' ' => "Space",
+            '!' => "Digit1",
+            '@' => "Digit2",
+            '#' => "Digit3",
+            '$' => "Digit4",
+            '%' => "Digit5",
+            '^' => "Digit6",
+            '&' => "Digit7",
+            '*' => "Digit8",
+            '(' => "Digit9",
+            ')' => "Digit0",
+            '-' | '_' => "Minus",
+            '=' | '+' => "Equal",
+            '[' | '{' => "BracketLeft",
+            ']' | '}' => "BracketRight",
+            '\\' | '|' => "Backslash",
+            ';' | ':' => "Semicolon",
+            '\'' | '"' => "Quote",
+            '`' | '~' => "Backquote",
+            ',' | '<' => "Comma",
+            '.' | '>' => "Period",
+            '/' | '?' => "Slash",
+            _ => "",
+        };
+    }
+    if let Some(n) = key.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
+        if (1..=24).contains(&n) {
+            return FKEYS[n - 1];
+        }
+    }
+    match key {
+        "Enter" => "Enter",
+        "Escape" => "Escape",
+        "Tab" => "Tab",
+        "Backspace" => "Backspace",
+        "Delete" => "Delete",
+        "Insert" => "Insert",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "PageUp",
+        "PageDown" => "PageDown",
+        "ArrowUp" => "ArrowUp",
+        "ArrowDown" => "ArrowDown",
+        "ArrowLeft" => "ArrowLeft",
+        "ArrowRight" => "ArrowRight",
+        "CapsLock" => "CapsLock",
+        // Side unknowable from a terminal; report the left key.
+        "Shift" => "ShiftLeft",
+        "Control" => "ControlLeft",
+        "Alt" => "AltLeft",
+        "Meta" => "MetaLeft",
+        _ => "",
+    }
 }
 
 fn make_key_event(
@@ -829,7 +1003,7 @@ mod regression_tests {
     }
 
     fn char_key(c: &str) -> TerminalKey {
-        TerminalKey { key: c.to_string(), shift: false, ctrl: false, alt: false, meta: false }
+        TerminalKey::press(c)
     }
 
     fn input_value(be: &TerminalBackend, node: &TermNode) -> String {
@@ -964,6 +1138,194 @@ mod regression_tests {
             "placeholder should name the unsupported external; got {:?}",
             data.content
         );
+    }
+
+    // -------------------------------------------------------------
+    // App-level keyboard sink (key down + up, focus loss)
+    // -------------------------------------------------------------
+
+    use runtime_shared::key_input;
+    use runtime_shared::primitives::key::{AppKeyEvent, KeyOutcome, KeyPhase, KeyboardSink};
+    use std::cell::{Cell, RefCell};
+
+    fn recording_sink(outcome: KeyOutcome) -> (KeyboardSink, Rc<RefCell<Vec<AppKeyEvent>>>, Rc<Cell<u32>>) {
+        let log: Rc<RefCell<Vec<AppKeyEvent>>> = Rc::default();
+        let lost = Rc::new(Cell::new(0));
+        let (l, f) = (log.clone(), lost.clone());
+        let sink = KeyboardSink::new(
+            move |e| {
+                l.borrow_mut().push(e.clone());
+                outcome
+            },
+            move || f.set(f.get() + 1),
+        );
+        (sink, log, lost)
+    }
+
+    /// Regression: the terminal host dropped every non-press crossterm
+    /// event and the backend's app-key hook was key-DOWN-only, so a game
+    /// never learned a held key was released. Both phases now reach the
+    /// sink, with a `code`.
+    #[test]
+    fn regression_terminal_app_keys_never_saw_releases() {
+        use runtime_vocabulary::caps::AppEnvOps;
+        let backend = RefCell::new(TerminalBackend::new());
+        let (sink, log, lost) = recording_sink(KeyOutcome::Default);
+        backend.borrow_mut().set_keyboard_sink(Some(sink));
+
+        let w = TerminalKey::press("w");
+        TerminalBackend::dispatch_key_in(&backend, &w);
+        TerminalBackend::dispatch_key_in(&backend, &TerminalKey { repeat: true, ..w.clone() });
+        TerminalBackend::dispatch_key_in(&backend, &w.released());
+        TerminalBackend::focus_lost_in(&backend);
+
+        let got: Vec<_> =
+            log.borrow().iter().map(|e| (e.phase, e.key.clone(), e.code.clone(), e.repeat)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (KeyPhase::Down, "w".to_string(), "KeyW".to_string(), false),
+                (KeyPhase::Down, "w".to_string(), "KeyW".to_string(), true),
+                (KeyPhase::Up, "w".to_string(), "KeyW".to_string(), false),
+            ]
+        );
+        assert_eq!(lost.get(), 1, "focus loss reaches the sink");
+
+        // `None` removes the sink: nothing more is delivered.
+        backend.borrow_mut().set_keyboard_sink(None);
+        TerminalBackend::dispatch_key_in(&backend, &w);
+        TerminalBackend::focus_lost_in(&backend);
+        assert_eq!(log.borrow().len(), 3);
+        assert_eq!(lost.get(), 1);
+    }
+
+    /// A release reaches the sink but never edits a focused input; a key
+    /// the sink claims never reaches the input at all.
+    #[test]
+    fn terminal_release_skips_input_and_prevent_default_claims() {
+        use runtime_vocabulary::caps::{AppEnvOps, LifecycleOps, TextInputOps};
+        let mut be = TerminalBackend::new();
+        be.set_viewport(20, 3);
+        let input = be.create_text_input("", None, Rc::new(|_| {}), None, None, false, &AccessibilityProps::default());
+        be.finish(input.clone());
+        be.render_to_grid();
+        assert!(matches!(be.dispatch_click(0, 0), ClickOutcome::FocusedInput));
+
+        let (sink, log, _) = recording_sink(KeyOutcome::Default);
+        be.set_keyboard_sink(Some(sink));
+        be.dispatch_key(&TerminalKey::press("a"));
+        be.dispatch_key(&TerminalKey::press("a").released());
+        assert_eq!(input_value(&be, &input), "a", "one press → one edit");
+        assert_eq!(log.borrow().len(), 2);
+
+        let (claiming, _, _) = recording_sink(KeyOutcome::PreventDefault);
+        be.set_keyboard_sink(Some(claiming));
+        assert!(be.dispatch_key(&TerminalKey::press("b")), "claimed → consumed");
+        assert_eq!(input_value(&be, &input), "a");
+    }
+
+    /// Wire the real key dispatcher to `backend` the way
+    /// `runtime_vocabulary::install_env_services` does (`try_borrow_mut`,
+    /// `false` = busy → retry).
+    fn wire_dispatcher(backend: &Rc<RefCell<TerminalBackend>>) {
+        use runtime_vocabulary::caps::AppEnvOps;
+        key_input::reset_for_tests();
+        let weak = Rc::downgrade(backend);
+        key_input::install_keyboard_host(Some(Rc::new(move |sink: Option<KeyboardSink>| {
+            let Some(b) = weak.upgrade() else { return true };
+            let Ok(mut b) = b.try_borrow_mut() else { return false };
+            b.set_keyboard_sink(sink);
+            true
+        })));
+    }
+
+    /// Listeners that add/remove listeners while a key is being
+    /// dispatched must not panic, through either entry point. Through
+    /// `dispatch_key_in` (what the host uses) the backend is unborrowed
+    /// while the sink runs, so the install change lands immediately.
+    #[test]
+    fn regression_terminal_listener_churn_during_key_dispatch() {
+        let backend = Rc::new(RefCell::new(TerminalBackend::new()));
+        wire_dispatcher(&backend);
+
+        let held: Rc<RefCell<Vec<key_input::KeyListener>>> = Rc::default();
+        let fired = Rc::new(Cell::new(0u32));
+        let (h, f) = (held.clone(), fired.clone());
+        // On every key: drop all held listeners (including itself) and
+        // register a fresh one that does the same — maximal churn.
+        fn churn(h: Rc<RefCell<Vec<key_input::KeyListener>>>, f: Rc<Cell<u32>>) -> key_input::KeyListener {
+            key_input::add_listener(move |_e| {
+                f.set(f.get() + 1);
+                let old = std::mem::take(&mut *h.borrow_mut());
+                drop(old);
+                let next = churn(h.clone(), f.clone());
+                h.borrow_mut().push(next);
+                KeyOutcome::Default
+            })
+        }
+        held.borrow_mut().push(churn(h, f));
+        assert!(backend.borrow().keyboard_sink.is_some(), "installed on first listener");
+
+        // RefCell entry point (the host's).
+        TerminalBackend::dispatch_key_in(&backend, &TerminalKey::press("w"));
+        TerminalBackend::dispatch_key_in(&backend, &TerminalKey::press("w").released());
+        // `&mut self` entry point: the caller's borrow is live while the
+        // sink runs; the dispatcher's install path must back off, not panic.
+        backend.borrow_mut().dispatch_key(&TerminalKey::press("s"));
+        backend.borrow_mut().dispatch_key(&TerminalKey::press("s").released());
+        assert_eq!(fired.get(), 4, "the replacement listener sees each next key");
+        assert!(backend.borrow().keyboard_sink.is_some());
+
+        // The last listener removing itself mid-dispatch uninstalls the
+        // sink right away through the RefCell entry point.
+        let solo: Rc<RefCell<Option<key_input::KeyListener>>> = Rc::default();
+        held.borrow_mut().clear();
+        let s = solo.clone();
+        *solo.borrow_mut() = Some(key_input::add_listener(move |_| {
+            s.borrow_mut().take();
+            KeyOutcome::Default
+        }));
+        TerminalBackend::dispatch_key_in(&backend, &TerminalKey::press("q"));
+        assert!(backend.borrow().keyboard_sink.is_none(), "last listener gone → sink removed");
+        key_input::reset_for_tests();
+    }
+
+    #[test]
+    fn code_for_key_table() {
+        let table = [
+            ("a", "KeyA"),
+            ("W", "KeyW"),
+            ("0", "Digit0"),
+            ("9", "Digit9"),
+            ("!", "Digit1"),
+            (" ", "Space"),
+            ("-", "Minus"),
+            ("+", "Equal"),
+            ("[", "BracketLeft"),
+            ("}", "BracketRight"),
+            ("\\", "Backslash"),
+            (";", "Semicolon"),
+            ("'", "Quote"),
+            ("`", "Backquote"),
+            (",", "Comma"),
+            (">", "Period"),
+            ("?", "Slash"),
+            ("Enter", "Enter"),
+            ("Escape", "Escape"),
+            ("Tab", "Tab"),
+            ("Backspace", "Backspace"),
+            ("ArrowUp", "ArrowUp"),
+            ("PageDown", "PageDown"),
+            ("F1", "F1"),
+            ("F12", "F12"),
+            ("F25", ""),
+            ("Shift", "ShiftLeft"),
+            ("é", ""),
+            ("", ""),
+        ];
+        for (key, code) in table {
+            assert_eq!(code_for_key(key), code, "{key:?}");
+        }
     }
 }
 

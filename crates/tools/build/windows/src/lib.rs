@@ -7,7 +7,7 @@
 //! ```
 //!
 //! The wrapper depends on `host-win32` + the user's crate, with a
-//! `main()` that calls `host_win32::run_with(opts, register_extensions,
+//! `main()` that calls `host_win32::run_with(opts, register_scene_extensions,
 //! app)`. Builds the wrapper via `cargo build`, returns the produced
 //! `.exe`'s path.
 //!
@@ -327,10 +327,12 @@ fn main() {{
         width: 1024,
         height: 768,
     }};
-    // `run_with` (not `run`) so the user crate's `register_extensions`
-    // runs first — that's how SDK `Element::External` handlers register
-    // per-backend. `run_with` returns the process exit code.
-    std::process::exit(host_win32::run_with(opts, {user_lib}::register_extensions, app));
+    // `run_with` (not `run`) so the user crate's
+    // `pub fn register_scene_extensions(&mut Registry<_>)` seam runs after
+    // `register_builtins` — how SDK payload handlers get into the scene
+    // registry. Same seam as the GTK / macOS wrappers; `register_extensions`
+    // was the pre-v2 name and took the backend. Returns the exit code.
+    std::process::exit(host_win32::run_with(opts, {user_lib}::register_scene_extensions, app));
 }}
 "#,
     )

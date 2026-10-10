@@ -142,8 +142,10 @@ pub struct RunOptions {
     /// Cap on how many times per second the render loop wakes up.
     /// 30 is plenty for ASCII; lower if you want to save CPU.
     pub target_fps: u32,
-    /// Single global key handler. Receives every key event before the
-    /// quit-check. Returning `true` suppresses default behaviour
+    /// Single global key handler. Receives every key PRESS (and
+    /// auto-repeat) the backend didn't consume — i.e. not claimed by an
+    /// app key listener (`PreventDefault`) or taken by a focused input —
+    /// before the quit-check. Releases never reach it. Returning `true` suppresses default behaviour
     /// (including quit-on-q). Useful for demos that want the full
     /// keyboard.
     pub on_key: Option<Rc<dyn Fn(&KeyEvent) -> bool>>,
@@ -273,17 +275,25 @@ fn paint_grid(
 }
 
 /// Convert a crossterm `KeyEvent` to the backend's portable
-/// [`TerminalKey`]. The string vocabulary matches the framework's
+/// [`TerminalKey`]. The `key` vocabulary matches the framework's
 /// `KeyEvent::key` contract (web's `KeyboardEvent.key`): single chars
-/// are their literal value, named keys are `"Enter"`, `"Backspace"`,
-/// `"ArrowLeft"`, etc.
+/// are their literal value (`" "` for Space), named keys are `"Enter"`,
+/// `"Backspace"`, `"ArrowLeft"`, `"F5"`, `"Shift"`, etc.
+///
+/// `code` is best-effort: terminals report the character, not the
+/// physical key, so it is derived from the key
+/// ([`backend_terminal::code_for_key`], US layout). Keypad digits (kitty
+/// protocol `KEYPAD` state) map to `NumpadN`, and modifier keys (only
+/// reported under the kitty protocol) keep their side.
 fn to_terminal_key(k: &KeyEvent) -> Option<TerminalKey> {
+    use crossterm::event::{KeyEventState, ModifierKeyCode as M};
     let key = match k.code {
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Enter => "Enter".to_string(),
         KeyCode::Backspace => "Backspace".to_string(),
         KeyCode::Delete => "Delete".to_string(),
-        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::Insert => "Insert".to_string(),
+        KeyCode::Tab | KeyCode::BackTab => "Tab".to_string(),
         KeyCode::Esc => "Escape".to_string(),
         KeyCode::Left => "ArrowLeft".to_string(),
         KeyCode::Right => "ArrowRight".to_string(),
@@ -293,15 +303,142 @@ fn to_terminal_key(k: &KeyEvent) -> Option<TerminalKey> {
         KeyCode::End => "End".to_string(),
         KeyCode::PageUp => "PageUp".to_string(),
         KeyCode::PageDown => "PageDown".to_string(),
+        KeyCode::CapsLock => "CapsLock".to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        KeyCode::Modifier(m) => match m {
+            M::LeftShift | M::RightShift => "Shift",
+            M::LeftControl | M::RightControl => "Control",
+            M::LeftAlt | M::RightAlt => "Alt",
+            M::LeftSuper | M::RightSuper | M::LeftMeta | M::RightMeta => "Meta",
+            M::IsoLevel3Shift => "AltGraph",
+            _ => return None,
+        }
+        .to_string(),
         _ => return None,
     };
+    let code = match k.code {
+        KeyCode::Modifier(m) => match m {
+            M::LeftShift => "ShiftLeft",
+            M::RightShift => "ShiftRight",
+            M::LeftControl => "ControlLeft",
+            M::RightControl => "ControlRight",
+            M::LeftAlt => "AltLeft",
+            M::RightAlt | M::IsoLevel3Shift => "AltRight",
+            M::LeftSuper | M::LeftMeta => "MetaLeft",
+            M::RightSuper | M::RightMeta => "MetaRight",
+            _ => "",
+        },
+        KeyCode::Char(c) if k.state.contains(KeyEventState::KEYPAD) => match c {
+            '0'..='9' => {
+                const NUMPAD: [&str; 10] = [
+                    "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6",
+                    "Numpad7", "Numpad8", "Numpad9",
+                ];
+                NUMPAD[(c as u8 - b'0') as usize]
+            }
+            '+' => "NumpadAdd",
+            '-' => "NumpadSubtract",
+            '*' => "NumpadMultiply",
+            '/' => "NumpadDivide",
+            '.' => "NumpadDecimal",
+            _ => backend_terminal::code_for_key(&key),
+        },
+        KeyCode::Enter if k.state.contains(KeyEventState::KEYPAD) => "NumpadEnter",
+        _ => backend_terminal::code_for_key(&key),
+    };
     Some(TerminalKey {
+        code: code.to_string(),
         key,
+        pressed: k.kind != KeyEventKind::Release,
+        repeat: k.kind == KeyEventKind::Repeat,
         shift: k.modifiers.contains(KeyModifiers::SHIFT),
         ctrl: k.modifiers.contains(KeyModifiers::CONTROL),
         alt: k.modifiers.contains(KeyModifiers::ALT),
-        meta: k.modifiers.contains(KeyModifiers::META),
+        meta: k.modifiers.contains(KeyModifiers::META)
+            || k.modifiers.contains(KeyModifiers::SUPER),
     })
+}
+
+/// The [`TerminalKey`]s one crossterm key event delivers to the backend.
+///
+/// `releases_reported` says whether this terminal sends key releases
+/// (see [`enable_key_reporting`]). When it doesn't, every press is
+/// followed by a synthesized release so the app's held-key state never
+/// sticks — a game on such a terminal sees taps (down+up per press and
+/// per auto-repeat), not holds.
+fn terminal_key_events(k: &KeyEvent, releases_reported: bool) -> Vec<TerminalKey> {
+    let Some(tk) = to_terminal_key(k) else { return Vec::new() };
+    if tk.pressed && !releases_reported {
+        // An auto-repeat on such a terminal is indistinguishable from a
+        // fresh press; after the synthesized release it IS a fresh press.
+        let press = TerminalKey { repeat: false, ..tk };
+        let release = press.released();
+        vec![press, release]
+    } else {
+        vec![tk]
+    }
+}
+
+/// Deliver one crossterm key event to the backend. Returns `true` if a
+/// press was consumed (claimed by an app key listener or taken by a
+/// focused input) — the caller then skips its `on_key` / quit handling.
+/// Releases never count as consumed (the caller ignores them anyway).
+fn dispatch_terminal_key(
+    backend: &std::cell::RefCell<backend_terminal::TerminalBackend>,
+    k: &KeyEvent,
+    releases_reported: bool,
+) -> bool {
+    let mut consumed = false;
+    for tk in terminal_key_events(k, releases_reported) {
+        // `dispatch_key_in`, not `borrow_mut().dispatch_key`: the app
+        // key sink runs with the backend unborrowed (its listeners may
+        // add/remove listeners → `set_keyboard_sink` on this backend).
+        let taken = backend_terminal::TerminalBackend::dispatch_key_in(backend, &tk);
+        consumed |= taken && tk.pressed;
+    }
+    consumed
+}
+
+/// Turn on the terminal input reporting the app keyboard needs, after
+/// raw mode is on. Returns whether key RELEASES will be reported:
+///
+/// - **kitty keyboard protocol** (kitty, WezTerm, foot, Ghostty, recent
+///   iTerm2/Alacritty…): pushed with `REPORT_EVENT_TYPES` (press /
+///   repeat / release) + `DISAMBIGUATE_ESCAPE_CODES` when
+///   `supports_keyboard_enhancement()` says the terminal speaks it.
+///   Popped again by [`disable_key_reporting`].
+/// - **Windows console**: crossterm reports releases natively (and
+///   `supports_keyboard_enhancement` is always `false` there).
+/// - **anything else**: no releases — [`terminal_key_events`] synthesizes
+///   them.
+///
+/// Focus reporting (`EnableFocusChange`) is turned on too so a terminal
+/// focus-out reaches the app keyboard as `focus_lost`; terminals that
+/// don't support it ignore the escape.
+fn enable_key_reporting(out: &mut io::Stdout) -> (bool, bool) {
+    use crossterm::event::{
+        EnableFocusChange, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    let _ = crossterm::execute!(out, EnableFocusChange);
+    let pushed = matches!(crossterm::terminal::supports_keyboard_enhancement(), Ok(true))
+        && crossterm::execute!(
+            out,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )
+        .is_ok();
+    (pushed || cfg!(windows), pushed)
+}
+
+/// Undo [`enable_key_reporting`] on exit (`pushed` = its second value).
+fn disable_key_reporting(out: &mut io::Stdout, pushed: bool) {
+    use crossterm::event::{DisableFocusChange, PopKeyboardEnhancementFlags};
+    if pushed {
+        let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
+    }
+    let _ = crossterm::execute!(out, DisableFocusChange);
 }
 
 fn to_ct(c: Rgba) -> CtColor {
@@ -315,3 +452,96 @@ fn to_ct(c: Rgba) -> CtColor {
     }
 }
 
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crossterm::event::{KeyEventState, ModifierKeyCode};
+
+    fn ev(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent { code, modifiers: KeyModifiers::NONE, kind, state: KeyEventState::NONE }
+    }
+
+    fn summary(v: &[TerminalKey]) -> Vec<(String, String, bool, bool)> {
+        v.iter().map(|k| (k.key.clone(), k.code.clone(), k.pressed, k.repeat)).collect()
+    }
+
+    /// With the kitty protocol, press / repeat / release map 1:1.
+    #[test]
+    fn kitty_protocol_kinds_map_to_phases() {
+        let w = |kind| terminal_key_events(&ev(KeyCode::Char('w'), kind), true);
+        assert_eq!(summary(&w(KeyEventKind::Press)), vec![("w".into(), "KeyW".into(), true, false)]);
+        assert_eq!(summary(&w(KeyEventKind::Repeat)), vec![("w".into(), "KeyW".into(), true, true)]);
+        assert_eq!(summary(&w(KeyEventKind::Release)), vec![("w".into(), "KeyW".into(), false, false)]);
+    }
+
+    /// Regression: without release reporting the host forwarded presses
+    /// only, so (once the app keyboard tracked held keys) every key would
+    /// stay "down" forever. Each press is now a tap.
+    #[test]
+    fn regression_terminal_without_releases_keys_stuck_down() {
+        let tap = terminal_key_events(&ev(KeyCode::Char(' '), KeyEventKind::Press), false);
+        assert_eq!(
+            summary(&tap),
+            vec![(" ".into(), "Space".into(), true, false), (" ".into(), "Space".into(), false, false)]
+        );
+        // A terminal-level auto-repeat is a fresh tap too.
+        let rep = terminal_key_events(&ev(KeyCode::Up, KeyEventKind::Repeat), false);
+        assert_eq!(
+            summary(&rep),
+            vec![
+                ("ArrowUp".into(), "ArrowUp".into(), true, false),
+                ("ArrowUp".into(), "ArrowUp".into(), false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_modifier_and_keypad_keys() {
+        let one = |e: KeyEvent| {
+            let v = terminal_key_events(&e, true);
+            (v[0].key.clone(), v[0].code.clone())
+        };
+        assert_eq!(one(ev(KeyCode::F(5), KeyEventKind::Press)), ("F5".into(), "F5".into()));
+        assert_eq!(
+            one(ev(KeyCode::Modifier(ModifierKeyCode::RightShift), KeyEventKind::Press)),
+            ("Shift".into(), "ShiftRight".into())
+        );
+        assert_eq!(
+            one(ev(KeyCode::Modifier(ModifierKeyCode::LeftSuper), KeyEventKind::Press)),
+            ("Meta".into(), "MetaLeft".into())
+        );
+        let kp = KeyEvent { state: KeyEventState::KEYPAD, ..ev(KeyCode::Char('7'), KeyEventKind::Press) };
+        assert_eq!(one(kp), ("7".into(), "Numpad7".into()));
+        let kp_enter = KeyEvent { state: KeyEventState::KEYPAD, ..ev(KeyCode::Enter, KeyEventKind::Press) };
+        assert_eq!(one(kp_enter), ("Enter".into(), "NumpadEnter".into()));
+        assert_eq!(one(ev(KeyCode::Char('A'), KeyEventKind::Press)), ("A".into(), "KeyA".into()));
+        assert!(terminal_key_events(&ev(KeyCode::Null, KeyEventKind::Press), true).is_empty());
+    }
+
+    /// End to end through the backend: a claimed press is consumed, the
+    /// release is delivered but never "consumed".
+    #[test]
+    fn dispatch_reaches_backend_sink_with_both_phases() {
+        use runtime_shared::primitives::key::{AppKeyEvent, KeyOutcome, KeyboardSink};
+        use runtime_vocabulary::caps::AppEnvOps;
+        let set_sink = |b: &std::cell::RefCell<backend_terminal::TerminalBackend>, s| {
+            b.borrow_mut().set_keyboard_sink(Some(s))
+        };
+        let backend = std::cell::RefCell::new(backend_terminal::TerminalBackend::new());
+        let log: Rc<std::cell::RefCell<Vec<AppKeyEvent>>> = Rc::default();
+        let l = log.clone();
+        set_sink(
+            &backend,
+            KeyboardSink::new(
+                move |e| {
+                    l.borrow_mut().push(e.clone());
+                    KeyOutcome::PreventDefault
+                },
+                || {},
+            ),
+        );
+        assert!(dispatch_terminal_key(&backend, &ev(KeyCode::Char('d'), KeyEventKind::Press), false));
+        assert_eq!(log.borrow().len(), 2, "press + synthesized release");
+    }
+}

@@ -2,7 +2,7 @@
 //!
 //! [`run`] opens one top-level window (title bar + resize + minimize +
 //! maximize), builds a [`WindowsBackend`](backend_windows::WindowsBackend)
-//! rooted at its HWND, mounts the app tree via [`runtime_core::mount`],
+//! rooted at its HWND, mounts the app tree via `backend_windows::newcore::start`,
 //! and pumps the Win32 message loop until the window closes. The
 //! framework's scheduler is installed (on the same message loop)
 //! *before* the mount so `after_ms` / `raf_loop` — and therefore every

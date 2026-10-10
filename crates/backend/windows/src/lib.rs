@@ -89,6 +89,7 @@ pub mod dispatch_hook;
 /// [`WindowsBackend`], plus the boot entry and flush driver.
 pub mod newcore;
 
+pub mod app_keys;
 mod border_pattern;
 mod code;
 mod dcomp;
@@ -97,6 +98,7 @@ mod graphics;
 mod handles;
 mod icon;
 mod image;
+mod keymap;
 mod scene;
 mod wrap;
 
@@ -557,6 +559,10 @@ pub struct WindowsBackend {
     /// GTK from its per-frame allocate loop.) Animated transform /
     /// color writes deliberately do NOT set it — they're paint-only.
     pub(crate) layout_dirty: bool,
+    /// The app-level keyboard sink, in a slot the host shell shares
+    /// ([`WindowsBackend::keyboard_slot`]) so its message pump can deliver
+    /// keys without borrowing the backend. See `app_keys.rs`.
+    keyboard: app_keys::KeyboardSlot,
 }
 
 impl WindowsBackend {
@@ -596,7 +602,28 @@ impl WindowsBackend {
             app_background: None,
             back: scene::BackBuffer::new(),
             layout_dirty: false,
+            keyboard: app_keys::KeyboardSlot::default(),
         }
+    }
+
+    /// The shared app-level keyboard slot. The host shell clones it once at
+    /// boot, offers every retrieved message to
+    /// [`KeyboardSlot::pre_dispatch`](app_keys::KeyboardSlot::pre_dispatch)
+    /// before `TranslateMessage`/`DispatchMessageW`, and calls
+    /// [`KeyboardSlot::focus_lost`](app_keys::KeyboardSlot::focus_lost) on
+    /// `WM_ACTIVATE(WA_INACTIVE)`.
+    pub fn keyboard_slot(&self) -> app_keys::KeyboardSlot {
+        self.keyboard.clone()
+    }
+
+    /// Install / remove the app-level keyboard sink (`None` removes). The
+    /// native source is the host's message pump, which is always running,
+    /// so installing is just publishing the sink into the shared slot.
+    pub(crate) fn set_keyboard_sink_impl(
+        &mut self,
+        sink: Option<runtime_shared::primitives::key::KeyboardSink>,
+    ) {
+        self.keyboard.set(sink);
     }
 
     /// Install the backend's weak self-reference. The host calls this

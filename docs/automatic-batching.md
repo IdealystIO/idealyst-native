@@ -100,7 +100,7 @@ that code returns. Two mechanisms, present in every backend's
    input/change, toggle, slider, scroll, hover, wheel, touch, key,
    focus/blur, file-drop, image load/error, link activation, portal
    dismiss, graphics lifecycle, virtualizer row mount/release, and the
-   app-level key handler. The wrapper calls the author fn, then
+   app-level keyboard sink (key events and focus loss). The wrapper calls the author fn, then
    `schedule_flush()` (web: one deduped
    `schedule_microtask` → `world.flush()`;
    `crates/backend/web/src/newcore.rs`).

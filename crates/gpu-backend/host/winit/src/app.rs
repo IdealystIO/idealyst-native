@@ -228,7 +228,7 @@ mod mac {
 }
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key as WKey, NamedKey};
+use winit::keyboard::{Key as WKey, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::gpu::Gpu;
@@ -758,7 +758,27 @@ fn winit_button_to_pointer(b: MouseButton) -> Option<PointerButton> {
 }
 
 fn winit_key(event: &winit::event::KeyEvent, modifiers: KeyModifiers) -> KeyEvent {
-    let key = match &event.logical_key {
+    translate_key(
+        &event.logical_key,
+        event.physical_key,
+        event.text.as_deref(),
+        event.state.is_pressed(),
+        event.repeat,
+        modifiers,
+    )
+}
+
+/// Pure half of [`winit_key`] (winit's `KeyEvent` has a private
+/// platform field, so tests can't build one).
+fn translate_key(
+    logical: &WKey,
+    physical: PhysicalKey,
+    text: Option<&str>,
+    pressed: bool,
+    repeat: bool,
+    modifiers: KeyModifiers,
+) -> KeyEvent {
+    let key = match logical {
         WKey::Named(NamedKey::Backspace) => Key::Backspace,
         WKey::Named(NamedKey::Delete) => Key::Delete,
         WKey::Named(NamedKey::Enter) => Key::Enter,
@@ -770,14 +790,72 @@ fn winit_key(event: &winit::event::KeyEvent, modifiers: KeyModifiers) -> KeyEven
         WKey::Named(NamedKey::ArrowDown) => Key::ArrowDown,
         WKey::Named(NamedKey::Home) => Key::Home,
         WKey::Named(NamedKey::End) => Key::End,
+        WKey::Named(NamedKey::PageUp) => Key::PageUp,
+        WKey::Named(NamedKey::PageDown) => Key::PageDown,
+        WKey::Named(NamedKey::Insert) => Key::Insert,
+        WKey::Named(NamedKey::Shift) => Key::Shift,
+        WKey::Named(NamedKey::Control) => Key::Control,
+        WKey::Named(NamedKey::Alt | NamedKey::AltGraph) => Key::Alt,
+        // winit's `Super` is the Web spec's `Meta` (winit keyboard docs).
+        WKey::Named(NamedKey::Super | NamedKey::Meta) => Key::Meta,
+        WKey::Named(NamedKey::CapsLock) => Key::CapsLock,
+        WKey::Named(named) => match function_key_number(*named) {
+            Some(n) => Key::F(n),
+            // Space is a character key: its text (" ") is what a text
+            // input types and what the Web `key` is.
+            None if *named == NamedKey::Space => Key::Character,
+            None => Key::Unknown,
+        },
         WKey::Character(_) => Key::Character,
         _ => Key::Unknown,
     };
+    // winit only attaches `text` to presses. A release still needs its
+    // character for the app-level `key` ("w" up, not "" up), so fall
+    // back to the logical key there; the focused-input path ignores
+    // releases, so this never types anything.
+    let text = match (text, pressed, logical) {
+        (Some(t), _, _) => Some(t.to_string()),
+        (None, false, WKey::Character(c)) => Some(c.to_string()),
+        (None, false, WKey::Named(NamedKey::Space)) => Some(" ".to_string()),
+        _ => None,
+    };
     KeyEvent {
         key,
-        text: event.text.as_ref().map(|s| s.to_string()),
+        text,
         modifiers,
-        pressed: event.state.is_pressed(),
+        pressed,
+        code: web_code(physical),
+        repeat: pressed && repeat,
+    }
+}
+
+fn function_key_number(named: NamedKey) -> Option<u8> {
+    use NamedKey::*;
+    Some(match named {
+        F1 => 1, F2 => 2, F3 => 3, F4 => 4, F5 => 5, F6 => 6, F7 => 7, F8 => 8,
+        F9 => 9, F10 => 10, F11 => 11, F12 => 12, F13 => 13, F14 => 14, F15 => 15,
+        F16 => 16, F17 => 17, F18 => 18, F19 => 19, F20 => 20, F21 => 21, F22 => 22,
+        F23 => 23, F24 => 24,
+        _ => return None,
+    })
+}
+
+/// Web `KeyboardEvent.code` for a winit physical key; empty when winit
+/// couldn't identify it.
+///
+/// winit's `KeyCode` variants are named after the W3C `code` values
+/// ("KeyA", "Digit1", "ArrowUp", "Space", "ShiftLeft", "NumpadEnter",
+/// "F5", …), so the variant name IS the code — with the one documented
+/// exception (winit `keyboard.rs` docs on `KeyCode`): the spec's
+/// "MetaLeft"/"MetaRight" are winit's `SuperLeft`/`SuperRight`. Going
+/// through the derived `Debug` name keeps this table from drifting as
+/// winit adds variants; the unit tests pin the names games rely on.
+fn web_code(physical: PhysicalKey) -> String {
+    match physical {
+        PhysicalKey::Code(KeyCode::SuperLeft) => "MetaLeft".to_string(),
+        PhysicalKey::Code(KeyCode::SuperRight) => "MetaRight".to_string(),
+        PhysicalKey::Code(code) => format!("{code:?}"),
+        PhysicalKey::Unidentified(_) => String::new(),
     }
 }
 
@@ -1103,6 +1181,9 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::Focused(false) => {
                 self.host.pointer_cancel();
+                // Releases for keys held at blur never arrive; the app
+                // keyboard dispatcher synthesizes them.
+                self.host.focus_lost();
             }
             WindowEvent::RedrawRequested => {
                 // Runtime-server tick: pulls inbound commands +
@@ -1142,5 +1223,112 @@ impl ApplicationHandler<AppEvent> for App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod key_translation_tests {
+    use super::*;
+    use winit::keyboard::NativeKeyCode;
+
+    fn code(k: KeyCode) -> String {
+        web_code(PhysicalKey::Code(k))
+    }
+
+    #[test]
+    fn physical_codes_use_web_code_vocabulary() {
+        let table = [
+            (KeyCode::KeyA, "KeyA"),
+            (KeyCode::KeyW, "KeyW"),
+            (KeyCode::Digit0, "Digit0"),
+            (KeyCode::Digit9, "Digit9"),
+            (KeyCode::ArrowUp, "ArrowUp"),
+            (KeyCode::ArrowLeft, "ArrowLeft"),
+            (KeyCode::Space, "Space"),
+            (KeyCode::Enter, "Enter"),
+            (KeyCode::Escape, "Escape"),
+            (KeyCode::Tab, "Tab"),
+            (KeyCode::Backspace, "Backspace"),
+            (KeyCode::Delete, "Delete"),
+            (KeyCode::ShiftLeft, "ShiftLeft"),
+            (KeyCode::ShiftRight, "ShiftRight"),
+            (KeyCode::ControlLeft, "ControlLeft"),
+            (KeyCode::AltRight, "AltRight"),
+            (KeyCode::SuperLeft, "MetaLeft"),
+            (KeyCode::SuperRight, "MetaRight"),
+            (KeyCode::Minus, "Minus"),
+            (KeyCode::Equal, "Equal"),
+            (KeyCode::BracketLeft, "BracketLeft"),
+            (KeyCode::Backslash, "Backslash"),
+            (KeyCode::Semicolon, "Semicolon"),
+            (KeyCode::Quote, "Quote"),
+            (KeyCode::Backquote, "Backquote"),
+            (KeyCode::Comma, "Comma"),
+            (KeyCode::Period, "Period"),
+            (KeyCode::Slash, "Slash"),
+            (KeyCode::CapsLock, "CapsLock"),
+            (KeyCode::F1, "F1"),
+            (KeyCode::F12, "F12"),
+            (KeyCode::Home, "Home"),
+            (KeyCode::PageDown, "PageDown"),
+            (KeyCode::Insert, "Insert"),
+            (KeyCode::Numpad0, "Numpad0"),
+            (KeyCode::NumpadEnter, "NumpadEnter"),
+            (KeyCode::NumpadAdd, "NumpadAdd"),
+        ];
+        for (k, want) in table {
+            assert_eq!(code(k), want, "{k:?}");
+        }
+        assert_eq!(web_code(PhysicalKey::Unidentified(NativeKeyCode::Unidentified)), "");
+    }
+
+    #[test]
+    fn release_keeps_its_key_and_never_repeats() {
+        let m = KeyModifiers::default();
+        let down = translate_key(
+            &WKey::Character("w".into()),
+            PhysicalKey::Code(KeyCode::KeyW),
+            Some("w"),
+            true,
+            true,
+            m,
+        );
+        assert!(down.pressed && down.repeat);
+        assert_eq!((down.code.as_str(), down.text.as_deref()), ("KeyW", Some("w")));
+        // winit sends releases without `text`.
+        let up = translate_key(
+            &WKey::Character("w".into()),
+            PhysicalKey::Code(KeyCode::KeyW),
+            None,
+            false,
+            true,
+            m,
+        );
+        assert!(!up.pressed && !up.repeat);
+        assert_eq!(up.text.as_deref(), Some("w"));
+        let space_up = translate_key(
+            &WKey::Named(NamedKey::Space),
+            PhysicalKey::Code(KeyCode::Space),
+            None,
+            false,
+            false,
+            m,
+        );
+        assert_eq!(space_up.key, Key::Character);
+        assert_eq!(space_up.text.as_deref(), Some(" "));
+    }
+
+    #[test]
+    fn named_keys_games_use() {
+        let t = |n: NamedKey| {
+            translate_key(&WKey::Named(n), PhysicalKey::Unidentified(NativeKeyCode::Unidentified), None, true, false, KeyModifiers::default()).key
+        };
+        assert_eq!(t(NamedKey::Shift), Key::Shift);
+        assert_eq!(t(NamedKey::Control), Key::Control);
+        assert_eq!(t(NamedKey::Alt), Key::Alt);
+        assert_eq!(t(NamedKey::Super), Key::Meta);
+        assert_eq!(t(NamedKey::F5), Key::F(5));
+        assert_eq!(t(NamedKey::PageUp), Key::PageUp);
+        assert_eq!(t(NamedKey::CapsLock), Key::CapsLock);
     }
 }

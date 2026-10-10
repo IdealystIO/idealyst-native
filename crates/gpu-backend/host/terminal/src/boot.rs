@@ -9,7 +9,9 @@
 //! discipline needs NO loop changes:
 //!
 //! - **Input events** (clicks, keys, wheel) dispatch through the same
-//!   backend entry points; the author callbacks they reach were wrapped
+//!   backend entry points (keys — presses AND releases, plus terminal
+//!   focus-out — via `dispatch_key_in` / `focus_lost_in`, which run the
+//!   app keyboard sink with the backend unborrowed); the author callbacks they reach were wrapped
 //!   at the caps layer, so each queues one deduped flush microtask.
 //! - **Timers/raf** run inside `scheduler::tick`, whose fire sites
 //!   invoke the backend's post-dispatch hook after each callback.
@@ -40,8 +42,9 @@ use crossterm::{
 };
 
 use crate::{
-    grid_to_rows, is_quit_key, paint_grid, scheduler, stderr_redirect, to_terminal_key,
-    KeyEventKind, RunError, RunOptions, SCROLL_STEP,
+    disable_key_reporting, dispatch_terminal_key, enable_key_reporting, grid_to_rows,
+    is_quit_key, paint_grid, scheduler, stderr_redirect, KeyEventKind, RunError, RunOptions,
+    SCROLL_STEP,
 };
 
 /// Mount `build` and render it once, headless — no TTY, no raw mode, no
@@ -116,6 +119,9 @@ where
         cursor::Hide,
         Clear(ClearType::All)
     )?;
+    // Key releases (kitty protocol / Windows console) + focus-out
+    // reporting for the app keyboard. Undone after the loop.
+    let (releases_reported, kitty_pushed) = enable_key_reporting(&mut stdout);
 
     // Scheduler BEFORE mount — the flush driver rides
     // `schedule_microtask` and must not hit the buffering fallback
@@ -186,13 +192,13 @@ where
                         backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
                     }
                     Event::Key(key) => {
-                        if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+                        // Presses AND releases reach the app keyboard;
+                        // only presses go on to `on_key` / quit.
+                        if dispatch_terminal_key(&backend, &key, releases_reported) {
                             continue;
                         }
-                        if let Some(tk) = to_terminal_key(&key) {
-                            if backend.borrow_mut().dispatch_key(&tk) {
-                                continue;
-                            }
+                        if key.kind == KeyEventKind::Release {
+                            continue;
                         }
                         if let Some(cb) = opts.on_key.as_ref() {
                             if cb(&key) {
@@ -203,6 +209,11 @@ where
                             quit = true;
                             break;
                         }
+                    }
+                    Event::FocusLost => {
+                        // Releases for keys held at focus-out never
+                        // arrive; the app keyboard synthesizes them.
+                        TerminalBackend::focus_lost_in(&backend);
                     }
                     _ => {}
                 }
@@ -245,6 +256,7 @@ where
     // Reactive teardown FIRST (while TLS is intact), then restore the
     // terminal — even on error.
     app.stop();
+    disable_key_reporting(&mut stdout, kitty_pushed);
     let _ = execute!(
         stdout,
         ResetColor,

@@ -403,6 +403,24 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
     })
 }
 
+/// Wrap the app-level keyboard sink: flush after every key delivery and
+/// after a focus-loss release burst (both run author listeners). The key
+/// outcome passes through untouched.
+fn flushing_sink(sink: primitives::key::KeyboardSink) -> primitives::key::KeyboardSink {
+    let on_focus_lost = sink.clone();
+    primitives::key::KeyboardSink::new(
+        move |ev| {
+            let outcome = sink.key(ev);
+            schedule_flush();
+            outcome
+        },
+        move || {
+            on_focus_lost.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // backend-terminal/src/newcore.rs / runtime_vocabulary::bridge — keep
@@ -520,6 +538,13 @@ impl caps::AppEnvOps for WindowsBackend {
 
     fn set_app_background(&mut self, color: &runtime_shared::Tokenized<Color>) {
         WindowsBackend::set_app_background(self, color)
+    }
+
+    fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
+        // Dispatch-site glue: the sink runs author listeners from the host's
+        // message pump (outside any wrapped callback), so flush after each
+        // delivery. Native source: `app_keys.rs`.
+        WindowsBackend::set_keyboard_sink_impl(self, sink.map(flushing_sink))
     }
 }
 
