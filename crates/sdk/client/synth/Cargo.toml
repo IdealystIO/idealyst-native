@@ -1,0 +1,64 @@
+[package]
+name = "synth"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Procedural audio SYNTHESIS that plugs into the audio/media pipeline — the
+# "make a sound out of nothing" peer of `microphone` (captures sound) and
+# `audio` (plays prepared sound). Built for game SFX: tones, sweeps, noise
+# bursts, envelopes, filters, a few ready presets.
+#
+#   let laser = synth::sweep(Waveform::Square, 1200.0, 200.0, 0.25,
+#                            Sweep::Exponential, synth::DEFAULT_FORMAT)
+#       .apply_envelope(Envelope::new(0.005, 0.05, 0.4, 0.1))
+#       .gain(0.4);
+#   let sound = laser.load().await?;   // -> audio::Sound (16-bit WAV bytes)
+#   let _p = sound.play();
+#
+# Sounds are synthesized AHEAD OF TIME in pure Rust into an owned `Pcm`
+# buffer (deterministic, testable, no per-sample callback engine). From there
+# a buffer goes out through either half of the pipeline:
+#
+#   - playback:  `Pcm::to_wav` / `Pcm::load` -> `audio::load(AudioSource::bytes)`
+#   - streams:   `Pcm::write_to(&AudioWriter)` (offline consumers), or the
+#                real-time-paced `Mixer`, a continuous `media_stream::AudioStream`
+#                producer that `media-writer` records and the web bridge turns
+#                into a `MediaStreamTrack`.
+#
+# Pure Rust on every target: no platform code lives here. Platform playback
+# is `audio`'s job and stream transport is `media-stream`'s; this crate is the
+# one that depends on both (`audio` deliberately does not depend on
+# `media-stream`).
+
+[dependencies]
+thiserror = { workspace = true }
+media-stream = { workspace = true }
+audio = { workspace = true }
+# The author surface: the host scheduler (`scheduling::after_ms_detached`)
+# drives the `Mixer`'s real-time pump, and `recipe!` builds the catalog.
+# `runtime-vocabulary` is a direct dep because the `ui!` emission inside the
+# recipes spells absolute `::runtime_vocabulary::glue::…` paths.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+# Only the catalog's recording recipe names these (recipes compile only under
+# `catalog`), so production builds never pull the encoder stack in.
+media-writer = { workspace = true, optional = true }
+files = { workspace = true, optional = true }
+
+# Recipes (compile-checked usage examples) compile only under `catalog`.
+# Forwards `async-driver` so the recipes can use the real
+# `runtime_core::driver::spawn_async` pattern (`Pcm::load` and
+# `MediaWriter::record` are async). Off in production: `recipe!` expands to
+# nothing.
+[features]
+catalog = [
+    "runtime-core/catalog",
+    "runtime-core/async-driver",
+    "dep:media-writer",
+    "dep:files",
+]
+
+[dev-dependencies]
+pollster = "0.3"

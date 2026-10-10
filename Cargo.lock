@@ -5800,6 +5800,7 @@ dependencies = [
  "libc",
  "runtime-server-shell-native",
  "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]
@@ -5853,6 +5854,8 @@ version = "1.5.2"
 dependencies = [
  "backend-windows",
  "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
  "welcome",
  "windows 0.58.0",
 ]
@@ -12435,6 +12438,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "synth"
+version = "0.1.0"
+dependencies = [
+ "audio",
+ "files",
+ "media-stream",
+ "media-writer",
+ "pollster 0.3.0",
+ "runtime-core",
+ "runtime-vocabulary",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -1,7 +1,8 @@
 # `media-stream`
 
 The common currency between capture SDKs that **produce** media (`camera`,
-`screen-recorder`, `microphone`) and the layers that **consume** it (a display
+`screen-recorder`, `microphone`, and [`synth`](../synth)'s `Mixer`, which
+produces synthesized audio) and the layers that **consume** it (a display
 component, a GPU compositor, a file writer, a denoiser). A developer wires
 `camera -> video` and never names a platform type — the per-platform transport
 (a web `MediaStream`, an Apple `CVPixelBuffer`/`IOSurface`, an Android

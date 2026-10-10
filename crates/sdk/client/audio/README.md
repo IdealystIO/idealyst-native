@@ -111,6 +111,10 @@ built on top of this one:
 - **Seeking, fades, position callbacks** — richer transport control.
 - **Background audio** — see *Permissions*.
 
+To **generate** sounds instead of loading files (tones, sweeps, noise,
+envelopes, game-SFX presets), see [`synth`](../synth): it renders a buffer in
+pure Rust and hands it here as WAV bytes (`Pcm::load`).
+
 The relationship to the capture SDKs: `microphone`/`camera` *produce*
 streams; `audio` *consumes* prepared sounds. A future layer that plays an
 `AudioStream` live (rather than a loaded `Sound`) would be the natural

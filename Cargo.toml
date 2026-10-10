@@ -285,6 +285,7 @@ members = [
     "crates/sdk/client/haptics",
     "crates/sdk/client/datetime",
     "crates/sdk/client/audio",
+    "crates/sdk/client/synth",
 
     # API — full-stack server-functions layer. `server` is the primitive
     # (server fns + transport + the DispatchHook seam); `server-kit` is
@@ -688,6 +689,7 @@ connectivity = { path = "crates/sdk/client/connectivity", version = "1.7.0", reg
 haptics = { path = "crates/sdk/client/haptics", version = "1.5.4", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.5.3", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "1.6.1", registry = "idealyst" }
+synth = { path = "crates/sdk/client/synth", version = "0.1.0", registry = "idealyst" }
 server = { path = "crates/api/server", version = "1.9.1", registry = "idealyst" }
 server-macros = { path = "crates/api/server-macros", version = "1.5.2", registry = "idealyst" }
 server-kit = { path = "crates/api/server-kit", version = "1.6.1", registry = "idealyst" }
