@@ -29,6 +29,14 @@ license.workspace = true
 # sound going when the app is backgrounded) needs app config and is out of
 # scope — see README.
 
+# Frameworks the iOS device build must link: `src/apple.rs` carries
+# `#[link(name = "AVFoundation")]` (AVAudioPlayer is resolved by name at
+# runtime, so the linker would otherwise drop it). The CLI's iOS deploy
+# collects this list from the dependency graph; pinned by
+# run-ios `regression_sdk_framework_links_are_declared_for_ios`.
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation"]
+
 [dependencies]
 # Pure-Rust surface + the `runtime_core::recipe!` macro for the catalog.
 # The author surface, aliased to `runtime_core` at the crate root (see
