@@ -280,12 +280,14 @@ fn handle_event(shared: &Rc<Shared>, ev: &gdk::Event) -> glib::Propagation {
     ) {
         return glib::Propagation::Proceed;
     }
-    // Finger touches belong to the view-level touch APIs; a button or
-    // motion event GDK emulated from a touch is not mouse input. (Scroll
-    // events are exempt: GDK uses the same flag on a SCROLL for "discrete
-    // step emulated from / alongside smooth scrolling", which is still
-    // the user's wheel, and GTK never delivers both shapes for one step.)
-    if ty != T::Scroll && ev.is_pointer_emulated() {
+    // Emulated events are skipped for every type: a button/motion event
+    // GDK emulated from a touch is not mouse input, and an emulated scroll
+    // is a discrete step GDK derives alongside the real (smooth) one —
+    // taking both would count one wheel notch twice. (A wheel that went
+    // missing on X11 was the position bail-out below, not this filter:
+    // traced under Xvfb + XTest, the scroll arrives with
+    // `is_pointer_emulated() == false`.)
+    if ev.is_pointer_emulated() {
         return glib::Propagation::Proceed;
     }
     let Some(window) = shared.window.upgrade() else {
@@ -303,9 +305,16 @@ fn handle_event(shared: &Rc<Shared>, ev: &gdk::Event) -> glib::Propagation {
     if locked || hidden {
         reassert_hidden(&window);
     }
-    let Some((sx, sy)) = ev.position() else {
+    // Buttons and motion need their own position. A wheel event may carry
+    // none — GDK's X11 backend leaves it unset for an XI2 scroll from a
+    // device without scroll valuators (XTest, many plain wheels), and
+    // bailing here dropped every such wheel turn. The Scroll arm uses the
+    // last known pointer position instead.
+    let position = ev.position();
+    if position.is_none() && ty != T::Scroll {
         return glib::Propagation::Proceed;
-    };
+    }
+    let (sx, sy) = position.unwrap_or((0.0, 0.0));
     let mods = ev.modifier_state();
 
     match ty {
@@ -402,7 +411,12 @@ fn handle_event(shared: &Rc<Shared>, ev: &gdk::Event) -> glib::Propagation {
                 // A kinetic-scroll stop marker carries no movement.
                 return glib::Propagation::Proceed;
             }
-            let (x, y) = shared.state.borrow().last.unwrap_or_else(|| to_root(&window, sx, sy));
+            let last = shared.state.borrow().last;
+            let (x, y) = match (last, position) {
+                (Some(p), _) => p,
+                (None, Some(_)) => to_root(&window, sx, sy),
+                (None, None) => (0.0, 0.0),
+            };
             let event = AppPointerEvent { wheel_dx: wx, wheel_dy: wy, ..AppPointerEvent::new(PointerPhase::Wheel, x, y) };
             propagation(shared.sink.event(&with_modifiers(event, mods)))
         }
