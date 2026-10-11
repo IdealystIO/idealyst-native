@@ -173,7 +173,7 @@ impl AudioChannel {
         let mut buf = self
             .latest
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .map(|a| a.samples)
             .unwrap_or_default();
@@ -187,13 +187,21 @@ impl AudioChannel {
                 channels: format.channels,
                 pts_micros,
             };
-            let mut subs = self.subscribers.lock().unwrap();
+            // Every lock in this crate recovers from poisoning. A subscriber
+            // callback is author code: if it panics while this guard is held
+            // the mutex is poisoned, and the old `.unwrap()` then panicked
+            // again in `AudioSubscription::drop` DURING that unwind — an
+            // abort that left the process hung on exit (hit by the
+            // audio-engine tests). The guarded data stays consistent through
+            // a callback panic (the list isn't mid-edit while callbacks run),
+            // so taking it back is safe.
+            let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             for (_, cb) in subs.iter_mut() {
                 cb(&view);
             }
         }
 
-        *self.latest.lock().unwrap() = Some(OwnedAudio {
+        *self.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(OwnedAudio {
             samples: buf,
             format,
             pts_micros,
@@ -207,7 +215,7 @@ impl AudioChannel {
     /// chunk (or one after a sample-rate change) re-anchors the epoch to
     /// `clock::now_micros()`.
     fn next_pts(&self, sample_rate: u32, frame_count: u64) -> u64 {
-        let mut c = self.clock.lock().unwrap();
+        let mut c = self.clock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if c.epoch_micros.is_none() || c.sample_rate != sample_rate {
             c.epoch_micros = Some(clock::now_micros());
             c.frames_emitted = 0;
@@ -223,12 +231,12 @@ impl AudioChannel {
 
     fn add_subscriber(&self, cb: BoxedAudioCallback) -> u64 {
         let id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        self.subscribers.lock().unwrap().push((id, cb));
+        self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, cb));
         id
     }
 
     fn remove_subscriber(&self, id: u64) {
-        self.subscribers.lock().unwrap().retain(|(i, _)| *i != id);
+        self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(i, _)| *i != id);
     }
 }
 
@@ -413,7 +421,7 @@ impl AudioStream {
     /// [`AudioFormat`], or `None` if no chunk has arrived. Pair with
     /// [`generation`](Self::generation) to skip re-reading an unchanged chunk.
     pub fn latest(&self, buf: &mut Vec<f32>) -> Option<AudioFormat> {
-        let slot = self.inner.channel.latest.lock().unwrap();
+        let slot = self.inner.channel.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let chunk = slot.as_ref()?;
         buf.clear();
         buf.extend_from_slice(&chunk.samples);
@@ -426,7 +434,7 @@ impl AudioStream {
             .channel
             .latest
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|a| a.format)
     }
@@ -439,7 +447,7 @@ impl AudioStream {
             .channel
             .latest
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|a| a.pts_micros)
     }
@@ -474,6 +482,30 @@ impl Drop for AudioSubscription {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    /// Regression: a subscriber that panics poisons the subscriber mutex;
+    /// dropping its subscription during that unwind used to panic again
+    /// (`.lock().unwrap()`), aborting the process. Now the drop and later
+    /// writes both proceed.
+    #[test]
+    fn regression_panicking_subscriber_does_not_abort_on_unsubscribe() {
+        let (stream, writer) = AudioStream::new();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _sub = stream.subscribe(|_f| panic!("author callback panicked"));
+            writer.write_pcm_f32(48_000, 1, &[0.0; 16]);
+            // `_sub` drops here, during the unwind.
+        }));
+        assert!(unwound.is_err(), "the callback's panic propagates to the writer");
+        // The stream still works after the poisoning.
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let _sub = stream.subscribe(move |_f| {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+        writer.write_pcm_f32(48_000, 1, &[0.0; 16]);
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert_eq!(stream.format().map(|f| f.channels), Some(1));
+    }
     use std::sync::atomic::AtomicUsize;
 
     const FMT: AudioFormat = AudioFormat {

@@ -212,7 +212,7 @@ impl FrameChannel {
         let mut buf = self
             .latest
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .map(|f| f.rgba)
             .unwrap_or_default();
@@ -228,13 +228,13 @@ impl FrameChannel {
                 format: PixelFormat::Rgba8,
                 pts_micros,
             };
-            let mut subs = self.subscribers.lock().unwrap();
+            let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             for (_, cb) in subs.iter_mut() {
                 cb(&view);
             }
         }
 
-        *self.latest.lock().unwrap() = Some(OwnedFrame {
+        *self.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(OwnedFrame {
             width,
             height,
             rgba: buf,
@@ -245,14 +245,14 @@ impl FrameChannel {
 
     fn add_subscriber(&self, cb: BoxedCallback) -> u64 {
         let id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        let mut subs = self.subscribers.lock().unwrap();
+        let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.push((id, cb));
         self.subscriber_count.store(subs.len(), Ordering::Release);
         id
     }
 
     fn remove_subscriber(&self, id: u64) {
-        let mut subs = self.subscribers.lock().unwrap();
+        let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         subs.retain(|(i, _)| *i != id);
         self.subscriber_count.store(subs.len(), Ordering::Release);
     }
@@ -617,7 +617,7 @@ impl MediaStream {
     /// [`generation`](Self::generation) to skip re-reading an unchanged
     /// frame — the shape a GPU blit consumes.
     pub fn latest(&self, buf: &mut Vec<u8>) -> Option<(u32, u32)> {
-        let slot = self.inner.channel.latest.lock().unwrap();
+        let slot = self.inner.channel.latest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let frame = slot.as_ref()?;
         buf.clear();
         buf.extend_from_slice(&frame.rgba);
@@ -632,7 +632,7 @@ impl MediaStream {
             .channel
             .latest
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|f| f.pts_micros)
     }
