@@ -7704,7 +7704,7 @@ dependencies = [
 
 [[package]]
 name = "media-stream"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "futures-channel",
  "wasm-bindgen-test",

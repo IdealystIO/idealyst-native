@@ -661,7 +661,7 @@ sync = { path = "crates/sdk/client/sync", version = "2.0.3", registry = "idealys
 graphql = { path = "crates/sdk/client/graphql", version = "1.5.4", registry = "idealyst" }
 microphone = { path = "crates/sdk/client/microphone", version = "1.6.2", registry = "idealyst" }
 camera = { path = "crates/sdk/client/camera", version = "1.7.1", registry = "idealyst" }
-media-stream = { path = "crates/sdk/client/media-stream", version = "1.7.0", registry = "idealyst" }
+media-stream = { path = "crates/sdk/client/media-stream", version = "1.8.0", registry = "idealyst" }
 qr = { path = "crates/sdk/client/qr", version = "0.1.1", registry = "idealyst" }
 media-writer = { path = "crates/sdk/client/media-writer", version = "1.7.0", registry = "idealyst" }
 video-compose = { path = "crates/sdk/client/video-compose", version = "1.6.2", registry = "idealyst" }
