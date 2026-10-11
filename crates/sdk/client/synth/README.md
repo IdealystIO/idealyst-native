@@ -172,6 +172,10 @@ Some things are deliberately left out:
   while a sound plays, and no DSP graph on an audio thread. Render a new
   `Pcm` instead.
 - **Spatial audio and reverb/delay effects.** These belong in a layer on top.
+  To play sounds with pan, low-pass filters, pitch and low latency (and to
+  hear a `Mixer` stream live), see [`audio-engine`](../audio-engine):
+  `SoundBuffer::from_pcm(&pcm)` takes a `Pcm` directly, and
+  `AudioEngine::play_stream(&mixer.stream(), ..)` plays the bus.
 - **Band-limited oscillators and resampling.** The square and saw waves are
   naive, which suits chiptune SFX. A large down-sample of bright material can
   alias, so render at the rate you need.

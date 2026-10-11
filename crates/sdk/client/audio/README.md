@@ -116,9 +116,13 @@ envelopes, game-SFX presets), see [`synth`](../synth): it renders a buffer in
 pure Rust and hands it here as WAV bytes (`Pcm::load`).
 
 The relationship to the capture SDKs: `microphone`/`camera` *produce*
-streams; `audio` *consumes* prepared sounds. A future layer that plays an
-`AudioStream` live (rather than a loaded `Sound`) would be the natural
-bridge between them.
+streams; `audio` *consumes* prepared sounds.
+
+For **games** — many overlapping sounds, per-sound pan / low-pass / pitch
+ramped while playing, low latency, or playing a live `AudioStream` (a
+`synth::Mixer`, a microphone) — see [`audio-engine`](../audio-engine). It is
+a separate crate on purpose: `audio` stays the simple one-player-per-file
+API.
 
 ## Testing checklist
 

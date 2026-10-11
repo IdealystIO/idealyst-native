@@ -1,0 +1,104 @@
+[package]
+name = "audio-engine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Low-latency, mixable, spatial-ready sound for games — the real-time peer of
+# `audio` (one platform player per loaded file, volume only).
+#
+#   let engine = AudioEngine::start().await?;
+#   let shot = SoundBuffer::decode(include_bytes!("shot.ogg"))?;
+#   engine.play(&shot, VoiceParams::new().gain(0.8).pan(-0.3).lowpass(4_000.0));
+#
+# Many overlapping voices, each with gain / stereo pan / low-pass / playback
+# rate that can be RAMPED while it plays, looping, live `AudioStream` voices
+# (a `synth::Mixer`, a microphone) and a master bus.
+#
+# One behavior, two mechanisms (rule 7): every DSP formula follows the Web
+# Audio spec, so
+#   - web (wasm32):   the browser's own Web Audio node graph
+#                     (`src/backend/web.rs`)
+#   - everything else: the deterministic Rust mixer in `src/mixer.rs`, written
+#                     into the platform's output callback —
+#       macOS / iOS / Linux / Windows: cpal (CoreAudio / ALSA / WASAPI)
+#       Android: AAudio (API 26+, loaded with dlopen; `src/backend/android.rs`)
+# converge on the same output. `AudioEngine::offline` renders the Rust mixer
+# without a device (tests, spec-convergence checks).
+
+# iOS: `src/backend/native.rs` messages `AVAudioSession` (by class name, via
+# objc2) to put the app's session in the Ambient category. The iOS link is
+# done by Xcode/swiftc from a staticlib, so the framework must be declared
+# here (run-ios `sdk_framework_declarations` checks the `#[link]` matches).
+[package.metadata.idealyst.ios]
+frameworks = ["AVFoundation"]
+
+[dependencies]
+thiserror = { workspace = true }
+# `AudioStream` / `AudioFormat` — the live-PCM currency `play_stream` consumes.
+media-stream = { workspace = true }
+# `SoundBuffer::from_pcm(&synth::Pcm)`; the recipes also play a `synth::Mixer`.
+synth = { workspace = true }
+# Lock-free bounded MPMC queue: the command channel into the render thread and
+# the per-stream-voice frame ring (`force_push` = drop-oldest backlog cap).
+# Allocates once at construction, never on push/pop.
+crossbeam-queue = "0.3"
+# Pure-Rust decoding, identical on every target (wasm32 included), so a
+# `SoundBuffer` holds the same PCM everywhere.
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "mp3", "ogg", "vorbis", "flac"] }
+# `recipe!` (catalog only). `runtime-vocabulary` is a direct dep because the
+# `ui!` emission inside the recipes spells absolute
+# `::runtime_vocabulary::glue::…` paths.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+# Desktop + iOS output: cpal (already in the lock via `microphone`).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+cpal = "0.15"
+
+# Android output: AAudio, rendering the shared Rust mixer
+# (`src/backend/android.rs`). `libaaudio.so` is opened with `dlopen`, NOT
+# linked: it exists only on API 26+, the CLI links Android libraries at API
+# 21 (whose NDK sysroot has no libaaudio), and a hard `DT_NEEDED` on it would
+# make `System.loadLibrary` fail on API 21–25 devices — taking the whole app
+# down, not just audio. That's why the `ndk` crate's `audio` feature (which
+# `#[link]`s aaudio) is not used. `ndk-sys` (no features → links nothing
+# beyond libandroid) supplies the header-generated types and constants;
+# `libc` supplies dlopen/dlsym, `__system_property_get` (the API level) and
+# `clock_gettime`; `log` reaches logcat through the backend's
+# `android_logger`.
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-sys = "0.6"
+libc = "0.2"
+log = "0.4"
+
+# Web: the Web Audio node graph (`src/backend/web.rs`) through web-glue,
+# the framework-owned JS boundary; `runtime-shared` for
+# `app_state::current().user_activated` (auto-resume on the first `play`
+# after a user gesture).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-glue = { workspace = true }
+runtime-shared = { workspace = true }
+
+# iOS: the AVAudioSession category (objc2 msg_send, house style — see
+# `microphone`).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+
+# Recipes compile only under `catalog`; `async-driver` for `spawn_async`
+# (`AudioEngine::start` is async). `synth/catalog` is forwarded because
+# `runtime-core/catalog` switches `recipe!` on for EVERY crate in the build,
+# synth's included, and synth's recipes need its catalog-only deps.
+[features]
+catalog = ["runtime-core/catalog", "runtime-core/async-driver", "synth/catalog"]
+
+[dev-dependencies]
+pollster = "0.3"
+
+# Browser tests (`src/backend/web/tests.rs`: the Web Audio graph against the
+# Rust mixer, rendered offline) — run with
+# `cargo test -p audio-engine --target wasm32-unknown-unknown --lib` (the
+# workspace runner supplies web-glue's JS; never wasm-pack).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
