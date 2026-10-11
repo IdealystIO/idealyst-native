@@ -723,6 +723,30 @@ fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::ke
     )
 }
 
+/// Wrap the app-level pointer sink: `event` and `focus_lost` run author
+/// listeners and `lock_changed` publishes `pointer_locked`, so each
+/// queues one flush (the event outcome passes through).
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let (on_event, on_lock) = (sink.clone(), sink.clone());
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = on_event.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            sink.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // backend-macos/src/newcore.rs / runtime_vocabulary::bridge — keep
@@ -814,6 +838,23 @@ impl caps::AppEnvOps for WgpuBackend {
         // synthesizes releases), so both entry points queue a flush.
         let sink = sink.map(flushing_keyboard_sink);
         WgpuBackend::set_keyboard_sink_impl(self, sink)
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // Mouse events reach it from `Host::pointer_*` / `scroll` /
+        // `mouse_motion`; lock answers from `Host::pointer_lock_changed`.
+        let sink = sink.map(flushing_pointer_sink);
+        WgpuBackend::set_pointer_sink_impl(self, sink)
+    }
+
+    fn set_pointer_lock(&mut self, locked: bool) {
+        // Forwarded to the shell's `PointerControl` hook (see
+        // `crate::app_pointer`); unsupported without one.
+        WgpuBackend::set_pointer_lock_impl(self, locked)
+    }
+
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        WgpuBackend::set_cursor_hidden_impl(self, hidden)
     }
 }
 

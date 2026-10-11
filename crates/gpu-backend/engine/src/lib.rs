@@ -29,6 +29,7 @@
 #![allow(clippy::new_without_default)]
 
 mod animation;
+mod app_pointer;
 mod backend_impl;
 mod border_marks;
 mod device_frame_pipeline;
@@ -77,6 +78,7 @@ pub use render_api::{
     ScrollEvent,
 };
 
+pub use app_pointer::{PointerControl, PointerControlHook};
 pub use animation::{lerp_color, AnimProperty, Animator, TweenKey};
 pub use backend_impl::{
     install_global_self, register_graphics_drawer, set_animated_color, set_animated_f32,

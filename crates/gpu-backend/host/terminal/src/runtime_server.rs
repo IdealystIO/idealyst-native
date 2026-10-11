@@ -23,10 +23,7 @@ use std::time::{Duration, Instant};
 use backend_terminal::{Grid, TerminalBackend};
 use crossterm::{
     cursor,
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEvent,
-        MouseEventKind,
-    },
+    event::{DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     style::ResetColor,
     terminal::{
@@ -36,8 +33,8 @@ use crossterm::{
 };
 
 use crate::{
-    dispatch_terminal_key, is_quit_key, paint_grid, scheduler, stderr_redirect, KeyEventKind,
-    RunError, RunOptions, DEFAULT_RUNTIME_SERVER_CELL_SIZE, SCROLL_STEP,
+    dispatch_terminal_key, dispatch_terminal_mouse, is_quit_key, paint_grid, scheduler,
+    stderr_redirect, KeyEventKind, RunError, RunOptions, DEFAULT_RUNTIME_SERVER_CELL_SIZE,
 };
 
 /// Runtime-server variant of [`crate::run`]. Same crossterm boot + frame
@@ -60,7 +57,7 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
     // Same posture as `run`: redirect stderr to the project's
     // terminal log so the runtime-server shell's connect /
     // disconnect chatter doesn't corrupt the cell grid.
-    let _stderr = stderr_redirect::StderrRedirect::install(&default_log_path());
+    let _stderr = stderr_redirect::StderrRedirect::install(&crate::default_log_path());
     enable_raw_mode()?;
     execute!(
         stdout,
@@ -134,48 +131,10 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
                         prev_grid = None;
                         execute!(stdout, Clear(ClearType::All))?;
                     }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::Down(MouseButton::Left),
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        let outcome = backend.borrow_mut().dispatch_click(column, row);
-                        if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
-                            h();
-                        }
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollDown,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollUp,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, -SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollRight,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, SCROLL_STEP, 0.0);
-                    }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::ScrollLeft,
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
+                    Event::Mouse(mouse) => {
+                        // App pointer sink first, then (unless claimed)
+                        // click / scroll — see `dispatch_terminal_mouse`.
+                        dispatch_terminal_mouse(&backend, &mouse);
                     }
                     Event::Key(key) => {
                         // Focused TextInput gets first crack — the
@@ -202,6 +161,8 @@ pub fn run_runtime_server(url: String, opts: RunOptions) -> Result<(), RunError>
                             break;
                         }
                     }
+                    Event::FocusLost => TerminalBackend::focus_lost_in(&backend),
+                    Event::FocusGained => TerminalBackend::focus_gained_in(&backend),
                     _ => {}
                 }
             }

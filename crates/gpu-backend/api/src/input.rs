@@ -25,6 +25,10 @@
 /// Identifies a pointer interaction. Use [`PointerId::MOUSE`] for
 /// the primary mouse pointer; touch shells should pass the OS's
 /// finger id (Apple's `UITouch` identifier, browser's `pointerId`).
+///
+/// Only [`PointerId::MOUSE`] events reach the app-level pointer API
+/// (`runtime_shared::pointer_input`) — that layer is for mouse /
+/// trackpad / pen, not fingers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PointerId(pub u64);
 
@@ -57,6 +61,11 @@ pub struct PointerEvent {
 /// `position` is where the pointer is at the moment of the event
 /// — the render side uses it to decide which scroll container
 /// under the cursor receives the event.
+///
+/// Sign: positive `delta.1` = wheel turned toward the user = content
+/// scrolls down (reveals what is below), the web `WheelEvent.deltaY`
+/// convention. Scroll events come from a mouse wheel or trackpad, never
+/// from a finger (touch shells feed finger drags as pointer moves).
 #[derive(Clone, Copy, Debug)]
 pub struct ScrollEvent {
     pub position: (f32, f32),

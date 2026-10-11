@@ -134,8 +134,77 @@ pub const DEFAULT_RUNTIME_SERVER_CELL_SIZE: (f32, f32) = (8.0, 16.0);
 /// Rows of scroll per mouse-wheel tick. Three matches the common
 /// browser default and feels right for a character-grid viewport
 /// (one row per tick is too laggy; the backend clamps to content
-/// bounds so over-scrolling is harmless).
-const SCROLL_STEP: f32 = 3.0;
+/// bounds so over-scrolling is harmless). The same step the app-level
+/// pointer reports a notch as (`backend_terminal::WHEEL_NOTCH_CELLS`).
+const SCROLL_STEP: f32 = backend_terminal::WHEEL_NOTCH_CELLS;
+
+/// crossterm mouse event → app-level pointer event (cells; the backend
+/// converts to layout px — see `backend_terminal::TerminalPointer`).
+/// Down / Up / Drag / Moved / the four scroll kinds; buttons Left /
+/// Right / Middle. crossterm reports Shift / Ctrl / Alt on mouse events
+/// (no Meta).
+fn terminal_pointer(ev: &crossterm::event::MouseEvent) -> backend_terminal::TerminalPointer {
+    use backend_terminal::{TerminalPointer, TerminalPointerKind as K};
+    use crossterm::event::{KeyModifiers as M, MouseButton as B, MouseEventKind as E};
+    use runtime_shared::pointer_input::MouseButton as AB;
+    let button = |b: B| match b {
+        B::Left => AB::Primary,
+        B::Right => AB::Secondary,
+        B::Middle => AB::Middle,
+    };
+    let kind = match ev.kind {
+        E::Down(b) => K::Down(button(b)),
+        E::Up(b) => K::Up(button(b)),
+        E::Drag(_) | E::Moved => K::Move,
+        E::ScrollDown => K::Wheel(0.0, 1.0),
+        E::ScrollUp => K::Wheel(0.0, -1.0),
+        E::ScrollRight => K::Wheel(1.0, 0.0),
+        E::ScrollLeft => K::Wheel(-1.0, 0.0),
+    };
+    TerminalPointer::new(kind, ev.column, ev.row).with_modifiers(
+        ev.modifiers.contains(M::SHIFT),
+        ev.modifiers.contains(M::CONTROL),
+        ev.modifiers.contains(M::ALT),
+        false,
+    )
+}
+
+/// Deliver one crossterm mouse event: the app-level pointer sink first
+/// (a no-op when no app pointer listener is live), then — unless a
+/// listener claimed it with `PreventDefault` — the host's own handling:
+/// a left press hit-tests and fires `on_click` / focuses an input, a
+/// wheel scrolls the scroll view under the pointer.
+fn dispatch_terminal_mouse(
+    backend: &std::cell::RefCell<backend_terminal::TerminalBackend>,
+    ev: &crossterm::event::MouseEvent,
+) {
+    use crossterm::event::{MouseButton as B, MouseEventKind as E};
+    let claimed =
+        backend_terminal::TerminalBackend::dispatch_pointer_in(backend, &terminal_pointer(ev));
+    if claimed {
+        return;
+    }
+    let (column, row) = (ev.column, ev.row);
+    let scroll = |dx: f32, dy: f32| {
+        backend.borrow_mut().dispatch_scroll(column, row, dx, dy);
+    };
+    match ev.kind {
+        E::Down(B::Left) => {
+            // Borrow discipline: the handler fires AFTER the backend
+            // borrow drops — it typically writes a signal, which
+            // re-enters the backend.
+            let outcome = backend.borrow_mut().dispatch_click(column, row);
+            if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
+                h();
+            }
+        }
+        E::ScrollDown => scroll(0.0, SCROLL_STEP),
+        E::ScrollUp => scroll(0.0, -SCROLL_STEP),
+        E::ScrollRight => scroll(SCROLL_STEP, 0.0),
+        E::ScrollLeft => scroll(-SCROLL_STEP, 0.0),
+        _ => {}
+    }
+}
 
 #[derive(Clone)]
 pub struct RunOptions {
@@ -413,8 +482,9 @@ fn dispatch_terminal_key(
 ///   them.
 ///
 /// Focus reporting (`EnableFocusChange`) is turned on too so a terminal
-/// focus-out reaches the app keyboard as `focus_lost`; terminals that
-/// don't support it ignore the escape.
+/// focus-out reaches the app keyboard / pointer as `focus_lost` and both
+/// directions reach `AppState::focused`; terminals that don't support it
+/// ignore the escape.
 fn enable_key_reporting(out: &mut io::Stdout) -> (bool, bool) {
     use crossterm::event::{
         EnableFocusChange, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -543,5 +613,107 @@ mod key_tests {
         );
         assert!(dispatch_terminal_key(&backend, &ev(KeyCode::Char('d'), KeyEventKind::Press), false));
         assert_eq!(log.borrow().len(), 2, "press + synthesized release");
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+    use backend_terminal::{TerminalBackend, TerminalPointerKind as K};
+    use crossterm::event::{KeyModifiers as M, MouseButton as B, MouseEvent, MouseEventKind as E};
+    use runtime_shared::pointer_input::{self, MouseButton as AB, PointerPhase};
+    use std::cell::RefCell;
+
+    fn mouse(kind: E, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: M::NONE }
+    }
+
+    #[test]
+    fn crossterm_mouse_kinds_map_to_app_pointer_kinds() {
+        let k = |kind| terminal_pointer(&mouse(kind, 1, 2)).kind;
+        assert_eq!(k(E::Down(B::Left)), K::Down(AB::Primary));
+        assert_eq!(k(E::Down(B::Right)), K::Down(AB::Secondary));
+        assert_eq!(k(E::Up(B::Middle)), K::Up(AB::Middle));
+        assert_eq!(k(E::Drag(B::Left)), K::Move);
+        assert_eq!(k(E::Moved), K::Move);
+        // ScrollDown = wheel toward the user = positive (web deltaY sign).
+        assert_eq!(k(E::ScrollDown), K::Wheel(0.0, 1.0));
+        assert_eq!(k(E::ScrollUp), K::Wheel(0.0, -1.0));
+        assert_eq!(k(E::ScrollRight), K::Wheel(1.0, 0.0));
+        assert_eq!(k(E::ScrollLeft), K::Wheel(-1.0, 0.0));
+        let p = terminal_pointer(&MouseEvent { modifiers: M::SHIFT | M::ALT, ..mouse(E::Moved, 7, 3) });
+        assert_eq!((p.column, p.row, p.shift, p.ctrl, p.alt, p.meta), (7, 3, true, false, true, false));
+    }
+
+    /// End to end through the real pointer dispatcher: crossterm events →
+    /// `dispatch_terminal_mouse` → backend sink → app listener; a claimed
+    /// wheel stops the host's own scroll handling.
+    #[test]
+    fn dispatch_reaches_app_pointer_listener() {
+        use runtime_vocabulary::caps::AppEnvOps;
+        let backend = Rc::new(RefCell::new(TerminalBackend::new()));
+        pointer_input::reset_for_tests();
+        let weak = Rc::downgrade(&backend);
+        pointer_input::install_pointer_host(Some(Rc::new(move |cmd| {
+            use pointer_input::PointerHostCommand as C;
+            let Some(b) = weak.upgrade() else { return true };
+            let Ok(mut b) = b.try_borrow_mut() else { return false };
+            match cmd {
+                C::Sink(s) => b.set_pointer_sink(s),
+                C::Lock(l) => b.set_pointer_lock(l),
+                C::HideCursor(h) => b.set_cursor_hidden(h),
+            }
+            true
+        })));
+        let seen: Rc<RefCell<Vec<(PointerPhase, Option<AB>, f32, f32)>>> = Rc::default();
+        let s = seen.clone();
+        let _l = pointer_input::add_listener(move |e| {
+            s.borrow_mut().push((e.phase, e.button, e.x, e.y));
+            runtime_shared::KeyOutcome::PreventDefault
+        });
+        dispatch_terminal_mouse(&backend, &mouse(E::Down(B::Left), 2, 1));
+        dispatch_terminal_mouse(&backend, &mouse(E::Drag(B::Left), 3, 1));
+        dispatch_terminal_mouse(&backend, &mouse(E::Up(B::Left), 3, 1));
+        dispatch_terminal_mouse(&backend, &mouse(E::ScrollDown, 3, 1));
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                (PointerPhase::Down, Some(AB::Primary), 2.0, 1.0),
+                (PointerPhase::Move, None, 3.0, 1.0),
+                (PointerPhase::Up, Some(AB::Primary), 3.0, 1.0),
+                (PointerPhase::Wheel, None, 3.0, 1.0),
+            ]
+        );
+        pointer_input::reset_for_tests();
+    }
+
+    /// `PreventDefault` on a down claims the press: the host's click
+    /// dispatch never runs (the button's handler doesn't fire).
+    /// Unclaimed, the same press fires it.
+    #[test]
+    fn claimed_mouse_down_skips_click_dispatch() {
+        use runtime_shared::accessibility::AccessibilityProps;
+        use runtime_shared::IntoAction;
+        use runtime_vocabulary::caps::{AppEnvOps, ButtonOps, LifecycleOps};
+        let backend = RefCell::new(TerminalBackend::new());
+        let clicks = Rc::new(std::cell::Cell::new(0u32));
+        {
+            let mut be = backend.borrow_mut();
+            be.set_viewport(20, 3);
+            let c = clicks.clone();
+            let action = (move || c.set(c.get() + 1)).into_action();
+            let button = be.create_button("OK", &action, None, None, &AccessibilityProps::default());
+            be.finish(button);
+            be.render_to_grid();
+        }
+        let sink = |outcome| {
+            runtime_shared::pointer_input::PointerSink::new(move |_| outcome, |_| {}, || {})
+        };
+        backend.borrow_mut().set_pointer_sink(Some(sink(runtime_shared::KeyOutcome::PreventDefault)));
+        dispatch_terminal_mouse(&backend, &mouse(E::Down(B::Left), 1, 0));
+        assert_eq!(clicks.get(), 0, "claimed press never reaches the button");
+        backend.borrow_mut().set_pointer_sink(Some(sink(runtime_shared::KeyOutcome::Default)));
+        dispatch_terminal_mouse(&backend, &mouse(E::Down(B::Left), 1, 0));
+        assert_eq!(clicks.get(), 1, "unclaimed press keeps the click default");
     }
 }

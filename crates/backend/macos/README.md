@@ -57,3 +57,38 @@ delegate. The framework intentionally keeps those concerns *out* of the
 Window / menu / multi-window plumbing lives in [`host-appkit`](../../gpu-backend/host/appkit),
 which composes the backend with the AppKit shell. Author code does not
 participate.
+
+## App situation + app-wide pointer
+
+`AppEnvOps::set_pointer_sink` / `set_pointer_lock` / `set_cursor_hidden`
+and the app-state reports (`runtime_shared::app_state`) — mechanism in
+`src/imp/pointer.rs` and `src/imp/app_state.rs`, pure translation in
+`src/pointer_policy.rs`:
+
+- **Pointer source**: one `NSEvent` local monitor (left/right/other down,
+  up, dragged; mouse-moved; scroll-wheel). Positions are host-root
+  relative, top-left origin, points. Wheel deltas are negated to web's
+  `deltaY` sign; a non-precise (notched) wheel's lines × 40 px. Returning
+  `nil` honors `PreventDefault` on a down (no `mouseDown:` /
+  `rightMouseDown:` → no focus change, selection, or `menuForEvent:`
+  context menu) and on a wheel (no scroll). `acceptsMouseMovedEvents` is
+  turned on for the host window while installed.
+- **Eaten releases**: a control's tracking loop (NSButton, NSSlider, text
+  selection, title-bar drag) consumes its mouse-up before any local
+  monitor sees it; a 100 ms poll against `+[NSEvent pressedMouseButtons]`
+  synthesizes the missing `Up` while a button is held.
+- **Lock**: `CGAssociateMouseAndMouseCursorPosition(false)` + a balanced
+  `+[NSCursor hide]`; motion keeps arriving as `deltaX`/`deltaY`. Granted
+  synchronously and only while the app is active (disassociation is
+  session-wide). Dropped and reported on app resign-active, window
+  resign-key, and Esc (web parity). Released on teardown and
+  `NewCoreApp::stop`.
+- **Cursor hiding**: balanced `+[NSCursor hide]`/`unhide` (process-wide
+  while the app is active).
+- **App state**: `NSApp.isActive` (focus), `!isHidden && occlusionState &
+  Visible` (visibility), `NSWorkspace.accessibilityDisplayShouldReduceMotion`
+  (followed via the workspace's own notification center), primary pointer
+  `Fine`.
+
+`tests/app_pointer.rs` drives all of it with real AppKit events
+(`cargo test -p backend-macos --test app_pointer`).

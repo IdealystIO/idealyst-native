@@ -84,6 +84,48 @@ pub trait AppEnvOps: Host {
     fn set_keyboard_sink(&mut self, sink: Option<primitives::key::KeyboardSink>) {
         // default: no-op
     }
+
+    /// Install (or remove, with `None`) the app-level pointer sink
+    /// (`runtime_shared::pointer_input`).
+    ///
+    /// While installed, deliver every mouse / trackpad / pen button down
+    /// and up, movement and wheel anywhere in the app (NOT finger touches)
+    /// through [`PointerSink::event`], in logical pixels relative to the
+    /// app root. While the pointer is locked, `dx`/`dy` carry the motion
+    /// (raw / unaccelerated where the platform offers it) and the position
+    /// stays put. Honor `PreventDefault`: suppress focus change / text
+    /// selection on a down, the context menu on a secondary down
+    /// (including the platform's separate context-menu event that follows
+    /// it), page scroll on a wheel. Call
+    /// [`PointerSink::lock_changed`] whenever the lock is granted or lost
+    /// — including losses the app didn't request — and
+    /// [`PointerSink::focus_lost`] when the window stops receiving input.
+    ///
+    /// Never hold a backend borrow while calling the sink.
+    ///
+    /// [`PointerSink::event`]: runtime_shared::pointer_input::PointerSink::event
+    /// [`PointerSink::lock_changed`]: runtime_shared::pointer_input::PointerSink::lock_changed
+    /// [`PointerSink::focus_lost`]: runtime_shared::pointer_input::PointerSink::focus_lost
+    #[allow(unused_variables)]
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // default: no-op
+    }
+
+    /// Lock (`true`) or release the pointer: hide the cursor, keep it from
+    /// moving or leaving the window, and report only movement amounts.
+    /// Report the result (possibly asynchronous, possibly refused) through
+    /// the installed sink's `lock_changed`. Default: unsupported — never
+    /// reports a lock.
+    #[allow(unused_variables)]
+    fn set_pointer_lock(&mut self, locked: bool) {
+        // default: no-op
+    }
+
+    /// Hide (`true`) or show the cursor while it is over the app.
+    #[allow(unused_variables)]
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        // default: no-op
+    }
 }
 
 /// Build/flush lifecycle: the end-of-build commit, layout scheduling,

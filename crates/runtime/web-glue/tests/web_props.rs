@@ -172,3 +172,29 @@ fn regression_property_access_decodes_no_name_per_call() {
     );
     el.remove();
 }
+
+/// The pointer-lock / page-state bindings the web backend's app-level
+/// pointer + app-state sources read.
+#[wasm_bindgen_test]
+fn pointer_lock_and_page_state_accessors() {
+    let d = doc();
+    assert!(d.pointer_lock_element().is_none(), "nothing is locked in a test page");
+    d.exit_pointer_lock(); // no-op when unlocked; must not throw
+    let vis = d.visibility_state();
+    assert!(vis == "visible" || vis == "hidden", "visibilityState: {vis}");
+    let _ = d.has_focus();
+    // Chrome ships the User Activation API.
+    assert!(window().unwrap().navigator().user_activation_has_been_active().is_some());
+    // No gesture: the request is refused asynchronously (promise rejection
+    // swallowed + `pointerlockerror`), never a synchronous Err.
+    let el = d.create_element("div").unwrap();
+    d.body().unwrap().append_child(&el).unwrap();
+    assert!(el.request_pointer_lock().is_ok());
+    el.remove();
+
+    let init = web_glue::js::Object::new();
+    web_glue::js::Reflect::set(init.as_ref(), &JsValue::from_str("movementX"), &JsValue::from_f64(4.0)).unwrap();
+    web_glue::js::Reflect::set(init.as_ref(), &JsValue::from_str("movementY"), &JsValue::from_f64(-2.0)).unwrap();
+    let me: MouseEvent = new_event("MouseEvent", "mousemove", &init).unwrap();
+    assert_eq!((me.movement_x(), me.movement_y()), (4.0, -2.0));
+}

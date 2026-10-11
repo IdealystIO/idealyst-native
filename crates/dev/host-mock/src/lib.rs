@@ -240,6 +240,9 @@ pub struct Shared {
     /// The app-level keyboard sink currently installed
     /// (`AppEnvOps::set_keyboard_sink`) — drive it like a native key source.
     pub keyboard_sink: RefCell<Option<primitives::key::KeyboardSink>>,
+    /// The app-level pointer sink currently installed
+    /// (`AppEnvOps::set_pointer_sink`).
+    pub pointer_sink: RefCell<Option<runtime_shared::pointer_input::PointerSink>>,
 }
 
 impl Default for Shared {
@@ -289,6 +292,7 @@ impl Default for Shared {
             scroll_offsets: RefCell::new(BTreeMap::new()),
             frames: RefCell::new(BTreeMap::new()),
             keyboard_sink: RefCell::new(None),
+            pointer_sink: RefCell::new(None),
         }
     }
 }
@@ -671,6 +675,22 @@ impl caps::AppEnvOps for HostMock {
             format!("set_keyboard_sink {}", if sink.is_some() { "some" } else { "none" }),
         );
         *self.s.keyboard_sink.borrow_mut() = sink;
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        self.s.rec_v(
+            "set_pointer_sink",
+            format!("set_pointer_sink {}", if sink.is_some() { "some" } else { "none" }),
+        );
+        *self.s.pointer_sink.borrow_mut() = sink;
+    }
+
+    fn set_pointer_lock(&mut self, locked: bool) {
+        self.s.rec_v("set_pointer_lock", format!("set_pointer_lock {locked}"));
+    }
+
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        self.s.rec_v("set_cursor_hidden", format!("set_cursor_hidden {hidden}"));
     }
 }
 

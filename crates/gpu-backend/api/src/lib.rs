@@ -116,4 +116,43 @@ pub trait EventSink {
     /// across the API boundary. Cross-target consistency is the
     /// render backend's problem, not the shell's.
     fn tick(&mut self) -> bool;
+
+    // -----------------------------------------------------------------
+    // App situation + app-level pointer (added after 2.0.0). Every method
+    // below has a default no-op body so existing shells and render
+    // backends keep compiling; a shell calls the ones its platform can
+    // observe.
+    // -----------------------------------------------------------------
+
+    /// Raw relative mouse motion (platform device deltas — unaccelerated
+    /// where the platform offers it, e.g. winit's
+    /// `DeviceEvent::MouseMotion`), in the same logical-pixel scale as
+    /// pointer positions. Only meaningful while the pointer is locked:
+    /// the render side turns it into app-level `Move` events carrying
+    /// `dx`/`dy` and ignores it otherwise (raw deltas arrive even when
+    /// the cursor is outside the window).
+    #[allow(unused_variables)]
+    fn mouse_motion(&mut self, dx: f32, dy: f32) {}
+
+    /// The keyboard modifier state changed (some platforms — winit —
+    /// report modifiers separately from key events). The render side
+    /// stamps the latest state onto app-level pointer events.
+    #[allow(unused_variables)]
+    fn modifiers_changed(&mut self, modifiers: KeyModifiers) {}
+
+    /// The window / app regained input focus — the counterpart of
+    /// [`focus_lost`](Self::focus_lost).
+    fn focus_gained(&mut self) {}
+
+    /// The app became visible (`true`) or hidden (`false`: minimized,
+    /// fully occluded, backgrounded).
+    #[allow(unused_variables)]
+    fn app_visibility(&mut self, visible: bool) {}
+
+    /// The platform granted (`true`) or dropped (`false`) pointer lock —
+    /// the answer to a lock request the render side forwarded to the
+    /// shell, or a loss the app didn't ask for (window deactivation,
+    /// grab lost). A shell that cannot lock never calls this with `true`.
+    #[allow(unused_variables)]
+    fn pointer_lock_changed(&mut self, locked: bool) {}
 }

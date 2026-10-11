@@ -188,6 +188,11 @@ impl NewCoreApp {
     /// cleanups (same rationale as the old host's explicit `Owner`
     /// drop on the terminal).
     pub fn stop(self) {
+        // Release a held pointer lock (the clip rectangle is desktop-wide)
+        // and show the cursor before the tree goes away.
+        if let Ok(mut b) = self._backend.try_borrow_mut() {
+            b.set_pointer_sink_impl(None);
+        }
         crate::dispatch_hook::clear_dispatch_hook();
         set_flush_world(None);
         BACKEND.with(|b| *b.borrow_mut() = None);
@@ -291,6 +296,15 @@ pub fn start_with<S, R, B>(
     crate::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
     BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
+    // App situation at boot (focus / minimized / reduce motion / pointer
+    // kind); later changes arrive through the host WndProc
+    // (`app_situation::window_message`). Reported with NO backend borrow
+    // held — a report runs world observers.
+    let host = backend.borrow().host_hwnd();
+    for fact in crate::app_situation::boot_facts(host) {
+        runtime_shared::app_state::report(fact);
+    }
+    schedule_flush();
     NewCoreApp {
         realized,
         _backend: backend,
@@ -401,6 +415,31 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
         schedule_flush();
         outcome
     })
+}
+
+/// Wrap the app-level pointer sink: flush after every event, lock change
+/// and focus-loss release burst (all run author listeners). The outcome
+/// passes through untouched.
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let on_lock = sink.clone();
+    let on_focus_lost = sink.clone();
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = sink.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            on_focus_lost.focus_lost();
+            schedule_flush();
+        },
+    )
 }
 
 /// Wrap the app-level keyboard sink: flush after every key delivery and
@@ -545,6 +584,23 @@ impl caps::AppEnvOps for WindowsBackend {
         // message pump (outside any wrapped callback), so flush after each
         // delivery. Native source: `app_keys.rs`.
         WindowsBackend::set_keyboard_sink_impl(self, sink.map(flushing_sink))
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // Same dispatch-site glue as the keyboard: the host pump runs the
+        // sink outside any wrapped callback. Native source: `app_pointer.rs`.
+        WindowsBackend::set_pointer_sink_impl(self, sink.map(flushing_pointer_sink))
+    }
+
+    fn set_pointer_lock(&mut self, locked: bool) {
+        // ClipCursor + raw input; the grant is reported from a microtask
+        // (this runs inside the dispatcher's backend borrow).
+        WindowsBackend::set_pointer_lock_impl(self, locked)
+    }
+
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        // WM_SETCURSOR over the client area — `app_pointer.rs`.
+        WindowsBackend::set_cursor_hidden_impl(self, hidden)
     }
 }
 

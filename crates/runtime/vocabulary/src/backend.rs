@@ -143,6 +143,29 @@ where
         },
     )));
 
+    // App-level pointer: same shape as the keyboard host above (weak,
+    // `try_borrow_mut` → "busy" → microtask retry). A lock request arrives
+    // here synchronously from the author's event handler, which on web is
+    // what makes `requestPointerLock` count as user-initiated.
+    let weak_ptr = Rc::downgrade(backend);
+    runtime_shared::pointer_input::install_pointer_host(Some(Rc::new(
+        move |cmd: runtime_shared::pointer_input::PointerHostCommand| {
+            use runtime_shared::pointer_input::PointerHostCommand as C;
+            let Some(backend) = weak_ptr.upgrade() else {
+                return true;
+            };
+            let Ok(mut b) = backend.try_borrow_mut() else {
+                return false;
+            };
+            match cmd {
+                C::Sink(sink) => caps::AppEnvOps::set_pointer_sink(&mut *b, sink),
+                C::Lock(locked) => caps::AppEnvOps::set_pointer_lock(&mut *b, locked),
+                C::HideCursor(hidden) => caps::AppEnvOps::set_cursor_hidden(&mut *b, hidden),
+            }
+            true
+        },
+    )));
+
     // Weak, and re-entrancy-safe: the borrow is confined to the forward
     // call. An announcer that re-entered framework code while we held a
     // borrow would trip a RefCell double-borrow on the backend — the same

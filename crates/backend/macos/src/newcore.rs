@@ -268,6 +268,11 @@ impl NewCoreApp {
     /// and the world. Primarily for tests; a windowed app forgets the
     /// value instead.
     pub fn stop(self) {
+        // Never leave the user's cursor frozen or hidden past the app: drop
+        // the pointer source (releases a held lock, shows the cursor).
+        if let Ok(mut b) = self._backend.try_borrow_mut() {
+            MacosBackend::set_pointer_sink_impl(&mut b, None);
+        }
         backend_apple_core::dispatch_hook::clear_dispatch_hook();
         set_viewport_sink(None);
         set_flush_world(None);
@@ -339,6 +344,11 @@ pub fn start_with<S, R, B>(
     // the build: a component body may read `platform()` while
     // constructing. See `runtime_vocabulary::backend`.
     runtime_vocabulary::backend::install_env_services(&backend);
+    // App situation (focus / visibility / reduce motion / fine pointer):
+    // reported now, before the build, so `app_focused()` etc. seed with the
+    // real values; live changes then flush like any other platform event.
+    // See `imp/app_state.rs`.
+    backend.borrow_mut().install_app_state_observers(Rc::new(schedule_flush));
     let mut registry: Registry<MacosBackend> = Registry::new();
     runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
     register(&mut registry);
@@ -652,6 +662,32 @@ fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::ke
     )
 }
 
+/// Wrap the app-level pointer sink: every entry point (event, lock
+/// change, focus loss) runs author listeners or publishes app state, so
+/// each queues the flush after it returns. The event outcome passes
+/// through unchanged.
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let on_lock = sink.clone();
+    let on_lost = sink.clone();
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = sink.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            on_lost.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // runtime_vocabulary::bridge — keep mechanically in sync; the scene-parity
@@ -725,6 +761,20 @@ impl caps::AppEnvOps for MacosBackend {
         // into it), so both entry points queue the flush afterwards.
         let sink = sink.map(flushing_keyboard_sink);
         MacosBackend::set_keyboard_sink_impl(self, sink)
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // Same dispatch-site glue as the keyboard sink (imp/pointer.rs).
+        let sink = sink.map(flushing_pointer_sink);
+        MacosBackend::set_pointer_sink_impl(self, sink)
+    }
+
+    fn set_pointer_lock(&mut self, locked: bool) {
+        MacosBackend::set_pointer_lock_impl(self, locked)
+    }
+
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        MacosBackend::set_cursor_hidden_impl(self, hidden)
     }
 }
 

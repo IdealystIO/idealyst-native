@@ -50,6 +50,14 @@ entry-symbols = []
 # `install_render_loop()` once at init.
 async-driver = ["runtime-shared/async-driver", "backend-ios-core/async-driver"]
 
+# Frameworks the final iOS link must include (collected by the iOS run tool
+# across the app's dependency closure — the staticlib drops `#[link]`).
+# GameController: `GCMouse` app-wide mouse buttons / motion / locked wheel
+# (`src/imp/pointer.rs`) and the connected-mouse primary-pointer reading
+# (`src/imp/app_state.rs`).
+[package.metadata.idealyst.ios]
+frameworks = ["GameController"]
+
 [dependencies]
 runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }

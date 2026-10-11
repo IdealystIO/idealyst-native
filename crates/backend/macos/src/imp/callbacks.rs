@@ -445,6 +445,23 @@ pub(crate) fn observe_notification(
     object: *mut objc2::runtime::AnyObject,
     callback: Rc<dyn Fn()>,
 ) -> Retained<NSObject> {
+    let center: *mut objc2::runtime::AnyObject =
+        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
+    observe_notification_on(mtm, center, name, object, callback)
+}
+
+/// [`observe_notification`] on an explicit notification center — e.g.
+/// `NSWorkspace.sharedWorkspace.notificationCenter`, where the workspace
+/// posts its notifications (the accessibility display-options change the
+/// reduce-motion reading follows) instead of the default center. Same
+/// one-turn deferral.
+pub(crate) fn observe_notification_on(
+    mtm: MainThreadMarker,
+    center: *mut objc2::runtime::AnyObject,
+    name: &str,
+    object: *mut objc2::runtime::AnyObject,
+    callback: Rc<dyn Fn()>,
+) -> Retained<NSObject> {
     let deferred: Rc<dyn Fn()> = Rc::new(move || {
         let cb = callback.clone();
         runtime_shared::schedule_microtask(move || cb());
@@ -452,8 +469,6 @@ pub(crate) fn observe_notification(
     let this = mtm.alloc::<NotificationTarget>();
     let this = this.set_ivars(NotificationTargetIvars { callback: deferred });
     let target: Retained<NotificationTarget> = unsafe { msg_send_id![super(this), init] };
-    let center: *mut objc2::runtime::AnyObject =
-        unsafe { msg_send![objc2::class!(NSNotificationCenter), defaultCenter] };
     let name: Retained<objc2_foundation::NSString> = objc2_foundation::NSString::from_str(name);
     let _: () = unsafe {
         msg_send![

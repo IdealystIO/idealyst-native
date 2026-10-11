@@ -4465,3 +4465,272 @@ fn regression_web_app_keyboard_delivers_down_up_and_blur() {
     assert_eq!(blurs.get(), 1, "None must detach the blur listener");
     el.remove();
 }
+
+// ---------------------------------------------------------------------------
+// App-level pointer source + app state (game input without a JS shim)
+// ---------------------------------------------------------------------------
+
+/// Construct `new <class>(ty, init)` where `init` is a plain object with the
+/// given numeric / string / bool fields — reaches fields the init-dict
+/// helpers don't model (`movementX`, `deltaMode`, …).
+fn synth_event<T: JsCast>(class: &str, ty: &str, fields: &[(&str, web_glue::JsValue)]) -> T {
+    let init = web_glue::js::Object::new();
+    for (k, v) in [("bubbles", web_glue::JsValue::from(true)), ("cancelable", web_glue::JsValue::from(true))]
+        .into_iter()
+        .chain(fields.iter().map(|(k, v)| (*k, v.clone())))
+    {
+        web_glue::js::Reflect::set(init.as_ref(), &web_glue::JsValue::from_str(k), &v).unwrap();
+    }
+    web_glue::dom::new_event(class, ty, &init).expect("construct event")
+}
+
+fn num(v: f64) -> web_glue::JsValue {
+    web_glue::JsValue::from_f64(v)
+}
+
+/// Dispatch `ev` on `target`; returns whether its default was prevented.
+fn fire(target: &impl AsRef<web_glue::JsValue>, ev: &web_glue::dom::Event) -> bool {
+    let t: web_glue::dom::EventTarget = target.as_ref().clone().unchecked_into();
+    t.dispatch_event(ev).expect("dispatch");
+    ev.default_prevented()
+}
+
+type PointerLog = std::rc::Rc<std::cell::RefCell<Vec<runtime_shared::pointer_input::AppPointerEvent>>>;
+
+fn recording_pointer_sink(
+    prevent: impl Fn(&runtime_shared::pointer_input::AppPointerEvent) -> bool + 'static,
+) -> (
+    runtime_shared::pointer_input::PointerSink,
+    PointerLog,
+    std::rc::Rc<std::cell::RefCell<Vec<bool>>>,
+    std::rc::Rc<std::cell::Cell<u32>>,
+) {
+    use runtime_shared::pointer_input::{PointerOutcome, PointerSink};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    let seen: PointerLog = Rc::new(RefCell::new(Vec::new()));
+    let locks = Rc::new(RefCell::new(Vec::new()));
+    let blurs = Rc::new(Cell::new(0u32));
+    let (s, l, b) = (seen.clone(), locks.clone(), blurs.clone());
+    let sink = PointerSink::new(
+        move |e| {
+            s.borrow_mut().push(e.clone());
+            if prevent(e) { PointerOutcome::PreventDefault } else { PointerOutcome::Default }
+        },
+        move |locked| l.borrow_mut().push(locked),
+        move || b.set(b.get() + 1),
+    );
+    (sink, seen, locks, blurs)
+}
+
+/// REGRESSION TEST (game input JS shim): a game had to listen on `document`
+/// itself for page-wide mouse buttons, movement and wheel, and to suppress
+/// the context menu and wheel scrolling during play. The app-level pointer
+/// source must deliver mouse down/up (DOM button numbering mapped), moves
+/// with `movementX/Y` as `dx`/`dy` and app-root-relative `x`/`y`, wheel in
+/// pixels (line mode ×16), honor `PreventDefault` (mousedown, wheel, and the
+/// `contextmenu` following a prevented secondary press — once), skip the
+/// compatibility mouse events of a finger tap, report window blur as focus
+/// loss, and detach everything on `None`.
+#[wasm_bindgen_test]
+fn regression_web_app_pointer_delivers_buttons_moves_wheel_and_suppresses_menu() {
+    use runtime_shared::pointer_input::{MouseButton, PointerPhase};
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let (sink, seen, _locks, blurs) = recording_pointer_sink(|e| {
+        e.phase == PointerPhase::Wheel || (e.phase == PointerPhase::Down && e.button == Some(MouseButton::Secondary))
+    });
+    backend.set_pointer_sink_impl(Some(sink));
+
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let el = doc.create_element("div").unwrap();
+    doc.body().unwrap().append_child(&el).unwrap();
+    let rect = backend.mount.get_bounding_client_rect();
+
+    let mv: web_glue::dom::Event = synth_event(
+        "PointerEvent",
+        "pointermove",
+        &[
+            ("pointerType", web_glue::JsValue::from_str("mouse")),
+            ("clientX", num(100.0)),
+            ("clientY", num(50.0)),
+            ("movementX", num(7.0)),
+            ("movementY", num(-3.0)),
+            ("shiftKey", web_glue::JsValue::from(true)),
+        ],
+    );
+    fire(&el, &mv);
+
+    let md = |button: f64| -> web_glue::dom::Event {
+        synth_event("MouseEvent", "mousedown", &[("button", num(button)), ("clientX", num(100.0)), ("clientY", num(50.0))])
+    };
+    let mu = |button: f64| -> web_glue::dom::Event {
+        synth_event("MouseEvent", "mouseup", &[("button", num(button)), ("clientX", num(100.0)), ("clientY", num(50.0))])
+    };
+    assert!(!fire(&el, &md(0.0)), "an unprevented primary down keeps its default");
+    assert!(!fire(&el, &mu(0.0)));
+    assert!(fire(&el, &md(2.0)), "PreventDefault on a secondary down cancels the mousedown");
+    let menu = || -> web_glue::dom::Event { synth_event("MouseEvent", "contextmenu", &[("button", num(2.0))]) };
+    assert!(fire(&el, &menu()), "the contextmenu after a prevented secondary down is cancelled");
+    assert!(!fire(&el, &menu()), "…only that one");
+    assert!(!fire(&el, &mu(2.0)), "an Up returning Default keeps its default");
+    assert!(!fire(&el, &md(4.0)));
+
+    let wheel: web_glue::dom::Event = synth_event(
+        "WheelEvent",
+        "wheel",
+        &[("deltaY", num(3.0)), ("deltaX", num(-1.0)), ("deltaMode", num(1.0))],
+    );
+    assert!(fire(&el, &wheel), "PreventDefault on a wheel cancels the page scroll");
+
+    // A finger tap: pointerdown(touch) then the browser's compat mousedown.
+    let tap: web_glue::dom::Event =
+        synth_event("PointerEvent", "pointerdown", &[("pointerType", web_glue::JsValue::from_str("touch"))]);
+    fire(&el, &tap);
+    fire(&el, &md(0.0));
+    fire(&el, &mu(0.0));
+
+    {
+        let seen = seen.borrow();
+        let got: Vec<(PointerPhase, Option<MouseButton>)> = seen.iter().map(|e| (e.phase, e.button)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (PointerPhase::Move, None),
+                (PointerPhase::Down, Some(MouseButton::Primary)),
+                (PointerPhase::Up, Some(MouseButton::Primary)),
+                (PointerPhase::Down, Some(MouseButton::Secondary)),
+                (PointerPhase::Up, Some(MouseButton::Secondary)),
+                (PointerPhase::Down, Some(MouseButton::Forward)),
+                (PointerPhase::Wheel, None),
+            ],
+            "touch compat mouse events must be skipped"
+        );
+        let m = &seen[0];
+        assert_eq!((m.dx, m.dy), (7.0, -3.0));
+        assert_eq!(m.x, (100.0 - rect.left()) as f32, "x is relative to the app root");
+        assert_eq!(m.y, (50.0 - rect.top()) as f32);
+        assert!(m.shift);
+        let w = &seen[6];
+        assert_eq!((w.wheel_dx, w.wheel_dy), (-16.0, 48.0), "line-mode wheel converts at 16 px/line");
+    }
+
+    let win = web_glue::dom::window().unwrap();
+    win.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
+    assert_eq!(blurs.get(), 1, "window blur must report focus loss");
+
+    backend.set_pointer_sink_impl(None);
+    fire(&el, &md(0.0));
+    fire(&el, &mv);
+    assert!(!fire(&el, &md(2.0)), "None must detach the mousedown listener");
+    win.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
+    assert_eq!(seen.borrow().len(), 7, "None must detach every pointer listener");
+    assert_eq!(blurs.get(), 1, "None must detach the blur listener");
+    el.remove();
+}
+
+/// REGRESSION TEST (pointer lock shim): the lock must be REQUESTED on the
+/// app root, a refusal must come back as `lock_changed(false)` (headless
+/// Chrome refuses: no user gesture), and a `pointerlockchange` that leaves
+/// the app unlocked (Esc, tab switch) must report `false` too. A real grant
+/// can't be produced in an automated browser without a trusted gesture.
+#[wasm_bindgen_test]
+async fn regression_web_pointer_lock_refusal_and_loss_report_unlocked() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let (sink, _seen, locks, _blurs) = recording_pointer_sink(|_| false);
+    backend.set_pointer_sink_impl(Some(sink));
+
+    backend.set_pointer_lock_impl(true);
+    for _ in 0..20 {
+        if !locks.borrow().is_empty() {
+            break;
+        }
+        sleep_ms(25).await;
+    }
+    assert_eq!(*locks.borrow(), vec![false], "a refused request reports unlocked");
+
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    doc.dispatch_event(&web_glue::dom::Event::new("pointerlockchange").unwrap()).unwrap();
+    assert_eq!(*locks.borrow(), vec![false, false], "a lock change away from the app reports unlocked");
+    doc.dispatch_event(&web_glue::dom::Event::new("pointerlockerror").unwrap()).unwrap();
+    assert_eq!(locks.borrow().len(), 3, "pointerlockerror reports unlocked");
+
+    // Release is safe when nothing is locked; teardown detaches the lock
+    // listeners.
+    backend.set_pointer_lock_impl(false);
+    backend.set_pointer_sink_impl(None);
+    doc.dispatch_event(&web_glue::dom::Event::new("pointerlockchange").unwrap()).unwrap();
+    assert_eq!(locks.borrow().len(), 3, "None must detach the lock listeners");
+}
+
+/// REGRESSION TEST (cursor-hiding shim): `set_cursor_hidden(true)` must hide
+/// the cursor over the app INCLUDING elements with their own `cursor`
+/// (a button's `cursor: pointer` used to show through an inline
+/// `cursor: none` on the root), `false` must restore it, and tearing the
+/// source down must restore it as well.
+#[wasm_bindgen_test]
+fn regression_web_cursor_hidden_covers_descendants_and_restores() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let win = web_glue::dom::window().unwrap();
+    let child: web_glue::dom::HtmlElement = doc.create_element("div").unwrap().unchecked_into();
+    child.style().set_property("cursor", "pointer").unwrap();
+    backend.mount.append_child(&child).unwrap();
+    let cursor_of = |el: &web_glue::dom::HtmlElement| {
+        win.get_computed_style(el).unwrap().unwrap().get_property_value("cursor").unwrap()
+    };
+    assert_eq!(cursor_of(&child), "pointer");
+
+    let (sink, ..) = recording_pointer_sink(|_| false);
+    backend.set_pointer_sink_impl(Some(sink));
+    backend.set_cursor_hidden_impl(true);
+    assert_eq!(cursor_of(&child), "none", "a descendant's own cursor must be hidden too");
+    backend.set_cursor_hidden_impl(false);
+    assert_eq!(cursor_of(&child), "pointer", "showing restores the author cursor");
+
+    backend.set_cursor_hidden_impl(true);
+    backend.set_pointer_sink_impl(None);
+    assert_eq!(cursor_of(&child), "pointer", "source teardown restores the cursor");
+    child.remove();
+}
+
+/// REGRESSION TEST (focus / visibility / activation shim): the app-state
+/// observers must report window focus and blur, page visibility, and the
+/// first user activation (sticky; the listeners go away after it).
+#[wasm_bindgen_test]
+fn regression_web_app_state_reports_focus_visibility_and_activation() {
+    use runtime_shared::app_state;
+
+    app_state::reset_for_tests();
+    crate::app_state_source::install();
+    let win = web_glue::dom::window().unwrap();
+    let doc = win.document().unwrap();
+    let activated_at_boot = win.navigator().user_activation_has_been_active().unwrap_or(false);
+    assert_eq!(app_state::current().user_activated, activated_at_boot, "boot reports the browser's activation");
+    assert_eq!(app_state::current().focused, doc.has_focus());
+
+    win.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
+    assert!(!app_state::current().focused, "window blur reports unfocused");
+    win.dispatch_event(&web_glue::dom::Event::new("focus").unwrap()).unwrap();
+    assert!(app_state::current().focused, "window focus reports focused");
+
+    app_state::report(app_state::AppStateChange::Visible(false));
+    doc.dispatch_event(&web_glue::dom::Event::new("visibilitychange").unwrap()).unwrap();
+    assert_eq!(
+        app_state::current().visible,
+        doc.visibility_state() != "hidden",
+        "visibilitychange re-reads document.visibilityState"
+    );
+
+    let key: web_glue::dom::Event = synth_event("KeyboardEvent", "keydown", &[("key", web_glue::JsValue::from_str("a"))]);
+    fire(&doc, &key);
+    assert!(app_state::current().user_activated, "the first keydown activates");
+
+    crate::app_state_source::remove();
+    win.dispatch_event(&web_glue::dom::Event::new("blur").unwrap()).unwrap();
+    assert!(app_state::current().focused, "remove() detaches the observers");
+    app_state::reset_for_tests();
+}

@@ -450,6 +450,8 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     install_viewport_source(vp_sig);
     // Soft-keyboard avoidance (mobile browsers) — see `keyboard_source`.
     crate::keyboard_source::install_keyboard_source();
+    // Focus / visibility / reduce-motion / pointer kind / activation.
+    crate::app_state_source::install();
 }
 
 /// Build the app root, realize it, put it on screen, and take ownership
@@ -627,6 +629,7 @@ pub fn stop() {
     crate::newcore_url_sync::reset();
     remove_viewport_source();
     crate::keyboard_source::remove_keyboard_source();
+    crate::app_state_source::remove();
     crate::dispatch_hook::clear_dispatch_hook();
     FLUSH_WORLD.with(|w| *w.borrow_mut() = None);
     APP.with(|slot| {
@@ -950,6 +953,38 @@ impl caps::AppEnvOps for WebBackend {
             )
         });
         WebBackend::set_keyboard_sink_impl(self, sink)
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // Same dispatch-site glue as the keyboard: every delivery runs
+        // author code (or flips `pointer_locked`), so flush after each.
+        let sink = sink.map(|s| {
+            let (lock, blur) = (s.clone(), s.clone());
+            runtime_shared::pointer_input::PointerSink::new(
+                move |ev| {
+                    let outcome = s.event(ev);
+                    schedule_flush();
+                    outcome
+                },
+                move |locked| {
+                    lock.lock_changed(locked);
+                    schedule_flush();
+                },
+                move || {
+                    blur.focus_lost();
+                    schedule_flush();
+                },
+            )
+        });
+        WebBackend::set_pointer_sink_impl(self, sink)
+    }
+
+    fn set_pointer_lock(&mut self, locked: bool) {
+        WebBackend::set_pointer_lock_impl(self, locked)
+    }
+
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        WebBackend::set_cursor_hidden_impl(self, hidden)
     }
 }
 

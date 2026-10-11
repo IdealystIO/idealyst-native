@@ -11,7 +11,10 @@
 //! - **Input events** (clicks, keys, wheel) dispatch through the same
 //!   backend entry points (keys — presses AND releases, plus terminal
 //!   focus-out — via `dispatch_key_in` / `focus_lost_in`, which run the
-//!   app keyboard sink with the backend unborrowed); the author callbacks they reach were wrapped
+//!   app keyboard sink with the backend unborrowed; mouse events reach
+//!   the app pointer sink first via `dispatch_pointer_in`, then click /
+//!   scroll unless claimed; focus in/out also set `AppState::focused`);
+//!   the author callbacks they reach were wrapped
 //!   at the caps layer, so each queues one deduped flush microtask.
 //! - **Timers/raf** run inside `scheduler::tick`, whose fire sites
 //!   invoke the backend's post-dispatch hook after each callback.
@@ -35,16 +38,16 @@ use backend_terminal::newcore::{SceneElement, SceneRegistry};
 use backend_terminal::{Grid, TerminalBackend};
 use crossterm::{
     cursor,
-    event::{DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEvent, MouseEventKind},
+    event::{DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     style::ResetColor,
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
 use crate::{
-    disable_key_reporting, dispatch_terminal_key, enable_key_reporting, grid_to_rows,
-    is_quit_key, paint_grid, scheduler, stderr_redirect, KeyEventKind, RunError, RunOptions,
-    SCROLL_STEP,
+    disable_key_reporting, dispatch_terminal_key, dispatch_terminal_mouse, enable_key_reporting,
+    grid_to_rows, is_quit_key, paint_grid, scheduler, stderr_redirect, KeyEventKind, RunError,
+    RunOptions,
 };
 
 /// Mount `build` and render it once, headless — no TTY, no raw mode, no
@@ -122,6 +125,15 @@ where
     // Key releases (kitty protocol / Windows console) + focus-out
     // reporting for the app keyboard. Undone after the loop.
     let (releases_reported, kitty_pushed) = enable_key_reporting(&mut stdout);
+    // App situation: a terminal is driven by a mouse (when it reports
+    // one) and the keyboard — a fine pointer. Focus follows crossterm
+    // FocusGained / FocusLost (enabled above); visibility and
+    // reduce-motion have no terminal signal and keep their defaults.
+    // `EnableMouseCapture` above is on for the whole session (clicks need
+    // it), which is also the app-level pointer's source.
+    runtime_shared::app_state::report(runtime_shared::app_state::AppStateChange::PrimaryPointer(
+        runtime_shared::app_state::PointerKind::Fine,
+    ));
 
     // Scheduler BEFORE mount — the flush driver rides
     // `schedule_microtask` and must not hit the buffering fallback
@@ -165,31 +177,10 @@ where
                         prev_grid = None;
                         execute!(stdout, Clear(ClearType::All))?;
                     }
-                    Event::Mouse(MouseEvent {
-                        kind: MouseEventKind::Down(MouseButton::Left),
-                        column,
-                        row,
-                        ..
-                    }) => {
-                        // Borrow discipline: the handler fires AFTER the
-                        // backend borrow drops — it typically writes a
-                        // signal, which re-enters the backend.
-                        let outcome = backend.borrow_mut().dispatch_click(column, row);
-                        if let backend_terminal::ClickOutcome::HandlerFired(h) = outcome {
-                            h();
-                        }
-                    }
-                    Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column, row, .. }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollUp, column, row, .. }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, 0.0, -SCROLL_STEP);
-                    }
-                    Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollRight, column, row, .. }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, SCROLL_STEP, 0.0);
-                    }
-                    Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollLeft, column, row, .. }) => {
-                        backend.borrow_mut().dispatch_scroll(column, row, -SCROLL_STEP, 0.0);
+                    Event::Mouse(mouse) => {
+                        // App pointer sink first, then (unless claimed)
+                        // click / scroll — see `dispatch_terminal_mouse`.
+                        dispatch_terminal_mouse(&backend, &mouse);
                     }
                     Event::Key(key) => {
                         // Presses AND releases reach the app keyboard;
@@ -215,6 +206,7 @@ where
                         // arrive; the app keyboard synthesizes them.
                         TerminalBackend::focus_lost_in(&backend);
                     }
+                    Event::FocusGained => TerminalBackend::focus_gained_in(&backend),
                     _ => {}
                 }
             }

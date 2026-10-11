@@ -1,5 +1,6 @@
 pub(crate) mod a11y;
 pub(crate) mod animated;
+pub(crate) mod app_state;
 pub mod callbacks;
 pub(crate) mod ffi_guard;
 pub(crate) mod graphics;
@@ -11,6 +12,7 @@ pub(crate) mod press_state;
 pub(crate) mod phase_timer;
 pub(crate) mod keyboard;
 pub(crate) mod pending_focus;
+pub(crate) mod pointer;
 pub(crate) mod screenshot;
 pub(crate) mod sticky;
 pub(crate) mod styled_text;
@@ -129,6 +131,17 @@ pub struct IosBackend {
     /// methods, plus its app-resign-active observer). Retained here;
     /// resigned, unobserved and removed when the sink is cleared.
     app_keyboard: Option<keyboard::AppKeyboard>,
+    /// The app-level pointer source installed by `set_pointer_sink`
+    /// (GCMouse handlers, hover + scroll recognizers on the host root,
+    /// focus-loss / mouse-connect / pointer-lock observers). Torn down when
+    /// the sink is cleared. See `imp/pointer.rs`.
+    pub(crate) app_pointer: Option<pointer::AppPointer>,
+    /// The `UIPointerInteraction` hiding the pointer while
+    /// `set_cursor_hidden(true)` is in effect. See `imp/pointer.rs`.
+    pub(crate) cursor_hider: Option<pointer::CursorHider>,
+    /// App-situation observer (focus / visibility / reduce motion / primary
+    /// pointer, `imp/app_state.rs`), installed once per boot.
+    app_state_observer: Option<Retained<NSObject>>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -735,6 +748,9 @@ impl IosBackend {
             host_root: None,
             callback_targets: Vec::new(),
             app_keyboard: None,
+            app_pointer: None,
+            cursor_hider: None,
+            app_state_observer: None,
             scroll_views: std::collections::HashSet::new(),
             external_content_measures: HashMap::new(),
             icon_image_cache: HashMap::new(),
@@ -1465,6 +1481,28 @@ impl IosBackend {
 
     pub(crate) fn set_keyboard_sink_impl(&mut self, sink: Option<runtime_shared::primitives::key::KeyboardSink>) {
         keyboard::set_keyboard_sink(self, sink);
+    }
+
+    pub(crate) fn set_pointer_sink_impl(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        pointer::set_pointer_sink(self, sink);
+    }
+
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        pointer::set_pointer_lock(self, locked);
+    }
+
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        pointer::set_cursor_hidden(self, hidden);
+    }
+
+    /// Report the app-situation facts and follow them live; `after_report`
+    /// runs after every live report. Called once per boot by
+    /// `newcore::start_with`. See `imp/app_state.rs`.
+    pub fn install_app_state_observers(&mut self, after_report: std::rc::Rc<dyn Fn()>) {
+        if let Some(old) = self.app_state_observer.take() {
+            app_state::uninstall(&old);
+        }
+        self.app_state_observer = Some(app_state::install(self.mtm, after_report));
     }
 
     pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {

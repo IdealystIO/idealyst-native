@@ -321,6 +321,10 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     super::push_current_viewport_now(vp_sig);
     // Soft-keyboard avoidance (mobile browsers) — see `keyboard_source`.
     crate::keyboard_source::install_keyboard_source();
+    // Focus / visibility / reduce-motion / pointer kind / activation —
+    // after adoption, like the viewport push: the server rendered the
+    // defaults, the real values land on the scheduled flush.
+    crate::app_state_source::install();
 }
 
 // ===========================================================================

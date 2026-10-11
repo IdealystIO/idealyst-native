@@ -198,6 +198,15 @@ impl NewCoreApp {
     /// scope cleanups (same rationale as the old host's explicit
     /// `Owner` drop on the terminal).
     pub fn stop(self) {
+        // Native observers first: release a held pointer lock / hidden
+        // cursor and disconnect the app-situation observers, so nothing
+        // reports into a world that is going away.
+        if let Ok(mut b) = self._backend.try_borrow_mut() {
+            if let Some(situation) = b.app_situation.take() {
+                situation.uninstall();
+            }
+            b.set_pointer_sink_impl(None);
+        }
         crate::dispatch_hook::clear_dispatch_hook();
         set_flush_world(None);
         set_viewport_sink(None);
@@ -314,6 +323,18 @@ pub fn start_with<S, R, B>(
     // author reactivity re-fires on resize instead of freezing at its seed.
     set_viewport_sink(Some(vp_sig));
     BACKEND.with(|b| *b.borrow_mut() = Some(Rc::downgrade(&backend)));
+    // App situation (focus / visibility / reduce motion / pointer kind):
+    // observers on the window, boot facts reported with NO backend borrow
+    // held — a report runs world observers. See `app_situation.rs`.
+    let (situation, boot_facts) = {
+        let b = backend.borrow();
+        crate::app_situation::AppSituation::install(b.host_window())
+    };
+    backend.borrow_mut().app_situation = Some(situation);
+    for fact in boot_facts {
+        runtime_shared::app_state::report(fact);
+    }
+    schedule_flush();
     // Point the Robot bridge at the registry this boot actually fills.
     #[cfg(feature = "robot")]
     install_robot_env();
@@ -548,6 +569,31 @@ fn flushing_sink(sink: primitives::key::KeyboardSink) -> primitives::key::Keyboa
     )
 }
 
+/// Wrap the app-level pointer sink: flush after every event, lock change
+/// and focus-loss release burst (all run author listeners). The outcome
+/// passes through untouched.
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let on_lock = sink.clone();
+    let on_focus_lost = sink.clone();
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = sink.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            on_focus_lost.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // backend-terminal/src/newcore.rs / runtime_vocabulary::bridge — keep
@@ -665,6 +711,22 @@ impl caps::AppEnvOps for LinuxBackend {
         // after each delivery (see `flushing_sink`). The native source is
         // a capture-phase key controller on the host window — `app_keys.rs`.
         LinuxBackend::set_keyboard_sink_impl(self, sink.map(flushing_sink))
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // Same dispatch-site glue as the keyboard: every sink call runs
+        // author listeners. Native source: `app_pointer.rs`.
+        LinuxBackend::set_pointer_sink_impl(self, sink.map(flushing_pointer_sink))
+    }
+
+    fn set_pointer_lock(&mut self, locked: bool) {
+        // X11 grab + warp; refused (reported `false`) on Wayland — see
+        // `x11_lock.rs`. The result arrives from a GLib idle.
+        LinuxBackend::set_pointer_lock_impl(self, locked)
+    }
+
+    fn set_cursor_hidden(&mut self, hidden: bool) {
+        LinuxBackend::set_cursor_hidden_impl(self, hidden)
     }
 }
 

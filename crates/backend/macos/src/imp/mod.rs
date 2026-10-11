@@ -8,6 +8,7 @@
 //! See `docs/macos-backend-plan.md` for the design.
 
 pub(crate) mod a11y;
+pub(crate) mod app_state;
 pub(crate) mod animated;
 pub(crate) mod border;
 pub(crate) mod callbacks;
@@ -20,6 +21,7 @@ pub(crate) mod introspect;
 pub(crate) mod keyboard;
 pub(crate) mod node;
 pub(crate) mod pending_focus;
+pub(crate) mod pointer;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
@@ -137,6 +139,16 @@ pub struct MacosBackend {
     /// observers unregistered) when the sink is cleared. See
     /// `imp/keyboard.rs`.
     app_keyboard: Option<keyboard::AppKeyboard>,
+    /// The app-level pointer source installed by `set_pointer_sink`: the
+    /// `NSEvent` mouse monitor, the focus-loss observers and the host
+    /// window's saved `acceptsMouseMovedEvents`. Torn down (monitor
+    /// removed, lock released, cursor shown) when the sink is cleared. See
+    /// `imp/pointer.rs`.
+    pub(crate) app_pointer: Option<pointer::AppPointer>,
+    /// App-situation observers (focus / visibility / reduce-motion,
+    /// `imp/app_state.rs`), installed once per boot. Held for the backend's
+    /// lifetime; replacing them drops (and so unregisters) the old set.
+    app_state_observers: Vec<Retained<NSObject>>,
     /// Per-view cached animation state. Keyed by view pointer;
     /// holds the translate/scale/rotate components so writing one
     /// doesn't destroy the others (CALayer's `transform` is a single
@@ -601,6 +613,8 @@ impl MacosBackend {
             font_registry: backend_apple_core::font::FontRegistry::new(),
             callback_targets: Vec::new(),
             app_keyboard: None,
+            app_pointer: None,
+            app_state_observers: Vec::new(),
             animated_states: HashMap::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
@@ -2918,6 +2932,46 @@ impl MacosBackend {
 
     pub(crate) fn set_keyboard_sink_impl(&mut self, sink: Option<runtime_shared::primitives::key::KeyboardSink>) {
         keyboard::set_keyboard_sink(self, sink);
+    }
+
+    pub(crate) fn set_pointer_sink_impl(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        pointer::set_pointer_sink(self, sink);
+    }
+
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        pointer::set_pointer_lock(self, locked);
+    }
+
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        pointer::set_cursor_hidden(self, hidden);
+    }
+
+    /// Report the app-situation facts (focus, visibility, reduce motion,
+    /// fine pointer) and follow them live; `after_report` runs after every
+    /// live report. Called once per boot by `newcore::start_with`. See
+    /// `imp/app_state.rs`.
+    pub fn install_app_state_observers(&mut self, after_report: Rc<dyn Fn()>) {
+        self.app_state_observers = app_state::install(self.mtm, after_report);
+    }
+
+    /// Whether the pointer source currently holds a hidden cursor (lock or
+    /// `set_cursor_hidden`). Diagnostics / the AppKit integration test.
+    #[doc(hidden)]
+    pub fn cursor_hidden_by_pointer_source(&self) -> bool {
+        pointer::cursor_hidden_applied()
+    }
+
+    /// Test seam for the AppKit integration test: let a pointer lock be
+    /// granted while the (background) test process is not the active app.
+    #[doc(hidden)]
+    pub fn pointer_lock_skip_active_gate_for_tests(&mut self, skip: bool) {
+        pointer::skip_active_gate_for_tests(skip);
+    }
+
+    /// Whether the pointer source holds a lock. Diagnostics / tests.
+    #[doc(hidden)]
+    pub fn pointer_lock_held(&self) -> bool {
+        pointer::is_locked()
     }
 
     // Native render introspection (parity testing) — reads the live

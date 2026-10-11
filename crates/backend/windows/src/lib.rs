@@ -30,6 +30,17 @@
 //! compositing all fall out of one code path instead of per-window
 //! hacks (repo rule §7).
 //!
+//! ## App-level input and situation
+//!
+//! The app-wide keyboard (`app_keys.rs`) and pointer (`app_pointer.rs` —
+//! buttons, movement, wheel, `ClipCursor` + raw-input pointer lock,
+//! `WM_SETCURSOR` cursor hiding) are fed from the HOST's message pump,
+//! because input for a focused / hovered child control never reaches the
+//! host `WndProc`. Focus, minimize, reduce-motion and pointer-kind facts
+//! come from host-window messages (`app_situation.rs`). The pure message
+//! → event rules live in `keymap.rs` / `pointer_policy.rs`, testable on
+//! any host.
+//!
 //! ## Threading
 //!
 //! HWND calls and painting are single-threaded — the host shell invokes
@@ -90,6 +101,8 @@ pub mod dispatch_hook;
 pub mod newcore;
 
 pub mod app_keys;
+pub mod app_pointer;
+pub mod app_situation;
 mod border_pattern;
 mod code;
 mod dcomp;
@@ -99,6 +112,7 @@ mod handles;
 mod icon;
 mod image;
 mod keymap;
+mod pointer_policy;
 mod scene;
 mod wrap;
 
@@ -563,6 +577,10 @@ pub struct WindowsBackend {
     /// ([`WindowsBackend::keyboard_slot`]) so its message pump can deliver
     /// keys without borrowing the backend. See `app_keys.rs`.
     keyboard: app_keys::KeyboardSlot,
+    /// The app-level pointer sink + lock / cursor state, shared with the
+    /// host shell ([`WindowsBackend::pointer_slot`]) like the keyboard
+    /// slot. See `app_pointer.rs`.
+    pointer: app_pointer::PointerSlot,
 }
 
 impl WindowsBackend {
@@ -603,6 +621,7 @@ impl WindowsBackend {
             back: scene::BackBuffer::new(),
             layout_dirty: false,
             keyboard: app_keys::KeyboardSlot::default(),
+            pointer: app_pointer::PointerSlot::new(host_hwnd),
         }
     }
 
@@ -614,6 +633,35 @@ impl WindowsBackend {
     /// `WM_ACTIVATE(WA_INACTIVE)`.
     pub fn keyboard_slot(&self) -> app_keys::KeyboardSlot {
         self.keyboard.clone()
+    }
+
+    /// The shared app-level pointer slot. The host shell clones it once at
+    /// boot, offers every retrieved message to
+    /// [`PointerSlot::pre_dispatch`](app_pointer::PointerSlot::pre_dispatch)
+    /// before `TranslateMessage`/`DispatchMessageW` (after the keyboard),
+    /// routes host-window messages through
+    /// [`PointerSlot::window_message`](app_pointer::PointerSlot::window_message),
+    /// and calls [`PointerSlot::shutdown`](app_pointer::PointerSlot::shutdown)
+    /// before the process exits.
+    pub fn pointer_slot(&self) -> app_pointer::PointerSlot {
+        self.pointer.clone()
+    }
+
+    /// Install / remove the app-level pointer sink (`None` removes, also
+    /// releasing a lock and showing the cursor).
+    pub(crate) fn set_pointer_sink_impl(
+        &mut self,
+        sink: Option<runtime_shared::pointer_input::PointerSink>,
+    ) {
+        self.pointer.set_sink(sink);
+    }
+
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        self.pointer.set_pointer_lock(locked);
+    }
+
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        self.pointer.set_cursor_hidden(hidden);
     }
 
     /// Install / remove the app-level keyboard sink (`None` removes). The

@@ -6,6 +6,7 @@
 
 mod a11y;
 mod animation;
+pub(crate) mod app_state;
 /// Cooperative main-thread async executor. Gated on `async-driver` since it
 /// needs `runtime_shared::driver` (which the feature brings in). Mirrors the
 /// Apple backend's `async_executor` module gating.
@@ -16,6 +17,7 @@ mod font;
 mod jni_exports;
 pub(crate) mod keyboard;
 pub(crate) mod pending_focus;
+pub(crate) mod pointer;
 mod primitives;
 pub(crate) mod scheduler;
 pub(crate) mod soft_keyboard;
@@ -440,6 +442,12 @@ pub struct AndroidBackend {
     /// `nativeGlobalKey` / `nativeKeyFocusLost`. `Some` while a sink is
     /// installed; detached + freed when replaced or cleared.
     pub(crate) app_key: Option<keyboard::AppKeySource>,
+    /// The app-level pointer source installed by `set_pointer_sink`: the
+    /// leaked `PointerSinkCallback` box plus the `RustGlobalPointerListener`
+    /// (window-callback wrapper, captured-pointer listener, cursor shield)
+    /// holding its pointer. `Some` while a sink is installed; detached +
+    /// freed when replaced or cleared. See `imp::pointer`.
+    pub(crate) app_pointer: Option<pointer::AppPointerSource>,
     /// Decoded `image_asset` sources by id (`register_asset`,
     /// `AssetTag::Image`). See `primitives::image`.
     pub(crate) image_cache: primitives::image::ImageCache,
@@ -894,9 +902,11 @@ impl AndroidBackend {
             pending_reveal: Vec::new(),
             detached_window_roots: HashMap::new(),
             app_key: None,
+            app_pointer: None,
         };
         backend.install_viewport_resize_listener();
         soft_keyboard::install(&backend);
+        app_state::install(&backend);
         backend
     }
 
@@ -2954,6 +2964,21 @@ impl AndroidBackend {
         sink: Option<runtime_shared::primitives::key::KeyboardSink>,
     ) {
         keyboard::set_keyboard_sink(self, sink);
+    }
+
+    pub(crate) fn set_pointer_sink_impl(
+        &mut self,
+        sink: Option<runtime_shared::pointer_input::PointerSink>,
+    ) {
+        pointer::set_pointer_sink(self, sink);
+    }
+
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        pointer::set_pointer_lock(self, locked);
+    }
+
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        pointer::set_cursor_hidden(self, hidden);
     }
 
     pub(crate) fn set_app_background_impl(&mut self, color: &runtime_shared::Tokenized<runtime_shared::Color>) {

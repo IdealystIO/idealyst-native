@@ -432,6 +432,32 @@ fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::ke
     )
 }
 
+/// Wrap the app-level pointer sink: every entry point (event, lock
+/// change, focus loss) runs author listeners or publishes app state, so
+/// each queues the flush after it returns.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let on_lock = sink.clone();
+    let on_lost = sink.clone();
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = sink.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            on_lost.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // iOS-only half: boot path + Host + capability-trait delegation
 // ===========================================================================
@@ -472,7 +498,8 @@ mod ios_impl {
     use runtime_world::World;
 
     use super::{
-        flushing0, flushing1, flushing_key, flushing_keyboard_sink, schedule_flush, set_flush_world, set_viewport_sink,
+        flushing0, flushing1, flushing_key, flushing_keyboard_sink, flushing_pointer_sink, schedule_flush,
+        set_flush_world, set_viewport_sink,
     };
     use crate::imp::{IosBackend, IosNode};
 
@@ -509,6 +536,11 @@ mod ios_impl {
         /// detach from the live tree's point of view) and the world.
         /// The old wrapper's `ios_teardown` analogue.
         pub fn stop(self) {
+            // Drop the pointer source: releases a lock preference and shows
+            // the pointer again.
+            if let Ok(mut b) = self._backend.try_borrow_mut() {
+                IosBackend::set_pointer_sink_impl(&mut b, None);
+            }
             backend_apple_core::dispatch_hook::clear_dispatch_hook();
             set_viewport_sink(None);
             set_flush_world(None);
@@ -625,6 +657,11 @@ mod ios_impl {
         // the build: a component body may read `platform()` while
         // constructing. See `runtime_vocabulary::backend`.
         runtime_vocabulary::backend::install_env_services(&backend);
+        // App situation (focus / visibility / reduce motion / primary
+        // pointer): reported now, before the build, so `app_focused()` etc.
+        // seed with real values; live changes flush like any other platform
+        // event. See `imp/app_state.rs`.
+        backend.borrow_mut().install_app_state_observers(Rc::new(schedule_flush));
         let mut registry: Registry<IosBackend> = Registry::new();
         runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
         register(&mut registry);
@@ -807,6 +844,21 @@ mod ios_impl {
             // the releases synthesized on focus loss).
             let sink = sink.map(flushing_keyboard_sink);
             IosBackend::set_keyboard_sink_impl(self, sink)
+        }
+
+        fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+            // Same dispatch-site glue as the keyboard sink (imp/pointer.rs:
+            // GCMouse handlers, hover/scroll recognizers, lock observer).
+            let sink = sink.map(flushing_pointer_sink);
+            IosBackend::set_pointer_sink_impl(self, sink)
+        }
+
+        fn set_pointer_lock(&mut self, locked: bool) {
+            IosBackend::set_pointer_lock_impl(self, locked)
+        }
+
+        fn set_cursor_hidden(&mut self, hidden: bool) {
+            IosBackend::set_cursor_hidden_impl(self, hidden)
         }
     }
 

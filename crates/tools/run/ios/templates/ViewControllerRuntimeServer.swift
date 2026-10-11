@@ -44,6 +44,23 @@ class ViewController: UIViewController {
         setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
 
+    /// Driven from Rust via `applyPointerLock(_:)` (the iOS backend's
+    /// `AppEnvOps::set_pointer_lock`, i.e. the author's
+    /// `request_pointer_lock()`). iPadOS grants the lock only to a
+    /// full-screen, foreground scene with a pointer attached; the backend
+    /// learns the outcome from `UIPointerLockStateDidChangeNotification`.
+    /// Soft-failed on the Rust side (`respondsToSelector:`) for a
+    /// `ViewController` generated before this method existed.
+    private var pointerLockWanted = false
+
+    override var prefersPointerLocked: Bool { pointerLockWanted }
+
+    @objc func applyPointerLock(_ locked: Bool) {
+        guard pointerLockWanted != locked else { return }
+        pointerLockWanted = locked
+        setNeedsUpdateOfPrefersPointerLocked()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
 

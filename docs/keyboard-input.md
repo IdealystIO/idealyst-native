@@ -4,7 +4,8 @@ App-level keyboard input: every key **press and release** anywhere in the
 app, regardless of which view has focus. Use it for game controls (WASD,
 arrows, held keys) and app-wide shortcuts. For a focused text field's own
 keys, use `text_input` / `text_area`'s `on_key_down` instead. For the
-on-screen keyboard, see [`keyboard.md`](keyboard.md).
+on-screen keyboard, see [`keyboard.md`](keyboard.md). For the mouse,
+pointer lock, and focus/visibility signals, see [`app-input.md`](app-input.md).
 
 ```rust
 use runtime_core::{on_key, key_state, raf_loop_scoped, signal, ui, Element, KeyOutcome};

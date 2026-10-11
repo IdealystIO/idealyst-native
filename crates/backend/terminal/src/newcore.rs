@@ -441,6 +441,29 @@ fn flushing_keyboard_sink(sink: primitives::key::KeyboardSink) -> primitives::ke
     )
 }
 
+/// Wrap the app-level pointer sink: each entry point runs author
+/// listeners (or publishes lock state), so each queues one flush.
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let (on_event, on_lock) = (sink.clone(), sink.clone());
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = on_event.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            sink.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Host + capability-trait delegation (generated from
 // render_wgpu/src/newcore.rs / runtime_vocabulary::bridge — keep
@@ -581,6 +604,27 @@ impl caps::AppEnvOps for TerminalBackend {
         // queue a flush. The host's crossterm loop IS the native source —
         // nothing to install or tear down; `None` just stops delivery.
         self.keyboard_sink = sink.map(flushing_keyboard_sink);
+    }
+
+    fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        // The host's crossterm loop is the source (mouse capture is on for
+        // the whole session — clicks need it anyway); events reach the sink
+        // through `dispatch_pointer_in`. `None` just stops delivery.
+        if sink.is_none() {
+            self.pointer_last = None;
+        }
+        self.pointer_sink = sink.map(flushing_pointer_sink);
+    }
+
+    fn set_pointer_lock(&mut self, _locked: bool) {
+        // Unsupported: a terminal cannot capture or hide the mouse cursor
+        // and reports positions by cell only. Never reports a lock, so
+        // the app's `pointer_locked()` stays `false` (see `crate::pointer`).
+    }
+
+    fn set_cursor_hidden(&mut self, _hidden: bool) {
+        // Not applicable: the mouse cursor belongs to the terminal
+        // emulator (the host already hides the TEXT cursor).
     }
 }
 

@@ -18,7 +18,7 @@
 //! | Trait | Status |
 //! |---|---|
 //! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct (+ dispatch-site glue on `set_keyboard_sink`) |
+//! | `AppEnvOps` | direct (+ dispatch-site glue on `set_keyboard_sink` / `set_pointer_sink`) |
 //! | `LifecycleOps` | direct (`is_hydrating` is always `false` on this backend — no hydration on native) |
 //! | `ViewOps` | direct |
 //! | `InputOps` | direct (+ glue on touch/wheel/hover/file-drop handlers) |
@@ -357,6 +357,17 @@ pub(crate) fn forward_keyboard_inset(inset: runtime_shared::KeyboardInset) {
     schedule_flush();
 }
 
+/// Report an app-situation change (window focus, Activity visibility,
+/// reduce motion, primary pointer) and queue the flush that commits the
+/// world signals the report staged. Called from the
+/// `RustAppStateObserver` trampolines (`imp/app_state.rs`) — raw platform
+/// callbacks outside every framework-wrapped handler.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn report_app_state(change: runtime_shared::app_state::AppStateChange) {
+    runtime_shared::app_state::report(change);
+    schedule_flush();
+}
+
 /// Run `f` with the mounted app's world ambient (`World::enter`).
 /// JNI-interop seam: exports that must CREATE reactive state
 /// (`signal()`, `memo()`) run outside any handler/effect, where no
@@ -482,6 +493,33 @@ fn flushing_sink(sink: primitives::key::KeyboardSink) -> primitives::key::Keyboa
     )
 }
 
+/// Wrap the app-level [`PointerSink`](runtime_shared::pointer_input::PointerSink):
+/// all three entry points run author listeners (events directly; a lock
+/// change publishes `pointer_locked`; focus loss synthesizes button-ups), so
+/// each queues the flush afterwards. The event outcome passes through.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn flushing_pointer_sink(
+    sink: runtime_shared::pointer_input::PointerSink,
+) -> runtime_shared::pointer_input::PointerSink {
+    let on_lock = sink.clone();
+    let on_focus = sink.clone();
+    runtime_shared::pointer_input::PointerSink::new(
+        move |ev| {
+            let outcome = sink.event(ev);
+            schedule_flush();
+            outcome
+        },
+        move |locked| {
+            on_lock.lock_changed(locked);
+            schedule_flush();
+        },
+        move || {
+            on_focus.focus_lost();
+            schedule_flush();
+        },
+    )
+}
+
 // ===========================================================================
 // Boot path + Host + capability-trait delegation (android-gated: the
 // real `AndroidBackend` only exists under `target_os = "android"`)
@@ -517,7 +555,7 @@ mod native {
     use runtime_world::World;
 
     use super::{
-        flushing0, flushing1, flushing_key, flushing_sink, schedule_flush, set_flush_world, set_viewport_sink,
+        flushing0, flushing1, flushing_key, flushing_pointer_sink, flushing_sink, schedule_flush, set_flush_world, set_viewport_sink,
     };
     use crate::imp::{self, AndroidBackend};
 
@@ -698,6 +736,12 @@ mod native {
                 // Explicit for readability; struct field order
                 // guarantees the same sequence.
                 let App { realized, _backend, _registry, world } = app;
+                // Release pointer capture, restore the cursor and unhook
+                // the window callback before the app goes away (the
+                // backend Rc may outlive this via the global self-handle).
+                if let Ok(mut b) = _backend.try_borrow_mut() {
+                    b.set_pointer_sink_impl(None);
+                }
                 drop(realized);
                 drop(world);
             }
@@ -828,6 +872,20 @@ mod native {
             // (author code) for every key down/up and on focus loss.
             let sink = sink.map(flushing_sink);
             AndroidBackend::set_keyboard_sink_impl(self, sink)
+        }
+
+        fn set_pointer_sink(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+            // Same dispatch-site glue as the keyboard sink.
+            let sink = sink.map(flushing_pointer_sink);
+            AndroidBackend::set_pointer_sink_impl(self, sink)
+        }
+
+        fn set_pointer_lock(&mut self, locked: bool) {
+            AndroidBackend::set_pointer_lock_impl(self, locked)
+        }
+
+        fn set_cursor_hidden(&mut self, hidden: bool) {
+            AndroidBackend::set_cursor_hidden_impl(self, hidden)
         }
     }
 
@@ -1922,6 +1980,70 @@ mod tests {
         pump();
         assert_eq!(world.enter(|| blurs.get()), 1, "focus-lost write committed by the queued flush");
         set_flush_world(None);
+    }
+
+    /// `flushing_pointer_sink` (the `set_pointer_sink` glue) passes the
+    /// event outcome through and commits what listeners staged from ALL
+    /// three entry points. Without the flush on `lock_changed` a game's
+    /// "paused because the lock was lost" write would sit staged until some
+    /// unrelated event; same for the synthesized button-ups of `focus_lost`.
+    #[test]
+    fn flushing_pointer_sink_commits_event_lock_and_focus_writes() {
+        use runtime_shared::pointer_input::{AppPointerEvent, PointerOutcome, PointerPhase, PointerSink};
+        install_test_scheduler();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        let (events, locks, blurs) = world.enter(|| (signal(0i32), signal(0i32), signal(0i32)));
+
+        let sink = flushing_pointer_sink(PointerSink::new(
+            move |_ev: &AppPointerEvent| {
+                events.update(|n| n + 1);
+                PointerOutcome::PreventDefault
+            },
+            move |_locked| locks.update(|n| n + 1),
+            move || blurs.update(|n| n + 1),
+        ));
+
+        let outcome = sink.event(&AppPointerEvent::new(PointerPhase::Move, 1.0, 2.0));
+        assert_eq!(outcome, PointerOutcome::PreventDefault, "outcome passes through");
+        pump();
+        assert_eq!(world.enter(|| events.get()), 1, "event write committed");
+
+        sink.lock_changed(true);
+        pump();
+        assert_eq!(world.enter(|| locks.get()), 1, "lock write committed");
+
+        sink.focus_lost();
+        pump();
+        assert_eq!(world.enter(|| blurs.get()), 1, "focus-lost write committed");
+        set_flush_world(None);
+    }
+
+    /// App-state reports from the platform observers commit through the
+    /// flush driver: a world effect reading the reported fact re-runs on
+    /// the next looper turn. Regression guard for "the app paused in the
+    /// background but `app_visible()` never changed" — a bare
+    /// `app_state::report` from a raw Activity callback only stages.
+    #[test]
+    fn report_app_state_commits_through_flush() {
+        use runtime_shared::app_state::{self, AppStateChange};
+        install_test_scheduler();
+        app_state::reset_for_tests();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        let seen: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let visible = world.enter(|| signal(true));
+        app_state::observe(move |s| visible.set(s.visible));
+        world.enter(|| {
+            let seen = seen.clone();
+            effect(move || seen.borrow_mut().push(visible.get()));
+        });
+
+        report_app_state(AppStateChange::Visible(false));
+        pump();
+        assert_eq!(*seen.borrow(), vec![true, false]);
+        set_flush_world(None);
+        app_state::reset_for_tests();
     }
 
     /// The dispatch hook wired to `schedule_flush` (what `start`

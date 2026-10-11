@@ -88,6 +88,10 @@ mod viewport_observer;
 /// Soft-keyboard avoidance on mobile browsers (VirtualKeyboard API /
 /// `visualViewport` → mount inset + `keyboard_inset()`).
 mod keyboard_source;
+/// Pure DOM→framework rules for the app-level pointer + app-state sources.
+mod app_pointer_policy;
+/// Browser observers feeding `runtime_shared::app_state`.
+mod app_state_source;
 
 #[cfg(feature = "async-driver")]
 pub use async_executor::install_async_executor;
@@ -412,6 +416,11 @@ pub struct WebBackend {
     /// window (focus loss). Held so JS keeps them alive; clearing the vec
     /// tears them down.
     pub(crate) _app_key_listeners: Vec<web_glue::dom::Listener>,
+    /// The APP-LEVEL pointer source installed by `set_pointer_sink`
+    /// (`primitives::app_pointer`). Dropping it detaches its listeners,
+    /// shows the cursor and releases a held pointer lock — on sink `None`
+    /// and when the backend itself drops (app shutdown).
+    pub(crate) app_pointer: Option<crate::primitives::app_pointer::AppPointerSource>,
     /// Per-node interaction-event closures. Keyed by node-id so we
     /// can drop them when `on_node_unstyled` fires. Each entry holds
     /// the listeners for one node (pointerenter, pointerleave,
@@ -1306,6 +1315,7 @@ impl WebBackend {
             #[cfg(feature = "hydrate")]
             hydration_consumed_outlets: Vec::new(),
             _app_key_listeners: Vec::new(),
+            app_pointer: None,
             state_listeners: FxHashMap::default(),
             inline_props: FxHashMap::default(),
             spinner_keyframes_injected: false,
@@ -3156,6 +3166,18 @@ impl WebBackend {
         sink: Option<runtime_shared::primitives::key::KeyboardSink>,
     ) {
         crate::primitives::keyboard::install_keyboard_sink(self, sink)
+    }
+
+    pub(crate) fn set_pointer_sink_impl(&mut self, sink: Option<runtime_shared::pointer_input::PointerSink>) {
+        crate::primitives::app_pointer::install_pointer_sink(self, sink)
+    }
+
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        crate::primitives::app_pointer::set_pointer_lock(self, locked)
+    }
+
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        crate::primitives::app_pointer::set_cursor_hidden(self, hidden)
     }
 
     pub(crate) fn register_asset_impl(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {

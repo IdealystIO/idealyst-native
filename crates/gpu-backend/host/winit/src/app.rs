@@ -9,6 +9,16 @@
 //!   normalized `render_wgpu::input` event types and
 //!   forwards them to the core's `Host`.
 //! - Drives `RedrawRequested` through the core's `Renderer`.
+//! - App-level pointer + app situation: mouse events already flow
+//!   through `Host` (which routes MOUSE events to the app pointer sink);
+//!   raw `DeviceEvent::MouseMotion` feeds locked movement;
+//!   `Focused` / `Occluded` report `AppState::focused` / `visible`;
+//!   pointer-lock and cursor-hiding requests come back out of the engine
+//!   through [`Host::set_pointer_control_hook`] as
+//!   [`AppEvent::Pointer`] and are applied to the window here (see
+//!   [`App::apply_pointer_control`]). `AppState::reduce_motion` is not
+//!   reported: winit has no API for the OS accessibility setting, so it
+//!   keeps the framework default (`false`).
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -226,8 +236,10 @@ mod mac {
         }
     }
 }
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use render_wgpu::PointerControl;
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::window::CursorGrabMode;
 use winit::keyboard::{Key as WKey, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -260,6 +272,11 @@ pub(crate) enum AppEvent {
     /// [`crate::scheduler::drain_due`] to fire the matching
     /// closures on the main thread.
     SchedTick,
+    /// A pointer-lock / cursor-visibility request from the engine
+    /// (`Host::set_pointer_control_hook`). Posted instead of applied
+    /// in the hook because the hook runs while the backend is borrowed
+    /// and the answer (`pointer_lock_changed`) re-enters it.
+    Pointer(PointerControl),
 }
 
 /// Run the preview window until the user closes it. `skin`
@@ -295,9 +312,10 @@ pub fn run_runtime_server(
             let _ = proxy.send_event(AppEvent::Redraw);
         }
     }));
-    crate::scheduler::install(proxy);
+    crate::scheduler::install(proxy.clone());
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new_runtime_server(profile, skin, url);
+    app.proxy = Some(proxy);
     event_loop
         .run_app(&mut app)
         .map_err(|e| RunError::EventLoop(e.to_string()))
@@ -401,10 +419,11 @@ where
     // every author-driven animation freezes. (The flush driver
     // ALSO rides this scheduler — `schedule_microtask` + the
     // post-dispatch hook — so the install is load-bearing.)
-    crate::scheduler::install(proxy);
+    crate::scheduler::install(proxy.clone());
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App::new(profile, skin, mount);
+    app.proxy = Some(proxy);
     event_loop
         .run_app(&mut app)
         .map_err(|e| RunError::EventLoop(e.to_string()))
@@ -449,6 +468,14 @@ impl ViewportScale {
     fn surface_rect(&self) -> (f32, f32, f32, f32) {
         (0.0, 0.0, self.phys.0, self.phys.1)
     }
+
+    /// Content-logical px per physical px, per axis.
+    fn logical_per_phys(&self) -> (f32, f32) {
+        (
+            self.logical.0 / self.phys.0.max(1.0),
+            self.logical.1 / self.phys.1.max(1.0),
+        )
+    }
 }
 
 struct App {
@@ -491,6 +518,17 @@ struct App {
     /// the aspect-lock snaps along the *other* axis instead of
     /// fighting the drag.
     last_size: Option<PhysicalSize<u32>>,
+    /// Event-loop proxy the engine's pointer-control hook posts
+    /// [`AppEvent::Pointer`] through. Set by `run_with` /
+    /// `run_runtime_server` before the loop starts.
+    proxy: Option<EventLoopProxy<AppEvent>>,
+    /// Active pointer lock, if any, and how it is held: `Locked` where
+    /// the OS pins the cursor (macOS), `Confined` + re-centering where it
+    /// can only keep it inside the window (Windows, X11).
+    lock: Option<CursorGrabMode>,
+    /// The app asked to hide the cursor (independent of the lock, which
+    /// always hides it).
+    cursor_hidden: bool,
     /// macOS-only: retained `NSWindowDelegate` that enforces
     /// the device-aspect ratio on every interactive resize. The
     /// retain has to live as long as the window — NSWindow holds
@@ -527,6 +565,9 @@ impl App {
             modifiers: KeyModifiers::default(),
             last_pointer: (0.0, 0.0),
             last_size: None,
+            proxy: None,
+            lock: None,
+            cursor_hidden: false,
             #[cfg(feature = "runtime-server")]
             runtime_server_url: None,
             #[cfg(feature = "runtime-server")]
@@ -563,6 +604,9 @@ impl App {
             modifiers: KeyModifiers::default(),
             last_pointer: (0.0, 0.0),
             last_size: None,
+            proxy: None,
+            lock: None,
+            cursor_hidden: false,
             runtime_server_url: Some(url),
             runtime_server_shell: None,
             #[cfg(target_os = "macos")]
@@ -637,6 +681,65 @@ impl App {
             self.viewport =
                 ViewportScale::new((gpu.config.width, gpu.config.height), logical);
         }
+    }
+
+    /// Apply an engine pointer request to the window and answer lock
+    /// requests through `pointer_lock_changed`.
+    ///
+    /// Lock: winit `CursorGrabMode::Locked` first (macOS — the OS pins
+    /// the cursor), else `Confined` (Windows / X11 support only that):
+    /// the cursor is then kept at the window centre by
+    /// [`Self::recenter_confined_cursor`] so it can never reach an edge.
+    /// Either way movement is read from raw `DeviceEvent::MouseMotion`
+    /// and cursor moves are not forwarded while locked. A refused grab
+    /// answers `false`.
+    fn apply_pointer_control(&mut self, control: PointerControl) {
+        let Some(window) = self.gpu.as_ref().map(|g| g.window.clone()) else {
+            if matches!(control, PointerControl::Lock(true)) {
+                self.host.pointer_lock_changed(false);
+            }
+            return;
+        };
+        match control {
+            PointerControl::Lock(true) => {
+                if self.lock.is_none() {
+                    self.lock = GRAB_ATTEMPTS
+                        .into_iter()
+                        .find(|mode| window.set_cursor_grab(*mode).is_ok());
+                    if self.lock == Some(CursorGrabMode::Confined) {
+                        self.recenter_confined_cursor(&window);
+                    }
+                }
+                window.set_cursor_visible(cursor_visible(self.cursor_hidden, self.lock.is_some()));
+                self.host.pointer_lock_changed(self.lock.is_some());
+            }
+            PointerControl::Lock(false) => {
+                self.release_pointer_lock(&window);
+                self.host.pointer_lock_changed(false);
+            }
+            PointerControl::HideCursor(hidden) => {
+                self.cursor_hidden = hidden;
+                window.set_cursor_visible(cursor_visible(hidden, self.lock.is_some()));
+            }
+        }
+    }
+
+    /// Drop the OS grab (idempotent) and restore cursor visibility.
+    fn release_pointer_lock(&mut self, window: &Window) {
+        if self.lock.take().is_some() {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+        }
+        window.set_cursor_visible(cursor_visible(self.cursor_hidden, false));
+    }
+
+    /// `Confined` lock: park the cursor at the window centre so raw
+    /// motion never stalls against an edge.
+    fn recenter_confined_cursor(&self, window: &Window) {
+        let size = window.inner_size();
+        let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
+            size.width as f64 / 2.0,
+            size.height as f64 / 2.0,
+        ));
     }
 
     fn render_frame(&mut self) -> FrameOutcome {
@@ -745,6 +848,34 @@ enum FrameOutcome {
 // ---------------------------------------------------------------------------
 // winit → normalized event translation
 // ---------------------------------------------------------------------------
+
+/// Grab modes tried, in order, for a pointer lock (see
+/// [`App::apply_pointer_control`]).
+const GRAB_ATTEMPTS: [CursorGrabMode; 2] = [CursorGrabMode::Locked, CursorGrabMode::Confined];
+
+/// The cursor is shown unless the app hid it or the pointer is locked.
+fn cursor_visible(hidden: bool, locked: bool) -> bool {
+    !hidden && !locked
+}
+
+/// Logical px one wheel "line" (winit `LineDelta`, a mouse-wheel notch)
+/// scrolls — the framework-wide notch distance, shared with every native
+/// backend so a wheel turn moves the same everywhere.
+const LINE_HEIGHT_PX: f32 = runtime_shared::pointer_input::WHEEL_NOTCH_PX;
+
+/// winit wheel delta → content-logical px in the web `deltaY` sign
+/// (positive = wheel toward the user = content scrolls down). winit's
+/// own sign is the opposite ("positive y = wheel up"), so both units are
+/// negated. `logical_per_phys` scales `PixelDelta` (physical px).
+fn wheel_delta(delta: MouseScrollDelta, logical_per_phys: (f32, f32)) -> (f32, f32) {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => (-x * LINE_HEIGHT_PX, -y * LINE_HEIGHT_PX),
+        MouseScrollDelta::PixelDelta(p) => (
+            -(p.x as f32) * logical_per_phys.0,
+            -(p.y as f32) * logical_per_phys.1,
+        ),
+    }
+}
 
 fn winit_button_to_pointer(b: MouseButton) -> Option<PointerButton> {
     match b {
@@ -975,8 +1106,26 @@ impl ApplicationHandler<AppEvent> for App {
         // Now that the renderer is up, build the framework tree
         // (`render_wgpu::newcore::start`, supplied as the mount
         // closure).
+        // Pointer lock / cursor hiding: the engine posts requests back
+        // onto this loop (see `AppEvent::Pointer`).
+        if let Some(proxy) = self.proxy.clone() {
+            self.host.set_pointer_control_hook(move |control| {
+                let _ = proxy.send_event(AppEvent::Pointer(control));
+            });
+        }
         if let Some(mount) = self.mount.take() {
             mount(&mut self.host);
+        }
+        // App situation at boot: what winit can read up front. A
+        // desktop window's primary pointer is a mouse/trackpad (Fine);
+        // visibility starts true (the window was just shown) and
+        // follows `Occluded`; reduce-motion has no winit API (default).
+        {
+            use runtime_shared::app_state::{report, AppStateChange};
+            let focused = self.gpu.as_ref().map_or(true, |g| g.window.has_focus());
+            report(AppStateChange::PrimaryPointer(runtime_shared::app_state::PointerKind::Fine));
+            report(AppStateChange::Focused(focused));
+            render_wgpu::newcore::schedule_flush();
         }
         // Runtime-server mode: spawn the shell against the same
         // backend `Rc<RefCell<>>` the renderer reads from. The
@@ -1017,6 +1166,7 @@ impl ApplicationHandler<AppEvent> for App {
                     gpu.window.request_redraw();
                 }
             }
+            AppEvent::Pointer(control) => self.apply_pointer_control(control),
             AppEvent::SchedTick => {
                 // Fire any due `after_ms` closures + tick every
                 // active `raf_loop` client. Drains run on the main
@@ -1030,6 +1180,22 @@ impl ApplicationHandler<AppEvent> for App {
                     gpu.window.request_redraw();
                 }
             }
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        // Raw mouse motion → locked app-level `Move` dx/dy. Only while we
+        // hold a lock (raw deltas also arrive when the cursor is over
+        // other windows). winit's delta is device motion in physical-px
+        // scale; mapped to content-logical px like cursor positions.
+        if let (Some(_), DeviceEvent::MouseMotion { delta }) = (self.lock, event) {
+            let (sx, sy) = self.viewport.logical_per_phys();
+            self.host.mouse_motion(delta.0 as f32 * sx, delta.1 as f32 * sy);
         }
     }
 
@@ -1115,8 +1281,27 @@ impl ApplicationHandler<AppEvent> for App {
                     alt: s.alt_key(),
                     meta: s.super_key(),
                 };
+                self.host.modifiers_changed(self.modifiers);
             }
             WindowEvent::CursorMoved { position, .. } => {
+                // Locked: the cursor position is meaningless (movement
+                // arrives as raw `DeviceEvent::MouseMotion`). Under a
+                // `Confined` lock, pull a drifting cursor back to the
+                // centre — the warp itself reports a move at the centre,
+                // which the threshold ignores.
+                if let Some(mode) = self.lock {
+                    if mode == CursorGrabMode::Confined {
+                        if let Some(gpu) = self.gpu.as_ref() {
+                            let size = gpu.window.inner_size();
+                            let (cx, cy) = (size.width as f64 / 2.0, size.height as f64 / 2.0);
+                            if (position.x - cx).abs() > 1.0 || (position.y - cy).abs() > 1.0 {
+                                let window = gpu.window.clone();
+                                self.recenter_confined_cursor(&window);
+                            }
+                        }
+                    }
+                    return;
+                }
                 // `position` is in physical pixels (winit 0.30).
                 // Convert to content-logical px via the active
                 // surface-scale; with the window aspect-locked
@@ -1145,31 +1330,11 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Translate winit's wheel delta into content-logical
-                // pixels. LineDelta uses platform-defined "lines" so
-                // we multiply by an empirical px/line (matches Cocoa
-                // default). PixelDelta arrives in physical px; scale
-                // it to logical so a 100-px wheel turn always moves
-                // the same amount of *content* regardless of window
-                // size.
-                //
-                // winit's convention is "positive y = wheel up =
-                // reveal content above". We invert here so wheel
-                // down scrolls down (reveals content below).
-                const LINE_HEIGHT_PX: f32 = 24.0;
-                let logical_per_phys_x =
-                    self.viewport.logical.0 / self.viewport.phys.0.max(1.0);
-                let logical_per_phys_y =
-                    self.viewport.logical.1 / self.viewport.phys.1.max(1.0);
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => {
-                        (-x * LINE_HEIGHT_PX, -y * LINE_HEIGHT_PX)
-                    }
-                    MouseScrollDelta::PixelDelta(p) => (
-                        -(p.x as f32) * logical_per_phys_x,
-                        -(p.y as f32) * logical_per_phys_y,
-                    ),
-                };
+                // Content-logical px, web sign (see `wheel_delta`). The
+                // engine hands it to the app pointer sink as a `Wheel`
+                // first, then (unless claimed) scrolls the scrollview
+                // under the cursor.
+                let (dx, dy) = wheel_delta(delta, self.viewport.logical_per_phys());
                 self.host.scroll(ScrollEvent {
                     position: self.last_pointer,
                     delta: (dx, dy),
@@ -1179,7 +1344,20 @@ impl ApplicationHandler<AppEvent> for App {
                 let ke = winit_key(&event, self.modifiers);
                 self.host.key(&ke);
             }
+            WindowEvent::Focused(true) => {
+                self.host.focus_gained();
+            }
+            WindowEvent::Occluded(occluded) => {
+                self.host.app_visibility(!occluded);
+            }
             WindowEvent::Focused(false) => {
+                // Drop our OS grab right away (a deactivated window must
+                // not keep the cursor). `focus_lost` below then reports
+                // `lock_changed(false)` + releases held buttons/keys and
+                // asks us to release again — a no-op by then.
+                if let Some(window) = self.gpu.as_ref().map(|g| g.window.clone()) {
+                    self.release_pointer_lock(&window);
+                }
                 self.host.pointer_cancel();
                 // Releases for keys held at blur never arrive; the app
                 // keyboard dispatcher synthesizes them.
@@ -1330,5 +1508,55 @@ mod key_translation_tests {
         assert_eq!(t(NamedKey::F5), Key::F(5));
         assert_eq!(t(NamedKey::PageUp), Key::PageUp);
         assert_eq!(t(NamedKey::CapsLock), Key::CapsLock);
+    }
+}
+
+#[cfg(test)]
+mod pointer_translation_tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+
+    #[test]
+    fn mouse_buttons_map_to_render_api_buttons() {
+        assert_eq!(winit_button_to_pointer(MouseButton::Left), Some(PointerButton::Primary));
+        assert_eq!(winit_button_to_pointer(MouseButton::Right), Some(PointerButton::Secondary));
+        assert_eq!(winit_button_to_pointer(MouseButton::Middle), Some(PointerButton::Middle));
+        // The engine names Other(3)/Other(4) as the app-level Back/Forward.
+        assert_eq!(winit_button_to_pointer(MouseButton::Back), Some(PointerButton::Other(3)));
+        assert_eq!(winit_button_to_pointer(MouseButton::Forward), Some(PointerButton::Other(4)));
+    }
+
+    /// winit says "positive y = wheel up"; the render API (and the app
+    /// pointer's `wheel_dy`) use the web sign: wheel toward the user =
+    /// positive = content scrolls down.
+    #[test]
+    fn wheel_uses_web_sign_and_logical_px() {
+        assert_eq!(
+            wheel_delta(MouseScrollDelta::LineDelta(0.0, -1.0), (1.0, 1.0)),
+            (0.0, LINE_HEIGHT_PX),
+        );
+        assert_eq!(
+            wheel_delta(MouseScrollDelta::LineDelta(1.0, 2.0), (1.0, 1.0)),
+            (-LINE_HEIGHT_PX, -2.0 * LINE_HEIGHT_PX),
+        );
+        // Pixel deltas are physical px: a 2x surface halves them.
+        assert_eq!(
+            wheel_delta(MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -40.0)), (0.5, 0.5)),
+            (0.0, 20.0),
+        );
+    }
+
+    #[test]
+    fn cursor_hidden_while_locked_or_asked() {
+        assert!(cursor_visible(false, false));
+        assert!(!cursor_visible(true, false));
+        assert!(!cursor_visible(false, true));
+        assert!(!cursor_visible(true, true));
+    }
+
+    /// `Locked` (macOS) first, `Confined` (Windows / X11) as the fallback.
+    #[test]
+    fn lock_prefers_locked_then_confined() {
+        assert_eq!(GRAB_ATTEMPTS, [CursorGrabMode::Locked, CursorGrabMode::Confined]);
     }
 }

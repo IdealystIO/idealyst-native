@@ -57,6 +57,12 @@ mod keyboard_frame_policy;
 // `UIResponder` that feeds them is ios-only (`imp/keyboard.rs`).
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 mod key_input_policy;
+// Pure halves of the app-level pointer source + app-situation reporting
+// (GameController translation, scroll-pan wheel, pointer-lock state
+// machine, UIApplicationState mapping). Un-gated so the tests run on any
+// host; the UIKit / GameController code that feeds them is ios-only.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+mod pointer_input_policy;
 /// How the layout pass treats a root that is a `virtual_grid` cell.
 mod grid_cell_root_policy;
 

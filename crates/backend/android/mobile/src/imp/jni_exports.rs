@@ -17,6 +17,7 @@
 
 use super::callbacks::{
     ClickCallback, HeaderButtonCallback, KeyDownCallback, KeyboardSinkCallback, OverlayDismissCallback,
+    PointerSinkCallback,
     SliderChangeCallback, StateCallback, TextChangeCallback, ToggleChangeCallback, TouchCallback,
 };
 use jni::objects::{JObject, JValue};
@@ -442,6 +443,179 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalKeyListener_nat
     }
     let sink = (*(ptr as *const KeyboardSinkCallback)).0.clone();
     run_void_callback("app-key-focus-lost", std::panic::AssertUnwindSafe(|| sink.focus_lost()));
+}
+
+/// App-level pointer trampoline — the `RustGlobalPointerListener`'s
+/// window-callback wrapper (touch stream + generic motion) and its
+/// captured-pointer listener call this for every `MotionEvent` while a
+/// pointer sink is installed. The raw fields → `AppPointerEvent`s
+/// translation, the finger filter and the consume decision are the
+/// host-tested [`crate::app_pointer_policy`]; this only marshals. Returns
+/// `true` to consume the event (`PreventDefault` on a `Down`/`Wheel`, or a
+/// swallowed press stream).
+///
+/// JVM descriptor `(JIIIIFFFFIFZZ)Z` — keep in step with
+/// `RustGlobalPointerListener.kt` (JNI binds by NAME only).
+///
+/// # Safety
+/// `ptr` must be a live `*const PointerSinkCallback` leaked by
+/// `pointer::set_pointer_sink`; the listener's `detach()` zeroes its copy
+/// before the box is freed.
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalPointerListener_nativePointerMotion(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    action: jint,
+    button_state: jint,
+    source: jint,
+    tool_type: jint,
+    x: jfloat,
+    y: jfloat,
+    vscroll: jfloat,
+    hscroll: jfloat,
+    meta_state: jint,
+    density: jfloat,
+    captured: jboolean,
+    touch_stream: jboolean,
+) -> jboolean {
+    if ptr == 0 {
+        return 0;
+    }
+    // Clone the source OUT of the box: a listener may drop the last
+    // pointer listener, which uninstalls the sink and frees this box
+    // while the call is on the stack.
+    let src = (*(ptr as *const PointerSinkCallback)).0.clone();
+    let raw = crate::app_pointer_policy::RawMotion {
+        action,
+        button_state,
+        source,
+        tool_type,
+        x,
+        y,
+        vscroll,
+        hscroll,
+        meta_state,
+        density,
+        captured: captured != 0,
+        touch_stream: touch_stream != 0,
+    };
+    // The tracker borrow is released before any sink call (a sink call can
+    // re-enter through a nested platform callback).
+    let Some(translation) = src.tracker.borrow_mut().translate(&raw) else {
+        return 0;
+    };
+    let prevented = run_returning_callback(
+        "app-pointer",
+        std::panic::AssertUnwindSafe(|| {
+            let mut prevented = false;
+            for event in &translation.events {
+                if src.sink.event(event) == runtime_shared::pointer_input::PointerOutcome::PreventDefault {
+                    prevented = true;
+                }
+            }
+            prevented
+        }),
+    );
+    let consume = src.tracker.borrow_mut().settle(&raw, &translation, prevented);
+    consume as jboolean
+}
+
+/// Pointer capture granted / lost (`Window.Callback.onPointerCaptureChanged`,
+/// including losses the app didn't ask for) → `PointerSink::lock_changed`.
+///
+/// # Safety
+/// Same pointer contract as [`Java_io_idealyst_runtime_RustGlobalPointerListener_nativePointerMotion`].
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalPointerListener_nativePointerLockChanged(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+    locked: jboolean,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let src = (*(ptr as *const PointerSinkCallback)).0.clone();
+    run_void_callback(
+        "app-pointer-lock",
+        std::panic::AssertUnwindSafe(|| src.sink.lock_changed(locked != 0)),
+    );
+}
+
+/// Window lost input focus → forget held buttons and let the dispatcher
+/// synthesize their `Up`s (`PointerSink::focus_lost`).
+///
+/// # Safety
+/// Same pointer contract as [`Java_io_idealyst_runtime_RustGlobalPointerListener_nativePointerMotion`].
+#[no_mangle]
+pub unsafe extern "system" fn Java_io_idealyst_runtime_RustGlobalPointerListener_nativePointerFocusLost(
+    _env: JNIEnv,
+    _this: JObject,
+    ptr: jlong,
+) {
+    if ptr == 0 {
+        return;
+    }
+    let src = (*(ptr as *const PointerSinkCallback)).0.clone();
+    src.tracker.borrow_mut().reset_buttons();
+    run_void_callback("app-pointer-focus-lost", std::panic::AssertUnwindSafe(|| src.sink.focus_lost()));
+}
+
+/// `RustAppStateObserver` → `AppStateChange::Focused` (window focus).
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppFocused(
+    _env: JNIEnv,
+    _this: JObject,
+    focused: jboolean,
+) {
+    run_void_callback("app-state-focused", || {
+        crate::newcore::report_app_state(runtime_shared::app_state::AppStateChange::Focused(focused != 0))
+    });
+}
+
+/// `RustAppStateObserver` → `AppStateChange::Visible` (Activity
+/// started / stopped).
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppVisible(
+    _env: JNIEnv,
+    _this: JObject,
+    visible: jboolean,
+) {
+    run_void_callback("app-state-visible", || {
+        crate::newcore::report_app_state(runtime_shared::app_state::AppStateChange::Visible(visible != 0))
+    });
+}
+
+/// `RustAppStateObserver` → `AppStateChange::ReduceMotion` from the raw
+/// `ANIMATOR_DURATION_SCALE` (decision in `app_pointer_policy`).
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppAnimatorScale(
+    _env: JNIEnv,
+    _this: JObject,
+    scale: jfloat,
+) {
+    run_void_callback("app-state-reduce-motion", || {
+        crate::newcore::report_app_state(runtime_shared::app_state::AppStateChange::ReduceMotion(
+            crate::app_pointer_policy::reduce_motion_from_animator_scale(scale),
+        ))
+    });
+}
+
+/// `RustAppStateObserver` → `AppStateChange::PrimaryPointer` (decision in
+/// `app_pointer_policy::primary_pointer`).
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppPointerDevices(
+    _env: JNIEnv,
+    _this: JObject,
+    has_mouse: jboolean,
+    has_touchscreen: jboolean,
+) {
+    run_void_callback("app-state-pointer", || {
+        crate::newcore::report_app_state(runtime_shared::app_state::AppStateChange::PrimaryPointer(
+            crate::app_pointer_policy::primary_pointer(has_mouse != 0, has_touchscreen != 0),
+        ))
+    });
 }
 
 /// Root-view size-change trampoline — the `RustViewportResizeListener`

@@ -51,7 +51,10 @@ use crate::node::{
 use crate::painter::Painter;
 use crate::text::TextStore;
 use render_api::EventSink;
-use render_api::{Key, KeyEvent, PointerButton, PointerEvent, ScrollEvent};
+use render_api::{Key, KeyEvent, PointerButton, PointerEvent, PointerId, ScrollEvent};
+use runtime_shared::pointer_input::{PointerOutcome, PointerPhase};
+
+use crate::app_pointer::{self, PointerControl};
 
 /// Bundled default font (Inter Regular, SIL Open Font License 1.1 —
 /// see `assets/fonts/LICENSE-Inter.txt`). Registered in the
@@ -150,6 +153,14 @@ pub struct Host {
     /// the right navigator command without ever reaching the
     /// screen subtree.
     pub(crate) header_hits: std::cell::RefCell<Vec<HeaderHit>>,
+    /// Last MOUSE position delivered to the app-level pointer sink —
+    /// the base for `Move` `dx`/`dy`, and the lock point (the position
+    /// every locked `Move` reports). Separate from [`Self::pointer`],
+    /// which touch events also update.
+    app_pointer_last: Option<(f32, f32)>,
+    /// Latest keyboard modifier state (from `modifiers_changed` and from
+    /// key events), stamped onto app-level pointer events.
+    modifiers: render_api::KeyModifiers,
 }
 
 /// One tappable header-bar slot. Pushed during render by
@@ -382,6 +393,8 @@ impl Host {
             keyboard_pressed_at: std::cell::Cell::new(None),
             active_touches: HashMap::new(),
             header_hits: std::cell::RefCell::new(Vec::new()),
+            app_pointer_last: None,
+            modifiers: render_api::KeyModifiers::default(),
         }
     }
 
@@ -999,6 +1012,19 @@ impl Host {
     }
 
     pub fn pointer_move(&mut self, ev: PointerEvent) {
+        if ev.id == PointerId::MOUSE {
+            // App-level `Move`. While locked the position is pinned and
+            // motion arrives through `mouse_motion` instead (shells stop
+            // forwarding cursor moves then; a stray one is ignored).
+            // A move has no default to prevent, so the engine's own
+            // handling below always runs.
+            if !self.backend.borrow().pointer_locked {
+                let ev_app =
+                    app_pointer::move_event(ev.position, self.app_pointer_last, self.modifiers);
+                self.app_pointer_last = Some(ev.position);
+                self.deliver_app_pointer(&ev_app);
+            }
+        }
         self.pointer = ev.position;
         if self.dispatch_touch_moved(&ev) {
             return;
@@ -1115,6 +1141,13 @@ impl Host {
     /// - Empty inside SV  → start pan immediately.
     /// - nothing          → drop any active TextInput focus.
     pub fn pointer_down(&mut self, ev: PointerEvent) {
+        // App-level `Down` first: `PreventDefault` claims the press, so
+        // the engine's own handling (focus change, press / pan / slider
+        // capture, a secondary press's `on_touch` delivery — this
+        // engine's context-menu path) is skipped.
+        if self.app_pointer_button(&ev, PointerPhase::Down) == PointerOutcome::PreventDefault {
+            return;
+        }
         if !matches!(ev.button, PointerButton::Primary) {
             self.secondary_pointer_down(&ev);
             return;
@@ -1331,6 +1364,10 @@ impl Host {
     /// still over the captured node (the iOS "drag-off-to-cancel"
     /// model).
     pub fn pointer_up(&mut self, ev: PointerEvent) {
+        // App-level `Up`. Its outcome is NOT honored: a release has no
+        // platform default, and skipping it would strand an engine press
+        // whose down was not claimed.
+        let _ = self.app_pointer_button(&ev, PointerPhase::Up);
         if self.dispatch_touch_ended(&ev, false) {
             return;
         }
@@ -1437,6 +1474,12 @@ impl Host {
     /// example level. Flip the sign here if you want
     /// natural-scrolling later.
     pub fn scroll(&mut self, ev: ScrollEvent) {
+        // App-level `Wheel` first; `PreventDefault` suppresses the
+        // engine's scrollview scrolling (the page-scroll default).
+        let wheel = app_pointer::wheel_event(ev.position, ev.delta, self.modifiers);
+        if self.deliver_app_pointer(&wheel) == PointerOutcome::PreventDefault {
+            return;
+        }
         let hit = {
             let backend = self.backend.borrow();
             let Some(root) = backend.root() else { return };
@@ -1608,6 +1651,7 @@ impl Host {
         // `set_keyboard_sink` through `try_borrow_mut` — would always
         // find the backend borrowed and its install change would be
         // deferred instead of applied.
+        self.modifiers = event.modifiers;
         let sink = self.backend.borrow().keyboard_sink.clone();
         if let Some(sink) = sink {
             let ev = app_key_event(event);
@@ -1715,10 +1759,141 @@ impl Host {
     /// Releases for keys still held won't arrive, so the app-level
     /// keyboard sink synthesizes them. Sink cloned out of the backend
     /// borrow first — same re-entrancy rule as [`Self::key`].
+    ///
+    /// Also the app-level pointer's focus loss: a held lock is dropped
+    /// (the shell is asked to release its grab and the sink hears
+    /// `lock_changed(false)` — a window that lost focus must not keep
+    /// the cursor captured), the pointer sink synthesizes button
+    /// releases, and `AppState::focused` becomes `false`.
     pub fn focus_lost(&mut self) {
         let sink = self.backend.borrow().keyboard_sink.clone();
         if let Some(sink) = sink {
             sink.focus_lost();
+        }
+        let (psink, hook, was_locked) = {
+            let mut b = self.backend.borrow_mut();
+            let was_locked = b.pointer_locked;
+            if was_locked {
+                b.pointer_locked = false;
+                b.pointer_lock_requested = false;
+            }
+            (b.pointer_sink.clone(), b.pointer_control.clone(), was_locked)
+        };
+        if was_locked {
+            if let Some(h) = hook {
+                h(PointerControl::Lock(false));
+            }
+            if let Some(s) = &psink {
+                s.lock_changed(false);
+            }
+        }
+        if let Some(s) = psink {
+            s.focus_lost();
+        }
+        report_app_state(runtime_shared::app_state::AppStateChange::Focused(false));
+    }
+
+    /// The window regained input focus (`AppState::focused`).
+    pub fn focus_gained(&mut self) {
+        report_app_state(runtime_shared::app_state::AppStateChange::Focused(true));
+    }
+
+    /// The window became visible / hidden (`AppState::visible`).
+    pub fn app_visibility(&mut self, visible: bool) {
+        report_app_state(runtime_shared::app_state::AppStateChange::Visible(visible));
+    }
+
+    /// Latest modifier state from a shell that reports it separately.
+    pub fn modifiers_changed(&mut self, modifiers: render_api::KeyModifiers) {
+        self.modifiers = modifiers;
+    }
+
+    /// Install the platform shell's handler for pointer-lock and
+    /// cursor-visibility requests (see [`crate::app_pointer`] —
+    /// including the rule that the hook must not call back into the
+    /// host synchronously). Without one, `set_pointer_lock` /
+    /// `set_cursor_hidden` are dropped: this shell can't lock, and the
+    /// app never sees a lock granted.
+    pub fn set_pointer_control_hook(&self, hook: impl Fn(PointerControl) + 'static) {
+        self.backend.borrow_mut().pointer_control = Some(Rc::new(hook));
+    }
+
+    /// The shell's answer to a lock request, or a platform-side loss.
+    /// Forwarded to the app-level pointer sink on change. While locked,
+    /// the current mouse position is the lock point.
+    pub fn pointer_lock_changed(&mut self, locked: bool) {
+        let sink = {
+            let mut b = self.backend.borrow_mut();
+            if b.pointer_locked == locked {
+                return;
+            }
+            b.pointer_locked = locked;
+            if !locked {
+                b.pointer_lock_requested = false;
+            }
+            b.pointer_sink.clone()
+        };
+        if locked && self.app_pointer_last.is_none() {
+            self.app_pointer_last = Some(self.pointer);
+        }
+        if let Some(s) = sink {
+            s.lock_changed(locked);
+        }
+    }
+
+    /// Raw relative mouse motion. Delivered as an app-level `Move` with
+    /// `dx`/`dy` at the lock point — only while locked (raw deltas also
+    /// arrive when the cursor is elsewhere on screen).
+    pub fn mouse_motion(&mut self, dx: f32, dy: f32) {
+        if !self.backend.borrow().pointer_locked {
+            return;
+        }
+        let at = self.app_pointer_last.unwrap_or(self.pointer);
+        let ev = runtime_shared::pointer_input::AppPointerEvent {
+            dx,
+            dy,
+            ..app_pointer::app_event(PointerPhase::Move, at, self.modifiers)
+        };
+        self.deliver_app_pointer(&ev);
+    }
+
+    /// Deliver a mouse button `Down`/`Up` to the app-level sink. Touch
+    /// pointers (any id but `MOUSE`) and unnamed extra buttons are not
+    /// delivered.
+    fn app_pointer_button(&mut self, ev: &PointerEvent, phase: PointerPhase) -> PointerOutcome {
+        if ev.id != PointerId::MOUSE {
+            return PointerOutcome::Default;
+        }
+        let Some(button) = app_pointer::app_mouse_button(ev.button) else {
+            return PointerOutcome::Default;
+        };
+        // While locked the position stays at the lock point.
+        let at = if self.backend.borrow().pointer_locked {
+            self.app_pointer_last.unwrap_or(ev.position)
+        } else {
+            self.app_pointer_last = Some(ev.position);
+            ev.position
+        };
+        let app = runtime_shared::pointer_input::AppPointerEvent {
+            button: Some(button),
+            ..app_pointer::app_event(phase, at, self.modifiers)
+        };
+        self.deliver_app_pointer(&app)
+    }
+
+    /// Run the app-level pointer sink, if installed. The sink is cloned
+    /// out in its own `let` so the backend borrow is released before
+    /// listeners run (they may add/remove listeners, which re-enters
+    /// `set_pointer_sink` through `try_borrow_mut` — same rule as
+    /// [`Self::key`]).
+    fn deliver_app_pointer(
+        &mut self,
+        ev: &runtime_shared::pointer_input::AppPointerEvent,
+    ) -> PointerOutcome {
+        let sink = self.backend.borrow().pointer_sink.clone();
+        match sink {
+            Some(s) => s.event(ev),
+            None => PointerOutcome::Default,
         }
     }
 
@@ -2375,6 +2550,21 @@ impl EventSink for Host {
     fn focus_lost(&mut self) {
         Host::focus_lost(self)
     }
+    fn mouse_motion(&mut self, dx: f32, dy: f32) {
+        Host::mouse_motion(self, dx, dy)
+    }
+    fn modifiers_changed(&mut self, modifiers: render_api::KeyModifiers) {
+        Host::modifiers_changed(self, modifiers)
+    }
+    fn focus_gained(&mut self) {
+        Host::focus_gained(self)
+    }
+    fn app_visibility(&mut self, visible: bool) {
+        Host::app_visibility(self, visible)
+    }
+    fn pointer_lock_changed(&mut self, locked: bool) {
+        Host::pointer_lock_changed(self, locked)
+    }
     fn set_viewport(&mut self, w: f32, h: f32) {
         Host::set_viewport(self, w, h)
     }
@@ -2416,6 +2606,14 @@ fn label_for_action(skin: &dyn Painter, action: keyboard::KeyAction) -> Option<&
         .flatten()
         .find(|spec| spec.action == action)
         .map(|spec| spec.label)
+}
+
+/// Report an app-situation change from a platform callback and queue the
+/// world flush that commits it into author signals (same post-event
+/// flush the input sinks queue).
+fn report_app_state(change: runtime_shared::app_state::AppStateChange) {
+    runtime_shared::app_state::report(change);
+    crate::newcore::schedule_flush();
 }
 
 /// Convert a render-API [`KeyEvent`] into the framework's app-level
@@ -3376,5 +3574,202 @@ mod tests {
         let up = app_key_event(&KeyEvent { repeat: true, ..physical(Key::Enter, None, "Enter", false) });
         assert_eq!(up.phase, KeyPhase::Up);
         assert!(!up.repeat, "a release is never a repeat");
+    }
+
+    // -------------------------------------------------------------
+    // App-level pointer sink (mouse buttons / moves / wheel, lock)
+    // -------------------------------------------------------------
+
+    use runtime_shared::pointer_input::{AppPointerEvent, MouseButton, PointerSink};
+
+    #[derive(Default)]
+    struct PointerLog {
+        events: RefCell<Vec<AppPointerEvent>>,
+        locks: RefCell<Vec<bool>>,
+        focus_lost: std::cell::Cell<u32>,
+    }
+
+    fn recording_pointer_sink(outcome: PointerOutcome) -> (PointerSink, Rc<PointerLog>) {
+        let log = Rc::new(PointerLog::default());
+        let (a, b, c) = (log.clone(), log.clone(), log.clone());
+        let sink = PointerSink::new(
+            move |e| {
+                a.events.borrow_mut().push(e.clone());
+                outcome
+            },
+            move |l| b.locks.borrow_mut().push(l),
+            move || c.focus_lost.set(c.focus_lost.get() + 1),
+        );
+        (sink, log)
+    }
+
+    fn mouse(button: PointerButton, at: (f32, f32)) -> PointerEvent {
+        PointerEvent { id: render_api::PointerId::MOUSE, button, position: at }
+    }
+
+    fn install_pointer_sink(host: &Host, sink: Option<PointerSink>) {
+        caps::AppEnvOps::set_pointer_sink(&mut *host.backend().borrow_mut(), sink);
+    }
+
+    /// Mouse down / move / up / wheel reach the app sink with buttons,
+    /// movement deltas, wheel amounts and the shell's modifier state;
+    /// finger touches (non-MOUSE ids) never do.
+    #[test]
+    fn wgpu_mouse_events_reach_app_pointer_sink() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let (sink, log) = recording_pointer_sink(PointerOutcome::Default);
+        install_pointer_sink(&host, Some(sink));
+        render_api::EventSink::modifiers_changed(
+            &mut host,
+            render_api::KeyModifiers { shift: true, ..Default::default() },
+        );
+
+        render_api::EventSink::pointer_move(&mut host, mouse(PointerButton::Primary, (10.0, 10.0)));
+        render_api::EventSink::pointer_move(&mut host, mouse(PointerButton::Primary, (15.0, 7.0)));
+        render_api::EventSink::pointer_down(&mut host, mouse(PointerButton::Secondary, (15.0, 7.0)));
+        render_api::EventSink::pointer_up(&mut host, mouse(PointerButton::Secondary, (15.0, 7.0)));
+        render_api::EventSink::scroll(&mut host, ScrollEvent { position: (15.0, 7.0), delta: (0.0, 24.0) });
+        // A finger: not app-pointer input.
+        render_api::EventSink::pointer_down(
+            &mut host,
+            PointerEvent { id: render_api::PointerId(7), button: PointerButton::Primary, position: (1.0, 1.0) },
+        );
+
+        let ev = log.events.borrow();
+        let got: Vec<_> = ev.iter().map(|e| (e.phase, e.button, e.x, e.y, e.dx, e.dy)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (PointerPhase::Move, None, 10.0, 10.0, 0.0, 0.0),
+                (PointerPhase::Move, None, 15.0, 7.0, 5.0, -3.0),
+                (PointerPhase::Down, Some(MouseButton::Secondary), 15.0, 7.0, 0.0, 0.0),
+                (PointerPhase::Up, Some(MouseButton::Secondary), 15.0, 7.0, 0.0, 0.0),
+                (PointerPhase::Wheel, None, 15.0, 7.0, 0.0, 0.0),
+            ],
+        );
+        assert_eq!(ev[4].wheel_dy, 24.0, "wheel keeps the web deltaY sign");
+        assert!(ev.iter().all(|e| e.shift), "modifier state stamped on every event");
+    }
+
+    /// `PreventDefault` on a down claims the press: the engine's own
+    /// focus handling never runs (the text input stays unfocused).
+    /// Without the claim the same click focuses it.
+    #[test]
+    fn wgpu_pointer_sink_prevent_default_skips_engine_press() {
+        let (mut host, _input, _) = host_with_text_input();
+        let (sink, _log) = recording_pointer_sink(PointerOutcome::PreventDefault);
+        install_pointer_sink(&host, Some(sink));
+        render_api::EventSink::pointer_down(&mut host, primary_press((50.0, 50.0)));
+        render_api::EventSink::pointer_up(&mut host, primary_press((50.0, 50.0)));
+        assert!(host.focused_input.is_none(), "claimed press must not focus the input");
+
+        let (sink, _log) = recording_pointer_sink(PointerOutcome::Default);
+        install_pointer_sink(&host, Some(sink));
+        render_api::EventSink::pointer_down(&mut host, primary_press((50.0, 50.0)));
+        assert!(host.focused_input.is_some(), "unclaimed press keeps the engine default");
+    }
+
+    /// Lock / cursor requests reach the shell hook; the shell's answer
+    /// reaches the sink; while locked, raw motion becomes `Move` dx/dy at
+    /// the lock point (and is ignored when unlocked); sink teardown
+    /// releases the lock and shows the cursor.
+    #[test]
+    fn wgpu_pointer_lock_round_trips_through_shell_hook() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let requests: Rc<RefCell<Vec<PointerControl>>> = Rc::default();
+        let r = requests.clone();
+        host.set_pointer_control_hook(move |c| r.borrow_mut().push(c));
+        let (sink, log) = recording_pointer_sink(PointerOutcome::Default);
+        install_pointer_sink(&host, Some(sink));
+        render_api::EventSink::pointer_move(&mut host, mouse(PointerButton::Primary, (40.0, 30.0)));
+
+        render_api::EventSink::mouse_motion(&mut host, 9.0, 9.0); // unlocked: ignored
+        caps::AppEnvOps::set_pointer_lock(&mut *host.backend().borrow_mut(), true);
+        caps::AppEnvOps::set_cursor_hidden(&mut *host.backend().borrow_mut(), true);
+        assert_eq!(*requests.borrow(), vec![PointerControl::Lock(true), PointerControl::HideCursor(true)]);
+
+        render_api::EventSink::pointer_lock_changed(&mut host, true);
+        render_api::EventSink::pointer_lock_changed(&mut host, true); // deduped
+        assert_eq!(*log.locks.borrow(), vec![true]);
+        render_api::EventSink::mouse_motion(&mut host, 3.0, -2.0);
+        {
+            let ev = log.events.borrow();
+            let last = ev.last().unwrap();
+            assert_eq!(ev.len(), 2, "the unlocked raw motion was not delivered");
+            assert_eq!((last.phase, last.x, last.y, last.dx, last.dy), (PointerPhase::Move, 40.0, 30.0, 3.0, -2.0));
+        }
+
+        requests.borrow_mut().clear();
+        install_pointer_sink(&host, None);
+        assert_eq!(*requests.borrow(), vec![PointerControl::Lock(false), PointerControl::HideCursor(false)]);
+    }
+
+    /// Without a shell hook, a lock request goes nowhere and nothing ever
+    /// reports `true` (honest "unsupported").
+    #[test]
+    fn wgpu_pointer_lock_without_shell_hook_is_never_granted() {
+        let host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let (sink, log) = recording_pointer_sink(PointerOutcome::Default);
+        install_pointer_sink(&host, Some(sink));
+        caps::AppEnvOps::set_pointer_lock(&mut *host.backend().borrow_mut(), true);
+        assert!(log.locks.borrow().is_empty());
+        assert!(!host.backend().borrow().pointer_locked);
+    }
+
+    /// Window blur while locked: the shell is told to release its grab,
+    /// the sink hears `lock_changed(false)` and `focus_lost`, and the app
+    /// state flips to unfocused (and back on `focus_gained`).
+    #[test]
+    fn regression_wgpu_focus_loss_drops_pointer_lock() {
+        runtime_shared::app_state::reset_for_tests();
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let requests: Rc<RefCell<Vec<PointerControl>>> = Rc::default();
+        let r = requests.clone();
+        host.set_pointer_control_hook(move |c| r.borrow_mut().push(c));
+        let (sink, log) = recording_pointer_sink(PointerOutcome::Default);
+        install_pointer_sink(&host, Some(sink));
+        caps::AppEnvOps::set_pointer_lock(&mut *host.backend().borrow_mut(), true);
+        render_api::EventSink::pointer_lock_changed(&mut host, true);
+
+        render_api::EventSink::focus_lost(&mut host);
+        assert_eq!(*log.locks.borrow(), vec![true, false]);
+        assert_eq!(log.focus_lost.get(), 1);
+        assert_eq!(requests.borrow().last(), Some(&PointerControl::Lock(false)));
+        assert!(!runtime_shared::app_state::current().focused);
+        // The shell's own late answer to the release is a no-op.
+        render_api::EventSink::pointer_lock_changed(&mut host, false);
+        assert_eq!(*log.locks.borrow(), vec![true, false]);
+
+        render_api::EventSink::focus_gained(&mut host);
+        assert!(runtime_shared::app_state::current().focused);
+        render_api::EventSink::app_visibility(&mut host, false);
+        assert!(!runtime_shared::app_state::current().visible);
+        runtime_shared::app_state::reset_for_tests();
+    }
+
+    /// Same re-entrancy rule as the keyboard: the sink runs with the
+    /// backend unborrowed, so a listener can remove the source mid-event.
+    #[test]
+    fn wgpu_pointer_sink_runs_with_backend_unborrowed() {
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let backend = host.backend().clone();
+        let ok = Rc::new(std::cell::Cell::new(false));
+        let (b, o) = (Rc::downgrade(&backend), ok.clone());
+        let sink = PointerSink::new(
+            move |_| {
+                let backend = b.upgrade().unwrap();
+                if let Ok(mut be) = backend.try_borrow_mut() {
+                    caps::AppEnvOps::set_pointer_sink(&mut *be, None);
+                    o.set(true);
+                }
+                PointerOutcome::Default
+            },
+            |_| {},
+            || {},
+        );
+        install_pointer_sink(&host, Some(sink));
+        render_api::EventSink::scroll(&mut host, ScrollEvent { position: (0.0, 0.0), delta: (0.0, 1.0) });
+        assert!(ok.get());
+        assert!(backend.borrow().pointer_sink.is_none());
     }
 }

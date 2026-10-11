@@ -37,6 +37,13 @@ mod portal_policy;
 // `transform_transition_policy` module.
 mod transform_transition_policy;
 
+// Pure translation behind the app-level pointer source (`imp/pointer.rs`):
+// NSEvent scalars → AppPointerEvent, wheel sign/units, the PreventDefault
+// swallow rule, the eaten-release reconcile, app visibility. Un-gated so
+// its tests run from any host; the NSEvent monitor is macos-only.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod pointer_policy;
+
 #[cfg(target_os = "macos")]
 pub use imp::{
     coalesce_layout_passes, install_global_self, private_layer_window_ids, schedule_layout_pass,

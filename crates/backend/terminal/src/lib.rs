@@ -30,6 +30,7 @@
 
 mod handles;
 mod node;
+mod pointer;
 mod render;
 
 // Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
@@ -44,6 +45,7 @@ pub mod newcore;
 
 pub use node::{NodeKind, TermNode};
 pub use render::{Cell, Grid};
+pub use pointer::{TerminalPointer, TerminalPointerKind, WHEEL_NOTCH_CELLS};
 
 /// Outcome of [`TerminalBackend::dispatch_click`]. The host pattern-
 /// matches this and is responsible for invoking `HandlerFired`'s
@@ -115,6 +117,14 @@ pub struct TerminalBackend {
     /// `set_keyboard_sink` while at least one app key listener is live.
     /// Always cloned out before it's called — see [`Self::dispatch_key_in`].
     pub(crate) keyboard_sink: Option<runtime_shared::primitives::key::KeyboardSink>,
+    /// App-level pointer sink (mouse buttons / moves / wheel anywhere,
+    /// plus `focus_lost`), installed by `set_pointer_sink` while the
+    /// pointer dispatcher wants a source. Cloned out before it's called
+    /// — see [`Self::dispatch_pointer_in`].
+    pub(crate) pointer_sink: Option<runtime_shared::pointer_input::PointerSink>,
+    /// Last mouse position delivered to the pointer sink (layout px) —
+    /// the base for `Move` `dx`/`dy`.
+    pub(crate) pointer_last: Option<(f32, f32)>,
 }
 
 impl Default for TerminalBackend {
@@ -134,6 +144,8 @@ impl TerminalBackend {
             focused_id: None,
             cell_size: (1.0, 1.0),
             keyboard_sink: None,
+            pointer_sink: None,
+            pointer_last: None,
         }
     }
 
@@ -727,11 +739,44 @@ impl TerminalBackend {
     /// The terminal stopped receiving keys (focus-out). Releases for keys
     /// still held won't arrive, so the sink synthesizes them. Same borrow
     /// discipline as [`Self::dispatch_key_in`].
+    ///
+    /// Also the app-level pointer's focus loss (held buttons are
+    /// released) and `AppState::focused = false`.
     pub fn focus_lost_in(backend: &RefCell<Self>) {
         let sink = backend.borrow().keyboard_sink.clone();
         if let Some(sink) = sink {
             sink.focus_lost();
         }
+        let psink = backend.borrow().pointer_sink.clone();
+        if let Some(psink) = psink {
+            psink.focus_lost();
+        }
+        report_app_state(runtime_shared::app_state::AppStateChange::Focused(false));
+    }
+
+    /// The terminal regained focus (crossterm `FocusGained`):
+    /// `AppState::focused = true`.
+    pub fn focus_gained_in(_backend: &RefCell<Self>) {
+        report_app_state(runtime_shared::app_state::AppStateChange::Focused(true));
+    }
+
+    /// Deliver one mouse event to the app-level pointer sink (see
+    /// [`TerminalPointer`] for units). Returns `true` when a listener
+    /// claimed it (`PreventDefault`) — the host then skips its own
+    /// handling: the click dispatch for a `Down`, the scroll-view scroll
+    /// for a `Wheel`. A no-op returning `false` when no sink is installed.
+    ///
+    /// Same borrow discipline as [`Self::dispatch_key_in`]: the sink runs
+    /// with the backend unborrowed.
+    pub fn dispatch_pointer_in(backend: &RefCell<Self>, p: &TerminalPointer) -> bool {
+        let (sink, ev) = {
+            let mut b = backend.borrow_mut();
+            let Some(sink) = b.pointer_sink.clone() else { return false };
+            let ev = pointer::app_pointer_event(p, b.cell_size, b.pointer_last);
+            b.pointer_last = Some((ev.x, ev.y));
+            (sink, ev)
+        };
+        matches!(sink.event(&ev), runtime_shared::KeyOutcome::PreventDefault)
     }
 
     /// Deliver one key to the app-level sink. `true` = claimed
@@ -794,6 +839,13 @@ enum HitTarget {
     /// must not fire the card, matching a disabled `<button>` on web) —
     /// but it does nothing: no handler, no focus.
     Inert,
+}
+
+/// Report an app-situation change from a host callback and queue the
+/// world flush that commits it into author signals.
+fn report_app_state(change: runtime_shared::app_state::AppStateChange) {
+    runtime_shared::app_state::report(change);
+    newcore::schedule_flush();
 }
 
 /// Host-side key event. Re-defined here so the backend doesn't pull
@@ -1326,6 +1378,120 @@ mod regression_tests {
         for (key, code) in table {
             assert_eq!(code_for_key(key), code, "{key:?}");
         }
+    }
+
+    // -------------------------------------------------------------
+    // App-level pointer sink (through the real pointer dispatcher)
+    // -------------------------------------------------------------
+
+    use runtime_shared::pointer_input::{self, AppPointerEvent, MouseButton, PointerPhase};
+
+    /// Wire the real pointer dispatcher to `backend` the way
+    /// `runtime_vocabulary::install_env_services` does.
+    fn wire_pointer(backend: &Rc<RefCell<TerminalBackend>>) {
+        use pointer_input::PointerHostCommand as C;
+        use runtime_vocabulary::caps::AppEnvOps;
+        pointer_input::reset_for_tests();
+        runtime_shared::app_state::reset_for_tests();
+        let weak = Rc::downgrade(backend);
+        pointer_input::install_pointer_host(Some(Rc::new(move |cmd: C| {
+            let Some(b) = weak.upgrade() else { return true };
+            let Ok(mut b) = b.try_borrow_mut() else { return false };
+            match cmd {
+                C::Sink(s) => b.set_pointer_sink(s),
+                C::Lock(l) => b.set_pointer_lock(l),
+                C::HideCursor(h) => b.set_cursor_hidden(h),
+            }
+            true
+        })));
+    }
+
+    /// Mouse events reach app listeners with buttons, cell→px positions,
+    /// move deltas and wheel amounts; `PreventDefault` reports claimed;
+    /// focus loss releases held buttons; the last listener removes the
+    /// sink.
+    #[test]
+    fn terminal_mouse_reaches_app_pointer_listeners() {
+        let backend = Rc::new(RefCell::new(TerminalBackend::new()));
+        backend.borrow_mut().set_cell_size(2.0, 4.0);
+        wire_pointer(&backend);
+        let seen: Rc<RefCell<Vec<AppPointerEvent>>> = Rc::default();
+        let s = seen.clone();
+        let listener = pointer_input::add_listener(move |e| {
+            s.borrow_mut().push(e.clone());
+            if e.phase == PointerPhase::Wheel {
+                KeyOutcome::PreventDefault
+            } else {
+                KeyOutcome::Default
+            }
+        });
+        assert!(backend.borrow().pointer_sink.is_some(), "installed for the listener");
+
+        let d = |p: TerminalPointer| TerminalBackend::dispatch_pointer_in(&backend, &p);
+        assert!(!d(TerminalPointer::new(TerminalPointerKind::Move, 1, 1)));
+        assert!(!d(TerminalPointer::new(TerminalPointerKind::Down(MouseButton::Primary), 3, 2)));
+        assert!(pointer_input::is_button_down(MouseButton::Primary));
+        assert!(d(TerminalPointer::new(TerminalPointerKind::Wheel(0.0, 1.0), 3, 2)), "claimed wheel");
+        TerminalBackend::focus_lost_in(&backend);
+        assert!(!pointer_input::is_button_down(MouseButton::Primary), "focus loss releases buttons");
+        assert!(!runtime_shared::app_state::current().focused);
+        TerminalBackend::focus_gained_in(&backend);
+        assert!(runtime_shared::app_state::current().focused);
+
+        let got: Vec<_> = seen
+            .borrow()
+            .iter()
+            .map(|e| (e.phase, e.button, e.x, e.y, e.dx, e.dy, e.wheel_dy, e.buttons))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (PointerPhase::Move, None, 2.0, 4.0, 0.0, 0.0, 0.0, 0),
+                (PointerPhase::Down, Some(MouseButton::Primary), 6.0, 8.0, 0.0, 0.0, 0.0, 1),
+                (PointerPhase::Wheel, None, 6.0, 8.0, 0.0, 0.0, 12.0, 1),
+                (PointerPhase::Up, Some(MouseButton::Primary), 6.0, 8.0, 0.0, 0.0, 0.0, 0),
+            ]
+        );
+
+        drop(listener);
+        assert!(backend.borrow().pointer_sink.is_none(), "last listener gone → sink removed");
+        assert!(!TerminalBackend::dispatch_pointer_in(
+            &backend,
+            &TerminalPointer::new(TerminalPointerKind::Move, 0, 0)
+        ));
+        pointer_input::reset_for_tests();
+        runtime_shared::app_state::reset_for_tests();
+    }
+
+    /// Terminals cannot lock the pointer: a request is accepted by the
+    /// dispatcher but the backend never reports a lock.
+    #[test]
+    fn terminal_pointer_lock_is_never_granted() {
+        let backend = Rc::new(RefCell::new(TerminalBackend::new()));
+        wire_pointer(&backend);
+        pointer_input::request_lock();
+        pointer_input::set_cursor_hidden(true);
+        assert!(!pointer_input::is_locked());
+        assert!(!runtime_shared::app_state::current().pointer_locked);
+        pointer_input::reset_for_tests();
+    }
+
+    /// Re-entrancy: a listener that drops itself mid-event (removing the
+    /// sink through `try_borrow_mut`) succeeds immediately because the
+    /// backend is unborrowed while the sink runs.
+    #[test]
+    fn terminal_pointer_sink_runs_with_backend_unborrowed() {
+        let backend = Rc::new(RefCell::new(TerminalBackend::new()));
+        wire_pointer(&backend);
+        let solo: Rc<RefCell<Option<pointer_input::PointerListener>>> = Rc::default();
+        let s = solo.clone();
+        *solo.borrow_mut() = Some(pointer_input::add_listener(move |_| {
+            s.borrow_mut().take();
+            KeyOutcome::Default
+        }));
+        TerminalBackend::dispatch_pointer_in(&backend, &TerminalPointer::new(TerminalPointerKind::Move, 0, 0));
+        assert!(backend.borrow().pointer_sink.is_none());
+        pointer_input::reset_for_tests();
     }
 }
 

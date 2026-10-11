@@ -141,3 +141,11 @@ harness = false
 [[test]]
 name = "app_keyboard"
 harness = false
+
+# Real-AppKit test of the app-level pointer source (`src/imp/pointer.rs`):
+# the NSEvent mouse monitor, PreventDefault swallowing, the eaten-release
+# reconcile, pointer lock + focus-loss drop, cursor hiding and teardown.
+# Main-thread only, for the same reason as `focus_attach`.
+[[test]]
+name = "app_pointer"
+harness = false

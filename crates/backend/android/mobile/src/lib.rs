@@ -137,6 +137,14 @@ mod anchored_portal_policy;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod app_key_policy;
 
+/// Android `MotionEvent` → app-level `AppPointerEvent` (button-state diffs,
+/// wheel units/sign, finger filtering, px → dp, press-stream swallowing for
+/// `PreventDefault`) and the app-situation prefs (reduce motion, primary
+/// pointer). Un-gated so the tests run on the host; the JNI half lives in
+/// `imp/pointer.rs` + `imp/jni_exports.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod app_pointer_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

@@ -392,6 +392,49 @@ props!(Document {
     title: String = "title";
     set_title <= &str = "title";
     ready_state: String = "readyState";
+    pointer_lock_element: Option<Element> = "pointerLockElement";
+    visibility_state: String = "visibilityState";
+});
+
+crate::import! {
+    // `requestPointerLock()` returns a Promise in current browsers (and
+    // `undefined` in older ones). A refusal ALSO fires `pointerlockerror`
+    // on the document, which is how callers learn the outcome, so the
+    // rejection is swallowed here to keep it from surfacing as an
+    // unhandled rejection. A synchronous throw is the `Err`.
+    #[catch]
+    fn js_request_pointer_lock(e: u32) =
+        "(e) => { const p = G.get(e).requestPointerLock(); if (p && typeof p.catch === 'function') p.catch(() => {}); }";
+    fn js_has_focus(d: u32) -> u32 = "(d) => G.get(d).hasFocus() ? 1 : 0";
+    // 0 = not yet, 1 = has been active, 2 = `navigator.userActivation`
+    // absent (Safari < 16.4, Firefox < 120).
+    fn js_user_activation(n: u32) -> u32 =
+        "(n) => { const u = G.get(n).userActivation; return u == null ? 2 : (u.hasBeenActive ? 1 : 0); }";
+}
+
+impl Document {
+    /// `exitPointerLock()` (no-op when nothing is locked).
+    pub fn exit_pointer_lock(&self) {
+        let _ = call0!(self, "exitPointerLock");
+    }
+    /// `hasFocus()` — the document's browsing context has system focus.
+    pub fn has_focus(&self) -> bool {
+        unsafe { js_has_focus(h(self)) != 0 }
+    }
+}
+
+impl Element {
+    /// `requestPointerLock()`. The outcome arrives as `pointerlockchange`
+    /// / `pointerlockerror` on the document; a promise rejection is
+    /// swallowed (the error event carries the same news).
+    pub fn request_pointer_lock(&self) -> Result<(), JsError> {
+        unsafe { js_request_pointer_lock(h(self)) }
+    }
+}
+
+props!(MouseEvent {
+    movement_x: f64 = "movementX";
+    movement_y: f64 = "movementY";
 });
 
 impl Document {
@@ -957,6 +1000,15 @@ impl Navigator {
     }
     pub fn language(&self) -> Option<String> {
         prop_str_opt!(self, "language")
+    }
+    /// `navigator.userActivation.hasBeenActive` — `None` when the browser
+    /// has no User Activation API.
+    pub fn user_activation_has_been_active(&self) -> Option<bool> {
+        match unsafe { js_user_activation(h(self)) } {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
     }
 }
 

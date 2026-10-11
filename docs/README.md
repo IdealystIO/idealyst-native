@@ -65,6 +65,9 @@ If you're new to the codebase, read the docs in this order:
    tree (its trait signatures predate runtime v2).
    [`keyboard-input.md`](./keyboard-input.md) covers app-level keyboard
    input (key presses and releases for games and shortcuts);
+   [`app-input.md`](./app-input.md) covers app-wide mouse input,
+   pointer lock, and app state signals (focus, visibility,
+   reduce-motion, touch-only, user activation);
    [`keyboard.md`](./keyboard.md) covers the on-screen keyboard.
 
 9. [`server-functions.md`](./server-functions.md). The full-stack layer:

@@ -13,11 +13,21 @@
 //! child control never reach this window's `WndProc`), and
 //! `WM_ACTIVATE(WA_INACTIVE)` reports focus loss. See
 //! `backend_windows::app_keys`.
+//!
+//! The app-level pointer rides the same two seams: the pump offers every
+//! message to the backend's [`PointerSlot`] (mouse messages for child
+//! controls never reach this `WndProc`; raw input for a locked pointer
+//! arrives as `WM_INPUT`), and the `WndProc` routes host-window messages
+//! through it first (`WM_SETCURSOR` for a hidden/locked cursor,
+//! deactivation dropping a lock). Host-window messages also feed
+//! `backend_windows::app_situation` (focus, minimize, settings changes).
+//! See `backend_windows::app_pointer`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use backend_windows::app_keys::KeyboardSlot;
+use backend_windows::app_pointer::PointerSlot;
 use backend_windows::newcore::{self, NewCoreApp};
 use backend_windows::WindowsBackend;
 use runtime_core::Element;
@@ -66,6 +76,8 @@ struct HostState {
     /// The backend's app-level keyboard slot, cloned once so the
     /// `WndProc` reports focus loss without borrowing the backend.
     keyboard: KeyboardSlot,
+    /// The backend's app-level pointer slot, same sharing as `keyboard`.
+    pointer: PointerSlot,
 }
 
 /// Run `app` on the Win32 backend with no extension registration —
@@ -114,6 +126,7 @@ where
     // effects all borrow the same instance.
     let backend = Rc::new(RefCell::new(WindowsBackend::new(hwnd)));
     let keyboard = backend.borrow().keyboard_slot();
+    let pointer = backend.borrow().pointer_slot();
     // Node handles (animation writes, frame reads) reach the backend
     // through a weak self-reference — install it before mount so
     // handles built during the first walk are live.
@@ -125,6 +138,7 @@ where
         backend: backend.clone(),
         app: RefCell::new(None),
         keyboard: keyboard.clone(),
+        pointer: pointer.clone(),
     });
     let state_ptr = Box::into_raw(state);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -174,6 +188,12 @@ where
         // (`PreventDefault`) skips translation too, so no `WM_CHAR` types
         // it. No backend borrow is held here — the slot is shared.
         if keyboard.pre_dispatch(&msg) {
+            continue;
+        }
+        // App-level pointer, same reasoning: a click / move / wheel over a
+        // child control goes to that control's window. A swallowed message
+        // (`PreventDefault`, or movement while locked) is never dispatched.
+        if pointer.pre_dispatch(&msg) {
             continue;
         }
         let _ = TranslateMessage(&msg);
@@ -333,6 +353,15 @@ unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if let Some(state) = host_state(hwnd) {
+        // Pointer first: a hidden / locked cursor answers WM_SETCURSOR, and
+        // deactivation must drop a lock before anything else runs.
+        if let Some(result) = state.pointer.window_message(hwnd, msg, wparam, lparam) {
+            return result;
+        }
+        // Focus / minimize / settings → app situation (never consumes).
+        backend_windows::app_situation::window_message(msg, wparam, lparam);
+    }
     match msg {
         WM_PAINT => {
             // The whole scene renders here: the backend paints the
@@ -479,6 +508,12 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            // The clip rectangle of a pointer lock is desktop-wide and the
+            // process is about to `TerminateProcess` — release it (and the
+            // raw-input registration) first.
+            if let Some(state) = host_state(hwnd) {
+                state.pointer.shutdown();
+            }
             // The window is going away — end the process here rather
             // than unwinding the message loop and dropping the reactive
             // tree. Disposing an app that owns `AnimatedValue`s tears

@@ -56,6 +56,9 @@ windows = { version = "0.58", features = [
     # EnableWindow / GetFocus / SetFocus — the native disabled state
     # behind `StyleOps::set_disabled`.
     "Win32_UI_Input_KeyboardAndMouse",
+    # Raw input (RegisterRawInputDevices / GetRawInputData) — unaccelerated
+    # mouse movement while the pointer is locked (`app_pointer.rs`).
+    "Win32_UI_Input",
     # GetModuleHandleW for the graphics-surface window class + the
     # Win32WindowHandle hinstance wgpu reads.
     "Win32_System_LibraryLoader",

@@ -94,6 +94,14 @@ core_recipe!(
     uses: ["text", "view"]
 );
 
+core_recipe!(
+    "pointer_lock_game_controls",
+    "on_pointer",
+    "pointer_lock_game_controls.rs",
+    "Mouse controls for a first-person game: click to lock the pointer,\nturn with mouse movement, fire with the left button, switch weapons\nwith the wheel, and pause automatically when the window loses focus.\n\n- `request_pointer_lock()` must be called from a click or key handler\n  (browsers refuse it otherwise). `pointer_locked()` is a signal: it\n  flips back to `false` when the user presses Esc or alt-tabs, so the\n  game shows its \"click to resume\" overlay from that alone.\n- `pointer_state()` is polled from the frame loop. `take_movement()`\n  returns the mouse motion since the last frame — while locked that is\n  the only motion there is (the cursor doesn't move). Each handle keeps\n  its own accumulator.\n- `on_pointer` sees buttons anywhere in the app; returning\n  `PreventDefault` for the right button suppresses the context menu.\n- `app_focused()` drives auto-pause.",
+    uses: ["button", "text", "view"]
+);
+
 // ---------------------------------------------------------------------------
 // Navigation recipes.
 //
@@ -153,6 +161,7 @@ mod tests {
             "animated_toast",
             "confirm_dialog_overlay",
             "keyboard_game_controls",
+            "pointer_lock_game_controls",
         ] {
             assert!(
                 names.contains(&expected),

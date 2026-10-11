@@ -646,7 +646,7 @@ fn pointer_listener(
         }
         let pos = canvas_to_logical(&inner, ev.client_x() as f64, ev.client_y() as f64);
         let pe = PointerEvent {
-            id: PointerId(ev.pointer_id() as u64),
+            id: crate::pointer_ids::engine_pointer_id(&ev.pointer_type(), ev.pointer_id()),
             button: pointer_button_from_dom(ev.button()),
             position: pos,
         };

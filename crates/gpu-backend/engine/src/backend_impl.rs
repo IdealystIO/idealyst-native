@@ -149,6 +149,23 @@ pub struct WgpuBackend {
     /// out and drop the backend borrow before calling it — listeners can
     /// add/remove listeners, which re-enters `set_keyboard_sink`.
     pub(crate) keyboard_sink: Option<runtime_shared::primitives::key::KeyboardSink>,
+    /// App-level pointer sink (mouse buttons / moves / wheel anywhere in
+    /// the app, `lock_changed`, `focus_lost`), installed by
+    /// `set_pointer_sink` while the pointer dispatcher wants a source.
+    /// Read by `Host`'s pointer entry points; cloned out before calling,
+    /// same re-entrancy rule as `keyboard_sink`.
+    pub(crate) pointer_sink: Option<runtime_shared::pointer_input::PointerSink>,
+    /// The platform shell's handler for lock / cursor requests
+    /// (`Host::set_pointer_control_hook`). `None` = this shell cannot
+    /// lock or hide the cursor; requests are dropped.
+    pub(crate) pointer_control: Option<crate::app_pointer::PointerControlHook>,
+    /// Last lock state the app asked for (forwarded to the hook).
+    pub(crate) pointer_lock_requested: bool,
+    /// Lock state the shell reported through
+    /// `EventSink::pointer_lock_changed`.
+    pub(crate) pointer_locked: bool,
+    /// Last cursor-hidden state the app asked for.
+    pub(crate) cursor_hidden: bool,
 }
 
 /// Per-node presence interpolation entry. `node` is a strong ref so
@@ -218,6 +235,11 @@ impl WgpuBackend {
             image_asset_bytes: std::collections::HashMap::new(),
             pending_font_urls: Vec::new(),
             keyboard_sink: None,
+            pointer_sink: None,
+            pointer_control: None,
+            pointer_lock_requested: false,
+            pointer_locked: false,
+            cursor_hidden: false,
         }
     }
 
@@ -1264,6 +1286,51 @@ impl WgpuBackend {
         // separate native source to install or tear down — `None` simply
         // stops delivery.
         self.keyboard_sink = sink;
+    }
+
+    pub(crate) fn set_pointer_sink_impl(
+        &mut self,
+        sink: Option<runtime_shared::pointer_input::PointerSink>,
+    ) {
+        // Like the keyboard sink, the shell's pointer events already flow
+        // through `Host`, which reads this field — installing is storing.
+        // Teardown additionally hands the window back: release a lock we
+        // asked for and show a cursor we hid (the dispatcher only removes
+        // the source once nothing wants it, but a platform-side grab must
+        // never outlive it).
+        if sink.is_none() {
+            let hook = self.pointer_control.clone();
+            if self.pointer_lock_requested || self.pointer_locked {
+                self.pointer_lock_requested = false;
+                if let Some(h) = &hook {
+                    h(crate::app_pointer::PointerControl::Lock(false));
+                }
+            }
+            if self.cursor_hidden {
+                self.cursor_hidden = false;
+                if let Some(h) = &hook {
+                    h(crate::app_pointer::PointerControl::HideCursor(false));
+                }
+            }
+        }
+        self.pointer_sink = sink;
+    }
+
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        // Forwarded to the shell; the answer comes back through
+        // `Host::pointer_lock_changed`. No hook → unsupported: nothing is
+        // ever reported, so the app never believes it is locked.
+        self.pointer_lock_requested = locked;
+        if let Some(h) = self.pointer_control.clone() {
+            h(crate::app_pointer::PointerControl::Lock(locked));
+        }
+    }
+
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        self.cursor_hidden = hidden;
+        if let Some(h) = self.pointer_control.clone() {
+            h(crate::app_pointer::PointerControl::HideCursor(hidden));
+        }
     }
 
     pub(crate) fn finish_impl(&mut self, root: WgpuNode) {

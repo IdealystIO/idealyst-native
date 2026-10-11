@@ -933,6 +933,18 @@ pub use crate::key_input::{add_key_listener, key_state, on_key, KeyState};
 pub use runtime_shared::key_input::KeyListener;
 pub use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
 pub use runtime_shared::set_app_key_handler;
+// App situation signals (focus, visibility, reduce-motion, primary
+// pointer, user activation, pointer lock) and app-wide mouse input with
+// pointer lock. See `crate::app_input`.
+pub use crate::app_input::{
+    add_pointer_listener, app_focused, app_visible, exit_pointer_lock, on_pointer, pointer_locked,
+    pointer_state, primary_pointer, reduce_motion, request_pointer_lock, set_cursor_hidden,
+    user_activated, PointerState,
+};
+pub use runtime_shared::app_state::PointerKind;
+pub use runtime_shared::pointer_input::{
+    AppPointerEvent, MouseButton, PointerListener, PointerOutcome, PointerPhase,
+};
 // `driver` (spawn_async + render_loop) is feature-gated in runtime-core
 // itself (`async-driver`); this crate's same-named forwarding feature
 // keeps the gate. Apps that reach `runtime_shared::driver` through the

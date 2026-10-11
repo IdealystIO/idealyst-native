@@ -52,6 +52,18 @@
 //! rather than panicking); fleshing those out is follow-on work for a
 //! general-purpose GTK backend, not needed by the welcome scene.
 //!
+//! ## App-level input and situation
+//!
+//! The app-wide keyboard (`app_keys.rs`) and pointer (`app_pointer.rs` —
+//! buttons, movement, wheel, cursor hiding) are capture-phase controllers
+//! on the host window, so they hear input whichever widget has focus or
+//! sits under the pointer. Pointer lock works on GDK's X11 backend only
+//! (`x11_lock.rs`: confined grab + warp-to-centre); on Wayland GTK4
+//! exposes no way to lock, so a request is reported refused. Focus,
+//! visibility, reduce motion and the pointer kind are observed by
+//! [`app_situation`]. The pure translation rules live in `keymap.rs` /
+//! `pointer_policy.rs`, testable on any host.
+//!
 //! ## Debugging layout
 //!
 //! Set `IDEALYST_GTK_DUMP_LAYOUT=1` to have every
@@ -97,6 +109,8 @@ use runtime_shared::{Action, Color, ColorScheme, Platform, PointerEvents, StyleR
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 
 mod app_keys;
+mod app_pointer;
+pub mod app_situation;
 mod border_stroke;
 mod color;
 mod cursor;
@@ -124,6 +138,8 @@ mod touch;
 mod virtualizer;
 mod icon;
 mod keymap;
+mod pointer_policy;
+mod x11_lock;
 mod text;
 mod text_area;
 mod transform;
@@ -747,6 +763,17 @@ pub struct LinuxBackend {
     /// window's `is-active` watcher), present only while the framework has
     /// a keyboard sink installed. See `app_keys.rs`.
     app_keys: Option<app_keys::AppKeySource>,
+    /// The app-level pointer source (capture-phase legacy controller +
+    /// `is-active` watcher, plus the X11 lock and cursor hiding), present
+    /// only while the framework has a pointer sink installed. See
+    /// `app_pointer.rs`.
+    app_pointer: Option<app_pointer::AppPointerSource>,
+    /// A `set_cursor_hidden(true)` that arrived while no pointer source
+    /// was installed; applied when one is.
+    cursor_hidden: bool,
+    /// Focus / visibility / reduce-motion / pointer-kind observers,
+    /// installed at boot (`newcore::start`). See `app_situation.rs`.
+    pub(crate) app_situation: Option<app_situation::AppSituation>,
 }
 
 // The `LinuxExternalRegistrar` / `LinuxNavigatorRegistrar` inventory
@@ -790,6 +817,42 @@ impl LinuxBackend {
             portal_anchors: HashMap::new(),
             portal_anchor_child: HashMap::new(),
             app_keys: None,
+            app_pointer: None,
+            cursor_hidden: false,
+            app_situation: None,
+        }
+    }
+
+    /// Install (or with `None` remove) the app-level pointer source on the
+    /// host window. Removal releases a held lock and restores the cursor.
+    pub(crate) fn set_pointer_sink_impl(
+        &mut self,
+        sink: Option<runtime_shared::pointer_input::PointerSink>,
+    ) {
+        if let Some(old) = self.app_pointer.take() {
+            self.cursor_hidden = old.cursor_hidden();
+            old.remove(&self.host_window);
+        }
+        if let Some(sink) = sink {
+            self.app_pointer =
+                Some(app_pointer::AppPointerSource::install(&self.host_window, sink, self.cursor_hidden));
+        }
+    }
+
+    /// Request / release pointer lock (X11 only — see `x11_lock.rs`). With
+    /// no source installed there is no sink to report to; the dispatcher
+    /// always installs one before asking.
+    pub(crate) fn set_pointer_lock_impl(&mut self, locked: bool) {
+        if let Some(src) = &self.app_pointer {
+            src.set_pointer_lock(locked);
+        }
+    }
+
+    /// Hide / show the cursor over the window.
+    pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
+        self.cursor_hidden = hidden;
+        if let Some(src) = &self.app_pointer {
+            src.set_cursor_hidden(hidden);
         }
     }
 

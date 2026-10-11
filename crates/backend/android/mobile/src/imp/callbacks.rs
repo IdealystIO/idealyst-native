@@ -78,6 +78,21 @@ pub(crate) struct KeyDownCallback(pub(crate) runtime_shared::primitives::key::Ke
 /// because a call can itself trigger that free.
 pub(crate) struct KeyboardSinkCallback(pub(crate) runtime_shared::primitives::key::KeyboardSink);
 
+/// The app-level pointer sink (`AppEnvOps::set_pointer_sink`) plus the
+/// per-source translation state (`app_pointer_policy::PointerTracker`).
+/// JVM-side `RustGlobalPointerListener` holds the pointer and calls
+/// `nativePointerMotion` / `nativePointerLockChanged` /
+/// `nativePointerFocusLost`. FREED like [`KeyboardSinkCallback`] (by
+/// `pointer::set_pointer_sink`, after the listener's `detach()` zeroed its
+/// copy). The `Rc` lets a trampoline clone the whole source out before
+/// calling the sink, because a call can itself trigger that free.
+pub(crate) struct PointerSinkCallback(pub(crate) Rc<PointerSourceState>);
+
+pub(crate) struct PointerSourceState {
+    pub(crate) sink: runtime_shared::pointer_input::PointerSink,
+    pub(crate) tracker: RefCell<crate::app_pointer_policy::PointerTracker>,
+}
+
 /// `Toggle.on_change`. JVM-side `RustToggleListener.onCheckedChanged`
 /// calls `nativeChanged(ptr, checked)`.
 pub(crate) struct ToggleChangeCallback(pub(crate) Rc<dyn Fn(bool)>);

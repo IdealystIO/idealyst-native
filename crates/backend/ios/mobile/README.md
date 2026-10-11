@@ -109,3 +109,39 @@ See `feedback_build_from_xcode` in memory.
 The `runtime_ios_files` metadata in `Cargo.toml` declares the Swift/ObjC
 files that need to be copied into the Xcode project; the `idealyst` CLI
 reads it via `cargo metadata` when scaffolding / building.
+
+## App situation + app-wide pointer (iPadOS mouse / trackpad)
+
+Mechanism in `src/imp/pointer.rs` and `src/imp/app_state.rs`; pure halves
+(host-tested) in `src/pointer_input_policy.rs`. Links GameController
+(declared in `[package.metadata.idealyst.ios] frameworks`).
+
+- **Pointer source**: `GCMouse` handlers for buttons (left / right /
+  middle / two side buttons) and movement deltas (GameController is y-up;
+  negated). Position from a `UIHoverGestureRecognizer` on the host root
+  (last known while pressed or locked). Wheel from a scroll-only
+  `UIPanGestureRecognizer` (points, web `deltaY` sign) while unlocked, from
+  `GCMouseInput.scroll` (treated as lines × 40 px) while locked. Finger
+  touches never reach it. An iPhone without a mouse simply never delivers.
+- **`PreventDefault` is not honored on iOS**: GameController input and
+  simultaneous recognizers are observation-only.
+- **Lock**: needs the host root view controller to implement
+  `applyPointerLock:` (flip `prefersPointerLocked`, call
+  `setNeedsUpdateOfPrefersPointerLocked()`), the same soft-fail protocol as
+  `applyFullscreen:`. Without it, or on a scene without `pointerLockState`
+  (iPhone), a lock request reports `false`. Grants and platform drops
+  arrive through `UIPointerLockStateDidChangeNotification`; a drop clears
+  the preference so UIKit does not re-lock on its own. iPadOS only grants
+  it to a full-screen, foreground scene with a pointer connected.
+- **Cursor hiding**: a `UIPointerInteraction` on the host root returning
+  `hiddenPointerStyle` (controls with their own pointer effect still style
+  the pointer over themselves).
+- **App state**: `applicationState` at boot, then the four
+  active/background notifications; `UIAccessibilityIsReduceMotionEnabled`
+  + its change notification; primary pointer `Coarse`, `Fine` while a
+  `GCMouse` is connected.
+
+There is no simulator/device test harness in this crate; only the pure
+policy is tested (`cargo test -p backend-ios-mobile --lib`). The GCMouse
+scroll units and the mouse-moved sign are taken from GameController's
+documented y-up axis convention and have not been checked on hardware.

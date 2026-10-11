@@ -43,6 +43,10 @@ mod recipes {
     ));
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
+        "/../../runtime/shared/recipes/pointer_lock_game_controls.rs"
+    ));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
         "/../../runtime/shared/recipes/swap_three_screens_tab_bar.rs"
     ));
     include!(concat!(
@@ -74,6 +78,7 @@ fn recipes_build_and_realize() {
         ("animated_toast", recipes::animated_toast),
         ("confirm_dialog_overlay", recipes::confirm_dialog_overlay),
         ("keyboard_game_controls", recipes::keyboard_game_controls),
+        ("pointer_lock_game_controls", recipes::pointer_lock_game_controls),
         (
             "swap_three_screens_tab_bar",
             recipes::swap_three_screens_tab_bar,

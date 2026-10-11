@@ -35,6 +35,7 @@ pub(crate) mod text_area;
 pub(crate) mod focus_retention;
 pub(crate) mod hover;
 pub(crate) mod keyboard;
+pub(crate) mod app_pointer;
 pub(crate) mod file_drop;
 pub(crate) mod text_input;
 pub(crate) mod touch;
