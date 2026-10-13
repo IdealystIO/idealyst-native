@@ -528,3 +528,17 @@ sdk!(
     SdkKind::Api,
     "Sound playback — `load(AudioSource)` → a `Sound` you `play()`, with a controllable `Playback` (pause/stop/volume/loop). The playback peer of the capture SDKs. AVAudioPlayer / MediaPlayer / HTMLAudioElement."
 );
+
+sdk!(
+    "audio-engine",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "Low-latency mixable sound for games — `AudioEngine::start()`, decode a `SoundBuffer`, `play(&buffer, VoiceParams)` many voices at once, each with gain, stereo pan, low-pass and pitch that can change while it plays (`set_lowpass`/`set_rate`/`stop` with ramps), looping, live `AudioStream` playback and a master bus. Same output on every platform."
+);
+
+sdk!(
+    "synth",
+    SdkCategory::Media,
+    SdkKind::Api,
+    "Procedural sound for games and UI — tones, pitch sweeps, noise bursts, ADSR envelopes, filters, bit-crushing and ready presets, rendered in pure Rust, then `load()` into an `audio::Sound` to play. The make-a-sound-from-nothing peer of `audio` and `microphone`."
+);
