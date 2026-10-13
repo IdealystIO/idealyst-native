@@ -259,15 +259,25 @@ internal class RustPointerWindowCallback(
     var owner: RustGlobalPointerListener?,
 ) : Window.Callback by base {
 
+    // A consumed event never reaches the `RustActivityWindowCallback`
+    // underneath (installed at boot, so this wrapper sits on top of it):
+    // report user activity for it here so a swallowed click or wheel still
+    // counts as the person using the app.
     override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
         val o = owner
-        if (o != null && event != null && o.onMotion(event, true)) return true
+        if (o != null && event != null && o.onMotion(event, true)) {
+            RustUserActivity.onMotion(event)
+            return true
+        }
         return base.dispatchTouchEvent(event)
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent?): Boolean {
         val o = owner
-        if (o != null && event != null && o.onMotion(event, false)) return true
+        if (o != null && event != null && o.onMotion(event, false)) {
+            RustUserActivity.onMotion(event)
+            return true
+        }
         return base.dispatchGenericMotionEvent(event)
     }
 

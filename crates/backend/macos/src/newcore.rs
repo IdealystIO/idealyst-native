@@ -349,6 +349,11 @@ pub fn start_with<S, R, B>(
     // real values; live changes then flush like any other platform event.
     // See `imp/app_state.rs`.
     backend.borrow_mut().install_app_state_observers(Rc::new(schedule_flush));
+    // App-wide user activity (`user_activity()`): one passive NSEvent
+    // monitor, always on — it has no side effects, unlike the key / pointer
+    // sources that install only while a listener is live. A tick flushes
+    // like any other platform event. See `imp/user_activity.rs`.
+    backend.borrow_mut().install_user_activity_source(Rc::new(schedule_flush));
     let mut registry: Registry<MacosBackend> = Registry::new();
     runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
     register(&mut registry);

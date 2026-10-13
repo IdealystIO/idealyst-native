@@ -942,6 +942,10 @@ pub use crate::app_input::{
     user_activated, PointerState,
 };
 pub use runtime_shared::app_state::PointerKind;
+// App-wide "the person is using the app" heartbeat (idle clocks, kiosk
+// timeouts, auto-lock). See `crate::user_activity`.
+pub use crate::user_activity::{add_user_activity_listener, user_activity};
+pub use runtime_shared::user_activity::UserActivityListener;
 pub use runtime_shared::pointer_input::{
     AppPointerEvent, MouseButton, PointerListener, PointerOutcome, PointerPhase,
 };

@@ -11,7 +11,8 @@ Two things a game or a full-screen app needs beyond views:
   only movement amounts are reported, which first-person cameras need).
 
 For keys, see [`keyboard-input.md`](keyboard-input.md). This is the same
-design for the mouse.
+design for the mouse. To know whether the person is using the app at all
+(idle clocks, session timeouts), see [`user-activity.md`](user-activity.md).
 
 ```rust
 use runtime_core::{

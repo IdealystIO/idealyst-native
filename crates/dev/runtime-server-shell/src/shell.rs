@@ -94,6 +94,10 @@ pub struct RuntimeServerShell<B: AllCaps + 'static> {
     /// Last soft-keyboard inset relayed via [`Self::report_keyboard`].
     /// Starts hidden — what the sidecar's fresh session assumes.
     last_reported_keyboard: RefCell<runtime_shared::KeyboardInset>,
+    /// Device `user_activity` tick count last relayed via
+    /// [`Self::report_user_activity`]. Seeded with the count at spawn so
+    /// touches before the connection don't arrive as a stale tick.
+    last_reported_activity: std::cell::Cell<u64>,
 }
 
 /// Optional knobs for [`RuntimeServerShell::spawn_with_options`].
@@ -211,6 +215,7 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
             inbound: inbound_rx,
             last_reported_viewport: RefCell::new(initial_viewport),
             last_reported_keyboard: RefCell::new(runtime_shared::KeyboardInset::HIDDEN),
+            last_reported_activity: std::cell::Cell::new(runtime_shared::user_activity::count()),
         }
     }
 
@@ -275,6 +280,9 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         // (`runtime_vocabulary::keyboard::push` from the platform seam);
         // relay it so the sidecar's author `keyboard_inset()` follows.
         self.report_keyboard(runtime_vocabulary::keyboard::latest());
+        // The backend's activity source ticks the device-side substrate;
+        // relay it so the sidecar's author `user_activity()` follows.
+        self.report_user_activity(runtime_shared::user_activity::count());
         let had_inbound = self.drain();
         if had_inbound {
             // `Backend::run_layout` is a no-op by default; backends
@@ -334,6 +342,18 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         }
         let _ = self.client.borrow().outbound().send(keyboard_changed(inset));
         *last = inset;
+    }
+
+    /// Relay the device's `user_activity` tick count to the sidecar as
+    /// `AppToDev::UserActivity` when it advanced since the last one sent.
+    /// One message per drain tick at most, however many ticks landed in
+    /// between — the sidecar only needs to know activity happened.
+    pub fn report_user_activity(&self, count: u64) {
+        if count == self.last_reported_activity.get() {
+            return;
+        }
+        let _ = self.client.borrow().outbound().send(wire::AppToDev::UserActivity { count });
+        self.last_reported_activity.set(count);
     }
 
     pub fn drain_with_dt_ms(&self, dt_ms: u32) -> bool {

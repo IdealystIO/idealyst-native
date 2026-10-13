@@ -618,6 +618,17 @@ pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppPo
     });
 }
 
+/// `RustUserActivity.nativeReport` (static — the second JNI arg is the
+/// `Class`): the person touched, typed, scrolled or wheeled anywhere in the
+/// app. Raw platform callback → report + flush.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustUserActivity_nativeReport(
+    _env: JNIEnv,
+    _class: JObject,
+) {
+    run_void_callback("user-activity", crate::newcore::report_user_activity);
+}
+
 /// Root-view size-change trampoline — the `RustViewportResizeListener`
 /// attached to the host root (see
 /// `AndroidBackend::install_viewport_resize_listener`) calls this whenever

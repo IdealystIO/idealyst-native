@@ -1,0 +1,25 @@
+[package]
+name = "user-activity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "user_activity(): a kiosk-style idle clock that every touch, key, scroll or keystroke resets — including inside an overlay and on controls that don't pass touches up."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The platform surface, used by `src/main.rs` only.
+idealyst = { workspace = true }
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "User Activity"
+bundle_id = "ai.truday.idealyst.useractivity"
+version   = "0.0.1"
+targets   = ["web", "ios", "android", "macos"]

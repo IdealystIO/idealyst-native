@@ -49,6 +49,13 @@ class RustOverlayPassthrough(context: Context) : FrameLayout(context) {
             // New gesture: forward it unless it starts on an interactive child.
             forwarding = !isOverChild(ev.x, ev.y)
         }
+        // This window was added through `WindowManager.addView`, so it has
+        // no `Window.Callback` for `RustUserActivity` to wrap. A forwarded
+        // gesture reaches the main window's decor view, whose
+        // `dispatchTouchEvent` goes through that window's wrapped callback
+        // and reports there; a gesture on the overlay's own controls is
+        // reported here.
+        if (!forwarding) RustUserActivity.onMotion(ev)
 
         if (forwarding) {
             val target = behind
@@ -62,6 +69,13 @@ class RustOverlayPassthrough(context: Context) : FrameLayout(context) {
         }
 
         return super.dispatchTouchEvent(ev)
+    }
+
+    /** Wheel / touchpad scroll over the overlay window (see [dispatchTouchEvent]
+     *  for why this window reports itself). Observe only. */
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        RustUserActivity.onMotion(ev)
+        return super.dispatchGenericMotionEvent(ev)
     }
 
     /** Is (x, y) — in this view's coordinate space — over any visible child? */

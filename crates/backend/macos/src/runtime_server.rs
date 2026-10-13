@@ -69,6 +69,11 @@ pub fn spawn_runtime_server_shell(
     host_root: Option<Retained<NSView>>,
 ) -> Rc<RuntimeServerShell<MacosBackend>> {
     let viewport = viewport_size.map(|(w, h)| WireViewport { width: w, height: h });
+    // `user_activity()` source: ticks the device substrate, which
+    // `RuntimeServerShell::tick` relays to the sidecar's author code. No
+    // flush hook — this process has no world; the sidecar's commits.
+    let mut backend = backend;
+    backend.install_user_activity_source(Rc::new(|| {}));
     let shell = Rc::new(RuntimeServerShell::spawn_with_options(
         backend,
         url.into(),

@@ -662,6 +662,9 @@ mod ios_impl {
         // seed with real values; live changes flush like any other platform
         // event. See `imp/app_state.rs`.
         backend.borrow_mut().install_app_state_observers(Rc::new(schedule_flush));
+        // `user_activity()` source: a passive recognizer on every app window
+        // plus text-change observation. See `imp/activity.rs`.
+        crate::imp::activity::install(unsafe { objc2_foundation::MainThreadMarker::new_unchecked() });
         let mut registry: Registry<IosBackend> = Registry::new();
         runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
         register(&mut registry);

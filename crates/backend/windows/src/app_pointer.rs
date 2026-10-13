@@ -320,6 +320,9 @@ impl PointerSlot {
     /// the message must be swallowed (skip `TranslateMessage` AND
     /// `DispatchMessageW`). Everything else returns `false` untouched.
     pub fn pre_dispatch(&self, msg: &MSG) -> bool {
+        // `user_activity()` first, sink or not, swallowed or not — see
+        // `user_activity.rs` for why the pump is the seam.
+        crate::user_activity::observe_pointer(msg.message, msg.wParam.0, crate::newcore::schedule_flush);
         if msg.message == policy::WM_INPUT {
             self.raw_input(msg.lParam);
             // Still dispatched: DefWindowProc releases the raw-input data.
@@ -590,6 +593,38 @@ mod tests {
         let mut n = 0u32;
         unsafe { GetRegisteredRawInputDevices(None, &mut n, std::mem::size_of::<RAWINPUTDEVICE>() as u32) };
         n
+    }
+
+    /// `user_activity()` rides the pump: a press over a CHILD control
+    /// ticks with no app pointer listener, a press from another top-level
+    /// window of the thread too (any window of the thread is the app), and
+    /// a press the sink swallows still counts. The ticks reset per check:
+    /// the throttle reads the process clock another test may install.
+    #[test]
+    fn regression_win32_pump_reports_user_activity() {
+        use runtime_shared::user_activity;
+        let host = window(None, 0, 0, 400, 300);
+        let child = window(Some(host), 50, 40, 100, 100);
+        let other = window(None, 0, 0, 200, 200);
+        let slot = PointerSlot::new(host);
+
+        user_activity::reset_for_tests();
+        assert!(!slot.pre_dispatch(&msg(child, policy::WM_LBUTTONDOWN, 0x0001, 10, 10)));
+        assert_eq!(user_activity::count(), 1, "no sink: a press over a child control counts");
+        user_activity::reset_for_tests();
+        slot.pre_dispatch(&msg(other, policy::WM_LBUTTONDOWN, 0x0001, 5, 5));
+        assert_eq!(user_activity::count(), 1, "another window of the thread counts");
+        user_activity::reset_for_tests();
+        slot.pre_dispatch(&msg(child, policy::WM_MOUSEMOVE, 0, 12, 12));
+        slot.pre_dispatch(&msg(child, policy::WM_LBUTTONUP, 0, 12, 12));
+        assert_eq!(user_activity::count(), 0, "moves and releases are not activity");
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        slot.set_sink(Some(recording(log.clone(), Rc::new(Cell::new(true)))));
+        user_activity::reset_for_tests();
+        assert!(slot.pre_dispatch(&msg(child, policy::WM_RBUTTONDOWN, 0x0002, 10, 10)), "the sink's claim stands");
+        assert_eq!(user_activity::count(), 1, "a swallowed press still counts");
+        slot.set_sink(None);
     }
 
     #[test]

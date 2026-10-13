@@ -65,6 +65,11 @@ mod key_input_policy;
 mod pointer_input_policy;
 /// How the layout pass treats a root that is a `virtual_grid` cell.
 mod grid_cell_root_policy;
+// Which windows the `user_activity()` source observes. Un-gated so the
+// tests run from any host; the UIKit recognizer is ios-only
+// (`imp/activity.rs`).
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+mod user_activity_policy;
 
 // idea-lite core migration (iOS mirror of P4a): `runtime_scene::Host` +
 // all 30 `runtime_vocabulary::caps` traits directly on `IosBackend`,

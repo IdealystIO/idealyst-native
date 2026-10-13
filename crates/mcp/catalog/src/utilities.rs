@@ -229,6 +229,20 @@ inventory::submit! {
 
 inventory::submit! {
     UtilityEntry {
+        name: "user_activity",
+        module_path: "runtime_core",
+        docs: "Reactive `ReadSignal<u64>` that ticks whenever the person uses the app: a touch, click, key press, wheel, scroll or typing in a text field, in any window or portal (modals and sheets included), at most once per frame. Read it in an effect to restart an idle clock (kiosk \"still there?\", session timeout, auto-lock). The value is only a tick count; compare for change. It only observes: no event is consumed or delayed. For code without a reactive scope use `add_user_activity_listener(f)`, which returns a guard.",
+        params: &[],
+        return_type: "ReadSignal<u64>",
+        return_type_short: "ReadSignal<u64>",
+        category: UtilityCategory::Platform,
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
         name: "current_breakpoint",
         module_path: "runtime_core",
         docs: "Reactive `Signal<Breakpoint>` derived from the active theme's breakpoint thresholds and `viewport_size()`. Use in `.responsive()`-style flows; prefer this over hand-comparing widths so the threshold lives in the theme, not the call site.",

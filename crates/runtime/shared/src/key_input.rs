@@ -222,6 +222,14 @@ fn sink() -> KeyboardSink {
 /// Deliver one event from a backend: normalize, update the held set, run
 /// listeners, then apply any install change they requested.
 fn dispatch(raw: &AppKeyEvent) -> KeyOutcome {
+    // A key press is user activity. Counting it here means every backend's
+    // app key source feeds `user_activity()` while it is installed, on top
+    // of the backend's own always-on activity observer (the throttle folds
+    // the two reports of one press into a single tick). The write stages;
+    // the backend's post-dispatch flush commits it with the listeners'.
+    if raw.phase == KeyPhase::Down {
+        crate::user_activity::report();
+    }
     let mut event = raw.clone();
     let listeners = STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -408,6 +416,20 @@ mod tests {
         drop(b);
         assert!(!is_source_installed());
         assert_eq!(host.removals.get(), 1);
+    }
+
+    /// Key presses reaching the app key source tick `user_activity()`;
+    /// releases don't (one press is one interaction).
+    #[test]
+    fn key_down_ticks_user_activity_and_up_does_not() {
+        let host = wire();
+        crate::user_activity::reset_for_tests();
+        let _l = add_listener(|_| KeyOutcome::Default);
+        send(&host, AppKeyEvent::down("w", "KeyW"));
+        assert_eq!(crate::user_activity::count(), 1);
+        crate::user_activity::reset_for_tests();
+        send(&host, AppKeyEvent::up("w", "KeyW"));
+        assert_eq!(crate::user_activity::count(), 0);
     }
 
     #[test]

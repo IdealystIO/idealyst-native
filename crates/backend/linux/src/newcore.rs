@@ -205,6 +205,9 @@ impl NewCoreApp {
             if let Some(situation) = b.app_situation.take() {
                 situation.uninstall();
             }
+            if let Some(activity) = b.user_activity.take() {
+                activity.uninstall();
+            }
             b.set_pointer_sink_impl(None);
         }
         crate::dispatch_hook::clear_dispatch_hook();
@@ -272,6 +275,15 @@ pub fn start_with<S, R, B>(
     // the build: a component body may read `platform()` while
     // constructing. See `runtime_vocabulary::backend`.
     runtime_vocabulary::backend::install_env_services(&backend);
+    // `user_activity()` observer, before the build so an app key / pointer
+    // source the build installs finds it and raises it above itself (a
+    // source `Stop`s claimed input, hiding it from OLDER controllers). See
+    // `user_activity.rs`.
+    {
+        let mut b = backend.borrow_mut();
+        let source = crate::user_activity::UserActivitySource::install(b.host_window());
+        b.user_activity = Some(source);
+    }
     let mut registry: Registry<LinuxBackend> = Registry::new();
     runtime_vocabulary::register_builtins_with::<_, S>(&mut registry);
     register(&mut registry);

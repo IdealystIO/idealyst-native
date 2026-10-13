@@ -73,6 +73,10 @@ pub use profile::DeviceProfile;
 /// if you can't express your event as one of these, the
 /// vocabulary needs widening here in the api crate so all
 /// shells benefit.
+///
+/// The render side, not the shell, feeds the app-wide
+/// `user_activity()` heartbeat from `pointer_down`, `scroll` and
+/// pressed `key` calls — a shell reports nothing extra for it.
 pub trait EventSink {
     fn pointer_down(&mut self, ev: PointerEvent);
     fn pointer_move(&mut self, ev: PointerEvent);

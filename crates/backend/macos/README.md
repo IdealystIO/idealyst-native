@@ -58,7 +58,7 @@ Window / menu / multi-window plumbing lives in [`host-appkit`](../../gpu-backend
 which composes the backend with the AppKit shell. Author code does not
 participate.
 
-## App situation + app-wide pointer
+## App situation, app-wide pointer, user activity
 
 `AppEnvOps::set_pointer_sink` / `set_pointer_lock` / `set_cursor_hidden`
 and the app-state reports (`runtime_shared::app_state`) — mechanism in
@@ -89,6 +89,16 @@ and the app-state reports (`runtime_shared::app_state`) — mechanism in
   Visible` (visibility), `NSWorkspace.accessibilityDisplayShouldReduceMotion`
   (followed via the workspace's own notification center), primary pointer
   `Fine`.
+- **User activity** (`runtime_shared::user_activity`, `src/imp/user_activity.rs`):
+  one more `NSEvent` local monitor, installed at boot unconditionally, for
+  left/right/other down, key down, scroll wheel and trackpad
+  magnify/rotate/swipe. It reports and always returns the event unchanged,
+  and sees every window of the app (portals, panels, sheets, a focused text
+  field's field editor). Events eaten by a nested tracking loop (open menu,
+  slider drag) are invisible, but the press that started the loop is
+  counted. The flush is scheduled only when a report ticks (throttled to
+  one tick per frame).
 
 `tests/app_pointer.rs` drives all of it with real AppKit events
-(`cargo test -p backend-macos --test app_pointer`).
+(`cargo test -p backend-macos --test app_pointer`); `tests/app_user_activity.rs`
+covers the activity monitor.

@@ -4697,6 +4697,48 @@ fn regression_web_cursor_hidden_covers_descendants_and_restores() {
     child.remove();
 }
 
+/// REGRESSION TEST (kiosk idle clock fired mid-form): every interaction —
+/// in a nested element, including a non-bubbling `scroll` and an element
+/// that stops propagation — must tick `user_activity()`, and the observer
+/// must never `preventDefault` the event it saw.
+#[wasm_bindgen_test]
+fn regression_web_user_activity_sees_every_interaction() {
+    use runtime_shared::user_activity;
+
+    crate::app_state_source::install();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let body = doc.body().unwrap();
+    let inner = doc.create_element("div").unwrap();
+    body.append_child(&inner).unwrap();
+    // A widget that swallows its own events (a button, a signature pad).
+    let _swallow: Vec<_> = ["pointerdown", "keydown", "wheel", "touchstart", "input"]
+        .into_iter()
+        .map(|ty| crate::glue_dom::listen_fn(&inner, ty, Default::default(), |e: web_glue::dom::Event| e.stop_propagation()))
+        .collect();
+
+    for ty in ["pointerdown", "touchstart", "keydown", "wheel", "input"] {
+        // Reset per event: the substrate throttles to one tick per frame,
+        // and these synthetic events all land inside one.
+        user_activity::reset_for_tests();
+        let ev: web_glue::dom::Event = synth_event("Event", ty, &[]);
+        assert!(!fire(&inner, &ev), "{ty}: the activity observer must not preventDefault");
+        assert_eq!(user_activity::count(), 1, "{ty} reaching a propagation-stopping element ticks activity");
+    }
+    user_activity::reset_for_tests();
+    let scroll: web_glue::dom::Event = {
+        let init = web_glue::js::Object::new();
+        web_glue::dom::new_event("Event", "scroll", &init).unwrap() // bubbles: false, like a real scroll
+    };
+    fire(&inner, &scroll);
+    assert_eq!(user_activity::count(), 1, "a non-bubbling element scroll ticks activity");
+
+    crate::app_state_source::remove();
+    user_activity::reset_for_tests();
+    fire(&inner, &synth_event::<web_glue::dom::Event>("Event", "pointerdown", &[]));
+    assert_eq!(user_activity::count(), 0, "remove() detaches the activity listeners");
+    inner.remove();
+}
+
 /// REGRESSION TEST (focus / visibility / activation shim): the app-state
 /// observers must report window focus and blur, page visibility, and the
 /// first user activation (sticky; the listeners go away after it).

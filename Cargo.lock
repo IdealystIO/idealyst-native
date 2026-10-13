@@ -13693,6 +13693,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
+name = "user-activity"
+version = "1.5.2"
+dependencies = [
+ "idealyst",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "usvg"
 version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

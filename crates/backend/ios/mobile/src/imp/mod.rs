@@ -1,4 +1,5 @@
 pub(crate) mod a11y;
+pub(crate) mod activity;
 pub(crate) mod animated;
 pub(crate) mod app_state;
 pub mod callbacks;

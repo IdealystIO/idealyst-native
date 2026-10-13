@@ -225,7 +225,13 @@ pub use payload_serde::{
 /// can't decode it and drops the message (the keyboard still avoids
 /// on-device; only author reactivity misses it). Also adds
 /// `Command::MarkKeyboardAvoiding` (`keyboard_avoiding_view`).
-pub const PROTOCOL_VERSION: u32 = 22;
+///
+/// **Bumped to 23 for `AppToDev::UserActivity`.** A new client→server
+/// message: the device's `user_activity()` tick count, so an author idle
+/// clock in the sidecar restarts on device touches exactly as under
+/// `--local`. A v22 server can't decode it and drops the message (the
+/// app still runs; only `user_activity()` stays frozen).
+pub const PROTOCOL_VERSION: u32 = 23;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -483,6 +489,13 @@ pub enum AppToDev {
     /// runtime-server dev while it works under `--local`. Sent by the
     /// native shells' `tick` and the web dev transport, on change only.
     KeyboardChanged { height: f32, duration_ms: u32, easing: [f32; 4] },
+
+    /// The person used the app on the device (PROTOCOL_VERSION 23):
+    /// `count` is the device's `runtime_shared::user_activity` tick count,
+    /// already throttled there. Sent by the native shells' `tick` and the
+    /// web dev transport when the count changed since the last one sent;
+    /// the sidecar ticks author `user_activity()` once per message.
+    UserActivity { count: u64 },
 
     /// Reply to [`DevToApp::CaptureScreenshot`]. Carries the same
     /// `request_id` so the server can correlate it with the blocked

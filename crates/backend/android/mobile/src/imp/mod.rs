@@ -21,6 +21,7 @@ pub(crate) mod pointer;
 mod primitives;
 pub(crate) mod scheduler;
 pub(crate) mod soft_keyboard;
+pub(crate) mod user_activity;
 mod screenshot;
 pub(crate) mod sticky;
 mod style;
@@ -907,6 +908,7 @@ impl AndroidBackend {
         backend.install_viewport_resize_listener();
         soft_keyboard::install(&backend);
         app_state::install(&backend);
+        user_activity::install(&backend);
         backend
     }
 

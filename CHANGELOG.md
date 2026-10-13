@@ -204,6 +204,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`user_activity()` — an app-wide "the person is using the app"
+  signal** (`runtime-shared`, `runtime-vocabulary`, every backend). A
+  `ReadSignal<u64>` that ticks on any touch, click, key press, scroll,
+  wheel or typing anywhere in the app, portals and modals included, so
+  an idle clock (a kiosk's "Still there?", a session timeout, auto-lock)
+  can be built from one effect. `add_user_activity_listener(f)` is the
+  non-reactive form. Each backend observes input at the window level and
+  never consumes, delays or reorders an event; ticks are throttled to one
+  per frame; releases, pointer motion and hover don't count. Under
+  runtime-server dev the device sends `AppToDev::UserActivity`
+  (**wire protocol 23**). See `docs/user-activity.md` (per-backend
+  mechanism and known limits) and `examples/user-activity`.
+
 - **`Autocomplete(clearable = true)`** (`idea-ui`) — an ✕ left of the
   chevron that clears the selection: `on_change("")` in single-select,
   `on_selection_change(vec![])` in multi-select, and the typed text

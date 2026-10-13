@@ -37,9 +37,12 @@
 //! `WM_SETCURSOR` cursor hiding) are fed from the HOST's message pump,
 //! because input for a focused / hovered child control never reaches the
 //! host `WndProc`. Focus, minimize, reduce-motion and pointer-kind facts
-//! come from host-window messages (`app_situation.rs`). The pure message
-//! → event rules live in `keymap.rs` / `pointer_policy.rs`, testable on
-//! any host.
+//! come from host-window messages (`app_situation.rs`). The
+//! `user_activity()` heartbeat (`user_activity.rs`) rides the same pump:
+//! both slots report every key / button down, pointer contact and wheel
+//! before looking for a sink. The pure message → event rules live in
+//! `keymap.rs` / `pointer_policy.rs` / `user_activity.rs`, testable on any
+//! host.
 //!
 //! ## Threading
 //!
@@ -113,6 +116,7 @@ mod icon;
 mod image;
 mod keymap;
 mod pointer_policy;
+pub mod user_activity;
 mod scene;
 mod wrap;
 

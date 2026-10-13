@@ -149,3 +149,12 @@ harness = false
 [[test]]
 name = "app_pointer"
 harness = false
+
+# Real-AppKit test of the app-wide user-activity source
+# (`src/imp/user_activity.rs`): the passive NSEvent monitor ticks on presses,
+# keys and wheel in any window, passes every event through, throttles to one
+# tick per frame, and is removed when the backend drops. Main-thread only, for
+# the same reason as `focus_attach`.
+[[test]]
+name = "app_user_activity"
+harness = false

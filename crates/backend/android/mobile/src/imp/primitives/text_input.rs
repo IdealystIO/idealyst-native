@@ -367,6 +367,17 @@ fn insert_text_edit_text(node: &GlobalRef, text: &str) {
             .and_then(|v| v.l().ok());
         let Some(editable) = editable else { return; };
         let java_str = env.new_string(text).unwrap();
+        // App-initiated edit: `on_change` must still fire (unlike
+        // `update_value`'s `suppress`), but it is not the person typing, so
+        // flag it on the watcher to keep it out of `user_activity()`.
+        let watcher = env
+            .call_method(node.as_obj(), "getTag", "()Ljava/lang/Object;", &[])
+            .ok()
+            .and_then(|v| v.l().ok())
+            .filter(|w| !w.is_null());
+        if let Some(ref w) = watcher {
+            let _ = env.set_field(w, "appEdit", "Z", JValue::Bool(1));
+        }
         let _ = env.call_method(
             &editable,
             "replace",
@@ -377,6 +388,9 @@ fn insert_text_edit_text(node: &GlobalRef, text: &str) {
                 JValue::Object(&JObject::from(java_str)),
             ],
         );
+        if let Some(ref w) = watcher {
+            let _ = env.set_field(w, "appEdit", "Z", JValue::Bool(0));
+        }
         // Caret to end of inserted text. `setSelection(int)` is the
         // single-index variant — places the caret with no range.
         let new_caret = start + text.chars().count() as i32;

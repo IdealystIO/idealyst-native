@@ -128,6 +128,10 @@ where
     // working — they hold the same `OutboundSender` wrapper whose
     // inner sender we just swapped.
     let (tx, outbound_rx) = mpsc::channel::<AppToDev>();
+    // The browser observers — including the `user_activity()` source,
+    // whose device-side ticks the raf pump below relays to the sidecar.
+    // Idempotent across reconnects (`install` replaces the previous set).
+    crate::app_state_source::install();
     // Hand one sender to the wire (used by event handlers, etc.);
     // keep a clone for the raf pump's per-frame `RequestFrame`
     // injection. mpsc::Sender is `Clone`; both sides drop
@@ -276,6 +280,7 @@ where
     let socket_for_pump = socket.clone();
     let mut last_raf_ms = now_ms();
     let mut last_keyboard = runtime_shared::KeyboardInset::HIDDEN;
+    let mut last_activity = runtime_shared::user_activity::count();
     let outbound_pump = runtime_shared::raf_loop(move || {
         // Skip the entire tick while the socket is still mid-handshake
         // — `send_with_u8_array` would throw `InvalidStateError` and
@@ -306,6 +311,13 @@ where
                 duration_ms: kb.transition.duration_ms,
                 easing: kb.transition.easing.control_points(),
             });
+        }
+        // Same for user activity — the web twin of
+        // `RuntimeServerShell::report_user_activity`.
+        let activity = runtime_shared::user_activity::count();
+        if activity != last_activity {
+            last_activity = activity;
+            let _ = raf_tx.send(AppToDev::UserActivity { count: activity });
         }
         // Drain everything currently queued.
         loop {

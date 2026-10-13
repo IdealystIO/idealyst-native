@@ -16,6 +16,20 @@
 //! triggering input events" list (plus `mousedown` for engines that
 //! predate pointer events); after the first one the listeners are removed
 //! — activation is sticky, there is nothing more to learn.
+//!
+//! ## User activity
+//!
+//! The same install attaches the `user_activity()` source
+//! (`runtime_shared::user_activity`): capture-phase, passive listeners on
+//! `document` for [`ACTIVITY_EVENTS`]. Capture on `document` sees every
+//! event in the page before any handler can stop it — portals mount in
+//! the same document, so modals and sheets are covered — and `scroll`,
+//! which does not bubble, still passes through `document`'s capture phase
+//! from whatever element scrolled. `passive: true` tells the browser the
+//! listener never calls `preventDefault`, so a `wheel` / `touchstart`
+//! listener here can't hold up scrolling. `input` catches soft-keyboard
+//! typing, which some mobile keyboards deliver without a usable
+//! `keydown`. These listeners stay for the boot's life.
 
 use std::cell::RefCell;
 
@@ -28,6 +42,9 @@ const REDUCE_MOTION_QUERY: &str = "(prefers-reduced-motion: reduce)";
 const POINTER_FINE_QUERY: &str = "(pointer: fine)";
 const POINTER_COARSE_QUERY: &str = "(pointer: coarse)";
 const ACTIVATION_EVENTS: [&str; 4] = ["pointerdown", "mousedown", "keydown", "touchend"];
+/// Events that tick `user_activity()` (see the module docs).
+const ACTIVITY_EVENTS: [&str; 6] = ["pointerdown", "touchstart", "keydown", "wheel", "scroll", "input"];
+const ACTIVITY_LISTENER: ListenerOptions = ListenerOptions { capture: true, passive: Some(true), once: false };
 
 thread_local! {
     /// Long-lived observers (focus, visibility, media queries).
@@ -87,6 +104,13 @@ pub(crate) fn install() {
                 report(AppStateChange::PrimaryPointer(primary_pointer(&w)));
             }));
         }
+    }
+    for ty in ACTIVITY_EVENTS {
+        ls.push(crate::glue_dom::listen_fn(&doc, ty, ACTIVITY_LISTENER, |_| {
+            if runtime_shared::user_activity::report() {
+                crate::newcore::schedule_flush();
+            }
+        }));
     }
     SOURCE.with(|s| *s.borrow_mut() = ls);
     crate::newcore::schedule_flush();

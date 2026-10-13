@@ -1141,6 +1141,7 @@ impl Host {
     /// - Empty inside SV  → start pan immediately.
     /// - nothing          → drop any active TextInput focus.
     pub fn pointer_down(&mut self, ev: PointerEvent) {
+        report_user_activity();
         // App-level `Down` first: `PreventDefault` claims the press, so
         // the engine's own handling (focus change, press / pan / slider
         // capture, a secondary press's `on_touch` delivery — this
@@ -1194,8 +1195,8 @@ impl Host {
                 // the app-level keyboard sink sees both, so an on-screen
                 // key never stays "held" in the key dispatcher.
                 let ke = keyboard::action_to_key_event(action);
-                self.key(&ke);
-                self.key(&KeyEvent { pressed: false, ..ke });
+                self.dispatch_key(&ke);
+                self.dispatch_key(&KeyEvent { pressed: false, ..ke });
                 return;
             }
             // Inside keyboard frame but no key → swallow.
@@ -1474,6 +1475,7 @@ impl Host {
     /// example level. Flip the sign here if you want
     /// natural-scrolling later.
     pub fn scroll(&mut self, ev: ScrollEvent) {
+        report_user_activity();
         // App-level `Wheel` first; `PreventDefault` suppresses the
         // engine's scrollview scrolling (the page-scroll default).
         let wheel = app_pointer::wheel_event(ev.position, ev.delta, self.modifiers);
@@ -1637,6 +1639,18 @@ impl Host {
     /// consumed or produced a state change (useful for shells that
     /// want to decide whether to redraw / propagate).
     pub fn key(&mut self, event: &KeyEvent) -> bool {
+        // Presses only (auto-repeat included — a held key is use);
+        // a release follows a press that already counted.
+        if event.pressed {
+            report_user_activity();
+        }
+        self.dispatch_key(event)
+    }
+
+    /// [`Self::key`] minus the activity report. The on-screen keyboard's
+    /// tap enters here: the tap already reported through
+    /// [`Self::pointer_down`], and one interaction must be one tick.
+    fn dispatch_key(&mut self, event: &KeyEvent) -> bool {
         // App-level keyboard sink FIRST — it fires regardless of focus
         // (WASD / arrow game controls, app shortcuts) and for releases
         // too. Claiming the key (`PreventDefault`) stops the
@@ -2614,6 +2628,23 @@ fn label_for_action(skin: &dyn Painter, action: keyboard::KeyAction) -> Option<&
 fn report_app_state(change: runtime_shared::app_state::AppStateChange) {
     runtime_shared::app_state::report(change);
     crate::newcore::schedule_flush();
+}
+
+/// Feed the app-wide `user_activity()` heartbeat
+/// (`runtime_shared::user_activity`) and queue the flush that commits it
+/// when it ticked (a throttled report changes nothing).
+///
+/// Called at the top of [`Host::pointer_down`], [`Host::scroll`] and (for
+/// presses) [`Host::key`]: those are the one seam every GPU shell's input
+/// enters through (`EventSink` delegates to them), so winit desktop, the
+/// web canvas host, the mobile GPU hosts and any future shell all report
+/// without per-shell code. It runs BEFORE the app-level sinks so a press
+/// or wheel a listener claims with `PreventDefault` still counts —
+/// observe-only, it never changes what happens to the event.
+fn report_user_activity() {
+    if runtime_shared::user_activity::report() {
+        crate::newcore::schedule_flush();
+    }
 }
 
 /// Convert a render-API [`KeyEvent`] into the framework's app-level
@@ -3771,5 +3802,87 @@ mod tests {
         render_api::EventSink::scroll(&mut host, ScrollEvent { position: (0.0, 0.0), delta: (0.0, 1.0) });
         assert!(ok.get());
         assert!(backend.borrow().pointer_sink.is_none());
+    }
+
+    // -------------------------------------------------------------
+    // user_activity() — the one seam every GPU shell feeds
+    // -------------------------------------------------------------
+
+    /// Regression: no GPU host fed `runtime_shared::user_activity`, so an
+    /// idle clock built on `user_activity()` (kiosk "still there?",
+    /// session timeout) expired while the person was clicking, typing and
+    /// scrolling on the winit / web-canvas / mobile GPU shells. Driven
+    /// through `EventSink`, the trait every shell calls.
+    ///
+    /// Each check starts from `reset_for_tests()`: the throttle reads the
+    /// process-global clock, which another test may have installed, so two
+    /// reports in one check could legitimately collapse into one tick.
+    #[test]
+    fn regression_wgpu_input_never_reported_user_activity() {
+        use render_api::{EventSink, PointerEvent, PointerId};
+        use runtime_shared::user_activity;
+
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let mut ticks = |f: &mut dyn FnMut(&mut Host)| {
+            user_activity::reset_for_tests();
+            f(&mut host);
+            user_activity::count()
+        };
+        let at = |button| PointerEvent { id: PointerId::MOUSE, button, position: (5.0, 5.0) };
+        let touch = PointerEvent { id: PointerId(1), button: PointerButton::Primary, position: (5.0, 5.0) };
+
+        assert_eq!(ticks(&mut |h| EventSink::pointer_down(h, at(PointerButton::Primary))), 1, "mouse down");
+        assert_eq!(ticks(&mut |h| EventSink::pointer_down(h, at(PointerButton::Secondary))), 1, "right click");
+        assert_eq!(ticks(&mut |h| EventSink::pointer_down(h, touch.clone())), 1, "touch begin");
+        assert_eq!(
+            ticks(&mut |h| EventSink::scroll(h, ScrollEvent { position: (5.0, 5.0), delta: (0.0, 3.0) })),
+            1,
+            "wheel"
+        );
+        assert_eq!(
+            ticks(&mut |h| { EventSink::key(h, &physical(Key::Character, Some("w"), "KeyW", true)); }),
+            1,
+            "key press"
+        );
+        // Not activity: moves, releases, key-ups.
+        assert_eq!(ticks(&mut |h| EventSink::pointer_move(h, at(PointerButton::Primary))), 0, "move");
+        assert_eq!(ticks(&mut |h| EventSink::pointer_up(h, at(PointerButton::Primary))), 0, "release");
+        assert_eq!(
+            ticks(&mut |h| { EventSink::key(h, &physical(Key::Character, Some("w"), "KeyW", false)); }),
+            0,
+            "key up"
+        );
+    }
+
+    /// Observe-only: a press / wheel / key an app-level listener claims
+    /// with `PreventDefault` is still activity — the report runs before the
+    /// sinks and never changes their outcome.
+    #[test]
+    fn wgpu_claimed_input_still_counts_as_user_activity() {
+        use render_api::{EventSink, PointerEvent, PointerId};
+        use runtime_shared::primitives::key::{KeyOutcome, KeyboardSink};
+        use runtime_shared::user_activity;
+
+        let mut host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let (sink, log) = recording_pointer_sink(PointerOutcome::PreventDefault);
+        install_pointer_sink(&host, Some(sink));
+        host.backend().borrow_mut().keyboard_sink =
+            Some(KeyboardSink::new(|_| KeyOutcome::PreventDefault, || {}));
+
+        user_activity::reset_for_tests();
+        EventSink::pointer_down(
+            &mut host,
+            PointerEvent { id: PointerId::MOUSE, button: PointerButton::Primary, position: (1.0, 1.0) },
+        );
+        assert_eq!((user_activity::count(), log.events.borrow().len()), (1, 1), "claimed press");
+        user_activity::reset_for_tests();
+        EventSink::scroll(&mut host, ScrollEvent { position: (1.0, 1.0), delta: (0.0, 1.0) });
+        assert_eq!(user_activity::count(), 1, "claimed wheel");
+        user_activity::reset_for_tests();
+        assert!(
+            EventSink::key(&mut host, &physical(Key::Character, Some("w"), "KeyW", true)),
+            "the keyboard sink's claim stands"
+        );
+        assert_eq!(user_activity::count(), 1, "claimed key");
     }
 }

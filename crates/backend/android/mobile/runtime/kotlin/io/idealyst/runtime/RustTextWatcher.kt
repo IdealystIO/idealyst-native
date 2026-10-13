@@ -30,10 +30,22 @@ class RustTextWatcher(private val nativePtr: Long) : TextWatcher {
     @JvmField
     var suppress: Boolean = false
 
+    /**
+     * Set to `true` around an app-initiated edit that must still reach
+     * `on_change` (`insert_text` in `text_input.rs`): the edit is not the
+     * person typing, so it must not count as user activity.
+     */
+    @JvmField
+    var appEdit: Boolean = false
+
     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
     override fun afterTextChanged(s: Editable?) {
         if (suppress) return
+        // Soft-keyboard typing commits through the InputConnection and
+        // never passes the window's `dispatchKeyEvent`, so a user edit is
+        // the only signal that the person is typing (`RustUserActivity`).
+        if (!appEdit) RustUserActivity.onUserTextEdit()
         nativeChanged(nativePtr, s?.toString() ?: "")
     }
 

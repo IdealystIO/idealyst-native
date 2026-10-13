@@ -61,8 +61,10 @@
 //! (`x11_lock.rs`: confined grab + warp-to-centre); on Wayland GTK4
 //! exposes no way to lock, so a request is reported refused. Focus,
 //! visibility, reduce motion and the pointer kind are observed by
-//! [`app_situation`]. The pure translation rules live in `keymap.rs` /
-//! `pointer_policy.rs`, testable on any host.
+//! [`app_situation`]. The `user_activity()` heartbeat is one more
+//! capture-phase controller on the host window ([`user_activity`]),
+//! observe-only and always installed. The pure translation rules live in
+//! `keymap.rs` / `pointer_policy.rs`, testable on any host.
 //!
 //! ## Debugging layout
 //!
@@ -143,6 +145,7 @@ mod x11_lock;
 mod text;
 mod text_area;
 mod transform;
+pub mod user_activity;
 mod view;
 
 use transform::NodeTransform;
@@ -774,6 +777,10 @@ pub struct LinuxBackend {
     /// Focus / visibility / reduce-motion / pointer-kind observers,
     /// installed at boot (`newcore::start`). See `app_situation.rs`.
     pub(crate) app_situation: Option<app_situation::AppSituation>,
+    /// The `user_activity()` observer (capture-phase legacy controller),
+    /// installed at boot (`newcore::start_with`) and raised above each app
+    /// key / pointer source as it is installed. See `user_activity.rs`.
+    pub(crate) user_activity: Option<user_activity::UserActivitySource>,
 }
 
 // The `LinuxExternalRegistrar` / `LinuxNavigatorRegistrar` inventory
@@ -820,6 +827,7 @@ impl LinuxBackend {
             app_pointer: None,
             cursor_hidden: false,
             app_situation: None,
+            user_activity: None,
         }
     }
 
@@ -836,6 +844,11 @@ impl LinuxBackend {
         if let Some(sink) = sink {
             self.app_pointer =
                 Some(app_pointer::AppPointerSource::install(&self.host_window, sink, self.cursor_hidden));
+            // The new source `Stop`s claimed presses; keep the activity
+            // observer ahead of it. See `user_activity.rs`.
+            if let Some(activity) = &self.user_activity {
+                activity.raise();
+            }
         }
     }
 
@@ -868,6 +881,11 @@ impl LinuxBackend {
         }
         if let Some(sink) = sink {
             self.app_keys = Some(app_keys::AppKeySource::install(&self.host_window, sink));
+            // The new source `Stop`s claimed keys; keep the activity
+            // observer ahead of it. See `user_activity.rs`.
+            if let Some(activity) = &self.user_activity {
+                activity.raise();
+            }
         }
     }
 

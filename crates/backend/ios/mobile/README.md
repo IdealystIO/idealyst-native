@@ -140,6 +140,17 @@ Mechanism in `src/imp/pointer.rs` and `src/imp/app_state.rs`; pure halves
   active/background notifications; `UIAccessibilityIsReduceMotionEnabled`
   + its change notification; primary pointer `Coarse`, `Fine` while a
   `GCMouse` is connected.
+- **User activity** (`user_activity()`, `src/imp/activity.rs`): an
+  `IdealystActivityRecognizer` on every app window (existing ones at boot,
+  later ones via `UIWindowDidBecomeVisibleNotification`; UIKit's private
+  keyboard windows skipped by `user_activity_policy`). It reports in
+  `touchesBegan:` and sets itself `Failed` at once, so it never delays,
+  cancels or competes for a touch. Typing is observed through the
+  text-field / text-view change notifications. Installed by both the local
+  boot and the runtime-server boot. Checked on the iOS 26.5 simulator with
+  `examples/user-activity` driven by `idb` touches: button, scroll, text
+  field, typing, overlay content and empty space each tick it, and the
+  button still receives its tap. See `docs/user-activity.md`.
 
 There is no simulator/device test harness in this crate; only the pure
 policy is tested (`cargo test -p backend-ios-mobile --lib`). The GCMouse

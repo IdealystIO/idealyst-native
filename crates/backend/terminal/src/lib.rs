@@ -711,6 +711,9 @@ impl TerminalBackend {
     /// change on its next microtask (`try_borrow_mut` + retry) — correct,
     /// just one tick later.
     pub fn dispatch_key(&mut self, key: &TerminalKey) -> bool {
+        if key_is_activity(key) {
+            report_user_activity();
+        }
         if let Some(sink) = self.keyboard_sink.clone() {
             if Self::run_sink(&sink, key) {
                 return true;
@@ -727,6 +730,9 @@ impl TerminalBackend {
     /// effects touch the backend. Only the focused-input path then
     /// borrows mutably.
     pub fn dispatch_key_in(backend: &RefCell<Self>, key: &TerminalKey) -> bool {
+        if key_is_activity(key) {
+            report_user_activity();
+        }
         let sink = backend.borrow().keyboard_sink.clone();
         if let Some(sink) = sink {
             if Self::run_sink(&sink, key) {
@@ -764,11 +770,23 @@ impl TerminalBackend {
     /// [`TerminalPointer`] for units). Returns `true` when a listener
     /// claimed it (`PreventDefault`) — the host then skips its own
     /// handling: the click dispatch for a `Down`, the scroll-view scroll
-    /// for a `Wheel`. A no-op returning `false` when no sink is installed.
+    /// for a `Wheel`. Returns `false` when no sink is installed.
+    ///
+    /// Also the terminal's `user_activity()` source: a `Down` or `Wheel`
+    /// ticks the heartbeat whether or not a sink is installed or claims it.
     ///
     /// Same borrow discipline as [`Self::dispatch_key_in`]: the sink runs
     /// with the backend unborrowed.
     pub fn dispatch_pointer_in(backend: &RefCell<Self>, p: &TerminalPointer) -> bool {
+        // Activity first, with no sink required: the host calls this for
+        // EVERY mouse event (it is the front door ahead of
+        // `dispatch_click` / `dispatch_scroll`), so this is the one place
+        // a press or wheel is seen whether or not an app pointer listener
+        // is live. Reporting from `dispatch_click` / `dispatch_scroll`
+        // too would double-count each press.
+        if pointer_is_activity(p) {
+            report_user_activity();
+        }
         let (sink, ev) = {
             let mut b = backend.borrow_mut();
             let Some(sink) = b.pointer_sink.clone() else { return false };
@@ -846,6 +864,33 @@ enum HitTarget {
 fn report_app_state(change: runtime_shared::app_state::AppStateChange) {
     runtime_shared::app_state::report(change);
     newcore::schedule_flush();
+}
+
+/// Feed the app-wide `user_activity()` heartbeat
+/// (`runtime_shared::user_activity`) and queue the flush that commits it
+/// when it ticked. Observe-only: called from the input entry points
+/// before (and regardless of) the sink / host handling, so a press a
+/// listener claims with `PreventDefault` is still activity.
+fn report_user_activity() {
+    if runtime_shared::user_activity::report() {
+        newcore::schedule_flush();
+    }
+}
+
+/// Whether a key event is user activity: every press, auto-repeat
+/// included (holding a key is using the app). Releases are not — they
+/// follow a press that already counted, and a terminal that reports
+/// releases would otherwise tick twice per keystroke.
+fn key_is_activity(key: &TerminalKey) -> bool {
+    key.pressed
+}
+
+/// Whether a mouse event is user activity: a button going down or a
+/// wheel notch. Moves and releases are not (the activity contract is
+/// press / key / wheel, the same set every backend reports — hover is
+/// not "using the app").
+fn pointer_is_activity(p: &TerminalPointer) -> bool {
+    matches!(p.kind, TerminalPointerKind::Down(_) | TerminalPointerKind::Wheel(..))
 }
 
 /// Host-side key event. Re-defined here so the backend doesn't pull
@@ -1904,5 +1949,74 @@ fn measure_text(
     TaffySize {
         width: known.width.unwrap_or(longest as f32 * cw),
         height: known.height.unwrap_or(lines as f32 * ch),
+    }
+}
+
+#[cfg(test)]
+mod user_activity_tests {
+    //! The terminal's `user_activity()` source: key presses, mouse downs
+    //! and wheel notches tick the heartbeat through the host's own entry
+    //! points; moves, releases and key-ups do not.
+    //!
+    //! ## The bug this pins
+    //!
+    //! The terminal backend fed nothing into
+    //! `runtime_shared::user_activity`, so a kiosk / session-timeout idle
+    //! clock built on `user_activity()` expired while the person was
+    //! typing and clicking in a terminal app.
+    //!
+    //! Each check starts from `reset_for_tests()`: the throttle reads the
+    //! process-global clock, which another test in this binary may have
+    //! installed, so two reports in one check could legitimately collapse
+    //! into one tick.
+    use super::*;
+    use runtime_shared::pointer_input::{MouseButton, PointerOutcome, PointerSink};
+    use runtime_shared::user_activity;
+    use runtime_vocabulary::caps::AppEnvOps;
+
+    /// One dispatch from a fresh counter; returns the ticks it produced.
+    fn ticks(f: impl FnOnce()) -> u64 {
+        user_activity::reset_for_tests();
+        f();
+        user_activity::count()
+    }
+
+    #[test]
+    fn regression_terminal_input_never_reported_user_activity() {
+        let backend = RefCell::new(TerminalBackend::new());
+        let backend = &backend;
+        let ptr = |kind| {
+            let p = TerminalPointer::new(kind, 1, 1);
+            move || {
+                TerminalBackend::dispatch_pointer_in(backend, &p);
+            }
+        };
+        // No pointer sink installed: activity still ticks (the source is
+        // unconditional, not tied to an app pointer listener).
+        assert_eq!(ticks(ptr(TerminalPointerKind::Down(MouseButton::Primary))), 1, "mouse down");
+        assert_eq!(ticks(ptr(TerminalPointerKind::Wheel(0.0, 1.0))), 1, "wheel");
+        assert_eq!(ticks(ptr(TerminalPointerKind::Move)), 0, "a move is not activity");
+        assert_eq!(ticks(ptr(TerminalPointerKind::Up(MouseButton::Primary))), 0, "a release is not activity");
+
+        let w = TerminalKey::press("w");
+        assert_eq!(ticks(|| { TerminalBackend::dispatch_key_in(backend, &w); }), 1, "key press");
+        assert_eq!(ticks(|| { backend.borrow_mut().dispatch_key(&w); }), 1, "key press (&mut path)");
+        assert_eq!(ticks(|| { TerminalBackend::dispatch_key_in(backend, &w.released()); }), 0, "key up");
+    }
+
+    /// Observe-only: a press a listener claims (`PreventDefault`) is still
+    /// activity, and reporting it does not change the claim.
+    #[test]
+    fn terminal_claimed_press_still_counts_as_activity() {
+        let backend = RefCell::new(TerminalBackend::new());
+        backend.borrow_mut().set_pointer_sink(Some(PointerSink::new(
+            |_| PointerOutcome::PreventDefault,
+            |_| {},
+            || {},
+        )));
+        user_activity::reset_for_tests();
+        let down = TerminalPointer::new(TerminalPointerKind::Down(MouseButton::Primary), 1, 1);
+        assert!(TerminalBackend::dispatch_pointer_in(&backend, &down), "the listener's claim stands");
+        assert_eq!(user_activity::count(), 1);
     }
 }

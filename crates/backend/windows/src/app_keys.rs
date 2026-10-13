@@ -99,6 +99,9 @@ impl KeyboardSlot {
     /// messages, and every message while no sink is installed, return
     /// `false` untouched.
     pub fn pre_dispatch(&self, msg: &MSG) -> bool {
+        // `user_activity()` first, sink or not, swallowed or not — see
+        // `user_activity.rs` for why the pump is the seam.
+        crate::user_activity::observe_key(msg.message, crate::newcore::schedule_flush);
         let Some(down) = keymap::key_message_is_down(msg.message) else {
             return false;
         };
@@ -214,6 +217,29 @@ mod tests {
             },
             move || *lost.borrow_mut() += 1,
         )
+    }
+
+    /// `user_activity()` rides the pump: a key down ticks with no app key
+    /// listener (it is addressed to whatever child has focus, so the host
+    /// `WndProc` never sees it), a key the sink swallows still counts, and
+    /// a key up does not. Reset per check: the throttle reads the process
+    /// clock another test may install.
+    #[test]
+    fn regression_win32_pump_reports_key_activity() {
+        use runtime_shared::user_activity;
+        let slot = KeyboardSlot::default();
+        user_activity::reset_for_tests();
+        assert!(!slot.pre_dispatch(&key_msg(keymap::WM_KEYDOWN, 0x57, 0x11, false, false)));
+        assert_eq!(user_activity::count(), 1, "no sink: a key down counts");
+        user_activity::reset_for_tests();
+        slot.pre_dispatch(&key_msg(keymap::WM_KEYUP, 0x57, 0x11, false, true));
+        assert_eq!(user_activity::count(), 0, "a key up is not activity");
+
+        slot.set(Some(recording(Rc::default(), Rc::default())));
+        user_activity::reset_for_tests();
+        // Up arrow → the recording sink claims it.
+        assert!(slot.pre_dispatch(&key_msg(keymap::WM_KEYDOWN, 0x26, 0x48, true, false)), "the sink's claim stands");
+        assert_eq!(user_activity::count(), 1, "a swallowed key still counts");
     }
 
     #[test]

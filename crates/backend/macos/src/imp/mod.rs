@@ -36,6 +36,7 @@ pub(crate) mod virtual_grid;
 pub(crate) mod styled_text;
 pub(crate) mod text_style;
 pub(crate) mod transitions;
+pub(crate) mod user_activity;
 pub(crate) mod view;
 pub(crate) mod virtualizer;
 
@@ -149,6 +150,10 @@ pub struct MacosBackend {
     /// `imp/app_state.rs`), installed once per boot. Held for the backend's
     /// lifetime; replacing them drops (and so unregisters) the old set.
     app_state_observers: Vec<Retained<NSObject>>,
+    /// The app-wide user-activity monitor (`imp/user_activity.rs`),
+    /// installed once per boot. Dropping it (with the backend, or on a
+    /// re-install) removes the `NSEvent` monitor.
+    user_activity: Option<user_activity::UserActivitySource>,
     /// Per-view cached animation state. Keyed by view pointer;
     /// holds the translate/scale/rotate components so writing one
     /// doesn't destroy the others (CALayer's `transform` is a single
@@ -615,6 +620,7 @@ impl MacosBackend {
             app_keyboard: None,
             app_pointer: None,
             app_state_observers: Vec::new(),
+            user_activity: None,
             animated_states: HashMap::new(),
             sticky_registry: HashMap::new(),
             pending_sticky: HashMap::new(),
@@ -2952,6 +2958,20 @@ impl MacosBackend {
     /// `imp/app_state.rs`.
     pub fn install_app_state_observers(&mut self, after_report: Rc<dyn Fn()>) {
         self.app_state_observers = app_state::install(self.mtm, after_report);
+    }
+
+    /// Install the app-wide user-activity source: one passive `NSEvent`
+    /// local monitor that calls `runtime_shared::user_activity::report` on
+    /// every press, key press, wheel or trackpad gesture in any of the app's
+    /// windows and returns the event unchanged; `after_report` runs after
+    /// every report that ticked. Called once per boot by
+    /// `newcore::start_with`; a second call replaces (and so removes) the
+    /// first monitor. See `imp/user_activity.rs`.
+    pub fn install_user_activity_source(&mut self, after_report: Rc<dyn Fn()>) {
+        // Drop the old monitor before adding the new one so the two never
+        // both report the same event.
+        self.user_activity = None;
+        self.user_activity = user_activity::install(after_report);
     }
 
     /// Whether the pointer source currently holds a hidden cursor (lock or

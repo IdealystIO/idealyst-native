@@ -168,6 +168,9 @@ pub unsafe fn ios_main_with_register(
 
         let mut backend = IosBackend::new(mtm);
         backend.set_host_root(view.clone());
+        // `user_activity()` source: ticks the device substrate, which
+        // `RuntimeServerShell::tick` relays to the sidecar's author code.
+        crate::imp::activity::install(mtm);
 
         // Register the compiled-in SDK handlers (no-op for the
         // back-compat `ios_main`). Must run before the shell spawns so

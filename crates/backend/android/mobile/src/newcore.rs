@@ -368,6 +368,26 @@ pub(crate) fn report_app_state(change: runtime_shared::app_state::AppStateChange
     schedule_flush();
 }
 
+/// The person touched, typed, scrolled or wheeled: tick
+/// `runtime_shared::user_activity` and, when the tick wasn't throttled,
+/// queue the flush that commits what its listeners staged. Called from the
+/// `RustUserActivity.nativeReport` trampoline (`imp/user_activity.rs`) — a
+/// raw window-callback / `TextWatcher` callback outside every
+/// framework-wrapped handler, so nothing else would commit those writes.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn report_user_activity() {
+    report_user_activity_at(runtime_shared::time::now_micros());
+}
+
+/// [`report_user_activity`] with an explicit clock reading (host tests
+/// drive the throttle deterministically through it). A throttled report
+/// staged nothing, so it queues no flush.
+fn report_user_activity_at(now: u64) {
+    if runtime_shared::user_activity::report_at(now) {
+        schedule_flush();
+    }
+}
+
 /// Run `f` with the mounted app's world ambient (`World::enter`).
 /// JNI-interop seam: exports that must CREATE reactive state
 /// (`signal()`, `memo()`) run outside any handler/effect, where no
@@ -2044,6 +2064,58 @@ mod tests {
         assert_eq!(*seen.borrow(), vec![true, false]);
         set_flush_world(None);
         app_state::reset_for_tests();
+    }
+
+    /// `user_activity()` on Android: the window-callback trampoline
+    /// (`RustUserActivity.nativeReport`) runs outside every framework
+    /// handler, so a listener's staged write only lands if the report
+    /// itself queues the flush. Regression guard for "the idle clock
+    /// never resets on Android" — without `schedule_flush` the effect
+    /// below never re-runs.
+    #[test]
+    fn report_user_activity_commits_through_flush() {
+        use runtime_shared::user_activity;
+        install_test_scheduler();
+        user_activity::reset_for_tests();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        let ticks = world.enter(|| signal(0u64));
+        let _guard = user_activity::add_listener(move |n| ticks.set(n));
+        let seen: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        world.enter(|| {
+            let seen = seen.clone();
+            effect(move || seen.borrow_mut().push(ticks.get()));
+        });
+
+        report_user_activity();
+        pump();
+        assert_eq!(*seen.borrow(), vec![0, 1], "the report ticked and its flush committed the write");
+        set_flush_world(None);
+        user_activity::reset_for_tests();
+    }
+
+    /// A report inside the throttle window (a scroll burst within one
+    /// frame) ticks nothing, so it must not queue a flush per event.
+    #[test]
+    fn throttled_user_activity_report_queues_no_flush() {
+        use runtime_shared::user_activity::{self, MIN_TICK_INTERVAL_MICROS};
+        const T0: u64 = 1_000_000;
+        install_test_scheduler();
+        user_activity::reset_for_tests();
+
+        report_user_activity_at(T0);
+        assert_eq!(QUEUE.with(|q| q.borrow().len()), 1, "first report ticks and queues the flush");
+        pump();
+
+        report_user_activity_at(T0 + MIN_TICK_INTERVAL_MICROS - 1);
+        assert_eq!(user_activity::count(), 1, "inside one frame: throttled");
+        assert_eq!(QUEUE.with(|q| q.borrow().len()), 0, "throttled report queues nothing");
+
+        report_user_activity_at(T0 + MIN_TICK_INTERVAL_MICROS);
+        assert_eq!(user_activity::count(), 2);
+        assert_eq!(QUEUE.with(|q| q.borrow().len()), 1, "next frame ticks and flushes again");
+        pump();
+        user_activity::reset_for_tests();
     }
 
     /// The dispatch hook wired to `schedule_flush` (what `start`

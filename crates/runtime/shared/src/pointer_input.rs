@@ -382,6 +382,12 @@ fn sink() -> PointerSink {
 }
 
 fn dispatch(raw: &AppPointerEvent) -> PointerOutcome {
+    // A button press or wheel is user activity (see the same hook in
+    // `key_input::dispatch`). Moves are not: a mouse resting on a desk
+    // can jitter, and hover alone shouldn't hold off an idle timeout.
+    if matches!(raw.phase, PointerPhase::Down | PointerPhase::Wheel) {
+        crate::user_activity::report();
+    }
     let mut event = raw.clone();
     let listeners = STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -578,6 +584,18 @@ mod tests {
         request_lock();
         assert!(is_source_installed());
         assert_eq!(*host.commands.borrow(), vec!["sink true", "sink false", "sink true", "lock true"]);
+    }
+
+    /// Presses and wheel tick `user_activity()`; plain movement doesn't.
+    #[test]
+    fn down_and_wheel_tick_user_activity_but_move_does_not() {
+        let host = wire();
+        let _l = add_listener(|_| PointerOutcome::Default);
+        for (phase, ticks) in [(PointerPhase::Move, 0), (PointerPhase::Down, 1), (PointerPhase::Wheel, 1)] {
+            crate::user_activity::reset_for_tests();
+            sink_of(&host).event(&AppPointerEvent::new(phase, 1.0, 1.0));
+            assert_eq!(crate::user_activity::count(), ticks, "{phase:?}");
+        }
     }
 
     #[test]

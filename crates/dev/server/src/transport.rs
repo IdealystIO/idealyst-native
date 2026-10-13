@@ -1047,6 +1047,8 @@ fn handle_app_msg(
         // Single-process mode: no sidecar session to relay the keyboard
         // to (the sidecar branch above forwards it).
         AppToDev::KeyboardChanged { .. } => {}
+        // Same for user activity (the sidecar branch forwards it).
+        AppToDev::UserActivity { .. } => {}
         AppToDev::ViewportChanged { .. } => {
             // Single-process mode: the host process IS the renderer,
             // so the browser's resize events don't need to flow to

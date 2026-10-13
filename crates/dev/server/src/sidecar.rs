@@ -1752,6 +1752,12 @@ mod runtime {
                     easing,
                 ));
             }
+            UserActivity { .. } => {
+                // The device already throttled; tick the session's
+                // `user_activity()` once per relayed message (committed by
+                // the post-dispatch flush, like `KeyboardChanged`).
+                runtime_shared::user_activity::report_relayed();
+            }
             Event { handler, args } => {
                 let _ = recorder.dispatch_event(handler, args);
             }
@@ -1867,6 +1873,35 @@ mod keyboard_relay_tests {
         })
         .join()
         .expect("keyboard relay reaches author code");
+    }
+}
+
+#[cfg(test)]
+mod user_activity_relay_tests {
+    use super::*;
+
+    /// Regression: under runtime-server dev the device's activity source
+    /// ticks the DEVICE substrate, but author `user_activity()` runs here.
+    /// Without the relay a kiosk idle clock in the sidecar ran down while
+    /// the person was touching the device. The message must survive the
+    /// JSON codec and tick the session's signal once per message.
+    #[test]
+    fn regression_device_activity_reaches_sidecar_author_code() {
+        std::thread::spawn(|| {
+            runtime_shared::user_activity::reset_for_tests();
+            let msg = wire::AppToDev::UserActivity { count: 41 };
+            let json = serde_json::to_vec(&msg).unwrap();
+            let back: wire::AppToDev = serde_json::from_slice(&json).unwrap();
+            assert!(matches!(back, wire::AppToDev::UserActivity { count: 41 }), "{back:?}");
+
+            let world = runtime_world::World::new();
+            let activity = world.enter(runtime_vocabulary::user_activity::user_activity);
+            runtime_shared::user_activity::report_relayed();
+            world.flush();
+            assert_eq!(world.enter(|| activity.get()), 1);
+        })
+        .join()
+        .expect("activity relay reaches author code");
     }
 }
 

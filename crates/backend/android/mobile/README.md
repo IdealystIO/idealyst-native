@@ -40,6 +40,23 @@ The Rust crate calls into these classes via `find_class` and
 `new_object`), and the Kotlin glue calls back into Rust where needed
 (`RustClickListener.onClick` → `nativeInvoke` → Rust closure).
 
+## User activity
+
+`runtime_shared::user_activity` (author API `user_activity()`) is fed by
+`RustUserActivity` (Kotlin) + `src/imp/user_activity.rs`, installed at boot
+unconditionally. A pass-through `Window.Callback` wrapper on the Activity
+window reports on touch down / pointer down, key down and generic
+`ACTION_SCROLL` / `ACTION_BUTTON_PRESS`, then calls the original callback and
+returns its result unchanged. Portals and overlays are views in that window,
+so they are covered; the screen-recorder private-layer window (no
+`Window.Callback`) reports from `RustOverlayPassthrough`. Soft-keyboard
+typing never reaches `dispatchKeyEvent`, so `RustTextWatcher` reports user
+edits (not `update_value` / `insert_text`). A mouse event the app-level
+pointer sink consumes is reported by `RustPointerWindowCallback`. The flush
+is scheduled only when a report ticks (throttled to one tick per frame);
+`newcore::tests::{report_user_activity_commits_through_flush,
+throttled_user_activity_report_queues_no_flush}` cover that half on the host.
+
 ## Using `backend-android` in an Android app
 
 Two ingredients:
