@@ -1361,7 +1361,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.12.0"
+version = "1.13.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.17.0"
+version = "1.18.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "gtk4",
  "inventory",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.14.0"
+version = "1.15.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "backend-terminal"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "parity-goldens",
  "runtime-layout",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.8.0"
+version = "2.9.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "raw-window-handle",
  "runtime-layout",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.9.1"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -7613,7 +7613,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10311,14 +10311,14 @@ dependencies = [
 
 [[package]]
 name = "render-api"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "runtime-shared",
 ]
 
 [[package]]
 name = "render-wgpu"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -10675,7 +10675,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-server-shell-native"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "dev-client",
  "runtime-shared",
@@ -10687,7 +10687,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.21.0"
+version = "1.22.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10716,7 +10716,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -15437,7 +15437,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "dev-client",
  "dev-server",
