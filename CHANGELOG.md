@@ -949,6 +949,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A `Table`'s bottom edge is no longer a double line** (`idea-ui`,
+  `table`). Every cell drew a 1px row divider, the last row's included,
+  and the table frame drew its own 1px border right under it, so the
+  bottom read 2px against 1px everywhere else; a `TableFooter` totals row
+  doubled the same way. The row that renders last (the footer's, when
+  there is one, wherever it is written) now drops its divider, through
+  a new `divider` axis on `TableHeadCell` / `TableBodyCell`, so the
+  cells still premint. A table with a `footer_slot` keeps the divider,
+  because there it separates the rows from the slot. New table SDK
+  helper `visit_last_rendered_row`. Apps that zeroed the last row's
+  `border_bottom_width` by hand to work around this can drop that code.
+
 - **A component's props are documented from its own props struct, not
   a same-named one elsewhere** (`mcp-catalog`, `mcp-server`, docs-app).
   A param names its props struct by bare ident, and the catalog joined it

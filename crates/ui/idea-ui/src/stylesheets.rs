@@ -2394,6 +2394,15 @@ stylesheet! {
         // highlights the slot under it. Inert until a custom
         // implementation selects them via `table::set_cell_style` on
         // the base application. Shared-signal axes like `row_hovered`.
+        // Row divider (the cell's bottom border). `Table` selects `off`
+        // on the row it renders LAST when nothing sits below the rows:
+        // there the frame's own bottom border is the edge, and the
+        // divider stacked on it read as a 2px double line.
+        variant divider {
+            #[default]
+            on(_t) {}
+            off(_t) { border_bottom_width: 0.0 }
+        }
         variant dragging {
             #[default]
             off(_t) {}
@@ -2587,6 +2596,15 @@ stylesheet! {
         }
         // Author-wired drag-and-drop feedback vocabulary — see
         // `TableHeadCell`.
+        // Row divider (the cell's bottom border). `Table` selects `off`
+        // on the row it renders LAST when nothing sits below the rows:
+        // there the frame's own bottom border is the edge, and the
+        // divider stacked on it read as a 2px double line.
+        variant divider {
+            #[default]
+            on(_t) {}
+            off(_t) { border_bottom_width: 0.0 }
+        }
         variant dragging {
             #[default]
             off(_t) {}
@@ -2699,7 +2717,8 @@ stylesheet! {
 // inside the table's frame but outside its horizontal scroller. Cell
 // padding, so slot content lines up with the first column's text; the
 // header slot draws the hairline between itself and the rows (the
-// footer slot needs none — the last row's own divider is above it).
+// footer slot needs none — the last row keeps its own divider when a
+// footer slot follows it; see the `divider` axis on the cell sheets).
 stylesheet! {
     pub TableSlot<IdeaThemeRef> {
         base(t) {

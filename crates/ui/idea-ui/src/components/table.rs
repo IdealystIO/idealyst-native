@@ -361,6 +361,18 @@ pub fn Table(props: TableProps) -> Element {
             });
         }
     }
+    // The row rendered last loses its divider unless a footer slot sits
+    // below it: otherwise the frame's bottom border is directly under that
+    // divider and the two read as one 2px line. Static selection, so the
+    // cells stay preminted; header cells carry the axis too, for a table
+    // that is only a header row.
+    if props.footer_slot.is_none() {
+        table::visit_last_rendered_row(&children, |row| {
+            table::visit_row_cells(row, |cell| {
+                table::map_cell_application(cell, Rc::new(|app| app.with("divider", "off")));
+            });
+        });
+    }
     let header_slot = props.header_slot.map(|slot| {
         let style = TableSlot().into_style_application().with("edge", "top");
         ui! { view(style = style) { slot } }
@@ -1841,6 +1853,134 @@ mod tests {
                     assert_eq!(pad, Some(expect), "{density:?}");
                 }
             }
+        });
+    }
+
+    /// The cells of a table that may be WRAPPED (scroll-x / frame slots):
+    /// the surface view holds [header slot?, content, footer slot?], and a
+    /// scroll-x content is a horizontal scroller around the plain table.
+    fn any_grid_cells(t: Element, wrapped: bool, header_slot: bool, scroll_x: bool) -> Vec<Element> {
+        if !wrapped {
+            return grid_cells(t);
+        }
+        let surface = match peel_owned_keepalive(t) {
+            Element::Item { children, .. } => children,
+            _ => panic!("a wrapped table lowers to its surface view"),
+        };
+        let content = surface.into_iter().nth(header_slot as usize).expect("surface holds the rows");
+        if !scroll_x {
+            return grid_cells(content);
+        }
+        match peel_owned_keepalive(content) {
+            Element::Item { children, .. } => {
+                grid_cells(children.into_iter().next().expect("the scroller wraps the table"))
+            }
+            _ => panic!("scroll-x content is the scroller"),
+        }
+    }
+
+    /// Each rendered cell's bottom-divider width, in render order.
+    fn dividers(cells: Vec<Element>) -> Vec<Option<f32>> {
+        cells
+            .into_iter()
+            .map(|cell| {
+                let app = cell_app(cell);
+                assert!(app.preminted_class_list().is_some(), "the divider selection premints");
+                runtime_core::resolve_style(&app).border_bottom_width.as_ref().map(|w| w.resolve())
+            })
+            .collect()
+    }
+
+    fn row_of(cells: Vec<Element>) -> Element {
+        TableRow(TableRowProps { children: cells, ..Default::default() })
+    }
+
+    fn head_cell(text: &str) -> Element {
+        TableCell(TableCellProps {
+            header: true,
+            text: Reactive::Static(Some(text.into())),
+            ..Default::default()
+        })
+    }
+
+    /// REGRESSION (idea-ui 4.0.0): the bottom edge of every table was a
+    /// double line. Every cell drew its row divider — the last row's
+    /// included — and the frame drew its own 1px border right under it.
+    /// The row rendered last must drop its divider; every other row keeps
+    /// one.
+    #[test]
+    fn regression_table_bottom_edge_is_not_a_double_line() {
+        with_test_world(|| {
+            for scroll_x in [false, true] {
+                let t = Table(TableProps {
+                    children: vec![
+                        row_of(vec![head_cell("Name"), head_cell("Hours")]),
+                        row_of(vec![body_cell("Ana"), body_cell("8")]),
+                        row_of(vec![body_cell("Bo"), body_cell("6")]),
+                    ],
+                    scroll_x,
+                    ..Default::default()
+                });
+                assert_eq!(
+                    dividers(any_grid_cells(t, scroll_x, false, scroll_x)),
+                    vec![Some(1.0), Some(1.0), Some(1.0), Some(1.0), Some(0.0), Some(0.0)],
+                    "scroll_x = {scroll_x}: only the last row drops its divider"
+                );
+            }
+        });
+    }
+
+    /// A footer renders after the body rows wherever it is written, so
+    /// ITS last row is the one against the frame — a totals foot doubled
+    /// the same way. Written first here to prove the choice follows render
+    /// order, not source order.
+    #[test]
+    fn regression_table_footer_is_the_last_row_wherever_written() {
+        with_test_world(|| {
+            let foot = TableFooter(TableFooterProps {
+                children: vec![row_of(vec![body_cell("Total"), body_cell("14")])],
+            });
+            let t = Table(TableProps {
+                children: vec![
+                    foot,
+                    row_of(vec![head_cell("Name"), head_cell("Hours")]),
+                    row_of(vec![body_cell("Ana"), body_cell("8")]),
+                ],
+                ..Default::default()
+            });
+            assert_eq!(
+                dividers(grid_cells(t)),
+                vec![Some(1.0), Some(1.0), Some(1.0), Some(1.0), Some(0.0), Some(0.0)],
+                "the body's last row keeps its divider above the foot"
+            );
+        });
+    }
+
+    /// With a footer slot below the rows, the last row's divider IS the
+    /// line between rows and slot — the frame's border is under the slot —
+    /// so it stays.
+    #[test]
+    fn table_footer_slot_keeps_the_last_row_divider() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![head_cell("Name")]), row_of(vec![body_cell("Ana")])],
+                footer_slot: Some(runtime_core::text("Add entry".to_string()).into_element()),
+                ..Default::default()
+            });
+            assert_eq!(dividers(any_grid_cells(t, true, false, false)), vec![Some(1.0), Some(1.0)]);
+        });
+    }
+
+    /// A table that is only its header row: the header cells are the last
+    /// row, so they carry the axis too.
+    #[test]
+    fn header_only_table_drops_the_header_divider() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![head_cell("Name"), head_cell("Hours")])],
+                ..Default::default()
+            });
+            assert_eq!(dividers(grid_cells(t)), vec![Some(0.0), Some(0.0)]);
         });
     }
 }

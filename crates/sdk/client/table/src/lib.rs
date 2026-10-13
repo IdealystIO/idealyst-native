@@ -1280,6 +1280,32 @@ pub fn visit_rows(el: &Element, mut f: impl FnMut(&Element)) {
     for_each_row(el, &mut |r| f(r));
 }
 
+/// Visit the row a table's children will RENDER last: the last row of the
+/// last footer section when there is one (a footer renders after every
+/// body row wherever it was written — `<tfoot>` on web, [`build_table`]'s
+/// body-then-foot order on native), otherwise the last body row. No call
+/// for a table with no rows. Owned-peeled, like [`visit_rows`].
+///
+/// The theme layer uses it to drop the last row's divider, which would
+/// otherwise stack on the table frame's own bottom border.
+pub fn visit_last_rendered_row(children: &[Element], f: impl FnOnce(&Element)) {
+    fn is_foot(el: &Element) -> bool {
+        match el {
+            Element::Owned { element, .. } => is_foot(element),
+            Element::Item { data, .. } => data.downcast_ref::<PrimCell<TableFootPrim>>().is_some(),
+            _ => false,
+        }
+    }
+    let any_foot = children.iter().any(is_foot);
+    let mut last: Option<&Element> = None;
+    for child in children.iter().filter(|c| is_foot(c) == any_foot) {
+        for_each_row(child, &mut |r| last = Some(r));
+    }
+    if let Some(row) = last {
+        f(row);
+    }
+}
+
 /// Replace a built cell's style in place (no-op for non-cells, so a
 /// caller that hands over an unexpected element shape is harmless).
 /// Sound because the payload is not yet mounted: realization takes it
