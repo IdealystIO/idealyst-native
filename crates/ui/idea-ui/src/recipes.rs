@@ -607,14 +607,17 @@ recipe!(
 recipe!(
     Avatar,
     /// A round user chip. Pass `src` for a photo, or `initials` to render
-    /// a colored monogram when there's no image. `color` picks the
-    /// monogram palette and `size` scales the circle.
+    /// a colored monogram when there's no image. `tone` picks the color —
+    /// a palette hue (`tone::Violet`), or `tone::palette_from_seed(..)` for
+    /// a stable per-user color — `variant` the fill (Soft by default,
+    /// `variant::Filled` for a solid disc), and `size` scales the circle.
     pub fn avatar_initials() -> ::runtime_core::Element {
-        use crate::{Avatar, AvatarColor, AvatarSize};
+        use crate::{tone, variant, Avatar, AvatarSize};
         use ::runtime_core::ui;
 
         ui! {
-            Avatar(initials = "AL", color = AvatarColor::Primary, size = AvatarSize::Lg)
+            Avatar(initials = "AL", tone = tone::palette_from_seed("ada@lovelace.dev"), size = AvatarSize::Lg)
+            Avatar(initials = "GH", tone = tone::Teal, variant = variant::Filled, size = AvatarSize::Lg)
         }
     }
 );

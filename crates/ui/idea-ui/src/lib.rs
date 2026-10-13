@@ -183,7 +183,7 @@ pub use components::alert::{Alert, AlertClose, AlertProps};
 pub use components::autocomplete::{
     Autocomplete, AutocompleteProps, AutocompleteSlot, AutocompleteSlotCx,
 };
-pub use components::avatar::{Avatar, AvatarColor, AvatarProps, AvatarSize};
+pub use components::avatar::{Avatar, AvatarProps, AvatarSize};
 pub use components::badge::{Badge, BadgeProps};
 pub use components::button::{Button, ButtonProps};
 pub use components::breadcrumbs::{Breadcrumbs, BreadcrumbsProps, Crumb};

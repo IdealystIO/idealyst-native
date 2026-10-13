@@ -1391,73 +1391,9 @@ stylesheet! {
 // Avatar — circular container + text overlay.
 // =============================================================================
 
-// Avatar takes a `color` axis (not an intent) — the placeholder
-// background uses the named color's soft tint, with the matching
-// soft_text on top. Picked separately from Intent because Avatar is
-// not a semantic action; it's a person/object placeholder.
-stylesheet! {
-    pub Avatar<IdeaThemeRef> {
-        base(t) {
-            border_radius: t.radius.pill(),
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-            // Hug: a row of mixed-size avatars centers rather than
-            // top-aligning under the parent's default `align-items: stretch`.
-            // Base rule, not a computed layer — it's constant, and a constant
-            // closure blocks premint for the whole sheet.
-            align_self: runtime_core::AlignSelf::Center,
-            overflow: runtime_core::Overflow::Hidden,
-            // Default to neutral wash so a no-prop Avatar reads as a
-            // generic placeholder rather than a colored chip.
-            background: t.intent.neutral.soft_bg(),
-            color: t.intent.neutral.soft_text(),
-        }
-        variant size {
-            xs(_t) { width: 24.0, height: 24.0 }
-            sm(_t) { width: 32.0, height: 32.0 }
-            #[default]
-            md(_t) { width: 40.0, height: 40.0 }
-            lg(_t) { width: 56.0, height: 56.0 }
-            xl(_t) { width: 80.0, height: 80.0 }
-        }
-        variant color {
-            #[default]
-            neutral(t) {
-                background: t.intent.neutral.soft_bg(),
-                color: t.intent.neutral.soft_text(),
-            }
-            primary(t) {
-                background: t.intent.primary.soft_bg(),
-                color: t.intent.primary.soft_text(),
-            }
-            secondary(t) {
-                background: t.intent.secondary.soft_bg(),
-                color: t.intent.secondary.soft_text(),
-            }
-            success(t) {
-                background: t.intent.success.soft_bg(),
-                color: t.intent.success.soft_text(),
-            }
-            danger(t) {
-                background: t.intent.danger.soft_bg(),
-                color: t.intent.danger.soft_text(),
-            }
-            warning(t) {
-                background: t.intent.warning.soft_bg(),
-                color: t.intent.warning.soft_text(),
-            }
-            info(t) {
-                background: t.intent.info.soft_bg(),
-                color: t.intent.info.soft_text(),
-            }
-        }
-        transitions {
-            background: 250ms EaseInOut,
-            color: 250ms EaseInOut,
-        }
-    }
-}
-
+// The disc and the initials are tone × variant sheets built by
+// `idea_theme::extensible::AvatarSheetBuilder` (open tone set: the semantic
+// tones plus the palette hues); only the photo's fill rule lives here.
 stylesheet! {
     // The photo inside the disc. Fill + `Cover`, because the container
     // is a fixed-size clipped circle: an UNSIZED image renders at its
@@ -1470,25 +1406,6 @@ stylesheet! {
             width: Length::pct(100.0),
             height: Length::pct(100.0),
             object_fit: runtime_core::ObjectFit::Cover,
-        }
-    }
-}
-
-stylesheet! {
-    pub AvatarText<IdeaThemeRef> {
-        base(_t) {
-            font_weight: FontWeight::SemiBold,
-            text_align: TextAlign::Center,
-            letter_spacing: 0.5,
-            text_transform: TextTransform::Uppercase,
-        }
-        variant size {
-            xs(_t) { font_size: 10.0, line_height: 24.0 }
-            sm(t) { font_size: t.typography.body_sm_size(), line_height: 32.0 }
-            #[default]
-            md(t) { font_size: t.typography.body_size(), line_height: 40.0 }
-            lg(_t) { font_size: 20.0, line_height: 56.0 }
-            xl(_t) { font_size: 28.0, line_height: 80.0 }
         }
     }
 }

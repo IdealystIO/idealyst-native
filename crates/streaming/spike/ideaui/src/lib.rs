@@ -14,7 +14,7 @@ use std::rc::Rc;
 use idea_ui::components::card;
 use idea_ui::{
     shape, size, tone, typography_kind, variant, Accordion, Autocomplete, AccordionItem, Adornment, Alert, AlertClose, Avatar,
-    AvatarColor, AvatarSize, Badge, Breadcrumbs, Button, Calendar, Card, CardPadding, Center, Checkbox, Chip, CivilDate,
+    AvatarSize, Badge, Breadcrumbs, Button, Calendar, Card, CardPadding, Center, Checkbox, Chip, CivilDate,
     CivilDateTime, CivilTime, Collapsible, Crumb, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Divider, DividerAxis, Field, FieldAppearance, FieldSize, Grid,
     Icon, IconButton, IconButtonSize, Image, Link, List, ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator,
     Modal, ModalContent, ModalPresentation, Pagination, Popover, Progress, ProgressMode, Radio, RadioAxis, RadioGroup,
@@ -92,7 +92,7 @@ pub fn status_demo() -> Element {
             Badge(label = s("Active"), tone = tone::Success, variant = variant::Soft)
             Tag(label = s("rust"), tone = tone::Info, on_remove = Some(act(move || closed.update(|n| n + 1))))
             Chip(label = s("filter"), selected = true, on_select = Some(act(|| {})))
-            Avatar(initials = s("AB"), color = AvatarColor::Primary, size = AvatarSize::Lg)
+            Avatar(initials = s("AB"), tone = tone::Violet, size = AvatarSize::Lg)
             Spinner(size = SpinnerSize::Large)
             Skeleton(width = SkeletonWidth::Half, height = 12.0f32)
             Progress(value = 0.4f32, tone = tone::Success)
