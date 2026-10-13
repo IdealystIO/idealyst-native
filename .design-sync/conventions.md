@@ -73,12 +73,16 @@ hard-coded hex or px:
 }}>…</div>
 ```
 
-Token families (full list in `tokens/tokens.css`, 74 tokens × light/dark):
+Token families (full list in `tokens/tokens.css`, light/dark):
 
 - `--color-*` — `background` `surface` `surface-alt` `text` `text-muted`
   `text-inverse` `border` `border-hover` `border-strong` `focus-ring` `overlay`
 - `--intent-<tone>-*` — `solid-bg` `solid-text` `soft-bg` `soft-text` `fg`
   `border`, for each of the seven tones
+- `--palette-<hue>-*` — the same six slots for each of the twelve
+  general-purpose hues (`red` `orange` `amber` `yellow` `lime` `green` `teal`
+  `cyan` `blue` `indigo` `violet` `pink`): color with no semantic meaning,
+  for avatars, user-colored tags, per-project badges
 - `--spacing-*` — `xs`(4) `sm`(8) `md`(12) `lg`(16) `xl`(24) `xxl`(32)
 - `--radius-*` — `sm`(4) `md`(8) `lg`(12) `pill`
 - `--typography-*-size` — `display`(40) `h1`(32) `h2`(24) `h3`(19)

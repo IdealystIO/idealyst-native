@@ -43,6 +43,11 @@ NOT an idea-ui-only facility:
 - `intents` — the seven semantic palettes (`primary`, `secondary`, `neutral`,
   `success`, `danger`, `warning`, `info`), each an `IntentColors` with six slots
   (`solid_bg`, `solid_text`, `soft_bg`, `soft_text`, `fg`, `border`).
+- `palette` — twelve general-purpose hues with no semantic meaning (`red`,
+  `orange`, `amber`, `yellow`, `lime`, `green`, `teal`, `cyan`, `blue`,
+  `indigo`, `violet`, `pink`), each an `IntentColors` with the same six slots.
+  For color that *categorizes* rather than means something — see
+  [Palette hues](#palette-hues) below.
 - `spacing` — `xs`/`sm`/`md`/`lg`/`xl`/`xxl` (`f32`).
 - `radius` — `sm`/`md`/`lg`/`pill` (`f32`).
 - `typography` — per-variant font sizes (`body_size`, `h1_size`, …), all `f32`.
@@ -245,6 +250,49 @@ world flushes, so `entry.text.set(t)` followed by `draft.commit(name)` in the
 same turn applies the text from *before* `t`. From an input handler use
 `commit_text(name, &t)`, which takes the text you already have.
 
+## Palette hues
+
+Intents mean something (`danger` is "destructive"), and a theme may retint
+them. Some components need color that means nothing: an avatar placeholder, a
+tag a user colored, a badge per project. For those the theme carries a separate
+`palette` block of twelve hues, reached as built-in tones:
+
+```rust
+use idea_ui::{tone, variant, Avatar, Tag};
+
+ui! {
+    Avatar(initials = "AL", tone = tone::Violet)
+    Avatar(initials = "AL", tone = tone::Violet, variant = variant::Filled)
+    Tag(label = "design", tone = tone::Teal)
+}
+```
+
+Each hue has the same six slots as an intent. `solid_bg` + `solid_text` is a
+filled background and its contrast color; `soft_bg` + `soft_text` is the tinted
+pair. In both stock themes every hue's text slot is legible on its own
+background (WCAG AA, pinned by a test), so `variant::Filled` and
+`variant::Soft` are both safe for text on a hue. Because the palette is its
+own block, retinting `danger` never recolors a red avatar.
+
+`tone::palette_from_seed(s)` picks a hue from any string, the same hue every
+time, on every platform and build. Use it for a stable per-user color:
+`Avatar(initials = …, tone = tone::palette_from_seed(&user.id))`.
+`tone::palette_hues()` lists the twelve in order.
+
+**Which components take them.** The categorization components — `Avatar`,
+`Tag`, `Chip` and `Badge` — have the hues in their default sheets. The other
+tone components (`Button`, `Alert`, `Switch`, …) stay on the seven intents by
+default, because each tone is pre-rendered into the shipped CSS for every
+variant, and adding twelve hues to every sheet would add roughly 260 KB (uncompressed) of
+CSS to every app. To use a hue on one of those components, add it to that
+component's sheet (see the next sections):
+`install_button_sheet(ButtonSheetBuilder::new().add_tone(tone::Teal).build())`.
+A tone missing from a sheet renders that component's default appearance.
+
+Override a hue like any other field: `theme.palette.blue.solid_bg = …`. From a
+`stylesheet!`, the tokens are `t.palette.<hue>.<slot>()` (token names
+`palette-<hue>-<slot>`).
+
 ## Custom tones and variants
 
 The seven built-in intents cover most needs, but you can add your own semantic
@@ -304,7 +352,8 @@ a light/dark swap) re-flows the stylesheet with zero changes to it. The theme st
 the single source of truth.
 
 The namespaces are `t.color.*` (neutrals), `t.intent.<intent>.<slot>()` (the seven
-intents × six slots), `t.spacing.*`, `t.radius.*`, and `t.typography.*_size()`.
+intents × six slots), `t.palette.<hue>.<slot>()` (the twelve palette hues × the
+same six slots), `t.spacing.*`, `t.radius.*`, and `t.typography.*_size()`.
 
 **Don't guess a token — ask.** `list_tokens` returns the whole vocabulary as data
 (`name`, `path`, `accessor`, `value_type`, `default_value`); `describe_token`
