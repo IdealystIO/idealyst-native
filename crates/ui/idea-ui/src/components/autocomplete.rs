@@ -135,7 +135,9 @@ use idea_theme::theme::IdeaThemeRef;
 use crate::components::date_input::CLEAR_GLYPH;
 use crate::components::field::{adornment_icon_color, adornment_icon_px_for};
 use crate::components::icon::Icon;
-use crate::components::select::{rotating_chevron, SelectOption, SelectSize, CHEVRON_DOWN};
+use crate::components::select::{
+    live_options, rotating_chevron, SelectOption, SelectSize, CHEVRON_DOWN,
+};
 use crate::stylesheets::{
     AutocompleteBox, AutocompleteChevron, AutocompleteClear, AutocompleteEmpty,
     AutocompleteInput, AutocompleteTrailing, SelectOption as SelectOptionStyle,
@@ -185,8 +187,10 @@ impl AutocompleteSlot {
 const DEFAULT_EMPTY_TEXT: &str = "No results";
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
-// `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source),
-// `on_change` (an `Rc` handler), and `options` (a `Vec` LIST). `size` routes
+// `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source) and
+// `on_change` (an `Rc` handler). `options` is a `Vec`, which the macro skips
+// as a list, so it opts in with `#[prop(reactive)]` — rows are DATA, and
+// rows that arrive after mount are the common case (see `Select`). `size` routes
 // into the reactive `input_style` sink; `placeholder` routes to the
 // `text_input`'s reactive placeholder. `empty_text` feeds the dropdown's
 // empty-state row — structural list content (see the TODO in the body).
@@ -204,6 +208,12 @@ pub struct AutocompleteProps {
     /// Fires with the chosen option's `id` when the user commits a row.
     pub on_change: Rc<dyn Fn(String)>,
     /// The rows to offer; the typed query filters this list by label.
+    /// Reactive: pass a `Signal<Vec<SelectOption>>` (or `rx!`) and rows that
+    /// change after mount show up — in the open menu too, and in the input's
+    /// label once the committed id's option arrives. Pass the signal itself,
+    /// not `opts.get()` (read once, like any prop).
+    #[prop(reactive)]
+    #[schema(constraint = "reactive: static Vec<SelectOption> or Signal/rx!")]
     pub options: Vec<SelectOption>,
     /// Input height/density. Default `Md`. Shared with [`Select`](crate::Select).
     pub size: SelectSize,
@@ -267,7 +277,7 @@ impl Default for AutocompleteProps {
         Self {
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
-            options: Vec::new(),
+            options: Reactive::Static(Vec::new()),
             size: Reactive::Static(SelectSize::default()),
             placeholder: Reactive::Static(None),
             empty_text: Reactive::Static(None),
@@ -442,7 +452,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         .empty_text
         .get()
         .unwrap_or_else(|| DEFAULT_EMPTY_TEXT.to_string());
-    let options = Rc::new(props.options);
+    // The live list, as a signal of one shared snapshot (see
+    // `select::live_options`). Rows identify their option by ID, never by
+    // position: a keyed row survives a list change, and an index it captured
+    // would then name a different option.
+    let options = live_options(props.options.clone());
     // MULTI-SELECT is the presence of a `selection` signal. It changes four
     // things and nothing else: what a row press does (toggle, menu stays
     // open), what the input holds (the query, never a committed label), what
@@ -459,15 +473,18 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // chosen label on first paint (external changes are synced via `on_defer`
     // below). In multi mode the input is a SEARCH BOX and starts empty — there
     // is no one label for a list of picks.
-    let initial_query = if multi {
-        String::new()
-    } else {
+    // The committed id's label in the CURRENT list ("" when it isn't there
+    // yet — rows still loading — or nothing is committed). Untracked: the
+    // callers are build-time seeding and event/effect bodies.
+    let label_of = move |id: &str| -> String {
         options
+            .peek()
             .iter()
-            .find(|o| o.id == value.get())
+            .find(|o| o.id == id)
             .map(|o| o.label.get())
             .unwrap_or_default()
     };
+    let initial_query = if multi { String::new() } else { label_of(&value.peek()) };
     let query: Signal<String> = signal(initial_query);
     let open: Signal<bool> = signal(false);
     // Keyboard highlight as a position into the *current* filtered list.
@@ -481,9 +498,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // (No type annotation: `memo` yields a `Memo` — a `Copy` handle with
     // `.get()`.)
     let filtered = {
-        let options = options.clone();
         memo(move || {
             let q = query.get();
+            let options = options.get();
             let labels: Vec<String> = options.iter().map(|o| o.label.get()).collect();
             // The "query equals the committed label ⇒ list everything" trick
             // is single-mode only: in multi mode the input never holds a
@@ -498,16 +515,16 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         })
     };
 
-    // Commit option `oi`. Single mode: report its id, show its label, close
-    // the menu. Multi mode: TOGGLE it and report the whole vec, leaving the
-    // menu open and the query intact — the same rule a checkable `MenuEntry`
-    // follows, so several matches of one search can be stacked without
-    // retyping it.
-    let commit: Rc<dyn Fn(usize)> = {
-        let options = options.clone();
+    // Commit the option with this id. Single mode: report its id, show its
+    // label, close the menu. Multi mode: TOGGLE it and report the whole vec,
+    // leaving the menu open and the query intact — the same rule a checkable
+    // `MenuEntry` follows, so several matches of one search can be stacked
+    // without retyping it. An id no longer in the list (it changed under the
+    // press) commits nothing.
+    let commit: Rc<dyn Fn(&str)> = {
         let on_change = on_change.clone();
-        Rc::new(move |oi: usize| {
-            let Some(o) = options.get(oi) else { return };
+        Rc::new(move |id: &str| {
+            let Some(o) = options.peek().iter().find(|o| o.id == id).cloned() else { return };
             let Some(sel) = selection else {
                 (on_change)(o.id.clone());
                 query.set(o.label.get());
@@ -527,7 +544,6 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // Revert the typed text to the committed selection's label (used on
     // Escape / tap-away so an unmatched query never lingers).
     let revert: Rc<dyn Fn()> = {
-        let options = options.clone();
         Rc::new(move || {
             // Multi mode has no committed label to revert TO — the field
             // holds the query and the selection lives in the vec — so
@@ -536,12 +552,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 query.set(String::new());
                 return;
             }
-            let label = options
-                .iter()
-                .find(|o| o.id == value.get())
-                .map(|o| o.label.get())
-                .unwrap_or_default();
-            query.set(label);
+            query.set(label_of(&value.get()));
         })
     };
 
@@ -551,7 +562,6 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // ArrowDown-from-closed); typing bypasses it and resets the cursor to
     // the top instead, because the filter just changed.
     let open_menu: Rc<dyn Fn()> = {
-        let options = options.clone();
         Rc::new(move || {
             open.set(true);
             // Multi mode seeds on the FIRST pick — there is no single
@@ -561,7 +571,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 Some(sel) => sel.get().first().cloned().unwrap_or_default(),
                 None => value.get(),
             };
-            highlight.set(initial_highlight(&filtered.get(), &options, &seed));
+            highlight.set(initial_highlight(&filtered.get(), &options.peek(), &seed));
         })
     };
 
@@ -569,22 +579,23 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // (skips the initial run — we seeded `query` above). Body is untracked,
     // so reading `open` here doesn't subscribe; we skip while the menu is
     // open to avoid clobbering active typing.
-    let _sync = {
-        let options = options.clone();
-        on_defer(value, move |new_id, _| {
-            // Multi mode ignores `value` entirely, and the input holds a
-            // query that an out-of-band write must never clobber.
-            if multi || open.get() {
-                return;
-            }
-            let label = options
-                .iter()
-                .find(|o| &o.id == new_id)
-                .map(|o| o.label.get())
-                .unwrap_or_default();
-            query.set(label);
-        })
-    };
+    let _sync = on_defer(value, move |new_id, _| {
+        // Multi mode ignores `value` entirely, and the input holds a
+        // query that an out-of-band write must never clobber.
+        if multi || open.get() {
+            return;
+        }
+        query.set(label_of(new_id));
+    });
+    // Same for a NEW option list: a committed id whose option arrives after
+    // mount (rows loaded by a fetch) seeded an empty input, and its label
+    // must show once the row exists. Same skips as above.
+    let _sync_options = on_defer(options, move |_, _| {
+        if multi || open.get() {
+            return;
+        }
+        query.set(label_of(&value.peek()));
+    });
 
     // The input is empty whenever the user isn't actively searching, so in
     // multi mode the PLACEHOLDER is where the selection shows: one pick reads
@@ -594,8 +605,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         None => props.placeholder.clone(),
         Some(sel) => {
             let base = props.placeholder.clone();
-            let opts = options.clone();
-            Reactive::derive(move || selection_summary(&sel.get(), &opts, base.get()))
+            Reactive::derive(move || selection_summary(&sel.get(), &options.get(), base.get()))
         }
     };
 
@@ -672,7 +682,10 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                     let idxs = filtered.get();
                     if !idxs.is_empty() {
                         let pos = highlight.get().min(idxs.len() - 1);
-                        (key_commit)(idxs[pos]);
+                        let id = options.peek().get(idxs[pos]).map(|o| o.id.clone());
+                        if let Some(id) = id {
+                            (key_commit)(&id);
+                        }
                     }
                     KeyOutcome::PreventDefault
                 } else {
@@ -754,13 +767,17 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         .into_element();
 
     // --- dropdown -----------------------------------------------------------
-    let menu_options = options.clone();
     let menu_commit = commit.clone();
+    // The id under the keyboard cursor, in the CURRENT filtered list.
+    let cursor_id = move || -> Option<String> {
+        let idxs = filtered.get();
+        let opts = options.get();
+        idxs.get(highlight.get()).and_then(|&i| opts.get(i)).map(|o| o.id.clone())
+    };
     let menu_revert = revert.clone();
     let header_slot = props.header.clone();
     let footer_slot = props.footer.clone();
     let build_panel = move || {
-        let snapshot_options = menu_options.clone();
         let snapshot_commit = menu_commit.clone();
         let empty_text = empty_text.clone();
         let rows = each_keyed(move || {
@@ -772,23 +789,17 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 });
                 return vec![(EachKey::new("__empty".to_string()), build)];
             }
+            // Tracks the list too: a new list with the same matching
+            // POSITIONS still has to re-key (the ids changed).
+            let opts = options.get();
             idxs.iter()
-                .map(|&oi| {
-                    let o = snapshot_options[oi].clone();
+                .filter_map(|&oi| opts.get(oi).cloned())
+                .map(|o| {
                     let key = EachKey::new(o.id.clone());
                     let commit_row = snapshot_commit.clone();
-                    let build: EachRowBuild =
-                        Box::new(move || {
-                            vec![row(
-                                o,
-                                oi,
-                                commit_row,
-                                move || filtered.get(),
-                                highlight,
-                                value,
-                                selection,
-                            )]
-                        });
+                    let build: EachRowBuild = Box::new(move || {
+                        vec![row(o, commit_row, cursor_id, value, selection)]
+                    });
                     (key, build)
                 })
                 .collect()
@@ -835,8 +846,8 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     }
 }
 
-/// One menu row. The `active` variant is resolved reactively from the
-/// *current* filtered list (`filtered[highlight] == this option`) plus the
+/// One menu row. The `active` variant is resolved reactively from the id
+/// under the keyboard cursor in the *current* filtered list plus the
 /// committed selection, so moving the keyboard cursor or filtering the list
 /// re-styles rows in place without rebuilding them. Selection and cursor
 /// are DISTINCT looks: the committed row paints solid (`on`), the keyboard
@@ -850,33 +861,32 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
 /// style is left to carry the cursor alone.
 fn row(
     o: SelectOption,
-    oi: usize,
-    commit: Rc<dyn Fn(usize)>,
-    // A tracked getter rather than the `Memo` handle itself: the row only
-    // ever `.get()`s, so the closure form keeps the signature open to any
-    // tracked source.
-    filtered: impl Fn() -> Vec<usize> + 'static,
-    highlight: Signal<usize>,
+    commit: Rc<dyn Fn(&str)>,
+    // The id under the keyboard cursor, or `None`. A tracked getter so
+    // moving the cursor or re-filtering re-styles the row in place; by ID
+    // because a keyed row outlives the list positions it was built at.
+    cursor_id: impl Fn() -> Option<String> + 'static,
     value: Signal<String>,
     selection: Option<Signal<Vec<String>>>,
 ) -> Element {
-    let id_for_style = o.id.clone();
+    let id = o.id.clone();
     let label = o.label.clone();
     let mut kids = Vec::with_capacity(2);
     if let Some(sel) = selection {
-        let id = o.id.clone();
+        let id = id.clone();
         kids.push(crate::components::menu::menu_checkbox(Reactive::derive(move || {
             sel.get().iter().any(|s| s == &id)
         })));
     }
     kids.push(text(label).into_element());
-    pressable(kids, move || (commit)(oi))
+    let press_id = id.clone();
+    pressable(kids, move || (commit)(&press_id))
         .with_style(move || {
             let _ = idea_theme::active_theme_untracked()
                 .downcast_ref::<IdeaThemeRef>()
                 .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            let highlighted = filtered().get(highlight.get()).copied() == Some(oi);
-            let selected = selection.is_none() && value.get() == id_for_style;
+            let highlighted = cursor_id().as_deref() == Some(id.as_str());
+            let selected = selection.is_none() && value.get() == id;
             let variant = if selected {
                 "on"
             } else if highlighted {
@@ -964,7 +974,7 @@ mod tests {
         with_test_world(|| {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
             let props = AutocompleteProps {
-                options: vec![SelectOption::new("apple", "Apple")],
+                options: Reactive::Static(vec![SelectOption::new("apple", "Apple")]),
                 ..Default::default()
             };
             // root view [input wrapper, dropdown panel] → wrapper [input,
@@ -1183,16 +1193,15 @@ mod tests {
         with_test_world(|| {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
 
-            let filtered = memo(|| vec![0, 1]);
             let highlight: Signal<usize> = runtime_core::signal(1);
+            // Rows "a", "b"; the cursor sits on `highlight`'s id.
+            let cursor = move || ["a", "b"].get(highlight.get()).map(|s| s.to_string());
             let value: Signal<String> = runtime_core::signal(String::new());
             let selection: Signal<Vec<String>> = runtime_core::signal(labels(&["a"]));
             let el = row(
                 SelectOption::new("a", "A"),
-                0,
-                Rc::new(|_| {}),
-                move || filtered.get(),
-                highlight,
+                Rc::new(|_: &str| {}),
+                cursor,
                 value,
                 Some(selection),
             );
@@ -1210,10 +1219,8 @@ mod tests {
 
             let single = row(
                 SelectOption::new("a", "A"),
-                0,
-                Rc::new(|_| {}),
-                move || filtered.get(),
-                highlight,
+                Rc::new(|_: &str| {}),
+                cursor,
                 runtime_core::signal("a".to_string()),
                 None,
             );
@@ -1243,15 +1250,14 @@ mod tests {
         with_test_world(|| {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
 
-            let filtered = memo(|| vec![0, 1]);
             let highlight: Signal<usize> = runtime_core::signal(0);
+            // Rows "a", "b"; the cursor sits on `highlight`'s id.
+            let cursor = move || ["a", "b"].get(highlight.get()).map(|s| s.to_string());
             let value: Signal<String> = runtime_core::signal("b".to_string());
             let el = row(
                 SelectOption::new("a", "A"),
-                0,
-                Rc::new(|_| {}),
-                move || filtered.get(),
-                highlight,
+                Rc::new(|_: &str| {}),
+                cursor,
                 value,
                 None,
             );
@@ -1319,7 +1325,7 @@ mod tests {
             let header_built = built.clone();
             let footer_built = built.clone();
             let props = AutocompleteProps {
-                options: vec![SelectOption::new("apple", "Apple")],
+                options: Reactive::Static(vec![SelectOption::new("apple", "Apple")]),
                 header: Some(AutocompleteSlot::new(move |_cx| {
                     header_built.set(header_built.get() + 1);
                     runtime_core::text("Fruits".to_string()).into_element()
@@ -1357,10 +1363,10 @@ mod tests {
             let value = runtime_core::signal("pear".to_string());
             let props = AutocompleteProps {
                 value,
-                options: vec![
+                options: Reactive::Static(vec![
                     SelectOption::new("apple", "Apple"),
                     SelectOption::new("pear", "Pear"),
-                ],
+                ]),
                 placeholder: Reactive::Static(Some("Search…".to_string())),
                 ..Default::default()
             };

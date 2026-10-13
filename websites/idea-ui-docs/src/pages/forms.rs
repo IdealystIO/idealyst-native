@@ -705,7 +705,7 @@ pub fn select() -> Element {
             PropsTable(rows = vec![
                 Prop { name: "value",       ty: "Signal<String>",     desc: "The active option's id. The host owns the signal." },
                 Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>", desc: "Fires when the user picks an option; receives the new id." },
-                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Options to show. SelectOption::new(id, label)." },
+                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Options to show. SelectOption::new(id, label). Reactive: pass a Signal<Vec<SelectOption>> (the signal, not .get()) and rows loaded after mount appear, in the open menu too." },
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — trigger height." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Text shown on the trigger when no option matches the value." },
                 Prop { name: "disabled",    ty: "bool",               desc: "Read-only: the trigger won't open, leaves keyboard focus, and dims; an open menu closes. Takes a Signal/rx! too. Default: false." },
@@ -790,7 +790,7 @@ pub fn autocomplete() -> Element {
             PropsTable(rows = vec![
                 Prop { name: "value",       ty: "Signal<String>",     desc: "The committed option's id. The host owns the signal." },
                 Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>", desc: "Fires when the user commits a row; receives the option's id." },
-                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Rows to offer. SelectOption::new(id, label); the query filters by label." },
+                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Rows to offer. SelectOption::new(id, label); the query filters by label. Reactive: pass a Signal<Vec<SelectOption>> (the signal, not .get()) and rows that arrive later show, in the open menu too." },
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — input height. Shared with Select." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Hint text shown while the input is empty." },
                 Prop { name: "empty_text",  ty: "Option<String>",     desc: "Menu row shown when nothing matches. Default: \"No results\"." },

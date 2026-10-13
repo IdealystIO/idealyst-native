@@ -497,3 +497,156 @@ fn autocomplete_without_clearable_has_no_clear_x() {
     assert_eq!(s.matches("icon").count(), 1, "only the chevron's icon, no ✕:\n{s}");
     assert_eq!(press_count(&h), 1, "just the chevron");
 }
+
+/// REGRESSION (CrewForge report 2026-10-13): `options` was read once at
+/// build, so rows fetched while the user typed never showed — the menu kept
+/// the mount-time (empty) list. Passing the options SIGNAL must make rows
+/// that land later appear in the already-open menu.
+#[test]
+fn regression_autocomplete_shows_options_that_arrive_after_mount() {
+    let options = std::cell::Cell::new(None::<Signal<Vec<SelectOption>>>);
+    let (h, _r) = boot(|| {
+        let val = signal(String::new());
+        let opts: Signal<Vec<SelectOption>> = signal(Vec::new());
+        options.set(Some(opts));
+        ui! {
+            Autocomplete(
+                value = val,
+                on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
+                options = opts,
+            )
+        }
+    });
+    let opts = options.get().unwrap();
+
+    let type_query = h.text_input_change(0);
+    act(&h, || type_query("Be".into()));
+    let before = shape(&h);
+    assert!(before.contains("text \"No results\""), "{before}");
+
+    // The fetch lands while the menu is open.
+    act(&h, || opts.set(vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")]));
+    let after = shape(&h);
+    assert!(after.contains("text \"Beta\""), "the fetched match shows:\n{after}");
+    assert!(!after.contains("No results") && !after.contains("Alpha"), "{after}");
+
+    // Committing a fetched row reports its id.
+    h.press_labelled("Beta");
+    h.flush();
+    assert!(!shape(&h).contains("portal"), "a single-select commit closes the menu");
+}
+
+/// A committed id whose option arrives after mount seeded an empty input;
+/// once the row exists, the input must show its label.
+#[test]
+fn regression_autocomplete_label_follows_options_loaded_after_mount() {
+    let options = std::cell::Cell::new(None::<Signal<Vec<SelectOption>>>);
+    let (h, _r) = boot(|| {
+        let val = signal("b".to_string());
+        let opts: Signal<Vec<SelectOption>> = signal(Vec::new());
+        options.set(Some(opts));
+        ui! {
+            Autocomplete(
+                value = val,
+                on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
+                options = opts,
+            )
+        }
+    });
+    let opts = options.get().unwrap();
+    h.clear_ops();
+    act(&h, || opts.set(vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")]));
+    let log = h.shared.log.borrow().join("\n");
+    assert!(
+        log.contains("update_text_input_value") && log.contains("\"Beta\""),
+        "the input shows the committed option's label once it loads:\n{log}"
+    );
+}
+
+/// Select had the same snapshot: a trigger whose value's option loaded
+/// later never showed its label, and the menu offered the mount-time rows.
+/// Both follow the options signal — the menu even while it is open.
+#[test]
+fn regression_select_follows_options_loaded_after_mount() {
+    let options = std::cell::Cell::new(None::<Signal<Vec<SelectOption>>>);
+    let (h, _r) = boot(|| {
+        let val = signal("b".to_string());
+        let opts: Signal<Vec<SelectOption>> = signal(Vec::new());
+        options.set(Some(opts));
+        ui! {
+            Select(
+                value = val,
+                on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
+                options = opts,
+            )
+        }
+    });
+    let opts = options.get().unwrap();
+    assert!(!shape(&h).contains("Beta"));
+
+    act(&h, || opts.set(vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")]));
+    assert!(shape(&h).contains("text \"Beta\""), "trigger shows the loaded label:\n{}", shape(&h));
+
+    press(&h, 0);
+    let open = shape(&h);
+    assert!(open.contains("portal") && open.contains("text \"Alpha\""), "{open}");
+
+    act(&h, || {
+        opts.set(vec![
+            SelectOption::new("a", "Alpha"),
+            SelectOption::new("b", "Beta"),
+            SelectOption::new("c", "Gamma"),
+        ])
+    });
+    assert!(shape(&h).contains("text \"Gamma\""), "a row added while open appears:\n{}", shape(&h));
+}
+
+/// Rows are keyed by option id, so on a host that splices keyed lists
+/// (the real backends) a row SURVIVES a list change. It must then still
+/// commit ITS option: a row that remembered its build-time position would,
+/// after a row is inserted ahead of it, commit whatever now sits there.
+/// (Without splice support the list rebuilds every row by contract, which
+/// would hide the hazard, so this harness turns splicing on.)
+#[test]
+fn autocomplete_kept_row_commits_its_own_option_after_the_list_changes() {
+    let h = host_mock::Harness::new();
+    h.shared.splice.set(true);
+    let state = std::cell::Cell::new(None::<(Signal<String>, Signal<Vec<SelectOption>>)>);
+    let tree = h.world.enter(|| {
+        install_idea_theme(light_theme());
+        let val = signal(String::new());
+        let opts: Signal<Vec<SelectOption>> =
+            signal(vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")]);
+        state.set(Some((val, opts)));
+        ui! {
+            Autocomplete(
+                value = val,
+                on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
+                options = opts,
+            )
+        }
+    });
+    let _r = h.mount(tree);
+    h.flush();
+    let (val, opts) = state.get().unwrap();
+    let type_query = h.text_input_change(0);
+    act(&h, || type_query("a".into())); // matches both labels
+    let alpha_row = node_of(&h, "text \"Alpha\"").expect("Alpha row shown");
+
+    // A row lands AHEAD of Alpha while the menu is open.
+    act(&h, || {
+        opts.set(vec![
+            SelectOption::new("z", "Zeta alpha"),
+            SelectOption::new("a", "Alpha"),
+            SelectOption::new("b", "Beta"),
+        ])
+    });
+    assert_eq!(
+        node_of(&h, "text \"Alpha\"").as_deref(),
+        Some(alpha_row.as_str()),
+        "the Alpha row is KEPT (the hazard needs a surviving row)"
+    );
+    h.press_labelled("Alpha");
+    h.flush();
+    assert_eq!(h.world.enter(|| val.peek()), "a", "the kept Alpha row commits Alpha's id");
+}

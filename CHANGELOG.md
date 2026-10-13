@@ -959,6 +959,31 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`Select` and `Autocomplete` follow options that change after mount**
+  (`idea-ui`). `options` was read once when the component was built, so
+  rows loaded later never appeared: an Autocomplete fed by a search kept
+  its mount-time (often empty) menu, and a Select whose value's option
+  loaded late never showed its label. `options` is now reactive. Pass a
+  `Signal<Vec<SelectOption>>` (the signal itself, not `opts.get()`, which
+  is read once like any prop) and new rows show in the trigger label, the
+  Autocomplete input's label, and the menu, even while it is open.
+  Autocomplete rows now identify their option by id, so a row kept across
+  a list change commits its own option. `SelectOption` gains `PartialEq`
+  so it can live in a signal. **Breaking for struct-literal callers:**
+  `SelectProps::options` / `AutocompleteProps::options` are now
+  `Reactive<Vec<SelectOption>>`; write `options: vec![…].into()`. `ui!`
+  call sites are unchanged. (CrewForge report 2026-10-13. The report's
+  remote-search asks — no client-side filter, an `on_query` hook,
+  `loading`, free text — are features, not part of this fix.)
+- **`camera`: `Front` / `Back` that can't be satisfied is `NoCamera` on
+  web and desktop Linux too.** The contract on `CameraFacing` says so, and
+  iOS/macOS/Android honoured it, but web sent `facingMode` as a
+  preference (the browser fell back to whatever camera existed) and Linux
+  ignored facing. On a one-camera laptop `open(back())` silently opened
+  the webcam, so a front/back switch did nothing. A camera that reports
+  no facing (a desktop webcam) now counts as user-facing everywhere:
+  `Front` and `Default` open it, `Back` is `NoCamera`.
+
 - **A `Table`'s bottom edge is no longer a double line** (`idea-ui`,
   `table`). Every cell drew a 1px row divider, the last row's included,
   and the table frame drew its own 1px border right under it, so the

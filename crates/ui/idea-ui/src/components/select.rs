@@ -23,6 +23,12 @@
 //!     )
 //! }
 //! ```
+//!
+//! `options` is reactive: pass a `Signal<Vec<SelectOption>>` (or `rx!`)
+//! and rows that arrive later — a fetch that lands after mount — appear in
+//! the trigger label and the menu, even while it is open. Pass the signal
+//! itself, not `opts.get()`: a `.get()` at the call site is read once, like
+//! any prop.
 
 use std::rc::Rc;
 
@@ -33,7 +39,7 @@ use runtime_core::stylesheet;
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
-    component, effect, signal, ui, Color, Element, FillRule, IconData, IdealystSchema,
+    component, each_keyed, effect, signal, ui, EachKey, EachRowBuild, Color, Element, FillRule, IconData, IdealystSchema,
     IntoElement, Length, Position, PressableHandle, Reactive, Ref, Signal, StyleApplication, StyleSheet, VariantEnum, ViewHandle
 };
 
@@ -106,6 +112,42 @@ pub(crate) fn rotating_chevron(glyph: IconData, size_px: f32, open: Signal<bool>
     runtime_core::view(vec![glyph]).bind(chevron_ref).into_element()
 }
 
+/// One published snapshot of an option list. Compares by IDENTITY: a
+/// signal's guarded `set` skips equal writes, `SelectOption` can't be
+/// compared (its label is `Reactive`), and every publish is a fresh `Rc`,
+/// so each new list from the host counts as a change.
+#[derive(Clone)]
+pub(crate) struct OptionList(Rc<Vec<SelectOption>>);
+
+impl PartialEq for OptionList {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::ops::Deref for OptionList {
+    type Target = [SelectOption];
+    fn deref(&self) -> &[SelectOption] {
+        &self.0
+    }
+}
+
+/// The live option list behind [`Select`] and `Autocomplete`, as a signal
+/// of a shared snapshot. Reading it is an `Rc` clone rather than a `Vec`
+/// clone (a `Reactive::Static` `.get()` clones the whole list), and every
+/// reader in one pass sees the same snapshot. A static list gets a signal
+/// nothing writes; a live one gets a scope-owned effect that republishes
+/// each change. Must run in a component body (the effect's owner).
+pub(crate) fn live_options(
+    options: Reactive<Vec<SelectOption>>,
+) -> runtime_core::ReadSignal<OptionList> {
+    let list = signal(OptionList(Rc::new(options.get_untracked())));
+    if !options.is_static() {
+        options.bind(move |v| list.set(OptionList(Rc::new(v))));
+    }
+    list.read_only()
+}
+
 /// One selectable row in a [`Select`]. `id` is the value committed to
 /// the bound signal when chosen; `label` is what the user sees.
 #[derive(Clone, IdealystSchema, runtime_core::Remote)]
@@ -118,6 +160,21 @@ pub struct SelectOption {
     pub label: Reactive<String>,
 }
 
+/// Equal when the ids match and the labels are the same text (both
+/// static) or the same live source (both reactive, one `Rc`). This is what
+/// lets a host keep its rows in a `Signal<Vec<SelectOption>>` (signals
+/// skip equal writes) and pass that signal as `options`.
+impl PartialEq for SelectOption {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && match (&self.label, &other.label) {
+                (Reactive::Static(a), Reactive::Static(b)) => a == b,
+                (Reactive::Dynamic(a), Reactive::Dynamic(b)) => Rc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+}
+
 impl SelectOption {
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
         Self { id: id.into(), label: label.into() }
@@ -125,9 +182,10 @@ impl SelectOption {
 }
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
-// `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source),
-// `on_change` (an `Rc` handler), and `options` (a `Vec` LIST — its per-row
-// `label` reactivity lives on `SelectOption::label`, already `Reactive`).
+// `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source) and
+// `on_change` (an `Rc` handler). `options` is a `Vec`, which the macro
+// skips as a list, so it opts in with `#[prop(reactive)]`: it is DATA (rows
+// loaded after mount are the common case), not an element list.
 // `size` routes into the reactive `trigger_style` sink; `placeholder` is read
 // live inside the trigger's label text source. `icon` is structural (the
 // chevron is built once into a bound view) — see the TODO in the body.
@@ -140,7 +198,11 @@ pub struct SelectProps {
     pub value: Signal<String>,
     /// Fires with the chosen option's `id` when the user picks a row.
     pub on_change: Rc<dyn Fn(String)>,
-    /// The rows to offer in the dropdown menu.
+    /// The rows to offer in the dropdown menu. Reactive: pass a
+    /// `Signal<Vec<SelectOption>>` (or `rx!`) for rows that change after
+    /// mount; a plain `vec![…]` is a fixed list.
+    #[prop(reactive)]
+    #[schema(constraint = "reactive: static Vec<SelectOption> or Signal/rx!")]
     pub options: Vec<SelectOption>,
     /// Trigger height. Default Md.
     pub size: SelectSize,
@@ -166,7 +228,7 @@ impl Default for SelectProps {
         Self {
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
-            options: Vec::new(),
+            options: Reactive::Static(Vec::new()),
             size: Reactive::Static(SelectSize::default()),
             placeholder: Reactive::Static(None),
             icon: Reactive::Static(None),
@@ -185,7 +247,7 @@ pub fn Select(props: SelectProps) -> Element {
     let on_change = props.on_change.clone();
     let size = props.size.clone();
     let placeholder = props.placeholder.clone();
-    let options = Rc::new(props.options);
+    let options = live_options(props.options.clone());
     // TODO(reactive-sweep): `icon` is read once to build the chevron glyph +
     // bound rotation view (structural). A live `icon` source would need the
     // chevron rebuilt — route it once the trigger affordance is restructured
@@ -195,7 +257,6 @@ pub fn Select(props: SelectProps) -> Element {
     let open: Signal<bool> = signal(false);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
 
-    let label_options = options.clone();
     let label_placeholder = placeholder.clone();
     // `placeholder` is read LIVE inside the trigger's label source, so a
     // reactive placeholder re-paints the empty-trigger text in place.
@@ -203,7 +264,8 @@ pub fn Select(props: SelectProps) -> Element {
     // conversion is implicit; an explicit `into_text_source` spelling
     // would be redundant.)
     let label_source = move || {
-        label_options
+        options
+            .get()
             .iter()
             .find(|o| o.id == value.get())
             .map(|o| o.label.get())
@@ -262,7 +324,6 @@ pub fn Select(props: SelectProps) -> Element {
     };
     let trigger = trigger.into_element();
 
-    let menu_options = options.clone();
     let menu_on_change = on_change.clone();
     let menu_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
     // The menu exists only while open: each open builds it fresh (rows
@@ -274,7 +335,7 @@ pub fn Select(props: SelectProps) -> Element {
                 {
                     menu_build(
                         value,
-                        menu_options.clone(),
+                        options,
                         menu_on_change.clone(),
                         menu_close.clone(),
                         trigger_ref,
@@ -285,45 +346,65 @@ pub fn Select(props: SelectProps) -> Element {
     }
 }
 
+/// One menu row: commits its id and closes on press, paints `active: on`
+/// while it is the committed value.
+fn menu_row(
+    opt_id: String,
+    opt_label: Reactive<String>,
+    value: Signal<String>,
+    on_change: Rc<dyn Fn(String)>,
+    menu_close: Rc<dyn Fn()>,
+) -> Element {
+    let on_click: Rc<dyn Fn()> = Rc::new({
+        let opt_id = opt_id.clone();
+        move || {
+            (on_change)(opt_id.clone());
+            (menu_close)();
+        }
+    });
+    let row_style = move || {
+        let _ = idea_theme::active_theme_untracked()
+            .downcast_ref::<IdeaThemeRef>()
+            .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
+        let variant = if value.get() == opt_id { "on" } else { "off" };
+        StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
+    };
+    // `opt_label` is a `Reactive<String>` — route it through
+    // `IntoTextSource` (Static→Static, Dynamic→Bound) so a live option
+    // label re-paints its row.
+    let label_child = runtime_core::text(opt_label).into_element();
+    runtime_core::pressable(vec![label_child], move || (on_click)())
+        .with_style(row_style)
+        .into_element()
+}
+
 fn menu_build(
     value: Signal<String>,
-    options: Rc<Vec<SelectOption>>,
+    options: runtime_core::ReadSignal<OptionList>,
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
     trigger_ref: Ref<PressableHandle>,
 ) -> Element {
-    let mut rows: Vec<Element> = Vec::with_capacity(options.len());
-    for option in options.iter() {
-        let opt_id = option.id.clone();
-        let opt_label = option.label.clone();
-        let on_change_for_row = on_change.clone();
-        let menu_close_for_row = menu_close.clone();
-        let on_click: Rc<dyn Fn()> = Rc::new({
-            let opt_id = opt_id.clone();
-            move || {
-                (on_change_for_row)(opt_id.clone());
-                (menu_close_for_row)();
-            }
-        });
-
-        let opt_id_for_style = opt_id.clone();
-        let row_style = move || {
-            let _ = idea_theme::active_theme_untracked()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            let variant = if value.get() == opt_id_for_style { "on" } else { "off" };
-            StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
-        };
-
-        // `opt_label` is a `Reactive<String>` — route it through
-        // `IntoTextSource` (Static→Static, Dynamic→Bound) so a live
-        // option label re-paints its row.
-        let label_child = runtime_core::text(opt_label).into_element();
-        let row = runtime_core::pressable(vec![label_child], move || (on_click)())
-            .with_style(row_style)
-            .into_element();
-        rows.push(row);
-    }
+    // Keyed by option id so a list that changes while the menu is open
+    // (rows loaded after mount) adds and drops rows in place instead of
+    // rebuilding the panel.
+    let row_close = menu_close.clone();
+    let rows = each_keyed(move || {
+        options
+            .get()
+            .iter()
+            .map(|option| {
+                let opt_id = option.id.clone();
+                let opt_label = option.label.clone();
+                let on_change = on_change.clone();
+                let menu_close = row_close.clone();
+                let build: EachRowBuild = Box::new(move || {
+                    vec![menu_row(opt_id, opt_label, value, on_change, menu_close)]
+                });
+                (EachKey::new(option.id.clone()), build)
+            })
+            .collect()
+    });
 
     // Click-away + re-press-to-close: a FULLSCREEN, transparent dismiss
     // backdrop. An anchored overlay's own backdrop only fills its small
@@ -353,7 +434,7 @@ fn menu_build(
     // closes via this `on_dismiss`.
     // Cap + scroll the option list so a long list (e.g. every category in a
     // filter) scrolls within a bounded panel instead of running off-screen.
-    let panel = crate::components::menu_panel::scrolling_menu_panel(rows);
+    let panel = crate::components::menu_panel::scrolling_menu_panel(vec![rows]);
 
     let anchored = runtime_core::anchored_overlay(
         AnchorTarget::from(trigger_ref),
@@ -376,7 +457,7 @@ mod tests {
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, FontFamily};
+    use runtime_core::resolve_style;
 
     use crate::stylesheets::{SelectMenu, SelectTrigger};
 
@@ -393,10 +474,7 @@ mod tests {
             let trigger: Ref<PressableHandle> = Ref::new();
             let el = menu_build(
                 runtime_core::signal(String::new()),
-                Rc::new(vec![SelectOption {
-                    id: "a".to_string(),
-                    label: runtime_core::Reactive::Static("A".to_string()),
-                }]),
+                live_options(Reactive::Static(vec![SelectOption::new("a", "A")])),
                 Rc::new(|_| {}),
                 Rc::new(|| {}),
                 trigger,
