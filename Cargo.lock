@@ -735,7 +735,7 @@ checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
 
 [[package]]
 name = "audio"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "gio",
  "glib",
@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.9.2"
+version = "1.9.3"
 dependencies = [
  "runtime-shared",
 ]
@@ -10629,7 +10629,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10735,7 +10735,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "rustc-hash 2.1.2",
 ]
@@ -12592,7 +12592,7 @@ dependencies = [
 
 [[package]]
 name = "synth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "audio",
  "files",

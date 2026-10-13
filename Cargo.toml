@@ -486,7 +486,7 @@ license = "MIT OR Apache-2.0"
 idealyst = { path = "crates/idealyst", version = "1.8.1", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "1.11.1", registry = "idealyst" }
 runtime-shared = { path = "crates/runtime/shared", version = "1.21.0", registry = "idealyst" }
-runtime-world = { path = "crates/runtime/world", version = "1.8.0", registry = "idealyst" }
+runtime-world = { path = "crates/runtime/world", version = "1.8.1", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.9.0", registry = "idealyst" }
 runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "2.1.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.0", registry = "idealyst" }
@@ -502,7 +502,7 @@ rustc-hash = "2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-css = { path = "crates/css", version = "1.9.2", registry = "idealyst" }
+css = { path = "crates/css", version = "1.9.3", registry = "idealyst" }
 # Remote components' loader and release format (crates/streaming).
 remote-abi = { path = "crates/streaming/abi", version = "1.0.0", registry = "idealyst" }
 remote-bundle = { path = "crates/streaming/bundle-format", version = "1.2.0", registry = "idealyst" }
@@ -525,7 +525,7 @@ mcp-catalog = { path = "crates/mcp/catalog", version = "1.19.1", registry = "ide
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "1.6.0", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
-runtime-layout = { path = "crates/runtime/layout", version = "1.11.0", registry = "idealyst" }
+runtime-layout = { path = "crates/runtime/layout", version = "1.11.1", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.1.0", registry = "idealyst" }
 zone-offset = { path = "crates/runtime/zone-offset", version = "1.5.2", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.9.0", registry = "idealyst" }
@@ -689,8 +689,8 @@ deep-link = { path = "crates/sdk/client/deep-link", version = "2.0.1", registry 
 connectivity = { path = "crates/sdk/client/connectivity", version = "1.7.1", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "1.5.5", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.5.3", registry = "idealyst" }
-audio = { path = "crates/sdk/client/audio", version = "1.7.1", registry = "idealyst" }
-synth = { path = "crates/sdk/client/synth", version = "0.1.0", registry = "idealyst" }
+audio = { path = "crates/sdk/client/audio", version = "1.8.0", registry = "idealyst" }
+synth = { path = "crates/sdk/client/synth", version = "0.2.0", registry = "idealyst" }
 audio-engine = { path = "crates/sdk/client/audio-engine", version = "0.1.0", registry = "idealyst" }
 server = { path = "crates/api/server", version = "1.9.2", registry = "idealyst" }
 server-macros = { path = "crates/api/server-macros", version = "1.5.2", registry = "idealyst" }
