@@ -2201,7 +2201,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "futures-channel",
  "glib",
@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6351,7 +6351,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "1.5.7"
+version = "1.5.8"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6362,7 +6362,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "4.1.0"
+version = "5.0.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6380,7 +6380,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "1.13.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6420,7 +6420,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6430,7 +6430,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.9"
+version = "1.5.10"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6450,7 +6450,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "1.5.8"
+version = "1.5.9"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6476,7 +6476,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
