@@ -594,7 +594,7 @@ backend-windows = { path = "crates/backend/windows", version = "1.9.0", registry
 backend-linux = { path = "crates/backend/linux", version = "1.10.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.3", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.12.2", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "1.13.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "2.1.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "2.2.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -620,7 +620,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "2.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.7", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "4.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "4.1.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.3", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.8", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
@@ -651,7 +651,7 @@ canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "0.2.1", r
 toolbar = { path = "crates/sdk/client/toolbar", version = "1.5.3", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "1.5.5", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "1.6.2", registry = "idealyst" }
-table = { path = "crates/sdk/client/table", version = "2.0.1", registry = "idealyst" }
+table = { path = "crates/sdk/client/table", version = "2.1.0", registry = "idealyst" }
 virtualized = { path = "crates/sdk/client/virtualized", version = "1.5.3", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "2.0.1", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "1.5.3", registry = "idealyst" }
