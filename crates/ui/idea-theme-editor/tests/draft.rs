@@ -52,7 +52,7 @@ fn namespaces_group_the_vocabulary_in_layout_order() {
         let draft = ThemeDraft::from_live();
         assert_eq!(
             draft.namespaces(),
-            vec!["color", "intent", "spacing", "radius", "typography"],
+            vec!["color", "intent", "palette", "spacing", "radius", "typography"],
             "sections follow declaration order, so the panel doesn't reshuffle"
         );
     });
