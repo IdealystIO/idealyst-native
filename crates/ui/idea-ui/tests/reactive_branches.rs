@@ -436,3 +436,64 @@ fn calendar_body_swaps_grid_per_zoom_and_rebuilds_per_month() {
     assert_eq!(sept[0], "September 2026");
     assert_ne!(sept[8..], labels[8..], "the day cells follow the visible month");
 }
+
+/// `clearable` puts a ✕ left of the chevron that exists only while there
+/// is something to clear. Pressing it commits `""` (the one way back to
+/// "nothing selected" — dismissal otherwise reverts to the committed
+/// label), and typing over the empty field brings it back.
+#[test]
+fn autocomplete_clear_x_exists_only_while_there_is_something_to_clear() {
+    let value = std::cell::Cell::new(None::<Signal<String>>);
+    let (h, _r) = boot(|| {
+        let val = signal("a".to_string());
+        value.set(Some(val));
+        ui! {
+            Autocomplete(
+                value = val,
+                on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
+                options = vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")],
+                clearable = true,
+            )
+        }
+    });
+    let val = value.get().unwrap();
+    let with_x = shape(&h);
+    assert!(with_x.contains("anchor\n        pressable\n          icon"), "{with_x}");
+    assert_eq!(press_count(&h), 2, "the ✕ and the chevron");
+
+    // The ✕ registers before the chevron (it sits left of it).
+    press(&h, 0);
+    assert_eq!(h.world.enter(|| val.peek()), "", "pressing ✕ commits \"\"");
+    let cleared = shape(&h);
+    assert_eq!(
+        cleared.matches("icon").count(),
+        1,
+        "the ✕ hides once nothing is left to clear (the chevron's icon stays):\n{cleared}"
+    );
+
+    // Typed text over an empty selection is clearable too.
+    let type_query = h.text_input_change(0);
+    act(&h, || type_query("Be".into()));
+    assert!(shape(&h).contains("pressable\n          icon"), "{}", shape(&h));
+}
+
+/// Without `clearable` the trailing row is the chevron alone — no ✕, no
+/// reactive hole for one.
+#[test]
+fn autocomplete_without_clearable_has_no_clear_x() {
+    let (h, _r) = boot(|| {
+        let val = signal("a".to_string());
+        ui! {
+            Autocomplete(
+                value = val,
+                on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
+                options = vec![SelectOption::new("a", "Alpha")],
+            )
+        }
+    });
+    let s = shape(&h);
+    // Trailing row = the chevron pressable alone (its rotating view + icon).
+    assert!(s.contains("    view\n      pressable\n        view\n          icon"), "{s}");
+    assert_eq!(s.matches("icon").count(), 1, "only the chevron's icon, no ✕:\n{s}");
+    assert_eq!(press_count(&h), 1, "just the chevron");
+}

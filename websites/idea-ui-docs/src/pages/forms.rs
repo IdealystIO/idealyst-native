@@ -757,12 +757,16 @@ pub fn autocomplete() -> Element {
                 SelectOption::new("strawberry", "Strawberry"),
             ],
             placeholder = Some("Search fruit…".to_string()),
+            clearable = true,
         )
     };
 
     let controls = ui! {
         Stack(gap = StackGap::Sm) {
             H3(content = "Notes".to_string())
+            P(content = "The ✕ (from `clearable = true`) clears the selection — \
+                `on_change` fires with an empty id. It shows only while something is \
+                selected or typed.".to_string())
             P(content = "Focus the input to open the full menu with the committed \
                 selection painted solid and the keyboard cursor seeded on it; type to \
                 filter. ArrowUp/ArrowDown move the cursor (the subtle highlight), Enter \
@@ -790,6 +794,7 @@ pub fn autocomplete() -> Element {
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — input height. Shared with Select." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Hint text shown while the input is empty." },
                 Prop { name: "empty_text",  ty: "Option<String>",     desc: "Menu row shown when nothing matches. Default: \"No results\"." },
+                Prop { name: "clearable",   ty: "bool",               desc: "Offer an ✕ left of the chevron that clears the selection (on_change(\"\"), or an empty vec in multi-select). Default false." },
             ])
         }
     }, ui! {

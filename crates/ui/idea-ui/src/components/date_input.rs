@@ -58,7 +58,7 @@ use crate::date::{
 
 /// Trailing clear glyph — an ✕. Inline `IconData` like
 /// [`CALENDAR_GLYPH`]: no icon-pack dependency for built-in affordances.
-const CLEAR_GLYPH: IconData = IconData {
+pub(crate) const CLEAR_GLYPH: IconData = IconData {
     view_box: (24, 24),
     paths: &["M18 6 6 18", "m6 6 12 12"],
     fill_rule: FillRule::NonZero,

@@ -1054,8 +1054,30 @@ stylesheet! {
 //
 // The dropdown deliberately REUSES `SelectMenu` (panel) and `SelectOption`
 // (rows) so a Select and an Autocomplete drop the same menu — one less
-// surface to keep in visual sync. `AutocompleteChevron` is the caret;
+// surface to keep in visual sync. `AutocompleteTrailing` is the row pinned
+// over the input's right edge holding the optional clear ✕
+// (`AutocompleteClear`) and the lucide chevron-down (`AutocompleteChevron`);
 // `AutocompleteEmpty` styles the "no matches" row.
+
+// Right padding the autocomplete input reserves, per size, so typed text
+// never runs under the trailing row. The chevron-only reserve is the row's
+// `sm` (8) inset + the chevron glyph + an `xs` (4) gap before the text; a
+// CLEARABLE input adds the ✕ glyph + its `xs` (4) margin. Glyphs are sized
+// by `field::adornment_icon_px_for` (14 / 16 / 18) — pixel constants, which
+// is why these are too (stylesheets also can't add two tokens).
+
+/// Chevron-only right reserve at `sm`: 8 + 14 + 4.
+pub const AUTOCOMPLETE_PAD_SM_PX: f32 = 26.0;
+/// Chevron-only right reserve at `md`: 8 + 16 + 4.
+pub const AUTOCOMPLETE_PAD_MD_PX: f32 = 28.0;
+/// Chevron-only right reserve at `lg`: 8 + 18 + 4.
+pub const AUTOCOMPLETE_PAD_LG_PX: f32 = 30.0;
+/// Clearable right reserve at `sm`: chevron-only + 14 + 4.
+pub const AUTOCOMPLETE_CLEARABLE_PAD_SM_PX: f32 = 44.0;
+/// Clearable right reserve at `md`: chevron-only + 16 + 4.
+pub const AUTOCOMPLETE_CLEARABLE_PAD_MD_PX: f32 = 48.0;
+/// Clearable right reserve at `lg`: chevron-only + 18 + 4.
+pub const AUTOCOMPLETE_CLEARABLE_PAD_LG_PX: f32 = 52.0;
 
 stylesheet! {
     pub AutocompleteBox<IdeaThemeRef> {
@@ -1079,7 +1101,7 @@ stylesheet! {
             padding_vertical: t.spacing.sm(),
             padding_left: t.spacing.md(),
             // Reserve room for the chevron pinned over the right edge.
-            padding_right: t.spacing.xl(),
+            padding_right: AUTOCOMPLETE_PAD_MD_PX,
             font_size: t.typography.body_size(),
             text_align: TextAlign::Left,
         }
@@ -1087,22 +1109,39 @@ stylesheet! {
             sm(t) {
                 padding_vertical: t.spacing.xs(),
                 padding_left: t.spacing.sm(),
-                padding_right: t.spacing.lg(),
+                padding_right: AUTOCOMPLETE_PAD_SM_PX,
                 font_size: t.typography.body_sm_size(),
             }
             #[default]
             md(t) {
                 padding_vertical: t.spacing.sm(),
                 padding_left: t.spacing.md(),
-                padding_right: t.spacing.xl(),
+                padding_right: AUTOCOMPLETE_PAD_MD_PX,
                 font_size: t.typography.body_size(),
             }
             lg(t) {
                 padding_vertical: t.spacing.md(),
                 padding_left: t.spacing.lg(),
-                padding_right: t.spacing.xl(),
+                padding_right: AUTOCOMPLETE_PAD_LG_PX,
                 font_size: t.typography.body_lg_size(),
             }
+        }
+        // `clearable` widens the right reserve to cover the ✕ as well. It
+        // is reserved whenever the prop is on — not only while the ✕ is
+        // showing — so text doesn't reflow the moment a value lands.
+        variant trailing {
+            #[default]
+            chevron(_t) {}
+            clear(_t) {}
+        }
+        compound (size: sm, trailing: clear)(_t) {
+            padding_right: AUTOCOMPLETE_CLEARABLE_PAD_SM_PX,
+        }
+        compound (size: md, trailing: clear)(_t) {
+            padding_right: AUTOCOMPLETE_CLEARABLE_PAD_MD_PX,
+        }
+        compound (size: lg, trailing: clear)(_t) {
+            padding_right: AUTOCOMPLETE_CLEARABLE_PAD_LG_PX,
         }
         state focused(t) {
             border_color: t.color.focus_ring(),
@@ -1119,16 +1158,40 @@ stylesheet! {
 }
 
 stylesheet! {
-    pub AutocompleteChevron<IdeaThemeRef> {
+    pub AutocompleteTrailing<IdeaThemeRef> {
         base(t) {
             position: Position::Absolute,
             right: t.spacing.sm(),
             top: Length::Px(0.0),
             bottom: Length::Px(0.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+        }
+    }
+}
+
+stylesheet! {
+    pub AutocompleteClear<IdeaThemeRef> {
+        base(t) {
+            cursor: Cursor::Pointer,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
-            color: t.color.text_muted(),
-            font_size: t.typography.body_size(),
+            // Margin, not a row `gap`: the ✕ sits in a reactive branch whose
+            // empty state may still leave a placeholder node, and a gap
+            // would space the chevron off that invisible sibling.
+            margin_right: t.spacing.xs(),
+        }
+        state hovered(_t) { opacity: 0.65 }
+        state pressed(_t) { opacity: 0.4 }
+    }
+}
+
+stylesheet! {
+    pub AutocompleteChevron<IdeaThemeRef> {
+        base(_t) {
+            cursor: Cursor::Pointer,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
         }
     }
 }

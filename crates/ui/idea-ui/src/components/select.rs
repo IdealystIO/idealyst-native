@@ -70,9 +70,10 @@ stylesheet! {
 pub use crate::stylesheets::SelectTriggerSize as SelectSize;
 use idea_theme::tokens;
 
-/// Default trigger affordance: a chevron that rotates when the menu opens.
-/// Authors override it via [`SelectProps::icon`].
-const CHEVRON_DOWN: IconData = IconData {
+/// Default trigger affordance: lucide's `chevron-down`, rotated when the
+/// menu opens. Authors override it via [`SelectProps::icon`]. Shared with
+/// `Autocomplete`'s disclosure chevron.
+pub(crate) const CHEVRON_DOWN: IconData = IconData {
     view_box: (24, 24),
     paths: &["M6 9l6 6 6-6"],
     fill_rule: FillRule::NonZero,
@@ -82,6 +83,28 @@ const CHEVRON_DOWN: IconData = IconData {
 /// How fast the trigger chevron flips between its closed (0°) and open
 /// (180°) positions. Short + eased-out so it feels snappy, not floaty.
 const CHEVRON_SPIN_MS: u64 = 130;
+
+/// Point size of the Select trigger's chevron at every trigger size.
+const SELECT_CHEVRON_PX: f32 = 16.0;
+
+/// A muted `glyph` that rotates 180° while `open` is true, tweening over
+/// [`CHEVRON_SPIN_MS`]. The disclosure affordance shared by `Select`'s
+/// trigger and `Autocomplete`'s chevron button, so both flip identically.
+/// Wrapped in a bound view because `RotateZ` animates a `ViewHandle`.
+pub(crate) fn rotating_chevron(glyph: IconData, size_px: f32, open: Signal<bool>) -> Element {
+    let chevron_ref: Ref<ViewHandle> = Ref::new();
+    let rot = AnimatedValue::new(0.0);
+    rot.bind(chevron_ref, AnimProp::RotateZ);
+    effect!({
+        let target = if open.get() { 180.0 } else { 0.0 };
+        rot.animate(TweenTo::new(target, Duration::from_millis(CHEVRON_SPIN_MS)).ease_out());
+    });
+    let glyph = icon(glyph)
+        .size(size_px)
+        .color(|| tokens().color.text_muted().resolve())
+        .into_element();
+    runtime_core::view(vec![glyph]).bind(chevron_ref).into_element()
+}
 
 /// One selectable row in a [`Select`]. `id` is the value committed to
 /// the bound signal when chosen; `label` is what the user sees.
@@ -189,20 +212,8 @@ pub fn Select(props: SelectProps) -> Element {
     };
     let label_child = runtime_core::text(label_source).into_element();
 
-    // Trailing chevron that rotates 180° while the menu is open. Bound to a
-    // view (RotateZ needs a ViewHandle), tinted muted, springing on toggle.
-    let chevron_ref: Ref<ViewHandle> = Ref::new();
-    let rot = AnimatedValue::new(0.0);
-    rot.bind(chevron_ref, AnimProp::RotateZ);
-    effect!({
-        let target = if open.get() { 180.0 } else { 0.0 };
-        rot.animate(TweenTo::new(target, Duration::from_millis(CHEVRON_SPIN_MS)).ease_out());
-    });
-    let chevron_glyph = icon(icon_data)
-        .size(16.0)
-        .color(|| tokens().color.text_muted().resolve())
-        .into_element();
-    let chevron = runtime_core::view(vec![chevron_glyph]).bind(chevron_ref).into_element();
+    // Trailing chevron that rotates 180° while the menu is open.
+    let chevron = rotating_chevron(icon_data, SELECT_CHEVRON_PX, open);
 
     // `size` is read LIVE inside the trigger style closure so a reactive
     // `size` re-resolves the trigger height in place (the apply-style Effect

@@ -126,7 +126,14 @@ impl Default for Adornment {
 
 /// Icon point size for an adornment at a given field size.
 fn adornment_icon_px(size: FieldSize) -> f32 {
-    match size.as_variant_str() {
+    adornment_icon_px_for(size.as_variant_str())
+}
+
+/// [`adornment_icon_px`] keyed by the `sm`/`md`/`lg` variant string, so
+/// controls with their own size enum (Autocomplete's `SelectSize`) size
+/// their trailing glyphs identically to a Field's.
+pub(crate) fn adornment_icon_px_for(size_variant: &str) -> f32 {
+    match size_variant {
         "sm" => 14.0,
         "lg" => 18.0,
         _ => 16.0,
@@ -134,7 +141,7 @@ fn adornment_icon_px(size: FieldSize) -> f32 {
 }
 
 /// The muted glyph color shared by `Icon`/`Button` adornments.
-fn adornment_icon_color() -> Color {
+pub(crate) fn adornment_icon_color() -> Color {
     tokens().color.text_muted().resolve()
 }
 

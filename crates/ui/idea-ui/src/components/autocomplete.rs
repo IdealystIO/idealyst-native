@@ -42,7 +42,8 @@
 //! - `ArrowDown`/`ArrowUp` move the keyboard cursor, `Enter` commits the
 //!   cursor row, `Escape` closes and reverts the text to the committed
 //!   selection's label.
-//! - The chevron toggles the menu open and focuses the input.
+//! - The chevron (lucide `chevron-down`, shared with `Select`) toggles the
+//!   menu open and focuses the input, and flips 180° while the menu is open.
 //! - Picking a row (click or `Enter`) fires `on_change` with the option's
 //!   `id` and shows its label.
 //! - Dismissing the menu without choosing (blur / `Escape`) reverts the
@@ -56,6 +57,13 @@
 //!   close the menu after acting. Slots are press surfaces inside the
 //!   focus-preserving panel, so pressing them never blurs the input; they
 //!   are click-only (the keyboard cursor and `Enter` stay on the rows).
+//! - `clearable` adds a trailing ✕ left of the chevron, shown while there is
+//!   something to clear (a committed selection or typed text). Pressing it
+//!   fires `on_change("")` and empties the input — the one way to get BACK
+//!   to "nothing selected", since dismissal otherwise reverts the text to
+//!   the committed label. Like the chevron it is `preserves_focus`, so
+//!   clearing a focused combobox keeps focus (and an open menu, now listing
+//!   every option) where it was.
 //!
 //! # Multi-select
 //!
@@ -74,6 +82,8 @@
 //!   the picks are untouched.
 //! - `on_selection_change` fires with the WHOLE vec, not the one id that
 //!   changed. `value` / `on_change` are ignored.
+//! - The `clearable` ✕ empties the whole selection (firing
+//!   `on_selection_change` with an empty vec) along with the query.
 //! - The picked options are shown as a count summary in the placeholder,
 //!   and nothing more: the bordered box is the `text_input` itself so the
 //!   focus ring lands on the focusable element, and a filter bar already
@@ -104,8 +114,8 @@
 //! Rationale for the input-carries-the-chrome layout (vs. a bordered
 //! wrapper around a bare input): the native focus ring must land on the
 //! *focusable* element, so the bordered box lives on the `text_input`
-//! itself — exactly like [`Field`](crate::Field) — and the chevron is
-//! absolutely positioned over its right edge. A bordered wrapper would draw
+//! itself — exactly like [`Field`](crate::Field) — and the trailing row (✕ +
+//! chevron) is absolutely positioned over its right edge. A bordered wrapper would draw
 //! a ring that never lights up, because focus is on the inner input.
 
 use std::rc::Rc;
@@ -122,14 +132,14 @@ use runtime_core::{
 
 use idea_theme::theme::IdeaThemeRef;
 
-use crate::components::select::{SelectOption, SelectSize};
+use crate::components::date_input::CLEAR_GLYPH;
+use crate::components::field::{adornment_icon_color, adornment_icon_px_for};
+use crate::components::icon::Icon;
+use crate::components::select::{rotating_chevron, SelectOption, SelectSize, CHEVRON_DOWN};
 use crate::stylesheets::{
-    AutocompleteBox, AutocompleteChevron, AutocompleteEmpty, AutocompleteInput,
-    SelectOption as SelectOptionStyle,
+    AutocompleteBox, AutocompleteChevron, AutocompleteClear, AutocompleteEmpty,
+    AutocompleteInput, AutocompleteTrailing, SelectOption as SelectOptionStyle,
 };
-
-/// Disclosure caret glyph (▾) shown at the input's right edge.
-const CHEVRON: &str = "\u{25BE}";
 
 /// Context handed to a menu-slot builder ([`AutocompleteProps::header`] /
 /// [`AutocompleteProps::footer`]) each time the menu opens.
@@ -242,6 +252,14 @@ pub struct AutocompleteProps {
     /// `false`.
     #[prop(static)]
     pub autofocus: bool,
+    /// Offer a trailing ✕ (left of the chevron) that clears the selection:
+    /// single mode fires `on_change("")`, multi mode fires
+    /// `on_selection_change` with an empty vec, and both empty the input.
+    /// Shown only while there is something to clear (a committed selection
+    /// or typed text). Static: it shapes the trailing row and the input's
+    /// right-padding reserve. Default `false`.
+    #[prop(static)]
+    pub clearable: bool,
 }
 
 impl Default for AutocompleteProps {
@@ -258,6 +276,7 @@ impl Default for AutocompleteProps {
             selection: None,
             on_selection_change: None,
             autofocus: false,
+            clearable: false,
         }
     }
 }
@@ -365,6 +384,47 @@ pub(crate) fn selection_summary(
     }
 }
 
+/// The ✕ action: empty the selection AND the typed query. Single mode
+/// reports `""` through `on_change` (the host owns `value`, as with a row
+/// commit); multi mode writes the empty vec to `selection` and reports it.
+/// The query is cleared too — otherwise single mode's blur-revert would
+/// restore a stale label if the host's write lands after it. Pulled out so
+/// both modes are unit-tested without a backend.
+pub(crate) fn clear_action(
+    query: Signal<String>,
+    on_change: Rc<dyn Fn(String)>,
+    selection: Option<Signal<Vec<String>>>,
+    on_selection_change: Option<Rc<dyn Fn(Vec<String>)>>,
+) -> Rc<dyn Fn()> {
+    Rc::new(move || {
+        query.set(String::new());
+        match selection {
+            None => (on_change)(String::new()),
+            Some(sel) => {
+                sel.set(Vec::new());
+                if let Some(cb) = &on_selection_change {
+                    (cb)(Vec::new());
+                }
+            }
+        }
+    })
+}
+
+/// The trailing ✕: an icon-sized pressable sized like a Field adornment
+/// at the same density. `preserves_focus` for the chevron's reason —
+/// pressing it must not blur the input (a blur would close-and-revert the
+/// menu mid-clear).
+fn clear_button(clear: Rc<dyn Fn()>, size: SelectSize) -> Element {
+    let px = adornment_icon_px_for(size.as_variant_str());
+    let muted = adornment_icon_color();
+    let glyph = ui! { Icon(data = CLEAR_GLYPH, size = px, color = Some(muted)) };
+    pressable(vec![glyph], move || (clear)())
+        .preserves_focus(true)
+        .a11y_label("Clear")
+        .with_style(AutocompleteClear())
+        .into_element()
+}
+
 /// Renders a searchable combobox: a `text_input` that filters an anchored
 /// dropdown of [`SelectOption`] rows, with keyboard navigation and
 /// constrained (id-only) selection.
@@ -391,6 +451,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let selection = props.selection;
     let multi = selection.is_some();
     let on_selection_change = props.on_selection_change.clone();
+    let clearable = props.clearable;
 
     // --- internal state -----------------------------------------------------
     // `query` is the text in the input; it doubles as the filter. In single
@@ -545,9 +606,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let size_is_reactive = !size.is_static();
     let make_input_style = {
         let size = size.clone();
+        let trailing = if clearable { "clear" } else { "chevron" };
         move || {
             StyleApplication::new(AutocompleteInput::sheet())
                 .with("size", size.get().as_variant_str().to_string())
+                .with("trailing", trailing.to_string())
         }
     };
 
@@ -639,7 +702,14 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // `preserves_focus`: pressing the chevron must not blur the input — a
     // blur would close-on-blur the menu BEFORE this toggle runs, flipping
     // `open` back to true and breaking "chevron closes an open menu".
-    let chevron = pressable(vec![text(CHEVRON.to_string()).into_element()], {
+    // Lucide `chevron-down`, flipping 180° while the menu is open — the same
+    // glyph + tween as Select's trigger, sized like the ✕ beside it.
+    let chevron_glyph = rotating_chevron(
+        CHEVRON_DOWN,
+        adornment_icon_px_for(size.get().as_variant_str()),
+        open,
+    );
+    let chevron = pressable(vec![chevron_glyph], {
         let open_menu = open_menu.clone();
         move || {
             if open.get() {
@@ -656,7 +726,29 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     .with_style(AutocompleteChevron())
     .into_element();
 
-    let wrapper = view(vec![input_node, chevron])
+    // --- clear ✕ -------------------------------------------------------------
+    // Shown only while there's something to clear: a committed selection, or
+    // text typed over an empty one.
+    let clear = clear_action(query, on_change.clone(), selection, props.on_selection_change.clone());
+    let show_clear = memo(move || {
+        let committed = match selection {
+            Some(sel) => !sel.get().is_empty(),
+            None => !value.get().is_empty(),
+        };
+        committed || !query.get().is_empty()
+    });
+    let trailing = ui! {
+        view(style = AutocompleteTrailing()) {
+            if clearable {
+                if show_clear.get() {
+                    clear_button(clear.clone(), size.get())
+                }
+            }
+            chevron
+        }
+    };
+
+    let wrapper = view(vec![input_node, trailing])
         .with_style(AutocompleteBox())
         .bind(wrapper_ref)
         .into_element();
@@ -875,22 +967,39 @@ mod tests {
                 options: vec![SelectOption::new("apple", "Apple")],
                 ..Default::default()
             };
-            // wrapper view [input+chevron wrapper, dropdown panel] → the
-            // chevron is the wrapper's second child.
+            // root view [input wrapper, dropdown panel] → wrapper [input,
+            // trailing row] → the chevron is the trailing row's last child.
             let mut children = match classify(Autocomplete(props)) {
                 P::View { children, .. } => children,
                 _ => panic!("Autocomplete renders a view wrapper"),
             };
             let mut wrapper_children = match classify(children.remove(0)) {
                 P::View { children, .. } => children,
-                _ => panic!("first child is the input+chevron wrapper view"),
+                _ => panic!("first child is the input wrapper view"),
             };
-            assert!(wrapper_children.len() >= 2, "wrapper holds [input, chevron]");
-            let chevron = wrapper_children.remove(1);
-            let P::Pressable { preserves_focus, .. } = classify(chevron) else {
+            assert_eq!(wrapper_children.len(), 2, "wrapper holds [input, trailing row]");
+            let mut trailing = classify(wrapper_children.remove(1)).children();
+            let chevron = trailing.pop().expect("the trailing row ends with the chevron");
+            let P::Pressable { preserves_focus, children, .. } = classify(chevron) else {
                 panic!("chevron is a pressable");
             };
             assert!(preserves_focus, "the chevron must not blur the input when pressed");
+            // The glyph is lucide `chevron-down` inside Select's rotating
+            // view (bound for the RotateZ flip), not a text caret.
+            let rotator = classify(children.into_iter().next().unwrap()).children();
+            let P::Icon { data, .. } = classify(rotator.into_iter().next().unwrap()) else {
+                panic!("the chevron's rotating view wraps an icon");
+            };
+            assert_eq!(data.paths, CHEVRON_DOWN.paths, "lucide chevron-down, shared with Select");
+
+            // Same rule for the clear ✕: a blur mid-clear would close the
+            // menu and revert the input to the label being cleared.
+            let P::Pressable { preserves_focus, .. } =
+                classify(clear_button(Rc::new(|| {}), SelectSize::default()))
+            else {
+                panic!("the ✕ is a pressable");
+            };
+            assert!(preserves_focus, "the ✕ must not blur the input when pressed");
     });
     }
 
@@ -915,6 +1024,87 @@ mod tests {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
             assert!(input_autofocus(AutocompleteProps { autofocus: true, ..Default::default() }));
             assert!(!input_autofocus(AutocompleteProps::default()));
+        });
+    }
+
+    /// The ✕ action in single mode reports `""` through `on_change` (the
+    /// host owns `value`) and empties the query so a later blur-revert has
+    /// no stale label to restore.
+    #[test]
+    fn clear_action_single_commits_empty_and_clears_query() {
+        with_test_world(|| {
+            let query: Signal<String> = signal("Apple".to_string());
+            let got = Rc::new(std::cell::RefCell::new(None::<String>));
+            let sink = got.clone();
+            let clear = clear_action(
+                query,
+                Rc::new(move |id| *sink.borrow_mut() = Some(id)),
+                None,
+                None,
+            );
+            (clear)();
+            idea_theme::testing::commit();
+            assert_eq!(got.borrow().as_deref(), Some(""), "on_change fires with \"\"");
+            assert_eq!(query.get(), "", "the input empties");
+        });
+    }
+
+    /// Multi mode: the ✕ empties the WHOLE selection and reports the empty
+    /// vec; single-mode `on_change` stays silent.
+    #[test]
+    fn clear_action_multi_empties_selection_and_reports_it() {
+        with_test_world(|| {
+            let query: Signal<String> = signal("pl".to_string());
+            let selection: Signal<Vec<String>> = signal(labels(&["a", "b"]));
+            let reported = Rc::new(std::cell::RefCell::new(None::<Vec<String>>));
+            let sink = reported.clone();
+            let single_fired = Rc::new(std::cell::Cell::new(false));
+            let single_flag = single_fired.clone();
+            let clear = clear_action(
+                query,
+                Rc::new(move |_| single_flag.set(true)),
+                Some(selection),
+                Some(Rc::new(move |ids| *sink.borrow_mut() = Some(ids))),
+            );
+            (clear)();
+            idea_theme::testing::commit();
+            assert!(selection.get().is_empty(), "every pick is cleared");
+            assert_eq!(reported.borrow().as_deref(), Some(&[][..]), "reports the empty vec");
+            assert!(!single_fired.get(), "multi mode never fires on_change");
+            assert_eq!(query.get(), "", "the search empties too");
+        });
+    }
+
+    /// The input's right-padding reserve covers the trailing row at every
+    /// size — the SVG chevron alone, or chevron + ✕ when `clearable` — so
+    /// typed text never runs under a glyph.
+    #[test]
+    fn clearable_reserves_room_for_the_x() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let pad = |size: &str, trailing: &str| {
+                let app = StyleApplication::new(AutocompleteInput::sheet())
+                    .with("size", size.to_string())
+                    .with("trailing", trailing.to_string());
+                runtime_core::resolve_style(&app).padding_right.clone().map(|t| t.resolve())
+            };
+            use crate::stylesheets::{
+                AUTOCOMPLETE_CLEARABLE_PAD_LG_PX, AUTOCOMPLETE_CLEARABLE_PAD_MD_PX,
+                AUTOCOMPLETE_CLEARABLE_PAD_SM_PX, AUTOCOMPLETE_PAD_LG_PX, AUTOCOMPLETE_PAD_MD_PX,
+                AUTOCOMPLETE_PAD_SM_PX,
+            };
+            for (size, chevron_only, clearable) in [
+                ("sm", AUTOCOMPLETE_PAD_SM_PX, AUTOCOMPLETE_CLEARABLE_PAD_SM_PX),
+                ("md", AUTOCOMPLETE_PAD_MD_PX, AUTOCOMPLETE_CLEARABLE_PAD_MD_PX),
+                ("lg", AUTOCOMPLETE_PAD_LG_PX, AUTOCOMPLETE_CLEARABLE_PAD_LG_PX),
+            ] {
+                assert_eq!(pad(size, "chevron"), Some(runtime_core::Length::Px(chevron_only)), "{size}");
+                assert_eq!(pad(size, "clear"), Some(runtime_core::Length::Px(clearable)), "{size}");
+                // Both reserves must cover the glyphs they sit beside.
+                let glyph = crate::components::field::adornment_icon_px_for(size);
+                assert!(chevron_only > glyph, "{size}: chevron reserve clears the chevron");
+                assert!(clearable > chevron_only + glyph, "{size}: clearable reserve clears the ✕ too");
+            }
         });
     }
 

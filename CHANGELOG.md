@@ -204,6 +204,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`Autocomplete(clearable = true)`** (`idea-ui`) — an ✕ left of the
+  chevron that clears the selection: `on_change("")` in single-select,
+  `on_selection_change(vec![])` in multi-select, and the typed text
+  empties either way. It shows only while something is selected or
+  typed. Before this there was no way back to "nothing selected", since
+  leaving the field puts the selected label back. Default `false`.
+  The disclosure caret is now lucide's `chevron-down` (Select's glyph,
+  through the same shared helper) and flips 180° while the menu is
+  open, as Select's does; it used to be a static `▾` text glyph. The
+  input reserves a little more right padding at every size to fit it.
 - **`SegmentedControl(size = …)`** (`idea-ui`) — `Sm`, `Md` (default) or
   `Lg`. Each size is the same height and font size as a Select, Field or
   outlined Button at that size, so the control lines up beside them in a
