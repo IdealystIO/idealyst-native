@@ -552,6 +552,26 @@ where
     sheet.variant_default("interactive", "off")
 }
 
+/// The default tone set for the sheets whose job is categorization — Badge,
+/// and Tag (which Chip shares): the seven semantic tones PLUS the twelve
+/// palette hues (`tone::Blue`, …), so `Tag(tone = tone::Teal)` works out of
+/// the box.
+///
+/// Every other tone-variant sheet (Button, Alert, Switch, …) defaults to the
+/// seven semantic tones only, because each tone is pre-rendered into the
+/// shipped premint CSS for every variant: adding the palette to all of them
+/// (via `ToneRef::builtins`) measured 177 KB → 437 KB of CSS for every app,
+/// whether it used a hue or not. Tag + Badge alone is a small fraction of
+/// that. An app that wants a hue on another component adds it to that
+/// sheet's builder: `ButtonSheetBuilder::new().add_tone(tone::Teal)`.
+fn categorization_tones() -> Vec<ToneRef> {
+    ToneRef::builtins()
+        .into_iter()
+        .chain(super::tone::palette_hues())
+        .map(|(_, t)| t)
+        .collect()
+}
+
 /// Builder for the Badge component's stylesheet.
 pub struct BadgeSheetBuilder {
     tones: Vec<ToneRef>,
@@ -560,7 +580,7 @@ pub struct BadgeSheetBuilder {
 impl BadgeSheetBuilder {
     pub fn new() -> Self {
         Self {
-            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            tones: categorization_tones(),
             variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
         }
     }
@@ -638,7 +658,7 @@ pub struct TagSheetBuilder {
 impl TagSheetBuilder {
     pub fn new() -> Self {
         Self {
-            tones: ToneRef::builtins().into_iter().map(|(_, t)| t).collect(),
+            tones: categorization_tones(),
             variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
         }
     }
@@ -748,6 +768,163 @@ impl Default for TagSheetBuilder {
 pub fn install_default_tag_sheet() {
     install_tag_sheet(TagSheetBuilder::new().build());
     install_tag_text_sheets(TagSheetBuilder::new().build_text());
+}
+
+// =============================================================================
+// AvatarSheetBuilder
+// =============================================================================
+//
+// Tone + Variant (`appearance` axis) plus a closed `size` axis (the disc's
+// diameter). Two sheets, same keys: the CONTAINER (disc fill, clip, size)
+// and the TEXT (initials font + the appearance's foreground). The text
+// carries its own color because native `UILabel`/`TextView` do not inherit
+// it from the disc — only web's cascade does — so a Filled avatar would
+// render default-colored initials on its fill everywhere but web.
+
+/// The Avatar `size` axis: `(key, diameter px, initials font size)`. The
+/// initials' line height is the diameter, so the text centers in the disc
+/// on every backend without relying on flex centering of a text node.
+const AVATAR_SIZES: [(&str, f32, TokenLength); 5] = [
+    ("xs", 24.0, || Tokenized::Literal(runtime_core::Length::Px(10.0))),
+    ("sm", 32.0, || crate::tokens().typography.body_sm_size()),
+    ("md", 40.0, || crate::tokens().typography.body_size()),
+    ("lg", 56.0, || Tokenized::Literal(runtime_core::Length::Px(20.0))),
+    ("xl", 80.0, || Tokenized::Literal(runtime_core::Length::Px(28.0))),
+];
+
+/// The Avatar component's two sheets — see [`AvatarSheetBuilder`].
+pub struct AvatarSheets {
+    /// The disc: fill, clip, diameter.
+    pub container: Rc<StyleSheet>,
+    /// The initials: font, and the appearance's foreground color.
+    pub text: Rc<StyleSheet>,
+}
+
+/// Builder for the Avatar component's sheets. Defaults to the seven
+/// semantic tones plus the twelve palette hues (an avatar placeholder is
+/// the canonical categorization use) × the built-in variants; the default
+/// appearance is `neutral_soft`.
+pub struct AvatarSheetBuilder {
+    tones: Vec<ToneRef>,
+    variants: Vec<VariantRef>,
+}
+
+impl AvatarSheetBuilder {
+    pub fn new() -> Self {
+        Self {
+            tones: categorization_tones(),
+            variants: VariantRef::builtins().into_iter().map(|(_, v)| v).collect(),
+        }
+    }
+    pub fn add_tone(mut self, t: impl Into<ToneRef>) -> Self {
+        self.tones.push(t.into());
+        self
+    }
+    pub fn add_variant(mut self, v: impl Into<VariantRef>) -> Self {
+        self.variants.push(v.into());
+        self
+    }
+
+    fn parts(&self) -> [String; 3] {
+        let [t, v] = tone_variant_parts(&self.tones, &self.variants);
+        let sizes = AVATAR_SIZES.iter().map(|(k, _, _)| *k).collect::<Vec<_>>().join(",");
+        [t, v, sizes]
+    }
+
+    pub fn build(&self) -> AvatarSheets {
+        let pill = || Some(Tokenized::token("radius-pill", runtime_core::Length::Full));
+        let mut container = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
+            border_top_left_radius: pill(),
+            border_top_right_radius: pill(),
+            border_bottom_left_radius: pill(),
+            border_bottom_right_radius: pill(),
+            align_items: Some(runtime_core::AlignItems::Center),
+            justify_content: Some(runtime_core::JustifyContent::Center),
+            // Hug: a row of mixed-size avatars centers rather than
+            // top-aligning under the parent's default `align-items: stretch`.
+            align_self: Some(AlignSelf::Center),
+            overflow: Some(runtime_core::Overflow::Hidden),
+            background_transition: Some(Transition::new(250, Easing::EaseInOut)),
+            color_transition: Some(Transition::new(250, Easing::EaseInOut)),
+            ..Default::default()
+        });
+        for tone in &self.tones {
+            for variant in &self.variants {
+                let key = format!("{}_{}", tone.current_key(), variant.current_key());
+                let tone_c = tone.clone();
+                let variant_c = variant.clone();
+                container = container.variant("appearance", key, move |_vs| {
+                    let theme_rc = active_theme();
+                    let theme_ref = theme_rc
+                        .downcast_ref::<IdeaThemeRef>()
+                        .expect("Avatar sheet closure: install_idea_theme(...) first");
+                    let ctx = ResolutionCtx { theme: theme_ref, tone: &*tone_c.0 };
+                    variant_c.0.render(&ctx)
+                });
+            }
+        }
+        for (key, diameter, _) in AVATAR_SIZES {
+            container = container.variant("size", key, move |_vs| StyleRules {
+                width: Some(Tokenized::Literal(runtime_core::Length::Px(diameter))),
+                height: Some(Tokenized::Literal(runtime_core::Length::Px(diameter))),
+                ..Default::default()
+            });
+        }
+        let container = default_neutral_soft(container)
+            .variant_default("size", "md")
+            .premint_as(&premint_identity("avatar", self.parts()));
+
+        let mut text = default_neutral_soft(text_color_axis(
+            StyleSheet::new(|_vs: &VariantSet| StyleRules {
+                font_weight: Some(FontWeight::SemiBold),
+                text_align: Some(TextAlign::Center),
+                letter_spacing: Some(Tokenized::Literal(0.5)),
+                text_transform: Some(runtime_core::TextTransform::Uppercase),
+                ..Default::default()
+            }),
+            &self.tones,
+            &self.variants,
+        ));
+        for (key, diameter, font) in AVATAR_SIZES {
+            text = text.variant("size", key, move |_vs| StyleRules {
+                font_size: Some(font()),
+                line_height: Some(Tokenized::Literal(diameter)),
+                ..Default::default()
+            });
+        }
+        let text = text
+            .variant_default("size", "md")
+            .premint_as(&premint_identity("avatar.text", self.parts()));
+
+        AvatarSheets { container, text }
+    }
+}
+
+impl Default for AvatarSheetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+thread_local! {
+    static AVATAR_SHEETS: RefCell<Option<Rc<AvatarSheets>>> = const { RefCell::new(None) };
+}
+
+/// Install the Avatar sheets — call with an extended
+/// [`AvatarSheetBuilder`] (`.add_tone(MyTone)`) to give avatars an app
+/// tone. `install_idea_theme` installs the default.
+pub fn install_avatar_sheets(sheets: AvatarSheets) {
+    AVATAR_SHEETS.with(|s| *s.borrow_mut() = Some(Rc::new(sheets)));
+}
+pub fn installed_avatar_sheets() -> Rc<AvatarSheets> {
+    AVATAR_SHEETS.with(|s| {
+        s.borrow()
+            .clone()
+            .expect("no Avatar sheets installed; call install_idea_theme(...) before rendering")
+    })
+}
+pub fn install_default_avatar_sheets() {
+    install_avatar_sheets(AvatarSheetBuilder::new().build());
 }
 
 /// Builder for the Alert component's stylesheet.
@@ -2844,5 +3021,92 @@ mod selection_sheet_tests {
         let before = keys.len();
         keys.dedup();
         assert_eq!(keys.len(), before, "duplicate key in FONT_WEIGHT_KEYS");
+    }
+
+    // ---- Palette tones ---------------------------------------------------
+
+    /// The categorization sheets (Tag — which Chip shares — and Badge)
+    /// carry an arm for every palette hue × variant, so
+    /// `Tag(tone = tone::Teal)` resolves instead of silently falling back
+    /// to the `neutral_soft` default.
+    #[test]
+    fn tag_and_badge_sheets_carry_the_palette_hues() {
+        const WITH_PALETTE: usize = (7 + 12) * 4;
+        let tag = TagSheetBuilder::new().build();
+        let badge = BadgeSheetBuilder::new().build();
+        assert_eq!(appearance_arms(&tag), WITH_PALETTE);
+        assert_eq!(appearance_arms(&badge), WITH_PALETTE);
+        // The Tag text sheets share the container's matrix.
+        let text = TagSheetBuilder::new().build_text();
+        assert_eq!(appearance_arms(&text.label), WITH_PALETTE);
+        for (hue, _) in crate::extensible::tone::palette_hues() {
+            for v in ["filled", "soft", "outlined", "ghost"] {
+                let key = format!("{hue}_{v}");
+                assert!(has(&tag, "appearance", &key), "tag sheet lacks {key}");
+                assert!(has(&badge, "appearance", &key), "badge sheet lacks {key}");
+            }
+        }
+    }
+
+    /// The non-categorization sheets stay on the seven semantic tones: each
+    /// tone is pre-rendered into the shipped premint CSS for every variant,
+    /// and adding the palette everywhere measured 177 KB → 437 KB for every
+    /// app (see `categorization_tones`). An app opts a sheet in with
+    /// `add_tone`.
+    #[test]
+    fn other_tone_sheets_stay_on_the_semantic_tones() {
+        assert_eq!(appearance_arms(&ButtonSheetBuilder::new().build()), BUILTIN_APPEARANCE_ARMS);
+        assert_eq!(appearance_arms(&AlertSheetBuilder::new().build()), BUILTIN_APPEARANCE_ARMS);
+        let opted_in = ButtonSheetBuilder::new().add_tone(crate::extensible::tone::Teal).build();
+        assert!(has(&opted_in, "appearance", "teal_filled"));
+    }
+
+    /// The Avatar's two sheets share one `appearance` × `size` matrix
+    /// (semantic tones + palette hues × the built-in variants), and default
+    /// to a neutral soft medium disc.
+    #[test]
+    fn avatar_sheets_share_the_appearance_and_size_matrix() {
+        let sheets = AvatarSheetBuilder::new().build();
+        for sheet in [&sheets.container, &sheets.text] {
+            assert_eq!(appearance_arms(sheet), (7 + 12) * 4);
+            for size in ["xs", "sm", "md", "lg", "xl"] {
+                assert!(has(sheet, "size", size));
+            }
+            assert!(has(sheet, "appearance", "violet_filled"));
+        }
+    }
+
+    /// Regression: the Avatar's initials used to get their color only from
+    /// the disc's `color`, which native `UILabel`/`TextView` never inherit
+    /// (only web's cascade does) — so on a Filled disc the initials kept the
+    /// default text color. The TEXT sheet must carry the appearance's
+    /// foreground itself: the contrast slot (`*-solid-text`) for Filled, the
+    /// soft text for Soft, matching what the disc paints under it.
+    #[test]
+    fn regression_avatar_initials_carry_their_own_contrast_color() {
+        crate::testing::with_test_world(|| {
+            crate::theme::install_idea_theme(crate::theme::light_theme());
+            let sheets = AvatarSheetBuilder::new().build();
+            let resolve = |sheet: &Rc<StyleSheet>, appearance: &str| {
+                let mut vs = VariantSet::default();
+                vs.0.insert("appearance".into(), appearance.into());
+                sheet.resolve(&vs)
+            };
+            let name = |t: Option<Tokenized<runtime_core::Color>>| t.and_then(|t| t.name());
+
+            let disc = resolve(&sheets.container, "teal_filled");
+            let text = resolve(&sheets.text, "teal_filled");
+            assert_eq!(name(disc.background), Some("palette-teal-solid-bg"));
+            assert_eq!(name(text.color), Some("palette-teal-solid-text"));
+
+            let disc = resolve(&sheets.container, "pink_soft");
+            let text = resolve(&sheets.text, "pink_soft");
+            assert_eq!(name(disc.background), Some("palette-pink-soft-bg"));
+            assert_eq!(name(text.color), Some("palette-pink-soft-text"));
+
+            // No appearance named → the neutral soft default, on both.
+            let text = sheets.text.resolve(&VariantSet::default());
+            assert_eq!(name(text.color), Some("intent-neutral-soft-text"));
+        });
     }
 }

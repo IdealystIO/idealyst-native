@@ -355,6 +355,9 @@ macro_rules! app_theme {
             fn intents(&self) -> &$crate::theme::Intents {
                 <$idea_ty as $crate::theme::IdeaTheme>::intents(&self.idea)
             }
+            fn palette(&self) -> &$crate::theme::Palette {
+                <$idea_ty as $crate::theme::IdeaTheme>::palette(&self.idea)
+            }
             fn spacing(&self) -> &$crate::theme::Spacing {
                 <$idea_ty as $crate::theme::IdeaTheme>::spacing(&self.idea)
             }

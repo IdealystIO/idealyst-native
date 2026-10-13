@@ -49,6 +49,8 @@ pub mod typography;
 pub mod variant;
 
 pub use sheets::{
+    install_avatar_sheets, install_default_avatar_sheets, installed_avatar_sheets,
+    AvatarSheetBuilder, AvatarSheets,
     install_alert_sheet, install_badge_sheet, install_button_sheet, install_checkbox_sheets,
     install_alert_text_sheets, install_button_label_sheet, install_default_alert_sheet,
     install_default_badge_sheet, installed_button_label_sheet,

@@ -117,6 +117,42 @@ pub struct Intents {
 }
 
 // =============================================================================
+// Palette — general-purpose hues with no semantic meaning
+// =============================================================================
+
+/// The twelve general-purpose hues a theme exposes, for components whose
+/// color is a *categorization* rather than a meaning — an avatar
+/// placeholder, a tag or chip a user colored, a badge per project.
+///
+/// [`Intents`] answer "what does this action mean?"; a palette hue answers
+/// nothing — `blue` is just blue. Keeping the two apart is what lets a
+/// theme retint `danger` without every red label in the app following it,
+/// and gives categorization more than seven distinguishable colors.
+///
+/// Each hue is an [`IntentColors`] block — the same six slots, so it reads
+/// through the same `kind`s: `solid_bg` + `solid_text` is the filled
+/// background and its contrast color, `soft_bg` + `soft_text` the tinted
+/// pair, `fg` / `border` the outlined/ghost colors. Reached from
+/// components as built-in tones (`tone::Blue`, …) and from a `stylesheet!`
+/// as `t.palette.blue.solid_bg()`. Token names are
+/// `palette-<hue>-<slot>`.
+#[derive(Clone)]
+pub struct Palette {
+    pub red: IntentColors,
+    pub orange: IntentColors,
+    pub amber: IntentColors,
+    pub yellow: IntentColors,
+    pub lime: IntentColors,
+    pub green: IntentColors,
+    pub teal: IntentColors,
+    pub cyan: IntentColors,
+    pub blue: IntentColors,
+    pub indigo: IntentColors,
+    pub violet: IntentColors,
+    pub pink: IntentColors,
+}
+
+// =============================================================================
 // Colors — non-intent neutrals
 // =============================================================================
 
@@ -241,6 +277,8 @@ pub struct Typography {
 pub trait IdeaTheme: Any + 'static {
     fn colors(&self) -> &Colors;
     fn intents(&self) -> &Intents;
+    /// The general-purpose hues — see [`Palette`].
+    fn palette(&self) -> &Palette;
     fn spacing(&self) -> &Spacing;
     fn radius(&self) -> &Radius;
     fn typography(&self) -> &Typography;
@@ -302,6 +340,8 @@ pub struct IdeaThemeRef {
     colors: Colors,
     /// Same treatment for all seven intent palettes.
     intents: Intents,
+    /// Same treatment for the twelve general-purpose hues.
+    palette: Palette,
 }
 
 impl IdeaThemeRef {
@@ -312,7 +352,8 @@ impl IdeaThemeRef {
     pub fn from_rc(inner: Rc<dyn IdeaTheme>) -> Self {
         let colors = canonicalize_colors(inner.colors());
         let intents = canonicalize_intents(inner.intents());
-        Self { inner, colors, intents }
+        let palette = canonicalize_palette(inner.palette());
+        Self { inner, colors, intents, palette }
     }
 
     /// The theme as the author wrote it — colors NOT canonicalized.
@@ -329,6 +370,9 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn intents(&self) -> &Intents {
         &self.intents
+    }
+    fn palette(&self) -> &Palette {
+        &self.palette
     }
     fn spacing(&self) -> &Spacing {
         self.inner.spacing()
@@ -443,6 +487,41 @@ fn canonicalize_intents(i: &Intents) -> Intents {
     }
 }
 
+/// [`canonicalize_color`] over one palette hue, under
+/// `palette-<hue>-<slot>` names. A macro rather than a lookup like
+/// [`intent_slot_token`]: the names are `concat!`-built `&'static str`s,
+/// so no table and no allocation.
+macro_rules! canonicalize_swatch {
+    ($p:ident . $hue:ident) => {
+        IntentColors {
+            solid_bg: canonicalize_color(concat!("palette-", stringify!($hue), "-solid-bg"), &$p.$hue.solid_bg),
+            solid_text: canonicalize_color(concat!("palette-", stringify!($hue), "-solid-text"), &$p.$hue.solid_text),
+            soft_bg: canonicalize_color(concat!("palette-", stringify!($hue), "-soft-bg"), &$p.$hue.soft_bg),
+            soft_text: canonicalize_color(concat!("palette-", stringify!($hue), "-soft-text"), &$p.$hue.soft_text),
+            fg: canonicalize_color(concat!("palette-", stringify!($hue), "-fg"), &$p.$hue.fg),
+            border: canonicalize_color(concat!("palette-", stringify!($hue), "-border"), &$p.$hue.border),
+        }
+    };
+}
+
+/// [`canonicalize_color`] over all twelve palette hues.
+fn canonicalize_palette(p: &Palette) -> Palette {
+    Palette {
+        red: canonicalize_swatch!(p.red),
+        orange: canonicalize_swatch!(p.orange),
+        amber: canonicalize_swatch!(p.amber),
+        yellow: canonicalize_swatch!(p.yellow),
+        lime: canonicalize_swatch!(p.lime),
+        green: canonicalize_swatch!(p.green),
+        teal: canonicalize_swatch!(p.teal),
+        cyan: canonicalize_swatch!(p.cyan),
+        blue: canonicalize_swatch!(p.blue),
+        indigo: canonicalize_swatch!(p.indigo),
+        violet: canonicalize_swatch!(p.violet),
+        pink: canonicalize_swatch!(p.pink),
+    }
+}
+
 // =============================================================================
 // Canonical token names — the single source of truth
 // =============================================================================
@@ -487,6 +566,13 @@ pub const INTENT_NAMES: [&str; 7] =
 /// Canonical intent token = `intent-<intent>-<slot>`.
 pub const INTENT_SLOTS: [&str; 6] =
     ["solid-bg", "solid-text", "soft-bg", "soft-text", "fg", "border"];
+
+/// The twelve palette hue names, in [`Palette`] field order. Canonical
+/// palette token = `palette-<hue>-<slot>`, slots as [`INTENT_SLOTS`].
+pub const PALETTE_NAMES: [&str; 12] = [
+    "red", "orange", "amber", "yellow", "lime", "green",
+    "teal", "cyan", "blue", "indigo", "violet", "pink",
+];
 
 /// Map an (`intent`, `slot`) pair to its canonical `&'static str` token
 /// name (`intent-<intent>-<slot>`). Returns a static string for every
@@ -562,6 +648,10 @@ pub fn is_canonical_token(name: &str) -> bool {
                 .is_some_and(|slot| INTENT_SLOTS.contains(&slot))
         });
     }
+    // palette-<hue>-<slot>
+    if CANONICAL_PALETTE_TOKENS.contains(&name) {
+        return true;
+    }
     // Spacing / radius / typography length tokens.
     CANONICAL_LENGTH_TOKENS.contains(&name)
 }
@@ -611,6 +701,28 @@ pub const CANONICAL_INTENT_TOKENS: [&str; 42] = {
     intent_tokens!("primary", "secondary", "neutral", "success", "danger", "warning", "info")
 };
 
+/// Flattened canonical palette color token names (`palette-<hue>-<slot>`),
+/// hues in [`PALETTE_NAMES`] order, each expanded through [`INTENT_SLOTS`]
+/// order. Palette peer of [`CANONICAL_INTENT_TOKENS`].
+pub const CANONICAL_PALETTE_TOKENS: [&str; 72] = {
+    macro_rules! palette_tokens {
+        ($($h:literal),+ $(,)?) => {
+            [ $(
+                concat!("palette-", $h, "-solid-bg"),
+                concat!("palette-", $h, "-solid-text"),
+                concat!("palette-", $h, "-soft-bg"),
+                concat!("palette-", $h, "-soft-text"),
+                concat!("palette-", $h, "-fg"),
+                concat!("palette-", $h, "-border"),
+            )+ ]
+        };
+    }
+    palette_tokens!(
+        "red", "orange", "amber", "yellow", "lime", "green",
+        "teal", "cyan", "blue", "indigo", "violet", "pink",
+    )
+};
+
 /// Canonical length token names — spacing, radius, and typography size
 /// tokens, in [`ThemeTokens::tokens`] emission order. Backs
 /// [`is_canonical_length_token`].
@@ -640,8 +752,9 @@ const fn const_str_eq(a: &str, b: &str) -> bool {
 }
 
 /// Compile-time predicate: is `name` a canonical **color** token — a
-/// neutral ([`CANONICAL_NEUTRAL_TOKENS`]) or an intent slot
-/// ([`CANONICAL_INTENT_TOKENS`])? Backs the string-driven [`theme_color`]
+/// neutral ([`CANONICAL_NEUTRAL_TOKENS`]), an intent slot
+/// ([`CANONICAL_INTENT_TOKENS`]) or a palette slot
+/// ([`CANONICAL_PALETTE_TOKENS`])? Backs the string-driven [`theme_color`]
 /// and the tooling that validates a name it only has as a string; `const`
 /// so a caller can check a name at compile time.
 pub const fn is_canonical_color_token(name: &str) -> bool {
@@ -658,6 +771,13 @@ pub const fn is_canonical_color_token(name: &str) -> bool {
             return true;
         }
         j += 1;
+    }
+    let mut k = 0;
+    while k < CANONICAL_PALETTE_TOKENS.len() {
+        if const_str_eq(CANONICAL_PALETTE_TOKENS[k], name) {
+            return true;
+        }
+        k += 1;
     }
     false
 }
@@ -760,6 +880,7 @@ impl ThemeTokens for IdeaThemeRef {
     fn tokens(&self) -> Vec<TokenEntry> {
         let c = self.colors();
         let i = self.intents();
+        let p = self.palette();
         let s = self.spacing();
         let r = self.radius();
         let ty = self.typography();
@@ -836,6 +957,22 @@ impl ThemeTokens for IdeaThemeRef {
         intent_entries("warning", &i.warning, &mut out);
         intent_entries("info", &i.info, &mut out);
 
+        // Palette: every hue's six slots under `palette-<hue>-<slot>`.
+        // Read off the canonicalized block, whose fields already carry
+        // exactly those names (see `canonicalize_palette`) — so the name
+        // registered and the name a sheet reads are the same `&'static str`.
+        for block in [
+            &p.red, &p.orange, &p.amber, &p.yellow, &p.lime, &p.green,
+            &p.teal, &p.cyan, &p.blue, &p.indigo, &p.violet, &p.pink,
+        ] {
+            for t in [
+                &block.solid_bg, &block.solid_text, &block.soft_bg,
+                &block.soft_text, &block.fg, &block.border,
+            ] {
+                out.push(entry(t.name().expect("canonicalized palette slot is a token"), t));
+            }
+        }
+
         // Spacing: one length token per Spacing field.
         out.push(len("spacing-xs", s.xs));
         out.push(len("spacing-sm", s.sm));
@@ -879,6 +1016,7 @@ impl ThemeTokens for IdeaThemeRef {
 pub struct IdeaThemeDefaults {
     pub colors: Colors,
     pub intents: Intents,
+    pub palette: Palette,
     pub spacing: Spacing,
     pub radius: Radius,
     pub typography: Typography,
@@ -895,6 +1033,9 @@ impl IdeaTheme for IdeaThemeDefaults {
     }
     fn intents(&self) -> &Intents {
         &self.intents
+    }
+    fn palette(&self) -> &Palette {
+        &self.palette
     }
     fn spacing(&self) -> &Spacing {
         &self.spacing
@@ -969,6 +1110,75 @@ macro_rules! intent_colors {
             border: tok(concat!("intent-", $name, "-border"), $border),
         }
     };
+}
+
+/// [`intent_colors!`] for a palette hue: tokens `palette-<hue>-<slot>`.
+/// Same slot order.
+macro_rules! palette_colors {
+    (
+        $name:literal,
+        $solid_bg:expr, $solid_text:expr,
+        $soft_bg:expr, $soft_text:expr,
+        $fg:expr, $border:expr $(,)?
+    ) => {
+        IntentColors {
+            solid_bg: tok(concat!("palette-", $name, "-solid-bg"), $solid_bg),
+            solid_text: tok(concat!("palette-", $name, "-solid-text"), $solid_text),
+            soft_bg: tok(concat!("palette-", $name, "-soft-bg"), $soft_bg),
+            soft_text: tok(concat!("palette-", $name, "-soft-text"), $soft_text),
+            fg: tok(concat!("palette-", $name, "-fg"), $fg),
+            border: tok(concat!("palette-", $name, "-border"), $border),
+        }
+    };
+}
+
+/// The light palette, on the Tailwind hue scales.
+///
+/// Every `*_text` slot is legible on its own background — the contract an
+/// Avatar's initials (or any text-on-fill) relies on. Solid fills use the
+/// 600 shade under white text; the hues whose 600 is too light for white
+/// at AA (orange, green, teal, cyan) step to 700, and the three yellows
+/// (amber, yellow, lime) — which never carry white well — use a bright
+/// 400 fill under their 950 shade instead. Soft is the 100 tint under the
+/// 800 shade; `fg` (text on the page) is 700; `border` is 300.
+fn light_palette() -> Palette {
+    Palette {
+        red: palette_colors!("red", "#dc2626", "#ffffff", "#fee2e2", "#991b1b", "#b91c1c", "#fca5a5"),
+        orange: palette_colors!("orange", "#c2410c", "#ffffff", "#ffedd5", "#9a3412", "#c2410c", "#fdba74"),
+        amber: palette_colors!("amber", "#fbbf24", "#451a03", "#fef3c7", "#92400e", "#b45309", "#fcd34d"),
+        yellow: palette_colors!("yellow", "#facc15", "#422006", "#fef9c3", "#854d0e", "#a16207", "#fde047"),
+        lime: palette_colors!("lime", "#a3e635", "#1a2e05", "#ecfccb", "#3f6212", "#4d7c0f", "#bef264"),
+        green: palette_colors!("green", "#15803d", "#ffffff", "#dcfce7", "#166534", "#15803d", "#86efac"),
+        teal: palette_colors!("teal", "#0f766e", "#ffffff", "#ccfbf1", "#115e59", "#0f766e", "#5eead4"),
+        cyan: palette_colors!("cyan", "#0e7490", "#ffffff", "#cffafe", "#155e75", "#0e7490", "#67e8f9"),
+        blue: palette_colors!("blue", "#2563eb", "#ffffff", "#dbeafe", "#1e40af", "#1d4ed8", "#93c5fd"),
+        indigo: palette_colors!("indigo", "#4f46e5", "#ffffff", "#e0e7ff", "#3730a3", "#4338ca", "#a5b4fc"),
+        violet: palette_colors!("violet", "#7c3aed", "#ffffff", "#ede9fe", "#5b21b6", "#6d28d9", "#c4b5fd"),
+        pink: palette_colors!("pink", "#db2777", "#ffffff", "#fce7f3", "#9d174d", "#be185d", "#f9a8d4"),
+    }
+}
+
+/// The dark palette — the dark intents' shape: a bright 500 fill under the
+/// hue's 950 shade, a translucent 500 soft wash under the 300 shade, `fg`
+/// 400, and a translucent 500 border. The five hues too saturated for dark
+/// text on their 500 (red, blue, indigo, violet, pink) carry white text
+/// instead — on their 600, because white on the 500 measures 3.5–4.5:1,
+/// under AA (pinned by `palette_text_pairs_meet_wcag_aa`).
+fn dark_palette() -> Palette {
+    Palette {
+        red: palette_colors!("red", "#dc2626", "#ffffff", "rgba(239, 68, 68, 0.16)", "#fca5a5", "#f87171", "rgba(239, 68, 68, 0.36)"),
+        orange: palette_colors!("orange", "#f97316", "#431407", "rgba(249, 115, 22, 0.16)", "#fdba74", "#fb923c", "rgba(249, 115, 22, 0.36)"),
+        amber: palette_colors!("amber", "#f59e0b", "#451a03", "rgba(245, 158, 11, 0.16)", "#fcd34d", "#fbbf24", "rgba(245, 158, 11, 0.36)"),
+        yellow: palette_colors!("yellow", "#eab308", "#422006", "rgba(234, 179, 8, 0.16)", "#fde047", "#facc15", "rgba(234, 179, 8, 0.36)"),
+        lime: palette_colors!("lime", "#84cc16", "#1a2e05", "rgba(132, 204, 22, 0.16)", "#bef264", "#a3e635", "rgba(132, 204, 22, 0.36)"),
+        green: palette_colors!("green", "#22c55e", "#052e16", "rgba(34, 197, 94, 0.16)", "#86efac", "#4ade80", "rgba(34, 197, 94, 0.36)"),
+        teal: palette_colors!("teal", "#14b8a6", "#042f2e", "rgba(20, 184, 166, 0.16)", "#5eead4", "#2dd4bf", "rgba(20, 184, 166, 0.36)"),
+        cyan: palette_colors!("cyan", "#06b6d4", "#083344", "rgba(6, 182, 212, 0.16)", "#67e8f9", "#22d3ee", "rgba(6, 182, 212, 0.36)"),
+        blue: palette_colors!("blue", "#2563eb", "#ffffff", "rgba(59, 130, 246, 0.16)", "#93c5fd", "#60a5fa", "rgba(59, 130, 246, 0.36)"),
+        indigo: palette_colors!("indigo", "#4f46e5", "#ffffff", "rgba(99, 102, 241, 0.16)", "#a5b4fc", "#818cf8", "rgba(99, 102, 241, 0.36)"),
+        violet: palette_colors!("violet", "#7c3aed", "#ffffff", "rgba(139, 92, 246, 0.16)", "#c4b5fd", "#a78bfa", "rgba(139, 92, 246, 0.36)"),
+        pink: palette_colors!("pink", "#db2777", "#ffffff", "rgba(236, 72, 153, 0.16)", "#f9a8d4", "#f472b6", "rgba(236, 72, 153, 0.36)"),
+    }
 }
 
 pub fn light_theme() -> IdeaThemeDefaults {
@@ -1051,6 +1261,7 @@ pub fn light_theme() -> IdeaThemeDefaults {
                 "#0891b2", "#a5f3fc",
             ),
         },
+        palette: light_palette(),
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
         typography: DEFAULT_TYPOGRAPHY.clone(),
@@ -1133,6 +1344,7 @@ pub fn dark_theme() -> IdeaThemeDefaults {
                 "#22d3ee", "rgba(6, 182, 212, 0.36)",
             ),
         },
+        palette: dark_palette(),
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
         typography: DEFAULT_TYPOGRAPHY.clone(),
@@ -1311,6 +1523,7 @@ pub fn install_default_idea_sheets() {
     crate::extensible::install_default_button_sheet();
     crate::extensible::install_default_badge_sheet();
     crate::extensible::install_default_tag_sheet();
+    crate::extensible::install_default_avatar_sheets();
     crate::extensible::install_default_alert_sheet();
     crate::extensible::install_default_typography_sheet();
     crate::extensible::install_default_icon_button_sheet();
@@ -1812,10 +2025,16 @@ mod tests {
             primary: intent(), secondary: intent(), neutral: intent(),
             success: intent(), danger: intent(), warning: intent(), info: intent(),
         };
+        t.palette = Palette {
+            red: intent(), orange: intent(), amber: intent(), yellow: intent(),
+            lime: intent(), green: intent(), teal: intent(), cyan: intent(),
+            blue: intent(), indigo: intent(), violet: intent(), pink: intent(),
+        };
 
         let r = IdeaThemeRef::new(t);
         let c = r.colors();
         let i = r.intents();
+        let p = r.palette();
 
         let mut read_names: Vec<&str> = Vec::new();
         for (label, field) in [
@@ -1842,6 +2061,12 @@ mod tests {
             ("primary", &i.primary), ("secondary", &i.secondary),
             ("neutral", &i.neutral), ("success", &i.success),
             ("danger", &i.danger), ("warning", &i.warning), ("info", &i.info),
+            ("palette.red", &p.red), ("palette.orange", &p.orange),
+            ("palette.amber", &p.amber), ("palette.yellow", &p.yellow),
+            ("palette.lime", &p.lime), ("palette.green", &p.green),
+            ("palette.teal", &p.teal), ("palette.cyan", &p.cyan),
+            ("palette.blue", &p.blue), ("palette.indigo", &p.indigo),
+            ("palette.violet", &p.violet), ("palette.pink", &p.pink),
         ] {
             for (slot, field) in [
                 ("solid_bg", &block.solid_bg), ("solid_text", &block.solid_text),
@@ -1899,6 +2124,8 @@ mod tests {
             "color-focus-ring",
             "intent-primary-solid-bg",
             "intent-info-border",
+            "palette-blue-solid-bg",
+            "palette-pink-border",
             "spacing-md",
             "radius-pill",
             "typography-body-size",
@@ -1914,6 +2141,8 @@ mod tests {
             "intent-primary-solidbg",
             "intent-bogus-fg",
             "intent-primary-glow",
+            "palette-magenta-fg",
+            "palette-blue-glow",
         ] {
             assert!(!is_canonical_token(name), "'{name}' should NOT be canonical");
         }

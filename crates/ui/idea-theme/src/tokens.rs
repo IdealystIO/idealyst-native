@@ -243,37 +243,40 @@ macro_rules! length_namespace {
     };
 }
 
-/// One intent slot accessor. Split out of `intent_namespaces!` because
-/// the slot's *token* spelling (`solid-bg`) and its *field* spelling
-/// (`solid_bg`) differ, so both have to be passed; the fallback still
-/// comes from the field, never a literal.
-macro_rules! intent_slot {
-    ($intent_field:ident, $intent:literal, $slot_field:ident, $slot:literal) => {
-        #[doc = concat!("Theme token `intent-", $intent, "-", $slot, "`.")]
+/// One swatch slot accessor — an intent's or a palette hue's. Split out of
+/// `swatch_namespaces!` because the slot's *token* spelling (`solid-bg`)
+/// and its *field* spelling (`solid_bg`) differ, so both have to be passed;
+/// the fallback still comes from the field, never a literal. `$ns` is the
+/// token prefix (`intent` / `palette`), `$group` the theme field the block
+/// lives on (`intents` / `palette`).
+macro_rules! swatch_slot {
+    ($ns:literal, $group:ident, $field:ident, $name:literal, $slot_field:ident, $slot:literal) => {
+        #[doc = concat!("Theme token `", $ns, "-", $name, "-", $slot, "`.")]
         pub fn $slot_field(&self) -> Tokenized<Color> {
             BASE.with(|b| {
                 Tokenized::token(
-                    concat!("intent-", $intent, "-", $slot),
-                    b.intents.$intent_field.$slot_field.value().clone(),
+                    concat!($ns, "-", $name, "-", $slot),
+                    b.$group.$field.$slot_field.value().clone(),
                 )
             })
         }
     };
 }
 
-/// One intent slot's [`TokenDescriptor`]. Peer of [`intent_slot`],
+/// One swatch slot's [`TokenDescriptor`]. Peer of [`swatch_slot`],
 /// split out for the same reason: the slot's token spelling
 /// (`solid-bg`) and field spelling (`solid_bg`) differ, so the name and
 /// the two paths have to be assembled from both.
-macro_rules! intent_descriptor {
-    ($intent_field:ident, $intent:literal, $slot_field:ident, $slot:literal) => {
+macro_rules! swatch_descriptor {
+    ($ns:literal, $group:ident, $field:ident, $name:literal, $slot_field:ident, $slot:literal) => {
         TokenDescriptor {
-            name: concat!("intent-", $intent, "-", $slot),
-            path: concat!("intent.", $intent, ".", stringify!($slot_field)),
-            namespace: "intent",
+            name: concat!($ns, "-", $name, "-", $slot),
+            path: concat!($ns, ".", $name, ".", stringify!($slot_field)),
+            namespace: $ns,
             field_path: Some(concat!(
-                "intents.",
-                stringify!($intent_field),
+                stringify!($group),
+                ".",
+                stringify!($field),
                 ".",
                 stringify!($slot_field)
             )),
@@ -302,67 +305,67 @@ macro_rules! catalog_token {
     };
 }
 
-/// Generate one namespace per intent, each carrying the six canonical
-/// slots. The slot accessors are fixed (they're the `IntentColors`
-/// fields), so only the intent name varies — and the token name is
-/// assembled from it at compile time via `concat!`, which is what keeps
-/// `t.intent.primary.solid_bg()` and `intent-primary-solid-bg` the same
-/// fact.
-macro_rules! intent_namespaces {
-    ( $( $ty:ident => $intent_field:ident, $intent:literal );+ $(;)? ) => {
+/// Generate one namespace per swatch (an intent, or a palette hue), each
+/// carrying the six canonical slots. The slot accessors are fixed (they're
+/// the `IntentColors` fields), so only the swatch name varies — and the
+/// token name is assembled from it at compile time via `concat!`, which is
+/// what keeps `t.intent.primary.solid_bg()` and `intent-primary-solid-bg`
+/// (or `t.palette.blue.soft_bg()` and `palette-blue-soft-bg`) the same fact.
+macro_rules! swatch_namespaces {
+    ( $ns:literal on $group:ident { $( $ty:ident => $field:ident, $name:literal );+ $(;)? } ) => {
         $(
-            #[doc = concat!("The `", $intent, "` intent's six color slots.")]
+            #[doc = concat!("The `", $name, "` ", $ns, "'s six color slots.")]
             #[derive(Default, Clone, Copy, Debug)]
             pub struct $ty;
 
             impl $ty {
                 /// Every token name this namespace can emit, in slot order.
                 pub const NAMES: &'static [&'static str] = &[
-                    concat!("intent-", $intent, "-solid-bg"),
-                    concat!("intent-", $intent, "-solid-text"),
-                    concat!("intent-", $intent, "-soft-bg"),
-                    concat!("intent-", $intent, "-soft-text"),
-                    concat!("intent-", $intent, "-fg"),
-                    concat!("intent-", $intent, "-border"),
+                    concat!($ns, "-", $name, "-solid-bg"),
+                    concat!($ns, "-", $name, "-solid-text"),
+                    concat!($ns, "-", $name, "-soft-bg"),
+                    concat!($ns, "-", $name, "-soft-text"),
+                    concat!($ns, "-", $name, "-fg"),
+                    concat!($ns, "-", $name, "-border"),
                 ];
 
-                /// Every slot of this intent, described as data. Same
+                /// Every slot of this swatch, described as data. Same
                 /// slot order as [`Self::NAMES`].
                 pub const DESCRIPTORS: &'static [TokenDescriptor] = &[
-                    intent_descriptor!($intent_field, $intent, solid_bg, "solid-bg"),
-                    intent_descriptor!($intent_field, $intent, solid_text, "solid-text"),
-                    intent_descriptor!($intent_field, $intent, soft_bg, "soft-bg"),
-                    intent_descriptor!($intent_field, $intent, soft_text, "soft-text"),
-                    intent_descriptor!($intent_field, $intent, fg, "fg"),
-                    intent_descriptor!($intent_field, $intent, border, "border"),
+                    swatch_descriptor!($ns, $group, $field, $name, solid_bg, "solid-bg"),
+                    swatch_descriptor!($ns, $group, $field, $name, solid_text, "solid-text"),
+                    swatch_descriptor!($ns, $group, $field, $name, soft_bg, "soft-bg"),
+                    swatch_descriptor!($ns, $group, $field, $name, soft_text, "soft-text"),
+                    swatch_descriptor!($ns, $group, $field, $name, fg, "fg"),
+                    swatch_descriptor!($ns, $group, $field, $name, border, "border"),
                 ];
 
-                intent_slot!($intent_field, $intent, solid_bg, "solid-bg");
-                intent_slot!($intent_field, $intent, solid_text, "solid-text");
-                intent_slot!($intent_field, $intent, soft_bg, "soft-bg");
-                intent_slot!($intent_field, $intent, soft_text, "soft-text");
-                intent_slot!($intent_field, $intent, fg, "fg");
-                intent_slot!($intent_field, $intent, border, "border");
+                swatch_slot!($ns, $group, $field, $name, solid_bg, "solid-bg");
+                swatch_slot!($ns, $group, $field, $name, solid_text, "solid-text");
+                swatch_slot!($ns, $group, $field, $name, soft_bg, "soft-bg");
+                swatch_slot!($ns, $group, $field, $name, soft_text, "soft-text");
+                swatch_slot!($ns, $group, $field, $name, fg, "fg");
+                swatch_slot!($ns, $group, $field, $name, border, "border");
             }
 
-            catalog_intent_slot!($ty, $intent, solid_bg, "solid-bg");
-            catalog_intent_slot!($ty, $intent, solid_text, "solid-text");
-            catalog_intent_slot!($ty, $intent, soft_bg, "soft-bg");
-            catalog_intent_slot!($ty, $intent, soft_text, "soft-text");
-            catalog_intent_slot!($ty, $intent, fg, "fg");
-            catalog_intent_slot!($ty, $intent, border, "border");
+            catalog_swatch_slot!($ty, $ns, $name, solid_bg, "solid-bg");
+            catalog_swatch_slot!($ty, $ns, $name, solid_text, "solid-text");
+            catalog_swatch_slot!($ty, $ns, $name, soft_bg, "soft-bg");
+            catalog_swatch_slot!($ty, $ns, $name, soft_text, "soft-text");
+            catalog_swatch_slot!($ty, $ns, $name, fg, "fg");
+            catalog_swatch_slot!($ty, $ns, $name, border, "border");
         )+
     };
 }
 
-/// Catalog registration for one intent slot — peer of `catalog_token!`,
-/// split out because the intent path has three segments.
-macro_rules! catalog_intent_slot {
-    ($ty:ident, $intent:literal, $slot_field:ident, $slot:literal) => {
+/// Catalog registration for one swatch slot — peer of `catalog_token!`,
+/// split out because the swatch path has three segments.
+macro_rules! catalog_swatch_slot {
+    ($ty:ident, $ns:literal, $name:literal, $slot_field:ident, $slot:literal) => {
         catalog_token!(
-            concat!("intent-", $intent, "-", $slot),
-            concat!("intent.", $intent, ".", stringify!($slot_field)),
-            "intent",
+            concat!($ns, "-", $name, "-", $slot),
+            concat!($ns, ".", $name, ".", stringify!($slot_field)),
+            $ns,
             "Color",
             { $ty.$slot_field().value().0.clone() }
         );
@@ -476,14 +479,33 @@ length_namespace! {
     }
 }
 
-intent_namespaces! {
-    PrimaryTokens => primary, "primary";
-    SecondaryTokens => secondary, "secondary";
-    NeutralTokens => neutral, "neutral";
-    SuccessTokens => success, "success";
-    DangerTokens => danger, "danger";
-    WarningTokens => warning, "warning";
-    InfoTokens => info, "info";
+swatch_namespaces! {
+    "intent" on intents {
+        PrimaryTokens => primary, "primary";
+        SecondaryTokens => secondary, "secondary";
+        NeutralTokens => neutral, "neutral";
+        SuccessTokens => success, "success";
+        DangerTokens => danger, "danger";
+        WarningTokens => warning, "warning";
+        InfoTokens => info, "info";
+    }
+}
+
+swatch_namespaces! {
+    "palette" on palette {
+        RedTokens => red, "red";
+        OrangeTokens => orange, "orange";
+        AmberTokens => amber, "amber";
+        YellowTokens => yellow, "yellow";
+        LimeTokens => lime, "lime";
+        GreenTokens => green, "green";
+        TealTokens => teal, "teal";
+        CyanTokens => cyan, "cyan";
+        BlueTokens => blue, "blue";
+        IndigoTokens => indigo, "indigo";
+        VioletTokens => violet, "violet";
+        PinkTokens => pink, "pink";
+    }
 }
 
 /// The seven intent palettes, each reached as `t.intent.<name>.<slot>()`.
@@ -498,9 +520,27 @@ pub struct IntentTokens {
     pub info: InfoTokens,
 }
 
+/// The twelve general-purpose hues (see [`crate::theme::Palette`]), each
+/// reached as `t.palette.<hue>.<slot>()`.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct PaletteTokens {
+    pub red: RedTokens,
+    pub orange: OrangeTokens,
+    pub amber: AmberTokens,
+    pub yellow: YellowTokens,
+    pub lime: LimeTokens,
+    pub green: GreenTokens,
+    pub teal: TealTokens,
+    pub cyan: CyanTokens,
+    pub blue: BlueTokens,
+    pub indigo: IndigoTokens,
+    pub violet: VioletTokens,
+    pub pink: PinkTokens,
+}
+
 /// Every token in the idea vocabulary, described as data — the whole
 /// palette an editor can offer, in declaration order (neutrals, the
-/// seven intents, spacing, radius, typography).
+/// seven intents, the twelve palette hues, spacing, radius, typography).
 ///
 /// Ungated, unlike the catalog slice: this is the enumeration a theme
 /// editor shipped inside an app walks to generate one control per
@@ -532,6 +572,18 @@ pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
         .chain(DangerTokens::DESCRIPTORS)
         .chain(WarningTokens::DESCRIPTORS)
         .chain(InfoTokens::DESCRIPTORS)
+        .chain(RedTokens::DESCRIPTORS)
+        .chain(OrangeTokens::DESCRIPTORS)
+        .chain(AmberTokens::DESCRIPTORS)
+        .chain(YellowTokens::DESCRIPTORS)
+        .chain(LimeTokens::DESCRIPTORS)
+        .chain(GreenTokens::DESCRIPTORS)
+        .chain(TealTokens::DESCRIPTORS)
+        .chain(CyanTokens::DESCRIPTORS)
+        .chain(BlueTokens::DESCRIPTORS)
+        .chain(IndigoTokens::DESCRIPTORS)
+        .chain(VioletTokens::DESCRIPTORS)
+        .chain(PinkTokens::DESCRIPTORS)
         .chain(SpacingTokens::DESCRIPTORS)
         .chain(RadiusTokens::DESCRIPTORS)
         .chain(RadiusTokens::PILL_DESCRIPTOR)
@@ -547,6 +599,7 @@ pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
 /// assert_eq!(t.spacing.md().name(), Some("spacing-md"));
 /// assert_eq!(t.color.surface_alt().name(), Some("color-surface-alt"));
 /// assert_eq!(t.intent.primary.solid_bg().name(), Some("intent-primary-solid-bg"));
+/// assert_eq!(t.palette.blue.soft_bg().name(), Some("palette-blue-soft-bg"));
 /// ```
 ///
 /// A token that doesn't exist is a compile error rather than a reference
@@ -562,6 +615,7 @@ pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
 pub struct IdeaTokens {
     pub color: ColorTokens,
     pub intent: IntentTokens,
+    pub palette: PaletteTokens,
     pub spacing: SpacingTokens,
     pub radius: RadiusTokens,
     pub typography: TypographyTokens,
@@ -605,7 +659,7 @@ mod tests {
 
     /// Every color accessor in the vocabulary, paired with nothing —
     /// the *name* is what the accessor itself reports, which is the
-    /// point of the tests below. The one place all 53 are enumerated by
+    /// point of the tests below. The one place they are all enumerated by
     /// hand; `NAMES` (macro-generated) is checked against it, so an
     /// accessor added without a name — or vice versa — fails here.
     fn all_colors(t: &IdeaTokens) -> Vec<Tokenized<Color>> {
@@ -639,6 +693,11 @@ mod tests {
             };
         }
         slots!(i.primary, i.secondary, i.neutral, i.success, i.danger, i.warning, i.info);
+        let p = &t.palette;
+        slots!(
+            p.red, p.orange, p.amber, p.yellow, p.lime, p.green,
+            p.teal, p.cyan, p.blue, p.indigo, p.violet, p.pink,
+        );
         out
     }
 
@@ -680,6 +739,18 @@ mod tests {
             DangerTokens::NAMES,
             WarningTokens::NAMES,
             InfoTokens::NAMES,
+            RedTokens::NAMES,
+            OrangeTokens::NAMES,
+            AmberTokens::NAMES,
+            YellowTokens::NAMES,
+            LimeTokens::NAMES,
+            GreenTokens::NAMES,
+            TealTokens::NAMES,
+            CyanTokens::NAMES,
+            BlueTokens::NAMES,
+            IndigoTokens::NAMES,
+            VioletTokens::NAMES,
+            PinkTokens::NAMES,
         ] {
             names.extend(ns);
         }
@@ -859,7 +930,8 @@ mod tests {
     /// codegen must skip it rather than emit an assignment.
     #[test]
     fn descriptor_field_path_points_at_a_theme_field() {
-        const GROUPS: [&str; 5] = ["colors", "intents", "spacing", "radius", "typography"];
+        const GROUPS: [&str; 6] =
+            ["colors", "intents", "palette", "spacing", "radius", "typography"];
         let mut without_field = Vec::new();
         for d in token_descriptors() {
             let Some(field) = d.field_path else {
@@ -915,9 +987,11 @@ mod tests {
     fn vocabulary_matches_canonical_token_lists() {
         use crate::theme::{
             CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS,
+            CANONICAL_PALETTE_TOKENS,
         };
         let mut canonical: Vec<&str> = CANONICAL_NEUTRAL_TOKENS.to_vec();
         canonical.extend(CANONICAL_INTENT_TOKENS);
+        canonical.extend(CANONICAL_PALETTE_TOKENS);
         canonical.extend(CANONICAL_LENGTH_TOKENS);
         canonical.sort_unstable();
 
