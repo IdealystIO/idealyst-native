@@ -25,6 +25,7 @@ use web_glue::dom::{MediaStream, MediaStreamTrack};
 use web_glue::js::Object;
 use web_glue::{Closure, JsCast, JsError, JsFuture, JsValue};
 
+use crate::facing::{satisfies, ObservedFacing};
 use crate::{CameraConfig, CameraError, CameraFacing, NativeSource};
 use media_stream::FrameWriter;
 
@@ -44,6 +45,14 @@ web_glue::import! {
         "(s) => { const v = document.createElement('video'); v.muted = true; \
            v.setAttribute('playsinline', ''); v.srcObject = G.get(s); \
            const p = v.play(); if (p) p.catch(() => {}); return G.add(v); }";
+    // The opened video track's reported `facingMode` as a code (see
+    // `ObservedFacing::from_web_code`): 0 when the device reports none
+    // (desktop webcams) or the engine lacks `getSettings`.
+    fn js_track_facing(s: u32) -> u32 =
+        "(s) => { const t = G.get(s).getVideoTracks()[0]; \
+           const f = t && t.getSettings ? t.getSettings().facingMode : ''; \
+           if (typeof f !== 'string' || f === '') return 0; \
+           return f === 'user' ? 1 : f === 'environment' ? 2 : 3; }";
     fn js_video_width(v: u32) -> u32 = "(v) => G.get(v).videoWidth >>> 0";
     fn js_video_height(v: u32) -> u32 = "(v) => G.get(v).videoHeight >>> 0";
     // Detach the source.
@@ -234,9 +243,23 @@ async fn get_user_media(config: &CameraConfig) -> Result<MediaStream, CameraErro
         .map_err(|e| CameraError::Backend(format!("getUserMedia: {}", err_string(&e))))?;
 
     let value = JsFuture::new(&promise).await.map_err(map_gum_error)?;
-    value
+    let stream = value
         .dyn_into::<MediaStream>()
-        .map_err(|_| CameraError::Backend("getUserMedia did not return a MediaStream".into()))
+        .map_err(|_| CameraError::Backend("getUserMedia did not return a MediaStream".into()))?;
+
+    // `facingMode` went in as a preference, so the browser may have opened
+    // the OTHER camera (on a one-camera laptop it always does). Check what
+    // was opened against the `CameraFacing` contract and release it rather
+    // than hand back the wrong camera. An `exact` constraint can't be used
+    // instead: desktop webcams report no facing, so `exact: "user"` would
+    // reject the one camera a laptop's `Front` should open.
+    // SAFETY: a live stream handle.
+    let observed = ObservedFacing::from_web_code(unsafe { js_track_facing(stream.as_js().raw()) });
+    if !satisfies(config.facing, observed) {
+        stop_tracks(&stream);
+        return Err(CameraError::NoCamera);
+    }
+    Ok(stream)
 }
 
 /// Build the `video` member of the constraints. `true` for device defaults,

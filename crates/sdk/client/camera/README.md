@@ -238,8 +238,10 @@ constraint.
   `live_v4l2_delivers_a_real_frame` test opens a real `/dev/videoN`; run it on
   a host with a camera. V4L2 access is filesystem-permission-based (the user
   must read `/dev/videoN`, usually via the `video` group) — there is no OS
-  prompt. V4L2 exposes no front/back facing metadata, so every `CameraFacing`
-  resolves to the primary video source. The PipeWire/xdg-desktop-portal path
+  prompt. V4L2 exposes no front/back facing metadata, so a camera there
+  counts as user-facing: `Default` and `Front` open the primary video source,
+  and `Back` is `NoCamera` (as on a Mac, and as on web for a webcam that
+  reports no facing). The PipeWire/xdg-desktop-portal path
   (`pipewiresrc`) is a **documented follow-on** — it needs the
   `gst-plugin-pipewire` GStreamer plugin and slots in as an alternate source
   behind the same pipeline contract.

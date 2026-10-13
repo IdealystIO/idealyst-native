@@ -70,6 +70,11 @@
 
 mod config;
 mod error;
+// Requested vs. observed facing: the check web and desktop Linux run on the
+// camera they opened (iOS/macOS/Android resolve facing from lens metadata).
+// Compiled for tests on every host so the rule is covered everywhere.
+#[cfg(any(test, target_arch = "wasm32", target_os = "linux"))]
+mod facing;
 
 // Interface orientation → capture rotation: the pure mapping the iOS device
 // backend (`apple.rs`) applies. Compiled for tests on every host so the

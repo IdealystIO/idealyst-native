@@ -9,7 +9,12 @@
 /// back camera on a phone, the only camera on a laptop. On a device with
 /// just one camera, `Front`/`Back` that can't be satisfied surface as
 /// [`CameraError::NoCamera`](crate::CameraError::NoCamera) rather than
-/// silently opening the wrong one.
+/// silently opening the wrong one — on every backend.
+///
+/// A camera that reports no facing (a desktop webcam; everything V4L2
+/// exposes) counts as user-facing: `Front` opens it, `Back` is `NoCamera`.
+/// So `Back` on a laptop fails the same way everywhere, and an app can hide
+/// a front/back switch when the other side fails to open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CameraFacing {
     /// The platform's primary camera (back on mobile, the built-in on a

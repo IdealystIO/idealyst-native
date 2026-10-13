@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use camera::{Camera, CameraConfig, VideoFrame};
+use camera::{Camera, CameraConfig, CameraError, VideoFrame};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 use web_glue::dom::{MediaStream as WebMediaStream, MediaStreamTrack, MediaStreamTrackState};
 use web_glue::js::Function;
@@ -67,6 +67,24 @@ async fn regression_camera_native_source_is_the_capture_stream() {
 
 /// The CPU tap: a subscriber receives real RGBA8 frames pumped off the
 /// capture `<video>` through the offscreen canvas.
+/// Regression (CrewForge report 2026-10-13): `facingMode` went to
+/// `getUserMedia` as a preference, so asking a one-camera laptop for `Back`
+/// silently opened its user-facing webcam — a front/back switch "worked"
+/// and did nothing. Chrome's fake camera stands in for that webcam (it
+/// reports no world-facing camera): `Back` must be `NoCamera`, while `Front`
+/// and the default still open it.
+#[wasm_bindgen_test]
+async fn regression_back_on_a_desktop_webcam_is_no_camera() {
+    let back = Camera::new().open(CameraConfig::default().back()).await;
+    assert!(
+        matches!(back, Err(CameraError::NoCamera)),
+        "Back on a webcam must be NoCamera, got {:?}",
+        back.as_ref().map(|_| "an open stream")
+    );
+    Camera::new().open(CameraConfig::default().front()).await.expect("Front opens the webcam");
+    Camera::new().open(CameraConfig::default()).await.expect("Default opens the webcam");
+}
+
 #[wasm_bindgen_test]
 async fn camera_subscriber_receives_rgba_frames() {
     let stream = Camera::new().open(CameraConfig::default()).await.expect("fake camera opens");

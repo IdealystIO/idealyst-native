@@ -139,13 +139,16 @@ fn enumerate_devices() -> Result<Vec<VideoDevice>, CameraError> {
 /// Resolve a [`CameraFacing`] to a preconfigured `v4l2src` source element.
 ///
 /// **V4L2 exposes no reliable front/back facing metadata** — "facing" is a
-/// mobile-sensor concept, and a desktop UVC webcam reports none. So every
-/// facing resolves to the primary (first-enumerated) video source: the honest
-/// best effort on desktop Linux. This is a documented limitation, not a silent
-/// wrong-camera open — an empty device list is `NoCamera` regardless of facing.
-/// (When the PipeWire-portal path lands it can carry richer device metadata.)
+/// mobile-sensor concept, and a desktop UVC webcam reports none. Under the
+/// SDK-wide rule (`facing.rs`) an unreported camera is user-facing, so
+/// `Default` and `Front` open the primary (first-enumerated) video source and
+/// `Back` is `NoCamera`, as on a Mac. Opening the primary for `Back` too was
+/// the silent wrong-camera open the `CameraFacing` contract rules out. (When
+/// the PipeWire-portal path lands it can carry richer device metadata.)
 fn source_for_facing(facing: CameraFacing) -> Result<gst::Element, CameraError> {
-    let _ = facing; // No facing distinction available on V4L2 (see above).
+    if !crate::facing::satisfies(facing, crate::facing::ObservedFacing::Unreported) {
+        return Err(CameraError::NoCamera);
+    }
     let devices = enumerate_devices()?;
     let Some(primary) = devices.first() else {
         return Err(CameraError::NoCamera);
