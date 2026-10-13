@@ -71,6 +71,15 @@ fn effective_transition(
     explicit.copied()
 }
 
+/// The `UIViewAnimationOptions` mask for `easing`. Kept so the removal is
+/// not a breaking change; it now returns the shared mask, which keeps the
+/// animating view touchable (the fix that removed it — see
+/// [`crate::uiview_animation`]).
+#[deprecated(note = "use `backend_ios_core::uiview_animation::animation_options`")]
+pub fn easing_to_options(easing: &runtime_shared::Easing) -> u64 {
+    crate::uiview_animation::animation_options(*easing)
+}
+
 /// Run property changes inside a UIView animation block. The view stays
 /// touchable while it animates — see [`crate::uiview_animation`].
 pub fn animate(transition: &runtime_shared::Transition, changes: Rc<dyn Fn()>) {
