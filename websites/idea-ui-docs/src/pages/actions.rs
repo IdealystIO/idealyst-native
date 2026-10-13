@@ -10,7 +10,7 @@ use std::rc::Rc;
 use runtime_core::{ui, Element};
 use icons_lucide::{DOWNLOAD, HEART, PENCIL, PLUS, SEARCH, SETTINGS, STAR, TRASH_2, X};
 use idea_ui::{
-    Avatar, AvatarColor, AvatarSize, Button, IconButton, IconButtonSize, Link, Stack, StackAlign,
+    Avatar, AvatarSize, Button, IconButton, IconButtonSize, Link, Stack, StackAlign,
     StackAxis, StackGap, tone, variant, size,
 };
 
@@ -291,8 +291,30 @@ pub fn avatar() -> Element {
         ui! {
             Section(title = "Content".to_string()) {
                 P(content = "Renders the `src` image when set, otherwise the `initials` on a \
-                    `color`-tinted placeholder background.".to_string())
+                    `tone`-tinted disc.".to_string())
                 DemoSurface { avatar_content_row() }
+            }
+        },
+        ui! {
+            Section(title = "Palette".to_string()) {
+                P(content = "`tone` takes any tone. For an avatar the usual pick is one of the \
+                    twelve palette hues — plain colors with no semantic meaning, so a red avatar \
+                    doesn't read as an error. `variant` picks the treatment: Soft (the default — \
+                    a tinted disc with hue-colored initials) or Filled (a solid disc with \
+                    contrasting initials). Every hue's initials are legible on its own \
+                    background, in both themes.".to_string())
+                DemoSurface { avatar_palette_rows() }
+                CodePanel(src = r##"Avatar(initials = "AL", tone = tone::Violet)
+Avatar(initials = "AL", tone = tone::Violet, variant = variant::Filled)"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "A stable color per user".to_string()) {
+                P(content = "`tone::palette_from_seed` hashes any string — a user id, an email — \
+                    to one of the twelve hues. The same seed always gives the same hue, on every \
+                    platform and build, so each person keeps their color.".to_string())
+                DemoSurface { avatar_seeded_row() }
+                CodePanel(src = r##"Avatar(initials = user.initials(), tone = tone::palette_from_seed(&user.id))"##.to_string())
             }
         },
         ui! {
@@ -305,19 +327,20 @@ pub fn avatar() -> Element {
         ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
-                    Prop { name: "src",      ty: "Option<String>",   desc: "Optional image URL. When Some, an Image renders and initials are hidden." },
-                    Prop { name: "initials", ty: "Reactive<String>", desc: "Fallback text rendered when src is None." },
-                    Prop { name: "color",    ty: "AvatarColor",      desc: "Placeholder tint. Distinct from Tone because an avatar is a person/object placeholder, not a semantic action." },
-                    Prop { name: "size",     ty: "AvatarSize",       desc: "Xs / Sm / Md / Lg / Xl." },
+                    Prop { name: "src",      ty: "Option<ImageSource>", desc: "Optional image (URL or bundled asset). When Some, an Image renders and initials are hidden." },
+                    Prop { name: "initials", ty: "Reactive<String>",    desc: "Fallback text rendered when src is None." },
+                    Prop { name: "tone",     ty: "ToneRef",             desc: "Disc color: a palette hue (tone::Blue, tone::palette_from_seed(..)) or a semantic tone. Default Neutral." },
+                    Prop { name: "variant",  ty: "VariantRef",          desc: "Soft (default), Filled, Outlined or Ghost." },
+                    Prop { name: "size",     ty: "AvatarSize",          desc: "Xs / Sm / Md / Lg / Xl." },
                 ])
             }
         },
         ui! {
-            Callout(label = "Why a separate AvatarColor axis".to_string()) {
-                P(content = "An avatar isn't a semantic action, so it doesn't take a Tone. The \
-                    `color` prop picks a named placeholder tint (the intent's soft background \
-                    + matching soft text) so a no-prop avatar reads as a generic \
-                    placeholder.".to_string())
+            Callout(label = "Palette hues vs. semantic tones".to_string()) {
+                P(content = "Semantic tones (Primary, Danger, …) mean something, and a theme \
+                    may retint them. Palette hues are just colors: they come from the theme's \
+                    separate `palette` block, so retinting `danger` never recolors your red \
+                    avatars. Tag, Chip and Badge take the hues too.".to_string())
             }
         },
     ])
@@ -326,11 +349,11 @@ pub fn avatar() -> Element {
 fn avatar_size_row() -> Element {
     ui! {
         Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
-            Avatar(initials = "XS".to_string(), color = AvatarColor::Primary, size = AvatarSize::Xs)
-            Avatar(initials = "SM".to_string(), color = AvatarColor::Primary, size = AvatarSize::Sm)
-            Avatar(initials = "MD".to_string(), color = AvatarColor::Primary, size = AvatarSize::Md)
-            Avatar(initials = "LG".to_string(), color = AvatarColor::Primary, size = AvatarSize::Lg)
-            Avatar(initials = "XL".to_string(), color = AvatarColor::Primary, size = AvatarSize::Xl)
+            Avatar(initials = "XS".to_string(), tone = tone::Indigo, size = AvatarSize::Xs)
+            Avatar(initials = "SM".to_string(), tone = tone::Indigo, size = AvatarSize::Sm)
+            Avatar(initials = "MD".to_string(), tone = tone::Indigo, size = AvatarSize::Md)
+            Avatar(initials = "LG".to_string(), tone = tone::Indigo, size = AvatarSize::Lg)
+            Avatar(initials = "XL".to_string(), tone = tone::Indigo, size = AvatarSize::Xl)
         }
     }
 }
@@ -338,8 +361,8 @@ fn avatar_size_row() -> Element {
 fn avatar_content_row() -> Element {
     ui! {
         Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
-            Avatar(initials = "AB".to_string(), color = AvatarColor::Primary, size = AvatarSize::Lg)
-            Avatar(initials = "CD".to_string(), color = AvatarColor::Success, size = AvatarSize::Lg)
+            Avatar(initials = "AB".to_string(), tone = tone::Blue, size = AvatarSize::Lg)
+            Avatar(initials = "CD".to_string(), tone = tone::Green, variant = variant::Filled, size = AvatarSize::Lg)
             Avatar(
                 src = Some("https://i.pravatar.cc/120?img=12".into()),
                 size = AvatarSize::Lg,
@@ -351,10 +374,44 @@ fn avatar_content_row() -> Element {
 fn avatar_group_row() -> Element {
     ui! {
         Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Xs) {
-            Avatar(initials = "AL".to_string(), color = AvatarColor::Primary,   size = AvatarSize::Md)
-            Avatar(initials = "BR".to_string(), color = AvatarColor::Secondary, size = AvatarSize::Md)
-            Avatar(initials = "CJ".to_string(), color = AvatarColor::Success,   size = AvatarSize::Md)
-            Avatar(initials = "DM".to_string(), color = AvatarColor::Warning,   size = AvatarSize::Md)
+            Avatar(initials = "AL".to_string(), tone = tone::Indigo, size = AvatarSize::Md)
+            Avatar(initials = "BR".to_string(), tone = tone::Pink,   size = AvatarSize::Md)
+            Avatar(initials = "CJ".to_string(), tone = tone::Teal,   size = AvatarSize::Md)
+            Avatar(initials = "DM".to_string(), tone = tone::Amber,  size = AvatarSize::Md)
+        }
+    }
+}
+
+fn avatar_palette_rows() -> Element {
+    ui! {
+        Stack(gap = StackGap::Md) {
+            Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Xs) {
+                for (key, hue) in tone::palette_hues() {
+                    Avatar(initials = key[..2].to_string(), tone = hue, size = AvatarSize::Md)
+                }
+            }
+            Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Xs) {
+                for (key, hue) in tone::palette_hues() {
+                    Avatar(initials = key[..2].to_string(), tone = hue, variant = variant::Filled, size = AvatarSize::Md)
+                }
+            }
+        }
+    }
+}
+
+fn avatar_seeded_row() -> Element {
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Xs) {
+            for (initials, seed) in [
+                ("AL", "ada@idealyst.dev"),
+                ("GH", "grace@idealyst.dev"),
+                ("AT", "alan@idealyst.dev"),
+                ("KJ", "katherine@idealyst.dev"),
+                ("ML", "margaret@idealyst.dev"),
+                ("DR", "dennis@idealyst.dev"),
+            ] {
+                Avatar(initials = initials.to_string(), tone = tone::palette_from_seed(seed), size = AvatarSize::Md)
+            }
         }
     }
 }

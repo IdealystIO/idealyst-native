@@ -11,7 +11,7 @@ use runtime_core::primitives::portal::AnchorTarget;
 use runtime_core::{rx, signal, ui, Element, IntoElement, PressableHandle, Ref, Signal};
 use icons_lucide::{CHEVRON_RIGHT, COPY, PENCIL, SHARE_2, TRASH_2};
 use idea_ui::{
-    tone, typography_kind, variant, Avatar, AvatarColor, AvatarSize, Breadcrumbs, Button, Crumb, Field, Icon, List,
+    tone, typography_kind, variant, Avatar, AvatarSize, Breadcrumbs, Button, Crumb, Field, Icon, List,
     ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator, Pagination, Stack, StackAxis,
     StackGap, SubMenu, SubMenuSlot, Tab, TabIndicator, Tabs, Typography,
 };
@@ -518,15 +518,15 @@ pub fn list() -> Element {
                     hover highlight.".to_string())
                 DemoSurface {
                     List {
-                        person_row("Ada Lovelace", "ada@idealyst.dev", "AL", AvatarColor::Primary, noop.clone())
-                        person_row("Grace Hopper", "grace@idealyst.dev", "GH", AvatarColor::Success, noop.clone())
-                        person_row("Alan Turing", "alan@idealyst.dev", "AT", AvatarColor::Warning, noop.clone())
+                        person_row("Ada Lovelace", "ada@idealyst.dev", "AL", tone::Indigo.into(), noop.clone())
+                        person_row("Grace Hopper", "grace@idealyst.dev", "GH", tone::Teal.into(), noop.clone())
+                        person_row("Alan Turing", "alan@idealyst.dev", "AT", tone::Amber.into(), noop.clone())
                     }
                 }
                 CodePanel(src = r##"List {
     ListItem(
         label = "Ada Lovelace",
-        leading = Some(ui! { Avatar(initials = "AL", color = AvatarColor::Primary) }),
+        leading = Some(ui! { Avatar(initials = "AL", tone = tone::Indigo) }),
         trailing = Some(ui! { Icon(data = icons_lucide::CHEVRON_RIGHT, size = 16.0) }),
         on_press = Some(on_open),
     )
@@ -557,11 +557,11 @@ fn person_row(
     name: &str,
     email: &str,
     initials: &str,
-    color: AvatarColor,
+    color: idea_ui::ToneRef,
     on_press: Rc<dyn Fn()>,
 ) -> Element {
     let avatar = ui! {
-        Avatar(initials = initials.to_string(), color = color, size = AvatarSize::Md)
+        Avatar(initials = initials.to_string(), tone = color, size = AvatarSize::Md)
     };
     let title = name.to_string();
     let subtitle = email.to_string();
