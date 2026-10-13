@@ -36,41 +36,35 @@ extern "C" {
     fn CACurrentMediaTime() -> f64;
 }
 
-/// Seconds a tap-driven view must have been on-screen before its tap
-/// recognizer is allowed to fire. Prevents the spurious "Pressable
-/// fires `on_click` at mount" bug: UIKit intermittently delivers a
-/// phantom touch sequence to a freshly-mounted view during the same
-/// run-loop turn it enters the window (most visibly the appointment
-/// block under the viewport center on QuillEMR's Schedule, which
-/// auto-opened the detail modal with no user tap). A real user tap
-/// cannot physically occur before the screen has rendered + the
-/// human has reacted, so gating the first ~third of a second after
-/// the view acquires a window discards only synthetic taps. Applies
-/// to both Link and Pressable (they share this target/delegate).
-const TAP_GATE_SETTLE_SECS: f64 = 0.35;
-
-/// Pure decision for the tap gate, factored out so the timing logic is
-/// unit-testable without a live UIKit window. Given the previously
-/// stamped window-entry time (`< 0.0` == not yet stamped) and the
-/// current media time, returns `(allow, new_entry)`:
-///   - first call (`entry < 0.0`): stamp `now`, reject (the synthetic
-///     mount-time tap arrives in this same run-loop turn);
-///   - later call: allow only once `now - entry >= TAP_GATE_SETTLE_SECS`,
-///     leaving the stamp unchanged.
-fn tap_gate_decision(entry: f64, now: f64) -> (bool, f64) {
-    if entry < 0.0 {
-        return (false, now);
-    }
-    (now - entry >= TAP_GATE_SETTLE_SECS, entry)
+/// Whether a touch may drive a Link/Pressable tap recognizer: only if it
+/// BEGAN after the control was created. `touch_began` is the touch's
+/// `UITouch.timestamp` as UIKit hands it to `gestureRecognizer:
+/// shouldReceiveTouch:` (the touch-down time), `created` the
+/// `CACurrentMediaTime()` stamped in [`CallbackTarget::new`]; both read the
+/// same clock (seconds of host uptime).
+///
+/// This replaces a 0.35 s "settle" window after creation, which existed to
+/// stop a phantom tap UIKit delivered to a freshly-mounted view (QuillEMR's
+/// Schedule auto-opened a modal with no user tap; the cause was never
+/// pinned down). A window can't tell that phantom from a real tap: any
+/// control REBUILT by a press (a Button whose live `disabled`/`loading`
+/// flips — a pin pad's backspace the moment the first digit lands) refused
+/// every tap for 0.35 s, so fast entry was silently dropped. A touch that
+/// began before the control existed, though, cannot be a press of it: the
+/// finger landed on something else. That is the line this draws, and the
+/// one the mount-time phantom crosses if it is the in-flight touch that
+/// caused the mount. A human tap on the control always begins after it was
+/// created, however soon after.
+fn touch_may_tap(touch_began: f64, created: f64) -> bool {
+    touch_began > created
 }
 
 pub struct CallbackTargetIvars {
     callback: RefCell<Option<Rc<dyn Fn()>>>,
-    /// `CACurrentMediaTime()` stamped the first time this target's
-    /// recognizer is asked `gestureRecognizerShouldBegin:` with its
-    /// view in a window. `< 0.0` = not yet stamped. See
-    /// `TAP_GATE_SETTLE_SECS` for the bug this guards.
-    window_entry: std::cell::Cell<f64>,
+    /// `CACurrentMediaTime()` when this target (and so its control) was
+    /// created. A touch that began earlier is refused — see
+    /// [`touch_may_tap`].
+    created: f64,
 }
 
 declare_class!(
@@ -99,12 +93,25 @@ declare_class!(
             })
         }
 
+        /// `UIGestureRecognizerDelegate.gestureRecognizer:shouldReceiveTouch:`.
+        /// Refuses a touch that began before this control was created —
+        /// see [`touch_may_tap`]. Asked once per new touch, at touch-down,
+        /// so `timestamp` is when the finger landed.
+        #[method(gestureRecognizer:shouldReceiveTouch:)]
+        fn gesture_recognizer_should_receive_touch(
+            &self,
+            _recognizer: &objc2_ui_kit::UIGestureRecognizer,
+            touch: &objc2::runtime::AnyObject,
+        ) -> objc2::runtime::Bool {
+            let began: f64 = unsafe { msg_send![touch, timestamp] };
+            objc2::runtime::Bool::new(touch_may_tap(began, self.ivars().created))
+        }
+
         /// `UIGestureRecognizerDelegate.gestureRecognizerShouldBegin:`.
-        /// Rejects taps that begin before the recognizer's view has
-        /// been in a window for `TAP_GATE_SETTLE_SECS` — the
-        /// mount-time phantom-tap guard documented on that constant.
-        /// Recognizers we don't wire as Link/Pressable tap gates never
-        /// reach here (we only set this object as their delegate).
+        /// A recognizer whose view is not in a window cannot have been
+        /// tapped by a person. Recognizers we don't wire as Link/Pressable
+        /// taps never reach here (we only set this object as their
+        /// delegate).
         #[method(gestureRecognizerShouldBegin:)]
         fn gesture_recognizer_should_begin(
             &self,
@@ -119,15 +126,7 @@ declare_class!(
             // `UIWindow` objc2 feature for a null check.
             let window: *mut objc2::runtime::AnyObject =
                 unsafe { msg_send![view, window] };
-            if window.is_null() {
-                // Not on screen yet — no legitimate tap is possible.
-                return objc2::runtime::Bool::NO;
-            }
-            let now = unsafe { CACurrentMediaTime() };
-            let (allow, new_entry) =
-                tap_gate_decision(self.ivars().window_entry.get(), now);
-            self.ivars().window_entry.set(new_entry);
-            objc2::runtime::Bool::new(allow)
+            objc2::runtime::Bool::new(!window.is_null())
         }
     }
 );
@@ -135,22 +134,12 @@ declare_class!(
 impl CallbackTarget {
     pub fn new(mtm: MainThreadMarker, callback: Rc<dyn Fn()>) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        // Stamp the settle clock at CREATION. The control is built immediately
-        // before it's mounted (navigator screens build on push, modals on open),
-        // so create-time ≈ on-screen-time. The phantom mount-tap fires within the
-        // same run-loop turn (≪ TAP_GATE_SETTLE_SECS after create) → rejected; a
-        // real human tap is always >0.35s after create → allowed on the FIRST try.
-        //
-        // The OLD behavior stamped on the first `gestureRecognizerShouldBegin:`
-        // call and rejected it outright — which assumed a phantom tap always
-        // arrives first. On a pushed screen with NO phantom (e.g. the whiteboard's
-        // Settings), that ate the user's first real tap on every Pressable/Link
-        // (SegmentedControl, Switch, …). Anchoring on create-time fixes that
-        // without re-opening the mount-time auto-open bug for immediate mounts.
-        let now = unsafe { CACurrentMediaTime() };
+        // The control is built immediately before it is mounted, so
+        // creation is the earliest moment a person could touch it.
+        let created = unsafe { CACurrentMediaTime() };
         let this = this.set_ivars(CallbackTargetIvars {
             callback: RefCell::new(Some(callback)),
-            window_entry: std::cell::Cell::new(now),
+            created,
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -1438,66 +1427,37 @@ impl ScrollDelegate {
 
 #[cfg(test)]
 mod tests {
-    use super::{tap_gate_decision, TAP_GATE_SETTLE_SECS};
+    use super::touch_may_tap;
 
-    // Regression: Link/Pressable on iOS fired `on_click` at mount.
-    // UIKit delivered a phantom tap in the same run-loop turn the view
-    // entered the window (QuillEMR Schedule auto-opened the appt detail
-    // modal with no user tap). With `window_entry` stamped at CREATION
-    // (≈ on-demand mount), the phantom — which fires within the same
-    // run-loop turn, ≪ TAP_GATE_SETTLE_SECS after create — is rejected.
+    // REGRESSION (CrewForge kiosk pin pad, 2026-10-13): a control rebuilt by
+    // a press refused every tap for 0.35 s after its creation, so a fast
+    // ⌫ right after a digit (the press that flips its live `disabled` and
+    // rebuilds it) was silently dropped. Reproduced in the iOS simulator
+    // with real HID taps: a Back tap 150 ms and 250 ms after a digit never
+    // fired, 600 ms did. A touch that begins after the rebuild — however
+    // soon — must be allowed. (The old window rule rejected all three.)
     #[test]
-    fn regression_ios_pressable_tap_rejected_at_mount() {
-        let create = 100.0;
-        // Phantom tap, same run-loop turn as mount → well within the settle
-        // window of create-time → rejected.
-        let (allow, entry) = tap_gate_decision(create, create + 0.01);
-        assert!(!allow, "the mount-time phantom tap must be gated");
-        assert_eq!(entry, create, "stamp stays at create-time");
+    fn regression_tap_soon_after_a_rebuild_is_allowed() {
+        let created = 100.0;
+        assert!(touch_may_tap(created + 0.15, created), "150 ms after the rebuild");
+        assert!(touch_may_tap(created + 0.25, created), "250 ms after the rebuild");
+        assert!(touch_may_tap(created + 0.01, created), "10 ms after: two thumbs");
     }
 
-    // Regression: the user's FIRST real tap on a pushed screen with NO phantom
-    // mount-tap (e.g. the whiteboard Settings: SegmentedControl/Switch) used to be
-    // eaten — the OLD gate stamped on the first should-begin call and rejected it,
-    // assuming a phantom always arrives first. Stamping at CREATE-time instead
-    // means the first real human tap (well past the settle window) is allowed on
-    // the first try.
+    // The mount-time guard the window existed for: a touch already in
+    // flight when the control was created landed on something else, so
+    // it can never tap this control.
     #[test]
-    fn regression_first_real_tap_on_pushed_screen_is_allowed() {
-        let create = 100.0;
-        let first_real_tap = create + 1.0; // human reaction, past settle
-        let (allow, entry) = tap_gate_decision(create, first_real_tap);
-        assert!(allow, "first real tap on a no-phantom screen must fire");
-        assert_eq!(entry, create);
+    fn touch_that_began_before_the_control_existed_is_refused() {
+        let created = 100.0;
+        assert!(!touch_may_tap(created - 0.2, created), "the press that caused the mount");
+        assert!(!touch_may_tap(created, created), "same instant is not after");
     }
 
+    // The case the 2026-06 whiteboard fix covered still holds: the first
+    // real tap on a freshly pushed screen fires on the first try.
     #[test]
-    fn tap_within_settle_window_is_rejected() {
-        // A tap arriving before the settle window elapses is still the
-        // synthetic-burst tail; reject it. Entry stays put.
-        let now = 100.0 + TAP_GATE_SETTLE_SECS - 0.01;
-        let (allow, entry) = tap_gate_decision(100.0, now);
-        assert!(!allow);
-        assert_eq!(entry, 100.0, "stamp is not moved by later calls");
-    }
-
-    #[test]
-    fn real_tap_after_settle_window_is_allowed() {
-        // A genuine user tap (the screen has rendered and the human has
-        // reacted — well past the settle window) must pass through.
-        let now = 100.0 + TAP_GATE_SETTLE_SECS + 0.5;
-        let (allow, entry) = tap_gate_decision(100.0, now);
-        assert!(allow, "a real post-mount tap must fire on_click");
-        assert_eq!(entry, 100.0);
-    }
-
-    #[test]
-    fn tap_exactly_at_settle_boundary_is_allowed() {
-        // Anchor entry at 0.0 so `now - entry` is EXACTLY TAP_GATE_SETTLE_SECS.
-        // Using a large base (e.g. 100.0 + 0.35 - 100.0) suffers catastrophic
-        // float cancellation and lands a hair below the threshold, which would
-        // spuriously fail the inclusive (`>=`) boundary it's meant to assert.
-        let (allow, _) = tap_gate_decision(0.0, TAP_GATE_SETTLE_SECS);
-        assert!(allow, "boundary is inclusive (>=)");
+    fn first_tap_on_a_pushed_screen_is_allowed() {
+        assert!(touch_may_tap(101.0, 100.0));
     }
 }

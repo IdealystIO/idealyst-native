@@ -61,17 +61,6 @@ pub fn font_weight_to_uikit(weight: runtime_shared::FontWeight) -> CGFloat {
     }
 }
 
-/// Map framework Easing to UIView animation options bitmask.
-pub fn easing_to_options(easing: &runtime_shared::Easing) -> u64 {
-    match easing {
-        runtime_shared::Easing::Linear => 3 << 16,
-        runtime_shared::Easing::Ease | runtime_shared::Easing::EaseInOut => 0 << 16,
-        runtime_shared::Easing::EaseIn => 1 << 16,
-        runtime_shared::Easing::EaseOut => 2 << 16,
-        runtime_shared::Easing::CubicBezier(_, _, _, _) => 0 << 16,
-    }
-}
-
 /// Pick the transition to use for a property change. With the
 /// active-theme concept gone, the only source of a transition is the
 /// stylesheet's per-property `Transition` field — explicit opt-in.
@@ -82,10 +71,11 @@ fn effective_transition(
     explicit.copied()
 }
 
-/// Run property changes inside a UIView animation block.
+/// Run property changes inside a UIView animation block. The view stays
+/// touchable while it animates — see [`crate::uiview_animation`].
 pub fn animate(transition: &runtime_shared::Transition, changes: Rc<dyn Fn()>) {
     let duration = transition.duration_ms as CGFloat / 1000.0;
-    let options = easing_to_options(&transition.easing);
+    let options = crate::uiview_animation::animation_options(transition.easing);
     let block = ConcreteBlock::new(move || {
         // `changes` is author/style-supplied work that runs synchronously
         // inside `+[UIView animateWithDuration:…animations:]` — an ObjC

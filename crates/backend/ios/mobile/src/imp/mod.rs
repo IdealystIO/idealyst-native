@@ -2789,10 +2789,9 @@ impl IosBackend {
                 Some(tap_sel),
             )
         };
-        // Same mount-time phantom-tap gate as `create_pressable` — a
-        // Link sitting under the viewport center must not auto-navigate
-        // on the first run-loop turn it appears. See
-        // `CallbackTarget::gesture_recognizer_should_begin`.
+        // Same mount-time gate as `create_pressable` — a Link must not
+        // auto-navigate from a touch that began before it existed. See
+        // `callbacks::touch_may_tap`.
         let _: () = unsafe { msg_send![&*tap_gr, setDelegate: &*target] };
         let _: () = unsafe { msg_send![&view, addGestureRecognizer: &*tap_gr] };
         self.retain_target(&target);
@@ -2845,11 +2844,11 @@ impl IosBackend {
                 Some(tap_sel),
             )
         };
-        // Gate the tap so a phantom touch UIKit delivers during the
-        // view's first run-loop turn on screen can't fire `on_click`
-        // (the mount-time auto-open bug). `CallbackTarget` doubles as
-        // the recognizer's `UIGestureRecognizerDelegate`; see its
-        // `gestureRecognizerShouldBegin:` + `TAP_GATE_SETTLE_SECS`.
+        // Gate the tap so a touch that began before this view existed
+        // (the mount-time auto-open bug) can't fire `on_click`, while a
+        // real tap — however soon after a rebuild — always does.
+        // `CallbackTarget` doubles as the recognizer's
+        // `UIGestureRecognizerDelegate`; see `callbacks::touch_may_tap`.
         let _: () = unsafe { msg_send![&*tap_gr, setDelegate: &*target] };
         // Do NOT cancel touches in the view (and its subtree) when this tap
         // recognizes. A Pressable can WRAP other interactive content — the idea-ui

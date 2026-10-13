@@ -18,27 +18,18 @@
 
 use runtime_shared::Easing;
 
-/// `UIViewAnimationOptions` bits. Curves occupy bits 16-19
-/// (`UIViewAnimationOptionCurveEaseInOut` = 0 << 16 … `Linear` =
-/// 3 << 16); `AllowUserInteraction` is 1 << 1 — kept ON so the
-/// scrim / content stay tappable during a 200-300ms slide, matching
-/// CSS transitions (which never block hit testing).
-pub(crate) const UIVIEW_ALLOW_USER_INTERACTION: usize = 1 << 1;
+/// `UIViewAnimationOptionAllowUserInteraction` — kept ON so the scrim /
+/// content stay tappable during a 200-300ms slide, matching CSS
+/// transitions (which never block hit testing). The one mask every iOS
+/// UIView animation uses lives in `backend_ios_core::uiview_animation`.
+pub(crate) const UIVIEW_ALLOW_USER_INTERACTION: usize =
+    backend_ios_core::uiview_animation::ALLOW_USER_INTERACTION as usize;
 
-/// Map the framework easing to `UIViewAnimationOptions` curve bits
-/// (plus `AllowUserInteraction`, see above). `Ease` and
-/// `CubicBezier` approximate to UIKit's EaseInOut — UIKit's
-/// block-based API has no custom-bezier option; the visual delta on
-/// a sub-300ms UI slide is imperceptible. (A future exact path would
-/// use `CAMediaTimingFunction` on a CABasicAnimation.)
+/// The `UIViewAnimationOptions` mask for a transform transition: the
+/// shared mapping (`backend_ios_core::uiview_animation`), as the `usize`
+/// this call site's `msg_send!` takes.
 pub(crate) fn easing_to_uiview_options(easing: Easing) -> usize {
-    let curve: usize = match easing {
-        Easing::EaseInOut | Easing::Ease | Easing::CubicBezier(..) => 0,
-        Easing::EaseIn => 1 << 16,
-        Easing::EaseOut => 2 << 16,
-        Easing::Linear => 3 << 16,
-    };
-    curve | UIVIEW_ALLOW_USER_INTERACTION
+    backend_ios_core::uiview_animation::animation_options(easing) as usize
 }
 
 /// Should this static-transform apply animate rather than snap?

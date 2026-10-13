@@ -959,6 +959,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **iOS no longer drops fast taps on a button that just appeared or is
+  animating** (`backend-ios-mobile`, `backend-ios-core`). Two causes,
+  both reproduced in the simulator with real HID taps on a pin-pad
+  shaped screen (a backspace tapped 50–300 ms after the digit that
+  enabled it never fired; it took 300–500 ms). (1) Every Pressable and
+  Link refused taps for 0.35 s after its view was created — a guard
+  against a mount-time "phantom" tap — so any button REBUILT by a press
+  (a Button whose live `disabled`/`loading` flips) ignored the next tap.
+  The guard now refuses only a touch that began before the control
+  existed, which a person cannot do. (2) Stylesheet and presence
+  transitions ran without `AllowUserInteraction`, so UIKit made a view
+  untouchable for the length of its transition (Button's 200 ms opacity
+  one included). Every UIView animation now shares one options mask
+  (`backend_ios_core::uiview_animation`) that keeps views touchable, as
+  CSS transitions and the existing transform transitions already did.
+  After both, the same backspace registers 50 ms after the digit.
+
 - **`Select` and `Autocomplete` follow options that change after mount**
   (`idea-ui`). `options` was read once when the component was built, so
   rows loaded later never appeared: an Autocomplete fed by a search kept

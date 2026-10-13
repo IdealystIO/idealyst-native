@@ -679,7 +679,9 @@ impl IosBackend {
             None => apply(),
             Some((duration_ms, easing)) => {
                 let duration = (duration_ms as f64) / 1000.0;
-                let options = easing_to_uiview_options(easing);
+                // Shared mask: keeps the view touchable while it fades
+                // (see `backend_ios_core::uiview_animation`).
+                let options = backend_ios_core::uiview_animation::animation_options(easing);
                 let anim_block = block2::StackBlock::new(move || apply());
                 let cls = objc2::class!(UIView);
                 // animateWithDuration:delay:options:animations:completion:
@@ -700,34 +702,6 @@ impl IosBackend {
     }
 }
 
-/// Map a framework [`Easing`](runtime_shared::Easing) to UIKit's
-/// `UIViewAnimationOptions` curve bits. The curve lives in bits
-/// 16..18 of the options mask:
-///
-/// - EaseInOut = 0 << 16
-/// - EaseIn    = 1 << 16
-/// - EaseOut   = 2 << 16
-/// - Linear    = 3 << 16
-///
-/// `Ease` (the CSS default — quick start, slow end) has no dedicated
-/// UIKit named curve; its shape is closest to ease-in-out's
-/// symmetric softening for the short fades presence drives, so we map
-/// it there. `CubicBezier` likewise falls back to ease-in-out — a
-/// custom curve would need `CAMediaTimingFunction` + a CATransaction
-/// rather than the `UIView.animate` options path, which presence's
-/// narrow fade/slide vocabulary doesn't warrant.
-fn easing_to_uiview_options(e: runtime_shared::Easing) -> u64 {
-    use runtime_shared::Easing;
-    match e {
-        Easing::EaseInOut => 0 << 16,
-        Easing::EaseIn => 1 << 16,
-        Easing::EaseOut => 2 << 16,
-        Easing::Linear => 3 << 16,
-        Easing::Ease => 0 << 16,
-        Easing::CubicBezier(..) => 0 << 16,
-    }
-}
-
 /// `[f32; 4]` sRGB → CSS `rgba(...)` string. We round to the
 /// nearest 0..=255 byte for r/g/b so the parser in
 /// `color_to_uicolor` reads the same way the web backend's
@@ -745,28 +719,6 @@ pub(crate) type AnimatedStateMap = HashMap<usize, AnimatedTransformState>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use runtime_shared::Easing;
-
-    // The curve lives in bits 16..18 of the UIViewAnimationOptions
-    // mask. These constants are part of UIKit's stable ABI; a
-    // regression here would silently flip presence fades to the wrong
-    // curve on device (the closest reachable test for an objc2-only
-    // crate — device verification covers the actual animation).
-    #[test]
-    fn easing_maps_to_uiview_curve_bits() {
-        assert_eq!(easing_to_uiview_options(Easing::EaseInOut), 0 << 16);
-        assert_eq!(easing_to_uiview_options(Easing::EaseIn), 1 << 16);
-        assert_eq!(easing_to_uiview_options(Easing::EaseOut), 2 << 16);
-        assert_eq!(easing_to_uiview_options(Easing::Linear), 3 << 16);
-        // Ease (CSS default) and CubicBezier fall back to ease-in-out.
-        assert_eq!(easing_to_uiview_options(Easing::Ease), 0 << 16);
-        assert_eq!(
-            easing_to_uiview_options(Easing::CubicBezier(0.1, 0.2, 0.3, 0.4)),
-            0 << 16
-        );
-    }
-
     #[test]
     fn presence_missing_fields_resolve_to_identity() {
         // Mirror the resolution logic in impl_apply_presence without

@@ -36,6 +36,11 @@ pub mod border;
 // path call into it.
 pub mod style_diff;
 
+// `UIViewAnimationOptions` for every UIView-block animation (style,
+// presence, transform). Cross-target so the mask — `AllowUserInteraction`
+// above all — is host-tested.
+pub mod uiview_animation;
+
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub mod style;
 
