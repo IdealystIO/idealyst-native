@@ -22,7 +22,9 @@
 //! - **`impl Trait` in return position**: the hidden type's methods — a
 //!   returned closure's body, say — are instantiated where they are
 //!   called;
-//! - **`async fn`**: the future is such a hidden type;
+//! - **`async fn`**: the future is such a hidden type — except one the
+//!   client build does not compile: a `#[server]` fn's body, or anything
+//!   under `cfg(feature = "server")` (see [`crate::server_only`]);
 //! - **`const fn`**: evaluated at compile time inside the dependent's own
 //!   constants;
 //!
@@ -45,6 +47,8 @@ use std::collections::BTreeMap;
 
 use quote::ToTokens;
 
+use crate::server_only::{item_attrs, server_cfg, Scope};
+
 /// Every function in `text` whose body a dependent may compile, keyed by
 /// a label (`fn name`, `impl Type::name`, `trait Name::name`, prefixed
 /// with enclosing `mod`s), valued by the function's token text.
@@ -54,13 +58,21 @@ use quote::ToTokens;
 pub fn downstream_bodies(text: &str) -> Option<BTreeMap<String, String>> {
     let file: syn::File = syn::parse_file(text).ok()?;
     let mut out = BTreeMap::new();
-    collect(&file.items, "", &mut out);
+    collect(&file.items, "", &Scope::of(&file.items, None), &mut out);
     Some(out)
 }
 
-fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>) {
+fn collect(items: &[syn::Item], prefix: &str, scope: &Scope, out: &mut BTreeMap<String, String>) {
     for item in items {
+        // Not in the client build at all (`crate::server_only`): no
+        // client dependent compiles it, and the dev loop decides for the
+        // client. A `#[server]` fn's client stub is generated from its
+        // signature, which the shape already covers.
+        if server_cfg(item_attrs(item)) {
+            continue;
+        }
         match item {
+            syn::Item::Fn(f) if scope.is_split_fn(&f.attrs) => {}
             syn::Item::Fn(f) => {
                 if downstream_sig(&f.sig, &f.attrs) {
                     insert(out, format!("{prefix}fn {}", f.sig.ident), f.to_token_stream().to_string());
@@ -68,7 +80,7 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
             }
             syn::Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
-                    collect(inner, &format!("{prefix}{}::", m.ident), out);
+                    collect(inner, &format!("{prefix}{}::", m.ident), &Scope::of(inner, Some(scope)), out);
                 }
             }
             syn::Item::Impl(imp) => {
@@ -82,6 +94,7 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
                 };
                 for it in &imp.items {
                     match it {
+                        syn::ImplItem::Fn(f) if server_cfg(&f.attrs) => {}
                         syn::ImplItem::Fn(f) => {
                             if generic_impl || downstream_sig(&f.sig, &f.attrs) {
                                 insert(
@@ -101,7 +114,7 @@ fn collect(items: &[syn::Item], prefix: &str, out: &mut BTreeMap<String, String>
                 // names the implementor.
                 for it in &t.items {
                     match it {
-                        syn::TraitItem::Fn(f) if f.default.is_some() => insert(
+                        syn::TraitItem::Fn(f) if f.default.is_some() && !server_cfg(&f.attrs) => insert(
                             out,
                             format!("{prefix}trait {}::{}", t.ident, f.sig.ident),
                             f.to_token_stream().to_string(),
@@ -187,6 +200,23 @@ mod tests {
 
     fn labels(src: &str) -> Vec<String> {
         downstream_bodies(src).expect("parses").into_keys().collect()
+    }
+
+    #[test]
+    fn regression_server_fn_body_is_not_downstream_for_the_client() {
+        // CrewForge: every `#[server]` body edit in an endpoints crate
+        // rebuilt the bundle and reloaded the page — the fn is `async`,
+        // but the client compiles only the stub generated from its
+        // signature.
+        let src = r#"use server::server;
+#[server] pub async fn ping() -> Result<String, E> { Ok("a".into()) }
+#[cfg(feature = "server")] pub async fn helper() -> u8 { 1 }
+pub async fn client_side() -> u8 { 1 }
+"#;
+        assert_eq!(labels(src), vec!["fn client_side"]);
+        // Not imported from `server`: an unknown attribute, so still downstream.
+        let other = src.replace("use server::server;", "use other::server;");
+        assert_eq!(labels(&other), vec!["fn client_side", "fn ping"]);
     }
 
     #[test]

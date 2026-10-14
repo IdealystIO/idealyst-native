@@ -287,6 +287,15 @@ fn decide_file(
     if recorded.content == crate::archive::digest(file.text.as_bytes()) {
         return FileOutcome::Unchanged;
     }
+    // Only server code moved — a `#[server]` body, a
+    // `cfg(feature = "server")` helper. The client program does not
+    // contain it, so there is nothing to patch and nothing to rebuild;
+    // the server's own watcher restarts the server. The archive is left
+    // as it was (an `Unchanged` save is not advanced), which still
+    // describes what the page runs.
+    if !recorded.client.is_empty() && recorded.client == crate::archive::client_digest(&file.text) {
+        return FileOutcome::Unchanged;
+    }
 
     let Ok(sites) = runtime_macros_parse::sites_in_file(&archive.package, &file.path, &file.text)
     else {
@@ -490,6 +499,7 @@ pub fn advance_archive(archive: &mut DescriptorSet, changed: &[ChangedFile]) {
                 sheets: crate::archive::sheets_digest(&file.text),
                 downstream: crate::archive::downstream_digests(&file.text),
                 consts: crate::archive::ConstDigest::of(&file.text),
+                client: crate::archive::client_digest(&file.text),
             },
         );
         if rekey {

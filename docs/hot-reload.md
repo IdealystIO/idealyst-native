@@ -286,6 +286,7 @@ A decision table, by example:
 | A function body in a library crate of the app's cargo workspace (a path dependency that is a member) | Hot patch — the library AND every workspace crate depending on it are re-emitted ([Workspace crates](#workspace-crates)) |
 | A literal in a `ui!` body of such a library crate | Overlay patch |
 | The body of a generic, `#[inline]`, `const`, `async` or `impl Trait` fn, or a trait's default method, in such a library crate | Rebuild — its dependents compile that body themselves |
+| The body of a `#[server]` / `#[channel]` / `#[subscription]` / `#[sse]` fn, or an item under `#[cfg(feature = "server")]` (in any crate) | Nothing for the client — it compiles only the stub generated from the signature. The server's watcher rebuilds and restarts the server; the page keeps its state. The macro counts when it is written `#[server::server]` or imported from the `server` crate in that module. A signature edit still rebuilds |
 | A `const`'s value in such a library crate, read only by its own plain bodies (a `#[component]`, a plain `fn`) | Hot patch |
 | A `const`'s value in such a library crate that a dependent reads, or that a generic / `#[inline]` body of the library reads | Rebuild — the dependent copies the old value from the base build's metadata |
 | Any shape edit in such a library crate (a new prop on a shared component) | Rebuild |

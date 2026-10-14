@@ -126,6 +126,15 @@ pub struct FileDigest {
     /// matches, and `overlay_version` refuses it anyway.
     #[serde(default)]
     pub consts: ConstDigest,
+    /// Digest of the file as a CLIENT build compiles it
+    /// (`runtime_macros_parse::client_view`): every `#[server]`-family
+    /// body and `cfg(feature = "server")` item cut out, the rest byte for
+    /// byte. A save that leaves it unchanged moved only server code — the
+    /// server's watcher rebuilds that, and the page has nothing to take.
+    /// Empty when the file does not parse, and an older document's
+    /// default: empty never matches, so those saves are decided in full.
+    #[serde(default)]
+    pub client: String,
 }
 
 /// [`runtime_macros_parse::ConstFacts`], with each value as a digest.
@@ -476,6 +485,7 @@ pub fn scan_sources_cancellable(
                         sheets: content,
                         downstream: BTreeMap::new(),
                         consts: ConstDigest { opaque: true, ..ConstDigest::default() },
+                        client: String::new(),
                     },
                 );
                 continue;
@@ -496,9 +506,10 @@ pub fn scan_sources_cancellable(
         let sheets = sheets_digest(text);
         let downstream = downstream_digests(text);
         let consts = ConstDigest::of(text);
+        let client = client_digest(text);
         set.files.insert(
             relative.clone(),
-            FileDigest { content, skeleton, shape, sheets, downstream, consts },
+            FileDigest { content, skeleton, shape, sheets, downstream, consts, client },
         );
         for (ordinal, mut site) in sites.into_iter().enumerate() {
             let key = site.id.key();
@@ -554,6 +565,13 @@ pub fn sheets_digest(text: &str) -> String {
             .unwrap_or_else(|| text.to_string())
             .as_bytes(),
     ))
+}
+
+/// [`FileDigest::client`] for a file's text; empty when it does not parse.
+pub fn client_digest(text: &str) -> String {
+    runtime_macros_parse::client_view(text)
+        .map(|view| hex(&Sha256::digest(view.as_bytes())))
+        .unwrap_or_default()
 }
 
 /// [`FileDigest::downstream`] for a file's text.

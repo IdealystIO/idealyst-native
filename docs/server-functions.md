@@ -185,6 +185,13 @@ The dev loop runs two independent watchers and they do different things:
 | server sources | server rebuilt, **then** the process is restarted | only for the rebind |
 | a crate they share | both — rebuild, restage, restart; the page reloads once, after the restarted server answers | only for the rebind |
 
+A save that only moves server code — the body of a `#[server]` fn, or an
+item under `#[cfg(feature = "server")]` — is not a client change, even in a
+crate the bundle shares: the client build compiles only the stub generated
+from the signature. The bundle is left alone and only the server rebuilds
+and restarts, so the page keeps its state. Editing the signature changes the
+stub, which rebuilds the bundle too.
+
 Two properties are load-bearing:
 
 - **A bundle-only rebuild never restarts the server.** Both server shapes

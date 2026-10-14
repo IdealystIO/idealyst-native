@@ -999,6 +999,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Editing a `#[server]` body no longer rebuilds the bundle in `idealyst
+  dev`** (`runtime-macros-parse`, `dev-overlay`). The dev loop treated a
+  `#[server]` fn as a body every dependent compiles (it is `async`), so
+  each endpoint edit in a library crate rebuilt the wasm bundle and
+  reloaded the page (about 14 s and the page state on CrewForge); in the
+  app crate it built a hot patch. The client build compiles only the stub
+  generated from the signature, so a save that moves only server code —
+  a `#[server]`/`#[channel]`/`#[subscription]`/`#[sse]` body, or an item
+  under `#[cfg(feature = "server")]` — now leaves the client alone, and
+  only the server rebuilds and restarts. The macro is recognised when it
+  is written `#[server::server]` or imported from the `server` crate.
+  See `docs/hot-reload.md`.
+
 - **`net` works on Linux and Windows apps** (`net`, `render-wgpu`). The
   desktop HTTP transport awaited async `reqwest` on the caller's executor,
   and reqwest's I/O needs a tokio reactor that no framework executor

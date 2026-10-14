@@ -1227,6 +1227,72 @@ const APP_TAG: &str = "app v1";
         );
     }
 
+    /// A `#[server]` fn as an endpoints crate writes one: the body only
+    /// the server build compiles, a gated helper beside it.
+    const ENDPOINT: &str = r#"
+use server::server;
+
+#[cfg(feature = "server")]
+fn db_label() -> &'static str { "db v1" }
+
+#[server]
+pub async fn ping() -> Result<String, ServerError> {
+    Ok("a".into())
+}
+"#;
+
+    /// CrewForge: editing a `#[server]` body in a library crate rebuilt
+    /// the bundle and reloaded the page ("changed the body of `fn
+    /// start_shift_session` … `async`"). The client build compiles only
+    /// the stub generated from the signature, so the page has nothing to
+    /// take; the server's own watcher rebuilds the server.
+    #[test]
+    fn regression_a_server_fn_body_edit_in_a_library_crate_leaves_the_client_alone() {
+        let base = format!("{SHARED}{ENDPOINT}");
+        let f = fixture_with(&base, APP);
+        for edit in [
+            base.replace(r#"Ok("a".into())"#, r#"Ok("b".into())"#),
+            base.replace(r#"Ok("a".into())"#, "let n = 1;\n    Ok(format!(\"{n}\"))"),
+            base.replace(r#""db v1""#, r#""db v2""#),
+        ] {
+            assert_eq!(
+                f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+                WorkspaceDecision::Unchanged
+            );
+        }
+        // The signature is the client stub's: that still rebuilds.
+        let sig = base.replace("ping()", "ping(n: u32)");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", sig), false),
+            WorkspaceDecision::Rebuild(Reason::ShapeChanged { .. })
+        ));
+    }
+
+    /// The same save also edits client code in that file: a hot patch,
+    /// not a rebuild — the server body is not a downstream body.
+    #[test]
+    fn a_server_fn_body_edit_beside_a_client_edit_hot_patches() {
+        let base = format!("{SHARED}{ENDPOINT}");
+        let f = fixture_with(&base, APP);
+        let edit = base
+            .replace(r#"Ok("a".into())"#, r#"Ok("b".into())"#)
+            .replace("\"card v1\"", "\"card v2\"");
+        assert!(matches!(
+            f.ws.decide(&saved(&f, "lab-shared/src/lib.rs", edit), false),
+            WorkspaceDecision::HotPatch(_)
+        ));
+    }
+
+    /// In the app crate a server body edit used to build a hot patch of
+    /// code the client does not contain.
+    #[test]
+    fn a_server_fn_body_edit_in_the_tip_is_unchanged() {
+        let app = format!("{APP}{ENDPOINT}");
+        let f = fixture_with(SHARED, &app);
+        let edit = app.replace(r#"Ok("a".into())"#, r#"Ok("b".into())"#);
+        assert_eq!(f.ws.decide(&saved(&f, "src/lib.rs", edit), false), WorkspaceDecision::Unchanged);
+    }
+
     /// A library's const the APP reads is evaluated into the app from the
     /// base build's metadata, which a patch's replay of the app still
     /// reads — so the app would keep the old value. Rebuild, naming the
