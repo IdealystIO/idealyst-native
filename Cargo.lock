@@ -1455,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.18.0"
+version = "1.19.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -6476,7 +6476,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.7.4"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7638,7 +7638,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -10318,7 +10318,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -10563,7 +10563,7 @@ dependencies = [
 
 [[package]]
 name = "run-ios"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10716,7 +10716,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "dev-hot",
  "host-mock",
