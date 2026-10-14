@@ -266,6 +266,76 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `true` when `bytes` look like an SVG document: after an optional UTF-8
+/// BOM, whitespace, an XML declaration, comments or a doctype, the first
+/// element is `<svg`. Sniffing (rather than trusting a mime type or file
+/// extension) lets one check cover all three ways an SVG reaches an image
+/// view — `embed_asset!` bytes, a `data:` URI, and a fetched URL.
+///
+/// Lives here (not only in `backend-image-source`) because the wgpu
+/// renderer on the web needs the same rule without linking resvg: it hands
+/// SVG to the browser, which only renders an SVG blob typed
+/// `image/svg+xml` (browsers never sniff SVG).
+pub fn looks_like_svg(bytes: &[u8]) -> bool {
+    /// How far into the document to look for the root element. Long license
+    /// comments ahead of `<svg` fit comfortably; a bitmap never matches.
+    const SNIFF_WINDOW: usize = 4096;
+    let head = &bytes[..bytes.len().min(SNIFF_WINDOW)];
+    let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
+    let Ok(text) = std::str::from_utf8(head).or_else(|e| {
+        // The window may have cut a multi-byte character in half.
+        std::str::from_utf8(&head[..e.valid_up_to()])
+    }) else {
+        return false;
+    };
+    let mut rest = text.trim_start();
+    loop {
+        if rest.starts_with("<svg") {
+            return true;
+        }
+        let skip_to = if rest.starts_with("<?") {
+            rest.find("?>").map(|i| i + 2)
+        } else if rest.starts_with("<!--") {
+            rest.find("-->").map(|i| i + 3)
+        } else if rest.starts_with("<!") {
+            rest.find('>').map(|i| i + 1)
+        } else {
+            return false;
+        };
+        match skip_to {
+            Some(i) => rest = rest[i..].trim_start(),
+            None => return false,
+        }
+    }
+}
+
+/// The largest raster edge, in pixels, an SVG is drawn at. A view stretched
+/// to an absurd size (or a scale computed from a transient huge frame) would
+/// otherwise allocate `edge² × 4` bytes per re-raster. 4096 px covers a
+/// full-screen image on the largest phone / desktop displays at native
+/// density.
+pub const MAX_SVG_RASTER_EDGE_PX: f64 = 4096.0;
+
+/// Pixels per intrinsic point an SVG of `intrinsic` size needs for a view
+/// whose bounds are `bounds` points on a `screen_scale` display: enough that
+/// neither axis is upscaled under any `ObjectFit` (cover fills the larger
+/// ratio), and never less than one intrinsic point per screen pixel group,
+/// so an unlaid-out (0×0) view still gets a usable first raster. Capped at
+/// [`MAX_SVG_RASTER_EDGE_PX`] on the longer edge.
+///
+/// One rule for every SVG rasterizer (resvg on native, the browser's
+/// canvas under the wgpu renderer on the web), so an SVG re-rasterizes at
+/// the same densities everywhere.
+pub fn svg_raster_scale(intrinsic: (f64, f64), bounds: (f64, f64), screen_scale: f64) -> f64 {
+    let (iw, ih) = intrinsic;
+    let screen_scale = if screen_scale > 0.0 { screen_scale } else { 1.0 };
+    let fit = (bounds.0 / iw).max(bounds.1 / ih);
+    let fit = if fit.is_finite() && fit > 1.0 { fit } else { 1.0 };
+    let scale = fit * screen_scale;
+    let cap = MAX_SVG_RASTER_EDGE_PX / iw.max(ih);
+    scale.min(cap)
+}
+
 /// The cross-backend conformance table: every backend's tests run each
 /// vector through its real src path and assert the outcome, so "the same
 /// `src` behaves the same everywhere" is checked per backend, not assumed.
@@ -311,6 +381,39 @@ pub mod vectors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn svg_sniffing() {
+        assert!(looks_like_svg(
+            b"<?xml version=\"1.0\"?>\n<!-- mark -->\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(looks_like_svg(b"\xEF\xBB\xBF  <svg xmlns='http://www.w3.org/2000/svg'/>"));
+        assert!(looks_like_svg(b"<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"x\"><svg/>"));
+        assert!(!looks_like_svg(b"\x89PNG\r\n\x1a\n"));
+        assert!(!looks_like_svg(b"<html><svg/></html>"));
+        assert!(!looks_like_svg(b"<!-- unterminated"));
+        let svg = parse_data_uri(vectors::SVG_2X1_PERCENT).unwrap();
+        assert!(looks_like_svg(&svg.bytes));
+        let png = parse_data_uri(vectors::PNG_1X1_BASE64).unwrap();
+        assert!(!looks_like_svg(&png.bytes));
+    }
+
+    #[test]
+    fn svg_raster_scale_tracks_display_size_and_density() {
+        let i = (32.0, 16.0);
+        // Unlaid-out view: one intrinsic point per screen point.
+        assert_eq!(svg_raster_scale(i, (0.0, 0.0), 3.0), 3.0);
+        // Displayed at its intrinsic size on a 2× screen.
+        assert_eq!(svg_raster_scale(i, (32.0, 16.0), 2.0), 2.0);
+        // Drawn 4× larger (square box → cover needs the larger ratio).
+        assert_eq!(svg_raster_scale(i, (128.0, 128.0), 2.0), 16.0);
+        // Never downsamples below intrinsic × screen.
+        assert_eq!(svg_raster_scale(i, (8.0, 4.0), 2.0), 2.0);
+        // A non-positive screen scale counts as 1×.
+        assert_eq!(svg_raster_scale(i, (32.0, 16.0), 0.0), 1.0);
+        // Capped on the longer edge.
+        assert_eq!(svg_raster_scale(i, (100_000.0, 50_000.0), 3.0), MAX_SVG_RASTER_EDGE_PX / 32.0);
+    }
 
     #[test]
     fn accepted_forms() {

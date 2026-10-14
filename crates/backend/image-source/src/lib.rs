@@ -38,50 +38,11 @@ pub use runtime_shared::image_src::{
     classify, parse_data_uri, warn_rejected, DataUri, ImageSrc, RejectReason, ASSET_URL_PREFIX,
 };
 
-/// `true` when `bytes` look like an SVG document: after an optional UTF-8
-/// BOM, whitespace, an XML declaration, comments or a doctype, the first
-/// element is `<svg`. Sniffing (rather than trusting a mime type or file
-/// extension) lets one check cover all three ways an SVG reaches an image
-/// view — `embed_asset!` bytes, a `data:` URI, and a fetched URL.
-pub fn looks_like_svg(bytes: &[u8]) -> bool {
-    /// How far into the document to look for the root element. Long license
-    /// comments ahead of `<svg` fit comfortably; a bitmap never matches.
-    const SNIFF_WINDOW: usize = 4096;
-    let head = &bytes[..bytes.len().min(SNIFF_WINDOW)];
-    let head = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
-    let Ok(text) = std::str::from_utf8(head).or_else(|e| {
-        // The window may have cut a multi-byte character in half.
-        std::str::from_utf8(&head[..e.valid_up_to()])
-    }) else {
-        return false;
-    };
-    let mut rest = text.trim_start();
-    loop {
-        if rest.starts_with("<svg") {
-            return true;
-        }
-        let skip_to = if rest.starts_with("<?") {
-            rest.find("?>").map(|i| i + 2)
-        } else if rest.starts_with("<!--") {
-            rest.find("-->").map(|i| i + 3)
-        } else if rest.starts_with("<!") {
-            rest.find('>').map(|i| i + 1)
-        } else {
-            return false;
-        };
-        match skip_to {
-            Some(i) => rest = rest[i..].trim_start(),
-            None => return false,
-        }
-    }
-}
-
-/// The largest raster edge, in pixels, an SVG is drawn at. A view stretched
-/// to an absurd size (or a scale computed from a transient huge frame) would
-/// otherwise allocate `edge² × 4` bytes per re-raster. 4096 px covers a
-/// full-screen image on the largest phone / desktop displays at native
-/// density.
-pub const MAX_SVG_RASTER_EDGE_PX: f64 = 4096.0;
+// `looks_like_svg` and the raster-scale rule live in
+// `runtime_shared::image_src` so the wgpu renderer can apply the same rules
+// on the web without linking resvg (it rasterizes SVG with the browser
+// there). Re-exported so native backends keep one import.
+pub use runtime_shared::image_src::{looks_like_svg, MAX_SVG_RASTER_EDGE_PX};
 
 /// A parsed SVG, ready to rasterize at any density.
 pub struct SvgImage {
@@ -124,13 +85,7 @@ impl SvgImage {
     /// unlaid-out (0×0) view still gets a usable first raster. Capped at
     /// [`MAX_SVG_RASTER_EDGE_PX`] on the longer edge.
     pub fn raster_scale(&self, bounds: (f64, f64), screen_scale: f64) -> f64 {
-        let (iw, ih) = self.intrinsic_size();
-        let screen_scale = if screen_scale > 0.0 { screen_scale } else { 1.0 };
-        let fit = (bounds.0 / iw).max(bounds.1 / ih);
-        let fit = if fit.is_finite() && fit > 1.0 { fit } else { 1.0 };
-        let scale = fit * screen_scale;
-        let cap = MAX_SVG_RASTER_EDGE_PX / iw.max(ih);
-        scale.min(cap)
+        runtime_shared::image_src::svg_raster_scale(self.intrinsic_size(), bounds, screen_scale)
     }
 
     /// Rasterize at `scale` pixels per intrinsic point. `None` for a

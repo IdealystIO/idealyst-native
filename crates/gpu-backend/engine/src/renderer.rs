@@ -364,7 +364,11 @@ impl Renderer {
         let (key, svg_scale) = match &img.kind {
             DecodedKind::Raster(_) => ((img.id, 0), None),
             DecodedKind::Svg(svg) => {
-                let need = svg.raster_scale((rect.2 as f64, rect.3 as f64), px_scale as f64);
+                let need = runtime_shared::image_src::svg_raster_scale(
+                    svg.intrinsic_size(),
+                    (rect.2 as f64, rect.3 as f64),
+                    px_scale as f64,
+                );
                 let step = (need * SVG_SCALE_STEPS).ceil().max(1.0);
                 ((img.id, step as u32), Some(step / SVG_SCALE_STEPS))
             }
@@ -373,15 +377,7 @@ impl Renderer {
             let entry = match (&img.kind, svg_scale) {
                 (DecodedKind::Raster(rgba), _) => upload_image(device, queue, &self.image, rgba),
                 (DecodedKind::Svg(svg), Some(scale)) => {
-                    let raster = svg.rasterize(scale)?;
-                    let mut rgba = image::RgbaImage::from_raw(
-                        raster.width_px,
-                        raster.height_px,
-                        raster.rgba_premultiplied,
-                    )?;
-                    // resvg rasterizes premultiplied; the image pipeline
-                    // blends straight alpha (`BlendState::ALPHA_BLENDING`).
-                    demultiply(&mut rgba);
+                    let rgba = crate::image_load::rasterize_svg(svg, scale)?;
                     upload_image(device, queue, &self.image, &rgba)
                 }
                 (DecodedKind::Svg(_), None) => unreachable!("svg always has a scale"),
@@ -3991,18 +3987,6 @@ fn upload_image(
         bind_group,
         size: (w, h),
         last_used: 0,
-    }
-}
-
-/// Premultiplied → straight alpha, in place.
-fn demultiply(rgba: &mut image::RgbaImage) {
-    for px in rgba.pixels_mut() {
-        let a = px.0[3] as u32;
-        if a != 0 && a != 255 {
-            for c in &mut px.0[..3] {
-                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
     }
 }
 

@@ -577,10 +577,11 @@ Sources follow one contract on every backend — see
   backend, web included: `on_error` fires and debug builds log why.
 
 PNG, JPEG, GIF (first frame), WebP and SVG decode everywhere. SVG is
-rasterized with resvg at the view's displayed size × screen density on the
-backends without a native SVG decoder (everything but web), re-rasterized
-when the view resizes, and measures at its intrinsic size; SVG `<text>` is
-not drawn there, so convert text to outlines. An unsized image measures at
+rasterized at the view's displayed size × screen density — with resvg on
+the native backends, with the browser's own renderer on the web (the wgpu
+renderer in the browser included) — re-rasterized when the view resizes,
+and measures at its intrinsic size. SVG `<text>` is not drawn by resvg, so
+convert text to outlines. An unsized image measures at
 its natural size. Changing `src` supersedes the previous load, so a slow
 earlier response never replaces a newer image; setting the same `src` again
 does nothing. `on_load` / `on_error` fire once per outcome, and a handler

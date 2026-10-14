@@ -18,6 +18,8 @@ description = "Platform-neutral image-source decoding for native backends: data:
 #   every graph including web; putting resvg there behind a feature would
 #   still let any crate in a workspace build unify the feature on for
 #   everyone. A separate crate is only linked by the backends that list it.
+#   The wgpu renderer (`render-wgpu`) lists it for native targets only: in
+#   the browser it decodes with `createImageBitmap` / `<img>` + canvas too.
 #
 # Platform wrappers stay with their platform: the CoreGraphics `CGImage`
 # wrapper + `nsdata_bytes` live in `backend-apple-core::image_source`, the

@@ -12,8 +12,8 @@
 //!
 //! | `src` (via [`image_src::classify`]) | Path |
 //! |---|---|
-//! | `data:` | parsed + decoded synchronously in `create_image` / `update_image_src` |
-//! | `asset://id`, `embed_asset!` | the registered bytes, decoded synchronously |
+//! | `data:` | parsed + decoded synchronously in `create_image` / `update_image_src` (web: decoded by the browser, settles on a later tick) |
+//! | `asset://id`, `embed_asset!` | the registered bytes, decoded synchronously (web: as `data:`) |
 //! | `asset://id`, `asset!` (Bundled) | native: `image_src::read_bundled_asset`; web: fetched from `/assets/<path>` |
 //! | `asset://id`, Remote asset | fetched like `http(s)` |
 //! | `http(s)://` | fetched + decoded off the render thread ([`spawn_fetch`]) |
@@ -43,6 +43,18 @@
 //! **Caching.** Successful decodes are cached by `src`, so a second node
 //! (or a src swapped back) reuses the bitmap without refetching.
 //! Failures are not cached: setting a failed `src` again retries.
+//!
+//! **Decoding.** Native decodes with the `image` crate (PNG / JPEG / GIF /
+//! WebP) and parses SVG with resvg (`backend-image-source`), synchronously
+//! for local bytes and on the fetch worker for remote ones. On wasm32 the
+//! browser decodes ([`web`]): decoding there is asynchronous, so EVERY src
+//! — `data:` and embedded assets included — settles through the same
+//! completion queue a fetch uses, on a later `Host::tick` (the stale guard
+//! and the waiter list apply unchanged). That is the same timing `<img>`
+//! has under the DOM web backend.
+
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -68,6 +80,10 @@ const IMAGE_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// src never samples a stale texture uploaded for the old bytes.
 static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
 
+fn next_image_id() -> u64 {
+    NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// A decoded image, ready for upload.
 pub struct DecodedImage {
     /// Unique per decode — see [`NEXT_IMAGE_ID`].
@@ -80,7 +96,47 @@ pub enum DecodedKind {
     /// the image pipeline's `ALPHA_BLENDING` expects).
     Raster(image::RgbaImage),
     /// Rasterized by the renderer at the size it is displayed.
-    Svg(backend_image_source::SvgImage),
+    Svg(SvgDoc),
+}
+
+/// A parsed SVG: resvg's tree on native, a browser-decoded image element
+/// on the web. Both expose `intrinsic_size()`; [`rasterize_svg`] draws
+/// either at a scale.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SvgDoc = backend_image_source::SvgImage;
+#[cfg(target_arch = "wasm32")]
+pub type SvgDoc = web::BrowserSvg;
+
+/// Rasterize `svg` at `scale` pixels per intrinsic point, as straight-alpha
+/// RGBA8 (the image pipeline blends straight alpha,
+/// `BlendState::ALPHA_BLENDING`). `None` for a degenerate document.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn rasterize_svg(svg: &SvgDoc, scale: f64) -> Option<image::RgbaImage> {
+    let raster = svg.rasterize(scale)?;
+    let mut rgba = image::RgbaImage::from_raw(raster.width_px, raster.height_px, raster.rgba_premultiplied)?;
+    // resvg rasterizes premultiplied.
+    demultiply(&mut rgba);
+    Some(rgba)
+}
+
+/// Web: the browser canvas already reads back straight alpha
+/// (`getImageData`).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn rasterize_svg(svg: &SvgDoc, scale: f64) -> Option<image::RgbaImage> {
+    svg.rasterize(scale)
+}
+
+/// Premultiplied → straight alpha, in place.
+#[cfg(not(target_arch = "wasm32"))]
+fn demultiply(rgba: &mut image::RgbaImage) {
+    for px in rgba.pixels_mut() {
+        let a = px.0[3] as u32;
+        if a != 0 && a != 255 {
+            for c in &mut px.0[..3] {
+                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
 }
 
 impl DecodedImage {
@@ -99,7 +155,9 @@ impl DecodedImage {
 }
 
 /// Decode image bytes: SVG when they sniff as one, otherwise whatever the
-/// `image` crate recognizes (PNG / JPEG / GIF first frame / WebP).
+/// `image` crate recognizes (PNG / JPEG / GIF first frame / WebP). Native
+/// only — on the web, see [`web::decode`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
     let kind = if backend_image_source::looks_like_svg(bytes) {
         DecodedKind::Svg(
@@ -108,7 +166,7 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedImage, String> {
     } else {
         DecodedKind::Raster(image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8())
     };
-    Ok(DecodedImage { id: NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed), kind })
+    Ok(DecodedImage { id: next_image_id(), kind })
 }
 
 /// How a node's current `src` ended up.
@@ -176,6 +234,15 @@ impl ImageLoader {
     }
 }
 
+/// The asynchronous work behind a pending `src`.
+enum LoadJob {
+    /// GET this URL, then decode the body.
+    Fetch(String),
+    /// Web only: decode local bytes with the browser (asynchronous there).
+    #[cfg(target_arch = "wasm32")]
+    Decode(Vec<u8>),
+}
+
 /// What resolving a `src` produced right now.
 enum Resolution {
     Ready(Rc<DecodedImage>),
@@ -213,41 +280,53 @@ impl WgpuBackend {
         if let Some(img) = self.images.cache.get(src) {
             return Resolution::Ready(img.clone());
         }
-        let local = |bytes: Option<Vec<u8>>, what: &str| -> Result<DecodedImage, String> {
-            decode(&bytes.ok_or_else(|| format!("{what} not found"))?)
-        };
-        let decoded = match image_src::classify(src) {
+        // The bytes of a local source (`data:`, embedded or — on native —
+        // bundled asset); remote sources return early as a pending fetch.
+        let bytes: Result<std::borrow::Cow<'_, [u8]>, String> = match image_src::classify(src) {
             ImageSrc::Rejected(reason) => {
                 image_src::warn_rejected(src, reason);
                 return Resolution::Failed;
             }
             ImageSrc::Data(uri) => match image_src::parse_data_uri(uri) {
-                Some(data) => decode(&data.bytes),
+                Some(data) => Ok(data.bytes.into()),
                 None => Err("malformed data: URI".to_string()),
             },
             ImageSrc::Remote(url) => {
-                return self.fetch_for(src, url.trim().to_string(), node, generation);
+                return self.fetch_for(src, LoadJob::Fetch(url.trim().to_string()), node, generation);
             }
             ImageSrc::Asset(id) => {
                 let id = AssetId(id);
                 if let Some(bytes) = self.image_asset_bytes.get(&id) {
-                    decode(bytes)
+                    Ok(bytes.as_slice().into())
                 } else if let Some(path) = self.images.bundled_assets.get(&id).copied() {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
-                        local(image_src::read_bundled_asset(path), &format!("bundled asset {path:?}"))
+                        image_src::read_bundled_asset(path)
+                            .map(Into::into)
+                            .ok_or_else(|| format!("bundled asset {path:?} not found"))
                     }
                     #[cfg(target_arch = "wasm32")]
                     {
-                        let _ = local;
-                        return self.fetch_for(src, format!("/assets/{path}"), node, generation);
+                        return self.fetch_for(src, LoadJob::Fetch(format!("/assets/{path}")), node, generation);
                     }
                 } else if let Some(url) = self.images.remote_assets.get(&id).copied() {
-                    return self.fetch_for(src, url.to_string(), node, generation);
+                    return self.fetch_for(src, LoadJob::Fetch(url.to_string()), node, generation);
                 } else {
-                    local(None, &format!("image asset {}", id.0))
+                    Err(format!("image asset {} not found", id.0))
                 }
             }
+        };
+        // Native decodes local bytes right here; the browser decodes
+        // asynchronously, so on the web they settle like a fetch.
+        #[cfg(not(target_arch = "wasm32"))]
+        let decoded = bytes.and_then(|b| decode(&b));
+        #[cfg(target_arch = "wasm32")]
+        let decoded: Result<DecodedImage, String> = match bytes {
+            Ok(b) => {
+                let b = b.into_owned();
+                return self.fetch_for(src, LoadJob::Decode(b), node, generation);
+            }
+            Err(e) => Err(e),
         };
         match decoded {
             Ok(img) => {
@@ -262,16 +341,21 @@ impl WgpuBackend {
         }
     }
 
-    /// Register `node` as waiting on `src`, starting the fetch of `url`
-    /// unless one for `src` is already in flight.
-    fn fetch_for(&mut self, src: &str, url: String, node: &WgpuNode, generation: u64) -> Resolution {
+    /// Register `node` as waiting on `src`, starting `job` unless a load
+    /// for `src` is already in flight.
+    fn fetch_for(&mut self, src: &str, job: LoadJob, node: &WgpuNode, generation: u64) -> Resolution {
         self.images
             .waiters
             .entry(src.to_string())
             .or_default()
             .push((Rc::downgrade(node), generation));
         if self.images.in_flight.insert(src.to_string()) {
-            spawn_fetch(url, src.to_string(), self.images.completions.clone());
+            let sink = self.images.completions.clone();
+            match job {
+                LoadJob::Fetch(url) => spawn_fetch(url, src.to_string(), sink),
+                #[cfg(target_arch = "wasm32")]
+                LoadJob::Decode(bytes) => spawn_decode(bytes, src.to_string(), sink),
+            }
         }
         Resolution::Pending
     }
@@ -460,34 +544,32 @@ fn spawn_fetch(url: String, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
 #[cfg(target_arch = "wasm32")]
 fn spawn_fetch(url: String, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
     runtime_shared::driver::spawn_async(async move {
-        let result = fetch_bytes(url).await.and_then(|b| decode(&b));
+        let result = match fetch_bytes(url).await {
+            Ok(bytes) => web::decode(bytes).await,
+            Err(e) => Err(e),
+        };
+        sink.lock().unwrap().push(FetchDone { key, result });
+        crate::scheduler::request_redraw();
+    });
+}
+
+/// Decode local bytes with the browser, then hand the result to the
+/// completion queue like a finished fetch.
+#[cfg(target_arch = "wasm32")]
+fn spawn_decode(bytes: Vec<u8>, key: String, sink: Arc<Mutex<Vec<FetchDone>>>) {
+    runtime_shared::driver::spawn_async(async move {
+        let result = web::decode(bytes).await;
         sink.lock().unwrap().push(FetchDone { key, result });
         crate::scheduler::request_redraw();
     });
 }
 
 /// Drive the fetch future to completion on the calling (worker) thread.
-/// On Linux/Windows `net` is async reqwest, which needs a Tokio reactor
-/// — run it on a throwaway current-thread runtime.
-#[cfg(not(any(
-    target_arch = "wasm32",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "tvos",
-    target_os = "android"
-)))]
-fn block_on_fetch<F: std::future::Future>(fut: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build image-fetch tokio runtime")
-        .block_on(fut)
-}
-
-/// Apple (NSURLSession completion) and Android (JNI worker) transports
-/// wake the future from their own threads, so a park/unpark loop is all
-/// the executor they need.
-#[cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos", target_os = "android"))]
+/// Every native `net` transport wakes its future from its own I/O thread
+/// (reqwest's process-wide runtime on Linux/Windows, the NSURLSession
+/// completion on Apple, the JNI worker on Android) and needs no ambient
+/// runtime, so a park/unpark loop is all the executor it needs.
+#[cfg(not(target_arch = "wasm32"))]
 fn block_on_fetch<F: std::future::Future>(fut: F) -> F::Output {
     use std::task::{Context, Poll, Wake, Waker};
     struct Unpark(std::thread::Thread);
@@ -864,5 +946,200 @@ mod tests {
         natural.set(None);
         let got = measure(Size { width: None, height: None }, avail);
         assert_eq!((got.width, got.height), (crate::node::IMAGE_DEFAULT_SIZE, crate::node::IMAGE_DEFAULT_SIZE));
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod web_tests {
+    //! The browser decode path (`image_load::web`), in a real browser:
+    //! `cargo test -p render-wgpu --target wasm32-unknown-unknown --lib`
+    //! with `CHROMEDRIVER` set. The native `tests` module can't cover it —
+    //! the decoders it exercises (`image`, resvg) aren't linked on wasm32.
+
+    use super::*;
+    use runtime_shared::image_src::vectors::{self, Expect};
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_glue::js::Function;
+    use web_glue::{JsFuture, JsValue};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// `spawn_async` on wasm32 needs an executor (`backend-web` installs
+    /// one in a real app); this is the same shape, without backend-web.
+    struct GlueExecutor;
+    impl runtime_shared::driver::AsyncExecutor for GlueExecutor {
+        fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + 'static>>) {
+            web_glue::spawn_local(future);
+        }
+    }
+
+    fn install_executor() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| runtime_shared::driver::install_async_executor(Box::new(GlueExecutor)));
+    }
+
+    async fn sleep_ms(ms: u32) {
+        let f = Function::new_no_args(&format!("return new Promise(r => setTimeout(r, {ms}))"));
+        JsFuture::new(&f.call0(&JsValue::undefined()).unwrap()).await.unwrap();
+    }
+
+    fn bytes(uri: &str) -> Vec<u8> {
+        image_src::parse_data_uri(uri).unwrap().bytes
+    }
+
+    fn rgba_at(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 4] {
+        img.get_pixel(x, y).0
+    }
+
+    /// PNG (and GIF / WebP — formats the native build gets from `image`
+    /// features) decode through `createImageBitmap` to straight-alpha
+    /// RGBA at the natural size.
+    #[wasm_bindgen_test]
+    async fn browser_decodes_rasters_to_rgba() {
+        let png = web::decode(bytes(vectors::PNG_1X1_BASE64)).await.expect("png decodes");
+        assert_eq!(png.natural_size(), (1.0, 1.0));
+        let DecodedKind::Raster(rgba) = &png.kind else { panic!("png must be a raster") };
+        assert_eq!(rgba_at(rgba, 0, 0), [255, 0, 0, 255]);
+
+        // 1×1 GIF and 1×1 lossless WebP.
+        for uri in [
+            "data:image/gif;base64,R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==",
+            "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==",
+        ] {
+            let img = web::decode(bytes(uri)).await.unwrap_or_else(|e| panic!("{uri}: {e}"));
+            assert_eq!(img.natural_size(), (1.0, 1.0), "{uri}");
+            assert!(matches!(img.kind, DecodedKind::Raster(_)));
+        }
+    }
+
+    /// SVG keeps its intrinsic size (what `on_load` reports) and
+    /// re-rasterizes at any scale — the renderer asks for displayed size ×
+    /// devicePixelRatio, never a stretched 1× bitmap.
+    #[wasm_bindgen_test]
+    async fn browser_svg_reports_intrinsic_size_and_rasterizes_at_scale() {
+        let img = web::decode(bytes(vectors::SVG_2X1_PERCENT)).await.expect("svg decodes");
+        assert_eq!(img.natural_size(), (2.0, 1.0));
+        let DecodedKind::Svg(svg) = &img.kind else { panic!("svg must stay vector") };
+        let r = rasterize_svg(svg, 8.0).expect("rasterizes");
+        assert_eq!(r.dimensions(), (16, 8));
+        assert_eq!(rgba_at(&r, 8, 4), [255, 0, 0, 255]);
+        let r = rasterize_svg(svg, 1.5).expect("rasterizes");
+        assert_eq!(r.dimensions(), (3, 2), "rounded like the native resvg path");
+    }
+
+    /// The intrinsic size follows usvg (the native path), not the browser's
+    /// `<img>` default: a `viewBox`-only SVG is its `viewBox` size (Chrome
+    /// alone would say 300×150), a lone axis follows the `viewBox` aspect,
+    /// and percentages fall back to the `viewBox`.
+    #[wasm_bindgen_test]
+    async fn browser_svg_intrinsic_size_matches_usvg_rules() {
+        let cases: [(&str, (f32, f32)); 4] = [
+            (r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16"><rect width="32" height="16"/></svg>"#, (32.0, 16.0)),
+            (r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" viewBox="0 0 32 16"/>"#, (64.0, 32.0)),
+            (r#"<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 10 20"/>"#, (10.0, 20.0)),
+            (r#"<?xml version="1.0"?><!-- c --><svg xmlns="http://www.w3.org/2000/svg" width="3" height="4"/>"#, (3.0, 4.0)),
+        ];
+        for (src, want) in cases {
+            let img = web::decode(src.as_bytes().to_vec()).await.unwrap_or_else(|e| panic!("{src}: {e}"));
+            assert_eq!(img.natural_size(), want, "{src}");
+        }
+    }
+
+    /// Undecodable bytes are an `Err` (→ `on_error`), never a blank image.
+    #[wasm_bindgen_test]
+    async fn browser_rejects_undecodable_bytes() {
+        for bad in [
+            b"AAAA".to_vec(),
+            b"\x89PNG\r\n\x1a\ntruncated".to_vec(),
+            b"<svg xmlns='http://www.w3.org/2000/svg'><unclosed></svg>".to_vec(),
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec(), // no size at all
+        ] {
+            assert!(web::decode(bad.clone()).await.is_err(), "{:?}", String::from_utf8_lossy(&bad));
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Event {
+        Load(f32, f32),
+        Error,
+    }
+
+    fn make_backend() -> WgpuBackend {
+        let text = Rc::new(RefCell::new(crate::text::TextStore::new()));
+        let fs = Rc::new(RefCell::new(glyphon::FontSystem::new()));
+        WgpuBackend::new(
+            text,
+            fs,
+            runtime_shared::ColorScheme::Light,
+            Rc::new(crate::NativeSkin::new(runtime_shared::Platform::Web)),
+        )
+    }
+
+    fn image(b: &mut WgpuBackend, src: &str) -> (WgpuNode, Rc<RefCell<Vec<Event>>>) {
+        let node = b.create_image_impl(src, None, &Default::default());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        b.install_image_load_handler_impl(
+            &node,
+            Rc::new(move |ev: &ImageLoadEvent| l.borrow_mut().push(Event::Load(ev.width, ev.height))),
+        );
+        let l = log.clone();
+        b.install_image_error_handler_impl(&node, Rc::new(move || l.borrow_mut().push(Event::Error)));
+        (node, log)
+    }
+
+    /// Pump the backend's completion queue (what `Host::tick` does) while
+    /// yielding to the event loop, until no load is in flight.
+    async fn settle(b: &mut WgpuBackend) {
+        for _ in 0..400 {
+            b.pump_image_loads();
+            if !b.has_pending_image_loads() {
+                return;
+            }
+            sleep_ms(5).await;
+        }
+        panic!("image load never settled");
+    }
+
+    /// Every synchronous conformance vector through the real backend path
+    /// on the web: `data:` srcs decode in the browser and settle on a later
+    /// pump with the same events and natural sizes as native.
+    #[wasm_bindgen_test]
+    async fn sync_vectors_follow_the_contract_in_the_browser() {
+        install_executor();
+        let mut b = make_backend();
+        let mut nodes = Vec::new();
+        for (src, expect) in vectors::SYNC {
+            let (node, log) = image(&mut b, src);
+            nodes.push((src, expect, node, log));
+        }
+        settle(&mut b).await;
+        for (src, expect, _node, log) in &nodes {
+            let want = match expect {
+                Expect::Loads { width, height } => Event::Load(*width as f32, *height as f32),
+                Expect::Errors => Event::Error,
+            };
+            assert_eq!(*log.borrow(), vec![want], "{src:?}");
+        }
+    }
+
+    /// The browser decode is asynchronous, so a `data:` src is pending at
+    /// mount and a src replaced before its decode lands never fires.
+    #[wasm_bindgen_test]
+    async fn stale_browser_decode_never_replaces_newer_src() {
+        install_executor();
+        let mut b = make_backend();
+        let (node, log) = image(&mut b, vectors::PNG_1X1_BASE64);
+        assert!(b.has_pending_image_loads(), "browser decode is asynchronous");
+        b.update_image_src_impl(&node, vectors::SVG_2X1_PERCENT);
+        settle(&mut b).await;
+        assert_eq!(*log.borrow(), vec![Event::Load(2.0, 1.0)]);
+        // The PNG still decoded and is cached: setting it settles at once.
+        b.update_image_src_impl(&node, vectors::PNG_1X1_BASE64);
+        assert!(!b.has_pending_image_loads());
+        assert_eq!(*log.borrow(), vec![Event::Load(2.0, 1.0), Event::Load(1.0, 1.0)]);
     }
 }

@@ -59,22 +59,18 @@ bytemuck = { version = "1.18", features = ["derive"] }
 # Logging — lightweight; the shell wires up an env_logger or similar.
 log = "0.4"
 
-# Raster image decode for the `Image` primitive's textured-quad
-# pipeline. Default features pull in 12+ formats; we enable exactly the
-# set `docs/image-src.md` promises on every backend: PNG, JPEG, GIF
-# (first frame) and WebP. SVG goes through `backend-image-source`.
-image = { version = "0.25", default-features = false, features = [
-    "png",
-    "jpeg",
-    "gif",
-    "webp",
-] }
-
-# SVG sniffing + resvg rasterization, shared with the Apple and Android
-# backends. Its Cargo.toml keeps it out of the DOM web backend (the
-# browser decodes SVG there); the wgpu renderer has no browser decoder
-# to lean on even when it runs on the web, so it links it everywhere.
-backend-image-source = { workspace = true }
+# `RgbaImage` (the decoded-pixel type the image pipeline uploads) and
+# `imageops::resize` (downscaling past the GPU's max texture edge) on every
+# target. NO decoders here: the format features are added per target below.
+# On wasm32 the browser decodes (`image_load/web.rs`), so the decoders and
+# resvg stay out of the web bundle. Measured 2026-10-14 on the fiddle
+# simulator bundle (host-web + ios-sim; release opt-level "z", LTO,
+# codegen-units 1; then wasm-opt -Oz): 6,829,264 B (2,563,445 gzip) with
+# resvg + png/jpeg/gif/webp linked, 5,936,319 B (2,213,483 gzip) with the
+# browser decoding — −893 KB. Raw twiggy attribution before the switch:
+# resvg/usvg/tiny-skia ~559 KB, webp ~109 KB, jpeg ~82 KB, png ~31 KB,
+# gif ~17 KB.
+image = { version = "0.25", default-features = false }
 
 # HTTP for `image()` `http(s)://` srcs (and `Remote` image assets): the
 # framework's cross-platform client — NSURLSession on Apple, JNI on
@@ -91,10 +87,29 @@ pollster = { version = "0.4", optional = true }
 # (`runtime_shared::driver::spawn_async`, installed by `backend-web`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 runtime-shared = { workspace = true, features = ["async-driver"] }
+# Browser image decoding (`image_load/web.rs`): `createImageBitmap` for
+# rasters, an `HTMLImageElement` + canvas for SVG — bound through the
+# framework's own web boundary, not wasm-bindgen / web-sys.
+web-glue = { workspace = true }
 
-# `net`'s Linux/Windows transport is async reqwest, whose I/O needs a
-# Tokio reactor; the image fetch worker thread runs it on a
-# current-thread runtime (`image_load::block_on_fetch`). Apple and
-# Android transports bring their own event source and need none.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "macos", target_os = "tvos", target_os = "android")))'.dependencies]
-tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+# Native image decode. The `image` format set is exactly what
+# `docs/image-src.md` promises on every backend: PNG, JPEG, GIF (first
+# frame) and WebP. SVG goes through `backend-image-source` (sniffing + resvg,
+# shared with the Apple and Android backends). Both are native-only: on the
+# web the browser decodes every one of these formats itself — see the
+# `image` comment above and `image_load/web.rs`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+] }
+backend-image-source = { workspace = true }
+
+
+# Browser tests for the wasm32 image decode path (`image_load::web_tests`):
+# `cargo test -p render-wgpu --target wasm32-unknown-unknown --lib` with
+# CHROMEDRIVER set (the workspace runner supplies web-glue's JS).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

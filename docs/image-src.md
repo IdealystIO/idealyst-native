@@ -25,8 +25,14 @@ Anything else is **rejected**: `on_error` fires, and debug builds log why
 - an empty `src`.
 
 Image formats: PNG, JPEG, GIF (first frame), WebP and SVG, on every backend.
-SVG is rasterized at the size it is displayed; SVG `<text>` is not drawn on
-native (convert text to outlines).
+SVG is rasterized at the size it is displayed, at the screen's pixel density
+(re-rasterized when either changes); SVG `<text>` is not drawn on
+native (convert text to outlines). In the browser — the DOM web backend and
+the wgpu renderer running on the web — the browser decodes every format
+(the wgpu renderer draws the decoded image into a canvas and uploads the
+pixels), so no Rust decoder ships in the web bundle and SVG `<text>` is
+drawn there. Because browser decoding is asynchronous, a `data:` or embedded
+`src` settles a moment after mount on the web, as it does for `<img>`.
 
 ## Events
 
