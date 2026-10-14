@@ -342,8 +342,14 @@ fn maybe_wrap_in_app_bundle(
 ) -> Result<Option<PathBuf>> {
     let config = icon_gen::load_config_from_manifest(project_dir)?;
     // URL schemes live in the bundle's Info.plist too: without a bundle
-    // the OS has nothing to route `myapp://` links to.
-    if config.is_none() && permissions.is_empty() && links.schemes.is_empty() {
+    // the OS has nothing to route `myapp://` links to. An `assets/` dir
+    // forces the bundle as well, so dev runs read `asset!` files from
+    // `Contents/Resources/assets/` exactly as a shipped app does.
+    if config.is_none()
+        && permissions.is_empty()
+        && links.schemes.is_empty()
+        && build_ios::app_assets::app_assets_dir(project_dir).is_none()
+    {
         return Ok(None);
     }
     Ok(Some(
@@ -435,10 +441,27 @@ pub(crate) fn assemble_app_bundle(
     // (xattr-based icon caches, older LaunchServices).
     fs::write(contents.join("PkgInfo"), b"APPL????")?;
 
+    // The app's `assets/` → `Contents/Resources/assets/`, where the AppKit
+    // backend resolves `asset!` paths (`NSBundle.mainBundle.resourcePath`).
+    // The bundle persists across runs, so the sync only rewrites changed
+    // files. Written before signing — the publish path codesigns the
+    // finished bundle, and a resource added after would break the seal.
+    ship_bundle_assets(project_dir, &resources)?;
+
     Ok(AssembledApp {
         app_dir,
         inner_binary: dest_binary,
     })
+}
+
+/// Mirror the app crate's `assets/` into a bundle's `Contents/Resources/`
+/// (see [`build_ios::app_assets`]).
+fn ship_bundle_assets(project_dir: &Path, resources: &Path) -> Result<()> {
+    build_ios::app_assets::stage_app_assets(
+        project_dir,
+        &resources.join(build_ios::app_assets::ASSETS_DIR),
+    )
+    .map(|_| ())
 }
 
 /// Escape text for inclusion in a plist XML `<string>`. Reason strings
@@ -650,5 +673,34 @@ mod tests {
         assert!(!plist.contains("NSHumanReadableCopyright"));
         // min_version always present (defaults to 11.0).
         assert!(plist.contains("<key>LSMinimumSystemVersion</key>\n    <string>11.0</string>"));
+    }
+
+    /// `asset!("images/logo.png")` on macOS reads
+    /// `<App>.app/Contents/Resources/assets/images/logo.png`; the dev path
+    /// must produce a bundle (not a bare binary) once `assets/` exists.
+    #[test]
+    fn macos_app_bundle_ships_assets_in_resources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("demo");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n\
+             [package.metadata.idealyst.app]\nname = \"Demo\"\nbundle_id = \"ai.example.demo\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(project.join("assets/images")).unwrap();
+        fs::write(project.join("assets/images/logo.png"), b"png").unwrap();
+        let binary = tmp.path().join("target/debug/demo-macos");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"bin").unwrap();
+
+        let no_links = build_ios::links::LinksMetadata::default();
+        let inner = maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links)
+            .unwrap()
+            .expect("an assets/ dir must force the .app bundle");
+        let app = app_bundle_for(&inner).unwrap();
+        assert!(app.join("Contents/Resources/assets/images/logo.png").is_file());
     }
 }

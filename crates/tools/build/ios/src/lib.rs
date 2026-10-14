@@ -41,6 +41,8 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+/// Copying the app crate's `assets/` into each platform's output (`asset!`).
+pub mod app_assets;
 pub mod capabilities;
 pub mod links;
 pub mod source;

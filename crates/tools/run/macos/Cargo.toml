@@ -21,3 +21,6 @@ build-ios = { workspace = true }
 # handles the layout. Without an icon block, the historical bare-
 # binary launch path stays in place.
 icon-gen = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1379,7 +1379,9 @@ fn hotpatch_prepare_base(
 /// must never end up served at the public site root:
 ///
 /// - **`assets` non-empty (allowlist, explicit-is-safe)**: ONLY the
-///   declared top-level entries are copied, plus `index.html`. `pkg/`
+///   declared top-level entries are copied, plus `index.html` and the
+///   `asset!` directory `assets/` (always — it is what `asset!` sources
+///   resolve against, `/assets/<path>`). `pkg/`
 ///   and the icon set are emitted by the build later, so they don't
 ///   need to be listed. Anything not named is skipped — a leak is
 ///   impossible regardless of what sits in the project root.
@@ -1456,8 +1458,16 @@ pub fn stage_bundle(
         // copied here if it exists), never gated by the allowlist —
         // the bundle is unservable without it.
         let mut wanted: Vec<&str> = assets.iter().map(|s| s.as_str()).collect();
-        if !wanted.iter().any(|s| *s == "index.html") {
-            wanted.push("index.html");
+        // `index.html` (the bundle is unservable without it) and `assets/`
+        // (where `asset!` files are served from, `/assets/<path>`) always
+        // ship. `assets/` is the framework's asset directory, not an
+        // arbitrary project folder: leaving it out would make every
+        // `asset!` image 404 in production while working in dev, which
+        // serves the project root. See `docs/image-src.md`.
+        for always in ["index.html", build_ios::app_assets::ASSETS_DIR] {
+            if !wanted.iter().any(|s| *s == always) {
+                wanted.push(always);
+            }
         }
         for entry in wanted {
             // Defend against `..`/absolute escapes — only single
@@ -4459,6 +4469,19 @@ mod regression_tests {
             !out.join("pkg").exists(),
             "stage_bundle must not copy project/pkg/ — the caller copies wrapper_pkg straight in",
         );
+    }
+
+    /// `asset!("images/logo.png")` on web is `/assets/images/logo.png`. An
+    /// allowlist that doesn't name `assets` must still ship it, or every
+    /// `asset!` image 404s in production while working under `dev`.
+    #[test]
+    fn regression_web_allowlist_without_assets_still_ships_asset_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        let out = tmp.path().join("dist");
+        stage_bundle(&project, &out, None, &["robots.txt".to_string()]).expect("stage");
+        assert!(out.join("assets/images/logo.png").is_file());
+        assert!(!out.join("fonts").exists(), "the rest of the allowlist still holds");
     }
 
     #[test]

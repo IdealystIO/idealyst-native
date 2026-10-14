@@ -132,7 +132,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             binary.display(),
         );
     }
+    ship_assets(&project_dir, &binary)?;
     Ok(BuildArtifact { binary, wrapper_dir })
+}
+
+/// Ship the app crate's `assets/` to `<exe dir>/assets/`, where the
+/// wgpu sim host reads `asset!` files at runtime. Incremental and symlink-safe;
+/// see [`build_ios::app_assets`].
+fn ship_assets(project_dir: &Path, binary: &Path) -> Result<()> {
+    build_ios::app_assets::stage_app_assets_beside(project_dir, binary).map(|_| ())
 }
 
 /// Produced-binary name for a given project. Suffixed with `-sim`
@@ -586,5 +594,19 @@ mod regression_tests {
             main_rs.contains("register_scene_extensions"),
             "sim main must register through the scene seam:\n{main_rs}",
         );
+    }
+
+    /// `asset!("images/logo.png")` reads `<exe dir>/assets/images/logo.png`.
+    #[test]
+    fn sim_binary_ships_assets_beside_exe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join("assets/images")).unwrap();
+        std::fs::write(project.join("assets/images/logo.png"), b"png").unwrap();
+        let binary = tmp.path().join("target/debug/app-sim");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"bin").unwrap();
+        super::ship_assets(&project, &binary).unwrap();
+        assert!(tmp.path().join("target/debug/assets/images/logo.png").is_file());
     }
 }

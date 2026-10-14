@@ -8,6 +8,7 @@
 //!   d8                    → .class → classes.dex
 //!   aapt2 link            → manifest → unsigned.apk
 //!   zip                   → splice classes.dex + lib/arm64-v8a/<so> into apk
+//!   zip                   → splice the app's assets/ as apk assets/<path>
 //!   zipalign              → page-align the .so for direct mmap
 //!   apksigner             → sign with the debug keystore
 //!   emulator -avd / adb   → boot a sim if none, install, launch
@@ -343,6 +344,17 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
 
     // ── 8. zip in classes.dex + lib/<abi>/<so> ──────────────────
     splice_into_apk(&unsigned_apk, &dex_dir, &so, &build_dir)?;
+
+    // ── 8b. zip in the app's `assets/` as APK `assets/<path>` ────
+    // Staged beside (not inside) `build_dir`, which is wiped every run:
+    // the staging copy persists, so unchanged files are not rewritten.
+    let apk_assets_root = build_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("android build dir has no parent"))?
+        .join(APK_ASSETS_STAGING);
+    if stage_apk_assets(&project_dir, &apk_assets_root)? {
+        splice_assets_into_apk(&unsigned_apk, &apk_assets_root)?;
+    }
 
     // ── 9. zipalign ─────────────────────────────────────────────
     let aligned_apk = build_dir.join("aligned.apk");
@@ -748,6 +760,68 @@ fn splice_into_apk(
     Ok(())
 }
 
+/// Staging dir (sibling of `app/` and `wrapper/`) holding `assets/`.
+const APK_ASSETS_STAGING: &str = "apk-assets";
+
+/// Extensions stored uncompressed in the APK. These formats are already
+/// compressed (deflating them again gains nothing), and a STORED entry is
+/// what `AssetManager.openFd` needs — media players read assets through a
+/// file descriptor, which a deflated entry cannot provide.
+const APK_STORED_ASSET_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "mp3", "mp4", "m4a", "m4v", "aac", "ogg", "opus",
+    "webm", "mkv", "woff", "woff2", "zip", "gz", "br",
+];
+
+/// Mirror the app crate's `assets/` into `<root>/assets/`. Returns whether
+/// the app has assets. See [`build_ios::app_assets`].
+fn stage_apk_assets(project_dir: &Path, root: &Path) -> Result<bool> {
+    build_ios::app_assets::stage_app_assets(
+        project_dir,
+        &root.join(build_ios::app_assets::ASSETS_DIR),
+    )
+}
+
+/// `zip` arguments that add `<root>/assets/` to `apk`, run with cwd
+/// `root` so each entry is stored as `assets/<path>`. Android serves APK
+/// entry `assets/<path>` as `AssetManager.open("<path>")` — the path the
+/// backend's `asset!` loader opens.
+fn apk_assets_zip_args(apk: &Path) -> Vec<std::ffi::OsString> {
+    let stored = APK_STORED_ASSET_EXTENSIONS
+        .iter()
+        .map(|e| format!(".{e}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    vec![
+        // `-n`: store (don't deflate) these suffixes; `-r`: recurse;
+        // `-y`: store a symlink as a link, never its target (staging has
+        // none — `sync_dir` drops them — this is belt and braces).
+        "-n".into(),
+        stored.into(),
+        "-r".into(),
+        "-y".into(),
+        apk.into(),
+        build_ios::app_assets::ASSETS_DIR.into(),
+    ]
+}
+
+/// Splice the staged `assets/` into the APK. Done with `zip` (like
+/// `classes.dex`) rather than `aapt2 link -A`: aapt2's default
+/// `--ignore-assets` pattern silently drops dotfiles and `_`-prefixed
+/// directories, so an `asset!` path that works on every other platform
+/// would 404 on Android.
+fn splice_assets_into_apk(apk: &Path, root: &Path) -> Result<()> {
+    eprintln!("[run-android] zipping assets/ into {}", apk.display());
+    let status = Command::new("zip")
+        .args(apk_assets_zip_args(apk))
+        .current_dir(root)
+        .status()
+        .with_context(|| "spawn zip — is it on your PATH?")?;
+    if !status.success() {
+        anyhow::bail!("zip (assets) exited with {status}");
+    }
+    Ok(())
+}
+
 fn run_zipalign(build_tools: &Path, input: &Path, output: &Path) -> Result<()> {
     eprintln!("[run-android] zipalign → {}", output.display());
     // `-p` page-aligns the `.so` so the kernel can mmap it directly
@@ -1078,6 +1152,9 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
+    use super::{splice_assets_into_apk, stage_apk_assets, APK_ASSETS_STAGING};
+    use std::fs;
+    use std::process::Command;
 
     /// The launch Activity is `singleTask` (a warm link must reach the
     /// running instance's `onNewIntent`, not mount a second app) and the
@@ -1145,5 +1222,59 @@ mod tests {
         // Runtime-server mode already declares INTERNET → never injected here,
         // even with the dev feature on.
         assert!(!local_robot_build_needs_internet(true, &dev));
+    }
+
+    /// `asset!("images/logo.png")` on Android is
+    /// `AssetManager.open("images/logo.png")`, i.e. APK entry
+    /// `assets/images/logo.png`. Stages the tree, then (when `zip` /
+    /// `unzip` are on PATH) splices it into a real archive and checks the
+    /// entry name and that already-compressed media is STORED.
+    #[test]
+    fn android_apk_stages_assets_for_asset_manager() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("app");
+        fs::create_dir_all(project.join("assets/images")).unwrap();
+        fs::write(project.join("assets/images/logo.png"), b"png-bytes").unwrap();
+        fs::write(project.join("assets/data.json"), b"{}").unwrap();
+        let root = tmp.path().join("android").join(APK_ASSETS_STAGING);
+        assert!(stage_apk_assets(&project, &root).unwrap());
+        assert!(root.join("assets/images/logo.png").is_file());
+
+        let has = |tool: &str| Command::new(tool).arg("-v").output().is_ok();
+        if !(has("zip") && has("unzip")) {
+            eprintln!("zip/unzip not on PATH — skipping the archive half");
+            return;
+        }
+        let apk = tmp.path().join("unsigned.apk");
+        // Seed a non-empty archive, as aapt2 link's manifest-only APK is.
+        fs::write(tmp.path().join("AndroidManifest.xml"), b"<manifest/>").unwrap();
+        let ok = Command::new("zip")
+            .arg(&apk)
+            .arg("AndroidManifest.xml")
+            .current_dir(tmp.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        splice_assets_into_apk(&apk, &root).unwrap();
+        let listing = Command::new("unzip").arg("-v").arg(&apk).output().unwrap();
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        let line = |name: &str| {
+            listing
+                .lines()
+                .find(|l| l.trim_end().ends_with(name))
+                .unwrap_or_else(|| panic!("{name} missing from APK:\n{listing}"))
+                .to_string()
+        };
+        assert!(line(" assets/images/logo.png").contains("Stored"), "{listing}");
+        line(" assets/data.json");
+        line(" AndroidManifest.xml");
+    }
+
+    #[test]
+    fn android_project_without_assets_splices_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(APK_ASSETS_STAGING);
+        assert!(!stage_apk_assets(tmp.path(), &root).unwrap());
     }
 }

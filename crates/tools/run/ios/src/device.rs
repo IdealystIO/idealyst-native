@@ -288,6 +288,13 @@ pub(crate) fn prepare_xcode_project(
     // simulator path keeps loose PNGs — it hand-assembles the bundle with no
     // `actool`. See [`crate::sync_ios_icons_into_bundle`].)
     crate::sync_ios_asset_catalog_into_project(project_dir, &project_root)?;
+    // The app's `assets/` → `<project_root>/assets/`, which the pbxproj
+    // references as a FOLDER (blue folder) in the Resources phase, so
+    // xcodebuild copies it to `<App>.app/assets/` — where the UIKit backend
+    // resolves `asset!` paths. Staged (not referenced in place) so symlinks
+    // inside the app's dir are dropped instead of copied into a signed
+    // bundle; the staging dir persists, so unchanged files aren't rewritten.
+    let has_app_assets = stage_xcode_project_assets(project_dir, &project_root)?;
     std::fs::write(
         project_root.join("Info.plist"),
         render_device_info_plist(
@@ -329,6 +336,7 @@ pub(crate) fn prepare_xcode_project(
             lib_name: &lib_name,
             frameworks: &frameworks,
             entitlements,
+            app_assets: has_app_assets,
         },
     )?;
 
@@ -337,6 +345,15 @@ pub(crate) fn prepare_xcode_project(
         xcodeproj,
         scheme: executable_name,
     })
+}
+
+/// Stage the app's `assets/` at `<project_root>/assets/` for the pbxproj's
+/// folder reference. Returns whether there were any (no reference without).
+fn stage_xcode_project_assets(project_dir: &Path, project_root: &Path) -> Result<bool> {
+    build_ios::app_assets::stage_app_assets(
+        project_dir,
+        &project_root.join(build_ios::app_assets::ASSETS_DIR),
+    )
 }
 
 /// Clone the manifest with the splash forced off (duration 0). Device
@@ -403,7 +420,16 @@ struct PbxParams<'a> {
     /// `CODE_SIGN_ENTITLEMENTS`, so a link-less app's provisioning profile
     /// is not asked for a capability it doesn't use.
     entitlements: Option<&'a str>,
+    /// Whether `<project_root>/assets/` was staged from the app's
+    /// `assets/`. Only then is the folder reference emitted — a reference
+    /// to a missing folder fails the build.
+    app_assets: bool,
 }
+
+/// Fixed IDs for the app-assets folder reference (build file, file ref).
+/// Same `A5E7…` family as the asset catalog's, distinct suffixes.
+const APP_ASSETS_BUILD_FILE_ID: &str = "A5E700000000000000000004";
+const APP_ASSETS_FILE_REF_ID: &str = "A5E700000000000000000005";
 
 /// Write `<name>.xcodeproj/project.pbxproj` from the parameterized
 /// template. The template is a capture of the pbxproj `xcodegen` produced
@@ -425,6 +451,8 @@ fn write_xcodeproj(xcodeproj: &Path, params: &PbxParams) -> Result<()> {
 fn render_pbxproj(params: &PbxParams) -> String {
     let (build_files, file_refs, phase_files, group_children) =
         render_frameworks_sections(params.frameworks);
+    let (assets_build_file, assets_file_ref, assets_phase_file, assets_group_child) =
+        render_app_assets_sections(params.app_assets);
     PBXPROJ_TMPL
         .replace("{{APP_NAME}}", params.app_name)
         .replace("{{BUNDLE_ID}}", params.bundle_id)
@@ -446,6 +474,32 @@ fn render_pbxproj(params: &PbxParams) -> String {
         .replace("{{FRAMEWORK_FILE_REFS}}", &file_refs)
         .replace("{{FRAMEWORK_PHASE_FILES}}", &phase_files)
         .replace("{{FRAMEWORK_GROUP_CHILDREN}}", &group_children)
+        .replace("{{APP_ASSETS_BUILD_FILE}}", &assets_build_file)
+        .replace("{{APP_ASSETS_FILE_REF}}", &assets_file_ref)
+        .replace("{{APP_ASSETS_PHASE_FILE}}", &assets_phase_file)
+        .replace("{{APP_ASSETS_GROUP_CHILD}}", &assets_group_child)
+}
+
+/// The four pbxproj lines that put `assets/` in the bundle as a folder
+/// reference (`lastKnownFileType = folder`): Xcode copies a folder
+/// reference's whole tree, structure intact, into the bundle root — unlike
+/// a group, which would flatten every file into `<App>.app/`. All empty
+/// when the app has no `assets/`.
+fn render_app_assets_sections(app_assets: bool) -> (String, String, String, String) {
+    if !app_assets {
+        return Default::default();
+    }
+    let (bf, fr) = (APP_ASSETS_BUILD_FILE_ID, APP_ASSETS_FILE_REF_ID);
+    (
+        format!(
+            "\t\t{bf} /* assets in Resources */ = {{isa = PBXBuildFile; fileRef = {fr} /* assets */; }};\n"
+        ),
+        format!(
+            "\t\t{fr} /* assets */ = {{isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = \"<group>\"; }};\n"
+        ),
+        format!("\t\t\t\t{bf} /* assets in Resources */,\n"),
+        format!("\t\t\t\t{fr} /* assets */,\n"),
+    )
 }
 
 /// Render the four framework-dependent pbxproj sections from the derived list:
@@ -1169,6 +1223,7 @@ mod tests {
             lib_name: "camera_preview_demo_ios_wrapper",
             frameworks: &frameworks,
             entitlements: None,
+            app_assets: false,
         });
         assert!(
             !rendered.contains("{{"),
@@ -1189,6 +1244,51 @@ mod tests {
         }
     }
 
+    /// `asset!("images/logo.png")` on a device / App Store build reads
+    /// `<App>.app/assets/images/logo.png`: the app's `assets/` is staged next
+    /// to the `.xcodeproj` and referenced as a FOLDER in the Resources phase,
+    /// which xcodebuild copies to the bundle root with its tree intact.
+    #[test]
+    fn ios_bundle_ships_assets_dir_via_xcode_folder_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("app");
+        std::fs::create_dir_all(project.join("assets/images")).unwrap();
+        std::fs::write(project.join("assets/images/logo.png"), b"png").unwrap();
+        let project_root = tmp.path().join("ios-device");
+        assert!(stage_xcode_project_assets(&project, &project_root).unwrap());
+        assert!(project_root.join("assets/images/logo.png").is_file());
+
+        let frameworks = camera_frameworks();
+        let params = |app_assets| PbxParams {
+            app_name: "Demo",
+            bundle_id: "ai.example.demo",
+            team: "USC735CN86",
+            library_search_path: Path::new("/tmp/lib"),
+            lib_name: "demo_ios_wrapper",
+            frameworks: &frameworks,
+            entitlements: None,
+            app_assets,
+        };
+        let with = render_pbxproj(&params(true));
+        assert!(!with.contains("{{"), "unsubstituted placeholder:\n{with}");
+        let file_ref = format!(
+            "{APP_ASSETS_FILE_REF_ID} /* assets */ = {{isa = PBXFileReference; \
+             lastKnownFileType = folder; path = assets; sourceTree = \"<group>\"; }};"
+        );
+        assert!(with.contains(&file_ref), "folder reference missing:\n{with}");
+        // In the Resources phase (build file) and the main group.
+        let resources = &with[with.find("isa = PBXResourcesBuildPhase").unwrap()..];
+        let resources = &resources[..resources.find("};").unwrap()];
+        assert!(resources.contains(&format!("{APP_ASSETS_BUILD_FILE_ID} /* assets in Resources */")));
+        assert!(with.contains(&format!(
+            "{APP_ASSETS_BUILD_FILE_ID} /* assets in Resources */ = {{isa = PBXBuildFile; fileRef = {APP_ASSETS_FILE_REF_ID}"
+        )));
+
+        let without = render_pbxproj(&params(false));
+        assert!(!without.contains("{{"));
+        assert!(!without.contains(APP_ASSETS_FILE_REF_ID), "no assets → no folder reference");
+    }
+
     /// Universal links need the associated-domains entitlement SIGNED into
     /// the app: both build configurations must point at the entitlements
     /// file, and a link-less app must not reference one at all.
@@ -1203,6 +1303,7 @@ mod tests {
             lib_name: "demo_ios_wrapper",
             frameworks: &frameworks,
             entitlements,
+            app_assets: false,
         };
         let with = render_pbxproj(&params(Some("App.entitlements")));
         assert_eq!(
@@ -1242,6 +1343,7 @@ mod tests {
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
             entitlements: None,
+            app_assets: false,
         });
         // Only UIKit/Foundation are weak (objc2 back-deploy fix).
         for fw in ["UIKit", "Foundation"] {
@@ -1283,6 +1385,7 @@ mod tests {
             lib_name: "screen_share_ios_wrapper",
             frameworks: &frameworks,
             entitlements: None,
+            app_assets: false,
         });
         // Present in all four sections.
         assert!(rendered.contains("ReplayKit.framework in Frameworks"));
@@ -1312,6 +1415,7 @@ mod tests {
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
             entitlements: None,
+            app_assets: false,
         });
         assert!(
             rendered.contains("CODE_SIGN_STYLE = Automatic"),
@@ -1503,6 +1607,7 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
             entitlements: None,
+            app_assets: false,
         });
         assert!(rendered.contains("PBXResourcesBuildPhase"), "no Resources build phase");
         assert!(
@@ -1546,6 +1651,7 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             lib_name: "demo_ios_wrapper",
             frameworks: &frameworks,
             entitlements: None,
+            app_assets: false,
         });
         let setting = format!("TARGETED_DEVICE_FAMILY = \"{}\";", crate::targeted_device_family());
         assert_eq!(rendered.matches(&setting).count(), 2, "Debug + Release:\n{rendered}");

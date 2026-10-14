@@ -15,3 +15,6 @@ serde_json = { workspace = true }
 # compiled to a `.flata` via `aapt2 compile --dir` and passed to
 # `aapt2 link -R` alongside the AAR-derived flats.
 icon-gen = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

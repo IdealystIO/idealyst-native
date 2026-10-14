@@ -7,7 +7,8 @@
 //!   swiftc             → compiles AppDelegate.swift + ViewController.swift
 //!                        AND links them against the staticlib + iOS frameworks
 //!                        into a Mach-O executable
-//!   assemble bundle    → Mach-O + Info.plist + PkgInfo into a .app directory
+//!   assemble bundle    → Mach-O + Info.plist + PkgInfo + the app's assets/
+//!                        into a .app directory
 //!   simctl boot        → bring up an iOS simulator
 //!   simctl install     → copy the .app to the booted simulator
 //!   simctl launch      → start it
@@ -320,6 +321,10 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // `@3x` PNG based on the runtime device density.
     let icon_plist_entries = sync_ios_icons_into_bundle(&project_dir, &app_bundle)?;
 
+    // ── 5b. The app's `assets/` → `<App>.app/assets/`, where the UIKit
+    // backend resolves `asset!` paths (`NSBundle.mainBundle.resourcePath`).
+    ship_sim_bundle_assets(&project_dir, &app_bundle)?;
+
     // ── 6. Info.plist + PkgInfo ──────────────────────────────────
     fs::write(
         app_bundle.join("Info.plist"),
@@ -506,6 +511,16 @@ pub(crate) fn sync_ios_icons_into_bundle(project_dir: &Path, app_bundle: &Path) 
          <key>CFBundleIconFiles</key>\n            <array>\n{stem_xml}\n            \
          </array>\n        </dict>\n    </dict>"
     ))
+}
+
+/// Mirror the app crate's `assets/` into a hand-assembled simulator `.app`
+/// at `<App>.app/assets/` (iOS bundles are flat: resources sit at the
+/// bundle root). See [`build_ios::app_assets`].
+pub(crate) fn ship_sim_bundle_assets(project_dir: &Path, app_bundle: &Path) -> Result<bool> {
+    build_ios::app_assets::stage_app_assets(
+        project_dir,
+        &app_bundle.join(build_ios::app_assets::ASSETS_DIR),
+    )
 }
 
 /// Generate an `Assets.xcassets/AppIcon` asset catalog under `dest_dir` (the
@@ -1048,5 +1063,19 @@ mod tests {
         for f in DEVICE_FAMILIES {
             assert!(entry.contains(&format!("<integer>{f}</integer>")), "{entry}");
         }
+    }
+
+    /// `asset!("images/logo.png")` on the simulator reads
+    /// `<App>.app/assets/images/logo.png` (`NSBundle.mainBundle.resourcePath`).
+    #[test]
+    fn ios_bundle_ships_assets_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("app");
+        std::fs::create_dir_all(project.join("assets/images")).unwrap();
+        std::fs::write(project.join("assets/images/logo.png"), b"png").unwrap();
+        let app_bundle = tmp.path().join("ios/Demo.app");
+        std::fs::create_dir_all(&app_bundle).unwrap();
+        assert!(ship_sim_bundle_assets(&project, &app_bundle).unwrap());
+        assert!(app_bundle.join("assets/images/logo.png").is_file());
     }
 }

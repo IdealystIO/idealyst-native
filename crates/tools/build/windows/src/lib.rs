@@ -80,7 +80,15 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
             binary.display(),
         );
     }
+    ship_assets(&project_dir, &binary)?;
     Ok(BuildArtifact { binary, wrapper_dir })
+}
+
+/// Ship the app crate's `assets/` to `<exe dir>/assets/`, where the
+/// Win32 host reads `asset!` files at runtime. Incremental and symlink-safe;
+/// see [`build_ios::app_assets`].
+fn ship_assets(project_dir: &Path, binary: &Path) -> Result<()> {
+    build_ios::app_assets::stage_app_assets_beside(project_dir, binary).map(|_| ())
 }
 
 /// Produced-binary name, suffixed `-windows` so it can't collide with
@@ -458,5 +466,19 @@ mod tests {
         let cfg = fs::read_to_string(dir.join(".cargo/config.toml")).unwrap();
         assert!(cfg.contains("target-dir = \"Z:/proj/target/idealyst/demo/windows/target\""), "got:\n{cfg}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `asset!("images/logo.png")` reads `<exe dir>/assets/images/logo.png`.
+    #[test]
+    fn windows_binary_ships_assets_beside_exe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join("assets/images")).unwrap();
+        std::fs::write(project.join("assets/images/logo.png"), b"png").unwrap();
+        let binary = tmp.path().join("target/debug/app-windows.exe");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"bin").unwrap();
+        super::ship_assets(&project, &binary).unwrap();
+        assert!(tmp.path().join("target/debug/assets/images/logo.png").is_file());
     }
 }
