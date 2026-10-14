@@ -595,7 +595,7 @@ backend-windows = { path = "crates/backend/windows", version = "1.10.0", registr
 backend-linux = { path = "crates/backend/linux", version = "1.11.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "1.5.3", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "2.0.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "3.0.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "2.2.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "2.3.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -620,10 +620,10 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "2.0.0", registry = "idealyst" }
-idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "1.5.8", registry = "idealyst" }
+idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "2.0.0", registry = "idealyst" }
 idea-ui = { path = "crates/ui/idea-ui", version = "5.0.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "1.5.3", registry = "idealyst" }
-idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "1.5.9", registry = "idealyst" }
+idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "2.0.0", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "1.5.3", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "1.5.3", registry = "idealyst" }
@@ -755,8 +755,8 @@ file-drop-demo = { path = "crates/sdk/client/file-picker/examples/file-drop-demo
 file-picker-demo = { path = "crates/sdk/client/file-picker/examples/file-picker-demo", version = "1.5.2", registry = "idealyst" }
 graphql-demo = { path = "crates/sdk/client/graphql/examples/graphql-demo", version = "1.5.2", registry = "idealyst" }
 i18n-demo = { path = "crates/sdk/client/i18n/examples/i18n-demo", version = "1.5.2", registry = "idealyst" }
-idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.11", registry = "idealyst" }
-idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.10", registry = "idealyst" }
+idea-ui-docs-gpu = { path = "websites/idea-ui-docs-gpu", version = "1.5.12", registry = "idealyst" }
+idea-ui-docs-gtk = { path = "crates/host/gtk/examples/idea-ui-docs-gtk", version = "1.5.11", registry = "idealyst" }
 idealyst-macros = { path = "crates/idealyst-macros", version = "1.5.2", registry = "idealyst" }
 jobs-demo = { path = "crates/sdk/server/jobs/examples/jobs-demo", version = "1.5.2", registry = "idealyst" }
 kanban-demo = { path = "crates/sdk/client/dnd/examples/kanban-demo", version = "1.5.2", registry = "idealyst" }
