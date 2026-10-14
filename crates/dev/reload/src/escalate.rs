@@ -250,7 +250,7 @@ mod tests {
         // The save: an overlay patch, pushed.
         let saved = read_saved(&ws, &[file.clone()]);
         assert!(matches!(
-            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Done
         ));
         assert_eq!(kinds(&signal), vec![PatchKind::Overlay]);
@@ -278,7 +278,7 @@ mod tests {
         // "unchanged".
         let again = read_saved(&ws, &paths);
         assert!(matches!(
-            handle_save(&mut ws, &root, &again, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &again, false, &signal, &reporter, &mut build, &|| false),
             Handled::Done
         ));
         assert_eq!(builds.get(), 1, "the refused edit was hot-patched");
@@ -306,11 +306,11 @@ mod tests {
         };
 
         let saved = read_saved(&ws, &[file.clone()]);
-        handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut unarmed, &|| false);
+        handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut unarmed, &|| false);
         assert!(signal.escalate_refused(1));
         let again = read_saved(&ws, &[file]);
         assert!(matches!(
-            handle_save(&mut ws, &root, &again, false, &signal, &reporter, &mut unarmed, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &again, false, &signal, &reporter, &mut unarmed, &|| false),
             Handled::Rebuild
         ));
     }
@@ -328,7 +328,7 @@ mod tests {
         let reporter = dev_events::Reporter::new();
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| built();
         let saved = read_saved(&ws, &[file.clone()]);
-        handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false);
+        handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false);
         assert_eq!(signal.escalation.lock().unwrap().pending.len(), 1);
 
         // A body edit before the ack: one hot patch, and nothing owed after.
@@ -336,7 +336,7 @@ mod tests {
         std::fs::write(&file, body).unwrap();
         let saved = read_saved(&ws, &[file]);
         assert!(matches!(
-            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Done
         ));
         assert!(signal.escalation.lock().unwrap().pending.is_empty());

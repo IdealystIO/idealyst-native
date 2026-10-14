@@ -999,6 +999,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A hot patch rescans only the files a save moved** (`dev-overlay`,
+  `dev-reload`). After each hot patch the dev loop rescanned every file of
+  the crates the save edited, beside the compile (3.4 s for CrewForge's
+  app crate). The scan now copies each file whose bytes match the
+  session's previous scan of that crate, so the rescan after a rebuild
+  gets the same saving.
+
 - **A web rebuild no longer re-runs `cargo metadata` before the next save
   can start** (`dev-reload`). After every rebuild the watch thread
   re-resolved the watched package set, serially. It now does so only when

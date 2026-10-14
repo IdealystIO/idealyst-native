@@ -115,6 +115,14 @@ impl ScanMemo {
     fn record(&self, set: &DescriptorSet) {
         self.sets.lock().unwrap().insert(set.package.clone(), set.clone());
     }
+
+    /// The last set scanned for `package`, whatever its sources: the
+    /// per-file reuse of [`crate::archive::scan_sources_reusing`]. Only
+    /// scans are recorded here, never an advanced archive — the property
+    /// that function needs.
+    fn latest(&self, package: &str) -> Option<DescriptorSet> {
+        self.sets.lock().unwrap().get(package).cloned()
+    }
 }
 
 /// The app's workspace, as the dev loop decides saves against it.
@@ -717,7 +725,12 @@ impl Workspace {
                     .or_else(|| crate::archive::read_set(&dir, &sources).inspect(|set| memo.record(set)))
                 {
                     Some(set) => Some(set),
-                    None => match crate::archive::write_scanned_cancellable(&dir, &sources, cancel) {
+                    None => match crate::archive::write_scanned_reusing(
+                        &dir,
+                        &sources,
+                        memo.latest(&package).as_ref(),
+                        cancel,
+                    ) {
                         Ok(Some(set)) => {
                             memo.record(&set);
                             Some(set)

@@ -448,6 +448,36 @@ pub fn scan_sources_cancellable(
     sources: &CrateSources,
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> Option<DescriptorSet> {
+    scan_sources_reusing(sources, None, cancel)
+}
+
+/// [`scan_sources_cancellable`], copying each file whose bytes `previous`
+/// was scanned from instead of scanning it again.
+///
+/// Why: a hot patch rescans the crates it edited, and a save edits one
+/// file of a crate of dozens — CrewForge's app crate is a 3.4 s scan,
+/// for one changed file's milliseconds. Everything a scan records for a
+/// file is a function of that file's package, path and text (its digests
+/// and its sites, keyed by position in that text), so a file with the
+/// same bytes yields the same entries.
+///
+/// `previous` must be a SCAN — never an archive the dev loop has advanced
+/// past an overlay patch, which keeps the running program's old site keys
+/// for text that has moved (`decide::advance_archive`); copying those
+/// would give a hot-patched program the wrong keys. It is ignored unless
+/// it is the same package scanned by this same scanner, at this format.
+pub fn scan_sources_reusing(
+    sources: &CrateSources,
+    previous: Option<&DescriptorSet>,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Option<DescriptorSet> {
+    let previous = previous.filter(|p| {
+        p.package == sources.package
+            && p.overlay_version == OVERLAY_VERSION
+            && p.split_version == SPLIT_VERSION
+            && p.scanner.is_some()
+            && p.scanner == scanner_identity()
+    });
     let package = sources.package.clone();
     let mut set = DescriptorSet {
         overlay_version: OVERLAY_VERSION,
@@ -464,6 +494,17 @@ pub fn scan_sources_cancellable(
         }
         let relative = relative.clone();
         let content = hex(&Sha256::digest(text.as_bytes()));
+
+        if let Some(prev) = previous {
+            if let Some(digest) = prev.files.get(&relative).filter(|d| d.content == content) {
+                set.files.insert(relative.clone(), digest.clone());
+                let mut sites: Vec<&ArchivedSite> =
+                    prev.sites.iter().filter(|s| s.descriptor.site.file.as_ref() == relative).collect();
+                sites.sort_by_key(|s| s.ordinal);
+                set.sites.extend(sites.into_iter().cloned());
+                continue;
+            }
+        }
 
         let sites = match runtime_macros_parse::sites_in_file(&package, &relative, &text) {
             Ok(s) => s,
@@ -624,7 +665,17 @@ pub fn write_scanned_cancellable(
     sources: &CrateSources,
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<Option<DescriptorSet>> {
-    let Some(set) = scan_sources_cancellable(sources, cancel) else { return Ok(None) };
+    write_scanned_reusing(dir, sources, None, cancel)
+}
+
+/// [`write_scanned_cancellable`] over [`scan_sources_reusing`].
+pub fn write_scanned_reusing(
+    dir: &Path,
+    sources: &CrateSources,
+    previous: Option<&DescriptorSet>,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<Option<DescriptorSet>> {
+    let Some(set) = scan_sources_reusing(sources, previous, cancel) else { return Ok(None) };
     write_set(dir, &set)?;
     Ok(Some(set))
 }
@@ -727,6 +778,50 @@ pub fn digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sources(files: &[(&str, &str)]) -> CrateSources {
+        CrateSources {
+            package: "app".into(),
+            files: files.iter().map(|(p, t)| (p.to_string(), t.to_string())).collect(),
+        }
+    }
+
+    const A: &str = "use runtime_core::*;\nfn a() -> Element {\n    ui! { view() { text { \"a\" } } }\n}\n";
+    const B: &str = "use runtime_core::*;\nfn b() -> Element {\n    ui! { view() { text { \"b\" } text { \"c\" } } }\n}\n";
+
+    /// Regression (CrewForge): a hot patch rescanned the whole edited
+    /// crate beside its compile (3.4 s for the app crate) for a save that
+    /// moved one file. A scan reusing the previous scan's unchanged files
+    /// must equal a full scan of the new sources — including the edited
+    /// file's sites shifting down a line — and must take the unchanged
+    /// files from `previous` rather than scanning them.
+    #[test]
+    fn regression_a_rescan_reuses_unchanged_files_and_equals_a_full_scan() {
+        let before = sources(&[("src/a.rs", A), ("src/b.rs", B)]);
+        let prev = scan_sources(&before);
+        let edited = A.replace("fn a()", "// moved\nfn a()");
+        let after = sources(&[("src/a.rs", &edited), ("src/b.rs", B)]);
+
+        let full = scan_sources(&after);
+        let reused = scan_sources_reusing(&after, Some(&prev), &|| false).unwrap();
+        assert_eq!(serde_json::to_value(&reused).unwrap(), serde_json::to_value(&full).unwrap());
+
+        // Proof the unchanged file came from `previous`: a marker planted
+        // there survives; the edited file's is rescanned away.
+        let mut marked = prev.clone();
+        for f in marked.files.values_mut() {
+            f.sheets = "planted".into();
+        }
+        let got = scan_sources_reusing(&after, Some(&marked), &|| false).unwrap();
+        assert_eq!(got.files["src/b.rs"].sheets, "planted");
+        assert_ne!(got.files["src/a.rs"].sheets, "planted");
+
+        // Another package's scan is never borrowed from.
+        let mut other = marked.clone();
+        other.package = "lib".into();
+        let got = scan_sources_reusing(&after, Some(&other), &|| false).unwrap();
+        assert_ne!(got.files["src/b.rs"].sheets, "planted");
+    }
 
     /// Regression: every session start scanned the whole workspace again
     /// before the hot tier could take a save (14–16 s on CrewForge), on

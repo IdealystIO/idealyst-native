@@ -1721,6 +1721,7 @@ fn watch_loop(
                 match handle_save(
                     &mut ws,
                     &dir,
+                    &memo,
                     &saved,
                     premint,
                     &signal,
@@ -2000,6 +2001,7 @@ struct PatchEvent {
 fn handle_save(
     ws: &mut dev_overlay::Workspace,
     dir: &Path,
+    memo: &dev_overlay::ScanMemo,
     saved: &[dev_overlay::SavedFile],
     premint: bool,
     signal: &ReloadSignal,
@@ -2076,8 +2078,11 @@ fn handle_save(
             // reported twice — before the restart could begin. A cancelled
             // scan yields `None` and writes nothing.
             let (built, scanned) = std::thread::scope(|scope| {
+                // Through the session's memo: only the files the save
+                // moved are scanned again (`archive::scan_sources_reusing`);
+                // the whole app crate was 3.4 s on CrewForge.
                 let scan = scope.spawn(|| {
-                    dev_overlay::Workspace::scan_read_cancellable(dir, &tip, read, superseded)
+                    dev_overlay::Workspace::scan_read_reusing(dir, &tip, read, superseded, memo)
                 });
                 let built = build_patch(&crates);
                 (built, scan.join().expect("the archive scan panicked"))
@@ -3126,7 +3131,7 @@ mod tests {
         };
         let (reporter, _) = capture();
         assert!(matches!(
-            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Done
         ));
         assert_eq!(signal.patches_since(0).len(), 1);
@@ -3152,7 +3157,7 @@ mod tests {
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
-        handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false);
+        handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false);
         let got = events(&q);
         assert_eq!(got.len(), 2, "{got:?}");
         assert_eq!(
@@ -3189,7 +3194,7 @@ mod tests {
         let mut build =
             |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Failed("no capture".to_string()));
         assert!(matches!(
-            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Rebuild
         ));
         assert!(signal.patches_since(0).is_empty());
@@ -3216,7 +3221,7 @@ mod tests {
         let (reporter, q) = capture();
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
         assert!(matches!(
-            handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Rebuild
         ));
         let got = events(&q);
@@ -3282,7 +3287,7 @@ mod tests {
         reporter.add_sink(Arc::new(PushedAtReport(signal.clone(), at_report.clone())));
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
         assert!(matches!(
-            handle_save(&mut ws, &dir, &saved, false, &signal, &reporter, &mut build, &|| false),
+            handle_save(&mut ws, &dir, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| false),
             Handled::Done
         ));
         assert_eq!(*at_report.lock().unwrap(), Some(0), "reported before anything was pushed");
@@ -4014,7 +4019,7 @@ mod tests {
             newer_save.store(true, std::sync::atomic::Ordering::SeqCst);
             patched_ok()
         };
-        let got = handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| {
+        let got = handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| {
             newer_save.load(std::sync::atomic::Ordering::SeqCst)
         });
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
@@ -4056,7 +4061,7 @@ mod tests {
         let signal = ReloadSignal::new();
         let (reporter, _) = capture();
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Superseded);
-        let got = handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| true);
+        let got = handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| true);
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
         assert_eq!(listing(), before, "the scan ran on after the patch was superseded");
     }
@@ -4074,7 +4079,7 @@ mod tests {
         let signal = ReloadSignal::new();
         let (reporter, q) = capture();
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| Err(PatchFailure::Superseded);
-        let got = handle_save(&mut ws, &root, &saved, false, &signal, &reporter, &mut build, &|| true);
+        let got = handle_save(&mut ws, &root, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| true);
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::HotPatch)), "{got:?}");
         assert!(!events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::PatchFailed { .. })));
     }
@@ -4097,7 +4102,7 @@ mod tests {
         let signal = ReloadSignal::new();
         let (reporter, _) = capture();
         let mut build = |_: &[build_web::hotpatch_build::PatchCrate]| patched_ok();
-        let got = handle_save(&mut ws, &dir, &saved, false, &signal, &reporter, &mut build, &|| true);
+        let got = handle_save(&mut ws, &dir, &dev_overlay::ScanMemo::default(), &saved, false, &signal, &reporter, &mut build, &|| true);
         assert!(matches!(got, Handled::Superseded(dev_events::SupersededWork::Overlay)), "{got:?}");
         assert!(signal.patches_since(0).is_empty());
         assert!(matches!(ws.decide(&saved, false), dev_overlay::WorkspaceDecision::Patch(_)), "archives moved");
