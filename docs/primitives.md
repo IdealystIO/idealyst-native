@@ -565,18 +565,28 @@ effect that calls `ImageOps::update_image_src` on change.
 `alt`/`accessibilityLabel`/`contentDescription` is set through a
 builder method.
 
-Sources: `http(s)://` URLs, `data:` URIs (base64 or percent-encoded),
-and declared assets (`image_asset`). SVG works on web, iOS, macOS and
-Android. The native backends sniff every source for SVG, then rasterize it
-with resvg at the view's displayed size × screen density. They
-re-rasterize when the view resizes, and the image measures at the SVG's
-intrinsic size. SVG `<text>` is not rendered on native, so convert text to
-outlines. Bitmaps go to the platform decoder (`UIImage`, `NSImage`,
-`BitmapFactory` — PNG, JPEG, WebP, GIF and more). An unsized image measures
-at its natural size: a bitmap's pixel count read as points/dp, or the SVG's
-intrinsic size. A source the backend can't load or decode fires `on_error`
-and logs a warning instead of staying blank. The decoding shared by the
-native backends lives in the `backend-image-source` crate.
+Sources follow one contract on every backend — see
+[`image-src.md`](image-src.md) for the full rules:
+
+- `http(s)://` URLs, loaded off the UI thread; a non-2xx status is an error.
+- `data:` URIs, base64 or percent-encoded, scheme in any case.
+- declared assets (`image_asset`), both `embed_asset!` and bundled
+  `asset!` files.
+- anything else — a relative path such as `/attachments/abc` or
+  `logo.png`, `//host/x`, `file:`, `blob:` — is rejected on every
+  backend, web included: `on_error` fires and debug builds log why.
+
+PNG, JPEG, GIF (first frame), WebP and SVG decode everywhere. SVG is
+rasterized with resvg at the view's displayed size × screen density on the
+backends without a native SVG decoder (everything but web), re-rasterized
+when the view resizes, and measures at its intrinsic size; SVG `<text>` is
+not drawn there, so convert text to outlines. An unsized image measures at
+its natural size. Changing `src` supersedes the previous load, so a slow
+earlier response never replaces a newer image; setting the same `src` again
+does nothing. `on_load` / `on_error` fire once per outcome, and a handler
+installed after the outcome still gets it. The parser is
+`runtime_shared::image_src`; native decoding lives in
+`backend-image-source`.
 
 Remote URLs load off the UI thread. On Android the app needs the
 `internet` capability (`android.permission.INTERNET`), declared in the

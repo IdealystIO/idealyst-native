@@ -9,8 +9,8 @@
 //!
 //! - **URL-based**: [`image`] takes a free-form `&str`/`String` or a
 //!   closure returning `String`. The framework hands the URL to the
-//!   backend as-is; the framework doesn't translate. Web, iOS, macOS and
-//!   Android load `http(s)://` and `data:` URIs (base64 or
+//!   backend as-is; the framework doesn't translate. Web, iOS, macOS,
+//!   Android and Windows load `http(s)://` and `data:` URIs (base64 or
 //!   percent-encoded), including SVG — the native backends rasterize SVG
 //!   at the view's displayed size (`backend_image_source`). An undecodable
 //!   or unsupported source, or an unregistered asset id, fires `on_error`.
@@ -74,8 +74,8 @@ pub struct ImageLoadEvent {
 /// new bitmap loads. Born batched — one reactive cycle per call, like the
 /// touch / hover handlers.
 ///
-/// Delivered on web (`<img>` `load`), Apple and Android (async URL
-/// completion + synchronous asset / `data:` assignment). A no-op on
+/// Delivered on web (`<img>` `load`), Apple, Android and Windows (async
+/// URL completion + synchronous asset / `data:` assignment). A no-op on
 /// headless / CPU backends (no real decode). See
 /// [`crate::Backend::install_image_load_handler`].
 pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
@@ -86,7 +86,7 @@ pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
 /// failure). Born batched like [`ImageLoadHandler`].
 ///
 /// Same backend coverage as [`ImageLoadHandler`]: web (`<img>` `error`),
-/// Apple and Android (load / decode failure); no-op elsewhere. See
+/// Apple, Android and Windows (load / decode failure); no-op elsewhere. See
 /// [`crate::Backend::install_image_error_handler`].
 pub type ImageErrorHandler = Rc<dyn Fn()>;
 

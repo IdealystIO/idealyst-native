@@ -91,6 +91,7 @@ pub mod derive;
 pub mod handles;
 #[doc(hidden)]
 pub mod identity;
+pub mod image_src;
 pub mod logging;
 /// Premint style-dump registry — only the CLI's ephemeral dump build
 /// enables the feature; shipped builds never carry it.

@@ -32,3 +32,5 @@ crate-type = ["rlib"]
 # rarely carry `<text>`; `raster-images` (embedded PNG/JPEG inside an SVG)
 # is also off.
 resvg = { version = "0.45", default-features = false }
+# The shared `src` parser (`runtime_shared::image_src`), re-exported.
+runtime-shared = { workspace = true }

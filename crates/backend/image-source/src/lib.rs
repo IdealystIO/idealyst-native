@@ -7,7 +7,8 @@
 //! owns the missing pieces so every native backend behaves identically
 //! (CLAUDE.md §7):
 //!
-//! - [`parse_data_uri`] — RFC 2397 `data:` URIs, base64 or percent-encoded.
+//! - [`parse_data_uri`] / [`classify`] — re-exported from
+//!   `runtime_shared::image_src`, the `src` contract every backend shares.
 //! - [`looks_like_svg`] / [`decode_bytes`] — sniff SVG out of raw bytes, so
 //!   one check covers embedded assets, `data:` URIs and fetched URLs.
 //! - [`SvgImage`] — parse once with `usvg`, rasterize with `resvg` at the
@@ -16,7 +17,6 @@
 //!   size or screen scale changes ([`SvgImage::raster_scale`]) — a logo
 //!   drawn at 3× its intrinsic size stays sharp instead of upscaling a 1×
 //!   bitmap.
-//! - [`classify_src`] — which loading path an `image()` `src` string takes.
 //!
 //! Everything here is pure Rust and host-testable. The platform wrappers
 //! (CoreGraphics `CGImage` in `backend-apple-core::image_source`, the
@@ -31,87 +31,12 @@
 
 use std::borrow::Cow;
 
-/// A decoded `data:` URI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DataUri {
-    /// Lower-cased media type without parameters (`image/svg+xml`), or
-    /// `text/plain` when the URI omits it (RFC 2397's default).
-    pub mime: String,
-    pub bytes: Vec<u8>,
-}
-
-/// Parse a `data:[<mediatype>][;base64],<data>` URI. Returns `None` for a
-/// non-`data:` string or a malformed payload (bad base64, bad `%XX`).
-pub fn parse_data_uri(src: &str) -> Option<DataUri> {
-    let rest = strip_prefix_ignore_case(src, "data:")?;
-    let comma = rest.find(',')?;
-    let (meta, payload) = (&rest[..comma], &rest[comma + 1..]);
-    let mut params = meta.split(';');
-    let mime = params.next().unwrap_or("").trim().to_ascii_lowercase();
-    let mime = if mime.is_empty() { "text/plain".to_string() } else { mime };
-    let is_base64 = params.any(|p| p.trim().eq_ignore_ascii_case("base64"));
-    // A base64 payload may itself be percent-encoded (`%2B` for `+`) when it
-    // came through a URL encoder, so unescape first in both cases.
-    let unescaped = percent_decode(payload)?;
-    let bytes = if is_base64 { base64_decode(&unescaped)? } else { unescaped };
-    Some(DataUri { mime, bytes })
-}
-
-fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    let head = s.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
-}
-
-fn percent_decode(s: &str) -> Option<Vec<u8>> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = s.get(i + 1..i + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    Some(out)
-}
-
-/// Standard-alphabet base64 (RFC 4648), padding optional, ASCII whitespace
-/// ignored (data URIs are sometimes line-wrapped).
-fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32)
-    }
-    let mut out = Vec::with_capacity(input.len() * 3 / 4);
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &c in input {
-        if c.is_ascii_whitespace() {
-            continue;
-        }
-        if c == b'=' {
-            break;
-        }
-        acc = (acc << 6) | val(c)?;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
-}
+// The `src` parser (`data:` URIs, scheme classification) lives in
+// `runtime_shared::image_src` so web can share it; re-exported here so the
+// native backends keep one import for "everything about an image source".
+pub use runtime_shared::image_src::{
+    classify, parse_data_uri, warn_rejected, DataUri, ImageSrc, RejectReason, ASSET_URL_PREFIX,
+};
 
 /// `true` when `bytes` look like an SVG document: after an optional UTF-8
 /// BOM, whitespace, an XML declaration, comments or a doctype, the first
@@ -250,44 +175,6 @@ pub fn decode_bytes(bytes: &[u8]) -> Option<DecodedSource<'_>> {
 }
 
 
-/// The asset sentinel the walker hands a backend for `image_asset(..)`:
-/// `asset://{id}` after `register_asset(id, AssetTag::Image, ..)`.
-pub const ASSET_URL_PREFIX: &str = "asset://";
-
-/// Which loading path an `image()` `src` string takes. Every native
-/// backend routes on the same rules so one `src` behaves identically
-/// everywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SrcKind<'a> {
-    /// `asset://{id}` — look the id up in the backend's registered-asset
-    /// cache. Carries the parsed id.
-    Asset(u64),
-    /// `data:` URI — decode synchronously with [`parse_data_uri`].
-    DataUri,
-    /// `http(s)://` — fetch asynchronously off the UI thread.
-    Remote(&'a str),
-    /// Anything else (an empty string, a bare path, an unknown scheme, a
-    /// malformed `asset://` id). Backends report it as a load error.
-    Unsupported,
-}
-
-/// Classify an `image()` `src` (see [`SrcKind`]). Scheme matching is
-/// case-insensitive, like a browser's.
-pub fn classify_src(src: &str) -> SrcKind<'_> {
-    if let Some(rest) = strip_prefix_ignore_case(src, ASSET_URL_PREFIX) {
-        return rest.parse().map(SrcKind::Asset).unwrap_or(SrcKind::Unsupported);
-    }
-    if strip_prefix_ignore_case(src, "data:").is_some() {
-        return SrcKind::DataUri;
-    }
-    if strip_prefix_ignore_case(src, "http://").is_some()
-        || strip_prefix_ignore_case(src, "https://").is_some()
-    {
-        return SrcKind::Remote(src);
-    }
-    SrcKind::Unsupported
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,19 +279,6 @@ mod tests {
         assert!(decode_bytes(b"<svg").is_none());
     }
 
-    #[test]
-    fn classify_src_routes_every_scheme() {
-        assert_eq!(classify_src("asset://42"), SrcKind::Asset(42));
-        assert_eq!(classify_src("ASSET://7"), SrcKind::Asset(7));
-        assert_eq!(classify_src("asset://nope"), SrcKind::Unsupported);
-        assert_eq!(classify_src("data:image/png;base64,AA=="), SrcKind::DataUri);
-        assert_eq!(classify_src("Data:,x"), SrcKind::DataUri);
-        assert_eq!(classify_src("https://x.dev/a.png"), SrcKind::Remote("https://x.dev/a.png"));
-        assert_eq!(classify_src("http://x.dev/a.png"), SrcKind::Remote("http://x.dev/a.png"));
-        assert_eq!(classify_src(""), SrcKind::Unsupported);
-        assert_eq!(classify_src("/local/file.png"), SrcKind::Unsupported);
-        assert_eq!(classify_src("ftp://x/a.png"), SrcKind::Unsupported);
-    }
 
     #[test]
     fn raster_scale_tracks_display_size_and_density() {
