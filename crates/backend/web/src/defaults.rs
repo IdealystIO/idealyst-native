@@ -1,5 +1,4 @@
-//! Global stylesheet baselines: the `.ui-default` class every node
-//! gets, the spinner keyframes, the JS runtime shims, and the
+//! Global stylesheet baselines: the spinner keyframes, the JS runtime shims, and the
 //! per-node dynamic-slot teardown helper.
 //!
 //! # The JS shims
@@ -57,14 +56,9 @@ shim_modules! {
 }
 
 impl WebBackend {
-    // The framework used to stamp every framework-created element
-    // with `class="ui-default"` and inject a
-    // `.ui-default { display: flex; flex-direction: column }`
-    // baseline. Both removed for perf: at 10k+ rows the per-node
-    // flex-container tracking cost dominated post-mount layout.
-    // Flex semantics now happen at CSS-emit time —
-    // `rules_to_css` auto-promotes a style to `display: flex`
-    // when the rules use any flex-container property.
+    // Containers get their flex-column default from the `data-iv`
+    // marker + `css::VIEW_FLEX_RESET` (installed with the other base
+    // resets in `style.rs`), not from a per-node class.
 
     /// Evaluate the virtualizer JS shim on first use. The shim defines
     /// `window.__idealystVirtualizer` (the recycler class the backend

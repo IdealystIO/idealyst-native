@@ -947,7 +947,7 @@ mod tests {
     use runtime_scene::Host;
     use runtime_vocabulary::caps::{
         AppEnvOps, AssetOps, DocumentOps, ExternalOps, LifecycleOps, LinkOps, PressableOps,
-        StyleOps, TextOps, ViewOps,
+        ScrollOps, StyleOps, TextOps, ViewOps,
     };
     use runtime_shared::StyleRules;
 
@@ -960,7 +960,7 @@ mod tests {
             use runtime_vocabulary::builders::{text, view};
             view().child(text().content("hi")).build()
         });
-        assert_eq!(html, "<div><span>hi</span></div>");
+        assert_eq!(html, r#"<div data-iv=""><span>hi</span></div>"#);
     }
 
     /// A styled-text node serializes to the nested-span structure the
@@ -1028,7 +1028,7 @@ mod tests {
 
         // Both nodes carry the identical class; no inline style attr.
         let html_v1 = { let mut s = String::new(); serialize(&v1, &mut s); s };
-        assert_eq!(html_v1, format!(r#"<div class="{expected_class}"></div>"#));
+        assert_eq!(html_v1, format!(r#"<div data-iv="" class="{expected_class}"></div>"#));
 
         // Exactly one deduped rule in the head stylesheet.
         let head = b.head_css();
@@ -1516,6 +1516,39 @@ mod tests {
         let html = { let mut s = String::new(); serialize(&node, &mut s); s };
         assert!(html.contains("text-decoration: none"), "anchor reset, got: {html}");
         assert!(html.contains(r#"href="/about""#), "href, got: {html}");
+    }
+
+    /// Regression: on native every node is a flex column; on web a container
+    /// whose own style set no flex-container property was a block box, so a
+    /// child's `flex-grow` / percentage height did nothing and the same layout
+    /// collapsed on web only (nav-showcase's navigator outlets). Every
+    /// container that holds author children carries the marker, and the head
+    /// carries the one rule that makes a marked element a flex column.
+    #[test]
+    fn regression_views_are_flex_columns_like_native() {
+        use runtime_shared::primitives::link::LinkConfig;
+        let mut b = SsrBackend::new();
+        let a11y = AccessibilityProps::default();
+        let link = LinkConfig {
+            route: "about",
+            url: "/about".to_string(),
+            external: false,
+            on_activate: Rc::new(|| {}),
+        };
+        let nodes = [
+            ("view", b.create_view(&a11y)),
+            ("pressable", b.create_pressable(Rc::new(|| {}), &a11y)),
+            ("scroll_view", b.create_scroll_view(false, None, &a11y)),
+            ("link", b.create_link(link, &a11y)),
+        ];
+        for (kind, node) in &nodes {
+            let html = { let mut s = String::new(); serialize(node, &mut s); s };
+            assert!(html.contains(r#"data-iv="""#), "{kind} carries the flex-column marker: {html}");
+        }
+        assert!(
+            b.head_css().contains(css::VIEW_FLEX_RESET),
+            "the head carries the rule the marker selects"
+        );
     }
 
     /// `render_document` wraps the body + metadata into a full HTML doc:

@@ -38,6 +38,8 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
             // shadowed by an un-overridable inline rule.
             let _ = el.set_attribute("role", "button");
             let _ = el.set_attribute("tabindex", "0");
+            // A flex column, as on native (`css::VIEW_FLEX_RESET`).
+            let _ = el.set_attribute(css::VIEW_MARKER_ATTR, "");
             el
         }
     };

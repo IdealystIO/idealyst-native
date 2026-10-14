@@ -66,8 +66,11 @@
       var a1 = u32Buf[off + 2];
       var a2 = u32Buf[off + 3];
       if (kind === 0) {
-        // CreateView
-        nodes[a0] = doc.createElement("div");
+        // CreateView. `data-iv` marks a framework container so the base
+        // reset makes it a flex column, as on native (css::VIEW_FLEX_RESET).
+        var v = doc.createElement("div");
+        v.setAttribute("data-iv", "");
+        nodes[a0] = v;
       } else if (kind === 1) {
         // CreateText — a2 is the string-table index of `content`.
         nodes[a0] = doc.createTextNode(strings[a2]);

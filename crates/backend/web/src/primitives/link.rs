@@ -41,6 +41,9 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
         // De-default the anchor (blue/underlined) so the wrapping content's
         // styling shows through. Shared with the SSR `create_link`.
         let _ = anchor.set_attribute("style", css::LINK_RESET_STYLE);
+        // Its children stack as a flex column, as on native
+        // (`css::VIEW_FLEX_RESET`; the inline reset keeps `inline-flex`).
+        let _ = anchor.set_attribute(css::VIEW_MARKER_ATTR, "");
         // External: real `<a target="_blank">` (never popup-blocked); we
         // don't `preventDefault`, so the SPA router doesn't swallow it.
         if config.external {

@@ -242,11 +242,15 @@ impl WebBackend {
             // Zero specificity, so an author size (a minted class) wins; it
             // used to be an inline style, which no class can beat. See
             // `css::GRAPHICS_FILL_RESET`. Web-only (SSR never stamps
-            // `data-graphics-id`, so it is not in `base_reset_css`). These six
-            // fixed resets occupy indices 0–5;
-            // author rules append at sheet length (index 6+) or recycle
-            // deleted author slots, so these indices never collide.
+            // `data-graphics-id`, so it is not in `base_reset_css`).
             let _ = sheet.insert_rule_with_index(css::GRAPHICS_FILL_RESET, 5);
+
+            // Index 6 — every framework container is a flex column, as on
+            // native. See `css::VIEW_FLEX_RESET`. These seven fixed resets
+            // occupy indices 0–6; author rules append at sheet length
+            // (index 7+) or recycle deleted author slots, so these indices
+            // never collide.
+            let _ = sheet.insert_rule_with_index(css::VIEW_FLEX_RESET, 6);
         }
         self.style_element.as_ref().unwrap().clone()
     }

@@ -1,15 +1,14 @@
-//! `Element::View` — a plain `<div>`. The framework used to stamp
-//! every View with a `.ui-default { display: flex; flex-direction:
-//! column }` class so authors got React-Native-style flex
-//! semantics for free. That class is gone: at 10k+ rows the
-//! O(N) flex-container tracking cost in the browser was the
-//! single biggest contributor to post-mount layout time.
+//! `Element::View` — a `<div data-iv>`. Like every native backend's view
+//! it is a flex column: the `data-iv` marker is matched by
+//! `css::VIEW_FLEX_RESET`, a zero-specificity base-reset rule, so an
+//! author `display` / `flex_direction` always wins.
 //!
-//! Equivalent semantics now happen at the CSS-emit layer: when a
-//! stylesheet sets any flex-container property (`gap`,
-//! `flex_direction`, `align_items`, etc.), `rules_to_css`
-//! auto-promotes the rule to `display: flex`. Views without flex
-//! props are plain blocks — cheap.
+//! Views were plain blocks on web for a while (the old per-node
+//! `.ui-default` class was dropped for its 10k-row layout cost), and a
+//! child's `flex-grow` or percentage height then did nothing inside an
+//! unstyled view: the same layout filled on native and collapsed on web.
+//! Measured when the marker went in: mount + first layout unchanged, a
+//! full relayout of ~3k otherwise-unstyled views 3.4 → 8 ms.
 
 use crate::WebBackend;
 use web_glue::JsCast;
@@ -23,6 +22,7 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
         .doc
         .create_element("div")
         .expect("create_element failed");
+    let _ = el.set_attribute(css::VIEW_MARKER_ATTR, "");
     let node: Node = el.unchecked_into();
     b.hydrate_note_fresh(&node);
     node

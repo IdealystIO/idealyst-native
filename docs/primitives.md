@@ -235,8 +235,11 @@ web, a `LinearLayout` on Android, a `UIView` on iOS).
 **Style controls layout.** The framework's flex-like style vocabulary
 (`flex_direction`, `justify_content`, `align_items`, `padding`,
 `margin`, `width`, `height`) is the universal way to control how a
-View arranges its children. Default direction is `Column` (stack
-top-to-bottom), matching React Native.
+View arranges its children. A View is a flex container on every
+backend, default direction `Column` (stack top-to-bottom), matching
+React Native; on web too, so a child's `flex_grow` or percentage
+height fills an unstyled View there exactly as it does on native.
+`pressable`, `scroll_view` and `link` share the same default.
 
 A `View` has no native behavior beyond "be a container." It exists
 to be the thing components hang structure off of — every layout

@@ -26,14 +26,13 @@ pub(crate) fn create(
                 .doc
                 .create_element("div")
                 .expect("create_element div failed");
+            // Its children stack as a flex column, as on native
+            // (`css::VIEW_FLEX_RESET`); an author direction still wins.
+            let _ = el.set_attribute(css::VIEW_MARKER_ATTR, "");
             b.hydrate_note_fresh(&el.clone().unchecked_into::<Node>());
             el
         }
     };
-    // No `.ui-default` class — see view.rs for the rationale.
-    // ScrollView's only fixed layout is the overflow we set inline
-    // below; children stack via normal block flow unless the user's
-    // style on the ScrollView itself opts into flex.
     // Apply the overflow style inline (not via the framework's style
     // system) so it's always present regardless of user-supplied
     // styling. The inline rules win over class rules for the overflow

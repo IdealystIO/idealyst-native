@@ -11,6 +11,22 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Views are flex columns on web, as on native** (`backend-web`,
+  `backend-ssr`, `css`). On native every view is a flex column. On web a
+  view (or pressable, scroll view, link) was a block box unless its own
+  style set a flex-container property, so a child's `flex_grow` or
+  percentage height did nothing inside it and the same layout filled on
+  native but collapsed on web. These elements now carry a `data-iv`
+  attribute that one zero-specificity base-reset rule makes a flex
+  column; an author `display` or `flex_direction` still wins. SSR emits
+  the attribute and the rule. Cost, measured: mount and first layout
+  unchanged; a full relayout of ~3,000 otherwise-unstyled views
+  3.4 → 8 ms. *Migration:* a web layout that relied on block flow
+  inside an unstyled view (children overflowing a fixed-height parent
+  instead of shrinking into it, inline-flowing children) now lays out
+  as it already did on native. Give such a child `flex_shrink: 0`, or
+  set `display`/`flex_direction` on the parent.
+
 - **A tab bar no longer grows by default** (`idea-ui` `Tabs`,
   `idea-ui-nav` `TabBar`). Its host carried `flex-grow: 1` so a bar in a
   row would take the row's leftover width. `flex-grow` grows along the

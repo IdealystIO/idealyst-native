@@ -1896,9 +1896,9 @@ fn regression_icon_in_non_flex_view_does_not_sit_on_a_line_box() {
     let mut backend = WebBackend::new("#app");
     let doc = web_glue::dom::window().unwrap().document().unwrap();
 
-    // A plain block view, as backend-web emits for a sheet with no flex
-    // property; a line-height well above the icon size makes a line box
-    // visible in the measurement.
+    // A plain block parent (a raw `<div>`; a framework view is a flex
+    // column since `css::VIEW_FLEX_RESET`); a line-height well above the
+    // icon size makes a line box visible in the measurement.
     let wrapper = doc.create_element("div").unwrap();
     wrapper.set_attribute("style", "font-size:15px;line-height:24px").unwrap();
     let icon = crate::primitives::icon::create(&mut backend, &OUTLINED_ICON, None);
@@ -1912,6 +1912,47 @@ fn regression_icon_in_non_flex_view_does_not_sit_on_a_line_box() {
     assert_eq!(w.height(), i.height(), "the view hugs the icon, not a 24px line box");
     assert_eq!(i.top(), w.top(), "the icon is not pushed down inside its view");
     wrapper.remove();
+}
+
+/// REGRESSION TEST.
+///
+/// On every native backend a view is a flex column (Taffy's default); on
+/// web a view whose own style set no flex-container property was a block
+/// box, so a child's `flex-grow` did nothing there and the same layout
+/// filled on native and collapsed on web (nav-showcase's navigator outlets
+/// were 20px tall). A view now carries `data-iv`, and the base reset makes
+/// that a flex column at zero specificity.
+#[wasm_bindgen_test]
+fn regression_unstyled_view_is_a_flex_column_like_native() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    // Installs the base reset rules, as the first styled node would.
+    let _ = backend.sheet();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+    let parent = crate::primitives::view::create(&mut backend);
+    let parent_el: web_glue::dom::Element = parent.clone().dyn_into().unwrap();
+    parent_el.set_attribute("style", "height:200px").unwrap();
+    let child = crate::primitives::view::create(&mut backend);
+    let child_el: web_glue::dom::Element = child.clone().dyn_into().unwrap();
+    child_el.set_attribute("style", "flex-grow:1").unwrap();
+    parent_el.append_child(&child_el).unwrap();
+    doc.get_element_by_id("app").unwrap().append_child(&parent_el).unwrap();
+
+    let cs = web_glue::dom::window().unwrap().get_computed_style(&parent_el).unwrap().unwrap();
+    assert_eq!(cs.get_property_value("display").unwrap(), "flex");
+    assert_eq!(cs.get_property_value("flex-direction").unwrap(), "column");
+    assert_eq!(
+        child_el.get_bounding_client_rect().height(),
+        200.0,
+        "a growing child fills an unstyled view, as on native"
+    );
+
+    // Zero specificity: an author display still wins.
+    parent_el.set_attribute("style", "height:200px;display:grid").unwrap();
+    let cs = web_glue::dom::window().unwrap().get_computed_style(&parent_el).unwrap().unwrap();
+    assert_eq!(cs.get_property_value("display").unwrap(), "grid");
+    parent_el.remove();
 }
 
 // ---------------------------------------------------------------------------

@@ -127,3 +127,18 @@ core's testimony with no way to recover it. So:
   `regression_ssr_rejected_src_has_no_src_attribute`
   (`tests/image_src.rs`) and backend-web's
   `regression_relative_src_is_rejected_on_web_too`.
+- **2026-10-14, views are flex columns** — every `*.html`: each `view`,
+  `pressable`, `scroll_view` and `link` element gained ` data-iv=""`;
+  every `*.head.css`: one reset rule after `:where(html) { … }`,
+  `:where([data-iv]) { display: flex; flex-direction: column; }`
+  (`css::VIEW_FLEX_RESET`). On native every node is a flex column; on web
+  a container was a block box unless its own style set a flex-container
+  property, so the same layout filled on native and collapsed on web
+  (`flex-grow` / percentage heights inside a block parent). The marker
+  is what the zero-specificity rule matches; the hydrating client creates
+  the same attribute, and adoption matches on tag, so the cursor is
+  unaffected. No minted class hash moved; stripping the attribute from
+  the html and that one rule from the css gives the previous bytes
+  exactly. Pinned by `regression_views_are_flex_columns_like_native`
+  (backend-ssr) and backend-web's
+  `regression_unstyled_view_is_a_flex_column_like_native`.

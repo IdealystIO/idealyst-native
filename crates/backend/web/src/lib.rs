@@ -13,7 +13,7 @@
 //!   stylesheet rule-index bookkeeping (`insert_rule` / `delete_rule`
 //!   on `WebBackend`), and the register/apply Backend methods that
 //!   live next to the data they mutate.
-//! - `defaults.rs` — global baselines: `.ui-default` class, spinner
+//! - `defaults.rs` — global baselines: spinner
 //!   keyframes, virtualizer JS shim, dynamic-slot teardown.
 //! - `primitives/` — one module per `Element` kind. Each owns its
 //!   create/update functions, any `Ops` impl, and the `make_*_handle`

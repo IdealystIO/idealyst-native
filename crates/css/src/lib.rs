@@ -109,9 +109,26 @@ pub const DEFAULT_TEXT_COLOR_RESET: &str = ":where(html) { color: var(--color-te
 pub const GRAPHICS_FILL_RESET: &str =
     ":where(canvas[data-graphics-id]) { display: block; width: 100%; height: 100%; }";
 
+/// Every framework container (`view`, `pressable`, `scroll_view` content,
+/// `link`) is a flex COLUMN, as it is on every native backend, where Taffy
+/// lays out every node as a flex column. The backends mark those elements
+/// with `data-iv` and this one zero-specificity rule gives them the native
+/// default, so an author class (display, direction) always wins.
+///
+/// Without it a container whose style sets no flex-container property was
+/// a block box on web only, and its children's `flex-grow` and percentage
+/// heights did nothing there: the same layout filled on native and
+/// collapsed on web (nav-showcase's navigator outlets). A rule on a marker
+/// attribute, not the old per-node `.ui-default` class, so the style
+/// engine's `className` writes never clear it.
+pub const VIEW_FLEX_RESET: &str = ":where([data-iv]) { display: flex; flex-direction: column; }";
+
+/// The marker attribute [`VIEW_FLEX_RESET`] matches.
+pub const VIEW_MARKER_ATTR: &str = "data-iv";
+
 /// The full base reset stylesheet ([`BOX_SIZING_RESET`] + [`BUTTON_RESET`]
 /// + [`FORM_FONT_RESET`] + [`IMG_FIT_RESET`] +
-/// [`DEFAULT_TEXT_COLOR_RESET`]). The SSR backend emits this
+/// [`DEFAULT_TEXT_COLOR_RESET`] + [`VIEW_FLEX_RESET`]). The SSR backend emits this
 /// once in `<head>`; the web backend inserts the rules at low sheet indices.
 ///
 /// Host-surface theming (body background, scrollbar) is **not** part of
@@ -125,7 +142,7 @@ pub const GRAPHICS_FILL_RESET: &str =
 /// default text color, names the token every backend already defaults to
 /// and falls back to a concrete color when that token isn't installed.
 pub fn base_reset_css() -> String {
-    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}")
+    format!("{BOX_SIZING_RESET}{BUTTON_RESET}{FORM_FONT_RESET}{IMG_FIT_RESET}{DEFAULT_TEXT_COLOR_RESET}{VIEW_FLEX_RESET}")
 }
 
 /// Default inline style for a `Link` primitive's `<a>`: strip the

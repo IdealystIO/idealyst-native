@@ -484,7 +484,11 @@ impl caps::LifecycleOps for SsrBackend {
 
 impl caps::ViewOps for SsrBackend {
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        nref(HtmlNode::new("div"))
+        // The marker that makes it a flex column, as on native
+        // (`css::VIEW_FLEX_RESET`, which `base_reset_css` puts in `<head>`).
+        let mut node = HtmlNode::new("div");
+        node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
+        nref(node)
     }
 }
 
@@ -505,6 +509,7 @@ impl caps::PressableOps for SsrBackend {
         let mut node = HtmlNode::new("div");
         node.attrs.push(("role", "button".to_string()));
         node.attrs.push(("tabindex", "0".to_string()));
+        node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
         nref(node)
     }
 }
@@ -690,6 +695,7 @@ impl caps::LinkOps for SsrBackend {
         // browser's blue/underlined anchor styling).
         node.style = Some(css::LINK_RESET_STYLE.to_string());
         node.attrs.push(("href", config.url.clone()));
+        node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
         if config.external {
             node.attrs.push(("target", "_blank".to_string()));
             node.attrs.push(("rel", "noopener noreferrer".to_string()));
@@ -843,6 +849,7 @@ impl caps::ScrollOps for SsrBackend {
     ) -> Self::Node {
         let mut node = HtmlNode::new("div");
         node.scroll = true;
+        node.attrs.push((css::VIEW_MARKER_ATTR, String::new()));
         nref(node)
     }
 }

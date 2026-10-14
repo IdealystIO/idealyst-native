@@ -2433,13 +2433,24 @@ mod tests {
     fn stack_scroll_snapshot_restores_on_browser_back() {
         use runtime_shared::{Length, StyleRules, Tokenized};
 
+        // A screen holding 600px of content. The screen ROOT is pinned to
+        // the outlet's height by the navigator's screen fill (as on
+        // native, where the outlet is a flex column); its content
+        // overflows it, and that overflow is what the outlet scrolls.
+        // `flex_shrink: 0` keeps the content its full height inside the
+        // pinned root.
         fn tall(label: &'static str) -> runtime_scene::Element {
             runtime_vocabulary::view()
-                .style(StyleRules {
-                    height: Some(Tokenized::Literal(Length::Px(600.0))),
-                    ..Default::default()
-                })
-                .child(runtime_vocabulary::text().content(label))
+                .child(
+                    runtime_vocabulary::view()
+                        .style(StyleRules {
+                            height: Some(Tokenized::Literal(Length::Px(600.0))),
+                            flex_shrink: Some(Tokenized::Literal(0.0)),
+                            ..Default::default()
+                        })
+                        .child(runtime_vocabulary::text().content(label))
+                        .build(),
+                )
                 .build()
         }
 
