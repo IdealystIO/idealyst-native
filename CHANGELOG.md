@@ -11,6 +11,28 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`image()` takes the same `src` on every platform** (every backend,
+  `runtime-shared`, `css`, the CLI). One contract, `docs/image-src.md`:
+  `http(s)://` URLs, `data:` URIs (base64 or percent-encoded) and
+  `image_asset(..)`. Everything else — a relative path (`/files/abc`,
+  `logo.png`), `//host`, `file:`, `blob:` — is rejected on every backend,
+  **web included**, with `on_error` and a debug-build warning. Before, web
+  resolved a relative path against the page, Linux/Windows/wgpu read it from
+  the working directory, and iOS/Android rejected it (CrewForge's kiosk drew
+  a blank photo tile on iOS for a `/attachments/<id>` that rendered on web).
+  Also: http(s) now loads on Windows and wgpu (was silently blank);
+  percent-encoded `data:` works on Linux/Windows/wgpu; PNG, JPEG, GIF, WebP
+  and SVG decode everywhere; `on_load`/`on_error` fire on Windows and wgpu
+  (never did) and once per outcome everywhere (web fired `on_load` twice for
+  a cached image); a non-2xx response is an error; a slow earlier load never
+  replaces a newer `src`. Bundled `asset!` images load on every platform:
+  the CLI now copies the app crate's `assets/` into each bundle, and web
+  serves them at root-absolute `/assets/<path>` (was document-relative,
+  broken under nested routes). *Migration:* build absolute URLs
+  (`format!("{}{path}", server::base_url().unwrap())`) or ship the file with
+  `asset!`/`embed_asset!`; a library ships images with `embed_asset!` (only
+  the app crate's `assets/` is copied).
+
 - **The soft keyboard no longer shrinks the app** (`backend-ios-mobile`,
   `backend-android-mobile`). iOS used to cut the layout viewport by the
   keyboard's height and Android let the system resize the window, so
@@ -972,6 +994,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **macOS: every bitmap `image()` aborted debug builds** (`backend-macos`).
+  `CGImageForProposedRect:` was read back as an object pointer; objc2's
+  debug message-type check aborted on the first PNG/JPEG. Now read as a
+  `CGImageRef`.
 - **`safe_area` padding follows the real insets on iOS**
   (`runtime-vocabulary`, `backend-ios-mobile`, `render-wgpu`). A
   container's safe-area padding was applied once, at mount, and iOS mounts
