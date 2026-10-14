@@ -1,6 +1,6 @@
 [package]
 name = "build-runtime-server"
-version = "1.5.2"
+version = "1.6.0"
 edition.workspace = true
 license.workspace = true
 description = "Generates and builds the runtime-server dev-host wrapper for a user project — a Rust binary that runs the project's `app()` against `dev-server::WireRecordingBackend` and serves the wire stream over a WebSocket."

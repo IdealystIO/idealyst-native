@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "android-navigator-helpers"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "backend-apple-core"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "backend-image-source",
  "block2 0.5.1",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "backend-email"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "backend-image-source"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "resvg",
  "runtime-shared",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.19.0"
+version = "1.19.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "backend-image-source",
  "gtk4",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.15.0"
+version = "1.15.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.9.0"
+version = "2.9.1"
 dependencies = [
  "css",
  "dev-client",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -1947,7 +1947,7 @@ dependencies = [
 
 [[package]]
 name = "build-linux"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "build-macos"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "build-sim"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "build-windows"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.9.3"
+version = "1.10.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "dev-events"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "dev-events",
  "schemars",
@@ -3544,7 +3544,7 @@ dependencies = [
 
 [[package]]
 name = "dev-overlay"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "runtime-macros-parse",
@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -5897,7 +5897,7 @@ dependencies = [
 
 [[package]]
 name = "host-win32"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "backend-windows",
  "runtime-core",
@@ -6380,7 +6380,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6468,7 +6468,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6494,7 +6494,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6749,7 +6749,7 @@ dependencies = [
 
 [[package]]
 name = "ios-navigator-helpers"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -8114,7 +8114,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -10339,7 +10339,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "2.3.1"
+version = "2.4.0"
 dependencies = [
  "backend-image-source",
  "bytemuck",
@@ -10577,7 +10577,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-android",
@@ -10589,7 +10589,7 @@ dependencies = [
 
 [[package]]
 name = "run-ios"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10611,7 +10611,7 @@ dependencies = [
 
 [[package]]
 name = "run-macos"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10657,7 +10657,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10685,7 +10685,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-parse"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10715,7 +10715,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.22.0"
+version = "1.23.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -12021,7 +12021,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",

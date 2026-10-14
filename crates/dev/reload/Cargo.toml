@@ -1,6 +1,6 @@
 [package]
 name = "dev-reload"
-version = "1.5.2"
+version = "1.5.3"
 edition.workspace = true
 license.workspace = true
 description = "Watch + wasm-pack rebuild loop for `idealyst dev` reload mode"
