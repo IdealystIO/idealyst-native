@@ -123,6 +123,7 @@ mod graphics;
 mod gradient;
 mod handles;
 mod image;
+mod image_load;
 // Diagnostic surfaces, reachable ONLY through the Robot bridge — which release
 // builds never start. Gated so they are not compiled into one either: the
 // render-node walk, the PNG encode path and their `NativeNode` machinery are
@@ -225,6 +226,9 @@ impl LinuxNode {
 struct ImageNodeState {
     /// Last resolved outcome, replayed when a handler installs late.
     outcome: Option<image::ImageOutcome>,
+    /// The node's current `src` + load generation: skips the walker's
+    /// redundant same-`src` write and discards superseded remote loads.
+    slot: image_load::LoadSlot,
     on_load: Option<runtime_shared::primitives::image::ImageLoadHandler>,
     on_error: Option<runtime_shared::primitives::image::ImageErrorHandler>,
 }
@@ -745,6 +749,10 @@ pub struct LinuxBackend {
     /// already decoded. A `data:` URI decodes inside `create_image`, so
     /// without this the handler would arrive after the only event.
     image_nodes: HashMap<u64, ImageNodeState>,
+    /// Image assets by id (`register_asset(.., AssetTag::Image, ..)`), read
+    /// when an `image()` `src` is `asset://<id>` (what `image_asset` sets).
+    /// Fonts are consumed at registration and not kept here.
+    image_assets: HashMap<u64, AssetSource>,
     /// Anchored portals → the trigger + placement intent they track.
     /// Only `PortalTarget::Anchor` portals get an entry; viewport-placed
     /// ones are fully positioned by their container's flex.
@@ -816,6 +824,7 @@ impl LinuxBackend {
             _font_files: Vec::new(),
             root_id: None,
             image_nodes: HashMap::new(),
+            image_assets: HashMap::new(),
             self_ref: std::rc::Weak::new(),
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
@@ -993,15 +1002,32 @@ impl LinuxBackend {
     /// effects synchronously, and effects re-enter the backend — firing
     /// one under a live `RefCell` borrow aborts with `RefCell already
     /// borrowed`. Same rule as `set_viewport_size` and `on_scroll`.
+    ///
+    /// When the backend IS borrowed (a GLib callback that ran while the
+    /// walker or a layout pass held it), the settle is re-queued on an idle
+    /// rather than dropped: dropping it lost the outcome for good, so
+    /// `on_load`/`on_error` never fired and a late-installed handler had
+    /// nothing to replay. `generation` is the load the outcome belongs to; a
+    /// settle for a superseded load is discarded.
     pub(crate) fn settle_image(
         backend: &std::rc::Weak<std::cell::RefCell<LinuxBackend>>,
         id: u64,
+        generation: u64,
         outcome: image::ImageOutcome,
     ) {
         let Some(rc) = backend.upgrade() else { return };
         let fired = {
-            let Ok(mut b) = rc.try_borrow_mut() else { return };
+            let Ok(mut b) = rc.try_borrow_mut() else {
+                let weak = backend.clone();
+                gtk4::glib::idle_add_local_once(move || {
+                    LinuxBackend::settle_image(&weak, id, generation, outcome);
+                });
+                return;
+            };
             let Some(st) = b.image_nodes.get_mut(&id) else { return };
+            if !st.slot.is_current(generation) {
+                return;
+            }
             st.outcome = Some(outcome);
             match outcome {
                 image::ImageOutcome::Loaded { width, height } => st
@@ -1022,6 +1048,86 @@ impl LinuxBackend {
             Some(ImageFire::Error(h)) => h(),
             None => {}
         }
+    }
+
+    /// Start loading `src` into image node `id` (see `docs/image-src.md`).
+    /// Returns `None` when `src` is what the node already shows (the walker
+    /// writes the mount-time `src` back once; reloading it re-fired the
+    /// handlers), else the load's generation and its outcome — `Pending`
+    /// for a remote fetch, which settles through [`Self::finish_remote_image`].
+    fn load_image(
+        &mut self,
+        id: u64,
+        pic: &gtk4::Picture,
+        src: &str,
+    ) -> Option<(u64, image::ImageOutcome)> {
+        let st = self.image_nodes.entry(id).or_default();
+        let generation = st.slot.begin(src)?;
+        st.outcome = None;
+        let outcome = match image_load::route(src, &self.image_assets) {
+            image_load::Route::Fail(why) => {
+                why.warn(src);
+                image::clear(pic)
+            }
+            image_load::Route::Bytes(bytes) => match image_load::decode(&bytes) {
+                Some(decoded) => image::show(pic, decoded),
+                None => image::clear(pic),
+            },
+            image_load::Route::Remote(url) => {
+                // Fetch + raster decode on GIO's worker pool; the result is
+                // applied back on the main context. The picture keeps its
+                // previous bitmap until then (no blank flash on a `src`
+                // swap); a failure clears it.
+                let url = url.into_owned();
+                let weak = self.self_ref();
+                gtk4::glib::MainContext::default().spawn_local(async move {
+                    let prepared =
+                        gtk4::gio::spawn_blocking(move || image_load::fetch_and_prepare(&url))
+                            .await
+                            .ok()
+                            .flatten();
+                    LinuxBackend::finish_remote_image(&weak, id, generation, prepared);
+                });
+                image::ImageOutcome::Pending
+            }
+        };
+        Some((generation, outcome))
+    }
+
+    /// Apply a finished remote fetch to node `id` — unless a newer `src`
+    /// superseded it (`generation` no longer current), in which case the
+    /// bytes are discarded and the newer image stays. Deferred, never
+    /// dropped, when the backend is borrowed (see [`Self::settle_image`]).
+    fn finish_remote_image(
+        backend: &std::rc::Weak<std::cell::RefCell<LinuxBackend>>,
+        id: u64,
+        generation: u64,
+        prepared: Option<image_load::Prepared>,
+    ) {
+        let Some(rc) = backend.upgrade() else { return };
+        let outcome = {
+            let Ok(mut b) = rc.try_borrow_mut() else {
+                let weak = backend.clone();
+                gtk4::glib::idle_add_local_once(move || {
+                    LinuxBackend::finish_remote_image(&weak, id, generation, prepared);
+                });
+                return;
+            };
+            let current = b.image_nodes.get(&id).is_some_and(|st| st.slot.is_current(generation));
+            let Some(node) = b.nodes.get(&id).filter(|_| current) else { return };
+            let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>().cloned() else { return };
+            let layout = node.layout;
+            let outcome = match prepared.and_then(image_load::Prepared::finish) {
+                Some(decoded) => image::show(&pic, decoded),
+                None => image::clear(&pic),
+            };
+            // The bitmap's intrinsic size just changed; Taffy caches the
+            // measure, so an unpinned image would keep its pre-load size.
+            b.layout.mark_dirty(layout);
+            pic.queue_resize();
+            outcome
+        };
+        LinuxBackend::settle_image(backend, id, generation, outcome);
     }
 
     /// Introspect by raw element id — the seam the integration tests drive.
@@ -2596,6 +2702,13 @@ impl LinuxBackend {
     // ---------------------------------------------------------------------
 
     fn register_asset(&mut self, id: AssetId, kind: AssetTag, source: &AssetSource) {
+        if kind == AssetTag::Image {
+            // Resolved when an `image()` names it (`asset://<id>`): bytes
+            // for `embed_asset!`, `<exe dir>/assets/<path>` for `asset!`,
+            // a URL for a remote asset. See `image_load::route`.
+            self.image_assets.insert(id.0, *source);
+            return;
+        }
         if kind != AssetTag::Font {
             return;
         }
@@ -2639,56 +2752,37 @@ impl LinuxBackend {
         // `gtk::Picture` with a `content-fit` for `object_fit` (see
         // `image.rs`). `register_external_view` installs the intrinsic-
         // size measure fn so an unpinned image sizes to its bitmap;
-        // author `width`/`height` still win via Taffy.
-        //
-        // The node id isn't known until `register_external_view` runs, so
-        // the async completion route goes through a cell the wrap fills in.
-        // A remote fetch cannot complete before this fn returns (GIO
-        // dispatches on a later main-loop turn), so the cell is always set
-        // by the time the closure runs.
-        let pending_id: Rc<std::cell::Cell<u64>> = Rc::new(std::cell::Cell::new(0));
-        let weak = self.self_ref();
-        let (pic, outcome) = {
-            let pending_id = pending_id.clone();
-            let weak = weak.clone();
-            image::build_picture(src, alt, move |o| {
-                LinuxBackend::settle_image(&weak, pending_id.get(), o);
-            })
-        };
-        let node = self.register_external_view(pic.upcast::<gtk4::Widget>());
-        pending_id.set(node.id);
-        self.image_nodes.insert(
-            node.id,
-            ImageNodeState {
-                // A `Pending` remote fetch has no outcome yet; the GIO
-                // callback records the real one.
-                outcome: (outcome != image::ImageOutcome::Pending).then_some(outcome),
-                ..Default::default()
-            },
-        );
+        // author `width`/`height` still win via Taffy. The load starts
+        // once the node has an id (a remote completion settles by id).
+        let pic = image::build_picture(alt);
+        let node = self.register_external_view(pic.clone().upcast::<gtk4::Widget>());
+        if let Some((_, outcome)) = self.load_image(node.id, &pic, src) {
+            // A synchronous outcome is recorded for the handlers the walker
+            // installs next (they replay it); a `Pending` fetch records its
+            // own when it settles.
+            if outcome != image::ImageOutcome::Pending {
+                if let Some(st) = self.image_nodes.get_mut(&node.id) {
+                    st.outcome = Some(outcome);
+                }
+            }
+        }
         node
     }
 
     fn update_image_src(&mut self, node: &LinuxNode, src: &str) {
-        if let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>() {
+        let Some(pic) = node.widget.downcast_ref::<gtk4::Picture>().cloned() else { return };
+        let id = node.id;
+        // `None`: same `src` as now — nothing to reload or re-fire.
+        let Some((generation, outcome)) = self.load_image(id, &pic, src) else { return };
+        // A reactive `src` swap must re-fire the handlers. `load_image`
+        // cleared the remembered outcome; settle on the new one from an
+        // idle: this runs inside the walker's update pass, and firing an
+        // author handler here would re-enter the backend borrow.
+        if outcome != image::ImageOutcome::Pending {
             let weak = self.self_ref();
-            let id = node.id;
-            let outcome = image::set_source(pic, src, move |o| {
-                LinuxBackend::settle_image(&weak, id, o);
+            gtk4::glib::idle_add_local_once(move || {
+                LinuxBackend::settle_image(&weak, id, generation, outcome);
             });
-            // A reactive `src` swap must re-fire the handlers, so clear the
-            // remembered outcome and settle on the new one. Deferred to an
-            // idle: this runs inside the walker's update pass, and firing an
-            // author handler here would re-enter the backend borrow.
-            if outcome != image::ImageOutcome::Pending {
-                let weak = self.self_ref();
-                if let Some(st) = self.image_nodes.get_mut(&id) {
-                    st.outcome = None;
-                }
-                gtk4::glib::idle_add_local_once(move || {
-                    LinuxBackend::settle_image(&weak, id, outcome);
-                });
-            }
         }
     }
 
@@ -2699,6 +2793,7 @@ impl LinuxBackend {
     ) {
         let st = self.image_nodes.entry(node.id).or_default();
         st.on_load = Some(handler.clone());
+        let generation = st.slot.generation();
         // Replay: the contract says `on_load` MUST fire immediately for an
         // image that already decoded, and a `data:`/local source decodes
         // inside `create_image` — before this install.
@@ -2709,6 +2804,7 @@ impl LinuxBackend {
                 LinuxBackend::settle_image(
                     &weak,
                     id,
+                    generation,
                     image::ImageOutcome::Loaded { width, height },
                 );
             });
@@ -2722,11 +2818,12 @@ impl LinuxBackend {
     ) {
         let st = self.image_nodes.entry(node.id).or_default();
         st.on_error = Some(handler);
+        let generation = st.slot.generation();
         if let Some(image::ImageOutcome::Failed) = st.outcome {
             let weak = self.self_ref();
             let id = node.id;
             gtk4::glib::idle_add_local_once(move || {
-                LinuxBackend::settle_image(&weak, id, image::ImageOutcome::Failed);
+                LinuxBackend::settle_image(&weak, id, generation, image::ImageOutcome::Failed);
             });
         }
     }
@@ -3535,6 +3632,235 @@ mod layout_tests {
     // that need a live GTK live in this single function; headless CI
     // skips the lot. Each section names the bug it guards.
     // ===================================================================
+    /// Counts of `on_load` / `on_error` deliveries for one image node, plus
+    /// the last natural size.
+    #[derive(Default)]
+    struct ImageEvents {
+        loads: std::cell::Cell<u32>,
+        errors: std::cell::Cell<u32>,
+        size: std::cell::Cell<Option<(f32, f32)>>,
+    }
+
+    /// Install counting handlers on `node`.
+    fn watch_image(
+        rc: &std::rc::Rc<std::cell::RefCell<LinuxBackend>>,
+        node: &super::LinuxNode,
+    ) -> std::rc::Rc<ImageEvents> {
+        let ev = std::rc::Rc::new(ImageEvents::default());
+        let (l, e) = (ev.clone(), ev.clone());
+        rc.borrow_mut().install_image_load_handler(
+            node,
+            std::rc::Rc::new(move |x: &runtime_shared::primitives::image::ImageLoadEvent| {
+                l.loads.set(l.loads.get() + 1);
+                l.size.set(Some((x.width, x.height)));
+            }),
+        );
+        rc.borrow_mut()
+            .install_image_error_handler(node, std::rc::Rc::new(move || e.errors.set(e.errors.get() + 1)));
+        ev
+    }
+
+    /// Pump the main loop until `done()` or a deadline (remote loads finish
+    /// on a GIO worker thread, so a fixed iteration count is not enough).
+    fn pump_until(done: impl Fn() -> bool) -> bool {
+        let ctx = gtk4::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            while ctx.iteration(false) {}
+            if done() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        done()
+    }
+
+    /// Serve one HTTP response on loopback after `release` fires (or at once
+    /// when `release` is `None`). Returns the URL.
+    fn serve_image(
+        status_line: &'static str,
+        body: Vec<u8>,
+        release: Option<std::sync::mpsc::Receiver<()>>,
+    ) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut req = [0u8; 4096];
+            let _ = s.read(&mut req);
+            if let Some(r) = release {
+                let _ = r.recv();
+            }
+            let head = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = s.write_all(head.as_bytes());
+            let _ = s.write_all(&body);
+        });
+        format!("http://{addr}/img.png")
+    }
+
+    /// The `image()` src sections of `regression_gtk_layout_behaviors` (one
+    /// GTK test per binary — see there).
+    fn image_src_contract_sections(
+        rc: &std::rc::Rc<std::cell::RefCell<LinuxBackend>>,
+        a11y: &runtime_shared::accessibility::AccessibilityProps,
+        pump: &dyn Fn(),
+    ) {
+        use runtime_shared::image_src::{parse_data_uri, vectors};
+        let png = parse_data_uri(vectors::PNG_1X1_BASE64).unwrap().bytes;
+
+        // (a) Every synchronous conformance vector, end to end.
+        for (src, expect) in vectors::SYNC {
+            let node = rc.borrow_mut().create_image(src, None, a11y);
+            let ev = watch_image(rc, &node);
+            pump();
+            match expect {
+                vectors::Expect::Loads { width, height } => {
+                    assert_eq!(
+                        (ev.loads.get(), ev.errors.get(), ev.size.get()),
+                        (1, 0, Some((*width as f32, *height as f32))),
+                        "{src:?} must load once",
+                    );
+                }
+                vectors::Expect::Errors => {
+                    assert_eq!((ev.loads.get(), ev.errors.get()), (0, 1), "{src:?} must error once")
+                }
+            }
+        }
+
+        // (b) regression_percent_encoded_svg_data_uri_loads: the old path
+        // decoded base64 only. The SVG must also be DRAWN at its displayed
+        // size (resvg, not a 2x1 bitmap stretched).
+        let svg_node = rc.borrow_mut().create_image(vectors::SVG_2X1_PERCENT, None, a11y);
+        let pic = svg_node.widget().downcast_ref::<gtk4::Picture>().unwrap().clone();
+        let paintable = pic
+            .paintable()
+            .and_downcast::<crate::image::SvgPaintable>()
+            .expect("an SVG src must be drawn by the resvg paintable");
+        assert_eq!((paintable.intrinsic_width(), paintable.intrinsic_height()), (2, 1));
+        let snap = gtk4::Snapshot::new();
+        paintable.snapshot(&snap, 40.0, 20.0);
+        let scale = pic.scale_factor().max(1) as u32;
+        assert_eq!(
+            paintable.last_raster_px(),
+            Some((40 * scale, 20 * scale)),
+            "an SVG drawn at 40x20 must be rasterized at 40x20 (x screen scale)",
+        );
+
+        // (c) regression_image_outcome_not_dropped_when_backend_borrowed: a
+        // settle that ran while the backend was borrowed used to `return`,
+        // losing on_load for good.
+        let node = rc.borrow_mut().create_image(vectors::PNG_1X1_BASE64, None, a11y);
+        let ev = watch_image(rc, &node);
+        pump();
+        assert_eq!(ev.loads.get(), 1);
+        let generation = rc.borrow().image_nodes[&node.id].slot.generation();
+        {
+            let _held = rc.borrow_mut();
+            LinuxBackend::settle_image(
+                &std::rc::Rc::downgrade(rc),
+                node.id,
+                generation,
+                crate::image::ImageOutcome::Loaded { width: 1.0, height: 1.0 },
+            );
+        }
+        pump();
+        assert_eq!(
+            ev.loads.get(),
+            2,
+            "an outcome settled while the backend was borrowed must be deferred, not dropped",
+        );
+
+        // (d) regression_redundant_same_src_update_does_not_refire: the
+        // walker writes the mount-time src back once; Linux reloaded it and
+        // fired on_load a second time.
+        let node = rc.borrow_mut().create_image(vectors::PNG_1X1_BASE64, None, a11y);
+        let ev = watch_image(rc, &node);
+        pump();
+        rc.borrow_mut().update_image_src(&node, vectors::PNG_1X1_BASE64);
+        pump();
+        assert_eq!((ev.loads.get(), ev.errors.get()), (1, 0), "same-src update must not reload");
+        // A real change still reloads and re-fires.
+        rc.borrow_mut().update_image_src(&node, vectors::SVG_2X1_PERCENT);
+        pump();
+        assert_eq!((ev.loads.get(), ev.size.get()), (2, Some((2.0, 1.0))));
+        // Failing srcs: on_error once per DISTINCT failing src; repeating
+        // the same failing src is a no-op like any same-src write.
+        let node = rc.borrow_mut().create_image("logo.png", None, a11y);
+        let ev = watch_image(rc, &node);
+        pump();
+        rc.borrow_mut().update_image_src(&node, "logo.png");
+        pump();
+        assert_eq!(ev.errors.get(), 1, "same failing src must not re-fire on_error");
+        rc.borrow_mut().update_image_src(&node, "file:///x.png");
+        pump();
+        assert_eq!((ev.loads.get(), ev.errors.get()), (0, 2), "a new failing src fires on_error again");
+
+        // (e) regression_bundled_image_asset_loads + embedded: register_asset
+        // dropped every non-font asset, so image_asset(..) never loaded.
+        let png_static: &'static [u8] = Box::leak(png.clone().into_boxed_slice());
+        let rel = format!("idealyst-gtk-bundled-{}/logo.png", std::process::id());
+        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let file = exe_dir.join("assets").join(&rel);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, &png).unwrap();
+        let rel: &'static str = Box::leak(rel.into_boxed_str());
+        rc.borrow_mut().register_asset(
+            runtime_shared::assets::AssetId(9_000_001),
+            runtime_shared::assets::AssetTag::Image,
+            &runtime_shared::assets::AssetSource::Embedded { bytes: png_static, extension: "png" },
+        );
+        rc.borrow_mut().register_asset(
+            runtime_shared::assets::AssetId(9_000_002),
+            runtime_shared::assets::AssetTag::Image,
+            &runtime_shared::assets::AssetSource::Bundled { path: rel },
+        );
+        for src in ["asset://9000001", "asset://9000002"] {
+            let node = rc.borrow_mut().create_image(src, None, a11y);
+            let ev = watch_image(rc, &node);
+            pump();
+            assert_eq!((ev.loads.get(), ev.errors.get()), (1, 0), "{src} must load");
+        }
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+
+        // (f) Remote: a 2xx loads; a 404 is an error even when its body is a
+        // decodable PNG (gio's loader exposed no status).
+        let ok_url = serve_image("200 OK", png.clone(), None);
+        let node = rc.borrow_mut().create_image(&ok_url, None, a11y);
+        let ev = watch_image(rc, &node);
+        assert!(pump_until(|| ev.loads.get() + ev.errors.get() > 0), "remote load never settled");
+        assert_eq!((ev.loads.get(), ev.errors.get(), ev.size.get()), (1, 0, Some((1.0, 1.0))));
+
+        let err_url = serve_image("404 Not Found", png.clone(), None);
+        let node = rc.borrow_mut().create_image(&err_url, None, a11y);
+        let ev = watch_image(rc, &node);
+        assert!(pump_until(|| ev.loads.get() + ev.errors.get() > 0), "404 never settled");
+        assert_eq!((ev.loads.get(), ev.errors.get()), (0, 1), "a 404 must be on_error");
+
+        // (g) regression_slow_remote_response_does_not_replace_newer_src: the
+        // old GIO callback set the paintable unconditionally.
+        let (release, gate) = std::sync::mpsc::channel();
+        let slow_url = serve_image("200 OK", png.clone(), Some(gate));
+        let node = rc.borrow_mut().create_image(&slow_url, None, a11y);
+        let ev = watch_image(rc, &node);
+        pump();
+        rc.borrow_mut().update_image_src(&node, vectors::SVG_2X1_PERCENT);
+        assert!(pump_until(|| ev.loads.get() == 1));
+        release.send(()).unwrap();
+        // Give the stale response every chance to land.
+        let landed = pump_until(|| ev.loads.get() > 1);
+        assert!(!landed, "the superseded remote response must not fire on_load");
+        assert_eq!(ev.size.get(), Some((2.0, 1.0)));
+        let pic = node.widget().downcast_ref::<gtk4::Picture>().unwrap().clone();
+        assert!(
+            pic.paintable().and_downcast::<crate::image::SvgPaintable>().is_some(),
+            "the newer src's image must stay on screen",
+        );
+    }
+
     #[test]
     fn regression_gtk_layout_behaviors() {
         if gtk4::init().is_err() {
@@ -4234,7 +4560,8 @@ mod layout_tests {
              that had already decoded before the handler was installed",
         );
 
-        // A local path that does not exist fails synchronously.
+        // A relative path is rejected by the contract (docs/image-src.md):
+        // it errors synchronously, before any filesystem access.
         let bad_node = rc.borrow_mut().create_image(
             "/nonexistent/idealyst-test-image-that-cannot-load.png",
             None,
@@ -4252,6 +4579,11 @@ mod layout_tests {
             "on_error must fire for a source that cannot be decoded — without \
              it an app's load-failure fallback never renders on Linux",
         );
+
+        // --- 12-img. The `image()` src contract (docs/image-src.md), through
+        // the real create_image → handler path. `image_load` covers the same
+        // policy without GTK; these prove the backend wires it.
+        image_src_contract_sections(&rc, &a11y, &pump);
 
         // --- 12b. The author's `line_height` must reach the text box.
         //

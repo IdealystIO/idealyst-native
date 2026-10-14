@@ -26,9 +26,8 @@ license.workspace = true
 #
 # Scope: `view` / `text` / `icon` / layout / styling / animation are
 # complete (icon strokes/fills Lucide glyph paths via GSK; stroke draw-on
-# animation is the one gap — icons render fully drawn); image /
-# virtualizer / navigator / portal / external render a labeled
-# placeholder (never panic) pending a general-purpose pass.
+# animation is the one gap — icons render fully drawn). `image` follows
+# docs/image-src.md (see src/image_load.rs).
 
 [lib]
 crate-type = ["rlib"]
@@ -74,6 +73,20 @@ pango = { version = "0.20", features = ["v1_56"] }
 # of the variable. `libc` is already in the workspace lock (a transitive dep),
 # so this adds no new external crate. See `src/gl_loader.rs`.
 libc = "0.2"
+# `image()` sources (docs/image-src.md). Decoding is compiled in rather than
+# left to GdkPixbuf, whose format loaders are separate distro packages
+# (WebP is absent on stock installs; SVG needs librsvg's loader) — the same
+# `src` must decode on every Linux host. See `src/image_load.rs`.
+#   - backend-image-source: the shared `src` parser re-export + resvg SVG
+#     rasterization (the same crate iOS/macOS/Android use).
+#   - image: PNG / JPEG / GIF (first frame) / WebP rasters.
+#   - reqwest (blocking, rustls): remote fetch with a real status code.
+#     GIO's http loader needs GVfs and hides non-2xx responses. rustls +
+#     webpki roots need no system TLS library. Already in the workspace
+#     lock with these features (sdk/client/net, ota).
+backend-image-source = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 # Link-time self-registration of SDK `Element::External` handlers
 # (`LinuxExternalRegistrar`), matching the macOS/iOS/Android backends. An
 # SDK submits a registrar; `LinuxBackend::new` drains them.

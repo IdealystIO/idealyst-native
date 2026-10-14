@@ -20,22 +20,16 @@
 //!
 //! ## Sources
 //!
-//! - **local path** (`/tmp/logo.png`, `assets/x.jpg`) → `set_filename`
-//!   (GdkPixbuf decodes PNG/JPG/GIF/BMP/… synchronously).
-//! - **`data:` URI** (`data:image/png;base64,…`) → base64-decode the
-//!   payload and build a `gdk::Texture` from the raw bytes.
-//! - **`http(s)://` URL** → `gio::File::for_uri` + `set_file`. GTK loads
-//!   the paintable through GIO/GVfs. NOTE: this depends on a GVfs http
-//!   backend being present and reads through GIO rather than a dedicated
-//!   streaming async decode — a remote image on a host without GVfs
-//!   simply stays blank rather than erroring. A fully async
-//!   `NSURLSession`-style loader (see the macOS backend) is the
-//!   documented follow-on; `set_file` is GTK's built-in equivalent and
-//!   is non-blocking on the main loop for the GVfs-backed case.
+//! `src` follows the cross-backend contract in `docs/image-src.md`; the
+//! routing, decoding and fetching live in the GTK-free [`crate::image_load`]
+//! (tested without a display). This module only turns a decoded image into a
+//! GDK paintable:
 //!
-//! `content-fit` (the `ObjectFit`) is honored in `apply_style`
-//! (`super::apply_style` routes an image node here) — a `src` swap keeps
-//! the fit, matching the other backends.
+//! - **raster** (PNG/JPEG/GIF/WebP, decoded by the `image` crate) → a
+//!   `gdk::MemoryTexture`.
+//! - **SVG** (parsed by `resvg`) → [`SvgPaintable`], which rasterizes at the
+//!   size the picture actually draws it, times the widget's scale factor, so
+//!   a logo scaled up stays sharp.
 //!
 //! ## `on_load` / `on_error`
 //!
@@ -47,16 +41,11 @@
 //! rendered an empty box instead: the remote fetch failed (no GVfs http
 //! backend on the host) and nothing told the app.
 //!
-//! Both are wired now, which required taking the load into our own hands
-//! rather than handing GTK a `GFile`:
-//!
-//! - `data:` URI and local path resolve SYNCHRONOUSLY, so the outcome is
-//!   known inside `set_source`.
-//! - `http(s)` goes through [`gio::File::load_bytes_async`] +
-//!   `gdk::Texture::from_bytes` instead of `Picture::set_file`. Same GIO
-//!   transport as before — but `set_file` reports no error at all, whereas
-//!   `load_bytes_async` hands back a `Result`, which is the difference
-//!   between an app's error fallback running and a silently blank box.
+//! Both are wired now. `data:` URIs and assets resolve SYNCHRONOUSLY inside
+//! `create_image` / `update_image_src`; `http(s)` resolves on a later
+//! main-loop turn (`LinuxBackend::finish_remote_image`), guarded by a
+//! per-node load generation so a slow earlier response never replaces a newer
+//! `src`.
 //!
 //! Handlers are installed by the walker AFTER `create_image` returns, so a
 //! synchronous outcome has to be REMEMBERED and replayed on install — the
@@ -70,11 +59,16 @@
 //! process with `RefCell already borrowed` — the same hazard documented on
 //! `set_viewport_size` and `on_scroll`.
 
-use gtk4::gio::prelude::*;
-use gtk4::prelude::*;
-use gtk4::{gdk, gio, glib};
+use std::cell::{Cell, RefCell};
 
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::*;
+use gtk4::{gdk, glib, graphene};
+
+use backend_image_source::SvgImage;
 use runtime_shared::ObjectFit;
+
+use crate::image_load::Decoded;
 
 /// Map the framework's [`ObjectFit`] to GTK's `content-fit`. `ScaleDown`
 /// has no `ObjectFit` peer (it's "contain, but never upscale"), so it's
@@ -87,199 +81,203 @@ pub(crate) fn map_fit(fit: ObjectFit) -> gtk4::ContentFit {
     }
 }
 
-/// Build the `gtk::Picture` for an image node. Default fit is `Contain`
-/// (the framework-wide `ObjectFit` default); `apply_style` overrides it
-/// when the node's `object_fit` is set. `set_can_shrink(true)` lets the
-/// picture size *down* to a box smaller than the bitmap (GTK defaults to
-/// only shrinking, but we set it explicitly so intent is visible).
-pub(crate) fn build_picture(
-    src: &str,
-    alt: Option<&str>,
-    finish: impl Fn(ImageOutcome) + 'static,
-) -> (gtk4::Picture, ImageOutcome) {
+/// Build the (empty) `gtk::Picture` for an image node; the backend loads
+/// its `src` once the node has an id. Default fit is `Contain` (the
+/// framework-wide `ObjectFit` default); `apply_style` overrides it when the
+/// node's `object_fit` is set. `set_can_shrink(true)` lets the picture size
+/// *down* to a box smaller than the bitmap.
+pub(crate) fn build_picture(alt: Option<&str>) -> gtk4::Picture {
     let pic = gtk4::Picture::new();
     pic.set_content_fit(gtk4::ContentFit::Contain);
     pic.set_can_shrink(true);
     if let Some(a) = alt {
         pic.set_alternative_text(Some(a));
     }
-    let outcome = set_source(&pic, src, finish);
-    (pic, outcome)
+    // An SVG is rasterized for the display it is on; moving the window to a
+    // display with a different scale must re-rasterize, not upscale.
+    pic.connect_scale_factor_notify(|p| {
+        if let Some(svg) = p.paintable().and_downcast::<SvgPaintable>() {
+            svg.set_screen_scale(p.scale_factor() as f64);
+        }
+    });
+    pic
 }
 
-/// What a [`set_source`] attempt resolved to. `Pending` means a remote
-/// fetch is in flight and the outcome will arrive on the GIO callback.
+/// What a load attempt resolved to. `Pending` means a remote fetch is in
+/// flight and the outcome arrives on a later main-loop turn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ImageOutcome {
-    /// Decoded, with the bitmap's natural size in px.
+    /// Decoded, with the natural size (px for a raster, the intrinsic size
+    /// for SVG).
     Loaded { width: f32, height: f32 },
-    /// Nothing decodable — bad bytes, missing file, transport error.
+    /// Rejected `src`, bad bytes, missing asset, transport or HTTP error.
     Failed,
     /// Remote fetch in flight.
     Pending,
 }
 
-/// Point a `gtk::Picture` at `src`, decoding by source kind, and report
-/// what happened so the caller can fire `on_load` / `on_error`.
-///
-/// An empty `src` clears the paintable (an image whose reactive source
-/// resolved to nothing renders blank rather than keeping the stale
-/// bitmap) and counts as a failure — there is no bitmap to report.
-///
-/// `finish` is invoked for the ASYNC (remote) case only, on a later
-/// main-loop turn; the synchronous cases report through the return value.
-pub(crate) fn set_source(
-    pic: &gtk4::Picture,
-    src: &str,
-    finish: impl Fn(ImageOutcome) + 'static,
-) -> ImageOutcome {
-    if src.is_empty() {
-        pic.set_paintable(gdk::Paintable::NONE);
-        return ImageOutcome::Failed;
-    }
-    if let Some(rest) = src.strip_prefix("data:") {
-        let decoded = decode_data_uri(rest)
-            // `glib::Bytes` copies the slice; the decoded Vec can drop.
-            .map(|bytes| glib::Bytes::from(&bytes[..]))
-            .and_then(|gbytes| gdk::Texture::from_bytes(&gbytes).ok());
-        return match decoded {
-            Some(tex) => {
-                pic.set_paintable(Some(&tex));
-                loaded_of(&tex)
+/// Put `decoded` on screen and report its natural size.
+pub(crate) fn show(pic: &gtk4::Picture, decoded: Decoded) -> ImageOutcome {
+    let (width, height) = decoded.natural_size();
+    match decoded {
+        Decoded::Raster(r) => {
+            if r.width == 0 || r.height == 0 {
+                return clear(pic);
             }
-            // Undecodable payload → blank, don't panic.
-            None => {
-                pic.set_paintable(gdk::Paintable::NONE);
-                ImageOutcome::Failed
-            }
-        };
-    }
-    if src.starts_with("http://") || src.starts_with("https://") {
-        // `load_bytes_async` rather than `Picture::set_file`: same GIO
-        // transport, but it hands back a `Result` we can turn into
-        // `on_error`. `set_file` fails silently (see module doc).
-        let file = gio::File::for_uri(src);
-        let pic = pic.clone();
-        file.load_bytes_async(gio::Cancellable::NONE, move |res| {
-            let outcome = match res.map(|(bytes, _etag)| bytes) {
-                Ok(bytes) => match gdk::Texture::from_bytes(&bytes) {
-                    Ok(tex) => {
-                        pic.set_paintable(Some(&tex));
-                        loaded_of(&tex)
-                    }
-                    Err(_) => ImageOutcome::Failed,
-                },
-                Err(_) => ImageOutcome::Failed,
-            };
-            if outcome == ImageOutcome::Failed {
-                pic.set_paintable(gdk::Paintable::NONE);
-            }
-            finish(outcome);
-        });
-        return ImageOutcome::Pending;
-    }
-    // Anything else is a local filesystem path (absolute or relative).
-    // `Texture::from_filename` (not `Picture::set_filename`) for the same
-    // reason as above: it reports whether the decode worked.
-    match gdk::Texture::from_filename(std::path::Path::new(src)) {
-        Ok(tex) => {
+            let stride = r.width as usize * 4;
+            let tex = gdk::MemoryTexture::new(
+                r.width as i32,
+                r.height as i32,
+                gdk::MemoryFormat::R8g8b8a8,
+                &glib::Bytes::from_owned(r.rgba),
+                stride,
+            );
             pic.set_paintable(Some(&tex));
-            loaded_of(&tex)
         }
-        Err(_) => {
-            pic.set_paintable(gdk::Paintable::NONE);
-            ImageOutcome::Failed
+        Decoded::Svg(svg) => {
+            let paintable = SvgPaintable::new(svg, pic.scale_factor() as f64);
+            pic.set_paintable(Some(&paintable));
         }
     }
+    ImageOutcome::Loaded { width, height }
 }
 
-/// The natural size a decoded texture reports, as an `ImageOutcome`.
-fn loaded_of(tex: &gdk::Texture) -> ImageOutcome {
-    ImageOutcome::Loaded {
-        width: tex.width().max(0) as f32,
-        height: tex.height().max(0) as f32,
-    }
+/// Blank the picture: a failed load must not keep showing the previous
+/// `src`'s bitmap.
+pub(crate) fn clear(pic: &gtk4::Picture) -> ImageOutcome {
+    pic.set_paintable(gdk::Paintable::NONE);
+    ImageOutcome::Failed
 }
 
 // =========================================================================
-// data: URI base64 decode
+// SvgPaintable — an SVG drawn at its displayed size.
 //
-// Pure logic (no GTK) so it's unit-testable without a display. Handles the
-// standard `data:[<mime>][;base64],<payload>` shape. Only base64 payloads
-// build a texture; a non-base64 (percent-encoded) data URI returns None
-// (rare for images, and GdkPixbuf can't decode raw text bytes anyway).
+// `gtk::Picture` calls `snapshot(width, height)` with the size it draws the
+// paintable at (after `content-fit`), and measures through the intrinsic
+// size. So the paintable reports the SVG's intrinsic size (what `on_load`
+// and Taffy's measure see) and rasterizes in `snapshot` at the drawn size ×
+// screen scale, caching the last raster by pixel size so a steady frame
+// re-uses it. Same rule as the Apple/Android backends
+// (`SvgImage::raster_scale`): enough pixels that no axis is upscaled.
 // =========================================================================
 
-/// Decode the part of a data URI *after* the `data:` prefix. Returns the
-/// raw bytes for a `;base64,` payload, or `None` for a malformed / non-
-/// base64 URI.
-pub(crate) fn decode_data_uri(rest: &str) -> Option<Vec<u8>> {
-    let comma = rest.find(',')?;
-    let (meta, payload) = rest.split_at(comma);
-    let payload = &payload[1..]; // skip the comma
-    if !meta
-        .rsplit(';')
-        .next()
-        .map(|s| s.eq_ignore_ascii_case("base64"))
-        .unwrap_or(false)
-    {
-        // Not a base64 data URI — nothing decodable to a bitmap.
-        return None;
+mod imp {
+    use super::*;
+
+    #[derive(Default)]
+    pub struct SvgPaintable {
+        pub svg: RefCell<Option<SvgImage>>,
+        /// Device pixels per logical px (the picture's scale factor).
+        pub screen_scale: Cell<f64>,
+        /// Last raster, keyed by its pixel size.
+        pub cache: RefCell<Option<((u32, u32), gdk::Texture)>>,
     }
-    base64_decode(payload.trim())
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for SvgPaintable {
+        const NAME: &'static str = "IdealystSvgPaintable";
+        type Type = super::SvgPaintable;
+        type ParentType = glib::Object;
+        type Interfaces = (gdk::Paintable,);
+    }
+
+    impl ObjectImpl for SvgPaintable {}
+
+    impl SvgPaintable {
+        fn intrinsic(&self) -> (f64, f64) {
+            self.svg.borrow().as_ref().map(|s| s.intrinsic_size()).unwrap_or((0.0, 0.0))
+        }
+    }
+
+    impl PaintableImpl for SvgPaintable {
+        fn flags(&self) -> gdk::PaintableFlags {
+            // The intrinsic size never changes; the CONTENTS can (a
+            // scale-factor change re-rasterizes), so only SIZE is static.
+            gdk::PaintableFlags::SIZE
+        }
+
+        fn intrinsic_width(&self) -> i32 {
+            self.intrinsic().0.round() as i32
+        }
+
+        fn intrinsic_height(&self) -> i32 {
+            self.intrinsic().1.round() as i32
+        }
+
+        fn intrinsic_aspect_ratio(&self) -> f64 {
+            let (w, h) = self.intrinsic();
+            if w > 0.0 && h > 0.0 {
+                w / h
+            } else {
+                0.0
+            }
+        }
+
+        fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
+            if width <= 0.0 || height <= 0.0 {
+                return;
+            }
+            let svg = self.svg.borrow();
+            let Some(svg) = svg.as_ref() else { return };
+            let scale = svg.raster_scale((width, height), self.screen_scale.get());
+            let (iw, ih) = svg.intrinsic_size();
+            // `SvgImage::rasterize` sizes its pixmap exactly like this.
+            let key = (
+                (iw * scale).round().max(1.0) as u32,
+                (ih * scale).round().max(1.0) as u32,
+            );
+            let cached = self.cache.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, t)| t.clone());
+            let tex = match cached {
+                Some(t) => t,
+                None => {
+                    let Some(r) = svg.rasterize(scale) else { return };
+                    let tex: gdk::Texture = gdk::MemoryTexture::new(
+                        r.width_px as i32,
+                        r.height_px as i32,
+                        gdk::MemoryFormat::R8g8b8a8Premultiplied,
+                        &glib::Bytes::from_owned(r.rgba_premultiplied),
+                        r.width_px as usize * 4,
+                    )
+                    .upcast();
+                    *self.cache.borrow_mut() = Some((key, tex.clone()));
+                    tex
+                }
+            };
+            if let Some(snap) = snapshot.downcast_ref::<gtk4::Snapshot>() {
+                snap.append_texture(
+                    &tex,
+                    &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
+                );
+            }
+        }
+    }
 }
 
-/// Minimal RFC 4648 base64 decoder (standard alphabet, `=` padding,
-/// whitespace tolerated). Hand-rolled to avoid pulling a base64 crate
-/// into the backend for one call site. Returns `None` on any invalid
-/// character or a truncated final quantum.
-pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
+glib::wrapper! {
+    pub struct SvgPaintable(ObjectSubclass<imp::SvgPaintable>)
+        @implements gdk::Paintable;
+}
+
+impl SvgPaintable {
+    pub(crate) fn new(svg: SvgImage, screen_scale: f64) -> Self {
+        let obj: Self = glib::Object::new();
+        *obj.imp().svg.borrow_mut() = Some(svg);
+        obj.imp().screen_scale.set(screen_scale.max(1.0));
+        obj
+    }
+
+    fn set_screen_scale(&self, scale: f64) {
+        let scale = scale.max(1.0);
+        if self.imp().screen_scale.replace(scale) != scale {
+            self.invalidate_contents();
         }
     }
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    let mut quad = [0u8; 4];
-    let mut n = 0usize; // symbols collected in the current quantum
-    let mut pads = 0usize;
-    for &c in input.as_bytes() {
-        if c == b'\n' || c == b'\r' || c == b' ' || c == b'\t' {
-            continue;
-        }
-        if c == b'=' {
-            pads += 1;
-            quad[n] = 0;
-            n += 1;
-        } else {
-            if pads > 0 {
-                return None; // data after padding — malformed
-            }
-            quad[n] = val(c)?;
-            n += 1;
-        }
-        if n == 4 {
-            out.push((quad[0] << 2) | (quad[1] >> 4));
-            if pads < 2 {
-                out.push((quad[1] << 4) | (quad[2] >> 2));
-            }
-            if pads < 1 {
-                out.push((quad[2] << 6) | quad[3]);
-            }
-            n = 0;
-            pads = 0;
-        }
+
+    /// The pixel size of the last raster drawn, if any (tests).
+    #[cfg(test)]
+    pub(crate) fn last_raster_px(&self) -> Option<(u32, u32)> {
+        self.imp().cache.borrow().as_ref().map(|(k, _)| *k)
     }
-    // A well-formed base64 string is a whole number of quanta.
-    if n != 0 {
-        return None;
-    }
-    Some(out)
 }
 
 #[cfg(test)]
@@ -287,47 +285,6 @@ mod tests {
     //! Pure-logic tests — no GTK context, so they run under
     //! `cargo test -p backend-linux --lib` without a display.
     use super::*;
-
-    #[test]
-    fn base64_decodes_ascii_payloads() {
-        assert_eq!(base64_decode("").unwrap(), b"");
-        assert_eq!(base64_decode("TWFu").unwrap(), b"Man");
-        // Padding-driven tail lengths.
-        assert_eq!(base64_decode("TWE=").unwrap(), b"Ma");
-        assert_eq!(base64_decode("TQ==").unwrap(), b"M");
-        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
-    }
-
-    #[test]
-    fn base64_tolerates_embedded_whitespace() {
-        // MIME base64 wraps at 76 cols — newlines must be ignored.
-        assert_eq!(base64_decode("Zm9v\nYmFy").unwrap(), b"foobar");
-        assert_eq!(base64_decode("TWE =").unwrap(), b"Ma");
-    }
-
-    #[test]
-    fn base64_rejects_malformed_input() {
-        assert!(base64_decode("TWF").is_none()); // truncated quantum
-        assert!(base64_decode("****").is_none()); // invalid alphabet
-        assert!(base64_decode("TW=E").is_none()); // data after padding
-    }
-
-    #[test]
-    fn data_uri_extracts_base64_payload() {
-        // "Man" → TWFu, with a mime + ;base64.
-        let bytes = decode_data_uri("image/png;base64,TWFu").unwrap();
-        assert_eq!(bytes, b"Man");
-        // No mime, just ;base64.
-        assert_eq!(decode_data_uri(";base64,TWE=").unwrap(), b"Ma");
-    }
-
-    #[test]
-    fn data_uri_rejects_non_base64() {
-        // Percent-encoded (text) data URIs aren't decodable to a bitmap.
-        assert!(decode_data_uri("text/plain,hello").is_none());
-        // No comma at all.
-        assert!(decode_data_uri("image/png;base64").is_none());
-    }
 
     #[test]
     fn object_fit_maps_one_to_one() {
