@@ -972,6 +972,60 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`safe_area` padding follows the real insets on iOS**
+  (`runtime-vocabulary`, `backend-ios-mobile`, `render-wgpu`). A
+  container's safe-area padding was applied once, at mount, and iOS mounts
+  from `viewDidLoad`, before the host view is in a window. A view outside a
+  window reports zero insets, so `view(safe_area = …)` and
+  `keyboard_avoiding_view(safe_area = …)` padded by nothing and an iPad
+  header drew under the status bar. Every `safe_area` container (view,
+  keyboard avoider, scroll view, `flat_list`) now re-applies whenever the
+  insets change: the first real report, rotation, the status bar showing
+  or hiding. `safe_area_insets()` is now a per-world signal that UIKit's
+  `safeAreaInsetsDidChange` feeds, so author code reading it re-runs too.
+  Before, it read a value from the old reactive core, which never
+  re-fired in an app. It returns `ReadSignal<EdgeInsets>` (was the old
+  core's `Signal`); `.get()` call sites are unchanged.
+- **iOS: no abort from `contentSize` sent to a text field**
+  (`backend-ios-mobile`). Releasing a `scroll_view` left its pointer in
+  the set the post-layout `contentSize` sync walks. Once UIKit freed the
+  scroll view, a new view allocated at the same address (an
+  `IdealystTextField`) got `contentSize`, and the unrecognized selector
+  aborted the app from inside `layoutSubviews`. Teardown now clears the
+  pointer from every pointer-keyed table in one place, and the sync checks
+  the class before it sends.
+- **MCP `search_icons` accepts the family name for `set`** (`mcp-server`).
+  `set = "lucide"` matched no pack (only `icons-lucide` did) and returned
+  nothing. The crate name, title, import path or bare family now all
+  match, an unknown pack is an error that lists the packs, and `qr-code`,
+  `QR_CODE` and `qr code` all find `qr-code`.
+- **MCP: a failed catalog rebuild reports the error, not the first
+  warning** (`mcp-server`). The STALE reason dropped `warning:` lines
+  but kept the rest of each warning block, which filled its four lines
+  before the real error. Whole warning blocks (and ANSI colour) are now
+  skipped, and a build that fails without printing an error (killed by a
+  signal or the memory cap) reports its exit status.
+- **`idealyst run ios --device` no longer launches the app under a
+  debugger** (`run-ios`, `idealyst-cli`). The launch went through
+  ios-deploy's `--justlaunch`, i.e. lldb; on an iPadOS 16.7.8 iPad the
+  app died ~0.1 s after the run printed `installed + launched` (SIGTRAP in
+  `lldb_image_notifier`, a breakpoint lldb left behind when it detached).
+  ios-deploy now only installs. On iOS 17 and later the app is launched
+  with `xcrun devicectl device process launch` (no debugger); below 17
+  Apple's tools have no debugger-free launch, so the run prints
+  `installed — open the app on the device` instead of claiming a launch.
+  The target device, its iOS version and the launch plan are printed
+  before the build, and with several devices connected the others are
+  listed with the `--udid` flag that picks one. Offline (paired but
+  unreachable) devices are no longer picked implicitly.
+- **`idealyst run ios` / `idealyst dev --ios` say which simulator they
+  will use before building** (`run-ios`, `idealyst-cli`). With an iPhone
+  and an iPad both booted the run silently installed onto whichever
+  `simctl` listed first. The chosen simulator (name, UDID, iOS version)
+  is now printed up front, and when it was picked implicitly the other
+  booted simulators are listed with `--simulator <NAME|UDID>`. `run ios
+  --udid <UDID>` now picks a simulator too when `--device` is absent.
+  A mistyped `--simulator` now fails before the build instead of after.
 - **iOS no longer drops fast taps on a button that just appeared or is
   animating** (`backend-ios-mobile`, `backend-ios-core`). Two causes,
   both reproduced in the simulator with real HID taps on a pin-pad
