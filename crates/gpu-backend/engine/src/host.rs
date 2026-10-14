@@ -661,6 +661,9 @@ impl Host {
         // `std::time::Instant::now()`).
         let now = Instant::now();
         let any_anim = self.backend.borrow_mut().animator.tick(now);
+        // Settle finished `image()` fetches (worker → UI thread hop; the
+        // worker's redraw request is what got us here).
+        let any_image = self.backend.borrow_mut().pump_image_loads();
         let any_presence = crate::backend_impl::tick_presence_tweens(&self.backend, now);
         let any_momentum = self.tick_momentum(now);
         // Advance navigator push/pop slides. Returns true while a
@@ -717,6 +720,7 @@ impl Host {
         // rotation phase.
         let spinner_alive = self.backend.borrow().active_spinner_count > 0;
         any_anim
+            || any_image
             || any_presence
             || any_momentum
             || kb_alive

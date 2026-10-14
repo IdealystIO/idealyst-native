@@ -145,10 +145,14 @@ pub struct Renderer {
     /// the simulator its "device sitting on a black table"
     /// look without needing per-skin corner-mask rects.
     pub device_frame: crate::device_frame_pipeline::DeviceFramePipeline,
-    /// Decoded + uploaded image textures, keyed by the author's
-    /// `src` string. Populated lazily on first encounter — load
-    /// failures cache as `Failed` so we don't retry every frame.
-    image_cache: std::collections::HashMap<String, ImageCacheState>,
+    /// Uploaded image textures, keyed by the decoded image's id (and,
+    /// for an SVG, the raster density). The backend loads + decodes
+    /// (`crate::image_load`); the renderer only uploads what loaded.
+    /// Entries unused for [`IMAGE_TEXTURE_IDLE_FRAMES`] frames are
+    /// dropped, so a replaced src or a resized SVG doesn't pin VRAM.
+    image_cache: std::collections::HashMap<ImageTexKey, ImageEntry>,
+    /// Frames rendered — the clock `image_cache` eviction runs on.
+    frame_counter: u64,
     /// Per-`Graphics`-node offscreen render targets. Keyed by the
     /// node's Taffy id (stable across remounts of the same Rc).
     /// Allocated lazily on first encounter at the node's current
@@ -171,10 +175,8 @@ struct GraphicsTextureEntry {
     size: (u32, u32),
 }
 
-/// One cache entry per `Image` `src`. Holds the GPU texture +
-/// the bind group the pipeline binds at draw time. The view
-/// and texture are stashed so we can rebuild the bind group
-/// if the layout ever changes.
+/// One uploaded image texture. Holds the GPU texture + the bind group
+/// the pipeline binds at draw time.
 pub struct ImageEntry {
     #[allow(dead_code)]
     pub texture: wgpu::Texture,
@@ -182,24 +184,40 @@ pub struct ImageEntry {
     pub view: wgpu::TextureView,
     pub bind_group: wgpu::BindGroup,
     pub size: (u32, u32),
+    /// `Renderer::frame_counter` when last drawn.
+    last_used: u64,
 }
 
-/// Cache state for an image src. `Loaded` carries the entry;
-/// `Failed` marks "we tried and it didn't decode" so we don't
-/// retry the file system every frame.
-enum ImageCacheState {
-    Loaded(ImageEntry),
+/// `(decoded image id, SVG raster density step)`; the step is `0` for a
+/// bitmap (one texture per decode).
+type ImageTexKey = (u64, u32);
+
+/// Frames an image texture survives undrawn before it's freed.
+const IMAGE_TEXTURE_IDLE_FRAMES: u64 = 600;
+
+/// SVG raster densities are rounded UP to a multiple of
+/// `1 / SVG_SCALE_STEPS` px per point, so a view animating its size
+/// reuses a handful of rasters instead of re-rasterizing every frame.
+const SVG_SCALE_STEPS: f64 = 4.0;
+
+/// The node's load state at walk time.
+pub enum ImageDrawState {
+    Loaded(Rc<crate::image_load::DecodedImage>),
+    /// Fetch in flight — nothing is painted (the slot stays empty, as on
+    /// every other backend).
+    Pending,
+    /// Load failed — the missing-image placeholder is painted.
     Failed,
 }
 
-/// One image draw recorded during the tree walk. `src` is
-/// resolved against the renderer's image cache in the pre-render
-/// step — successes turn into [`crate::image_pipeline::ImageDraw`]s
-/// for the textured-quad batch; failures fall back to the
-/// missing-image placeholder rect.
+/// One image draw recorded during the tree walk. Resolved in the
+/// pre-render step — loaded images turn into
+/// [`crate::image_pipeline::ImageDraw`]s for the textured-quad batch;
+/// failures fall back to the missing-image placeholder rect.
 pub struct ImageRequest {
     pub src: String,
     pub alt: Option<String>,
+    pub state: ImageDrawState,
     /// Screen-space rect in logical px: `(x, y, w, h)`.
     pub rect: (f32, f32, f32, f32),
     pub opacity: f32,
@@ -241,6 +259,7 @@ impl Renderer {
             image: ImagePipeline::new(device, format),
             device_frame: crate::device_frame_pipeline::DeviceFramePipeline::new(device, format),
             image_cache: std::collections::HashMap::new(),
+            frame_counter: 0,
             graphics_cache: std::collections::HashMap::new(),
         }
     }
@@ -329,36 +348,50 @@ impl Renderer {
         self.graphics_cache.get(&layout)
     }
 
-    /// Look up an image src in the cache, loading + uploading
-    /// it on miss. Returns the cached entry on success, `None`
-    /// on decode/IO failure (so the caller falls back to the
-    /// placeholder paint). Failures are remembered as
-    /// `ImageCacheState::Failed`, so a broken `src` doesn't
-    /// hit the file system every frame.
-    ///
-    /// `asset_bytes` lets the loader resolve `asset://{id}` srcs
-    /// against the backend's image-asset byte cache (populated by
-    /// `register_asset` for `AssetTag::Image`). Filesystem-path
-    /// srcs ignore this lookup and fall through to
-    /// [`decode_and_upload`]'s `std::fs::read` path.
-    fn get_or_load_image(
+    /// Ensure the texture for `req` (a loaded image) is uploaded and
+    /// return its cache key. An SVG is rasterized at the density its
+    /// on-screen rect needs (`px_scale` = physical px per logical px).
+    /// `None` when the image can't be drawn (a degenerate SVG).
+    fn ensure_image_texture(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        src: &str,
-        asset_bytes: Option<&[u8]>,
-    ) -> Option<&ImageEntry> {
-        if !self.image_cache.contains_key(src) {
-            let state = match decode_and_upload(device, queue, &self.image, src, asset_bytes) {
-                Some(entry) => ImageCacheState::Loaded(entry),
-                None => ImageCacheState::Failed,
+        img: &crate::image_load::DecodedImage,
+        rect: (f32, f32, f32, f32),
+        px_scale: f32,
+    ) -> Option<ImageTexKey> {
+        use crate::image_load::DecodedKind;
+        let (key, svg_scale) = match &img.kind {
+            DecodedKind::Raster(_) => ((img.id, 0), None),
+            DecodedKind::Svg(svg) => {
+                let need = svg.raster_scale((rect.2 as f64, rect.3 as f64), px_scale as f64);
+                let step = (need * SVG_SCALE_STEPS).ceil().max(1.0);
+                ((img.id, step as u32), Some(step / SVG_SCALE_STEPS))
+            }
+        };
+        if !self.image_cache.contains_key(&key) {
+            let entry = match (&img.kind, svg_scale) {
+                (DecodedKind::Raster(rgba), _) => upload_image(device, queue, &self.image, rgba),
+                (DecodedKind::Svg(svg), Some(scale)) => {
+                    let raster = svg.rasterize(scale)?;
+                    let mut rgba = image::RgbaImage::from_raw(
+                        raster.width_px,
+                        raster.height_px,
+                        raster.rgba_premultiplied,
+                    )?;
+                    // resvg rasterizes premultiplied; the image pipeline
+                    // blends straight alpha (`BlendState::ALPHA_BLENDING`).
+                    demultiply(&mut rgba);
+                    upload_image(device, queue, &self.image, &rgba)
+                }
+                (DecodedKind::Svg(_), None) => unreachable!("svg always has a scale"),
             };
-            self.image_cache.insert(src.to_string(), state);
+            self.image_cache.insert(key, entry);
         }
-        match self.image_cache.get(src) {
-            Some(ImageCacheState::Loaded(e)) => Some(e),
-            _ => None,
+        if let Some(e) = self.image_cache.get_mut(&key) {
+            e.last_used = self.frame_counter;
         }
+        Some(key)
     }
 
     /// Render one frame of `host`'s tree into `target_view`.
@@ -690,39 +723,46 @@ impl Renderer {
         let (vx, vy, vw, vh) = surface_viewport;
         let viewport_px = [viewport[0] as u32, viewport[1] as u32];
 
-        // Phase 1: load (or fail) every image src referenced
+        // Phase 1: upload a texture for every loaded image drawn
         // this frame. Each call mutably borrows `self.image_cache`,
-        // so we do it as a separate pass before phase 2 collects
-        // immutable references to the loaded bind groups.
-        //
-        // For `asset://{id}` sources we resolve the bytes from the
-        // backend's image-asset cache (populated by `register_asset`
-        // for `AssetTag::Image`); filesystem-path sources fall
-        // through to the cache's own resolver and `std::fs::read`.
-        for req in image_requests
-            .iter()
-            .chain(nav_top_image_requests.iter())
-            .chain(overlay_image_requests.iter())
-        {
-            let asset_bytes_owned: Option<Vec<u8>> = resolve_asset_url(&req.src)
-                .and_then(|id| backend.image_asset_bytes(id).map(|b| b.to_vec()));
-            let asset_bytes: Option<&[u8]> = asset_bytes_owned.as_deref();
-            let _ = self.get_or_load_image(device, queue, &req.src, asset_bytes);
-        }
-        // Phase 2: resolve each request to either a real
-        // textured-quad draw (cache hit / fresh load succeeded)
-        // or a placeholder rect (failed load — file not found,
-        // unsupported format, etc.). Failed requests reuse
-        // the original missing-image stripe so the slot is
-        // visible in-place.
+        // so it runs as a separate pass before phase 2 collects
+        // immutable references to the bind groups. Loading and
+        // decoding already happened on the backend
+        // (`crate::image_load`); the walk captured each node's state.
+        self.frame_counter += 1;
+        let px_scale = if logical_viewport.0 > 0.0 {
+            surface_viewport.2 / logical_viewport.0
+        } else {
+            1.0
+        };
+        let texture_keys = |reqs: &[ImageRequest], this: &mut Self| -> Vec<Option<ImageTexKey>> {
+            reqs.iter()
+                .map(|req| match &req.state {
+                    ImageDrawState::Loaded(img) => {
+                        this.ensure_image_texture(device, queue, img, req.rect, px_scale)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let main_keys = texture_keys(&image_requests, self);
+        let nav_top_keys = texture_keys(&nav_top_image_requests, self);
+        let overlay_keys = texture_keys(&overlay_image_requests, self);
+        let frame = self.frame_counter;
+        self.image_cache
+            .retain(|_, e| frame.saturating_sub(e.last_used) <= IMAGE_TEXTURE_IDLE_FRAMES);
+        // Phase 2: resolve each request to either a textured-quad
+        // draw (loaded) or the missing-image placeholder (failed).
+        // A pending fetch paints nothing.
         let resolve_draws = |reqs: &[ImageRequest],
+                             keys: &[Option<ImageTexKey>],
                              rects: &mut Vec<RectInstance>,
-                             cache: &std::collections::HashMap<String, ImageCacheState>|
-         -> Vec<(ImageInstance, String)> {
+                             cache: &std::collections::HashMap<ImageTexKey, ImageEntry>|
+         -> Vec<(ImageInstance, ImageTexKey)> {
             let mut out = Vec::new();
-            for req in reqs {
-                match cache.get(&req.src) {
-                    Some(ImageCacheState::Loaded(entry)) => {
+            for (req, key) in reqs.iter().zip(keys) {
+                match (&req.state, key.and_then(|k| cache.get(&k).map(|e| (k, e)))) {
+                    (ImageDrawState::Loaded(_), Some((key, entry))) => {
                         let (rect, uv_rect) = fit_image(req.fit, req.rect, entry.size);
                         out.push((
                             ImageInstance {
@@ -733,9 +773,10 @@ impl Renderer {
                                 opacity: req.opacity,
                                 _pad: [0.0; 2],
                             },
-                            req.src.clone(),
+                            key,
                         ));
                     }
+                    (ImageDrawState::Pending, _) => {}
                     _ => {
                         paint_image_placeholder(
                             req.rect.0,
@@ -751,14 +792,17 @@ impl Renderer {
             }
             out
         };
-        let main_image_specs = resolve_draws(&image_requests, &mut rects, &self.image_cache);
+        let main_image_specs =
+            resolve_draws(&image_requests, &main_keys, &mut rects, &self.image_cache);
         let nav_top_image_specs = resolve_draws(
             &nav_top_image_requests,
+            &nav_top_keys,
             &mut nav_top_rects,
             &self.image_cache,
         );
         let overlay_image_specs = resolve_draws(
             &overlay_image_requests,
+            &overlay_keys,
             &mut overlay_rects,
             &self.image_cache,
         );
@@ -925,11 +969,11 @@ impl Renderer {
             // pass borrow that consumes them.
             let mut main_image_draws: Vec<ImageDraw<'_>> = main_image_specs
                 .iter()
-                .map(|(inst, src)| ImageDraw {
+                .map(|(inst, key)| ImageDraw {
                     instance: *inst,
-                    bind_group: match self.image_cache.get(src) {
-                        Some(ImageCacheState::Loaded(e)) => &e.bind_group,
-                        _ => unreachable!("resolved-but-missing image src in cache"),
+                    bind_group: match self.image_cache.get(key) {
+                        Some(e) => &e.bind_group,
+                        None => unreachable!("resolved-but-missing image texture in cache"),
                     },
                 })
                 .collect();
@@ -1078,11 +1122,11 @@ impl Renderer {
         if has_nav_top_content {
             let mut nav_top_image_draws: Vec<ImageDraw<'_>> = nav_top_image_specs
                 .iter()
-                .map(|(inst, src)| ImageDraw {
+                .map(|(inst, key)| ImageDraw {
                     instance: *inst,
-                    bind_group: match self.image_cache.get(src) {
-                        Some(ImageCacheState::Loaded(e)) => &e.bind_group,
-                        _ => unreachable!("resolved-but-missing image src in cache"),
+                    bind_group: match self.image_cache.get(key) {
+                        Some(e) => &e.bind_group,
+                        None => unreachable!("resolved-but-missing image texture in cache"),
                     },
                 })
                 .collect();
@@ -1146,11 +1190,11 @@ impl Renderer {
         if has_overlay_content {
             let mut overlay_image_draws: Vec<ImageDraw<'_>> = overlay_image_specs
                 .iter()
-                .map(|(inst, src)| ImageDraw {
+                .map(|(inst, key)| ImageDraw {
                     instance: *inst,
-                    bind_group: match self.image_cache.get(src) {
-                        Some(ImageCacheState::Loaded(e)) => &e.bind_group,
-                        _ => unreachable!("resolved-but-missing image src in cache"),
+                    bind_group: match self.image_cache.get(key) {
+                        Some(e) => &e.bind_group,
+                        None => unreachable!("resolved-but-missing image texture in cache"),
                     },
                 })
                 .collect();
@@ -1902,17 +1946,21 @@ fn walk<'a>(
                     );
                 }
             }
-            NodeKind::Image { src, alt } => {
+            NodeKind::Image { src, alt, load } => {
                 // The walk only *records* image draws — the
-                // actual cache lookup + decode happens before
-                // the render pass (see `Renderer::render`,
-                // pre-pass). Here we push a request so the
-                // post-walk collation can join it with the
-                // bind group from the cache. Failures resolve
-                // there too and fall back to the placeholder.
+                // texture upload happens before the render pass
+                // (see `Renderer::render`, pre-pass), which joins
+                // each request with its bind group.
                 image_requests.push(ImageRequest {
                     src: src.clone(),
                     alt: alt.clone(),
+                    state: match &load.outcome {
+                        Some(crate::image_load::ImageOutcome::Loaded(img)) => {
+                            ImageDrawState::Loaded(img.clone())
+                        }
+                        Some(crate::image_load::ImageOutcome::Failed) => ImageDrawState::Failed,
+                        None => ImageDrawState::Pending,
+                    },
                     rect: (x, y, w, h),
                     opacity: r.opacity,
                     fit: r.object_fit,
@@ -3858,45 +3906,30 @@ fn render_epoch(now: Instant) -> Instant {
 // Image decode + upload
 // ---------------------------------------------------------------------------
 
-/// Resolve an image `src` to a decoded `image::RgbaImage`,
-/// upload it to a GPU texture, and build the bind group the
-/// `ImagePipeline` will sample from. Returns `None` on IO or
-/// decode failure — the caller caches that and falls back to
-/// the missing-image placeholder.
-///
-/// Two source paths:
-/// - **`asset://{id}` URIs**: caller passes the pre-resolved
-///   bytes via `asset_bytes`. These come from the backend's
-///   image-asset cache populated by `register_asset`.
-/// - **Filesystem paths** (absolute or relative): fall through
-///   to [`resolve_asset_path`] + `std::fs::read`. Future
-///   `http://` loaders can branch here too.
-fn decode_and_upload(
+/// Upload straight-alpha sRGB RGBA pixels to a GPU texture and build
+/// the bind group the `ImagePipeline` samples it with. A bitmap larger
+/// than the device's texture limit is downscaled to fit (aspect kept) —
+/// creating the oversized texture would be a wgpu validation error.
+fn upload_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &crate::image_pipeline::ImagePipeline,
-    src: &str,
-    asset_bytes: Option<&[u8]>,
-) -> Option<ImageEntry> {
-    let bytes: Vec<u8> = if let Some(asset_bytes) = asset_bytes {
-        // `asset://{id}` source — bytes already in memory. `to_vec`
-        // because the `image` crate's `load_from_memory` reads a
-        // slice and the caller's borrow can't necessarily outlive
-        // this function.
-        asset_bytes.to_vec()
+    rgba: &image::RgbaImage,
+) -> ImageEntry {
+    let max = device.limits().max_texture_dimension_2d;
+    let resized;
+    let decoded = if rgba.width() > max || rgba.height() > max {
+        let k = max as f64 / rgba.width().max(rgba.height()) as f64;
+        resized = image::imageops::resize(
+            rgba,
+            ((rgba.width() as f64 * k) as u32).max(1),
+            ((rgba.height() as f64 * k) as u32).max(1),
+            image::imageops::FilterType::Triangle,
+        );
+        &resized
     } else {
-        let resolved = resolve_asset_path(src).or_else(|| {
-            log::warn!("image::resolve({src:?}) — not found in cwd, exe dir, or workspace root");
-            None
-        })?;
-        std::fs::read(&resolved)
-            .map_err(|e| log::warn!("image::read({src:?} → {resolved:?}) failed: {e}"))
-            .ok()?
+        rgba
     };
-    let decoded = image::load_from_memory(&bytes)
-        .map_err(|e| log::warn!("image::decode({src:?}) failed: {e}"))
-        .ok()?
-        .to_rgba8();
     let (w, h) = decoded.dimensions();
 
     // sRGB texture format — the surface is sRGB-encoded, so a
@@ -3925,7 +3958,7 @@ fn decode_and_upload(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &decoded,
+        decoded.as_raw(),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(4 * w),
@@ -3952,82 +3985,25 @@ fn decode_and_upload(
             },
         ],
     });
-    Some(ImageEntry {
+    ImageEntry {
         texture,
         view,
         bind_group,
         size: (w, h),
-    })
+        last_used: 0,
+    }
 }
 
-/// Parse an `asset://{id}` URL into its numeric `AssetId`.
-/// Returns `None` for any other scheme (filesystem paths,
-/// `http://`, malformed input). The framework's
-/// `image_asset!()` macro emits `asset://{id}` srcs; the wgpu
-/// renderer routes those through the backend's image-asset byte
-/// cache instead of the filesystem resolver.
-fn resolve_asset_url(src: &str) -> Option<runtime_shared::AssetId> {
-    src.strip_prefix("asset://")
-        .and_then(|rest| rest.parse::<u64>().ok())
-        .map(runtime_shared::AssetId)
-}
-
-/// Resolve a user-supplied image path to an absolute path on
-/// disk. Tries — in order — the literal path, the current
-/// working directory, the executable's directory (for
-/// distributed binaries that ship assets next to the
-/// executable), and a walk up from cwd looking for a
-/// `Cargo.lock` (the workspace root, useful in dev when
-/// running from a sub-crate's directory). Returns `None` if
-/// none of them exist; the loader caches that as a `Failed`
-/// state so we don't re-walk the FS every frame.
-fn resolve_asset_path(src: &str) -> Option<std::path::PathBuf> {
-    use std::path::{Path, PathBuf};
-    let raw = Path::new(src);
-    if raw.is_absolute() {
-        return if raw.exists() {
-            Some(raw.to_path_buf())
-        } else {
-            None
-        };
-    }
-    // Candidate roots, in priority order.
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.clone());
-        // Walk up from cwd looking for the workspace root (the
-        // first parent that owns a `Cargo.lock`).
-        let mut p = cwd;
-        while let Some(parent) = p.parent().map(|p| p.to_path_buf()) {
-            if parent.join("Cargo.lock").exists() {
-                roots.push(parent);
-                break;
-            }
-            // Stop at the FS root.
-            if parent.parent().is_none() {
-                break;
-            }
-            p = parent;
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            // For `cargo run`, the exe lives in `target/debug`
-            // (or `target/release`) — its grandparent is the
-            // workspace root.
-            roots.push(parent.to_path_buf());
-            if let Some(target_root) = parent.parent().and_then(|p| p.parent()) {
-                roots.push(target_root.to_path_buf());
+/// Premultiplied → straight alpha, in place.
+fn demultiply(rgba: &mut image::RgbaImage) {
+    for px in rgba.pixels_mut() {
+        let a = px.0[3] as u32;
+        if a != 0 && a != 255 {
+            for c in &mut px.0[..3] {
+                *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
             }
         }
     }
-    for root in &roots {
-        let candidate = root.join(src);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

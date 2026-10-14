@@ -968,6 +968,32 @@ impl caps::ImageOps for WgpuBackend {
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         WgpuBackend::update_image_src_impl(self, node, src)
     }
+
+    fn update_image_alt(&mut self, node: &Self::Node, alt: Option<&str>) {
+        WgpuBackend::update_image_alt_impl(self, node, alt)
+    }
+
+    fn install_image_load_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: primitives::image::ImageLoadHandler,
+    ) {
+        // Dispatch-site glue: the load event runs author code.
+        let f = handler;
+        let handler: primitives::image::ImageLoadHandler = Rc::new(move |ev| {
+            f(ev);
+            schedule_flush();
+        });
+        WgpuBackend::install_image_load_handler_impl(self, node, handler)
+    }
+
+    fn install_image_error_handler(
+        &mut self,
+        node: &Self::Node,
+        handler: primitives::image::ImageErrorHandler,
+    ) {
+        WgpuBackend::install_image_error_handler_impl(self, node, flushing0(handler))
+    }
 }
 
 impl caps::IconOps for WgpuBackend {

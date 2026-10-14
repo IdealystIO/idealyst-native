@@ -60,16 +60,41 @@ bytemuck = { version = "1.18", features = ["derive"] }
 log = "0.4"
 
 # Raster image decode for the `Image` primitive's textured-quad
-# pipeline. Default features pull in 12+ formats; we trim to PNG
-# + JPEG to keep the binary small. Add `webp`, `gif`, etc. when
-# an app's content needs them.
+# pipeline. Default features pull in 12+ formats; we enable exactly the
+# set `docs/image-src.md` promises on every backend: PNG, JPEG, GIF
+# (first frame) and WebP. SVG goes through `backend-image-source`.
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
+    "gif",
+    "webp",
 ] }
+
+# SVG sniffing + resvg rasterization, shared with the Apple and Android
+# backends. Its Cargo.toml keeps it out of the DOM web backend (the
+# browser decodes SVG there); the wgpu renderer has no browser decoder
+# to lean on even when it runs on the web, so it links it everywhere.
+backend-image-source = { workspace = true }
+
+# HTTP for `image()` `http(s)://` srcs (and `Remote` image assets): the
+# framework's cross-platform client — NSURLSession on Apple, JNI on
+# Android, `fetch` on the web, reqwest elsewhere.
+net = { workspace = true }
 
 # Block on async wgpu device-request + buffer-map during headless
 # screenshot capture. Only pulled in by the `headless` feature — the
 # windowed hosts drive their own event loop and don't need it.
 pollster = { version = "0.4", optional = true }
 
+
+# On the web the image fetch is a future driven by the page's executor
+# (`runtime_shared::driver::spawn_async`, installed by `backend-web`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+runtime-shared = { workspace = true, features = ["async-driver"] }
+
+# `net`'s Linux/Windows transport is async reqwest, whose I/O needs a
+# Tokio reactor; the image fetch worker thread runs it on a
+# current-thread runtime (`image_load::block_on_fetch`). Apple and
+# Android transports bring their own event source and need none.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "macos", target_os = "tvos", target_os = "android")))'.dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }

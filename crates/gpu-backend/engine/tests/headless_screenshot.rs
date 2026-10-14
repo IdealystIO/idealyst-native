@@ -299,3 +299,65 @@ fn headless_border_fades_with_node_opacity() {
         assert!((60..=200).contains(&r), "{style:?}: half-faded white, got {r}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// image() sources (docs/image-src.md)
+// ---------------------------------------------------------------------------
+
+/// A black root holding a 100%×100% `image(src)` with `fit: Fill`.
+fn full_bleed_image(src: &'static str) -> Element {
+    runtime_vocabulary::view()
+        .style(StyleRules {
+            width: Some(Tokenized::Literal(Length::Percent(100.0))),
+            height: Some(Tokenized::Literal(Length::Percent(100.0))),
+            background: Some(Tokenized::Literal(Color("#000000".to_string()))),
+            ..Default::default()
+        })
+        .child(
+            runtime_vocabulary::image()
+                .src(src)
+                .style(StyleRules {
+                    width: Some(Tokenized::Literal(Length::Percent(100.0))),
+                    height: Some(Tokenized::Literal(Length::Percent(100.0))),
+                    object_fit: Some(runtime_shared::ObjectFit::Fill),
+                    ..Default::default()
+                })
+                .build(),
+        )
+        .build()
+}
+
+/// Bug: the renderer treated every non-`asset://` src as a file path, so
+/// an SVG `data:` URI (CrewForge's `BrandLockup` logo) drew the gray
+/// missing-image placeholder. It now decodes in place and rasterizes
+/// through resvg: a red SVG fills the frame red.
+#[test]
+fn regression_svg_data_uri_renders() {
+    let (w, h) = (64u32, 32u32);
+    let Some(mut shot) = try_screenshotter(w, h) else {
+        return;
+    };
+    let src = runtime_shared::image_src::vectors::SVG_2X1_PERCENT;
+    let _app = render_wgpu::newcore::start(shot.backend(), |_| {}, move || full_bleed_image(src));
+    let [r, g, b, a] = center_pixel(&shot.capture_rgba(), w, h);
+    assert!(
+        a > 200 && r > 200 && g < 60 && b < 60,
+        "a red SVG data: URI must paint red, got ({r},{g},{b},{a})"
+    );
+}
+
+/// Same path for a bitmap `data:` URI (1×1 red PNG stretched).
+#[test]
+fn png_data_uri_renders() {
+    let (w, h) = (32u32, 32u32);
+    let Some(mut shot) = try_screenshotter(w, h) else {
+        return;
+    };
+    let src = runtime_shared::image_src::vectors::PNG_1X1_BASE64;
+    let _app = render_wgpu::newcore::start(shot.backend(), |_| {}, move || full_bleed_image(src));
+    let [r, g, b, a] = center_pixel(&shot.capture_rgba(), w, h);
+    assert!(
+        a > 200 && r > 200 && g < 60 && b < 60,
+        "a red PNG data: URI must paint red, got ({r},{g},{b},{a})"
+    );
+}

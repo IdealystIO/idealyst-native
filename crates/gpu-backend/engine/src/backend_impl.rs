@@ -26,7 +26,7 @@ use runtime_shared::{Action, Color, ColorScheme, Easing, StateBits, StyleRules, 
 use crate::animation::{AnimProperty, Animator, TweenKey};
 use crate::node::{
     new_node, NodeData, NodeKind, WgpuNode, ACTIVITY_INDICATOR_LARGE_SIZE,
-    ACTIVITY_INDICATOR_SMALL_SIZE, ICON_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE, SLIDER_DEFAULT_WIDTH,
+    ACTIVITY_INDICATOR_SMALL_SIZE, ICON_DEFAULT_SIZE, SLIDER_DEFAULT_WIDTH,
     SLIDER_HEIGHT, TEXT_AREA_DEFAULT_HEIGHT, TEXT_INPUT_DEFAULT_HEIGHT, TOGGLE_ANIM_MS,
     TOGGLE_HEIGHT, TOGGLE_WIDTH,
 };
@@ -125,14 +125,14 @@ pub struct WgpuBackend {
     /// registry per-node to decide whether to apply a pin
     /// translate. See `crate::sticky` for the full design.
     pub(crate) sticky_registry: crate::sticky::StickyRegistry,
-    /// Cached image-asset bytes keyed by `AssetId`. Populated by
-    /// `register_asset` for `AssetTag::Image`. The renderer
-    /// resolves `asset://{id}` image sources by looking up the
-    /// bytes here and decoding through the same `image` crate
-    /// path as filesystem sources — same mount surface as iOS /
-    /// Android / macOS, which all store the decoded image keyed
-    /// by `AssetId` in their per-backend `ImageCache`.
+    /// Image-asset bytes (`embed_asset!` / `BundledEmbedded`) keyed by
+    /// `AssetId`. Populated by `register_asset` for `AssetTag::Image`;
+    /// an `image()` whose src is `asset://{id}` decodes them
+    /// (`crate::image_load`).
     pub(crate) image_asset_bytes: std::collections::HashMap<runtime_shared::AssetId, Vec<u8>>,
+    /// `image()` src loading: decoded-image cache, in-flight fetches,
+    /// bundled/remote image assets. See [`crate::image_load`].
+    pub(crate) images: crate::image_load::ImageLoader,
     /// Served-file URLs of `Bundled` fonts the app registered but
     /// whose bytes aren't in the binary (i.e. `embed-font-bytes` is
     /// off — the web host path). `register_asset` pushes `/{path}`
@@ -233,6 +233,7 @@ impl WgpuBackend {
             presence_tweens: std::collections::HashMap::new(),
             sticky_registry: crate::sticky::StickyRegistry::new(),
             image_asset_bytes: std::collections::HashMap::new(),
+            images: Default::default(),
             pending_font_urls: Vec::new(),
             keyboard_sink: None,
             pointer_sink: None,
@@ -243,12 +244,8 @@ impl WgpuBackend {
         }
     }
 
-    /// Look up the raw bytes for a registered image asset. Returns
-    /// `None` if no asset with that id was registered (the renderer
-    /// then falls back to its filesystem-path resolver). Exposed as
-    /// `pub` so the renderer in [`crate::renderer`] — which is in
-    /// the same crate but accesses `WgpuBackend` through `Host::
-    /// backend()` — can call without going through a private field.
+    /// Look up the raw bytes for a registered (embedded) image asset.
+    /// `None` if no asset with that id carries bytes.
     pub fn image_asset_bytes(&self, id: runtime_shared::AssetId) -> Option<&[u8]> {
         self.image_asset_bytes.get(&id).map(|v| v.as_slice())
     }
@@ -922,9 +919,8 @@ impl WgpuBackend {
     }
 
     // -----------------------------------------------------------
-    // Image — placeholder for now. Stores src + alt so the
-    // renderer can paint a labeled placeholder rect. A real
-    // textured-quad pipeline is future work.
+    // Image — `src` loading follows docs/image-src.md; see
+    // `crate::image_load` for the routing, threading and events.
     // -----------------------------------------------------------
 
     pub(crate) fn create_image_impl(
@@ -934,25 +930,50 @@ impl WgpuBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> WgpuNode {
         let layout = self.layout.new_node();
+        let load = crate::image_load::ImageLoadState::default();
+        // A measure fn, not `set_intrinsic_size`: that writes a
+        // `min_size` floor, which would hold an image styled smaller
+        // than its natural size at the natural size.
         self.layout
-            .set_intrinsic_size(layout, IMAGE_DEFAULT_SIZE, IMAGE_DEFAULT_SIZE);
+            .set_measure_fn(layout, crate::image_load::image_measure_fn(load.natural.clone()));
         let node = new_node(
             NodeKind::Image {
                 src: src.to_string(),
                 alt: alt.map(|s| s.to_string()),
+                load,
             },
             layout,
         );
         init_node_a11y(&node, a11y, PrimitiveKind::Image);
         self.roots.push(node.clone());
+        self.begin_image_load(&node);
         node
     }
 
     pub(crate) fn update_image_src_impl(&mut self, node: &WgpuNode, src: &str) {
-        if let NodeKind::Image { src: stored, .. } = &mut node.borrow_mut().kind {
-            *stored = src.to_string();
+        let changed = match &mut node.borrow_mut().kind {
+            NodeKind::Image { src: stored, .. } => {
+                // The same src again is a no-op (mount runs create +
+                // update with one value): no reload, no second event.
+                // A different src supersedes; a src that failed loads
+                // afresh when it is set again after another one, since
+                // failures aren't cached.
+                let unchanged = stored == src;
+                *stored = src.to_string();
+                !unchanged
+            }
+            _ => false,
+        };
+        if changed {
+            self.begin_image_load(node);
         }
         request_redraw();
+    }
+
+    pub(crate) fn update_image_alt_impl(&mut self, node: &WgpuNode, alt: Option<&str>) {
+        if let NodeKind::Image { alt: stored, .. } = &mut node.borrow_mut().kind {
+            *stored = alt.map(str::to_string);
+        }
     }
 
     // -----------------------------------------------------------
@@ -1486,15 +1507,22 @@ impl WgpuBackend {
                 }
             }
             runtime_shared::AssetTag::Image => {
-                if let runtime_shared::AssetSource::Embedded { bytes, .. }
-                | runtime_shared::AssetSource::BundledEmbedded { bytes, .. } = source
-                {
-                    // Store the raw bytes; the renderer decodes
-                    // lazily on first `asset://{id}` reference. The
-                    // image crate auto-detects PNG/JPEG/WebP/etc
-                    // from the bytes' magic, so no per-format
-                    // dispatch is needed here.
-                    self.image_asset_bytes.insert(id, bytes.to_vec());
+                // Recorded here, decoded when an `image()` with
+                // `asset://{id}` loads (`crate::image_load`). A
+                // re-registration (hot reload) drops the decoded copy
+                // so the next load sees the new bytes.
+                self.images.evict(&format!("{}{}", runtime_shared::image_src::ASSET_URL_PREFIX, id.0));
+                match source {
+                    runtime_shared::AssetSource::Embedded { bytes, .. }
+                    | runtime_shared::AssetSource::BundledEmbedded { bytes, .. } => {
+                        self.image_asset_bytes.insert(id, bytes.to_vec());
+                    }
+                    runtime_shared::AssetSource::Bundled { path } => {
+                        self.images.bundled_assets.insert(id, path);
+                    }
+                    runtime_shared::AssetSource::Remote { url } => {
+                        self.images.remote_assets.insert(id, url);
+                    }
                 }
             }
             _ => {}
@@ -1512,6 +1540,9 @@ impl WgpuBackend {
         // is append-only), so we just drop our image-side entry.
         if matches!(kind, runtime_shared::AssetTag::Image) {
             self.image_asset_bytes.remove(&id);
+            self.images.bundled_assets.remove(&id);
+            self.images.remote_assets.remove(&id);
+            self.images.evict(&format!("{}{}", runtime_shared::image_src::ASSET_URL_PREFIX, id.0));
         }
     }
 
@@ -2931,10 +2962,8 @@ mod a11y_tests {
     /// renderer's filesystem resolver fell through to "not found"
     /// → placeholder paint. This test verifies that
     /// `register_asset` for an Image asset stashes the bytes and
-    /// `image_asset_bytes(id)` returns them. The renderer's
-    /// integration with `decode_and_upload` can't be exercised
-    /// without a real wgpu Device + Queue, so the visual decode
-    /// path remains a manual on-device check.
+    /// `image_asset_bytes(id)` returns them. Loading an `asset://`
+    /// src from those bytes is covered in `crate::image_load`'s tests.
     #[test]
     fn regression_wgpu_register_asset_caches_image_bytes() {
         use runtime_shared::{AssetId, AssetSource, AssetTag};

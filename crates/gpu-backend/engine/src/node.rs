@@ -159,8 +159,9 @@ pub const ACTIVITY_INDICATOR_LARGE_SIZE: f32 = 36.0;
 /// UIKit medium-size spinner — 12 ticks ≈ 1 Hz.
 pub const ACTIVITY_INDICATOR_SPIN_PERIOD_SEC: f32 = 1.0;
 
-/// Default intrinsic size for an unstyled `Image` — gives the
-/// placeholder visible bulk before a real texture pipeline lands.
+/// Size an unsized `Image` lays out at until its `src` loads (then its
+/// natural size takes over) — and keeps if it fails, so the
+/// missing-image placeholder has visible bulk.
 pub const IMAGE_DEFAULT_SIZE: f32 = 96.0;
 /// Default square size for an unstyled `Icon`. Authors usually
 /// constrain it via styles; this is what an unstyled icon looks
@@ -383,13 +384,13 @@ pub enum NodeKind {
     Link {
         on_activate: Rc<dyn Fn()>,
     },
-    /// Bitmap image. The simulator renders a placeholder rect
-    /// with the alt text — a real texture pipeline is future
-    /// work. `src` and `alt` are kept so that placeholder can
-    /// surface what would have been loaded.
+    /// Image. `load` tracks the current `src`'s load (see
+    /// [`crate::image_load`]); the renderer draws the decoded bitmap
+    /// once loaded and a missing-image placeholder on failure.
     Image {
         src: String,
         alt: Option<String>,
+        load: crate::image_load::ImageLoadState,
     },
     /// Vector icon. Rendered as a small placeholder square
     /// stamped with the icon's color until path/SDF rendering

@@ -40,6 +40,7 @@ mod device_frame_pipeline;
 pub mod dispatch_hook;
 mod handles;
 mod host;
+pub mod image_load;
 mod image_pipeline;
 pub mod keyboard;
 mod native_skin;
