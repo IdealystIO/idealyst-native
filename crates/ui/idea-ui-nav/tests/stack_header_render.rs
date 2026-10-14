@@ -85,3 +85,36 @@ fn suppresses_when_hidden() {
     let d = rendered(state, false);
     assert!(!contains(&d, "Hidden"), "hidden header renders nothing:\n{d}");
 }
+
+/// Regression: the bar was a `Surface(grow = 1.0)`, i.e. `flex: 1 1 0`.
+/// A stack's layout puts the header in a column above the outlet's growing
+/// region, so the header grew along that column and took half the screen,
+/// pushing every screen down and cutting it off (seen on Android in
+/// nav-showcase; plain flexbox, so every backend). A header sizes to its
+/// content; a column already stretches it across.
+#[test]
+fn regression_header_bar_does_not_grow_along_its_column() {
+    use std::rc::Rc;
+
+    let h = host_mock::Harness::new();
+    h.set_style_line(|node, rules| {
+        let grow = rules.flex_grow.as_ref().map(|t| *t.value()).unwrap_or(0.0);
+        format!("apply_style n{node} grow={grow}")
+    });
+    let on_back: Rc<dyn Fn()> = Rc::new(|| {});
+    let root = h.world.enter(|| {
+        install_idea_theme(light_theme());
+        StackHeader(StackHeaderProps {
+            state: Reactive::Static(Some(header("Detail"))),
+            show_back: Reactive::Static(true),
+            on_back: Some(on_back.clone()),
+        })
+    });
+    let _realized = h.mount(root);
+    h.flush();
+    let log = h.take_log().join("\n");
+    let styled: Vec<&str> = log.lines().filter(|l| l.starts_with("apply_style")).collect();
+    assert!(!styled.is_empty(), "the header applies styles:\n{log}");
+    let growing: Vec<&&str> = styled.iter().filter(|l| !l.ends_with("grow=0")).collect();
+    assert!(growing.is_empty(), "no header node may grow: {growing:?}\n{log}");
+}

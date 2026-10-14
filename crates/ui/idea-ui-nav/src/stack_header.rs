@@ -151,8 +151,11 @@ fn build_bar(s: &StackHeaderState, show_back: bool, on_back: Option<Rc<dyn Fn()>
             children
         }
     };
+    // No `grow`: the header sits in a column above the outlet's growing
+    // region, so growing would take height, not width (it split the screen
+    // with the outlet). The column already stretches it across.
     ui! {
-        Surface(background = SurfaceColor::Surface, grow = 1.0) {
+        Surface(background = SurfaceColor::Surface) {
             { row }
         }
     }

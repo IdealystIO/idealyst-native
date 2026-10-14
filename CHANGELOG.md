@@ -11,6 +11,15 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`StackHeader` no longer grows** (`idea-ui-nav`). Its bar was a
+  `Surface(grow = 1.0)`, i.e. `flex: 1 1 0`. In the usual stack layout (a
+  column of header, then the outlet's growing region) it took height
+  instead of width and split the screen with the outlet, so screens
+  started halfway down and were cut off. The bar now sizes to its content;
+  the column stretches it across. *Migration:* none, unless a layout put
+  `StackHeader` in a row and relied on it filling the row: wrap it in a
+  view with `flex_grow`.
+
 - **Stack `replace` animates on iOS, and Android stacks get native
   transitions and system Back** (`ios-navigator-helpers`,
   `android-navigator-helpers`, `stack-navigator`, `backend-android-mobile`).
