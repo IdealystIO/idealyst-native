@@ -14,7 +14,10 @@
 //!   build-ios::build (device, release)  → libNAME_ios_wrapper.a (aarch64-apple-ios)
 //!   render Swift + BridgingHeader + Info.plist + project.pbxproj
 //!   xcodebuild -destination "id=<UDID>" -allowProvisioningUpdates build
-//!   ios-deploy --id <UDID> --bundle <app> --justlaunch
+//!   ios-deploy --id <UDID> --bundle <app>            (install only)
+//!   iOS 17+: xcrun devicectl device process launch --device <UDID>
+//!            --terminate-existing <bundle id>         (no debugger)
+//!   iOS < 17: no launch — "installed — open the app on the device"
 //! ```
 //!
 //! ## Three non-obvious gotchas baked in here
@@ -45,6 +48,12 @@
 //! on older devices where `xcrun devicectl device install` fails with
 //! "error 1010 usage assertion". It's a brew tool; we detect its absence
 //! and emit `brew install ios-deploy` rather than a opaque failure.
+//!
+//! And the launcher choice — see [`launch_strategy`]. ios-deploy can only
+//! launch through lldb (`--justlaunch` = debugserver launch + lldb detach),
+//! which on iPadOS 16.7.8 killed the app ~0.1 s after "launched": SIGTRAP in
+//! `lldb_image_notifier`, the dyld hook lldb breakpoints and fails to clear
+//! on its scripted detach. So the debugger is never used to launch.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -99,8 +108,10 @@ pub struct DeviceOptions {
 pub struct DeviceArtifact {
     /// The signed `.app` bundle xcodebuild produced (under derivedData).
     pub app_bundle: PathBuf,
-    /// UDID of the device the app was installed + launched on.
+    /// UDID of the device the app was installed on.
     pub device_udid: String,
+    /// Whether the app was launched, or only installed (and why).
+    pub launch: DeviceLaunch,
     /// The generated `.xcodeproj` (kept for debugging / re-opening in Xcode).
     pub xcodeproj: PathBuf,
 }
@@ -117,11 +128,12 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
     // ── 0. Resolve the target device UP FRONT ────────────────────
     // Fail before the (slow) Rust build if no device is attached — a
     // missing phone shouldn't cost the user a multi-minute compile.
-    let udid = match &opts.udid {
-        Some(u) => u.clone(),
-        None => discover_device_udid()?,
-    };
-    eprintln!("[run-ios --device] target device {udid}");
+    let choice = find_device(opts.udid.as_deref())?;
+    let strategy = launch_strategy(choice.device.os_version.as_deref());
+    for line in choice.report(&strategy) {
+        eprintln!("[run-ios --device] {line}");
+    }
+    let udid = choice.device.udid.clone();
 
     // ── 1. Build the wrapper staticlib (device target, release) ──
     let artifact = build_ios::build(
@@ -164,12 +176,19 @@ pub fn run(project_dir: &Path, opts: DeviceOptions) -> Result<DeviceArtifact> {
         );
     }
 
-    // ── 7. ios-deploy: install + launch ──────────────────────────
-    install_and_launch(&udid, &app_bundle, opts.clean)?;
+    // ── 7. ios-deploy: install (never launch — see [`launch_strategy`]) ──
+    install(&udid, &app_bundle, opts.clean)?;
+
+    // ── 8. Launch without a debugger, where the OS allows it ─────
+    let launch = match strategy {
+        LaunchStrategy::DeviceCtl => launch_with_devicectl(&udid, manifest.app.require_bundle_id()?)?,
+        LaunchStrategy::InstallOnly { reason } => DeviceLaunch::InstalledNotLaunched { reason },
+    };
 
     Ok(DeviceArtifact {
         app_bundle,
         device_udid: udid,
+        launch,
         xcodeproj: prepared.xcodeproj,
     })
 }
@@ -476,26 +495,77 @@ fn render_frameworks_sections(frameworks: &[Framework]) -> (String, String, Stri
 // Device discovery
 // ---------------------------------------------------------------------------
 
-/// Discover the first connected physical iPhone's UDID via
-/// `xcrun xctrace list devices`. We parse `xctrace` rather than
-/// `devicectl` because `devicectl` marks older devices (iPhone X / iOS
-/// 16.7) "unavailable" and refuses to install to them — `xctrace` still
-/// lists them and the classic install path (ios-deploy) works.
-///
-/// Output format (the device section is above a `== Simulators ==`
-/// divider):
-/// ```text
-/// == Devices ==
-/// Nicho's iPhone (16.7.10) (00008020-000123456789ABCD)
-/// My Mac (...)
-/// == Simulators ==
-/// iPhone 15 (17.0) (XXXX-...)
-/// ```
-/// We take the first line in the Devices section that carries a
-/// `(<version>)` AND a `(<udid>)` and whose UDID looks like a real device
-/// UDID (contains a hyphen or is 25/40 hex). "My Mac" has no `(version)`
-/// pair so it's skipped.
-fn discover_device_udid() -> Result<String> {
+/// One physical device from `xcrun xctrace list devices`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    pub udid: String,
+    /// `None` when the person passed a `--udid` that xctrace doesn't list.
+    pub name: Option<String>,
+    /// The OS version xctrace reports, e.g. `16.7.8`. `None` when unknown.
+    pub os_version: Option<String>,
+    /// Listed under `== Devices Offline ==` (paired, not reachable now).
+    pub offline: bool,
+}
+
+/// The device a run resolved to, plus the other connected devices it
+/// passed over when the person didn't choose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceChoice {
+    pub device: Device,
+    pub explicit: bool,
+    pub other_connected: Vec<Device>,
+}
+
+impl DeviceChoice {
+    /// Lines to print before the build: the target device, how the app will
+    /// be started on it, and (implicit choice only) the other connected
+    /// devices and the flag that picks one.
+    pub fn report(&self, strategy: &LaunchStrategy) -> Vec<String> {
+        let d = &self.device;
+        let os = d
+            .os_version
+            .as_deref()
+            .map(|v| format!("iOS {v}"))
+            .unwrap_or_else(|| "iOS version unknown".to_string());
+        let mut lines = vec![format!(
+            "target device: {} ({}), {os}{}",
+            d.name.as_deref().unwrap_or("not listed by `xcrun xctrace list devices`"),
+            d.udid,
+            if d.offline { ", OFFLINE" } else { "" },
+        )];
+        lines.push(match strategy {
+            LaunchStrategy::DeviceCtl => {
+                "will install with ios-deploy, then launch with `xcrun devicectl` (no debugger)"
+                    .to_string()
+            }
+            LaunchStrategy::InstallOnly { .. } => {
+                "will install only — open the app on the device yourself (no debugger-free \
+                 launch on this iOS version)"
+                    .to_string()
+            }
+        });
+        if !self.explicit && !self.other_connected.is_empty() {
+            let n = self.other_connected.len();
+            lines.push(format!(
+                "{n} other device{} connected: {}",
+                if n == 1 { " is" } else { "s are" },
+                self.other_connected
+                    .iter()
+                    .map(|o| format!("{} ({})", o.name.as_deref().unwrap_or("?"), o.udid))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+            lines.push("pass `--udid <UDID>` to choose which one to run on".to_string());
+        }
+        lines
+    }
+}
+
+/// Run `xcrun xctrace list devices` and choose from it ([`choose_device`]).
+/// We parse `xctrace` rather than `devicectl` because `devicectl` marks
+/// older devices (iPhone X / iOS 16.7) "unavailable" — `xctrace` still lists
+/// them and the classic install path (ios-deploy) works.
+fn find_device(wanted: Option<&str>) -> Result<DeviceChoice> {
     let out = Command::new("xcrun")
         .args(["xctrace", "list", "devices"])
         .output()
@@ -506,46 +576,101 @@ fn discover_device_udid() -> Result<String> {
             String::from_utf8_lossy(&out.stderr),
         );
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    if let Some(udid) = parse_first_device_udid(&text) {
-        return Ok(udid);
-    }
-    anyhow::bail!(
-        "no connected iPhone found. Plug in a device, unlock it, and trust this \
-         Mac (tap \"Trust\" on the phone). Verify it shows up under \
-         `xcrun xctrace list devices` (Devices section), then re-run. To target a \
-         specific device, pass `--udid <UDID>`."
-    )
+    choose_device(&parse_xctrace_devices(&String::from_utf8_lossy(&out.stdout)), wanted)
 }
 
-/// Parse the first physical-device UDID out of `xctrace list devices`
-/// output. Stops at the `== Simulators ==` divider so a booted simulator
-/// is never picked. Pulled out for unit testing without a device.
-fn parse_first_device_udid(text: &str) -> Option<String> {
+/// Choose the device to install on.
+///
+/// - `wanted = Some(s)`: the listed device whose UDID (case-insensitive) or
+///   name equals `s`. A UDID xctrace doesn't list is still used as given
+///   (xcodebuild / ios-deploy report it if it's wrong), with the OS version
+///   unknown — which means install-only.
+/// - `wanted = None`: the first ONLINE device. Offline devices (paired but
+///   not reachable) are never picked implicitly.
+pub fn choose_device(devices: &[Device], wanted: Option<&str>) -> Result<DeviceChoice> {
+    let online: Vec<&Device> = devices.iter().filter(|d| !d.offline).collect();
+    let device = match wanted.map(str::trim) {
+        Some(w) => devices
+            .iter()
+            .find(|d| d.udid.eq_ignore_ascii_case(w))
+            .or_else(|| devices.iter().find(|d| d.name.as_deref() == Some(w)))
+            .cloned()
+            .unwrap_or_else(|| Device {
+                udid: w.to_string(),
+                name: None,
+                os_version: None,
+                offline: false,
+            }),
+        None => match online.first() {
+            Some(d) => (*d).clone(),
+            None => anyhow::bail!(
+                "no connected iPhone or iPad found. Plug in a device, unlock it, and trust \
+                 this Mac (tap \"Trust\" on the device). Verify it shows up under \
+                 `xcrun xctrace list devices` (Devices section), then re-run. To target a \
+                 specific device, pass `--udid <UDID>`."
+            ),
+        },
+    };
+    let other_connected = online
+        .into_iter()
+        .filter(|d| d.udid != device.udid)
+        .cloned()
+        .collect();
+    Ok(DeviceChoice { device, explicit: wanted.is_some(), other_connected })
+}
+
+/// Parse the physical devices out of `xctrace list devices` output:
+/// ```text
+/// == Devices ==
+/// MacBook Pro (12345678-90AB-CDEF-1234-567890ABCDEF)
+/// Nicho's iPad (16.7.8) (177c4b6460b71dfd58765484740a9f581419f5ad)
+///
+/// == Devices Offline ==
+/// iPad (18.4.1) (00008103-001A2B3C4D5E802E)
+///
+/// == Simulators ==
+/// iPhone 15 (17.0) (XXXX-...)
+/// ```
+/// A device line is `Name (version) (udid)`: the LAST parenthesized group
+/// is the UDID, the one before it the OS version. The Mac has no version
+/// group (and a 4-hyphen UUID), so it's skipped. Parsing stops at the
+/// Simulators divider so a simulator is never picked. Pulled out for unit
+/// testing without a device.
+fn parse_xctrace_devices(text: &str) -> Vec<Device> {
+    let mut out = Vec::new();
+    let mut offline = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        // The simulators block follows the devices block; once we hit it
-        // there are no more real devices to consider.
         if trimmed.starts_with("== Simulators") {
             break;
         }
-        if trimmed.starts_with("==") || trimmed.is_empty() {
+        if trimmed.starts_with("==") {
+            offline = trimmed.contains("Offline");
             continue;
         }
-        // A device line looks like `Name (version) (udid)`. The LAST
-        // parenthesized group is the UDID; the second-to-last is the OS
-        // version. "My Mac" lines have only one parenthesized group, so
-        // requiring two filters them out.
+        if trimmed.is_empty() {
+            continue;
+        }
         let groups: Vec<&str> = collect_paren_groups(trimmed);
         if groups.len() < 2 {
             continue;
         }
-        let candidate = groups[groups.len() - 1];
-        if looks_like_device_udid(candidate) {
-            return Some(candidate.to_string());
+        let udid = groups[groups.len() - 1];
+        if !looks_like_device_udid(udid) {
+            continue;
         }
+        let version = groups[groups.len() - 2];
+        let name_end = trimmed
+            .rfind(&format!("({version})"))
+            .unwrap_or(trimmed.len());
+        out.push(Device {
+            udid: udid.to_string(),
+            name: Some(trimmed[..name_end].trim().to_string()),
+            os_version: Some(version.to_string()),
+            offline,
+        });
     }
-    None
+    out
 }
 
 /// Collect every `(...)` group's inner text from a line, in order.
@@ -627,34 +752,119 @@ fn xcodebuild_for_device(
 // ios-deploy install + launch
 // ---------------------------------------------------------------------------
 
-/// Install + launch via `ios-deploy`. Chosen over `xcrun devicectl device
-/// install` because devicectl fails on older devices ("error 1010 usage
-/// assertion"); ios-deploy uses the classic lockdown/AFC path that works on
-/// iPhone X / iOS 16.7.
+/// How the app is started on the device once installed.
 ///
-/// Success is decided from ios-deploy's OUTPUT, not its exit code (see
-/// [`classify_ios_deploy_output`]): `--justlaunch` can exit non-zero on lldb
-/// detach after a good launch, and it can exit 0 after the launch FAILED —
-/// the untrusted-developer-profile case, where lldb prints
-/// `error: Cannot launch ...` and the run used to be reported as
-/// "installed + launched".
-fn install_and_launch(udid: &str, app_bundle: &Path, clean: bool) -> Result<()> {
+/// Why not ios-deploy's launch: ios-deploy has no launch that avoids the
+/// debugger. `--justlaunch` (and `--debug`) start the app under debugserver
+/// and drive it from lldb, then detach. lldb sets a breakpoint on
+/// `lldb_image_notifier` (the hook dyld calls on every image load); when its
+/// scripted detach leaves that trap in place the app dies on the next image
+/// load — on an iPadOS 16.7.8 iPad it was gone ~0.1 s after ios-deploy
+/// printed `success` (crash report: SIGTRAP in `lldb_image_notifier`).
+/// `--nolldb` still launches under debugserver. So we install with ios-deploy
+/// and never launch through it.
+///
+/// The debugger-free launch is CoreDevice: `xcrun devicectl device process
+/// launch` asks the device to open the app the way SpringBoard would (no
+/// `--start-stopped`, no `--console`, nothing attached). CoreDevice only
+/// talks to iOS 17+: `devicectl list devices` shows an iOS 16 device as
+/// `unavailable` even while connected, and `process launch` on its UDID
+/// fails with "The specified device was not found" (CoreDeviceError 1000) —
+/// both observed with devicectl 518.33 and a USB-connected iPad on 16.7.16.
+/// Below 17 there is no debugger-free remote launch in Apple's tools, so the
+/// run installs and says so instead of claiming a launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchStrategy {
+    /// iOS 17+: launch with `xcrun devicectl device process launch`.
+    DeviceCtl,
+    /// iOS < 17, or the version is unknown: install only.
+    InstallOnly { reason: String },
+}
+
+/// The first iOS release CoreDevice (`devicectl`) can launch apps on.
+const DEVICECTL_MIN_IOS_MAJOR: u32 = 17;
+
+/// Pick the launch strategy for a device's OS version (as xctrace reports
+/// it, e.g. `16.7.8`). See [`LaunchStrategy`] for why.
+pub fn launch_strategy(os_version: Option<&str>) -> LaunchStrategy {
+    let major = os_version.and_then(|v| v.split('.').next()?.trim().parse::<u32>().ok());
+    match (major, os_version) {
+        (Some(m), _) if m >= DEVICECTL_MIN_IOS_MAJOR => LaunchStrategy::DeviceCtl,
+        (Some(_), Some(v)) => LaunchStrategy::InstallOnly {
+            reason: format!(
+                "iOS {v} can't be launched from the Mac without a debugger (`xcrun devicectl` \
+                 launches iOS {DEVICECTL_MIN_IOS_MAJOR}+ only, and a debugger launch kills the app \
+                 when it detaches)"
+            ),
+        },
+        _ => LaunchStrategy::InstallOnly {
+            reason: "the device's iOS version is unknown (it isn't listed by `xcrun xctrace \
+                     list devices`), so no debugger-free launch was attempted"
+                .to_string(),
+        },
+    }
+}
+
+/// What happened after the install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceLaunch {
+    /// Launched with `devicectl` (no debugger attached).
+    Launched,
+    /// Installed; the person has to open it on the device.
+    InstalledNotLaunched { reason: String },
+}
+
+impl DeviceLaunch {
+    /// The one-line result the CLI prints.
+    pub fn headline(&self) -> &'static str {
+        match self {
+            DeviceLaunch::Launched => "installed + launched",
+            DeviceLaunch::InstalledNotLaunched { .. } => "installed — open the app on the device",
+        }
+    }
+
+    /// Extra lines explaining an install-only result.
+    pub fn details(&self) -> Vec<String> {
+        match self {
+            DeviceLaunch::Launched => Vec::new(),
+            DeviceLaunch::InstalledNotLaunched { reason } => vec![
+                format!("not launched: {reason}."),
+                "If iOS says \"Untrusted Developer\" when you open it: Settings → General → \
+                 VPN & Device Management → your Apple Development profile → Trust."
+                    .to_string(),
+            ],
+        }
+    }
+}
+
+/// `ios-deploy` arguments for an install that does NOT launch. No
+/// `--justlaunch` / `--debug` / `--nolldb` / `--noinstall`: every ios-deploy
+/// launch goes through debugserver (see [`LaunchStrategy`]).
+fn ios_deploy_install_args(udid: &str, app_bundle: &Path, clean: bool) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> =
+        vec!["--id".into(), udid.into(), "--bundle".into(), app_bundle.into()];
+    // `--uninstall` makes ios-deploy remove the existing app (and its
+    // container) before copying the new bundle, rather than installing over
+    // it — the device-side equivalent of the simulator's `--clean` path.
+    if clean {
+        args.push("--uninstall".into());
+    }
+    args
+}
+
+/// Install via `ios-deploy`. Chosen over `xcrun devicectl device install`
+/// because devicectl fails on older devices ("error 1010 usage assertion");
+/// ios-deploy uses the classic lockdown/AFC path that works on iPhone X /
+/// iOS 16.7. Success is read from the output ([`classify_ios_deploy_install`]).
+fn install(udid: &str, app_bundle: &Path, clean: bool) -> Result<()> {
     ensure_ios_deploy_present()?;
     eprintln!(
         "[run-ios --device] ios-deploy --id {udid} --bundle {}{}",
         app_bundle.display(),
         if clean { " --uninstall (--clean)" } else { "" },
     );
-    let mut cmd = Command::new("ios-deploy");
-    cmd.args(["--id", udid]).arg("--bundle").arg(app_bundle);
-    // `--uninstall` makes ios-deploy remove the existing app (and its
-    // container) before copying the new bundle, rather than installing over
-    // it — the device-side equivalent of the simulator's `--clean` path.
-    if clean {
-        cmd.arg("--uninstall");
-    }
-    let out = cmd
-        .arg("--justlaunch")
+    let out = Command::new("ios-deploy")
+        .args(ios_deploy_install_args(udid, app_bundle, clean))
         .output()
         .with_context(|| "spawn ios-deploy")?;
 
@@ -667,132 +877,127 @@ fn install_and_launch(udid: &str, app_bundle: &Path, clean: bool) -> Result<()> 
     if !stderr.trim().is_empty() {
         eprint!("{stderr}");
     }
-
-    match classify_ios_deploy_output(&stdout, &stderr, out.status.success()) {
-        DeployOutcome::Launched => Ok(()),
-        failure => anyhow::bail!("{}", failure.message(&out.status.to_string())),
+    match classify_ios_deploy_install(&stdout, &stderr) {
+        InstallOutcome::Installed => Ok(()),
+        InstallOutcome::Failed { detail } => anyhow::bail!(
+            "ios-deploy did not install the app ({}):\n  {detail}",
+            out.status
+        ),
     }
 }
 
-/// What an `ios-deploy --justlaunch` run did, read from its output.
+/// What an `ios-deploy` install run did, read from its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DeployOutcome {
-    /// Installed, and lldb reported the launch as `success`.
-    Launched,
-    /// Installed, but iOS refused to launch it because the developer
-    /// profile isn't trusted on the device (or the signature/entitlements
-    /// are bad — iOS reports all three with the same message).
-    LaunchUntrusted { detail: String },
-    /// Installed, but the device was locked when lldb tried to launch.
-    LaunchDeviceLocked,
-    /// Installed, but the launch failed for another reason, or no launch
-    /// result was reported and ios-deploy exited non-zero.
-    LaunchFailed { detail: String },
-    /// The install itself failed (no `Installed package` line).
-    InstallFailed { detail: String },
+pub(crate) enum InstallOutcome {
+    Installed,
+    Failed { detail: String },
 }
 
-impl DeployOutcome {
-    /// The user-facing error for a failed outcome. `status` is ios-deploy's
-    /// exit status, rendered.
-    fn message(&self, status: &str) -> String {
-        match self {
-            DeployOutcome::Launched => "installed + launched".to_string(),
-            DeployOutcome::LaunchUntrusted { detail } => format!(
-                "the app installed but iOS refused to launch it:\n  {detail}\n\n\
-                 The device doesn't trust your developer certificate yet. On the device, \
-                 open Settings → General → VPN & Device Management, select your Apple \
-                 Development profile, tap Trust, then run this command again."
-            ),
-            DeployOutcome::LaunchDeviceLocked => {
-                "the app installed but the device is locked, so it couldn't be launched. \
-                 Unlock the device and run this command again."
-                    .to_string()
-            }
-            DeployOutcome::LaunchFailed { detail } => format!(
-                "the app installed but did not launch (ios-deploy {status}):\n  {detail}"
-            ),
-            DeployOutcome::InstallFailed { detail } => format!(
-                "ios-deploy did not install the app ({status}):\n  {detail}"
-            ),
-        }
+/// Classify an `ios-deploy` install from its output. `Installed package`
+/// (or the `InstallComplete` progress step) is the proof of install; the
+/// exit status is not consulted — ios-deploy's `[ !! ]` lines carry the
+/// reason when it fails.
+pub(crate) fn classify_ios_deploy_install(stdout: &str, stderr: &str) -> InstallOutcome {
+    let lines: Vec<&str> = stdout.lines().chain(stderr.lines()).map(str::trim).collect();
+    if lines
+        .iter()
+        .any(|l| l.contains("Installed package") || l.contains("InstallComplete"))
+    {
+        return InstallOutcome::Installed;
     }
+    let errors: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("error:") || l.starts_with("[ !! ]"))
+        .collect();
+    InstallOutcome::Failed {
+        detail: if errors.is_empty() {
+            "no `Installed package` line in ios-deploy's output".to_string()
+        } else {
+            errors.join("\n  ")
+        },
+    }
+}
+
+/// `xcrun` arguments for the debugger-free launch. `--terminate-existing`
+/// replaces an instance left running from the previous install; no
+/// `--start-stopped` (that waits for a debugger) and no `--console` (that
+/// keeps devicectl attached until the app exits).
+fn devicectl_launch_args(udid: &str, bundle_id: &str) -> Vec<String> {
+    ["devicectl", "device", "process", "launch", "--device", udid, "--terminate-existing", bundle_id]
+        .map(String::from)
+        .to_vec()
+}
+
+fn launch_with_devicectl(udid: &str, bundle_id: &str) -> Result<DeviceLaunch> {
+    let args = devicectl_launch_args(udid, bundle_id);
+    eprintln!("[run-ios --device] xcrun {}", args.join(" "));
+    let out = Command::new("xcrun")
+        .args(&args)
+        .output()
+        .with_context(|| "spawn xcrun devicectl")?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if !text.trim().is_empty() {
+        eprint!("{text}");
+    }
+    classify_devicectl_launch(&text, out.status.success())
 }
 
 /// Phrases iOS uses when it refuses to launch an app whose developer profile
-/// the user hasn't trusted (lldb: "Unable to launch <id> because it has an
-/// invalid code signature, inadequate entitlements or its profile has not
-/// been explicitly trusted by the user").
+/// the user hasn't trusted ("Unable to launch <id> because it has an invalid
+/// code signature, inadequate entitlements or its profile has not been
+/// explicitly trusted by the user").
 const UNTRUSTED_MARKERS: &[&str] = &[
     "has not been explicitly trusted",
     "invalid code signature",
     "inadequate entitlements",
 ];
 
-/// Classify an `ios-deploy --justlaunch` run from its output.
+/// Classify a `devicectl device process launch` run. devicectl exits
+/// non-zero on failure and prints `ERROR: …` with the underlying
+/// FrontBoard / CoreDevice reason, which picks the message:
 ///
-/// ios-deploy's lldb script prints the launch result on its own line — the
-/// text of lldb's `SBError`, which is `success` or `error: ...` — then
-/// detaches. It prints `Device Locked` for a locked device and
-/// `[ !! ] ...` for its own errors. The exit status is only a tiebreaker:
-/// it is non-zero after some successful launches (lldb detach) and was 0
-/// after the untrusted-profile launch failure.
-pub(crate) fn classify_ios_deploy_output(
-    stdout: &str,
-    stderr: &str,
-    exit_ok: bool,
-) -> DeployOutcome {
-    let lines: Vec<&str> = stdout.lines().chain(stderr.lines()).map(str::trim).collect();
-    let installed = lines
-        .iter()
-        .any(|l| l.contains("Installed package") || l.contains("InstallComplete"));
-    let errors: Vec<&str> = lines
-        .iter()
-        .copied()
-        .filter(|l| {
-            l.starts_with("error:")
-                || l.starts_with("[ !! ]")
-                || *l == "PROCESS_NOT_STARTED"
-                || *l == "Application has not been launched"
-        })
-        .collect();
-    let detail = |fallback: &str| {
-        if errors.is_empty() {
-            fallback.to_string()
-        } else {
-            errors.join("\n  ")
-        }
-    };
-
-    if lines.iter().any(|l| *l == "Device Locked") {
-        return DeployOutcome::LaunchDeviceLocked;
-    }
-    if errors
-        .iter()
-        .any(|l| UNTRUSTED_MARKERS.iter().any(|m| l.contains(m)))
-    {
-        return DeployOutcome::LaunchUntrusted { detail: detail("") };
-    }
-    if !installed {
-        return DeployOutcome::InstallFailed {
-            detail: detail("no `Installed package` line in ios-deploy's output"),
-        };
-    }
-    // lldb's launch result line is exactly `success`. It outranks other
-    // `error:` lines, which lldb can print for benign setup steps (symbol
-    // lookup) before the launch.
-    if lines.iter().any(|l| *l == "success") {
-        return DeployOutcome::Launched;
-    }
-    if !errors.is_empty() {
-        return DeployOutcome::LaunchFailed { detail: detail("") };
-    }
+/// - untrusted profile → an error pointing at the Trust setting;
+/// - locked device ("could not be, unlocked") → an error saying to unlock;
+/// - CoreDevice can't reach the device ("was not found" / "unavailable") →
+///   the install still happened, so it's an install-only result, not a
+///   failed run;
+/// - anything else → an error with devicectl's text.
+pub(crate) fn classify_devicectl_launch(output: &str, exit_ok: bool) -> Result<DeviceLaunch> {
     if exit_ok {
-        return DeployOutcome::Launched;
+        return Ok(DeviceLaunch::Launched);
     }
-    DeployOutcome::LaunchFailed {
-        detail: "ios-deploy reported no launch result".to_string(),
+    let detail = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    let lower = output.to_ascii_lowercase();
+    if UNTRUSTED_MARKERS.iter().any(|m| lower.contains(m)) {
+        anyhow::bail!(
+            "the app installed but iOS refused to launch it:\n  {detail}\n\n\
+             The device doesn't trust your developer certificate yet. On the device, open \
+             Settings → General → VPN & Device Management, select your Apple Development \
+             profile, tap Trust, then run this command again."
+        );
     }
+    if lower.contains("could not be, unlocked") || lower.contains("device is locked") {
+        anyhow::bail!(
+            "the app installed but the device is locked, so it couldn't be launched. Unlock \
+             the device and run this command again."
+        );
+    }
+    if lower.contains("was not found") || lower.contains("unavailable") {
+        return Ok(DeviceLaunch::InstalledNotLaunched {
+            reason: format!("`xcrun devicectl` couldn't reach the device:\n  {detail}"),
+        });
+    }
+    anyhow::bail!("the app installed but `xcrun devicectl` did not launch it:\n  {detail}")
 }
 
 /// Verify `ios-deploy` is on PATH; emit an actionable error otherwise. We
@@ -1131,33 +1336,102 @@ mod tests {
             .unwrap_or_else(|| panic!("no build-file line for {fw}"))
     }
 
-    #[test]
-    fn parses_modern_device_udid_skipping_mac_and_simulators() {
-        let text = "\
+    /// Trimmed from real `xcrun xctrace list devices` output (Xcode 26):
+    /// the Mac line carries a 4-hyphen UUID and no version, the online
+    /// iPad a legacy 40-hex UDID, and paired-but-unreachable devices sit
+    /// under `== Devices Offline ==`.
+    const XCTRACE: &str = "\
 == Devices ==
-Nicho's iPhone (16.7.10) (00008020-000123456789ABCD)
-My Mac (12345678-90AB-CDEF-1234-567890ABCDEF)
+MacBook Pro (12345678-90AB-CDEF-1234-567890ABCDEF)
+Nicho's iPad (16.7.8) (177c4b6460b71dfd58765484740a9f581419f5ad)
+Test iPhone (18.5) (00008030-001A2B3C4D5E802E)
+
+== Devices Offline ==
+Old iPad (17.7.8) (b306675160c57ebd167081fe3144b0924f971569)
 
 == Simulators ==
 iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
 ";
+
+    #[test]
+    fn parses_devices_skipping_mac_and_simulators() {
+        let devices = parse_xctrace_devices(XCTRACE);
         assert_eq!(
-            parse_first_device_udid(text).as_deref(),
-            Some("00008020-000123456789ABCD"),
+            devices.iter().map(|d| d.udid.as_str()).collect::<Vec<_>>(),
+            vec![
+                "177c4b6460b71dfd58765484740a9f581419f5ad",
+                "00008030-001A2B3C4D5E802E",
+                "b306675160c57ebd167081fe3144b0924f971569",
+            ],
         );
+        assert_eq!(devices[0].name.as_deref(), Some("Nicho's iPad"));
+        assert_eq!(devices[0].os_version.as_deref(), Some("16.7.8"));
+        assert!(!devices[0].offline);
+        assert!(devices[2].offline);
     }
 
     #[test]
     fn skips_mac_line_with_only_one_paren_group() {
         // A line with a single parenthesized group (no OS version) is the Mac.
-        let text = "== Devices ==\nMy Mac (some-id)\n";
-        assert_eq!(parse_first_device_udid(text), None);
+        assert!(parse_xctrace_devices("== Devices ==\nMy Mac (some-id)\n").is_empty());
     }
 
     #[test]
     fn no_device_when_only_simulators() {
         let text = "== Devices ==\n\n== Simulators ==\niPhone 15 (17.0) (ABCD-1234)\n";
-        assert_eq!(parse_first_device_udid(text), None);
+        assert!(parse_xctrace_devices(text).is_empty());
+        assert!(choose_device(&[], None).is_err());
+    }
+
+    /// Without `--udid`: the first online device, and the report names the
+    /// other connected one plus the flag. Offline devices are never picked.
+    #[test]
+    fn implicit_device_choice_reports_others_and_the_flag() {
+        let devices = parse_xctrace_devices(XCTRACE);
+        let choice = choose_device(&devices, None).unwrap();
+        assert_eq!(choice.device.udid, "177c4b6460b71dfd58765484740a9f581419f5ad");
+        assert_eq!(
+            choice.other_connected.iter().map(|d| d.udid.as_str()).collect::<Vec<_>>(),
+            vec!["00008030-001A2B3C4D5E802E"],
+            "offline devices aren't 'connected'",
+        );
+        let report = choice.report(&launch_strategy(Some("16.7.8"))).join("\n");
+        assert!(
+            report.contains("Nicho's iPad (177c4b6460b71dfd58765484740a9f581419f5ad), iOS 16.7.8"),
+            "{report}"
+        );
+        assert!(report.contains("will install only"), "{report}");
+        assert!(report.contains("Test iPhone (00008030-001A2B3C4D5E802E)"), "{report}");
+        assert!(report.contains("--udid <UDID>"), "{report}");
+    }
+
+    #[test]
+    fn offline_only_is_not_picked_implicitly() {
+        let devices: Vec<Device> =
+            parse_xctrace_devices(XCTRACE).into_iter().filter(|d| d.offline).collect();
+        assert!(choose_device(&devices, None).is_err());
+    }
+
+    #[test]
+    fn explicit_device_by_udid_or_name() {
+        let devices = parse_xctrace_devices(XCTRACE);
+        let by_udid = choose_device(&devices, Some("00008030-001a2b3c4d5e802e")).unwrap();
+        assert_eq!(by_udid.device.os_version.as_deref(), Some("18.5"));
+        assert!(by_udid.explicit);
+        assert_eq!(by_udid.report(&LaunchStrategy::DeviceCtl).len(), 2, "no 'others' noise");
+        let by_name = choose_device(&devices, Some("Test iPhone")).unwrap();
+        assert_eq!(by_name.device.udid, "00008030-001A2B3C4D5E802E");
+    }
+
+    /// A `--udid` xctrace doesn't list is still used, with the OS unknown —
+    /// which must mean install-only, never a launch attempt.
+    #[test]
+    fn unlisted_udid_passes_through_as_install_only() {
+        let choice =
+            choose_device(&parse_xctrace_devices(XCTRACE), Some("00008110-0000000000000001")).unwrap();
+        assert_eq!(choice.device.udid, "00008110-0000000000000001");
+        assert_eq!(choice.device.os_version, None);
+        assert!(matches!(launch_strategy(None), LaunchStrategy::InstallOnly { .. }));
     }
 
     #[test]
@@ -1283,12 +1557,124 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
         assert!(!plist.contains("{{"), "unsubstituted placeholder:\n{plist}");
     }
 
-    // ── ios-deploy output classification ────────────────────────────
+    // ── launch strategy ─────────────────────────────────────────────
+
+    /// Regression: on an iPadOS 16.7.8 iPad, `run ios --device` printed
+    /// "installed + launched" and the app died ~0.1 s later (SIGTRAP in
+    /// `lldb_image_notifier`) because ios-deploy launched it under lldb.
+    /// iOS 16 must get an install-only plan, the ios-deploy call must carry
+    /// no launch flag, and the result must not claim a launch.
+    #[test]
+    fn regression_ios16_device_is_never_launched_through_the_debugger() {
+        let strategy = launch_strategy(Some("16.7.8"));
+        let LaunchStrategy::InstallOnly { reason } = &strategy else {
+            panic!("iOS 16 must not be launched: {strategy:?}");
+        };
+        assert!(reason.contains("16.7.8"), "{reason}");
+
+        for clean in [false, true] {
+            let args: Vec<String> = ios_deploy_install_args("UDID", Path::new("/x/X.app"), clean)
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            for launch_flag in
+                ["--justlaunch", "-L", "--debug", "-d", "--nolldb", "-N", "--noinstall", "-m"]
+            {
+                assert!(!args.iter().any(|a| a == launch_flag), "{launch_flag} in {args:?}");
+            }
+            assert_eq!(args.iter().any(|a| a == "--uninstall"), clean, "{args:?}");
+        }
+
+        let result = DeviceLaunch::InstalledNotLaunched { reason: reason.clone() };
+        assert_eq!(result.headline(), "installed — open the app on the device");
+        let details = result.details().join("\n");
+        assert!(
+            details.contains("16.7.8") && details.contains("VPN & Device Management"),
+            "{details}"
+        );
+    }
+
+    #[test]
+    fn ios17_and_later_launch_with_devicectl() {
+        for v in ["17.0", "17.5.1", "18.5", "26.0"] {
+            assert_eq!(launch_strategy(Some(v)), LaunchStrategy::DeviceCtl, "{v}");
+        }
+        for v in ["16.7.16", "15.8", "12.5.7"] {
+            assert!(matches!(launch_strategy(Some(v)), LaunchStrategy::InstallOnly { .. }), "{v}");
+        }
+        assert!(matches!(launch_strategy(Some("garbage")), LaunchStrategy::InstallOnly { .. }));
+        assert_eq!(DeviceLaunch::Launched.headline(), "installed + launched");
+    }
+
+    #[test]
+    fn devicectl_launch_attaches_no_debugger() {
+        let args = devicectl_launch_args("00008030-001A2B3C4D5E802E", "com.x");
+        assert_eq!(&args[..4], ["devicectl", "device", "process", "launch"]);
+        assert!(
+            args.windows(2).any(|w| w == ["--device", "00008030-001A2B3C4D5E802E"]),
+            "{args:?}"
+        );
+        assert!(args.contains(&"--terminate-existing".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("com.x"));
+        assert!(!args.iter().any(|a| a == "--start-stopped" || a == "--console"), "{args:?}");
+    }
+
+    // ── devicectl launch classification ─────────────────────────────
+
+    #[test]
+    fn devicectl_success_is_launched() {
+        let out = "Launched application with com.x bundle identifier.\n";
+        assert_eq!(classify_devicectl_launch(out, true).unwrap(), DeviceLaunch::Launched);
+    }
+
+    /// The untrusted-profile refusal must fail with the Trust pointer, never
+    /// report a launch.
+    #[test]
+    fn devicectl_untrusted_profile_is_failure_with_trust_pointer() {
+        let out = "ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x271A))\n\
+                   \x20      BundleIdentifier = com.x\n\
+                   ----------------------------------------\n\
+                   The operation couldn't be completed. Unable to launch com.x because it has an invalid code \
+                   signature, inadequate entitlements or its profile has not been explicitly trusted by the user. \
+                   (FBSOpenApplicationErrorDomain error 3 (0x03))\n";
+        let err = classify_devicectl_launch(out, false).unwrap_err().to_string();
+        assert!(err.contains("VPN & Device Management") && err.contains("Trust"), "{err}");
+    }
+
+    #[test]
+    fn devicectl_locked_device_is_failure() {
+        let out = "ERROR: The application failed to launch. (com.apple.dt.CoreDeviceError error 10002 (0x271A))\n\
+                   Unable to launch com.x because the device was not, or could not be, unlocked. \
+                   (FBSOpenApplicationErrorDomain error 7 (0x07))\n";
+        let err = classify_devicectl_launch(out, false).unwrap_err().to_string();
+        assert!(err.contains("device is locked"), "{err}");
+    }
+
+    /// devicectl can't see the device (captured from devicectl 518.33 with an
+    /// iOS 16 iPad): the install already happened, so this is install-only.
+    #[test]
+    fn devicectl_device_not_found_is_install_only() {
+        let out = "ERROR: The specified device was not found. (Name: 177c4b6460b71dfd58765484740a9f581419f5ad) \
+                   (com.apple.dt.CoreDeviceError error 1000 (0x3E8))\n";
+        let result = classify_devicectl_launch(out, false).unwrap();
+        let DeviceLaunch::InstalledNotLaunched { reason } = &result else {
+            panic!("{result:?}");
+        };
+        assert!(reason.contains("CoreDeviceError error 1000"), "{reason}");
+    }
+
+    #[test]
+    fn devicectl_other_failure_is_an_error() {
+        let out = "ERROR: Something else went wrong. (com.apple.dt.CoreDeviceError error 4 (0x04))\n";
+        let err = classify_devicectl_launch(out, false).unwrap_err().to_string();
+        assert!(err.contains("Something else went wrong"), "{err}");
+    }
+
+    // ── ios-deploy install classification ───────────────────────────
     //
-    // Captured from `ios-deploy 1.12.2 --id <udid> --bundle X.app
-    // --justlaunch` (paths/UDIDs shortened). The lldb section is the
-    // embedded `fruitstrap` script echoing its commands; the line after
-    // `run` is lldb's `SBError` text.
+    // Captured from `ios-deploy 1.12.2 --id <udid> --bundle X.app`
+    // (paths/UDIDs shortened). Without a launch flag ios-deploy stops after
+    // the install phase.
 
     const DEPLOY_INSTALL_PHASE: &str = "\
 [....] Waiting for iOS device to be connected
@@ -1297,85 +1683,15 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
 [  0%] Found 00008030-001A2B3C4D5E802E (D421AP, iPhone 11 Pro, iphoneos, arm64e, 17.5, 21F79) a.k.a. 'Test iPhone' connected through USB, beginning install
 [  5%] Copying /tmp/build/Build/Products/Debug-iphoneos/X.app/META-INF/ to device
 [ 52%] CreatingStagingDirectory
-[ 57%] ExtractingPackage
-[ 60%] InspectingPackage
-[ 65%] PreflightingApplication
-[ 70%] VerifyingApplication
-[ 75%] CreatingContainer
 [ 80%] InstallingApplication
-[ 85%] PostflightingApplication
-[ 90%] SandboxingApplication
 [ 95%] GeneratingApplicationMap
 [100%] InstallComplete
 [100%] Installed package /tmp/build/Build/Products/Debug-iphoneos/X.app
------- Debug phase ------
-Starting debug of 00008030-001A2B3C4D5E802E (D421AP, iPhone 11 Pro, iphoneos, arm64e, 17.5, 21F79) a.k.a. 'Test iPhone' connected through USB...
-[  0%] Looking up developer disk image
-[ 95%] Developer disk image mounted successfully
-[100%] Connecting to remote debug server
--------------------------
-(lldb) command source -s 0 '/tmp/X.app/fruitstrap-lldb-prep-cmds-00008030'
-(lldb)     platform select remote-ios --sysroot '/Users/me/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)/Symbols'
-  Platform: remote-ios
- Connected: no
-  SDK Path: \"/Users/me/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)/Symbols\"
-(lldb)     target create \"/tmp/build/Build/Products/Debug-iphoneos/X.app\"
-Current executable set to '/tmp/build/Build/Products/Debug-iphoneos/X.app' (arm64).
-(lldb)     script fruitstrap_device_app=\"/private/var/containers/Bundle/Application/5F3C/X.app\"
-(lldb)     script fruitstrap_connect_url=\"connect://127.0.0.1:62078\"
-(lldb)     script fruitstrap_output_path=\"\"
-(lldb)     script fruitstrap_error_path=\"\"
-(lldb)     target modules search-paths add /usr \"/Users/me/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)/Symbols/usr\"
-(lldb)     command script import \"/tmp/fruitstrap_00008030.py\"
-(lldb)     command script add -f fruitstrap_00008030.connect_command connect
-(lldb)     command script add -s asynchronous -f fruitstrap_00008030.run_command run
-(lldb)     command script add -s asynchronous -f fruitstrap_00008030.autoexit_command autoexit
-(lldb)     command script add -s asynchronous -f fruitstrap_00008030.safequit_command safequit
-(lldb)     connect
-(lldb)     run
 ";
 
     #[test]
-    fn ios_deploy_success_is_launched() {
-        let stdout = format!("{DEPLOY_INSTALL_PHASE}success\n(lldb)     safequit\nProcess 1234 detached\n");
-        assert_eq!(classify_ios_deploy_output(&stdout, "", true), DeployOutcome::Launched);
-        // `--justlaunch` can exit non-zero on lldb detach after a good
-        // launch; the `success` line wins.
-        assert_eq!(classify_ios_deploy_output(&stdout, "", false), DeployOutcome::Launched);
-    }
-
-    /// Regression: the untrusted-developer-profile launch failure exited 0
-    /// and was reported as "installed + launched". It must fail, and the
-    /// message must point at Settings → General → VPN & Device Management.
-    #[test]
-    fn regression_ios_deploy_untrusted_profile_exit_zero_is_failure() {
-        let stdout = format!(
-            "{DEPLOY_INSTALL_PHASE}error: Cannot launch '/private/var/containers/Bundle/Application/5F3C/X.app': \
-             Unable to launch com.x because it has an invalid code signature, inadequate entitlements or its \
-             profile has not been explicitly trusted by the user.\n(lldb)     safequit\n"
-        );
-        let outcome = classify_ios_deploy_output(&stdout, "", true);
-        let DeployOutcome::LaunchUntrusted { detail } = &outcome else {
-            panic!("expected LaunchUntrusted, got {outcome:?}");
-        };
-        assert!(detail.contains("Cannot launch"), "{detail}");
-        let msg = outcome.message("exit status: 0");
-        assert!(msg.contains("VPN & Device Management"), "{msg}");
-        assert!(msg.contains("Trust"), "{msg}");
-    }
-
-    #[test]
-    fn ios_deploy_generic_launch_error_is_failure() {
-        let stdout = format!(
-            "{DEPLOY_INSTALL_PHASE}error: process launch failed: timed out trying to launch app\n\
-             (lldb)     safequit\n\nApplication has not been launched\n\n"
-        );
-        let outcome = classify_ios_deploy_output(&stdout, "", false);
-        let DeployOutcome::LaunchFailed { detail } = &outcome else {
-            panic!("expected LaunchFailed, got {outcome:?}");
-        };
-        assert!(detail.contains("timed out trying to launch app"), "{detail}");
-        assert!(!outcome.message("exit status: 1").contains("VPN & Device Management"));
+    fn ios_deploy_install_success() {
+        assert_eq!(classify_ios_deploy_install(DEPLOY_INSTALL_PHASE, ""), InstallOutcome::Installed);
     }
 
     #[test]
@@ -1385,23 +1701,14 @@ Current executable set to '/tmp/build/Build/Products/Debug-iphoneos/X.app' (arm6
                       [  0%] Found 00008030 connected through USB, beginning install\n";
         let stderr = "[ !! ] Error 0xe8008015: A valid provisioning profile for this executable was not found. \
                       AMDeviceSecureInstallApplication(0, device, url, options, install_callback, 0)\n";
-        let outcome = classify_ios_deploy_output(stdout, stderr, false);
-        let DeployOutcome::InstallFailed { detail } = &outcome else {
-            panic!("expected InstallFailed, got {outcome:?}");
+        let InstallOutcome::Failed { detail } = classify_ios_deploy_install(stdout, stderr) else {
+            panic!("expected Failed");
         };
         assert!(detail.contains("0xe8008015"), "{detail}");
     }
 
     #[test]
-    fn ios_deploy_locked_device_is_failure() {
-        let stdout = format!("{DEPLOY_INSTALL_PHASE}\nDevice Locked\n\n");
-        assert_eq!(classify_ios_deploy_output(&stdout, "", false), DeployOutcome::LaunchDeviceLocked);
-    }
-
-    /// Installed, no launch result, non-zero exit: not a success.
-    #[test]
-    fn ios_deploy_no_launch_result_and_nonzero_exit_is_failure() {
-        let outcome = classify_ios_deploy_output(DEPLOY_INSTALL_PHASE, "", false);
-        assert!(matches!(outcome, DeployOutcome::LaunchFailed { .. }), "{outcome:?}");
+    fn ios_deploy_no_output_is_install_failure() {
+        assert!(matches!(classify_ios_deploy_install("", ""), InstallOutcome::Failed { .. }));
     }
 }

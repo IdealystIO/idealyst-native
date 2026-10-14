@@ -43,10 +43,12 @@ pub struct Args {
     pub release: bool,
 
     /// iOS only: build, code-sign, and install onto a connected physical
-    /// iPhone (instead of the simulator). Requires a development signing
-    /// identity + `ios-deploy` (`brew install ios-deploy`). The Rust
-    /// staticlib is built in RELEASE by default for this path — pass
-    /// `--debug` to override.
+    /// iPhone or iPad (instead of the simulator). Requires a development
+    /// signing identity + `ios-deploy` (`brew install ios-deploy`). The app
+    /// is never launched under a debugger: on iOS 17+ it is launched with
+    /// `xcrun devicectl`; below 17 it is installed and you open it on the
+    /// device. The Rust staticlib is built in RELEASE by default for this
+    /// path — pass `--debug` to override.
     #[arg(long)]
     pub device: bool,
 
@@ -63,15 +65,18 @@ pub struct Args {
     #[arg(long)]
     pub team: Option<String>,
 
-    /// iOS `--device` only: target a specific device by UDID. Defaults to
-    /// the first connected iPhone found via `xcrun xctrace list devices`.
-    #[arg(long)]
+    /// iOS: the UDID to run on. With `--device`, the physical device
+    /// (default: the first connected one in `xcrun xctrace list devices`);
+    /// without it, the simulator (same as `--simulator <UDID>`).
+    #[arg(long, value_name = "UDID")]
     pub udid: Option<String>,
 
     /// iOS simulator only: the simulator to run on, by name (as listed by
     /// `xcrun simctl list devices`, e.g. "iPad Pro 13-inch (M4)") or UDID.
     /// Booted if it isn't running. Defaults to the first booted iOS
-    /// simulator, else the first iPhone on the newest runtime.
+    /// simulator, else the first iPhone on the newest runtime. The chosen
+    /// simulator is printed before the build, along with any other booted
+    /// ones it passed over.
     #[arg(long, value_name = "NAME|UDID")]
     pub simulator: Option<String>,
 
@@ -151,6 +156,19 @@ pub struct Args {
     pub port: Option<u16>,
 }
 
+/// The simulator a non-`--device` `run ios` targets. `--udid` names a
+/// simulator here (it names the physical device only under `--device`), so
+/// it is the same as `--simulator <UDID>`; passing both is only accepted when
+/// they agree.
+fn simulator_target(simulator: Option<&str>, udid: Option<&str>) -> anyhow::Result<Option<String>> {
+    match (simulator, udid) {
+        (Some(s), Some(u)) if !s.trim().eq_ignore_ascii_case(u.trim()) => anyhow::bail!(
+            "`--simulator {s}` and `--udid {u}` name different simulators; pass one"
+        ),
+        (s, u) => Ok(s.or(u).map(str::to_string)),
+    }
+}
+
 fn loopback_endpoint(args: &Args) -> anyhow::Result<String> {
     let port = args.runtime_server_port.ok_or_else(|| {
         anyhow::anyhow!(
@@ -206,7 +224,10 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                 },
             )?;
             eprintln!();
-            eprintln!("[idealyst run ios --device] installed + launched");
+            eprintln!("[idealyst run ios --device] {}", artifact.launch.headline());
+            for line in artifact.launch.details() {
+                eprintln!("  {line}");
+            }
             eprintln!("  app:    {}", artifact.app_bundle.display());
             eprintln!("  device: {}", artifact.device_udid);
             eprintln!("  proj:   {}", artifact.xcodeproj.display());
@@ -229,7 +250,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     source,
                     user_features: Vec::new(),
                     clean: args.clean,
-                    simulator: args.simulator.clone(),
+                    simulator: simulator_target(args.simulator.as_deref(), args.udid.as_deref())?,
                 },
             )?;
             eprintln!();
@@ -770,5 +791,30 @@ mod tests {
             msg.contains("server_manifest") && msg.contains("doesn't exist"),
             "bad server_manifest path should be reported, got: {msg}",
         );
+    }
+
+    /// Regression: `--udid` only applied to `--device`, so a simulator run
+    /// with an iPhone and an iPad booted had no UDID flag to pick one.
+    /// Without `--device`, `--udid` names the simulator.
+    #[test]
+    fn regression_udid_picks_the_simulator_without_device() {
+        let args = parse(&["idealyst", "run", "ios", "--udid", "471A6C9B-9AA6-4134-8EE7-5E5466CF8F55"]);
+        assert!(!args.device);
+        assert_eq!(
+            simulator_target(args.simulator.as_deref(), args.udid.as_deref()).unwrap().as_deref(),
+            Some("471A6C9B-9AA6-4134-8EE7-5E5466CF8F55"),
+        );
+    }
+
+    #[test]
+    fn simulator_target_prefers_simulator_and_rejects_disagreement() {
+        assert_eq!(simulator_target(None, None).unwrap(), None);
+        assert_eq!(
+            simulator_target(Some("iPad Pro 13-inch (M4)"), None).unwrap().as_deref(),
+            Some("iPad Pro 13-inch (M4)"),
+        );
+        assert_eq!(simulator_target(Some("abc"), Some("ABC")).unwrap().as_deref(), Some("abc"));
+        let err = simulator_target(Some("iPhone 16"), Some("ABC")).unwrap_err().to_string();
+        assert!(err.contains("--simulator") && err.contains("--udid"), "{err}");
     }
 }

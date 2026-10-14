@@ -3,7 +3,7 @@ name = "run-ios"
 version = "1.6.0"
 edition.workspace = true
 license.workspace = true
-description = "Build and launch an idealyst app on iOS. Simulator path compiles Swift directly via swiftc + simctl (no Xcode project); device path (`device` module) generates a signed .app via a self-written pbxproj + xcodebuild auto-provisioning and installs with ios-deploy."
+description = "Build and launch an idealyst app on iOS. Simulator path compiles Swift directly via swiftc + simctl (no Xcode project); device path (`device` module) generates a signed .app via a self-written pbxproj + xcodebuild auto-provisioning, installs with ios-deploy, and launches with devicectl on iOS 17+ (never through a debugger)."
 
 [dependencies]
 anyhow = "1"

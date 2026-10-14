@@ -33,7 +33,8 @@
 //! code-signing requires an Xcode project + `xcodebuild` auto-provisioning
 //! (provisioning profile + signing identity + entitlements). The device
 //! path generates a `.xcodeproj` directly (no `xcodegen` dependency),
-//! builds + signs with `xcodebuild`, and installs with `ios-deploy`. See
+//! builds + signs with `xcodebuild`, installs with `ios-deploy`, and
+//! launches without a debugger (`devicectl`, iOS 17+ only). See
 //! `device.rs` and [[project_ios_device_deploy_from_cli]].
 
 use std::fs;
@@ -197,6 +198,16 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = build_ios::parse_manifest(&project_dir)?;
 
+    // ── 0. Resolve the target simulator UP FRONT ─────────────────
+    // Before the (slow) build, so the person sees which simulator the app
+    // is going to while it compiles — with an iPhone and an iPad both
+    // booted, the implicit pick is otherwise a surprise at install time —
+    // and so a mistyped `--simulator` fails without costing a build.
+    let sim_choice = simulator::find_simulator(opts.simulator.as_deref())?;
+    for line in sim_choice.report() {
+        eprintln!("[run-ios] {line}");
+    }
+
     // ── 1. Produce the staticlib for the chosen mode ─────────────
     let target_triple = build_ios::pick_target(false);
     // Capability-derived Info.plist permission keys. Only the local mode
@@ -323,7 +334,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     fs::write(app_bundle.join("PkgInfo"), b"APPL????")?;
 
     // ── 6. Simulator: boot, then run the (re)install plan ─────────
-    let udid = ensure_simulator_booted(opts.simulator.as_deref())?;
+    let udid = ensure_simulator_booted(&sim_choice.sim)?;
     let bundle_id = manifest.app.require_bundle_id()?;
     for step in reinstall_plan(opts.clean) {
         match step {
@@ -671,16 +682,18 @@ pub(crate) fn xml_escape(s: &str) -> String {
 // Simulator orchestration
 // ---------------------------------------------------------------------------
 
-/// Resolve the simulator to run on (see [`simulator::select_simulator`]) and
-/// boot it if it isn't running. Returns its UDID. Also opens Simulator.app so
-/// the window surfaces; on a fresh machine the boot can take a few seconds.
-fn ensure_simulator_booted(wanted: Option<&str>) -> Result<String> {
-    let sim = simulator::find_simulator(wanted)?;
+/// Boot the simulator resolved before the build (see
+/// [`simulator::find_simulator`]) if it isn't running. Returns its UDID. Also
+/// opens Simulator.app so the window surfaces; on a fresh machine the boot
+/// can take a few seconds. A simulator that was booted when the run started
+/// is not re-checked: if it was shut down during the build, `simctl install`
+/// fails loudly naming it.
+fn ensure_simulator_booted(sim: &simulator::Simulator) -> Result<String> {
     if sim.booted {
         eprintln!("[run-ios] reusing booted simulator {} ({})", sim.name, sim.udid);
         // Make sure Simulator.app is visible.
         let _ = Command::new("open").args(["-a", "Simulator"]).status();
-        return Ok(sim.udid);
+        return Ok(sim.udid.clone());
     }
 
     eprintln!("[run-ios] booting simulator {} ({})", sim.name, sim.udid);
@@ -695,7 +708,7 @@ fn ensure_simulator_booted(wanted: Option<&str>) -> Result<String> {
     let _ = Command::new("open").args(["-a", "Simulator"]).status();
 
     wait_for_boot(&sim.udid)?;
-    Ok(sim.udid)
+    Ok(sim.udid.clone())
 }
 
 fn wait_for_boot(udid: &str) -> Result<()> {

@@ -425,7 +425,9 @@ pub struct Args {
     /// `--ios` only: the simulator to run on, by name (as listed by
     /// `xcrun simctl list devices`, e.g. "iPad Pro 13-inch (M4)") or UDID.
     /// Booted if it isn't running. Defaults to the first booted iOS
-    /// simulator, else the first iPhone on the newest runtime.
+    /// simulator, else the first iPhone on the newest runtime. The chosen
+    /// simulator is printed before the build, along with any other booted
+    /// ones it passed over.
     #[arg(long, value_name = "NAME|UDID")]
     pub simulator: Option<String>,
 

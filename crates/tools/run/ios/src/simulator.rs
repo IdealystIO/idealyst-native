@@ -1,8 +1,15 @@
 //! Picking the iOS simulator to run on.
 //!
-//! `idealyst run ios` / `idealyst dev --ios` take `--simulator <NAME|UDID>`.
-//! Without it they reuse the first booted iOS simulator, and boot the first
-//! iPhone on the newest runtime when none is booted.
+//! `idealyst run ios` / `idealyst dev --ios` take `--simulator <NAME|UDID>`
+//! (`run ios` also takes `--udid <UDID>` for a simulator when `--device` is
+//! absent). Without one they reuse the first booted iOS simulator, and boot
+//! the first iPhone on the newest runtime when none is booted.
+//!
+//! Every iOS simulator run resolves its target through [`find_simulator`]
+//! BEFORE the build starts and prints [`SimulatorChoice::report`], so the
+//! person sees which simulator the app is going to — and, when they didn't
+//! choose and several are booted (an iPhone and an iPad), which others were
+//! passed over and the flag that picks one.
 //!
 //! The device list comes from `xcrun simctl list devices --json`. The JSON is
 //! parsed by [`select_simulator`], a pure function, so the selection rules are
@@ -24,6 +31,76 @@ pub struct Simulator {
     /// The runtime key, e.g. `com.apple.CoreSimulator.SimRuntime.iOS-17-5`.
     pub runtime: String,
     pub booted: bool,
+}
+
+/// The simulator a run resolved to, plus what the person should be told
+/// about the choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimulatorChoice {
+    pub sim: Simulator,
+    /// The person named this simulator (`--simulator` / `--udid`).
+    pub explicit: bool,
+    /// Other booted iOS simulators, in selection order. Only reported when
+    /// the choice wasn't explicit — then it is the list the run silently
+    /// passed over.
+    pub other_booted: Vec<Simulator>,
+}
+
+impl SimulatorChoice {
+    /// Lines to print before the build: the target, and when it was picked
+    /// implicitly while other simulators are booted, those others and the
+    /// flag that chooses between them.
+    pub fn report(&self) -> Vec<String> {
+        let sim = &self.sim;
+        let state = if sim.booted { "booted" } else { "will boot" };
+        let how = match (self.explicit, sim.booted) {
+            (true, _) => "",
+            (false, true) => " (first booted)",
+            (false, false) => " (none booted; default iPhone)",
+        };
+        let mut lines = vec![format!(
+            "target simulator: {} ({}), {}, {state}{how}",
+            sim.name,
+            sim.udid,
+            runtime_label(&sim.runtime),
+        )];
+        if !self.explicit && !self.other_booted.is_empty() {
+            let n = self.other_booted.len();
+            lines.push(format!(
+                "{n} other simulator{} booted: {}",
+                if n == 1 { " is" } else { "s are" },
+                self.other_booted
+                    .iter()
+                    .map(|s| format!("{} ({})", s.name, s.udid))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+            lines.push("pass `--simulator <NAME|UDID>` to choose which one to run on".to_string());
+        }
+        lines
+    }
+}
+
+/// `com.apple.CoreSimulator.SimRuntime.iOS-17-5` → `iOS 17.5`; `iOS 12.0`
+/// stays as is. Falls back to the raw key.
+fn runtime_label(runtime: &str) -> String {
+    match ios_runtime_version(runtime) {
+        Some(v) if !v.is_empty() => format!(
+            "iOS {}",
+            v.iter().map(u32::to_string).collect::<Vec<_>>().join(".")
+        ),
+        _ => runtime.to_string(),
+    }
+}
+
+/// [`select_simulator`], plus the other booted simulators it passed over.
+pub fn choose_simulator(list: &Value, wanted: Option<&str>) -> Result<SimulatorChoice> {
+    let sim = select_simulator(list, wanted)?;
+    let other_booted = ios_simulators(list)
+        .into_iter()
+        .filter(|s| s.booted && s.udid != sim.udid)
+        .collect();
+    Ok(SimulatorChoice { sim, explicit: wanted.is_some(), other_booted })
 }
 
 /// Choose a simulator from `simctl list devices --json` output.
@@ -134,8 +211,9 @@ fn ios_runtime_version(runtime: &str) -> Option<Vec<u32>> {
     )
 }
 
-/// Run `xcrun simctl list devices --json` and select from it.
-pub(crate) fn find_simulator(wanted: Option<&str>) -> Result<Simulator> {
+/// Run `xcrun simctl list devices --json` and choose from it
+/// ([`choose_simulator`]).
+pub fn find_simulator(wanted: Option<&str>) -> Result<SimulatorChoice> {
     let out = Command::new("xcrun")
         .args(["simctl", "list", "devices", "--json"])
         .output()
@@ -148,7 +226,7 @@ pub(crate) fn find_simulator(wanted: Option<&str>) -> Result<Simulator> {
     }
     let list: Value = serde_json::from_slice(&out.stdout)
         .with_context(|| "parse `xcrun simctl list devices --json` output")?;
-    select_simulator(&list, wanted)
+    choose_simulator(&list, wanted)
 }
 
 #[cfg(test)]
@@ -251,6 +329,55 @@ mod tests {
         assert_eq!(ios_runtime_version("iOS 12.0"), Some(vec![12, 0]));
         assert_eq!(ios_runtime_version("com.apple.CoreSimulator.SimRuntime.tvOS-17-5"), None);
         assert!(vec![9u32, 3] < vec![17, 0], "9.3 sorts before 17.0 numerically");
+    }
+
+    /// Regression: with an iPhone and an iPad both booted and no
+    /// `--simulator`, the run silently installed onto whichever simctl
+    /// listed first. The choice must name the target AND the passed-over
+    /// booted simulator, and name the flag that picks between them.
+    #[test]
+    fn regression_two_booted_simulators_report_the_others_and_the_flag() {
+        let list = with_booted(with_booted(sample(), "NEW-IPHONE"), "NEW-IPAD");
+        let choice = choose_simulator(&list, None).unwrap();
+        assert_eq!(choice.sim.udid, "NEW-IPAD", "simctl order within the newest runtime");
+        assert!(!choice.explicit);
+        assert_eq!(
+            choice.other_booted.iter().map(|s| s.udid.as_str()).collect::<Vec<_>>(),
+            vec!["NEW-IPHONE"],
+        );
+        let report = choice.report().join("\n");
+        assert!(report.contains("iPad Pro 13-inch (M4) (NEW-IPAD)"), "{report}");
+        assert!(report.contains("iOS 18.2"), "{report}");
+        assert!(report.contains("iPhone 16 (NEW-IPHONE)"), "{report}");
+        assert!(report.contains("--simulator <NAME|UDID>"), "{report}");
+    }
+
+    /// An explicit choice is not second-guessed: no "others are booted" noise.
+    #[test]
+    fn explicit_choice_reports_only_the_target() {
+        let list = with_booted(with_booted(sample(), "NEW-IPHONE"), "NEW-IPAD");
+        let choice = choose_simulator(&list, Some("NEW-IPHONE")).unwrap();
+        assert!(choice.explicit);
+        let report = choice.report();
+        assert_eq!(report.len(), 1, "{report:?}");
+        assert!(report[0].contains("iPhone 16 (NEW-IPHONE)"), "{report:?}");
+        assert!(report[0].contains("booted"), "{report:?}");
+    }
+
+    /// One booted simulator, none chosen: name it, nothing else.
+    #[test]
+    fn single_booted_simulator_reports_only_the_target() {
+        let choice = choose_simulator(&with_booted(sample(), "OLD-IPAD"), None).unwrap();
+        let report = choice.report();
+        assert_eq!(report.len(), 1, "{report:?}");
+        assert!(report[0].contains("OLD-IPAD") && report[0].contains("iOS 17.5"), "{report:?}");
+    }
+
+    #[test]
+    fn nothing_booted_reports_the_simulator_that_will_boot() {
+        let report = choose_simulator(&sample(), None).unwrap().report();
+        assert_eq!(report.len(), 1, "{report:?}");
+        assert!(report[0].contains("NEW-IPHONE") && report[0].contains("will boot"), "{report:?}");
     }
 
     #[test]

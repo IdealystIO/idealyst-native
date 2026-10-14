@@ -70,16 +70,22 @@ pub fn page() -> Element {
                 title = "Run".to_string(),
                 body = "Build and launch on a connected device or simulator. The target \
                         platform is a positional argument. On iOS, `--simulator` picks the \
-                        simulator by name or UDID (`run ios` and `dev --ios`); without it \
-                        the first booted simulator is used. `--device` builds, signs, and \
-                        installs on a connected iPhone or iPad, and `--udid` picks which \
-                        one. If the device hasn't trusted your developer certificate, the \
-                        launch fails with a pointer to Settings \u{2192} General \u{2192} \
-                        VPN & Device Management.".to_string(),
+                        simulator by name or UDID (`run ios` and `dev --ios`; `run ios \
+                        --udid` works too); without it the first booted simulator is used. \
+                        The chosen simulator is printed before the build, and if others are \
+                        booted they are listed so you can pick one. `--device` builds, signs, \
+                        and installs on a connected iPhone or iPad, and `--udid` picks which \
+                        one. The app is never started under a debugger: on iOS 17 and later \
+                        it is launched with `xcrun devicectl`; on older versions there is no \
+                        way to launch it from the Mac without one, so the run installs it and \
+                        tells you to open it on the device. If the device hasn't trusted your \
+                        developer certificate, the launch fails with a pointer to Settings \
+                        \u{2192} General \u{2192} VPN & Device Management.".to_string(),
                 code = "idealyst run ios\n\
                         idealyst run ios --simulator \"iPad Pro 13-inch (M4)\"\n\
                         idealyst dev --ios --simulator 471A6C9B-9AA6-4134-8EE7-5E5466CF8F55\n\
                         idealyst run ios --device\n\
+                        idealyst run ios --device --udid 00008030-001A2B3C4D5E802E\n\
                         idealyst run android".to_string(),
             )
 
