@@ -222,18 +222,25 @@ pub(crate) fn create(
 /// Re-sync after a data change: full reload (recycle every mounted cell,
 /// then re-window). Keyed identity preservation is a future optimization
 /// — mirrors the macOS/iOS `reloadData` shape.
-pub(crate) fn data_changed(node_id: u64) {
+///
+/// Returns the recycled cells' root node ids: the caller (the backend,
+/// which holds `&mut self` here) frees their per-node state.
+#[must_use = "recycled cells must be freed by the backend"]
+pub(crate) fn data_changed(node_id: u64) -> Vec<u64> {
     let state = STATES.with(|m| m.borrow().get(&node_id).cloned());
-    let Some(state) = state else { return };
-    recycle_all(&state);
+    let Some(state) = state else { return Vec::new() };
+    let recycled = recycle_all(&state);
     resync(&state);
+    recycled
 }
 
 /// Tear down: disconnect signals, recycle mounted cells (dropping their
-/// scopes), drop the state entry.
-pub(crate) fn release(node_id: u64) {
+/// scopes), drop the state entry. Returns the recycled cells' root node
+/// ids for the backend to free (see [`data_changed`]).
+#[must_use = "recycled cells must be freed by the backend"]
+pub(crate) fn release(node_id: u64) -> Vec<u64> {
     let state = STATES.with(|m| m.borrow_mut().remove(&node_id));
-    let Some(state) = state else { return };
+    let Some(state) = state else { return Vec::new() };
     {
         let mut s = state.borrow_mut();
         s.alive = false;
@@ -242,7 +249,34 @@ pub(crate) fn release(node_id: u64) {
             adj.disconnect(id);
         }
     }
-    recycle_all(&state);
+    recycle_all(&state)
+}
+
+/// How many virtualizers hold live state — the per-node-state test seam
+/// (`LinuxBackend::per_node_state_counts_for_test`).
+pub(crate) fn live_count() -> usize {
+    STATES.with(|m| m.borrow().len())
+}
+
+/// Free a cell that scrolled out of the window, from a GTK signal callback.
+///
+/// The backend is usually not borrowed here, but a scroll/resize signal can
+/// fire inside a layout pass that holds it; then the free waits for an idle
+/// rather than being dropped (a dropped free is exactly the leak this
+/// exists to close). The cell is already out of the document and its scope
+/// is gone, so nothing observes the delay.
+fn free_cell(state: &Rc<RefCell<State>>, cell_id: u64) {
+    let backend = state.borrow().backend.clone();
+    free_cell_via(backend, cell_id);
+}
+
+fn free_cell_via(backend: Weak<RefCell<LinuxBackend>>, cell_id: u64) {
+    let Some(rc) = backend.upgrade() else { return };
+    let Ok(mut b) = rc.try_borrow_mut() else {
+        glib::idle_add_local_once(move || free_cell_via(backend, cell_id));
+        return;
+    };
+    b.free_subtree(cell_id);
 }
 
 // =========================================================================
@@ -250,18 +284,22 @@ pub(crate) fn release(node_id: u64) {
 // =========================================================================
 
 /// Recycle every mounted cell: detach its widget and drop its scope.
-fn recycle_all(state: &Rc<RefCell<State>>) {
+/// Returns the cells' root node ids so the caller can free their state.
+fn recycle_all(state: &Rc<RefCell<State>>) -> Vec<u64> {
     let mut s = state.borrow_mut();
     let fixed = s.fixed.clone();
     let release_item = s.callbacks.release_item.clone();
     let mounted = std::mem::take(&mut s.mounted);
     drop(s); // release_item may re-enter the framework; hold no State borrow
+    let mut recycled = Vec::with_capacity(mounted.len());
     for (_, cell) in mounted {
         if cell.node.widget.parent().as_ref() == Some(fixed.upcast_ref::<gtk4::Widget>()) {
             fixed.remove(&cell.node.widget);
         }
         (release_item)(cell.scope_id);
+        recycled.push(cell.node.id);
     }
+    recycled
 }
 
 /// Recompute the visible window and reconcile mounted cells against it.
@@ -331,6 +369,8 @@ fn resync(state: &Rc<RefCell<State>>) {
             }
             let release = state.borrow().callbacks.release_item.clone();
             (release)(cell.scope_id);
+            // The row's scope is gone; free what the backend kept for it.
+            free_cell(state, cell.node.id);
         }
     }
 

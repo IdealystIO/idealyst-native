@@ -657,6 +657,14 @@ impl Host for LinuxBackend {
         LinuxBackend::clear_children(self, node)
     }
 
+    /// The subtree is DISCARDED: free every per-node table entry and Taffy
+    /// node it holds. Detach-only `clear_children` cannot do this (a
+    /// `LazyPersistent` screen is re-inserted on the same nodes). See
+    /// [`LinuxBackend::release_subtree_impl`].
+    fn release_subtree(&mut self, node: &Self::Node) {
+        LinuxBackend::release_subtree_impl(self, node)
+    }
+
     /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
     /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
     /// it is stated here rather than inherited (deletion-baseline S2.2).

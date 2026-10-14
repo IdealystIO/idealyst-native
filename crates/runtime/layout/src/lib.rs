@@ -728,6 +728,13 @@ impl LayoutTree {
         self.dropped.insert(node.0);
     }
 
+    /// How many nodes currently hold a slot in the tree (freed ones
+    /// excluded). Lets a backend's teardown tests assert a released subtree
+    /// gave its nodes back, rather than only unparenting them.
+    pub fn live_node_count(&self) -> usize {
+        self.tree.total_node_count()
+    }
+
     /// Whether `node` was freed by [`Self::remove_node`]. The `set_style`
     /// / `set_safe_area_extra` asserts use the same set to name a
     /// lifecycle bug; this exposes it so callers and tests can ask
@@ -5339,6 +5346,26 @@ mod tests {
         // …and re-adding it brings the span back, at the new position.
         t.add_child(root, anchor);
         assert_eq!(t.children_of(root), vec![a, b, new1, new2]);
+    }
+
+    /// `live_node_count` counts slots, not roots: unparenting keeps a node
+    /// alive (it becomes a root), only `remove_node` gives it back. Backend
+    /// teardown tests lean on exactly that distinction.
+    #[test]
+    fn live_node_count_drops_only_on_remove_node() {
+        let mut t = LayoutTree::new();
+        let base = t.live_node_count();
+        let parent = t.new_node();
+        let child = t.new_node();
+        let anchor = t.new_contents_node();
+        t.add_child(parent, child);
+        assert_eq!(t.live_node_count(), base + 3);
+        t.remove_child(parent, child);
+        assert_eq!(t.live_node_count(), base + 3, "unparented is not freed");
+        t.remove_node(child);
+        t.remove_node(anchor);
+        t.remove_node(parent);
+        assert_eq!(t.live_node_count(), base);
     }
 
     /// Freeing a contents node orphans its children as roots (as Taffy

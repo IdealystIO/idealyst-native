@@ -550,6 +550,22 @@ impl IdealystView {
         false
     }
 
+    /// Remove + unparent ONE child (a released subtree's root). Returns
+    /// whether `child` was ours.
+    pub fn remove_child(&self, child: &gtk4::Widget) -> bool {
+        let removed = {
+            let mut children = self.imp().children.borrow_mut();
+            let Some(i) = children.iter().position(|c| &c.widget == child) else {
+                return false;
+            };
+            children.remove(i)
+        };
+        // Unparent outside the borrow: it can emit signals (focus-leave)
+        // and queue a resize that re-enters this widget's vfuncs.
+        removed.widget.unparent();
+        true
+    }
+
     /// Remove + unparent every child (framework `clear_children`).
     pub fn remove_all_children(&self) {
         for child in self.imp().children.borrow_mut().drain(..) {

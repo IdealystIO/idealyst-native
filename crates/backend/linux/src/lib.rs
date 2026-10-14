@@ -1704,6 +1704,164 @@ impl LinuxBackend {
         }
     }
 
+    /// A subtree the framework has DISCARDED (`Host::release_subtree`): free
+    /// everything this backend keeps for it and take it out of its parent.
+    ///
+    /// Before this existed the trait's no-op default ran, and nothing on
+    /// this backend ever freed per-node state. `clear_children` only
+    /// detaches (it must: a `LazyPersistent` screen is detached and later
+    /// re-inserted on the SAME nodes — see the trait docs), so every
+    /// discarded `when` branch, keyed row and navigator screen left its
+    /// `nodes` entry (holding a strong ref to the widget, so the whole
+    /// GTK subtree stayed alive too), its Taffy node, and its entries in
+    /// every side table below — growing without bound for the life of the
+    /// app. A `text_areas` entry outliving its Taffy node is worse than a
+    /// leak: `flush_text_area_dirty` marks it dirty every pass.
+    ///
+    /// A LIVE portal container is skipped: it is a detached Taffy root
+    /// whose ordered teardown is [`Self::release_portal`]'s (the spliced
+    /// dispose order calls `release_portal` first and then this on the
+    /// same node, which then finds nothing left — `forget_node` frees each
+    /// Taffy slot at most once, because the slot is reached only through
+    /// the `nodes` entry it removes).
+    ///
+    /// Detaching the root from its parent here (rather than leaving it to
+    /// a following `clear_children`) is what keeps the hot-patch overlay
+    /// path correct: it releases then calls `remove_child`, which is a
+    /// no-op on this anchored host, so without it the discarded widget
+    /// stayed parented — and painted — with its backing state gone.
+    pub(crate) fn release_subtree_impl(&mut self, node: &LinuxNode) {
+        if self.portal_roots.contains(&node.id) {
+            return;
+        }
+        // Parent widget + layout, read BEFORE freeing (the parent is not
+        // part of the subtree, so it survives the free either way).
+        let parent = self.parent_of.get(&node.id).copied();
+        let parent_widget = parent.and_then(|p| self.nodes.get(&p)).map(|s| (s.widget.clone(), s.layout));
+        if let Some(p) = parent {
+            if let Some(kids) = self.children.get_mut(&p) {
+                kids.retain(|k| *k != node.id);
+                if kids.is_empty() {
+                    self.children.remove(&p);
+                }
+            }
+        }
+        // Free first, unparent second: unparenting a focused entry makes
+        // GTK emit focus-leave, and by then the subtree's controllers are
+        // detached (the navigator releases BEFORE the screen's scope drops,
+        // so `on_node_unstyled` has not run yet on that path).
+        self.free_subtree(node.id);
+        if let Some((pw, playout)) = parent_widget {
+            if let Some(iv) = pw.downcast_ref::<IdealystView>() {
+                iv.remove_child(&node.widget);
+            } else if let Some(scrolled) = pw.downcast_ref::<gtk4::ScrolledWindow>() {
+                if let Some(inner) = scroll_document(scrolled) {
+                    if node.widget.parent().as_ref() == Some(inner.upcast_ref::<gtk4::Widget>()) {
+                        inner.remove(&node.widget);
+                    }
+                }
+            }
+            // Taffy caches the parent's size against its old child set.
+            self.layout.mark_dirty(playout);
+        }
+    }
+
+    /// Free `root` and every descendant reachable through `children`.
+    ///
+    /// Portal containers never appear here as descendants: `insert` skips
+    /// them, so they are not in their declaration parent's `children`.
+    /// Virtualizer cells don't either (they are parented into the list's
+    /// document directly); [`Self::release_virtualizer`] frees those.
+    pub(crate) fn free_subtree(&mut self, root: u64) {
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if let Some(kids) = self.children.get(&id) {
+                stack.extend(kids.iter().copied());
+            }
+            self.forget_node(id);
+        }
+    }
+
+    /// Drop EVERY per-node table entry for `id` — the one place that knows
+    /// the full list, so a table added later is cleared on every teardown
+    /// path ([`Self::release_subtree_impl`], [`Self::release_portal`],
+    /// virtualizer cell recycling) or on none. Idempotent: a second call
+    /// finds nothing, and the Taffy slot is freed only by the call that
+    /// removes the `nodes` entry (`remove_node` on a freed slot panics in
+    /// Taffy).
+    ///
+    /// NOT cleared here: the virtualizer's own state (`virtualizer::STATES`).
+    /// Its `release` drops row scopes, whose teardown re-borrows the backend
+    /// — calling it from under this `&mut self` would panic. It has its own
+    /// ordered teardown (`release_virtualizer`, run when the list's scope
+    /// drops), exactly as iOS leaves `virtualizer_instances` to
+    /// `release_virtualizer_impl`.
+    fn forget_node(&mut self, id: u64) {
+        let widget = self.nodes.remove(&id).map(|st| {
+            self.layout.remove_node(st.layout);
+            st.widget
+        });
+        // Controllers first: they hold author closures that write through
+        // signals of a scope that may already be gone — see
+        // `input_controllers` / `states.rs` for the abort that prevents.
+        if let Some(installed) = self.state_controllers.remove(&id) {
+            if let Some(w) = &widget {
+                installed.detach(w);
+            }
+        }
+        match &widget {
+            Some(w) => self.detach_input_controllers(id, w),
+            None => {
+                self.input_controllers.remove(&id);
+            }
+        }
+        self.children.remove(&id);
+        self.parent_of.remove(&id);
+        self.native_css.remove(&id);
+        self.echo_guards.remove(&id);
+        self.native_styles.remove(&id);
+        // Its `layout` is the slot just freed; `flush_text_area_dirty`
+        // would mark a dead node dirty every pass.
+        self.text_areas.remove(&id);
+        self.sticky_nodes.remove(&id);
+        // A remote load still in flight settles through `finish_remote_image`
+        // / `settle_image`, which find no entry and drop the result.
+        self.image_nodes.remove(&id);
+        self.portal_roots.remove(&id);
+        self.portal_anchors.remove(&id);
+        self.portal_anchor_child.remove(&id);
+        self.portal_anchor_child.retain(|_, child| *child != id);
+        if self.root_id == Some(id) {
+            self.root_id = None;
+        }
+    }
+
+    /// Sizes of every per-node table, plus the live Taffy node count.
+    /// Test seam for the teardown regression
+    /// (`tests/released_subtree_frees_per_node_state.rs`): a mount/release
+    /// cycle must return each to its baseline.
+    #[doc(hidden)]
+    pub fn per_node_state_counts_for_test(&self) -> Vec<(&'static str, usize)> {
+        vec![
+            ("nodes", self.nodes.len()),
+            ("layout_nodes", self.layout.live_node_count()),
+            ("children", self.children.len()),
+            ("parent_of", self.parent_of.len()),
+            ("input_controllers", self.input_controllers.len()),
+            ("native_css", self.native_css.len()),
+            ("echo_guards", self.echo_guards.len()),
+            ("native_styles", self.native_styles.len()),
+            ("text_areas", self.text_areas.len()),
+            ("sticky_nodes", self.sticky_nodes.len()),
+            ("image_nodes", self.image_nodes.len()),
+            ("state_controllers", self.state_controllers.len()),
+            ("portal_roots", self.portal_roots.len()),
+            ("portal_anchors", self.portal_anchors.len()),
+            ("portal_anchor_child", self.portal_anchor_child.len()),
+            ("virtualizers", virtualizer::live_count()),
+        ]
+    }
+
     /// Run `write` with the node's echo guard up, so the widget's change
     /// signal (which GTK fires for programmatic writes) does not call the
     /// author back. See [`Self::echo_guards`].
@@ -3510,11 +3668,17 @@ impl LinuxBackend {
     }
 
     fn virtualizer_data_changed(&mut self, node: &LinuxNode) {
-        virtualizer::data_changed(node.id);
+        for cell in virtualizer::data_changed(node.id) {
+            self.free_subtree(cell);
+        }
     }
 
     fn release_virtualizer(&mut self, node: &LinuxNode) {
-        virtualizer::release(node.id);
+        // The recycled cells' subtrees are gone for good: free their
+        // per-node state (each cell root is a detached Taffy root).
+        for cell in virtualizer::release(node.id) {
+            self.free_subtree(cell);
+        }
     }
 
     fn create_graphics(
@@ -3584,12 +3748,18 @@ impl LinuxBackend {
     }
 
     fn release_portal(&mut self, node: &LinuxNode) {
-        self.portal_roots.remove(&node.id);
-        self.portal_anchors.remove(&node.id);
-        self.portal_anchor_child.remove(&node.id);
         if let Some(v) = node.widget.downcast_ref::<IdealystView>() {
             portal::release(v);
         }
+        // Free the container and its whole content subtree — the same
+        // teardown `release_subtree` does, and iOS's `release_portal_impl`.
+        // The container is never reachable from a released ancestor (insert
+        // skips it), so this is the ONLY point its state can be freed; it
+        // used to drop just the three portal maps, leaving the container's
+        // detached Taffy root and every content node registered forever.
+        // `forget_node` also clears `portal_roots` / `portal_anchors` /
+        // `portal_anchor_child` for it.
+        self.free_subtree(node.id);
     }
 
     fn set_portal_hidden(&mut self, node: &LinuxNode, hidden: bool) {
