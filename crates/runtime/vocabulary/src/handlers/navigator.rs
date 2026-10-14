@@ -927,7 +927,10 @@ pub mod native_push {
         pub push: Rc<dyn Fn(Rc<dyn Any>)>,
         /// Pop the top, animated, revealing the given screen.
         pub pop: Rc<dyn Fn(Rc<dyn Any>)>,
-        /// Swap the top in place, unanimated (Replace).
+        /// Swap the top for a different screen, keeping the stack below
+        /// (Replace). A native container animates it as a navigation
+        /// (UIKit plays its push transition). A query-only replace never
+        /// reaches the presenter.
         pub replace: Rc<dyn Fn(Rc<dyn Any>)>,
         /// Collapse to a single screen, unanimated (Reset).
         pub reset: Rc<dyn Fn(Rc<dyn Any>)>,

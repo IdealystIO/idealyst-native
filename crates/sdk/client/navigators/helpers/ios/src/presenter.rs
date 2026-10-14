@@ -110,6 +110,10 @@ declare_class!(
                     cb();
                 }
             }
+            // A raw UIKit delegate callback, outside every framework-
+            // wrapped handler: nothing else commits the writes the
+            // handler just staged (depth, active route, header chrome).
+            backend_ios::newcore::schedule_flush();
             schedule_layout_pass();
         }
     }
@@ -258,17 +262,9 @@ impl StackPresenter for IosStackPresenter {
             Rc::new(move |node: Rc<dyn Any>| {
                 let Some(view) = screen_view(&node) else { return };
                 let vc = mount_screen_in_vc(mtm, &view);
-                // Swap the top in place, unanimated: Replace is not a
-                // navigation, it is the same position holding something
-                // else.
-                let snapshot = {
-                    let mut v = vcs.borrow_mut();
-                    v.pop();
-                    v.push(vc);
-                    v.clone()
-                };
+                let mv = replace_move(&mut vcs.borrow_mut(), vc);
                 unsafe {
-                    nav.setViewControllers_animated(&NSArray::from_vec(snapshot), false);
+                    nav.setViewControllers_animated(&NSArray::from_vec(mv.stack), mv.animated);
                 }
                 schedule_layout_pass();
             }) as Rc<dyn Fn(Rc<dyn Any>)>
@@ -293,10 +289,76 @@ impl StackPresenter for IosStackPresenter {
     }
 }
 
+/// The container move a `Replace` reveal makes: the stack to hand
+/// `setViewControllers:animated:` and whether to animate it.
+struct StackMove<T> {
+    stack: Vec<T>,
+    animated: bool,
+}
+
+/// Swap the top of `believed` for `incoming` (updating it first, so the
+/// `didShow` that follows sees `actual == believed` and stays quiet) and
+/// say how to show the result.
+///
+/// Animated, because replacing the top is a navigation on iOS: with a new
+/// top that was not in the old stack, `setViewControllers:animated:YES`
+/// plays the standard push transition and leaves the screens below as
+/// given, the native move for linear flows (sign-in steps, checkout
+/// steps). A replace that keeps the same screen never reaches the
+/// presenter: the handler absorbs a query-only `replace_with_state`
+/// before revealing anything.
+///
+/// The outgoing screen keeps its content for the whole slide. The handler
+/// releases it before this reveal, but `release_subtree` only unregisters
+/// it from layout; the view stays inside its view controller, which UIKit
+/// retains until the transition ends (the same as an app-initiated pop).
+fn replace_move<T: Clone>(believed: &mut Vec<T>, incoming: T) -> StackMove<T> {
+    believed.pop();
+    believed.push(incoming);
+    StackMove { stack: believed.clone(), animated: true }
+}
+
 /// Install the iOS stack presenter. Idempotent; safe to call more than
 /// once (the seam replaces).
 pub fn install() {
     runtime_vocabulary::handlers::nav_native_push::install_stack_presenter(Rc::new(
         IosStackPresenter,
     ));
+}
+
+// The UIKit call itself needs a windowed `UINavigationController` to show
+// a transition, which a test binary cannot host. These pin the decision
+// the presenter hands it. The crate is iOS-only, so they run on the
+// simulator: `cargo test -p ios-navigator-helpers --target
+// aarch64-apple-ios-sim --no-run`, then `xcrun simctl spawn booted <bin>`.
+#[cfg(test)]
+mod tests {
+    use super::replace_move;
+
+    /// CrewForge kiosk, 2026-10-14: `replace` from a pushed step cut to
+    /// the next step with no slide, while push and pop animated.
+    #[test]
+    fn regression_replace_to_a_different_screen_animates() {
+        let mut believed = vec!["pin_pad", "picker"];
+        let mv = replace_move(&mut believed, "employee_id");
+        assert!(mv.animated, "a replace that changes the top screen is a navigation");
+    }
+
+    #[test]
+    fn replace_swaps_only_the_top_and_keeps_the_stack_below() {
+        let mut believed = vec!["pin_pad", "picker"];
+        let mv = replace_move(&mut believed, "employee_id");
+        assert_eq!(mv.stack, ["pin_pad", "employee_id"]);
+        // Updated before UIKit moves, so `didShow` reads it as our move
+        // and not as a user pop.
+        assert_eq!(believed, mv.stack);
+    }
+
+    #[test]
+    fn replace_at_the_root_keeps_a_single_screen() {
+        let mut believed = vec!["pin_pad"];
+        let mv = replace_move(&mut believed, "form");
+        assert_eq!(mv.stack, ["form"]);
+        assert!(mv.animated);
+    }
 }
