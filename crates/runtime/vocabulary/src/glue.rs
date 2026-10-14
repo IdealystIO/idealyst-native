@@ -886,10 +886,12 @@ pub use runtime_shared::{
     TouchPhase, TouchPoint, TouchResponse,
 };
 
-// Safe-area: still the old-core value read (same read the vocabulary's
-// own apply paths perform; the reactive re-fire port follows the same
-// pattern as the viewport ctx when a native backend needs it).
-pub use runtime_shared::safe_area_insets;
+/// The platform's safe-area insets (status bar, home indicator, notch,
+/// rounded-corner sides), reactive: rotation or a status bar appearing
+/// re-fires readers. To keep content clear of them, give a container
+/// `safe_area` sides instead; read this to react in app code. Zero on
+/// platforms without a safe area. See `crate::safe_area`.
+pub use crate::safe_area::safe_area_insets;
 
 // Ambient host identity + frame gating + clocks + the async driver:
 // pure thread-local / registry reads shared by both cores. `platform()`

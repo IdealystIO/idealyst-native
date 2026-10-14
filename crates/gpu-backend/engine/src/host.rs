@@ -349,7 +349,12 @@ impl Host {
         // reactive signal so any `.safe_area(TOP | BOTTOM)`
         // container in the app subtree inset itself off the
         // device chrome. Idempotent — `set_safe_area_insets`
-        // is signal-compare-and-set.
+        // is signal-compare-and-set. Two sinks, same value: the
+        // vocabulary's per-world source (author `safe_area_insets()`
+        // and every container's re-apply effect — this runs before
+        // the world exists, so it seeds the ctx) and the shared
+        // value the dev client resolves wire opt-ins against.
+        runtime_vocabulary::safe_area::push(skin.safe_area_insets());
         runtime_shared::set_safe_area_insets(skin.safe_area_insets());
         let backend = Rc::new(RefCell::new(WgpuBackend::new(
             text.clone(),

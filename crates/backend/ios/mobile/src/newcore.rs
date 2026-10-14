@@ -349,6 +349,19 @@ pub(crate) fn forward_keyboard_inset(inset: runtime_shared::KeyboardInset) {
     schedule_flush();
 }
 
+/// Report new safe-area insets to the mounted world
+/// (`runtime_vocabulary::safe_area`): author `safe_area_insets()` readers
+/// and every `safe_area` container's re-apply effect. Called by the
+/// observer's `safeAreaInsetsDidChange` with the same value it writes to
+/// `runtime_shared::set_safe_area_insets` (the dev client's source). Same
+/// discipline as [`forward_keyboard_inset`]: the push stages through the
+/// vocabulary's captured handle and rides one deduped [`schedule_flush`];
+/// before any world reads the insets the value is kept as the seed.
+pub(crate) fn forward_safe_area(insets: runtime_shared::EdgeInsets) {
+    runtime_vocabulary::safe_area::push(insets);
+    schedule_flush();
+}
+
 /// Run a platform-invoked vocabulary callback with the mounted world
 /// ambient (`World::enter`).
 ///

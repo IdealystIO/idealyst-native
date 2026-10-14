@@ -525,6 +525,34 @@ pub(crate) fn bind_value<T: 'static>(value: Value<T>, mut apply: impl FnMut(&T) 
     }
 }
 
+/// Apply a container's safe-area treatment now, and again every time the
+/// platform's insets change (`crate::safe_area`).
+///
+/// The backend's apply reads the platform insets itself, so the effect
+/// only needs the signal as a trigger. Re-applying is what makes the
+/// padding correct at all on a native host: the tree mounts before the
+/// host view is in a window, when the platform reports zero insets, and
+/// the real ones arrive afterwards (see `crate::safe_area`'s module docs).
+/// Empty `sides` is an opt-out (scroll views pass it explicitly to clear a
+/// platform default): applied once, nothing to follow. The effect belongs
+/// to the mounting scope, so it dies with the node.
+pub(crate) fn follow_safe_area(
+    sides: runtime_shared::SafeAreaSides,
+    mut apply: impl FnMut() + 'static,
+) {
+    if sides.is_empty() {
+        apply();
+        return;
+    }
+    let insets = crate::safe_area::safe_area_insets();
+    let _ = effect(move || {
+        let _ = insets.get();
+        // The backend reads no world signal, but nothing it might touch
+        // should become a dependency of this effect.
+        runtime_world::untrack(&mut apply);
+    });
+}
+
 /// Bind a `Value` prop whose initial value the `create_*` call ALREADY
 /// consumed: `Const` installs nothing (the widget was born correct);
 /// `Dyn` installs the update effect, whose first fire re-applies at

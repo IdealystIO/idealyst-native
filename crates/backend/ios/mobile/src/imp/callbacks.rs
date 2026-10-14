@@ -583,19 +583,31 @@ declare_class!(
         /// island, status-bar hide/show, sheet adaptation). Our
         /// observer sits as a flexible-resize subview of the host
         /// root, so its `safeAreaInsets` mirror the host's — read
-        /// them and push to the framework's global signal. Effects
-        /// subscribed via `safe_area_insets()` re-fire downstream,
-        /// including any container's `apply_safe_area_padding`.
+        /// them and push them to the mounted world, where author
+        /// `safe_area_insets()` readers and every `safe_area`
+        /// container's re-apply effect subscribe.
+        ///
+        /// This is also how the FIRST real insets arrive. The tree
+        /// mounts from `viewDidLoad`, before the host view is in a
+        /// window, and a view outside a window reports zero insets;
+        /// the real ones land here once UIKit attaches it. Without the
+        /// world push, every `safe_area` padding stayed at that zero
+        /// (an iPad header drawn under the status bar).
         #[method(safeAreaInsetsDidChange)]
         fn safe_area_insets_did_change(&self) {
             let _: () = unsafe { msg_send![super(self), safeAreaInsetsDidChange] };
             let insets: UIEdgeInsets = unsafe { msg_send![self, safeAreaInsets] };
-            runtime_shared::set_safe_area_insets(runtime_shared::EdgeInsets {
+            let insets = runtime_shared::EdgeInsets {
                 top: insets.top as f32,
                 right: insets.right as f32,
                 bottom: insets.bottom as f32,
                 left: insets.left as f32,
-            });
+            };
+            // The runtime-server dev client resolves wire safe-area
+            // opt-ins against the shared value; the world source is
+            // the local-render one.
+            runtime_shared::set_safe_area_insets(insets);
+            crate::newcore::forward_safe_area(insets);
         }
     }
 );

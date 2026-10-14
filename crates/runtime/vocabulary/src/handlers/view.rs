@@ -18,10 +18,8 @@ use super::bind_value;
 /// `mark_preserves_focus` → ref-fill.
 ///
 /// Deviations from the walker, per the P2 scope (crate docs):
-/// - safe-area applies ONCE at mount (`apply_safe_area_padding`); the
-///   old inset-signal re-application effect is deferred with the
-///   flush-driver work (P3) — the insets signal lives in the old
-///   reactive world.
+/// - safe-area applies at mount and re-applies whenever the platform
+///   insets change (`super::follow_safe_area`).
 /// - `mark_container` is emitted, but the native inline-size feedback
 ///   signal the old walker builds on non-cascade backends is deferred
 ///   with the style engine.
@@ -58,9 +56,10 @@ where
         attach_style(&backend, &node, style);
     }
     if !prim.safe_area.is_empty() {
-        backend
-            .borrow_mut()
-            .apply_safe_area_padding(&node, prim.safe_area);
+        let (backend, node, sides) = (backend.clone(), node.clone(), prim.safe_area);
+        super::follow_safe_area(sides, move || {
+            backend.borrow_mut().apply_safe_area_padding(&node, sides)
+        });
     }
     // After children + style: the backend measures this view's frame to
     // know how much of it the keyboard covers.
@@ -258,9 +257,10 @@ where
     // that is the whole reason this is an Option. Only silence (`None`)
     // leaves the platform default alone.
     if let Some(sides) = prim.safe_area {
-        backend
-            .borrow_mut()
-            .apply_scroll_view_safe_area_inset(&node, sides);
+        let (backend, node) = (backend.clone(), node.clone());
+        super::follow_safe_area(sides, move || {
+            backend.borrow_mut().apply_scroll_view_safe_area_inset(&node, sides)
+        });
     }
     // Same three-state contract as `safe_area` above: only a stated
     // preference reaches the backend, so a backend's own default is

@@ -305,9 +305,10 @@ where
     // stated preference reaches the backend, so a backend's own default
     // is never overwritten by silence.
     if let Some(sides) = prim.safe_area {
-        backend
-            .borrow_mut()
-            .apply_virtualizer_safe_area_inset(&node, sides);
+        let (backend, node) = (backend.clone(), node.clone());
+        super::follow_safe_area(sides, move || {
+            backend.borrow_mut().apply_virtualizer_safe_area_inset(&node, sides)
+        });
     }
 
     // End-of-scroll observation, on the virtualizer's OWN scroller —
