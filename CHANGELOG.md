@@ -32,6 +32,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   (`format!("{}{path}", server::base_url().unwrap())`) or ship the file with
   `asset!`/`embed_asset!`; a library ships images with `embed_asset!` (only
   the app crate's `assets/` is copied).
+  The wgpu renderer in the browser decodes with the browser
+  (`createImageBitmap`, `<img>` + canvas for SVG) instead of linking resvg
+  and the `image` decoders: −893 KB of wasm (−350 KB gzip) on the fiddle
+  simulator bundle. There a `data:`/embedded `src` settles a tick after
+  mount, like `<img>`.
 
 - **The soft keyboard no longer shrinks the app** (`backend-ios-mobile`,
   `backend-android-mobile`). iOS used to cut the layout viewport by the
@@ -994,6 +999,27 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`net` works on Linux and Windows apps** (`net`, `render-wgpu`). The
+  desktop HTTP transport awaited async `reqwest` on the caller's executor,
+  and reqwest's I/O needs a tokio reactor that no framework executor
+  provides — every request from an app on the Linux or Windows backend
+  (including `server` function calls) panicked with "there is no reactor
+  running". Requests now run on one process-wide tokio runtime thread that
+  `net` starts on first use, and any executor can await them; a cancel or a
+  dropped request future aborts the exchange there and closes its
+  connection. The wgpu renderer's private per-fetch tokio runtime for
+  `http(s)://` images is gone. Pinned by `net/tests/foreign_executor.rs`
+  on macOS, Linux and Windows.
+
+- **Linux frees what a discarded subtree held** (`backend-linux`,
+  `runtime-layout`). The GTK backend never implemented
+  `Host::release_subtree`, and `release_portal` / virtualizer recycling
+  only detached, so every swapped-out branch, removed row, popped screen,
+  closed portal and scrolled-out list cell kept its widget, its Taffy
+  node and its entries in every per-node table for the life of the app.
+  One helper now clears all of them, and a released subtree is also
+  taken out of its parent. `LayoutTree::live_node_count` is new (used by
+  the regression test).
 - **macOS: every bitmap `image()` aborted debug builds** (`backend-macos`).
   `CGImageForProposedRect:` was read back as an object pointer; objc2's
   debug message-type check aborted on the first PNG/JPEG. Now read as a
