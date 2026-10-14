@@ -154,7 +154,10 @@ mod imp {
         let app: Retained<AnyObject> = unsafe { msg_send_id![class!(NSApplication), sharedApplication] };
         let mouse: CGPoint = unsafe { msg_send![class!(NSEvent), mouseLocation] };
         let rect = CGRect {
-            origin: CGPoint { x: mouse.x - 200.0, y: mouse.y - 150.0 },
+            // Integral origin: a fractional one (the cursor location is
+            // sub-point) is pixel-aligned by AppKit, which can change the
+            // content height. `mouse_event` reads the real height anyway.
+            origin: CGPoint { x: (mouse.x - 200.0).round(), y: (mouse.y - 150.0).round() },
             size: CGSize { width: 400.0, height: 300.0 },
         };
         let window: Retained<NSWindow> = unsafe {
@@ -186,14 +189,26 @@ mod imp {
         unsafe { msg_send![w, windowNumber] }
     }
 
-    /// A mouse event at window-base coordinates (bottom-left origin).
-    fn mouse_event(kind: usize, window: &NSWindow, x: f64, y: f64, flags: usize) -> Retained<AnyObject> {
+    /// A mouse event at the content view's point `(x, y_from_top)`, like
+    /// [`cg_point`]. The window-base location (bottom-left origin) is
+    /// derived from the content view's ACTUAL height, never the 300 the
+    /// fixture asked for: AppKit sizes the content view to the window's
+    /// content rect, and that rect is only 300 tall when the window lands
+    /// where it was asked to. Centred on a cursor at the bottom screen edge
+    /// it is constrained onto the screen and pixel-aligned, and came out
+    /// 301 tall (frame 333), so a hard-coded `300 - y` put every press 1 pt
+    /// low depending on where the developer's mouse happened to be.
+    fn mouse_event(kind: usize, window: &NSWindow, x: f64, y_from_top: f64, flags: usize) -> Retained<AnyObject> {
         let ctx: *mut AnyObject = std::ptr::null_mut();
+        let content: *mut AnyObject = unsafe { msg_send![window, contentView] };
+        assert!(!content.is_null(), "fixture window has a content view");
+        let cf: CGRect = unsafe { msg_send![content, frame] };
+        let y = cf.origin.y + cf.size.height - y_from_top;
         unsafe {
             msg_send_id![
                 class!(NSEvent),
                 mouseEventWithType: kind,
-                location: CGPoint { x, y },
+                location: CGPoint { x: cf.origin.x + x, y },
                 modifierFlags: flags,
                 timestamp: 0.0f64,
                 windowNumber: window_number(window),
@@ -272,11 +287,10 @@ mod imp {
         let accepts: bool = unsafe { msg_send![&fx.window, acceptsMouseMovedEvents] };
         assert!(accepts, "the source turns on mouse-moved delivery for the host window");
 
-        // Window-base (10, 290) = 10 px from the content view's top.
-        send(&fx.app, &mouse_event(LEFT_DOWN, &fx.window, 10.0, 290.0, 0));
-        send(&fx.app, &mouse_event(LEFT_UP, &fx.window, 10.0, 290.0, 0));
-        send(&fx.app, &mouse_event(RIGHT_DOWN, &fx.window, 20.0, 280.0, FLAG_CONTROL));
-        send(&fx.app, &mouse_event(RIGHT_UP, &fx.window, 20.0, 280.0, 0));
+        send(&fx.app, &mouse_event(LEFT_DOWN, &fx.window, 10.0, 10.0, 0));
+        send(&fx.app, &mouse_event(LEFT_UP, &fx.window, 10.0, 10.0, 0));
+        send(&fx.app, &mouse_event(RIGHT_DOWN, &fx.window, 20.0, 20.0, FLAG_CONTROL));
+        send(&fx.app, &mouse_event(RIGHT_UP, &fx.window, 20.0, 20.0, 0));
         unsafe {
             let p = cg_point(&fx.window, 50.0, 60.0);
             send(&fx.app, &from_cg(CGEventCreateMouseEvent(std::ptr::null(), CG_OTHER_DOWN, p, CG_BUTTON_CENTER)));
