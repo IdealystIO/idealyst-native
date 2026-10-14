@@ -999,6 +999,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A web rebuild no longer re-runs `cargo metadata` before the next save
+  can start** (`dev-reload`). After every rebuild the watch thread
+  re-resolved the watched package set, serially. It now does so only when
+  a manifest moved — a watched package's `Cargo.toml`, or the workspace
+  root's `Cargo.toml`, `Cargo.lock` or `.cargo/config.toml` (by
+  modification time, since the root is not watched) — or the rebuild was
+  forced.
+
 - **`idealyst dev` says when Cargo.lock misses what its features pull in**
   (`dev-events`, `idealyst-cli`). The dev session's `--features
   idealyst/hot-reload,…,runtime-core/dev` are dependency features, which

@@ -1524,6 +1524,8 @@ fn watch_loop(
     };
 
     let mut watch_paths = watch_roots(&dir.join("Cargo.toml"));
+    // What `watch_paths` was resolved against; see `ManifestStamp`.
+    let mut manifests = ManifestStamp::of(&dir, &watch_paths);
     for path in &watch_paths {
         if let Err(e) = debouncer
             .watcher()
@@ -1832,11 +1834,22 @@ fn watch_loop(
             // The save may have edited a `Cargo.toml` and ADDED a path
             // dependency — and a dependency nobody watches is precisely the
             // silent staleness this watcher exists to prevent, so it must
-            // not be reintroduced by a mid-session edit. Re-resolving costs
-            // one `cargo metadata` against a build we just spent orders of
-            // magnitude longer on, which is cheap enough to do
-            // unconditionally rather than sniff event paths for manifests.
-            let fresh = watch_roots(&dir.join("Cargo.toml"));
+            // not be reintroduced by a mid-session edit. Only a manifest
+            // can move the set, though, and the
+            // `cargo metadata` this costs ran serially here before the next
+            // save could start, after every rebuild (CrewForge). A forced
+            // rebuild re-resolves too: it is how a person asks for a fresh
+            // look. The workspace root's manifest and cargo config are not
+            // watched (a save there arrives with the next source save), so
+            // the question is "did any manifest move", by modification
+            // time, not "did this save name one".
+            let stamp = ManifestStamp::of(&dir, &watch_paths);
+            let fresh = if forced || stamp != manifests {
+                manifests = stamp;
+                watch_roots(&dir.join("Cargo.toml"))
+            } else {
+                watch_paths.clone()
+            };
             if fresh != watch_paths {
                 for path in &watch_paths {
                     let _ = debouncer.watcher().unwatch(path);
@@ -1878,6 +1891,38 @@ fn watch_loop(
         // the record now describes what is on disk and what a page loading
         // it is replayed.
         record(&ws, &base, base_inputs.as_ref());
+    }
+}
+
+/// The modification time of every file that can move the set of local
+/// packages the watcher follows: each watched package's `Cargo.toml` (a
+/// path dependency added), and in the app's directory and every ancestor
+/// a `Cargo.toml` (the workspace root: a member listed), `Cargo.lock` and
+/// `.cargo/config.toml` / `.cargo/config` (a `[patch]`). A few `stat`s,
+/// where re-resolving is a `cargo metadata`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ManifestStamp(Vec<(PathBuf, Option<std::time::SystemTime>)>);
+
+impl ManifestStamp {
+    fn of(dir: &Path, watch_paths: &[PathBuf]) -> Self {
+        let mut files: Vec<PathBuf> =
+            watch_paths.iter().filter(|p| p.file_name().is_some_and(|n| n == "Cargo.toml")).cloned().collect();
+        for d in dir.ancestors() {
+            for f in ["Cargo.toml", "Cargo.lock", ".cargo/config.toml", ".cargo/config"] {
+                files.push(d.join(f));
+            }
+        }
+        files.sort();
+        files.dedup();
+        Self(
+            files
+                .into_iter()
+                .map(|f| {
+                    let t = std::fs::metadata(&f).and_then(|m| m.modified()).ok();
+                    (f, t)
+                })
+                .collect(),
+        )
     }
 }
 
@@ -3367,6 +3412,48 @@ mod tests {
         assert_eq!(target, "server");
         assert!(paths.iter().any(|p| p.ends_with("main.rs")), "{paths:?}");
         assert!(!paths.iter().any(|p| p.ends_with(".main.rs.swp")), "{paths:?}");
+    }
+
+    /// Regression (CrewForge): every rebuild re-ran `cargo metadata` on
+    /// the watch thread to refresh the watch roots, before the next save
+    /// could start. Only a manifest, the lock or a cargo config can move
+    /// them.
+    #[test]
+    fn regression_only_a_moved_manifest_re_resolves_the_watch_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let app = root.join("crates/app");
+        let lib = root.join("crates/ui");
+        for d in [&app.join("src"), &lib.join("src")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for f in [root.join("Cargo.toml"), app.join("Cargo.toml"), lib.join("Cargo.toml"), app.join("src/lib.rs")] {
+            std::fs::write(f, "").unwrap();
+        }
+        let watched = vec![app.join("Cargo.toml"), app.join("src"), lib.join("Cargo.toml"), lib.join("src")];
+        let before = ManifestStamp::of(&app, &watched);
+        let bump = |f: &Path| {
+            let t = std::fs::metadata(f).unwrap().modified().unwrap() + Duration::from_secs(5);
+            std::fs::File::options().write(true).open(f).unwrap().set_modified(t).unwrap();
+        };
+
+        // A source save: nothing to re-resolve.
+        bump(&app.join("src/lib.rs"));
+        assert_eq!(ManifestStamp::of(&app, &watched), before);
+
+        // The unwatched workspace root, a watched library, a new lock and
+        // a new cargo config each move it.
+        for f in [root.join("Cargo.toml"), lib.join("Cargo.toml")] {
+            let at = ManifestStamp::of(&app, &watched);
+            bump(&f);
+            assert_ne!(ManifestStamp::of(&app, &watched), at, "{}", f.display());
+        }
+        for f in [root.join("Cargo.lock"), root.join(".cargo/config.toml")] {
+            let at = ManifestStamp::of(&app, &watched);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "").unwrap();
+            assert_ne!(ManifestStamp::of(&app, &watched), at, "{}", f.display());
+        }
     }
 
     /// Regression (CrewForge): the full-stack server's watcher built on
