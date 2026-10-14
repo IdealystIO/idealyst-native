@@ -1614,16 +1614,22 @@ mod client_side {
         let _guard = configure_for(addr).await;
         let (handle, token) = net::cancel_token();
 
-        // Spawn the call so we can fire cancel concurrently. The
-        // task captures `token` via with_cancel_token; the handle
-        // stays here to trigger cancellation from this test thread.
-        let task = tokio::spawn(server::with_cancel_token(token, add(1, 2)));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        handle.cancel();
-
-        let start = std::time::Instant::now();
-        let result = task.await.unwrap();
-        let elapsed = start.elapsed();
+        // Drive the call and the cancel concurrently on THIS task
+        // rather than `tokio::spawn`ing the call: a client-side stub
+        // future is not `Send` on Apple hosts (`net`'s transport there
+        // holds objc2 `NSURLRequest`/`RcBlock` values across awaits),
+        // and it never needs to be — the framework runs it on the
+        // single-threaded UI executor (`spawn_async`, no `Send` bound).
+        // `tokio::spawn` demanded `Send`, so this test did not compile
+        // on macOS at all.
+        let call = server::with_cancel_token(token, add(1, 2));
+        let canceller = async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            handle.cancel();
+            std::time::Instant::now()
+        };
+        let (result, cancelled_at) = tokio::join!(call, canceller);
+        let elapsed = cancelled_at.elapsed();
 
         match result {
             Err(ServerError::Cancelled) => {}
@@ -1635,9 +1641,21 @@ mod client_side {
         );
     }
 
+    /// A `#[server]` stub drives `mutation()`'s request lifecycle.
+    ///
+    /// World setup mirrors production: `mutation` is a reactive
+    /// primitive whose state signal lives in a world, so it is CREATED
+    /// inside `World::enter` (in an app, the component build) and then
+    /// RUN from outside it (in an app, an event handler / async task —
+    /// tasks never enter the world). The settle write stages and only
+    /// becomes observable when the world flushes; in an app the host's
+    /// post-dispatch hook does that, here the test does it explicitly.
+    /// The old version of this test created the mutation with no world
+    /// at all and panicked with "signal()/effect() called outside
+    /// World::enter" before any network call.
     #[tokio::test]
     async fn regression_mutation_wraps_server_fn_callback() {
-        use runtime_core::{mutation, NetworkState};
+        use runtime_core::{mutation, Mutation, NetworkState};
 
         let mock = mock_server(Arc::new(|_call| {
             let body = serde_json::to_vec(&Result::<i32, ServerError>::Ok(42)).unwrap();
@@ -1646,16 +1664,27 @@ mod client_side {
         .await;
         let _guard = configure_for(mock.addr).await;
 
-        let m = mutation::<(i32, i32), i32, ServerError, _, _>(|(a, b)| async move {
-            add(a, b).await
+        let world = runtime_world::World::new();
+        let m: Mutation<(i32, i32), i32, ServerError> = world.enter(|| {
+            mutation(|(a, b): (i32, i32)| async move { add(a, b).await })
         });
+        world.flush();
         assert_eq!(m.network_state(), NetworkState::Idle);
 
-        let _ = m.run((2, 3)).await;
+        // Run outside `enter`, exactly like an event handler.
+        let result = m.run((2, 3)).await;
+        assert_eq!(result, Ok(42), "run returns the stub's decoded result inline");
+        world.flush();
         match m.network_state() {
             NetworkState::Success(v) => assert_eq!(v, 42),
             other => panic!("expected Success, got {other:?}"),
         }
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1, "one RPC for one run");
+        assert_eq!(calls[0].path, "add");
+        let decoded: (i32, i32) = serde_json::from_slice(&calls[0].body).unwrap();
+        assert_eq!(decoded, (2, 3));
     }
 
     #[tokio::test]

@@ -1123,6 +1123,20 @@ is byte-unchanged this wave (`git diff --stat` empty) and the only edit to
 future's auto-traits. The crate's real gate is `--features server` (52
 passed).
 
+> **RESOLVED (2026-10-14).** The fix was test-side: the stub future is
+> `!Send` on Apple by design (the framework drives it on the
+> single-threaded UI executor, whose `spawn_async` has no `Send` bound), so
+> `regression_cancel_aborts_solo_in_flight_http` now runs the call and the
+> cancel concurrently with `tokio::join!` instead of `tokio::spawn`. Once
+> the leg compiled, it exposed a second, platform-independent failure that
+> Linux had been reporting: `regression_mutation_wraps_server_fn_callback`
+> created a `mutation()` with no world ("signal()/effect() called outside
+> World::enter"). The test now creates it inside `World::enter`, runs it
+> from outside (the event-handler shape), and flushes before asserting the
+> staged settle. No production code changed — `#[server]` stubs never
+> create reactive state. `cargo test -p server` (client leg) is green on
+> macOS and Linux; it is a real gate again alongside `--features server`.
+
 ### 7.7 A defect class this migration nearly shipped: generated-code name drift
 
 **Mechanism.** The CLI generates each platform wrapper crate at build
