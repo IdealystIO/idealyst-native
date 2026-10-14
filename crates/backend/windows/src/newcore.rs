@@ -97,14 +97,13 @@
 //!
 //! # Viewport
 //!
-//! **No viewport source on this scaffold.** `finish()` reads the host
-//! client rect via `GetClientRect` directly for the Taffy pass, and
-//! nothing writes `runtime_shared::set_viewport_size` on EITHER core, so
-//! the world's viewport ctx keeps its default seed and old/new
-//! behavior matches by construction. When a resize seam lands
-//! (`WM_SIZE` forwarding) it must write the old TLS value and a
-//! new-core sink side by side — the terminal's `set_viewport` +
-//! `forward_viewport` pattern; the two sinks must never diverge.
+//! The host shell (`host-win32`) is the viewport source: it publishes
+//! [`WindowsBackend::logical_client_size`] through
+//! `runtime_shared::set_viewport_size` at boot, on `WM_SIZE` and on
+//! `WM_DPICHANGED`. The size is in LOGICAL pixels — the same units the
+//! layout pass runs in (`layout_pass` converts the device client rect the
+//! same way; see `crate::dpi`), so breakpoints don't shift with the
+//! monitor's scale.
 //!
 //! # Residual seams (named, none silent)
 //!

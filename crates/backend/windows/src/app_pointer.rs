@@ -13,8 +13,9 @@
 //! [`PointerSlot::pre_dispatch`] before `TranslateMessage` /
 //! `DispatchMessageW` — the seam `app_keys.rs` already uses. Positions are
 //! mapped from the target window's client area into the HOST client area
-//! (the app root). The host is DPI-unaware (see `OnResizeEvent` in
-//! `lib.rs`), so client pixels ARE logical pixels.
+//! (the app root), then from device to LOGICAL pixels by the window's DPI
+//! scale (`dpi.rs`) — the same units as layout and hit-testing. Movement
+//! deltas (cursor and raw locked movement) are divided by the same scale.
 //!
 //! ## PreventDefault
 //!
@@ -97,7 +98,8 @@ const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
 const HID_USAGE_GENERIC_MOUSE: u16 = 0x02;
 
 struct Lock {
-    /// Lock point, host client coordinates (what `x`/`y` report).
+    /// Lock point, host client coordinates in DEVICE pixels (reported as
+    /// `x`/`y` after the logical conversion).
     client_point: (f32, f32),
     /// Where the cursor was when the lock began (screen coordinates).
     restore: Option<POINT>,
@@ -108,8 +110,11 @@ struct Lock {
 struct Inner {
     host: HWND,
     sink: Option<PointerSink>,
-    /// Last position (host client coordinates).
+    /// Last position (host client coordinates, logical px).
     last: Option<(f32, f32)>,
+    /// Device px per logical px — the host window's DPI scale, kept in
+    /// step by `WindowsBackend::set_dpi`.
+    scale: f32,
     /// Secondary downs that were prevented: swallow the matching up.
     swallow_secondary_up: bool,
     hidden: bool,
@@ -129,10 +134,26 @@ impl PointerSlot {
             host,
             sink: None,
             last: None,
+            scale: 1.0,
             swallow_secondary_up: false,
             hidden: false,
             lock: None,
         })))
+    }
+
+    /// Adopt the host window's DPI scale (device px per logical px).
+    pub(crate) fn set_scale(&self, scale: f32) {
+        let mut s = self.0.borrow_mut();
+        if scale > 0.0 && scale != s.scale {
+            s.scale = scale;
+            // `last` was logical at the old scale's mapping of the same
+            // device point — a delta across the change would be bogus.
+            s.last = None;
+        }
+    }
+
+    fn scale(&self) -> f32 {
+        self.0.borrow().scale
     }
 
     fn sink(&self) -> Option<PointerSink> {
@@ -347,7 +368,13 @@ impl PointerSlot {
         }
         let pos = unsafe { self.host_point(msg, kind) };
         let mods = |e: AppPointerEvent| with_modifiers(e, msg.wParam.0);
-        let locked_point = self.0.borrow().lock.as_ref().map(|l| l.client_point);
+        let scale = self.scale();
+        let locked_point = self
+            .0
+            .borrow()
+            .lock
+            .as_ref()
+            .map(|l| (l.client_point.0 / scale, l.client_point.1 / scale));
 
         match kind {
             MouseMsg::Move => {
@@ -396,7 +423,7 @@ impl PointerSlot {
         }
     }
 
-    /// The message's point in HOST client coordinates.
+    /// The message's point in HOST client coordinates, logical px.
     unsafe fn host_point(&self, msg: &MSG, kind: MouseMsg) -> (f32, f32) {
         let host = self.0.borrow().host;
         let (x, y) = policy::lparam_point(msg.lParam.0);
@@ -409,7 +436,8 @@ impl PointerSlot {
                 MapWindowPoints(msg.hwnd, host, std::slice::from_mut(&mut p));
             }
         }
-        (p.x as f32, p.y as f32)
+        let scale = self.scale();
+        (p.x as f32 / scale, p.y as f32 / scale)
     }
 
     /// `WM_INPUT` while locked → `Move` with the raw device movement.
@@ -443,9 +471,13 @@ impl PointerSlot {
         };
         let (point, (dx, dy)) = {
             let mut s = self.0.borrow_mut();
+            let k = s.scale;
             let Some(lock) = s.lock.as_mut() else { return };
             let d = policy::raw_mouse_delta(flags, mouse.lLastX, mouse.lLastY, extent, &mut lock.prev_abs);
-            (lock.client_point, d)
+            // Raw movement is in device units (mickeys / desktop pixels);
+            // report it, and the lock point, in logical px like every
+            // other pointer coordinate.
+            ((lock.client_point.0 / k, lock.client_point.1 / k), (d.0 / k, d.1 / k))
         };
         if dx == 0.0 && dy == 0.0 {
             return;
@@ -625,6 +657,35 @@ mod tests {
         assert!(slot.pre_dispatch(&msg(child, policy::WM_RBUTTONDOWN, 0x0002, 10, 10)), "the sink's claim stands");
         assert_eq!(user_activity::count(), 1, "a swallowed press still counts");
         slot.set_sink(None);
+    }
+
+    /// On a 200% monitor the app-level pointer reported DEVICE pixels —
+    /// twice the coordinates of the layout the app hit-tests against (and
+    /// twice the movement). Positions, child-mapped positions and deltas
+    /// are logical.
+    #[test]
+    fn regression_win32_app_pointer_reports_logical_px_at_2x() {
+        let host = window(None, 0, 0, 400, 300);
+        let child = window(Some(host), 50, 40, 100, 100);
+        let slot = PointerSlot::new(host);
+        slot.set_scale(2.0);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        slot.set_sink(Some(recording(log.clone(), Rc::new(Cell::new(false)))));
+        slot.pre_dispatch(&msg(host, policy::WM_MOUSEMOVE, 0, 100, 100));
+        let m = ev(&log);
+        assert_eq!((m.x, m.y), (50.0, 50.0));
+        slot.pre_dispatch(&msg(host, policy::WM_MOUSEMOVE, 0, 120, 90));
+        let m = ev(&log);
+        assert_eq!((m.x, m.y, m.dx, m.dy), (60.0, 45.0, 10.0, -5.0));
+        // Child (50, 40) + (10, 10) = host device (60, 50) = logical (30, 25).
+        slot.pre_dispatch(&msg(child, policy::WM_LBUTTONDOWN, 0x0001, 10, 10));
+        let m = ev(&log);
+        assert_eq!((m.x, m.y), (30.0, 25.0));
+        slot.set_sink(None);
+        unsafe {
+            let _ = DestroyWindow(child);
+            let _ = DestroyWindow(host);
+        }
     }
 
     #[test]

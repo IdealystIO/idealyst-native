@@ -10,8 +10,11 @@
 //!   surface is in the layout tree and has a real size"). The
 //!   readiness decision is [`layout_event`]; dispatch plumbing lives
 //!   in `lib.rs`.
-//! - `scale` is reported as `1.0` — the Win32 host is DPI-unaware
-//!   today, and `1.0` is the documented "not yet reported" value.
+//! - `size` is PHYSICAL pixels (the laid-out logical frame × the
+//!   window's DPI scale) and `scale` is that DPI scale (`crate::dpi`), so
+//!   a renderer drawing a logical scene applies `scale` as its base
+//!   transform. A DPI change with an unchanged logical frame is a real
+//!   `on_resize` (the swapchain grows).
 //!
 //! The surface handed to the author is a
 //! [`GraphicsSurface::new_composed`] wrapper: `window_handle()`
@@ -73,7 +76,7 @@ pub(crate) enum GfxEvent {
 }
 
 /// Readiness / resize decision for a graphics node at its laid-out
-/// `frame` (w, h). `None` = nothing to dispatch: a degenerate ≤1px
+/// `frame` (w, h) in PHYSICAL pixels. `None` = nothing to dispatch: a degenerate ≤1px
 /// frame (mid-layout — the simulator mounts from a lazy chunk before
 /// its column has width), or a size unchanged from the last report.
 /// The first real size is `Ready`; later real changes are `Resize`.

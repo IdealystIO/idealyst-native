@@ -243,7 +243,7 @@ pub(crate) fn rgba_premul_to_bgra(width: u32, height: u32, mut rgba: Vec<u8>) ->
 }
 
 /// An SVG's natural size for layout and `on_load`: its intrinsic size in
-/// points (pixels on this DPI-unaware backend).
+/// points — logical pixels on this backend (see `dpi.rs`).
 pub(crate) fn svg_natural(svg: &SvgImage) -> (f32, f32) {
     let (w, h) = svg.intrinsic_size();
     (w as f32, h as f32)

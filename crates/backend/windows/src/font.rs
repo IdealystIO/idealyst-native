@@ -156,26 +156,44 @@ pub(crate) fn gpfont_for(entry: &mut FontEntry, hdc: HDC) -> *mut GpFont {
 /// CSS generic/system keywords map to their Windows equivalents;
 /// concrete names are probed with `GdipCreateFontFamilyFromName` so
 /// the returned family is one GDI+ provably has.
+///
+/// A generic keyword probes a short list of faces OF ITS KIND
+/// ([`MONOSPACE_FACES`], [`SERIF_FACES`]) before the stack moves on: a
+/// single-face mapping fell through to the proportional shell font
+/// whenever that face was missing (Wine, trimmed Windows images), so a
+/// `monospace` code block silently rendered in Segoe UI — columns
+/// misaligned, and wider than the layout measured for a mono face.
 pub(crate) fn resolve_family_stack(stack: &str, shell: &str) -> String {
     for raw in stack.split(',') {
         let name = raw.trim().trim_matches('"').trim_matches('\'').trim();
         if name.is_empty() {
             continue;
         }
-        let candidate = match name.to_ascii_lowercase().as_str() {
+        let shell_only = [shell];
+        let single = [name];
+        let candidates: &[&str] = match name.to_ascii_lowercase().as_str() {
             // The platform UI font — exactly what the shell font is.
             "system-ui" | "-apple-system" | "blinkmacsystemfont" | "ui-sans-serif"
-            | "sans-serif" => shell,
-            "serif" | "ui-serif" => "Times New Roman",
-            "monospace" | "ui-monospace" => "Consolas",
-            _ => name,
+            | "sans-serif" => &shell_only,
+            "serif" | "ui-serif" => SERIF_FACES,
+            "monospace" | "ui-monospace" => MONOSPACE_FACES,
+            _ => &single,
         };
-        if gdiplus_family_exists(candidate) {
-            return candidate.to_string();
+        if let Some(found) = candidates.iter().find(|c| gdiplus_family_exists(c)) {
+            return found.to_string();
         }
     }
     shell.to_string()
 }
+
+/// The faces CSS `monospace` resolves to, in preference order: Consolas
+/// (every Windows since Vista), Cascadia Mono (Windows 11), then the
+/// fixed-pitch faces that predate both.
+pub(crate) const MONOSPACE_FACES: &[&str] =
+    &["Consolas", "Cascadia Mono", "Courier New", "Lucida Console"];
+
+/// The faces CSS `serif` resolves to, in preference order.
+pub(crate) const SERIF_FACES: &[&str] = &["Times New Roman", "Georgia", "Cambria"];
 
 /// True iff GDI+ can resolve `name` as a font family (its default
 /// system collection — the same lookup `GdipCreateFontFromLogfontW`
@@ -258,9 +276,40 @@ mod tests {
         }
         assert!(!gp.is_null(), "resolved family must be drawable by GDI+");
         // Unknown-first stacks fall through; garbage-only falls back.
-        assert_eq!(resolve_family_stack("NoSuchFont, Arial", "Segoe UI"), "Arial");
+        // (Arial ships with every Windows; under Wine it comes from the
+        // host's fonts — the check is skipped only where it genuinely
+        // isn't installed, since the rule under test is "fall through".)
+        if gdiplus_family_exists("Arial") {
+            assert_eq!(resolve_family_stack("NoSuchFont, Arial", "Segoe UI"), "Arial");
+        }
         assert_eq!(resolve_family_stack("NoSuchFont, AlsoMissing", "Segoe UI"), "Segoe UI");
-        assert_eq!(resolve_family_stack("monospace", "Segoe UI"), "Consolas");
+        // Consolas when it's installed (every real Windows); see
+        // `regression_monospace_generic_never_resolves_to_proportional_shell`
+        // for systems without it.
+        if gdiplus_family_exists("Consolas") {
+            assert_eq!(resolve_family_stack("monospace", "Segoe UI"), "Consolas");
+        }
+    }
+
+    /// `monospace` mapped to Consolas ONLY: on a system without Consolas
+    /// (Wine — where this was found — or a trimmed Windows image) the
+    /// probe failed and the generic fell through to the PROPORTIONAL
+    /// shell font. It must land on some installed fixed-pitch face from
+    /// the fallback list instead (Courier New is on every Windows and
+    /// every Wine prefix that sees the host's fonts).
+    #[test]
+    fn regression_monospace_generic_never_resolves_to_proportional_shell() {
+        crate::ensure_gdiplus();
+        let installed: Vec<&str> =
+            MONOSPACE_FACES.iter().copied().filter(|f| gdiplus_family_exists(f)).collect();
+        assert!(
+            !installed.is_empty(),
+            "no fixed-pitch face from {MONOSPACE_FACES:?} is installed — the test host is broken"
+        );
+        let got = resolve_family_stack("monospace", "Segoe UI");
+        assert_eq!(got, installed[0], "first installed mono face wins");
+        assert_ne!(got, "Segoe UI", "monospace must never become the proportional shell font");
+        assert_eq!(resolve_family_stack("ui-monospace, monospace", "Segoe UI"), installed[0]);
     }
 
     /// Every CSS weight must yield a drawable GDI+ font — the painter

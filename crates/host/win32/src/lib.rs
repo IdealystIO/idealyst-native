@@ -40,9 +40,10 @@
 pub struct RunOptions {
     /// Window title shown in the title bar + taskbar.
     pub title: String,
-    /// Initial client width in pixels.
+    /// Initial client width in LOGICAL pixels (96-DPI units, like every
+    /// framework size); the window is sized × the monitor's DPI scale.
     pub width: i32,
-    /// Initial client height in pixels.
+    /// Initial client height in LOGICAL pixels.
     pub height: i32,
 }
 

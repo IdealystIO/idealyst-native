@@ -77,8 +77,9 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, GetDC, GetTextExtentPoint32W, HFONT, HGDIOBJ,
-    InvalidateRect, ReleaseDC, SelectObject, SetWindowRgn, HDC,
+    InvalidateRect, ReleaseDC, SelectObject, SetWindowRgn, HDC, LOGFONTW,
 };
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::Graphics::GdiPlus::{
     GdipDeleteFont, GdiplusStartup, GdiplusStartupInput, GdiplusStartupOutput,
 };
@@ -109,6 +110,9 @@ pub mod app_situation;
 mod border_pattern;
 mod code;
 mod dcomp;
+/// Logical ↔ device pixel policy (per-monitor DPI). Public so the host
+/// shell sizes its window and handles `WM_DPICHANGED` with the same rules.
+pub mod dpi;
 mod font;
 mod graphics;
 mod handles;
@@ -162,6 +166,28 @@ const TBM_SETRANGE: u32 = 0x0406; // WM_USER+6; lParam = MAKELONG(min, max)
 const SLIDER_RESOLUTION: i32 = 1000;
 const PBS_MARQUEE: u32 = 0x08;
 const PBM_SETMARQUEE: u32 = 0x040A; // WM_USER+10
+
+/// Make the process per-monitor DPI aware (v2, falling back to v1 on
+/// Windows 10 before 1703, then to system-aware on older systems).
+/// Process-wide and settable once, so the HOST calls it before creating
+/// any window; a manifest that already declared awareness makes every
+/// call fail harmlessly. Returns whether this call set it.
+///
+/// Without it Windows treats the process as DPI-unaware and bitmap-
+/// stretches the whole window on a >96-DPI monitor: blurry text and
+/// SVGs, `GetDpiForWindow` stuck at 96. See `dpi.rs`.
+pub fn enable_per_monitor_dpi_awareness() -> bool {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware;
+    unsafe {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).is_ok()
+            || SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE).is_ok()
+            || SetProcessDPIAware().as_bool()
+    }
+}
 
 /// Initialize the comctl32 trackbar + progress window classes once per
 /// process. Required before `CreateWindowExW` on `msctls_*` classes.
@@ -551,11 +577,23 @@ pub struct WindowsBackend {
     /// image events back to the UI thread (`image_fetch.rs`). Created on
     /// the first image load.
     image_pump: Option<image_fetch::ImagePump>,
-    /// The shell message font (Segoe UI) applied to native controls and
-    /// used when a text style names no typography.
+    /// The shell message font (Segoe UI) at its LOGICAL size — what text
+    /// with no style typography is measured in. Never handed to a native
+    /// control: controls draw in device pixels (`control_font`).
     ui_font: HFONT,
-    /// Single-line height of `ui_font` in px.
+    /// The shell message font recipe at logical size; `control_font` is
+    /// rebuilt from it whenever the DPI changes.
+    ui_logfont: LOGFONTW,
+    /// `ui_font` scaled to the window's DPI — the `WM_SETFONT` font of
+    /// every native control (button / edit / checkbox …), whose text the
+    /// control itself draws in device pixels.
+    control_font: HFONT,
+    /// Single-line height of `ui_font` in logical px.
     line_height: i32,
+    /// The host window's DPI. Everything stored on the backend (frames,
+    /// fonts, scroll offsets) is logical; this converts at the Win32
+    /// boundary. See `dpi.rs`.
+    pub(crate) dpi: dpi::DpiScale,
     /// Font cache + the key describing the shell font (painted text with
     /// no style typography draws with this).
     pub(crate) font_cache: font::FontCache,
@@ -592,7 +630,13 @@ impl WindowsBackend {
     /// controls underneath.
     pub fn new(host_hwnd: HWND) -> Self {
         ensure_gdiplus();
-        let (ui_font, line_height, base_size, base_family) = create_ui_font();
+        let (ui_logfont, ui_font, line_height, base_size, base_family) = create_ui_font();
+        // `GetDpiForWindow` answers 0 for a null/invalid window (tests
+        // build headless backends) — `from_dpi` reads that as 96.
+        let dpi = dpi::DpiScale::from_dpi(unsafe { GetDpiForWindow(host_hwnd) });
+        let control_font = create_control_font(&ui_logfont, dpi);
+        let pointer = app_pointer::PointerSlot::new(host_hwnd);
+        pointer.set_scale(dpi.factor());
         let default_font_key = font::FontKey {
             family: base_family,
             size_px: base_size,
@@ -618,7 +662,10 @@ impl WindowsBackend {
             image_events: HashMap::new(),
             image_pump: None,
             ui_font,
+            ui_logfont,
+            control_font,
             line_height,
+            dpi,
             font_cache: font::FontCache::new(),
             default_font_key,
             installed_typefaces: HashSet::new(),
@@ -626,8 +673,62 @@ impl WindowsBackend {
             back: scene::BackBuffer::new(),
             layout_dirty: false,
             keyboard: app_keys::KeyboardSlot::default(),
-            pointer: app_pointer::PointerSlot::new(host_hwnd),
+            pointer,
         }
+    }
+
+    /// The window's current DPI scale (device px per logical px).
+    pub fn scale(&self) -> f32 {
+        self.dpi.factor()
+    }
+
+    /// The host client area in LOGICAL pixels — what layout runs against
+    /// and what the host publishes as the viewport signal.
+    pub fn logical_client_size(&self) -> (f32, f32) {
+        let mut rect = RECT::default();
+        if unsafe { GetClientRect(self.host_hwnd, &mut rect) }.is_err() {
+            return (0.0, 0.0);
+        }
+        self.dpi.client_to_logical(rect.right - rect.left, rect.bottom - rect.top)
+    }
+
+    /// Adopt a new window DPI — the host calls this from `WM_DPICHANGED`
+    /// BEFORE applying the suggested window rect, so the `WM_SIZE` that
+    /// rect triggers already lays out at the new scale. Rebuilds the
+    /// native controls' device font, re-scales pointer reporting, and
+    /// re-lays out (control HWNDs, window regions and composition visuals
+    /// move to their new device rects; graphics surfaces get an
+    /// `on_resize` with the new physical size + scale). Painted content
+    /// needs nothing: the next paint's root transform and SVG raster
+    /// density read the new scale.
+    pub fn set_dpi(&mut self, dpi: u32) {
+        let next = dpi::DpiScale::from_dpi(dpi);
+        if next == self.dpi {
+            return;
+        }
+        self.dpi = next;
+        self.pointer.set_scale(next.factor());
+        let font = create_control_font(&self.ui_logfont, next);
+        if !font.is_invalid() {
+            for meta in self.nodes.values() {
+                if let NodeKind::Control { hwnd } = meta.kind {
+                    if !hwnd.is_invalid() {
+                        unsafe {
+                            SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+                        }
+                    }
+                }
+            }
+            // Every control now holds the new font; the old one is free.
+            let old = std::mem::replace(&mut self.control_font, font);
+            if !old.is_invalid() {
+                unsafe {
+                    let _ = DeleteObject(HGDIOBJ(old.0));
+                }
+            }
+        }
+        self.layout_dirty = true;
+        self.relayout();
     }
 
     /// The shared app-level keyboard slot. The host shell clones it once at
@@ -741,16 +842,22 @@ impl WindowsBackend {
         }
     }
 
-    /// The pressable handler under client-space `(x, y)`, if any. The
-    /// host fires it AFTER releasing the backend borrow (the handler
-    /// writes signals whose effects re-borrow the backend).
+    /// The pressable handler under the client-area point `(x, y)` — in
+    /// DEVICE pixels, exactly as the mouse message's `lParam` carries it;
+    /// hit-testing runs in logical pixels. The host fires the handler
+    /// AFTER releasing the backend borrow (the handler writes signals
+    /// whose effects re-borrow the backend).
     pub fn pressable_action(&self, x: f32, y: f32) -> Option<Rc<dyn Fn()>> {
+        let (x, y) = self.dpi.point_to_logical(x, y);
         scene::pressable_at(self, x, y)
     }
 
-    /// Route a wheel tick (`delta_px` > 0 scrolls content down/right) to
-    /// the scroll view under `(x, y)`. Returns true when consumed.
+    /// Route a wheel tick (`delta_px` > 0 scrolls content down/right, in
+    /// LOGICAL pixels) to the scroll view under the client-area point
+    /// `(x, y)` (DEVICE pixels, as the message carries it). Returns true
+    /// when consumed.
     pub fn wheel_scroll(&mut self, x: f32, y: f32, delta_px: f32) -> bool {
+        let (x, y) = self.dpi.point_to_logical(x, y);
         let handled = scene::scroll_at(self, x, y, delta_px);
         if handled {
             // Native children (composition visuals, control HWNDs)
@@ -912,9 +1019,9 @@ impl WindowsBackend {
         let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
         // Modern shell font — without it controls render in the legacy
         // bitmap "System" font.
-        if !hwnd.is_invalid() && !self.ui_font.is_invalid() {
+        if !hwnd.is_invalid() && !self.control_font.is_invalid() {
             unsafe {
-                SendMessageW(hwnd, WM_SETFONT, WPARAM(self.ui_font.0 as usize), LPARAM(1));
+                SendMessageW(hwnd, WM_SETFONT, WPARAM(self.control_font.0 as usize), LPARAM(1));
             }
         }
         hwnd
@@ -1125,12 +1232,8 @@ impl WindowsBackend {
         let Some(root_layout) = self.layout_for_id.get(&root_id).copied() else {
             return;
         };
-        let mut rect = RECT::default();
-        if unsafe { GetClientRect(self.host_hwnd, &mut rect) }.is_err() {
-            return;
-        }
-        let width = (rect.right - rect.left).max(0) as f32;
-        let height = (rect.bottom - rect.top).max(0) as f32;
+        // The client rect is device pixels; layout runs in logical ones.
+        let (width, height) = self.logical_client_size();
         if width <= 0.0 || height <= 0.0 {
             return;
         }
@@ -1184,10 +1287,12 @@ impl WindowsBackend {
             if meta.hidden {
                 continue;
             }
+            // Surfaces are sized in PHYSICAL pixels: a DPI change with an
+            // unchanged logical frame is a real resize (bigger swapchain).
             let ev = graphics::layout_event(
                 st.on_ready.is_none(),
                 st.last_size,
-                (meta.frame.2, meta.frame.3),
+                (self.dpi.to_device(meta.frame.2), self.dpi.to_device(meta.frame.3)),
             );
             if let Some(ev) = ev {
                 gfx_events.push((*id, ev));
@@ -1238,6 +1343,9 @@ impl WindowsBackend {
             if is_gfx {
                 gfx_moves.push((id, (ax, ay, w, h), clip, hidden));
             } else if let Some(hwnd) = meta.hwnd() {
+                // Child windows live in DEVICE pixels: place the
+                // edge-snapped device rect, and cut the region from the
+                // clip in device space too (radii scale with it).
                 // Painted-scene clips (`overflow: hidden`, scroll
                 // boxes, rounded wrappers) can't touch a native child
                 // HWND — express the nearest clipping ancestor as a
@@ -1246,15 +1354,13 @@ impl WindowsBackend {
                 // hold ONE shape, so controls get the chain's
                 // single-clip approximation; graphics visuals get the
                 // full two-channel chain.
-                let region = hwnd_clip_region((ax, ay, w, h), clip.legacy());
-                control_moves.push((
-                    hwnd,
-                    ax.round() as i32,
-                    ay.round() as i32,
-                    w.round() as i32,
-                    h.round() as i32,
-                    region,
-                ));
+                let dpi = self.dpi;
+                let (dx, dy, dw, dh) = dpi.rect_to_device((ax, ay, w, h));
+                let region = hwnd_clip_region(
+                    (dx as f32, dy as f32, dw as f32, dh as f32),
+                    clip.legacy().map(|(r, rad)| (dpi.rect_to_device_f(r), dpi.to_device(rad))),
+                );
+                control_moves.push((hwnd, dx, dy, dw, dh, region));
             }
             let (mut cox, mut coy) = (ax, ay);
             if let NodeKind::View(v) = &meta.kind {
@@ -1292,7 +1398,12 @@ impl WindowsBackend {
             };
             st.visible
                 .store(!hidden, std::sync::atomic::Ordering::Relaxed);
-            let placement = dcomp::visual_placement(abs, clip, hidden);
+            // Composition visuals are positioned/clipped in DEVICE pixels.
+            let placement = dcomp::visual_placement(
+                self.dpi.rect_to_device_f(abs),
+                clip.scaled(self.dpi.factor()),
+                hidden,
+            );
             if st.last_placement == Some(placement) {
                 continue;
             }
@@ -1353,20 +1464,20 @@ impl WindowsBackend {
     /// should call with the backend released.
     fn take_graphics_callback(&mut self, id: u64, ev: graphics::GfxEvent) -> Option<TakenGfx> {
         let meta = self.nodes.get(&id)?;
-        let w = meta.frame.2.round().max(0.0) as u32;
-        let h = meta.frame.3.round().max(0.0) as u32;
+        let (w, h) = self.dpi.physical_size(meta.frame.2, meta.frame.3);
         if w <= 1 || h <= 1 {
             return None;
         }
+        let scale = self.dpi.factor();
         let st = self.graphics.get_mut(&id)?;
         st.last_size = Some((w, h));
         match ev {
             graphics::GfxEvent::Ready => st
                 .on_ready
                 .take()
-                .map(|cb| TakenGfx::Ready(cb, st.surface.clone(), (w, h))),
+                .map(|cb| TakenGfx::Ready(cb, st.surface.clone(), (w, h), scale)),
             graphics::GfxEvent::Resize => {
-                st.on_resize.take().map(|cb| TakenGfx::Resize(cb, (w, h)))
+                st.on_resize.take().map(|cb| TakenGfx::Resize(cb, (w, h), scale))
             }
         }
     }
@@ -1594,8 +1705,9 @@ enum TakenGfx {
         runtime_shared::primitives::graphics::OnReady,
         runtime_shared::primitives::graphics::GraphicsSurface,
         (u32, u32),
+        f32,
     ),
-    Resize(runtime_shared::primitives::graphics::OnResize, (u32, u32)),
+    Resize(runtime_shared::primitives::graphics::OnResize, (u32, u32), f32),
 }
 
 /// Deliver deferred graphics events (queued by `layout_pass`). Runs on
@@ -1607,8 +1719,9 @@ enum TakenGfx {
 /// composition visual is stable for the node's lifetime — no
 /// Android-style surface recreation on this backend).
 ///
-/// `scale` is 1.0 — the Win32 host is DPI-unaware today; `1.0` is the
-/// documented "not yet reported" value.
+/// `size` is the surface's PHYSICAL pixel size and `scale` the window's
+/// DPI scale (the `OnReadyEvent` contract) — a renderer drawing a logical
+/// scene applies `scale` as its base transform.
 fn dispatch_graphics_events(
     weak: &Weak<RefCell<WindowsBackend>>,
     events: &[(u64, graphics::GfxEvent)],
@@ -1620,15 +1733,15 @@ fn dispatch_graphics_events(
         };
         let taken = backend.borrow_mut().take_graphics_callback(id, ev);
         match taken {
-            Some(TakenGfx::Ready(mut cb, surface, size)) => {
+            Some(TakenGfx::Ready(mut cb, surface, size, scale)) => {
                 cb(OnReadyEvent {
                     target: GraphicsTarget::RawWindow(surface),
                     size,
-                    scale: 1.0,
+                    scale,
                 });
             }
-            Some(TakenGfx::Resize(mut cb, size)) => {
-                cb(OnResizeEvent { size, scale: 1.0 });
+            Some(TakenGfx::Resize(mut cb, size, scale)) => {
+                cb(OnResizeEvent { size, scale });
                 if let Some(st) = backend.borrow_mut().graphics.get_mut(&id) {
                     st.on_resize = Some(cb);
                 }
@@ -1663,34 +1776,68 @@ fn measure_text_gdi(text: &str, hfont: HFONT, line_height: i32) -> (i32, i32) {
     }
 }
 
-/// Build the shell UI font (the message font — Segoe UI on modern
-/// Windows), returning `(hfont, line_height, em_size, family_name)`.
-fn create_ui_font() -> (HFONT, i32, i32, String) {
+/// The shell message font (Segoe UI on modern Windows) at its LOGICAL
+/// (96-DPI) size, returning `(logfont, hfont, line_height, em_size,
+/// family_name)` — all metrics in logical px.
+///
+/// A per-monitor-aware process gets `SPI_GETNONCLIENTMETRICS` pre-scaled
+/// for the SYSTEM DPI (the primary monitor's at login), which would bake
+/// one monitor's scale into every logical text size. Ask for the 96-DPI
+/// metrics directly (`SystemParametersInfoForDpi`, Windows 10 1607+); on
+/// older systems normalize the plain query by the system DPI instead.
+fn create_ui_font() -> (LOGFONTW, HFONT, i32, i32, String) {
+    use windows::Win32::UI::HiDpi::{GetDpiForSystem, SystemParametersInfoForDpi};
     const FALLBACK: (i32, i32) = (16, 12);
     unsafe {
         let mut ncm = NONCLIENTMETRICSW {
             cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
             ..Default::default()
         };
-        let ok = SystemParametersInfoW(
+        let ptr = &mut ncm as *mut _ as *mut std::ffi::c_void;
+        let ok = if SystemParametersInfoForDpi(
+            SPI_GETNONCLIENTMETRICS.0,
+            ncm.cbSize,
+            Some(ptr),
+            0,
+            dpi::BASE_DPI,
+        )
+        .is_ok()
+        {
+            true
+        } else if SystemParametersInfoW(
             SPI_GETNONCLIENTMETRICS,
             ncm.cbSize,
-            Some(&mut ncm as *mut _ as *mut std::ffi::c_void),
+            Some(ptr),
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
-        .is_ok();
+        .is_ok()
+        {
+            let h = ncm.lfMessageFont.lfHeight;
+            let logical = dpi::metric_to_logical(h.abs(), GetDpiForSystem());
+            ncm.lfMessageFont.lfHeight = if h < 0 { -logical } else { logical };
+            true
+        } else {
+            false
+        };
         if !ok {
-            return (HFONT(std::ptr::null_mut()), FALLBACK.0, FALLBACK.1, String::new());
+            return (
+                LOGFONTW::default(),
+                HFONT(std::ptr::null_mut()),
+                FALLBACK.0,
+                FALLBACK.1,
+                String::new(),
+            );
         }
+        let logfont = ncm.lfMessageFont;
         // `lfHeight` is negative for an em height; take its magnitude
         // as the base font size.
-        let base_size = ncm.lfMessageFont.lfHeight.abs().max(1);
-        let face = &ncm.lfMessageFont.lfFaceName;
+        let base_size = logfont.lfHeight.abs().max(1);
+        let face = &logfont.lfFaceName;
         let face_len = face.iter().position(|&c| c == 0).unwrap_or(face.len());
         let base_family = String::from_utf16_lossy(&face[..face_len]);
-        let font = CreateFontIndirectW(&ncm.lfMessageFont);
+        let font = CreateFontIndirectW(&logfont);
         if font.is_invalid() {
-            return (HFONT(std::ptr::null_mut()), FALLBACK.0, FALLBACK.1, base_family);
+            return (logfont, HFONT(std::ptr::null_mut()), FALLBACK.0, FALLBACK.1, base_family);
         }
         let mut line_height = 16;
         let dc = GetDC(HWND(std::ptr::null_mut()));
@@ -1704,8 +1851,23 @@ fn create_ui_font() -> (HFONT, i32, i32, String) {
             SelectObject(dc, prev);
             ReleaseDC(HWND(std::ptr::null_mut()), dc);
         }
-        (font, line_height, base_size, base_family)
+        (logfont, font, line_height, base_size, base_family)
     }
+}
+
+/// The shell font at `dpi`'s DEVICE size — native controls draw their own
+/// text in device pixels, so their `WM_SETFONT` font must be the logical
+/// font scaled (a logical-size font renders half-size text inside a
+/// correctly-sized 2× button). Null when the shell font is unavailable
+/// (controls then keep their class default).
+fn create_control_font(logical: &LOGFONTW, dpi: dpi::DpiScale) -> HFONT {
+    if logical.lfFaceName[0] == 0 && logical.lfHeight == 0 {
+        return HFONT(std::ptr::null_mut());
+    }
+    let mut lf = *logical;
+    let device = dpi.font_px_to_device(lf.lfHeight.abs());
+    lf.lfHeight = if logical.lfHeight < 0 { -device } else { device };
+    unsafe { CreateFontIndirectW(&lf) }
 }
 
 impl Drop for WindowsBackend {
@@ -1728,8 +1890,10 @@ impl Drop for WindowsBackend {
                 let _ = unsafe { GdipDeleteFont(entry.gpfont) };
             }
         }
-        if !self.ui_font.is_invalid() {
-            let _ = unsafe { DeleteObject(HGDIOBJ(self.ui_font.0)) };
+        for font in [self.ui_font, self.control_font] {
+            if !font.is_invalid() {
+                let _ = unsafe { DeleteObject(HGDIOBJ(font.0)) };
+            }
         }
         unsafe {
             self.back.release();
@@ -2882,5 +3046,315 @@ mod disabled_tests {
         unsafe {
             let _ = DestroyWindow(host);
         }
+    }
+}
+
+/// Per-monitor DPI on a real window + GDI. Needs a desktop session (real
+/// HWNDs, GDI+), so these run on a Windows host or under Wine
+/// (`x86_64-pc-windows-gnu`). The pure conversion rules are host-tested
+/// in `tests/dpi.rs`.
+#[cfg(test)]
+mod dpi_tests {
+    use super::*;
+    use runtime_shared::Position;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, GetObjectW, MapWindowPoints,
+        BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, WM_GETFONT, WS_POPUP, WS_VISIBLE};
+
+    /// Device client size of the test window.
+    const CLIENT: (i32, i32) = (800, 600);
+
+    /// A frameless popup whose client area is exactly `CLIENT` device px.
+    fn host_window() -> HWND {
+        let title = to_pcwstr("dpi-test");
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                title.as_pcwstr(),
+                WS_POPUP | WS_VISIBLE,
+                0,
+                0,
+                CLIENT.0,
+                CLIENT.1,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window")
+    }
+
+    fn sized(w: f32, h: f32, bg: Option<&str>) -> Rc<StyleRules> {
+        let mut s = StyleRules::default();
+        s.width = Some(Length::Px(w).into());
+        s.height = Some(Length::Px(h).into());
+        s.flex_shrink = Some(0.0.into());
+        if let Some(c) = bg {
+            s.background = Some(Color::from(c).into());
+        }
+        Rc::new(s)
+    }
+
+    /// Paint the scene at the window's device size into a 32-bpp DIB and
+    /// return its pixels (`0x00RRGGBB`, row-major, top-down).
+    fn render(b: &mut WindowsBackend) -> Vec<u32> {
+        let (w, h) = CLIENT;
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h, // top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            let bmp = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0)
+                .expect("DIB section");
+            let old = SelectObject(dc, HGDIOBJ(bmp.0));
+            b.paint(dc, w, h);
+            let px = std::slice::from_raw_parts(bits as *const u32, (w * h) as usize)
+                .iter()
+                .map(|p| p & 0x00FF_FFFF)
+                .collect();
+            SelectObject(dc, old);
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            let _ = DeleteDC(dc);
+            px
+        }
+    }
+
+    fn at(px: &[u32], x: i32, y: i32) -> u32 {
+        px[(y * CLIENT.0 + x) as usize]
+    }
+
+    const RED: u32 = 0x00FF_0000;
+
+    /// A native control's rect in the host's client area, device px.
+    fn control_client_rect(host: HWND, ctl: HWND) -> (i32, i32, i32, i32) {
+        let mut r = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(ctl, &mut r);
+            let mut pts = [POINT { x: r.left, y: r.top }, POINT { x: r.right, y: r.bottom }];
+            MapWindowPoints(None, host, &mut pts);
+            (pts[0].x, pts[0].y, pts[1].x - pts[0].x, pts[1].y - pts[0].y)
+        }
+    }
+
+    fn control_font_height(ctl: HWND) -> i32 {
+        unsafe {
+            let font = SendMessageW(ctl, WM_GETFONT, WPARAM(0), LPARAM(0));
+            let mut lf = LOGFONTW::default();
+            let n = GetObjectW(
+                HGDIOBJ(font.0 as *mut std::ffi::c_void),
+                std::mem::size_of::<LOGFONTW>() as i32,
+                Some(&mut lf as *mut LOGFONTW as *mut std::ffi::c_void),
+            );
+            assert!(n > 0, "control has a font");
+            lf.lfHeight
+        }
+    }
+
+    /// The backend had no DPI handling: layout ran against the DEVICE
+    /// client rect and everything was drawn 1:1 in device pixels, so on a
+    /// 200% monitor a `100×50` view covered 100×50 device px (half its
+    /// size on screen, next to correctly-sized OS chrome), controls'
+    /// fonts stayed 96-DPI tiny, and clicks hit-tested in the wrong units.
+    /// At 192 DPI a 100×50 logical view must occupy 200×100 device px —
+    /// painted, native, and hit-tested — and dropping back to 96 DPI
+    /// (`WM_DPICHANGED`) must restore 1:1.
+    #[test]
+    fn regression_layout_units_scale_with_dpi() {
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let red = b.create_pressable(Rc::new(|| {}), &a11y);
+        b.apply_style(&red, &sized(100.0, 50.0, Some("#ff0000")));
+        let red_id = red.id;
+        let button = b.create_button("OK", &runtime_shared::derive::IntoAction::into_action(|| {}), None, None, &a11y);
+        b.apply_style(&button, &sized(100.0, 50.0, None));
+        let button_hwnd = button.hwnd;
+        b.insert(&mut root, red);
+        b.insert(&mut root, button);
+        let root_id = root.id;
+        b.set_dpi(192);
+        b.finish(root);
+
+        // Layout is logical: the 800×600 device client is a 400×300 viewport
+        // the root lays out in.
+        assert_eq!(b.scale(), 2.0);
+        assert_eq!(b.logical_client_size(), (400.0, 300.0));
+        assert_eq!(b.node_frame(root_id), Some((0.0, 0.0, 400.0, 300.0)));
+        assert_eq!(b.node_frame(red_id), Some((0.0, 0.0, 100.0, 50.0)));
+
+        // Painted: the red view fills device (0..200, 0..100).
+        let px = render(&mut b);
+        assert_eq!(at(&px, 10, 10), RED);
+        assert_eq!(at(&px, 150, 75), RED, "inside 200×100 device px");
+        assert_eq!(at(&px, 199, 99), RED);
+        assert_ne!(at(&px, 205, 75), RED, "nothing beyond 200 device px");
+
+        // Native: the button below it sits at logical (0, 50) = device (0, 100).
+        assert_eq!(control_client_rect(host, button_hwnd), (0, 100, 200, 100));
+        // …and draws its label in a device-scaled font.
+        let logical_font = b.default_font_key.size_px;
+        assert_eq!(control_font_height(button_hwnd), -(logical_font * 2));
+
+        // Hit-testing takes device coordinates and tests logical frames.
+        assert!(b.pressable_action(150.0, 75.0).is_some(), "device (150,75) = logical (75,37)");
+        assert!(b.pressable_action(150.0, 120.0).is_none(), "device y 120 = logical 60: the button row");
+
+        // The window moves to a 96-DPI monitor: back to 1:1, same logical layout.
+        b.set_dpi(96);
+        assert_eq!(b.logical_client_size(), (800.0, 600.0));
+        assert_eq!(b.node_frame(root_id), Some((0.0, 0.0, 800.0, 600.0)));
+        assert_eq!(b.node_frame(red_id), Some((0.0, 0.0, 100.0, 50.0)));
+        assert_eq!(control_client_rect(host, button_hwnd), (0, 50, 100, 50));
+        assert_eq!(control_font_height(button_hwnd), -logical_font);
+        let px = render(&mut b);
+        assert_eq!(at(&px, 50, 25), RED);
+        assert_ne!(at(&px, 150, 75), RED, "1:1 again");
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    /// 150% (144 DPI) — a fractional scale: native controls tile without
+    /// seams (edges snapped, not origin + size rounded independently).
+    #[test]
+    fn fractional_dpi_snaps_control_edges() {
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let mut hwnds = Vec::new();
+        for _ in 0..3 {
+            let btn = b.create_button("x", &runtime_shared::derive::IntoAction::into_action(|| {}), None, None, &a11y);
+            b.apply_style(&btn, &sized(33.0, 21.0, None));
+            hwnds.push(btn.hwnd);
+            b.insert(&mut root, btn);
+        }
+        b.set_dpi(144);
+        b.finish(root);
+        let rects: Vec<_> = hwnds.iter().map(|h| control_client_rect(host, *h)).collect();
+        for pair in rects.windows(2) {
+            assert_eq!(pair[0].1 + pair[0].3, pair[1].1, "no seam/overlap: {rects:?}");
+        }
+        // 3 × 21 logical = 63 logical = 94.5 → 95 device px in total.
+        assert_eq!(rects[2].1 + rects[2].3, 95);
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    /// An SVG `image()` was rasterized at scale 1 ("the backend doesn't
+    /// scale for DPI") and stretched by the paint: blurry on any HiDPI
+    /// monitor. Drawn at its 32×16 intrinsic size on a 2× monitor it must
+    /// be rasterized at 64×32 device px and paint exactly that area.
+    #[test]
+    fn regression_svg_rasterizes_at_monitor_scale() {
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16"><rect width="32" height="16" fill="red"/></svg>"#;
+        let src = format!("data:image/svg+xml,{}", percent_encode(svg));
+        let img = b.create_image(&src, None, &a11y);
+        let img_id = img.id;
+        let mut s = StyleRules::default();
+        s.position = Some(Position::Absolute);
+        s.left = Some(Length::Px(0.0).into());
+        s.top = Some(Length::Px(0.0).into());
+        b.apply_style(&img, &Rc::new(s));
+        b.insert(&mut root, img);
+        b.set_dpi(192);
+        b.finish(root);
+        assert_eq!(b.node_frame(img_id), Some((0.0, 0.0, 32.0, 16.0)), "laid out at its logical size");
+
+        let px = render(&mut b);
+        let raster = match &b.nodes[&img_id].kind {
+            NodeKind::Image(p) => match &p.source {
+                Some(image::ImageSource::Svg { raster, .. }) => {
+                    raster.borrow().as_ref().map(|(scale, d)| (*scale, d.natural_px()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        assert_eq!(raster, Some((2.0, (64, 32))), "rasterized at the monitor's 2× density");
+        assert_eq!(at(&px, 2, 2), RED);
+        assert_eq!(at(&px, 62, 30), RED, "covers 64×32 device px");
+        assert_ne!(at(&px, 66, 10), RED);
+
+        // Moving to a 1.5× monitor re-rasterizes at the new density.
+        b.set_dpi(144);
+        let _ = render(&mut b);
+        let scale = match &b.nodes[&img_id].kind {
+            NodeKind::Image(p) => match &p.source {
+                Some(image::ImageSource::Svg { raster, .. }) => raster.borrow().as_ref().map(|r| r.0),
+                _ => None,
+            },
+            _ => None,
+        };
+        assert_eq!(scale, Some(1.5));
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    /// The backend adopts the DPI Windows reports for its window, with no
+    /// `set_dpi` call. Run in a Wine prefix with `LogPixels` = 192 (or on a
+    /// 200% monitor) this sees 2.0 and the 100×50 view paints 200×100
+    /// device px; at 96 it sees 1.0 and 100×50 — the assertions are
+    /// relative to the reported DPI, so they hold on any monitor.
+    #[test]
+    fn backend_adopts_the_window_dpi() {
+        enable_per_monitor_dpi_awareness();
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let reported = unsafe { GetDpiForWindow(host) };
+        eprintln!("[dpi_tests] GetDpiForWindow = {reported}");
+        assert_eq!(b.dpi, dpi::DpiScale::from_dpi(reported));
+        let s = b.scale();
+        let (w, h) = b.logical_client_size();
+        assert_eq!((w * s).round() as i32, CLIENT.0);
+        assert_eq!((h * s).round() as i32, CLIENT.1);
+
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let red = b.create_view(&a11y);
+        b.apply_style(&red, &sized(100.0, 50.0, Some("#ff0000")));
+        b.insert(&mut root, red);
+        b.finish(root);
+        let (dw, dh) = ((100.0 * s).round() as i32, (50.0 * s).round() as i32);
+        let px = render(&mut b);
+        assert_eq!(at(&px, dw - 2, dh - 2), RED, "{dw}×{dh} device px at {reported} DPI");
+        assert_ne!(at(&px, dw + 3, dh / 2), RED);
+        assert_ne!(at(&px, dw / 2, dh + 3), RED);
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    fn percent_encode(s: &str) -> String {
+        s.bytes()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    (c as char).to_string()
+                } else {
+                    format!("%{c:02X}")
+                }
+            })
+            .collect()
     }
 }

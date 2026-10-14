@@ -22,6 +22,18 @@
 //! deactivation dropping a lock). Host-window messages also feed
 //! `backend_windows::app_situation` (focus, minimize, settings changes).
 //! See `backend_windows::app_pointer`.
+//!
+//! ## DPI
+//!
+//! The process is per-monitor-v2 DPI aware
+//! ([`backend_windows::enable_per_monitor_dpi_awareness`], before any
+//! window exists). `RunOptions` sizes are LOGICAL pixels: the window is
+//! created, its DPI read, and its client area sized to the options × the
+//! scale. Mouse coordinates are handed to the backend in device pixels
+//! (it converts); the viewport signal is published in logical pixels.
+//! `WM_DPICHANGED` (the window crossed to a monitor with another scale)
+//! re-scales the backend, then applies the suggested window rect. See
+//! `backend_windows::dpi`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -29,6 +41,7 @@ use std::rc::Rc;
 use backend_windows::app_keys::KeyboardSlot;
 use backend_windows::app_pointer::PointerSlot;
 use backend_windows::newcore::{self, NewCoreApp};
+use backend_windows::dpi;
 use backend_windows::WindowsBackend;
 use runtime_core::Element;
 
@@ -40,11 +53,13 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, EndPaint, ScreenToClient, UpdateWindow, HBRUSH, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect,
+    CreateWindowExW, DefWindowProcW, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+    WM_DPICHANGED, DispatchMessageW, GetClientRect,
     GetMessageW, GetWindowLongPtrW, LoadCursorW, RegisterClassExW,
     SetWindowLongPtrW, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    IDC_ARROW, MSG, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
+    IDC_ARROW, MSG, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
     WM_DESTROY, WM_ERASEBKGND,
     WM_HSCROLL, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
     WS_OVERLAPPEDWINDOW,
@@ -114,6 +129,10 @@ where
     R: FnOnce(&mut runtime_scene::Registry<WindowsBackend>),
     F: FnOnce() -> Element,
 {
+    // Per-monitor DPI awareness is process-wide and must precede the
+    // first window (see `backend_windows::dpi`).
+    backend_windows::enable_per_monitor_dpi_awareness();
+
     // hInstance for the window class — the current executable's module.
     let hmodule = GetModuleHandleW(None).map_err(|e| format!("GetModuleHandleW: {e}"))?;
     let hinstance = HINSTANCE(hmodule.0);
@@ -157,14 +176,7 @@ where
     // Seed the reactive viewport signal with the initial client size so
     // breakpoint-driven layout (responsive sidebars etc.) resolves
     // correctly on the FIRST build, not only after the first resize.
-    {
-        let mut rc = RECT::default();
-        let _ = GetClientRect(hwnd, &mut rc);
-        runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
-            width: (rc.right - rc.left).max(0) as f32,
-            height: (rc.bottom - rc.top).max(0) as f32,
-        });
-    }
+    publish_viewport(&backend);
 
     // Mount: `newcore::start` installs the time source, builds the scene
     // `Registry` (builtins, then the app's `register`), realizes the tree
@@ -249,9 +261,20 @@ unsafe fn register_host_class(hinstance: HINSTANCE) -> Result<(), String> {
     Ok(())
 }
 
-/// Create the top-level window sized so its *client* area is exactly
-/// `opts.width × opts.height` (via `AdjustWindowRectEx`, which inflates
-/// for the frame + title bar).
+/// Publish the backend's LOGICAL client size to the framework's reactive
+/// viewport signal (breakpoint / responsive styling reads it — the web
+/// host's resize observer equivalent). Call with no backend borrow held
+/// by the caller beyond this read: the write re-runs author effects that
+/// may re-borrow the backend.
+fn publish_viewport(backend: &Rc<RefCell<WindowsBackend>>) {
+    let (width, height) = backend.borrow().logical_client_size();
+    runtime_shared::set_viewport_size(runtime_shared::ViewportSize { width, height });
+}
+
+/// Create the top-level window sized so its *client* area shows exactly
+/// `opts.width × opts.height` LOGICAL pixels at the DPI of the monitor it
+/// opens on (via `AdjustWindowRectExForDpi`, which inflates for the frame
+/// + title bar at that DPI).
 unsafe fn create_host_window(hinstance: HINSTANCE, opts: &RunOptions) -> Result<HWND, String> {
     let ex_style = WINDOW_EX_STYLE(0);
     // WS_CLIPCHILDREN: the scene painter blits the whole client area;
@@ -259,17 +282,10 @@ unsafe fn create_host_window(hinstance: HINSTANCE, opts: &RunOptions) -> Result<
     // (button / edit / trackbar) positioned on top of it.
     let style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: opts.width.max(1),
-        bottom: opts.height.max(1),
-    };
-    // Ignore an AdjustWindowRectEx error (extremely unlikely for a
-    // standard style) — fall back to client dims as window dims.
-    let _ = AdjustWindowRectEx(&mut rect, style, false, ex_style);
-    let win_w = rect.right - rect.left;
-    let win_h = rect.bottom - rect.top;
+    // The monitor (and so the DPI) is only known once the window exists:
+    // create at the 96-DPI size, then resize for the real DPI before the
+    // window is ever shown.
+    let (win_w, win_h) = window_size_for(opts, style, ex_style, dpi::BASE_DPI);
 
     let title = to_wide(&opts.title);
     let hwnd = CreateWindowExW(
@@ -293,7 +309,28 @@ unsafe fn create_host_window(hinstance: HINSTANCE, opts: &RunOptions) -> Result<
     if hwnd.is_invalid() {
         return Err("CreateWindowExW returned null".into());
     }
+    let window_dpi = GetDpiForWindow(hwnd);
+    if window_dpi != 0 && window_dpi != dpi::BASE_DPI {
+        let (w, h) = window_size_for(opts, style, ex_style, window_dpi);
+        let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     Ok(hwnd)
+}
+
+/// Outer window size whose client area is `opts`' logical size at `dpi`.
+unsafe fn window_size_for(
+    opts: &RunOptions,
+    style: WINDOW_STYLE,
+    ex_style: WINDOW_EX_STYLE,
+    window_dpi: u32,
+) -> (i32, i32) {
+    let scale = dpi::DpiScale::from_dpi(window_dpi);
+    let (cw, ch) = scale.logical_size_to_device(opts.width.max(1) as f32, opts.height.max(1) as f32);
+    let mut rect = RECT { left: 0, top: 0, right: cw, bottom: ch };
+    // Ignore an adjust error (extremely unlikely for a standard style) —
+    // fall back to client dims as window dims.
+    let _ = AdjustWindowRectExForDpi(&mut rect, style, false, ex_style, window_dpi);
+    (rect.right - rect.left, rect.bottom - rect.top)
 }
 
 /// Terminate the process immediately without running the CRT's
@@ -439,18 +476,35 @@ unsafe extern "system" fn wnd_proc(
             // framework never re-`finish`es on its own — re-run layout.
             if let Some(state) = host_state(hwnd) {
                 state.backend.borrow_mut().relayout();
+                // The new client size, in LOGICAL px, into the viewport
+                // signal — after the relayout borrow is released.
+                publish_viewport(&state.backend);
             }
-            // Push the new client size into the framework's reactive
-            // viewport signal (breakpoint / responsive styling reads
-            // it — the web host's resize observer equivalent). AFTER
-            // the backend borrow is released: the write re-runs author
-            // effects that may re-borrow the backend.
-            let w = (lparam.0 & 0xffff) as u16 as f32;
-            let h = ((lparam.0 >> 16) & 0xffff) as u16 as f32;
-            runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
-                width: w,
-                height: h,
-            });
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            // The window moved to a monitor with a different scale (or the
+            // user changed it). Re-scale the backend FIRST so the WM_SIZE
+            // the suggested rect triggers lays out at the new scale, then
+            // take the suggested rect exactly — it keeps the window's
+            // logical size (see `dpi::suggested_window_pos`).
+            let new_dpi = dpi::dpichanged_dpi(wparam.0);
+            if let Some(state) = host_state(hwnd) {
+                state.backend.borrow_mut().set_dpi(new_dpi);
+            }
+            let suggested = &*(lparam.0 as *const RECT);
+            let (x, y, w, h) = dpi::suggested_window_pos((
+                suggested.left,
+                suggested.top,
+                suggested.right,
+                suggested.bottom,
+            ));
+            let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+            if let Some(state) = host_state(hwnd) {
+                // The device client size can stay put across a change
+                // (rounding); the logical viewport still moved.
+                publish_viewport(&state.backend);
+            }
             LRESULT(0)
         }
         WM_COMMAND => {

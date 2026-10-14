@@ -62,6 +62,9 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_GdiPlus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",
+    # Per-monitor DPI (`dpi.rs`): GetDpiForWindow, the process awareness
+    # context, SystemParametersInfoForDpi for the 96-DPI shell font.
+    "Win32_UI_HiDpi",
     # EnableWindow / GetFocus / SetFocus — the native disabled state
     # behind `StyleOps::set_disabled`.
     "Win32_UI_Input_KeyboardAndMouse",

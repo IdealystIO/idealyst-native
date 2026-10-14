@@ -535,8 +535,8 @@ impl BackBuffer {
 }
 
 /// Paint the whole scene into `target` (the host's `WM_PAINT` DC) at
-/// `w × h`. Renders into the retained back buffer, then blits — one
-/// flicker-free flip.
+/// `w × h` DEVICE pixels (the client rect). Renders into the retained
+/// back buffer, then blits — one flicker-free flip.
 pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h: i32) {
     if w <= 0 || h <= 0 {
         return;
@@ -589,6 +589,16 @@ pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h:
             .map(|c| c.to_argb_u32())
             .unwrap_or(0xFFFF_FFFF);
         let _ = GdipGraphicsClear(g, clear);
+
+        // The ONE logical → device conversion for everything painted:
+        // frames, borders, radii, text (GDI+ fonts are logical-px
+        // `UnitPixel` fonts, rasterized at device size under this
+        // transform), icons and images all draw in logical pixels and
+        // land on the DPI-sized back buffer. See `dpi.rs`.
+        let scale = b.dpi.factor();
+        if scale != 1.0 {
+            let _ = GdipScaleWorldTransform(g, scale, scale, MatrixOrderPrepend);
+        }
 
         if let Some(root) = b.root_id {
             paint_node(b, g, root, 1.0);
@@ -766,7 +776,7 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
             }
         }
         NodeKind::Icon(p) => icon::paint_into(g, p, w, h, alpha),
-        NodeKind::Image(p) => image::paint_into(g, p, w, h),
+        NodeKind::Image(p) => image::paint_into(g, p, w, h, b.dpi.svg_screen_scale()),
         // Native controls paint themselves in their own HWNDs (the
         // host's WS_CLIPCHILDREN keeps our blit off them).
         NodeKind::Control { .. } | NodeKind::External { .. } => {}

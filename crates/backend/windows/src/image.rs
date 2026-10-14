@@ -14,7 +14,7 @@
 //! |-------------------------------|----------------------------------------------|
 //! | PNG / JPEG / GIF / BMP / TIFF | GDI+, from an in-memory `IStream`            |
 //! | WebP                          | `image-webp` → premultiplied BGRA bitmap      |
-//! | SVG                           | resvg, re-rasterized at the displayed size   |
+//! | SVG                           | resvg, re-rasterized at the displayed DEVICE size (drawn size × DPI scale) |
 //!
 //! GIF draws its first frame (GDI+'s active frame by default), matching the
 //! contract. `http(s)` sources are fetched by `crate::image_fetch` and land
@@ -60,6 +60,15 @@ pub(crate) struct DecodedImage {
     natural: (u32, u32),
     /// Dropped after `image` is disposed (field drop runs after `Drop::drop`).
     _backing: Backing,
+}
+
+impl DecodedImage {
+    /// The bitmap's pixel size (for an SVG raster: the DEVICE pixels it
+    /// was rasterized at).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn natural_px(&self) -> (u32, u32) {
+        self.natural
+    }
 }
 
 impl Drop for DecodedImage {
@@ -208,18 +217,20 @@ fn dest_rect(natural: (f32, f32), cw: i32, ch: i32, fit: ObjectFit) -> (i32, i32
     }
 }
 
-/// The SVG raster for a `w × h` box: the cached one when its density
-/// still suffices, else a fresh one at the shared `raster_scale` rule
-/// (enough pixels that no `ObjectFit` upscales it, capped at
-/// `MAX_SVG_RASTER_EDGE_PX`). Screen scale is 1 — this backend is
-/// DPI-unaware, so layout px are device px.
+/// The SVG raster for a `w × h` (logical px) box on a `screen_scale`
+/// monitor: the cached one when its density still suffices, else a fresh
+/// one at the shared `raster_scale` rule (enough DEVICE pixels that
+/// neither `ObjectFit` nor the paint's DPI transform upscales it, capped
+/// at `MAX_SVG_RASTER_EDGE_PX`). A DPI change makes the cached density
+/// stale and re-rasterizes on the next paint.
 fn svg_raster<'a>(
     svg: &SvgImage,
     cache: &'a RefCell<Option<(f64, DecodedImage)>>,
     w: f32,
     h: f32,
+    screen_scale: f64,
 ) -> std::cell::Ref<'a, Option<(f64, DecodedImage)>> {
-    let want = svg.raster_scale((w as f64, h as f64), 1.0);
+    let want = svg.raster_scale((w as f64, h as f64), screen_scale);
     let stale = cache.borrow().as_ref().is_none_or(|(scale, _)| *scale != want);
     if stale {
         let fresh = svg.rasterize(want).and_then(|r| {
@@ -242,7 +253,19 @@ fn svg_raster<'a>(
 /// — that needs a per-draw `ImageAttributes` color matrix; images render
 /// at full alpha under a faded ancestor. Documented gap, not a silent
 /// wrong-path: no current example animates opacity over an image.)
-pub(crate) unsafe fn paint_into(g: *mut GpGraphics, p: &ImagePaint, w: f32, h: f32) {
+///
+/// `w`/`h` are LOGICAL px — the scene's root world transform maps them to
+/// device pixels, so a bitmap is drawn at its logical size (one image
+/// pixel per logical px, filtered up on a denser monitor, exactly like a
+/// 1× `UIImage` or a CSS `<img>`). `screen_scale` is the monitor's DPI
+/// scale, used only to rasterize SVGs at the device density they cover.
+pub(crate) unsafe fn paint_into(
+    g: *mut GpGraphics,
+    p: &ImagePaint,
+    w: f32,
+    h: f32,
+    screen_scale: f64,
+) {
     let Some(source) = &p.source else {
         return;
     };
@@ -257,7 +280,7 @@ pub(crate) unsafe fn paint_into(g: *mut GpGraphics, p: &ImagePaint, w: f32, h: f
         // Rasterize for the size actually drawn (the dest rect, which
         // `Cover` makes larger than the box).
         ImageSource::Svg { svg, raster } => {
-            svg_guard = svg_raster(svg, raster, dw as f32, dh as f32);
+            svg_guard = svg_raster(svg, raster, dw as f32, dh as f32, screen_scale);
             match svg_guard.as_ref() {
                 Some((_, d)) => d.image,
                 None => return,

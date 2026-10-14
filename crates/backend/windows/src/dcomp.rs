@@ -246,6 +246,17 @@ impl ClipChain {
         Self { square, rounded }
     }
 
+    /// The chain in DEVICE pixels: every rect and radius × `s`. The walk
+    /// accumulates clips in logical pixels; composition visuals are
+    /// placed in device pixels (`dpi.rs`).
+    pub(crate) fn scaled(self, s: f32) -> Self {
+        let r = |(l, t, rr, b): (f32, f32, f32, f32)| (l * s, t * s, rr * s, b * s);
+        Self {
+            square: self.square.map(r),
+            rounded: self.rounded.map(|(rect, rad)| (r(rect), rad * s)),
+        }
+    }
+
     /// The single-clip form the HWND region path consumes:
     /// all rects intersected, the rounded radius if one is present.
     pub(crate) fn legacy(&self) -> Option<((f32, f32, f32, f32), f32)> {
