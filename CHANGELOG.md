@@ -1018,6 +1018,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Less fixed cost on every web rebuild** (`build-web`, `dev-reload`).
+  The hot-patch base prep read cargo's whole module a second time and parsed
+  its symbol tables serially; it now reads it once and pulls the tables on
+  their own threads. Indexing the new base (~1 s on CrewForge) moved off the
+  watch thread, so the next save no longer waits for it. Favicons are
+  rendered into a cache that outlives the stage (the stage is cleared on
+  every build, so icon-gen's cache never hit and every rebuild rasterized
+  them again), and the cache file is no longer served from the bundle root.
+
 - **A library crate's first hot patch no longer replays its dependents
   cold** (`build-web`, `build-runtime-server`, `dev-reload`). Only the app
   crate's replay cache was seeded after a base build, so the first patch

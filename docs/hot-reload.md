@@ -823,9 +823,12 @@ the incremental cache 0.6 – 1.1 s, mono collection and partitioning
 about 0.9 s. Type checking, borrow checking and codegen of the one
 changed unit are each under 0.3 s.
 
-The base is indexed once per base build, right after it is built, and
-the builder keeps the base's slot map rather than re-reading the module
-per patch.
+The base is indexed once per base build, right after it is built, on a
+thread of its own (the next save does not wait for it; the first hot
+patch joins it), and the builder keeps the base's slot map rather than
+re-reading the module per patch. Preparing the base reads cargo's module
+once, and its symbol tables (aliases, data symbols) are read on their own
+threads beside the glue extraction and the prep.
 
 **The replay cache is seeded after every base build.** A replay has its
 own incremental directory, which the base build never fills, so the

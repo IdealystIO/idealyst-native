@@ -909,8 +909,26 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         // section — and learn whether anything in the app still uses
         // wasm-bindgen, which decides the rest of the pipeline. See
         // `own_glue`'s module docs.
+        //
+        // A hot-patch base reads cargo's module ONCE: the bytes feed the
+        // extraction here and the base prep below, and the base's symbol
+        // tables (aliases, data symbols — read from the `linking` section
+        // the prep drops) are pulled on their own threads meanwhile. They
+        // were a second read of the whole module and two serial parses
+        // inside `hotpatch-base-prep` (CrewForge: 1.18 s of a 2.75 s floor).
+        let linked = if opts.hot_patch {
+            let bytes = fs::read(&original_wasm)
+                .with_context(|| format!("read {}", original_wasm.display()))?;
+            Some(std::sync::Arc::new(bytes))
+        } else {
+            None
+        };
+        let mut base_symbols = linked.as_ref().map(|l| BaseSymbols::start(l.clone(), &original_wasm));
         let extracted = timings
-            .time("glue-extract", || own_glue::extract_for_build(&original_wasm))
+            .time("glue-extract", || match &linked {
+                Some(bytes) => own_glue::extract_bytes(bytes),
+                None => own_glue::extract_for_build(&original_wasm),
+            })
             .with_context(|| "web-glue extraction")?;
         let own_glue::Extracted { mode, glue, .. } = extracted;
         match (&mode, &glue.wasm_bindgen) {
@@ -935,14 +953,9 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
                 // reach any of them by index (`hotpatch_base`). No GC runs
                 // after it in own mode — the table is only what the patch
                 // tier itself needs.
-                let served = if opts.hot_patch {
+                let served = if let Some(symbols) = base_symbols.take() {
                     timings.time("hotpatch-base-prep", || {
-                        hotpatch_prepare_base(
-                            &reporter,
-                            &original_wasm,
-                            &glue.wasm,
-                            hotpatch_base::Flavor::Own,
-                        )
+                        hotpatch_prepare_base(&reporter, symbols, &glue.wasm, hotpatch_base::Flavor::Own)
                     })?
                 } else {
                     glue.wasm.clone()
@@ -966,19 +979,14 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
                 // `app.wasm` in place would leave a later build reusing a
                 // module it considers fresh — with thousands of extra table
                 // entries, after a hot-patch prep — and shipping it.
-                let bindgen_input = if opts.hot_patch {
+                let bindgen_input = if let Some(symbols) = base_symbols.take() {
                     // Root every function in the element table BEFORE
                     // wasm-bindgen runs. wasm-bindgen's dead-code pass keeps
                     // only what the exports and the table reach — measured,
                     // 2993 functions in and 560 out — so this is what decides
                     // whether a patch can call anything at all.
                     let prepared = timings.time("hotpatch-base-prep", || {
-                        hotpatch_prepare_base(
-                            &reporter,
-                            &original_wasm,
-                            &glue.wasm,
-                            hotpatch_base::Flavor::Hybrid,
-                        )
+                        hotpatch_prepare_base(&reporter, symbols, &glue.wasm, hotpatch_base::Flavor::Hybrid)
                     })?;
                     let path = original_wasm.with_extension("hotbase.wasm");
                     fs::write(&path, prepared).with_context(|| format!("write {}", path.display()))?;
@@ -1228,7 +1236,7 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         // when the icon block is absent. Has to run AFTER fonts
         // (independent concerns, but both must finish before gzip)
         // and BEFORE gzip for the same reason.
-        sync_and_inject_web_icons(&project_dir, &staged)?;
+        sync_and_inject_web_icons(&project_dir, &staged, &build_dir.join("web-icons"))?;
         if opts.brotli {
             brotli_precompress_bundle(&staged)
                 .with_context(|| format!("brotli-precompress bundle at {}", staged.display()))?;
@@ -1330,41 +1338,70 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
 /// every function rooted in the table (`hotpatch_base::prepare_base_module`).
 fn hotpatch_prepare_base(
     reporter: &dev_events::Reporter,
-    original_wasm: &Path,
+    symbols: BaseSymbols,
     module: &[u8],
     flavor: hotpatch_base::Flavor,
 ) -> Result<Vec<u8>> {
-    let alias_path = original_wasm.with_extension("aliases.tsv");
-    let data_path = original_wasm.with_extension("datasyms.tsv");
-    let linked = fs::read(original_wasm)
-        .with_context(|| format!("read {} for hot-patch prep", original_wasm.display()))?;
-    // Read BEFORE the prep: the map is built from the `linking` section,
-    // which the prep drops (and whose function indices wasm-bindgen, in
-    // hybrid mode, renumbers anyway).
-    let aliases = hotpatch_aliases::read_from_linked(&linked)
-        .context("reading the base module's symbol aliases")?;
-    hotpatch_aliases::write(&alias_path, &aliases)?;
-    // The only other thing anything reads from `linking`; the prep drops
-    // that section from the served base.
-    let data = hotpatch_aliases::read_data_symbols_from_linked(&linked)
-        .context("reading the base module's data symbols")?;
-    hotpatch_aliases::write_data_symbols(&data_path, &data)?;
-    // The prep works on the glue-extracted module (the aliases above came
+    // The prep works on the glue-extracted module (the symbol tables come
     // from cargo's own: extraction renames imports and repoints exports
     // only, so no function index or symbol differs).
     let (prepared, census) = hotpatch_base::prepare_base_module(module, flavor)
         .context("preparing the base module for hot patching")?;
+    let (linked_len, aliases) = symbols.finish()?;
     reporter.log(
         "build-web",
         format!(
             "hot-patch base: {} → {} bytes; {}; {} symbol aliases",
-            linked.len(),
+            linked_len,
             prepared.len(),
             census.summary(),
-            aliases.len(),
+            aliases,
         ),
     );
     Ok(prepared)
+}
+
+/// The base module's symbol aliases and data symbols, read from cargo's
+/// linked module and written beside it (`<bin>.aliases.tsv`,
+/// `<bin>.datasyms.tsv`) on two threads of their own while the glue
+/// extraction and the base prep run. Read BEFORE the prep in effect: both
+/// come from the `linking` section, which the prep drops (and whose
+/// function indices wasm-bindgen, in hybrid mode, renumbers anyway).
+struct BaseSymbols {
+    linked_len: usize,
+    aliases: std::thread::JoinHandle<Result<usize>>,
+    data: std::thread::JoinHandle<Result<()>>,
+}
+
+impl BaseSymbols {
+    fn start(linked: std::sync::Arc<Vec<u8>>, original_wasm: &Path) -> Self {
+        let alias_path = original_wasm.with_extension("aliases.tsv");
+        let data_path = original_wasm.with_extension("datasyms.tsv");
+        let for_data = linked.clone();
+        let linked_len = linked.len();
+        Self {
+            linked_len,
+            aliases: std::thread::spawn(move || {
+                let aliases = hotpatch_aliases::read_from_linked(&linked)
+                    .context("reading the base module's symbol aliases")?;
+                hotpatch_aliases::write(&alias_path, &aliases)?;
+                Ok(aliases.len())
+            }),
+            data: std::thread::spawn(move || {
+                let data = hotpatch_aliases::read_data_symbols_from_linked(&for_data)
+                    .context("reading the base module's data symbols")?;
+                hotpatch_aliases::write_data_symbols(&data_path, &data)
+            }),
+        }
+    }
+
+    /// Wait for both, returning the linked module's length and the
+    /// alias count.
+    fn finish(self) -> Result<(usize, usize)> {
+        let aliases = self.aliases.join().map_err(|_| anyhow::anyhow!("the alias reader panicked"))??;
+        self.data.join().map_err(|_| anyhow::anyhow!("the data-symbol reader panicked"))??;
+        Ok((self.linked_len, aliases))
+    }
 }
 
 /// Stage a deployable static-site bundle at `out_dir`. `pkg/` is
@@ -1771,13 +1808,24 @@ fn escape_js_string(s: &str) -> String {
 /// matching how the font-preload pipeline emits `/fonts/...`. The
 /// 16/32/48 sizes are bundled into `favicon.ico`; the PNGs cover
 /// web-app-manifest and Apple home-screen pinning.
-fn sync_and_inject_web_icons(project_dir: &Path, staged: &Path) -> Result<()> {
+///
+/// Rendered into `cache_dir`, which outlives the stage, and copied from
+/// there: the stage is cleared on every build, so rendering into it made
+/// icon-gen's own cache (keyed by the icon block and the source's bytes)
+/// miss every time, and every rebuild rasterized four images again.
+fn sync_and_inject_web_icons(project_dir: &Path, staged: &Path, cache_dir: &Path) -> Result<()> {
     let Some(config) = icon_gen::load_config_from_manifest(project_dir)? else {
         return Ok(());
     };
     let block = config.resolved_for(icon_gen::Target::Web);
-    icon_gen::sync_web_icons(Some(&block), staged)
-        .with_context(|| format!("generate web icons into {}", staged.display()))?;
+    let outputs = icon_gen::sync_web_icons(Some(&block), cache_dir)
+        .with_context(|| format!("generate web icons into {}", cache_dir.display()))?
+        .context("an icon block yields web icons")?;
+    for file in [&outputs.favicon_ico, &outputs.favicon_192, &outputs.favicon_512, &outputs.apple_touch_icon] {
+        let name = file.file_name().context("an icon file has a name")?;
+        fs::copy(file, staged.join(name))
+            .with_context(|| format!("copy {} into {}", file.display(), staged.display()))?;
+    }
 
     let index_path = staged.join("index.html");
     let html = fs::read_to_string(&index_path)
@@ -4804,7 +4852,7 @@ mod regression_tests {
         // `fake_project`'s Cargo.toml has no icon block, so the
         // helper must leave the bundle untouched — no extra files,
         // no HTML rewrite.
-        sync_and_inject_web_icons(&project, &out).unwrap();
+        sync_and_inject_web_icons(&project, &out, &tmp.path().join("icons")).unwrap();
 
         assert!(!out.join("favicon.ico").exists());
         assert!(!out.join("favicon-192.png").exists());
@@ -4842,8 +4890,23 @@ mod regression_tests {
         .unwrap();
 
         let out = tmp.path().join("dist");
+        let icons = tmp.path().join("icons");
         stage_bundle(&project, &out, None, &[]).unwrap();
-        sync_and_inject_web_icons(&project, &out).unwrap();
+        sync_and_inject_web_icons(&project, &out, &icons).unwrap();
+
+        // Regression (CrewForge): rendered into the stage, which every
+        // build clears, the icons were rasterized again on every rebuild.
+        // A restage copies the cached ones; nothing is rendered.
+        let rendered = fs::metadata(icons.join("favicon-512.png")).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        stage_bundle(&project, &out, None, &[]).unwrap();
+        sync_and_inject_web_icons(&project, &out, &icons).unwrap();
+        assert_eq!(fs::metadata(icons.join("favicon-512.png")).unwrap().modified().unwrap(), rendered);
+        let in_bundle: Vec<String> = fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!in_bundle.iter().any(|n| n.ends_with(".json")), "the cache file is not served: {in_bundle:?}");
 
         for name in [
             "favicon.ico",

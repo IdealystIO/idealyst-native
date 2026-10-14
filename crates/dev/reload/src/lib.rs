@@ -1301,6 +1301,8 @@ struct HotPatchBase {
     armed: bool,
     artifact: build_web::BuildArtifact,
     builder: Option<build_web::hotpatch_build::WasmPatchBuilder>,
+    /// The builder being made on another thread (see [`Self::warm`]).
+    indexing: Option<std::thread::JoinHandle<std::result::Result<build_web::hotpatch_build::WasmPatchBuilder, String>>>,
     /// Set after a failure that will recur — a base built without the
     /// capture wrapper, say. One message, then the tier stays quiet and
     /// every body edit rebuilds.
@@ -1329,6 +1331,7 @@ impl HotPatchBase {
             armed: opts.hot_patch,
             artifact,
             builder: None,
+            indexing: None,
             retired: None,
             reporter: opts.reporter.clone(),
             serial: 0,
@@ -1346,87 +1349,124 @@ impl HotPatchBase {
         self.resumed_objects.clear();
         self.artifact = artifact;
         // The table the old builder indexed no longer describes the
-        // module the page is running.
+        // module the page is running. One still being made is waited for
+        // and dropped like it: its seeds must stop before the new base's
+        // replay the same crates.
+        if let Some(indexing) = self.indexing.take() {
+            let _ = indexing.join();
+        }
         self.builder = None;
     }
 
     /// Index the base for patching, if that has not happened since the
     /// last base build.
     ///
-    /// Called right after each base build (see [`Self::warm`]) as well as
-    /// from [`Self::patch`]: indexing reads and parses the whole served
-    /// module (2.4 s on CrewForge's 223 MB base), and doing it at the
-    /// first save put that on the first patch's save-to-screen time.
+    /// Started right after each base build (see [`Self::warm`]) and
+    /// joined here, from [`Self::patch`]: indexing reads and parses the
+    /// whole served module (2.4 s on CrewForge's 223 MB base), and doing it
+    /// at the first save put that on the first patch's save-to-screen time.
     fn ensure_builder(&mut self) -> std::result::Result<(), String> {
+        if let Some(indexing) = self.indexing.take() {
+            match indexing.join() {
+                Ok(Ok(builder)) => {
+                    self.builder = Some(builder);
+                    self.resumed_objects.clear();
+                }
+                // Retried below, which says why.
+                Ok(Err(_)) => {}
+                Err(_) => self.reporter.error("hotpatch", "indexing the base panicked"),
+            }
+        }
         if self.builder.is_none() {
-            let Some(captures) = self.artifact.captures_dir.clone() else {
+            let Some(index) = self.index_job() else {
                 let why = "this base was built without the rustc capture wrapper, so there is \
                            no invocation to replay"
                     .to_string();
                 self.retired = Some(why.clone());
                 return Err(why);
             };
-            match build_web::hotpatch_build::WasmPatchBuilder::new(
-                &self.artifact.served_wasm,
-                self.artifact.symbol_aliases.as_deref(),
-                self.artifact.data_symbols.as_deref(),
-                captures,
-                self.crate_name.clone(),
-                build_web::patches_dir(&self.serve_root),
-            ) {
-                Ok(builder) => {
-                    self.reporter.log(
-                        "hotpatch",
-                        format!(
-                            "base indexed: {} functions reachable through the table \
-                             ({} of them a second name for one of the others)",
-                            builder.base_table_size(),
-                            builder.alias_count(),
-                        ),
-                    );
-                    self.builder = Some(
-                        builder
-                            .reporting_to(self.reporter.clone())
-                            .numbered_after(self.serial)
-                            .reusing_objects(std::mem::take(&mut self.resumed_objects)),
-                    );
-                }
-                // Not retired: a base that could not be indexed once may
-                // index fine after the next rebuild, and retiring here
-                // would disarm the tier for the whole session over one
-                // bad build.
-                Err(e) => return Err(format!("{e:#}")),
-            }
+            // Not retired on failure: a base that could not be indexed once
+            // may index fine after the next rebuild, and retiring here would
+            // disarm the tier for the whole session over one bad build.
+            self.builder = Some(index()?);
+            self.resumed_objects.clear();
         }
         Ok(())
     }
 
-    /// Index a freshly built base now, while the page is reloading,
-    /// instead of at the first save, and start `seeds` — every patchable
-    /// crate ([`workspace_seeds`]) — replaying in the background so the
-    /// first save's replays find their caches warm, and a crate a patch
-    /// only carries is not replayed at all (`WasmPatchBuilder::seed_all`). Failures are
-    /// not reported here: the first save retries and says why.
-    fn warm(&mut self, seeds: Vec<build_web::hotpatch_build::PatchCrate>) {
-        if !self.armed || self.retired.is_some() || self.builder.is_some() {
-            return;
-        }
-        let started = std::time::Instant::now();
-        if self.ensure_builder().is_ok() {
-            self.reporter.log(
+    /// Indexing this base, as a job that owns everything it needs (it
+    /// runs on another thread from [`Self::warm`]). `None` when the base
+    /// has no captures, so nothing can be replayed against it.
+    fn index_job(
+        &self,
+    ) -> Option<impl FnOnce() -> std::result::Result<build_web::hotpatch_build::WasmPatchBuilder, String> + Send + 'static>
+    {
+        let captures = self.artifact.captures_dir.clone()?;
+        let served = self.artifact.served_wasm.clone();
+        let aliases = self.artifact.symbol_aliases.clone();
+        let data = self.artifact.data_symbols.clone();
+        let crate_name = self.crate_name.clone();
+        let patches = build_web::patches_dir(&self.serve_root);
+        let reporter = self.reporter.clone();
+        let serial = self.serial;
+        // Cloned, not taken: until the job is joined, a resume record of
+        // this base still has to name them (`resume_snapshot`).
+        let resumed = self.resumed_objects.clone();
+        Some(move || {
+            let builder = build_web::hotpatch_build::WasmPatchBuilder::new(
+                &served,
+                aliases.as_deref(),
+                data.as_deref(),
+                captures,
+                crate_name,
+                patches,
+            )
+            .map_err(|e| format!("{e:#}"))?;
+            reporter.log(
                 "hotpatch",
                 format!(
-                    "base indexed ahead of the first save in {} ms",
-                    started.elapsed().as_millis()
+                    "base indexed: {} functions reachable through the table \
+                     ({} of them a second name for one of the others)",
+                    builder.base_table_size(),
+                    builder.alias_count(),
                 ),
             );
-            // `IDEALYST_HOTPATCH_NO_SEED=1` skips it, for A/B timing of
-            // the first save.
-            let seeding = seeding_enabled(std::env::var_os("IDEALYST_HOTPATCH_NO_SEED"));
-            if let (Some(builder), true) = (self.builder.as_ref(), seeding) {
+            Ok(builder.reporting_to(reporter).numbered_after(serial).reusing_objects(resumed))
+        })
+    }
+
+    /// Index a freshly built base on a thread of its own, while the page
+    /// reloads, and then start `seeds` — every patchable crate
+    /// ([`workspace_seeds`]) — replaying in the background, so the first
+    /// save's replays find their caches warm and a crate a patch only
+    /// carries is not replayed at all (`WasmPatchBuilder::seed_all`).
+    ///
+    /// Not on the watch thread: indexing took ~1.0 s there after every
+    /// rebuild (CrewForge), and the next save could not start until it
+    /// finished — an overlay patch, which never needs the index, included.
+    /// The first hot patch joins it ([`Self::ensure_builder`]). Failures
+    /// are not reported here: that patch retries and says why.
+    fn warm(&mut self, seeds: Vec<build_web::hotpatch_build::PatchCrate>) {
+        if !self.armed || self.retired.is_some() || self.builder.is_some() || self.indexing.is_some() {
+            return;
+        }
+        let Some(index) = self.index_job() else { return };
+        let reporter = self.reporter.clone();
+        // `IDEALYST_HOTPATCH_NO_SEED=1` skips it, for A/B timing of the
+        // first save.
+        let seeding = seeding_enabled(std::env::var_os("IDEALYST_HOTPATCH_NO_SEED"));
+        self.indexing = Some(std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let builder = index()?;
+            reporter.log(
+                "hotpatch",
+                format!("base indexed ahead of the first save in {} ms", started.elapsed().as_millis()),
+            );
+            if seeding {
                 builder.seed_all(seeds);
             }
-        }
+            Ok(builder)
+        }));
     }
 
     /// Build a patch re-emitting `crates`, or say why it cannot.
@@ -2904,6 +2944,7 @@ mod tests {
                 data_symbols: None,
             },
             builder: None,
+            indexing: None,
             retired: None,
             reporter: dev_events::Reporter::new(),
             serial: 0,
@@ -2915,17 +2956,28 @@ mod tests {
     /// CrewForge), so the first patch after every rebuild paid for it.
     /// `warm` indexes it right after the build instead, and again after
     /// each rebuild.
+    ///
+    /// Regression (CrewForge): `warm` then indexed ON the watch thread,
+    /// ~1.0 s after every rebuild before the next save could start. It
+    /// returns with the index being made elsewhere; the first patch joins it.
     #[test]
     fn regression_the_base_is_indexed_before_the_first_save() {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
         base.warm(Vec::new());
-        assert!(base.builder.is_some(), "warm did not index the base");
+        assert!(base.builder.is_none() && base.indexing.is_some(), "warm indexes off the watch thread");
+        base.ensure_builder().unwrap();
+        assert!(base.builder.is_some() && base.indexing.is_none(), "the patch joins it");
 
         let artifact = armed_base(&tmp.path().join("next")).artifact;
         base.rebuilt(artifact);
         assert!(base.builder.is_none(), "a rebuild must drop the old index");
         base.warm(Vec::new());
+        // A rebuild before the index is joined drops it too.
+        base.rebuilt(armed_base(&tmp.path().join("next")).artifact);
+        assert!(base.builder.is_none() && base.indexing.is_none());
+        base.warm(Vec::new());
+        base.ensure_builder().unwrap();
         assert!(base.builder.is_some(), "and warm must index the new base");
     }
 
@@ -2942,6 +2994,9 @@ mod tests {
         base.serial = 5;
         base.resumed_objects = vec![("app".into(), "key".into(), vec![obj.clone()])];
         base.warm(Vec::new());
+        // While the index is made, a resume record still names them.
+        assert_eq!(base.resumed_objects.len(), 1);
+        base.ensure_builder().unwrap();
         let builder = base.builder.as_ref().expect("indexed");
         assert_eq!(builder.serial(), 5);
         assert_eq!(builder.reusable_objects(), vec![("app".to_string(), "key".to_string(), vec![obj])]);
@@ -2949,6 +3004,7 @@ mod tests {
         base.rebuilt(armed_base(&tmp.path().join("next")).artifact);
         assert_eq!(base.serial(), 5, "the numbering survives a rebuild");
         base.warm(Vec::new());
+        base.ensure_builder().unwrap();
         assert!(base.builder.as_ref().unwrap().reusable_objects().is_empty(), "objects of the old base");
     }
 
@@ -2984,7 +3040,7 @@ mod tests {
         let mut base = armed_base(tmp.path());
         base.armed = false;
         base.warm(Vec::new());
-        assert!(base.builder.is_none());
+        assert!(base.builder.is_none() && base.indexing.is_none());
     }
 
     /// Regression: after a hot patch the archive was advanced over the
