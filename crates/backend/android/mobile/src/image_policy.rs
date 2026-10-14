@@ -13,8 +13,24 @@
 //! native backend loads all of these. The decoding rules now come from the
 //! shared `backend_image_source` crate (the same one iOS and macOS use);
 //! this module holds the Android-side policy around them.
+//!
+//! # `src` contract (`docs/image-src.md`)
+//!
+//! Routing is the shared `runtime_shared::image_src::classify`: a relative
+//! path, scheme-relative URL, `file:`/`content:`/… or empty `src` is
+//! rejected (`warn_rejected` + `on_error`) exactly as on every other
+//! backend. `asset!` images — which used to fire `on_error` here because
+//! only embedded bytes were handled — load from the APK's `assets/` through
+//! `AssetManager` ([`plan_asset`]).
 
-use backend_image_source::{classify_src, SrcKind};
+use backend_image_source::{
+    classify, decode_bytes, parse_data_uri, DecodedSource, ImageSrc, RejectReason, SvgImage,
+};
+use runtime_shared::AssetSource;
+
+// The `src` contract itself (what is accepted, what is rejected and why) is
+// `runtime_shared::image_src` — see `docs/image-src.md`. This module only
+// maps its verdicts onto Android's loaders.
 
 /// What `create_image` / `update_image_src` must do with a `src`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,15 +40,15 @@ pub(crate) enum LoadPlan<'a> {
     /// `create_image` already loaded; reloading would double-fetch and
     /// double-fire `on_load`. Mirrors iOS's `current_src` guard.
     Unchanged,
-    /// Show the registered asset with this id (decoded at `register_asset`).
+    /// Show the registered asset with this id (see [`plan_asset`]).
     Asset(u64),
-    /// Decode the `data:` URI synchronously.
+    /// Decode the `data:` URI synchronously ([`decode_data_uri`]).
     DataUri,
     /// Fetch off the UI thread, decode, then show on the UI thread.
     Remote(&'a str),
-    /// No loader understands this `src`: fire `on_error` + log a warning
-    /// rather than leave a silently blank slot.
-    Unsupported,
+    /// Not a `src` the contract accepts (relative path, `file:`, empty, …):
+    /// `warn_rejected` + `on_error`, never a silently blank slot.
+    Rejected(RejectReason),
 }
 
 /// Route `src` given the `src` the view currently holds (`None` at create).
@@ -42,12 +58,98 @@ pub(crate) fn plan_load<'a>(current: Option<&str>, src: &'a str) -> LoadPlan<'a>
     if current == Some(src) {
         return LoadPlan::Unchanged;
     }
-    match classify_src(src) {
-        SrcKind::Asset(id) => LoadPlan::Asset(id),
-        SrcKind::DataUri => LoadPlan::DataUri,
-        SrcKind::Remote(url) => LoadPlan::Remote(url),
-        SrcKind::Unsupported => LoadPlan::Unsupported,
+    match classify(src) {
+        ImageSrc::Asset(id) => LoadPlan::Asset(id),
+        ImageSrc::Data(_) => LoadPlan::DataUri,
+        ImageSrc::Remote(url) => LoadPlan::Remote(url),
+        ImageSrc::Rejected(why) => LoadPlan::Rejected(why),
     }
+}
+
+/// A `data:` URI's payload, ready for the view: an SVG (rasterized by
+/// resvg at the displayed size) or bitmap bytes for `BitmapFactory`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) enum DecodedData {
+    Svg(SvgImage),
+    Bitmap(Vec<u8>),
+}
+
+/// Parse + sniff a `data:` URI. `Err` carries the `on_error` diagnosis (bad
+/// base64 / `%XX`, or bytes that sniff as SVG but don't parse). Whether the
+/// bitmap bytes actually decode is `BitmapFactory`'s call on device.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn decode_data_uri(src: &str) -> Result<DecodedData, &'static str> {
+    let uri = parse_data_uri(src).ok_or("malformed data URI")?;
+    match decode_bytes(&uri.bytes) {
+        Some(DecodedSource::Svg(svg)) => Ok(DecodedData::Svg(svg)),
+        Some(DecodedSource::Bitmap(_)) => Ok(DecodedData::Bitmap(uri.bytes)),
+        None => Err("data URI is not a valid SVG"),
+    }
+}
+
+/// How a registered image asset (`register_asset(id, AssetTag::Image, ..)`)
+/// is loaded on Android.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AssetPlan {
+    /// `embed_asset!` / a `face!`-style source: the bytes are in the binary;
+    /// decode them once at registration.
+    Bytes(&'static [u8]),
+    /// `asset!("images/logo.png")`: the build copies the declaring crate's
+    /// `assets/` directory into the APK's `assets/`, so the file is the APK
+    /// entry `assets/<path>`, which `AssetManager.open(<path>)` reads (the
+    /// argument is relative to the APK's `assets/` root). Carries the
+    /// normalized `<path>`.
+    ApkAsset(String),
+    /// `AssetSource::Remote { url }` with an `http(s)` URL: the same fetch a
+    /// `https://` `src` gets.
+    Remote(&'static str),
+    /// A bundled path that could escape the assets directory, or a remote
+    /// asset whose URL the contract rejects. Every view showing it fires
+    /// `on_error`.
+    Invalid(String),
+}
+
+/// Map a registered image asset onto its Android loader. See [`AssetPlan`].
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn plan_asset(source: &AssetSource) -> AssetPlan {
+    match *source {
+        AssetSource::Embedded { bytes, .. } | AssetSource::BundledEmbedded { bytes, .. } => {
+            AssetPlan::Bytes(bytes)
+        }
+        AssetSource::Bundled { path } => match apk_asset_path(path) {
+            Some(p) => AssetPlan::ApkAsset(p),
+            None => AssetPlan::Invalid(format!(
+                "asset path {path:?} must be relative to the crate's assets/ dir (no leading /, no ..)"
+            )),
+        },
+        AssetSource::Remote { url } => match classify(url) {
+            ImageSrc::Remote(u) => AssetPlan::Remote(u),
+            ImageSrc::Rejected(why) => {
+                AssetPlan::Invalid(format!("remote asset {url:?}: {}", why.explain()))
+            }
+            _ => AssetPlan::Invalid(format!("remote asset {url:?} is not an http(s) URL")),
+        },
+    }
+}
+
+/// The `AssetManager.open` argument for an `asset!` path: `None` when it is
+/// empty, absolute, or has a `..` component (an asset path names a file the
+/// build shipped, nothing else — the same rule as the desktop
+/// `bundled_asset_candidates`). `.` and empty components are dropped:
+/// `AssetManager` does no path normalization, so `./a.png` would miss.
+pub(crate) fn apk_asset_path(path: &str) -> Option<String> {
+    if path.starts_with('/') || path.starts_with('\\') {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for part in path.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            p => parts.push(p),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// The image's Taffy measurement: an explicit (known) dimension wins on its
@@ -96,7 +198,7 @@ mod tests {
             plan_load(None, "https://example.com/a.webp"),
             LoadPlan::Remote("https://example.com/a.webp")
         );
-        assert_eq!(plan_load(None, "not a url"), LoadPlan::Unsupported);
+        assert_eq!(plan_load(None, "not a url"), LoadPlan::Rejected(RejectReason::Relative));
         // …and the decoded natural size reaches layout instead of 0×0.
         assert_eq!(measure((None, None), Some((64.0, 32.0))), (64.0, 32.0));
     }
@@ -127,5 +229,113 @@ mod tests {
         // Laid out at 4× its intrinsic width: re-raster sharp.
         assert_eq!(svg_reraster_scale(&svg, (128.0, 64.0), 2.75, 2.75), Some(11.0));
         assert_eq!(svg_reraster_scale(&svg, (128.0, 64.0), 2.75, 11.0), None);
+    }
+
+    /// Render one `vectors::SYNC` src through this backend's real host-side
+    /// path: `plan_load`, then `decode_data_uri` for `data:`, then the
+    /// registered-asset lookup (none registered — the vector table's
+    /// `asset://424242` is "never registered"). `Some(size)` = loads.
+    /// The bitmap decode itself is `BitmapFactory` on device; for the PNG
+    /// vectors the size comes from the IHDR chunk, which is exactly what
+    /// `BitmapFactory` reports for a non-density-scaled decode.
+    fn host_outcome(src: &str) -> Option<(u32, u32)> {
+        match plan_load(None, src) {
+            LoadPlan::Unchanged => unreachable!("no current src"),
+            LoadPlan::Rejected(_) => None,
+            LoadPlan::Remote(_) => panic!("SYNC vectors are never remote: {src}"),
+            // Nothing is registered in a host run; `image::load` reports an
+            // unregistered id as `on_error`.
+            LoadPlan::Asset(_) => None,
+            LoadPlan::DataUri => match decode_data_uri(src).ok()? {
+                DecodedData::Svg(svg) => {
+                    let (w, h) = svg.intrinsic_size();
+                    Some((w as u32, h as u32))
+                }
+                DecodedData::Bitmap(bytes) => {
+                    assert!(bytes.starts_with(b"\x89PNG"), "{src}");
+                    let be = |i: usize| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
+                    Some((be(16), be(20)))
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn src_contract_vectors() {
+        use runtime_shared::image_src::vectors::{Expect, SYNC};
+        for &(src, expect) in SYNC {
+            let got = host_outcome(src);
+            match expect {
+                Expect::Loads { width, height } => {
+                    assert_eq!(got, Some((width, height)), "{src:?} should load")
+                }
+                Expect::Errors => assert_eq!(got, None, "{src:?} should fire on_error"),
+            }
+        }
+    }
+
+    /// CrewForge's kiosk: a relative `/attachments/<id>` was a blank tile
+    /// on native. Every relative form is now a reported rejection.
+    #[test]
+    fn regression_relative_src_rejected() {
+        for src in ["/attachments/abc", "logo.png", "./logo.png", "../x.png"] {
+            assert_eq!(plan_load(None, src), LoadPlan::Rejected(RejectReason::Relative), "{src}");
+        }
+        assert_eq!(
+            plan_load(None, "//cdn.example.com/x.png"),
+            LoadPlan::Rejected(RejectReason::SchemeRelative)
+        );
+        for src in ["file:///sdcard/x.png", "content://media/external/images/1"] {
+            assert_eq!(plan_load(None, src), LoadPlan::Rejected(RejectReason::UnsupportedScheme));
+        }
+        assert_eq!(plan_load(None, ""), LoadPlan::Rejected(RejectReason::Empty));
+    }
+
+    /// `asset!` images fired `on_error` on Android: `register_asset` only
+    /// handled embedded bytes, so a `Bundled` source was never cached. It
+    /// now plans an `AssetManager.open(<path>)` of the APK entry
+    /// `assets/<path>`.
+    #[test]
+    fn regression_bundled_asset_image_loads_from_apk_assets() {
+        assert_eq!(
+            plan_asset(&AssetSource::Bundled { path: "images/logo.png" }),
+            AssetPlan::ApkAsset("images/logo.png".into())
+        );
+        assert_eq!(
+            plan_asset(&AssetSource::Bundled { path: "./images//logo.png" }),
+            AssetPlan::ApkAsset("images/logo.png".into()),
+            "AssetManager does not normalize; we do"
+        );
+    }
+
+    #[test]
+    fn bundled_asset_paths_cannot_escape_the_assets_dir() {
+        for path in ["", "/etc/passwd", "../secret.png", "images/../../x.png", "\\x.png"] {
+            assert!(
+                matches!(plan_asset(&AssetSource::Bundled { path }), AssetPlan::Invalid(_)),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_and_embedded_assets() {
+        const BYTES: &[u8] = b"\x89PNG";
+        assert_eq!(
+            plan_asset(&AssetSource::Embedded { bytes: BYTES, extension: "png" }),
+            AssetPlan::Bytes(BYTES)
+        );
+        assert_eq!(
+            plan_asset(&AssetSource::BundledEmbedded { path: "a.png", bytes: BYTES, extension: "png" }),
+            AssetPlan::Bytes(BYTES)
+        );
+        assert_eq!(
+            plan_asset(&AssetSource::Remote { url: "https://cdn.example.com/a.png" }),
+            AssetPlan::Remote("https://cdn.example.com/a.png")
+        );
+        assert!(matches!(
+            plan_asset(&AssetSource::Remote { url: "file:///a.png" }),
+            AssetPlan::Invalid(_)
+        ));
     }
 }

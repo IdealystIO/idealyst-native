@@ -3,12 +3,20 @@
 //!
 //! # Sources
 //!
-//! Routing is `crate::image_policy::plan_load` (host-tested), on the shared
-//! `backend_image_source::classify_src` rules every native backend uses:
+//! The contract is `docs/image-src.md`. Routing is
+//! `crate::image_policy::plan_load` (host-tested, including the shared
+//! `runtime_shared::image_src::vectors::SYNC` table), on the shared
+//! `runtime_shared::image_src::classify` rules every backend uses:
 //!
-//! - **`asset://{id}`** (`image_asset(LOGO)`): `register_asset` decoded the
-//!   embedded bytes once into the backend's [`ImageCache`] (a `Bitmap`, or a
-//!   parsed SVG); `create_image` / `update_image_src` look the id up.
+//! - **`asset://{id}`** (`image_asset(LOGO)`): `register_asset` records the
+//!   asset in the backend's [`ImageCache`] (`image_policy::plan_asset`).
+//!   `embed_asset!` bytes are decoded there once (a `Bitmap`, or a parsed
+//!   SVG). An `asset!("images/logo.png")` is read on first display from the
+//!   APK entry `assets/images/logo.png` — `context.getAssets().open(
+//!   "images/logo.png")` — decoded, and the decoded image replaces the cache
+//!   entry so later views share it. That read is synchronous on the main
+//!   thread, like `ImageView.setImageResource`. A remote asset fetches like a
+//!   `https://` src.
 //! - **`data:` URI** (base64 or percent-encoded): decoded synchronously via
 //!   `backend_image_source::parse_data_uri`.
 //! - **`http(s)://`**: fetched on a small background worker pool with
@@ -20,7 +28,12 @@
 //!   the main `Handler`). No Glide/Coil dependency. Needs the app's
 //!   `android.permission.INTERNET` (declared via the app manifest's
 //!   permissions); cleartext `http://` additionally needs a network-security
-//!   exception, like iOS ATS.
+//!   exception, like iOS ATS. A build without the `async-driver` feature has
+//!   no way back onto the main looper from a worker, so there a remote `src`
+//!   fires `on_error` (the CLI's Android builds always enable it).
+//! - **anything else** (relative path, `//host`, `file:`, `content:`, empty,
+//!   …) is rejected: `image_src::warn_rejected` logs why in debug builds and
+//!   `on_error` fires.
 //!
 //! Bytes are sniffed for SVG first (`backend_image_source::decode_bytes`);
 //! everything else goes to `BitmapFactory`, which reads PNG, JPEG, WebP, GIF
@@ -53,7 +66,7 @@ use runtime_shared::{
     ObjectFit,
 };
 
-use crate::image_policy::{self, LoadPlan};
+use crate::image_policy::{self, AssetPlan, DecodedData, LoadPlan};
 use crate::imp::{with_env, AndroidBackend};
 
 /// Decoded registered assets, keyed by [`AssetId`]. Filled by
@@ -66,6 +79,14 @@ pub(crate) type ImageCache = HashMap<AssetId, CachedImage>;
 pub(crate) enum CachedImage {
     Bitmap { bitmap: GlobalRef, natural: (f32, f32) },
     Svg(Rc<SvgImage>),
+    /// `asset!` not displayed yet: the `AssetManager.open` path (relative to
+    /// the APK's `assets/`). Replaced by `Bitmap` / `Svg` on first load.
+    ApkAsset(String),
+    /// `AssetSource::Remote` — fetched per view like a `https://` src.
+    Remote(&'static str),
+    /// A registration that can never load (escaping path, rejected URL,
+    /// undecodable bytes); every view showing it fires `on_error` with this.
+    Invalid(String),
 }
 
 /// Live image views, keyed by node key (the `GlobalRef`'s raw pointer —
@@ -175,7 +196,7 @@ pub(crate) fn create(b: &mut AndroidBackend, src: &str, _alt: Option<&str>) -> G
         }),
     );
 
-    load(&b.image_cache, &state, src);
+    load(&b.context, &mut b.image_cache, &state, src);
     view
 }
 
@@ -184,10 +205,10 @@ pub(crate) fn update_src(b: &mut AndroidBackend, node: &GlobalRef, src: &str) {
     let Some(state) = b.image_states.get(&AndroidBackend::node_key_of(node)).cloned() else {
         return;
     };
-    load(&b.image_cache, &state, src);
+    load(&b.context, &mut b.image_cache, &state, src);
 }
 
-fn load(cache: &ImageCache, state: &Rc<ImageState>, src: &str) {
+fn load(context: &GlobalRef, cache: &mut ImageCache, state: &Rc<ImageState>, src: &str) {
     let plan = image_policy::plan_load(state.current_src.borrow().as_deref(), src);
     if plan == LoadPlan::Unchanged {
         return;
@@ -196,34 +217,46 @@ fn load(cache: &ImageCache, state: &Rc<ImageState>, src: &str) {
     state.generation.set(state.generation.get().wrapping_add(1));
     match plan {
         LoadPlan::Unchanged => {}
-        LoadPlan::Asset(id) => match cache.get(&AssetId(id)) {
-            Some(CachedImage::Bitmap { bitmap, natural }) => {
-                with_env(|env| show_bitmap(env, state, bitmap.as_obj()));
-                loaded(state, *natural);
-            }
-            Some(CachedImage::Svg(svg)) => show_svg(state, svg.clone()),
-            None => report_error(
-                state,
-                &format!("image: asset {id} is not registered (or its bytes didn't decode)"),
-            ),
-        },
+        LoadPlan::Asset(id) => load_asset(context, cache, state, AssetId(id)),
         LoadPlan::DataUri => load_data_uri(state, src),
         LoadPlan::Remote(url) => load_remote(state, url),
-        LoadPlan::Unsupported => report_error(
-            state,
-            &format!("image: unsupported src {:?} (expected asset://, data:, or http(s)://)", short(src)),
-        ),
+        LoadPlan::Rejected(why) => {
+            image_source::warn_rejected(src, why);
+            fail(state);
+        }
+    }
+}
+
+fn load_asset(context: &GlobalRef, cache: &mut ImageCache, state: &Rc<ImageState>, id: AssetId) {
+    // First display of an `asset!` image: read it out of the APK and cache
+    // the decoded result (or the failure) in place of the path.
+    if let Some(CachedImage::ApkAsset(path)) = cache.get(&id) {
+        let path = path.clone();
+        let decoded = with_env(|env| {
+            let bytes = read_apk_asset(env, context, &path)?;
+            decode_to_cache(env, &bytes)
+                .ok_or_else(|| format!("APK asset assets/{path} is not a decodable image"))
+        });
+        cache.insert(id, decoded.unwrap_or_else(CachedImage::Invalid));
+    }
+    match cache.get(&id) {
+        Some(CachedImage::Bitmap { bitmap, natural }) => {
+            with_env(|env| show_bitmap(env, state, bitmap.as_obj()));
+            loaded(state, *natural);
+        }
+        Some(CachedImage::Svg(svg)) => show_svg(state, svg.clone()),
+        Some(CachedImage::Remote(url)) => load_remote(state, url),
+        Some(CachedImage::Invalid(why)) => report_error(state, &format!("image: asset {}: {why}", id.0)),
+        Some(CachedImage::ApkAsset(_)) => unreachable!("resolved above"),
+        None => report_error(state, &format!("image: asset {} is not registered", id.0)),
     }
 }
 
 fn load_data_uri(state: &Rc<ImageState>, src: &str) {
-    let Some(uri) = image_source::parse_data_uri(src) else {
-        report_error(state, &format!("image: malformed data URI ({}…)", short(src)));
-        return;
-    };
-    match image_source::decode_bytes(&uri.bytes) {
-        Some(DecodedSource::Svg(svg)) => show_svg(state, Rc::new(svg)),
-        Some(DecodedSource::Bitmap(bytes)) => {
+    match image_policy::decode_data_uri(src) {
+        Err(why) => report_error(state, &format!("image: {why} ({}…)", short(src))),
+        Ok(DecodedData::Svg(svg)) => show_svg(state, Rc::new(svg)),
+        Ok(DecodedData::Bitmap(bytes)) => {
             let shown = with_env(|env| {
                 let (bitmap, natural) = decode_bitmap(env, &bytes)?;
                 show_bitmap(env, state, &bitmap);
@@ -237,7 +270,6 @@ fn load_data_uri(state: &Rc<ImageState>, src: &str) {
                 ),
             }
         }
-        None => report_error(state, &format!("image: data URI is not a valid SVG ({}…)", short(src))),
     }
 }
 
@@ -298,6 +330,12 @@ fn loaded(state: &ImageState, natural: (f32, f32)) {
 
 fn report_error(state: &ImageState, msg: &str) {
     runtime_shared::log(LogLevel::Warn, &format!("[backend-android] {msg} — firing on_error"));
+    fail(state);
+}
+
+/// Latch the failure and fire `on_error`. The caller has already logged
+/// (`report_error`, or `warn_rejected` for a contract rejection).
+fn fail(state: &ImageState) {
     state.errored.set(true);
     let handler = state.on_error.borrow().clone();
     if let Some(h) = handler {
@@ -359,44 +397,96 @@ pub(crate) fn sync_svg_raster(env: &mut JNIEnv, state: &ImageState, frame_dp: (f
 // Assets
 // ---------------------------------------------------------------------------
 
-/// Decode an `AssetTag::Image` asset once and cache it by id. Bundled /
-/// Remote sources (no embedded bytes) aren't cached — same as iOS — and a
-/// later `asset://{id}` for them reports `on_error`.
+/// Record an `AssetTag::Image` asset by id (`image_policy::plan_asset`):
+/// embedded bytes are decoded now, once; an `asset!` path is kept until its
+/// first display reads it from the APK (`load_asset`); a remote asset is
+/// fetched per view.
 pub(crate) fn register_asset(cache: &mut ImageCache, id: AssetId, kind: AssetTag, source: &AssetSource) {
     if kind != AssetTag::Image || cache.contains_key(&id) {
         return;
     }
-    let bytes: &[u8] = match source {
-        AssetSource::Embedded { bytes, .. } | AssetSource::BundledEmbedded { bytes, .. } => bytes,
-        _ => return,
+    let cached = match image_policy::plan_asset(source) {
+        AssetPlan::Bytes(bytes) => with_env(|env| decode_to_cache(env, bytes)).unwrap_or_else(|| {
+            CachedImage::Invalid("embedded bytes are not a decodable image".into())
+        }),
+        AssetPlan::ApkAsset(path) => CachedImage::ApkAsset(path),
+        AssetPlan::Remote(url) => CachedImage::Remote(url),
+        AssetPlan::Invalid(why) => CachedImage::Invalid(why),
     };
-    let cached = match image_source::decode_bytes(bytes) {
-        Some(DecodedSource::Svg(svg)) => CachedImage::Svg(Rc::new(svg)),
-        Some(DecodedSource::Bitmap(bytes)) => {
-            match with_env(|env| {
-                decode_bitmap(env, &bytes).and_then(|(bitmap, natural)| {
-                    env.new_global_ref(bitmap).ok().map(|g| (g, natural))
-                })
-            }) {
-                Some((bitmap, natural)) => CachedImage::Bitmap { bitmap, natural },
-                None => {
-                    runtime_shared::log(
-                        LogLevel::Warn,
-                        &format!("[backend-android] image asset {} did not decode", id.0),
-                    );
-                    return;
-                }
-            }
-        }
-        None => {
-            runtime_shared::log(
-                LogLevel::Warn,
-                &format!("[backend-android] image asset {} sniffs as SVG but does not parse", id.0),
-            );
-            return;
-        }
-    };
+    if let CachedImage::Invalid(why) = &cached {
+        runtime_shared::log(LogLevel::Warn, &format!("[backend-android] image asset {}: {why}", id.0));
+    }
     cache.insert(id, cached);
+}
+
+/// Decode image bytes into a cache entry: a parsed SVG, or a `Bitmap` held
+/// by a global ref. `None` when the bytes are neither.
+fn decode_to_cache(env: &mut JNIEnv, bytes: &[u8]) -> Option<CachedImage> {
+    match image_source::decode_bytes(bytes)? {
+        DecodedSource::Svg(svg) => Some(CachedImage::Svg(Rc::new(svg))),
+        DecodedSource::Bitmap(bytes) => {
+            let (bitmap, natural) = decode_bitmap(env, &bytes)?;
+            let bitmap = env.new_global_ref(bitmap).ok()?;
+            Some(CachedImage::Bitmap { bitmap, natural })
+        }
+    }
+}
+
+/// Read the APK entry `assets/<path>` via `context.getAssets().open(path)`
+/// (`AssetManager.open` takes a path relative to the APK's `assets/` root).
+/// `Err` — with any pending `IOException` cleared — when the file is absent.
+fn read_apk_asset(env: &mut JNIEnv, context: &GlobalRef, path: &str) -> Result<Vec<u8>, String> {
+    let result = (|| -> Result<Vec<u8>, String> {
+        let e = |err: jni::errors::Error| err.to_string();
+        let assets = env
+            .call_method(context.as_obj(), "getAssets", "()Landroid/content/res/AssetManager;", &[])
+            .and_then(|v| v.l())
+            .map_err(e)?;
+        let jpath = env.new_string(path).map_err(e)?;
+        let stream = env
+            .call_method(&assets, "open", "(Ljava/lang/String;)Ljava/io/InputStream;", &[JValue::Object(&jpath)])
+            .and_then(|v| v.l())
+            .map_err(e)?;
+        let body = read_stream(env, &stream);
+        let _ = env.call_method(&stream, "close", "()V", &[]);
+        body
+    })();
+    // `open` throws `FileNotFoundException` for a missing entry; a pending
+    // exception left on the main thread would crash the next JNI call.
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    result.map_err(|why| format!("APK asset assets/{path} could not be read ({why}) — is it in the crate's assets/ dir?"))
+}
+
+/// Refuse bodies past this size: decoding a huge image would allocate a
+/// bitmap of `w × h × 4` bytes and can OOM the app.
+const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const READ_CHUNK: i32 = 64 * 1024;
+
+/// Drain a `java.io.InputStream` into bytes (caller closes it and clears
+/// any pending exception).
+fn read_stream(env: &mut JNIEnv, stream: &JObject) -> Result<Vec<u8>, String> {
+    let e = |err: jni::errors::Error| err.to_string();
+    let buf = env.new_byte_array(READ_CHUNK).map_err(e)?;
+    let mut out: Vec<u8> = Vec::new();
+    let mut chunk = vec![0i8; READ_CHUNK as usize];
+    loop {
+        let n = env
+            .call_method(stream, "read", "([B)I", &[JValue::Object(&buf)])
+            .and_then(|v| v.i())
+            .map_err(e)?;
+        if n < 0 {
+            break;
+        }
+        let n = n as usize;
+        env.get_byte_array_region(&buf, 0, &mut chunk[..n]).map_err(e)?;
+        out.extend(chunk[..n].iter().map(|&b| b as u8));
+        if out.len() > MAX_IMAGE_BYTES {
+            return Err(format!("body exceeds {MAX_IMAGE_BYTES} bytes"));
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +547,7 @@ mod fetch {
     //! thread-per-image so a grid of 100 thumbnails doesn't spawn 100
     //! threads (and 100 concurrent connections).
 
-    use super::{decode_bitmap, Fetched};
+    use super::{decode_bitmap, read_stream, Fetched};
     use backend_image_source as image_source;
     use jni::objects::{JObject, JValue};
     use jni::JNIEnv;
@@ -472,10 +562,6 @@ mod fetch {
     const FETCH_WORKERS: usize = 4;
     /// Connect / read timeout per fetch, ms.
     const FETCH_TIMEOUT_MS: i32 = 15_000;
-    /// Refuse bodies past this size: decoding a huge image would allocate a
-    /// bitmap of `w × h × 4` bytes and can OOM the app.
-    const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
-    const READ_CHUNK: i32 = 64 * 1024;
 
     #[derive(Default)]
     pub(super) struct Slot {
@@ -598,32 +684,13 @@ mod fetch {
     }
 
     fn read_all(env: &mut JNIEnv, conn: &JObject) -> Result<Vec<u8>, String> {
-        let e = |err: jni::errors::Error| err.to_string();
         let stream = env
             .call_method(conn, "getInputStream", "()Ljava/io/InputStream;", &[])
             .and_then(|v| v.l())
-            .map_err(e)?;
-        let buf = env.new_byte_array(READ_CHUNK).map_err(e)?;
-        let mut out: Vec<u8> = Vec::new();
-        let mut chunk = vec![0i8; READ_CHUNK as usize];
-        loop {
-            let n = env
-                .call_method(&stream, "read", "([B)I", &[JValue::Object(&buf)])
-                .and_then(|v| v.i())
-                .map_err(e)?;
-            if n < 0 {
-                break;
-            }
-            let n = n as usize;
-            env.get_byte_array_region(&buf, 0, &mut chunk[..n]).map_err(e)?;
-            out.extend(chunk[..n].iter().map(|&b| b as u8));
-            if out.len() > MAX_IMAGE_BYTES {
-                let _ = env.call_method(&stream, "close", "()V", &[]);
-                return Err(format!("body exceeds {MAX_IMAGE_BYTES} bytes"));
-            }
-        }
+            .map_err(|err| err.to_string())?;
+        let body = read_stream(env, &stream);
         let _ = env.call_method(&stream, "close", "()V", &[]);
-        Ok(out)
+        body
     }
 
     /// Capture the pending throwable's `toString()` and CLEAR it. Only
