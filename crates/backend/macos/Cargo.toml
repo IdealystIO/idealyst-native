@@ -158,3 +158,12 @@ harness = false
 [[test]]
 name = "app_user_activity"
 harness = false
+
+# Real-AppKit + NSURLSession test of `image()` `src` loading
+# (`docs/image-src.md`): conformance vectors through `NSImage`, remote
+# fetches from a local HTTP server (non-2xx, superseded slow response),
+# unparseable URLs and bundled `asset!` files. Main-thread only (the fetch
+# result hops to the main queue), for the same reason as `focus_attach`.
+[[test]]
+name = "image_src"
+harness = false

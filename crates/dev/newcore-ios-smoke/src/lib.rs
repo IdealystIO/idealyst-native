@@ -18,7 +18,11 @@
 //! must follow the host's real insets (they arrive after mount, once
 //! the host view is in a window), and a released `scroll_view` must
 //! leave the backend's `contentSize`-sync set (a stale key let the sync
-//! message a recycled `UITextField` as a scroll view and abort).
+//! message a recycled `UITextField` as a scroll view and abort). The
+//! `image()` `src` contract (`docs/image-src.md`) rides it too: a `data:`
+//! PNG and a bundled `asset!` file (which `run-sim.sh` copies into
+//! `<App>.app/assets/`) must fire `on_load` 1x1; a relative path and an
+//! unparseable URL must fire `on_error` (both used to leave a silent blank).
 //!
 //! The Swift shell lives in `host/` (AppDelegate + ViewController +
 //! bridging header, mirroring the CLI-generated wrapper's
@@ -29,8 +33,58 @@ use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::{FlexDirection, Length, SafeAreaSides, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
-use runtime_vocabulary::{button, scroll_view, text, toggle, view};
+use runtime_vocabulary::{button, image, scroll_view, text, toggle, view};
 use runtime_world::signal;
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+thread_local! {
+    /// `"<case>:load WxH"` / `"<case>:error"` from the image cases'
+    /// handlers, in arrival order; the self-test compares it.
+    static IMAGE_EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A 1x1 PNG; `run-sim.sh` writes the same bytes to
+/// `<App>.app/assets/smoke/dot.png` for the bundled case.
+const PNG_1X1: &str = runtime_shared::image_src::vectors::PNG_1X1_BASE64;
+
+/// What the image cases must report, sorted (sync and bundled loads land
+/// at mount; no order is promised between cases).
+const IMAGE_EXPECTED: &[&str] = &[
+    "asset:load 1x1",
+    "bad-url:error",
+    "data:load 1x1",
+    "relative:error",
+];
+
+/// One `image()` whose `on_load` / `on_error` append to [`IMAGE_EVENTS`].
+fn image_case(case: &'static str, src: Option<&str>) -> Element {
+    let b = match src {
+        Some(src) => image().src(src.to_string()),
+        None => image().asset(runtime_shared::asset!("smoke/dot.png")),
+    };
+    b.style(StyleRules { width: px(8.0), height: px(8.0), ..StyleRules::default() })
+        .on_load(Rc::new(move |ev: &runtime_shared::ImageLoadEvent| {
+            let line = format!("{case}:load {}x{}", ev.width, ev.height);
+            IMAGE_EVENTS.with(|e| e.borrow_mut().push(line));
+        }))
+        .on_error(Rc::new(move || {
+            IMAGE_EVENTS.with(|e| e.borrow_mut().push(format!("{case}:error")));
+        }))
+        .build()
+}
+
+/// The image cases, sorted: `"ok"` or what arrived instead.
+fn check_images() -> String {
+    let mut got = IMAGE_EVENTS.with(|e| e.borrow().clone());
+    got.sort();
+    if got == IMAGE_EXPECTED {
+        "ok".to_string()
+    } else {
+        format!("{got:?}")
+    }
+}
 
 /// A minimal literal style — exercises the `StyleOps` delegation (on
 /// iOS: per-node `apply_style` through Taffy, not class minting).
@@ -162,12 +216,14 @@ pub fn app() -> Element {
                 let anchors = selftest::check_anchor_shapes();
                 let safe_area = selftest::check_safe_area();
                 let scrolls_after = selftest::registered_scroll_views();
+                let images = check_images();
                 // Exactly one scroll view mounted, then released: the
                 // set must shrink by one (pre-fix it stayed at 1).
                 let scroll_released = scrolls_before == 1 && scrolls_after == 0;
                 let line = format!(
                     "[SMOKE-SELFTEST] committed={committed} views={views} anchors={anchors} \
-                     safe_area={safe_area} scroll_views={scrolls_before}->{scrolls_after}"
+                     safe_area={safe_area} scroll_views={scrolls_before}->{scrolls_after} \
+                     images={images}"
                 );
                 // println! goes to stdout, which `simctl launch
                 // --console-pty` captures; also NSLog via the installed
@@ -182,7 +238,8 @@ pub fn app() -> Element {
                     && views > 10
                     && anchors == "ok"
                     && safe_area == "ok"
-                    && scroll_released;
+                    && scroll_released
+                    && images == "ok";
                 std::process::exit(if ok { 0 } else { 1 });
             });
         });
@@ -244,6 +301,18 @@ pub fn app() -> Element {
             |n| text().content(format!("row #{n}")).build(),
         ))
         .child(anchor_shapes())
+        .child(
+            view()
+                .style(StyleRules {
+                    flex_direction: Some(FlexDirection::Row),
+                    gap: px(4.0),
+                    ..StyleRules::default()
+                })
+                .child(image_case("data", Some(PNG_1X1)))
+                .child(image_case("asset", None))
+                .child(image_case("relative", Some("/attachments/abc")))
+                .child(image_case("bad-url", Some("https://exa mple.com/a b.png"))),
+        )
         // A scroll view the self-test releases (see `show_scroll`).
         .child(move || {
             if show_scroll.get() {

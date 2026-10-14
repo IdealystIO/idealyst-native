@@ -32,17 +32,26 @@
 //!
 //! ## Sources
 //!
-//! - **Asset source** (`image_asset(LOGO)`): the walker calls
-//!   `register_asset` first; we decode the bytes into an `NSImage` and cache
-//!   by id. `create_image` looks up the cached image and assigns its
-//!   `CGImage` to the layer.
-//! - **URL source** (`image("https://...")`): fetched via `NSURLSession`,
-//!   decoded, then assigned on the main thread.
-//! - **`data:` URI** (`image("data:image/svg+xml,…")`): decoded
-//!   synchronously via `backend_image_source::parse_data_uri`.
+//! The `src` contract is `docs/image-src.md`; the decisions are
+//! `backend_apple_core::image_load_policy`, shared with iOS.
 //!
-//! `NSImage(data:)` natively decodes PNG, JPG, TIFF, BMP, GIF, ICO, and (on
-//! macOS 12+) HEIF and WebP. SVG goes through the shared
+//! - **Asset source** (`image_asset(LOGO)`): the walker calls
+//!   `register_asset` first, which decodes `embed_asset!` bytes, reads an
+//!   `asset!` file from `<App>.app/Contents/Resources/assets/<path>`, or
+//!   records an `AssetSource::Remote` URL. `create_image` then shows it.
+//! - **URL source** (`image("https://...")`): fetched via `NSURLSession`
+//!   (`apple_image::fetch_image`), decoded off the main thread, assigned on
+//!   it. A network error, a non-2xx status, an empty body or an
+//!   unparseable URL fires `on_error`.
+//! - **`data:` URI** (`image("data:image/svg+xml,…")`): decoded
+//!   synchronously, base64 or percent-encoded.
+//! - Anything else is rejected: `on_error` fires and debug builds log why.
+//!
+//! Every `src` applied starts a new load generation; a fetch completing for
+//! an older `src` is dropped, so a slow response never replaces a newer one.
+//!
+//! `NSImage(data:)` natively decodes PNG, JPEG, TIFF, BMP, GIF (first
+//! frame), ICO, and (macOS 11+) WebP and HEIF. SVG goes through the shared
 //! `backend_image_source` path instead (identical to iOS): every
 //! source is sniffed, an SVG is parsed once, kept on the view, and
 //! rasterized into `layer.contents` at the view's bounds × backing scale —
@@ -54,13 +63,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use backend_apple_core::image_source as apple_image;
+use backend_apple_core::image_load_policy::{
+    self as policy, AssetPlan, ImageLoadState, LoadOutcome, LoadTicket, SrcFailure, SrcPlan,
+};
+use backend_apple_core::image_source::{self as apple_image, Fetched};
 use backend_image_source::{self as image_source, DecodedSource, SvgImage};
 
 use runtime_shared::{
     AssetId, AssetSource, AssetTag, ImageErrorHandler, ImageLoadEvent, ImageLoadHandler, ObjectFit,
 };
-use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
@@ -82,6 +93,11 @@ pub(crate) type ImageCache = HashMap<AssetId, CachedImage>;
 pub(crate) enum CachedImage {
     Bitmap(Retained<NSObject>),
     Svg(Rc<SvgImage>),
+    /// `AssetSource::Remote`: fetched like an `https://` `src`, per view.
+    Remote(&'static str),
+    /// Registered, but its bytes are missing (an `asset!` file the build
+    /// didn't ship) or don't decode. Showing it fires `on_error`.
+    Unavailable,
 }
 
 
@@ -112,10 +128,6 @@ pub struct ImageViewIvars {
     /// Framework `on_error` observer, fired from the async URL loader's
     /// failure branch (via the `imageLoadFailed` main-thread hop).
     on_error: RefCell<Option<ImageErrorHandler>>,
-    /// Set once an async load has failed, so an `on_error` handler
-    /// installed *after* the failure still fires (mirrors the web
-    /// already-errored check).
-    errored: Cell<bool>,
     /// The `src` currently displayed (or in-flight). Guards
     /// `update_image_src` against re-applying an unchanged URL — the
     /// walker's reactive-`src` Effect runs once at mount with the same
@@ -127,6 +139,11 @@ pub struct ImageViewIvars {
     svg: RefCell<Option<Rc<SvgImage>>>,
     /// Pixels per intrinsic point of the current SVG raster (0 = none yet).
     svg_raster_scale: Cell<f64>,
+    /// Load generation + the current load's outcome. A fetch completion
+    /// whose ticket is no longer current is dropped; a late-installed
+    /// handler is replayed from the outcome only (see
+    /// `image_load_policy::ImageLoadState`).
+    load: ImageLoadState,
 }
 
 declare_class!(
@@ -154,36 +171,14 @@ declare_class!(
             self.ivars().natural_size.get()
         }
 
-        // Main-thread hop target for the async URL loader. The background
-        // completion decodes an `NSImage` then
-        // `performSelectorOnMainThread:` calls this with it, so the layer
-        // mutation happens on main. Declared so the async path can reference
-        // it as a selector.
+        // Assign an `NSImage` (and fire `on_load`). Also the identity
+        // marker `is_image_view` checks for: no other view responds to it.
         #[method(setImageFromNSImage:)]
         fn set_image_from_ns_image(&self, image: &NSObject) {
             let view: &NSView = self;
-            set_layer_image(view, image);
+            let _ = set_layer_image(view, image);
         }
 
-        // Main-thread hop target for the async URL loader's *failure*
-        // branch (null data / undecodable bytes). Fires the `on_error`
-        // observer on main; records the failure so a late-installed
-        // handler still sees it.
-        #[method(imageLoadFailed)]
-        fn image_load_failed(&self) {
-            report_load_failed(self);
-        }
-
-        // Main-thread hop target for the async loader when the fetched bytes
-        // are SVG (`NSImage(data:)` can't be relied on for them): the raw
-        // `NSData` crosses threads and is parsed + rasterized here.
-        #[method(setImageFromSVGData:)]
-        fn set_image_from_svg_data(&self, data: &AnyObject) {
-            match SvgImage::parse(unsafe { apple_image::nsdata_bytes(data) }) {
-                Some(svg) => show_svg(self, Rc::new(svg)),
-                None => report_load_failed(self),
-            }
-        }
 
         // Taffy sets frames with `setFrame:`, which routes through
         // `setFrameSize:` — the resize hook for re-rasterizing an SVG.
@@ -209,10 +204,10 @@ impl ImageView {
             natural_size: Cell::new(CGSize::new(-1.0, -1.0)),
             on_load: RefCell::new(None),
             on_error: RefCell::new(None),
-            errored: Cell::new(false),
             current_src: RefCell::new(String::new()),
             svg: RefCell::new(None),
             svg_raster_scale: Cell::new(0.0),
+            load: ImageLoadState::new(),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         // Layer-backed so `contents`/`contentsGravity` render; clip so a
@@ -253,9 +248,12 @@ fn set_gravity(layer: &NSObject, fit: ObjectFit) {
     let _: () = unsafe { msg_send![layer, setContentsGravity: &*gravity] };
 }
 
-/// Decode `source`'s bytes into an `NSImage` and stash by id.
-/// Bundled / Remote sources are no-ops here — a future bundle-
-/// resource lookup or `NSURLSession` fetch can populate them.
+/// Resolve an image asset and stash it by id: `embed_asset!` bytes are
+/// decoded now, an `asset!` file is read from
+/// `<App>.app/Contents/Resources/assets/<path>` and decoded now (once per
+/// asset, not per view), and an `AssetSource::Remote` URL is recorded for
+/// each view to fetch. A file the build didn't ship, or bytes that don't
+/// decode, is cached as `Unavailable` so the view fires `on_error`.
 pub(crate) fn register_asset(
     cache: &mut ImageCache,
     id: AssetId,
@@ -268,19 +266,32 @@ pub(crate) fn register_asset(
     if cache.contains_key(&id) {
         return;
     }
-    let bytes: &[u8] = match source {
-        AssetSource::Embedded { bytes, .. } | AssetSource::BundledEmbedded { bytes, .. } => bytes,
-        AssetSource::Bundled { .. } | AssetSource::Remote { .. } => return,
+    let cached = match policy::asset_plan(source) {
+        AssetPlan::Bytes(bytes) => decode_asset_bytes(bytes),
+        AssetPlan::BundleFile(path) => match apple_image::read_bundled_asset(path) {
+            Some(bytes) => decode_asset_bytes(&bytes),
+            None => {
+                backend_apple_core::apple_log(&format!(
+                    "[backend-macos] image: asset {path:?} is not in the app bundle \
+                     (expected Contents/Resources/assets/{path})"
+                ));
+                CachedImage::Unavailable
+            }
+        },
+        AssetPlan::Remote(url) => CachedImage::Remote(url),
     };
-    let cached = match image_source::decode_bytes(bytes) {
+    cache.insert(id, cached);
+}
+
+fn decode_asset_bytes(bytes: &[u8]) -> CachedImage {
+    match image_source::decode_bytes(bytes) {
         Some(DecodedSource::Svg(svg)) => CachedImage::Svg(Rc::new(svg)),
         Some(DecodedSource::Bitmap(bytes)) => match decode_image_from_bytes(&bytes) {
             Some(image) => CachedImage::Bitmap(image),
-            None => return,
+            None => CachedImage::Unavailable,
         },
-        None => return,
-    };
-    cache.insert(id, cached);
+        None => CachedImage::Unavailable,
+    }
 }
 
 /// `+[NSImage alloc] -[initWithData:]` against an NSData built from
@@ -309,12 +320,17 @@ fn decode_image_from_bytes(bytes: &[u8]) -> Option<Retained<NSObject>> {
 /// Assign an `NSImage`'s `CGImage` to `view`'s backing layer and record
 /// its natural size for measurement. The layer's `contentsGravity`
 /// (set at create / by `apply_style`) decides the fit; here we only
-/// swap the bitmap.
-fn set_layer_image(view: &NSView, image: &NSObject) {
+/// swap the bitmap. `false` when the image yields no `CGImage` (nothing
+/// assigned; the caller reports the failure).
+fn set_layer_image(view: &NSView, image: &NSObject) -> bool {
     // `-[NSImage CGImageForProposedRect:context:hints:]` with a NULL rect
     // returns the bitmap at its natural size (+0 autoreleased); the layer
-    // retains it on assignment.
-    let cg: *mut AnyObject = unsafe {
+    // retains it on assignment. The return MUST be read as the typed
+    // `CGImageRef` (`^{CGImage=}`): read as `*mut AnyObject` (`@`), objc2's
+    // debug-build message verification aborted the process on every bitmap
+    // image (PNG/JPEG asset, data: URI or URL) — caught by the
+    // `image_src` harness test, which runs the real call on the main thread.
+    let cg: backend_apple_core::cg::CGImageRef = unsafe {
         msg_send![
             image,
             CGImageForProposedRect: std::ptr::null_mut::<CGRect>(),
@@ -322,9 +338,10 @@ fn set_layer_image(view: &NSView, image: &NSObject) {
             hints: std::ptr::null_mut::<AnyObject>()
         ]
     };
-    if cg.is_null() {
-        return;
+    if cg.0.is_null() {
+        return false;
     }
+    let cg = cg.0 as *mut AnyObject;
     let size: CGSize = unsafe { msg_send![image, size] };
     if is_image_view(view) {
         // A bitmap replaces any SVG this view was showing.
@@ -333,6 +350,7 @@ fn set_layer_image(view: &NSView, image: &NSObject) {
         iv.ivars().svg_raster_scale.set(0.0);
     }
     set_layer_contents(view, cg, size);
+    true
 }
 
 /// Put `cg` (a `CGImageRef`, passed as the `id` `layer.contents` takes) on
@@ -350,12 +368,12 @@ fn set_layer_contents(view: &NSView, cg: *mut AnyObject, size: CGSize) {
     if is_image_view(view) {
         let iv: &ImageView = unsafe { &*(view as *const NSView as *const ImageView) };
         iv.ivars().natural_size.set(size);
-        iv.ivars().errored.set(false);
-        if let Some(h) = iv.ivars().on_load.borrow().clone() {
-            h(&ImageLoadEvent {
-                width: size.width as f32,
-                height: size.height as f32,
-            });
+        let (width, height) = (size.width as f32, size.height as f32);
+        iv.ivars().load.loaded(width, height);
+        // Clone out before calling: the handler may re-enter this view.
+        let handler = iv.ivars().on_load.borrow().clone();
+        if let Some(h) = handler {
+            h(&ImageLoadEvent { width, height });
         }
     }
     // A new natural size can change layout — invalidate so the next pass
@@ -363,8 +381,8 @@ fn set_layer_contents(view: &NSView, cg: *mut AnyObject, size: CGSize) {
     let _: () = unsafe { msg_send![view, invalidateIntrinsicContentSize] };
 }
 
-/// Install the framework `on_load` observer on an image view, firing it
-/// immediately if a bitmap has **already** decoded (an embedded asset is
+/// Install the framework `on_load` observer on an image view, replaying it
+/// once if the current load has **already** succeeded (an embedded asset is
 /// assigned synchronously in `create_image`, before the walker installs
 /// the handler — this closes that race, mirroring web's `<img>.complete`
 /// check). No-op on a non-image view.
@@ -374,14 +392,13 @@ pub(crate) fn install_load_handler(node: &MacosNode, handler: ImageLoadHandler) 
         return;
     }
     let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
-    let size = iv.ivars().natural_size.get();
     *iv.ivars().on_load.borrow_mut() = Some(handler.clone());
-    // Already loaded before install (natural size recorded) → fire now.
-    if size.width > 0.0 && size.height > 0.0 {
-        handler(&ImageLoadEvent {
-            width: size.width as f32,
-            height: size.height as f32,
-        });
+    // The CURRENT load already succeeded → replay once. Read the outcome,
+    // not `natural_size`: while a new `src` loads the previous bitmap's size
+    // is still recorded, and replaying it would deliver a second `on_load`
+    // when the new load lands.
+    if let LoadOutcome::Loaded { width, height } = iv.ivars().load.outcome() {
+        handler(&ImageLoadEvent { width, height });
     }
 }
 
@@ -393,7 +410,7 @@ pub(crate) fn install_error_handler(node: &MacosNode, handler: ImageErrorHandler
         return;
     }
     let iv: &ImageView = unsafe { &*(Retained::as_ptr(view) as *const ImageView) };
-    let already = iv.ivars().errored.get();
+    let already = iv.ivars().load.outcome() == LoadOutcome::Failed;
     *iv.ivars().on_error.borrow_mut() = Some(handler.clone());
     if already {
         handler();
@@ -439,68 +456,81 @@ pub(crate) fn update_image_src(node: &MacosNode, cache: &ImageCache, src: &str) 
     apply_src(view, cache, src);
 }
 
-/// Resolve `src` and put it on `view`: a cached asset or `data:` URI
-/// synchronously, a remote URL asynchronously. An unregistered asset id or
-/// an unrecognized scheme leaves the view as it was.
+/// Resolve `src` and put it on `view`, following `docs/image-src.md`
+/// through `image_load_policy::plan_src`: a cached asset or `data:` URI
+/// synchronously, a remote URL asynchronously, anything else `on_error`.
+/// Every call starts a new load generation, which supersedes any fetch
+/// still in flight for this view.
 fn apply_src(view: &Retained<NSView>, cache: &ImageCache, src: &str) {
-    // Same routing as every native backend (`image_source::classify_src`),
-    // so one `src` behaves identically everywhere — including the failures:
-    // an `asset://` id nothing registered, or a `src` no loader handles,
-    // fires `on_error` (and logs) on Android too, instead of a silent blank.
-    match image_source::classify_src(src) {
-        image_source::SrcKind::Asset(id) => match cache.get(&AssetId(id)).cloned() {
-            Some(CachedImage::Bitmap(image)) => set_layer_image(view, &image),
+    let ticket = begin_load(view);
+    match policy::plan_src(src) {
+        SrcPlan::Asset(id) => match cache.get(&AssetId(id)).cloned() {
+            Some(CachedImage::Bitmap(image)) => show_bitmap(view, src, &image),
             Some(CachedImage::Svg(svg)) => show_svg_on(view, svg),
-            None => report_unloadable(view, src, "no registered asset with that id"),
+            Some(CachedImage::Remote(url)) => load_url_image_async(view, url, ticket),
+            Some(CachedImage::Unavailable) => fail_load(view, src, SrcFailure::AssetUnavailable),
+            None => fail_load(view, src, SrcFailure::UnknownAsset),
         },
-        image_source::SrcKind::DataUri => apply_data_uri(view, src),
-        // Fetch the remote URL (web's `<img src>` analog).
-        image_source::SrcKind::Remote(url) => load_url_image_async(view, url),
-        image_source::SrcKind::Unsupported => {
-            report_unloadable(view, src, "unsupported image source")
-        }
+        SrcPlan::Decoded(DecodedSource::Svg(svg)) => show_svg_on(view, Rc::new(svg)),
+        SrcPlan::Decoded(DecodedSource::Bitmap(bytes)) => match decode_image_from_bytes(&bytes) {
+            Some(image) => show_bitmap(view, src, &image),
+            None => fail_load(view, src, SrcFailure::UndecodableBitmap),
+        },
+        SrcPlan::Remote(url) => load_url_image_async(view, url, ticket),
+        SrcPlan::Fail(failure) => fail_load(view, src, failure),
     }
 }
 
-/// Log why `src` can't be shown and fire the view's `on_error`.
-fn report_unloadable(view: &NSView, src: &str, why: &str) {
-    backend_apple_core::apple_log(&format!(
-        "[backend-macos] image: {why} ({}) — firing on_error",
-        &src[..src.len().min(48)]
-    ));
+fn show_bitmap(view: &NSView, src: &str, image: &NSObject) {
+    if !set_layer_image(view, image) {
+        fail_load(view, src, SrcFailure::UndecodableBitmap);
+    }
+}
+
+/// Start a new load on `view`: bump its generation and forget the previous
+/// outcome (a late handler must be replayed THIS `src`'s outcome).
+fn begin_load(view: &NSView) -> Option<LoadTicket> {
+    if !is_image_view(view) {
+        return None;
+    }
+    let iv: &ImageView = unsafe { &*(view as *const NSView as *const ImageView) };
+    Some(iv.ivars().load.begin())
+}
+
+/// Log why `src` produced no image, clear the view, and fire `on_error`.
+/// A rejected `src` logs through `image_source::warn_rejected` (debug
+/// builds), the same line every backend prints.
+fn fail_load(view: &NSView, src: &str, failure: SrcFailure) {
+    match failure {
+        SrcFailure::Rejected(reason) => image_source::warn_rejected(src, reason),
+        other => backend_apple_core::apple_log(&format!(
+            "[backend-macos] image: {} ({}) — firing on_error",
+            other.describe(),
+            &src[..src.floor_char_boundary(48)]
+        )),
+    }
     if is_image_view(view) {
-        report_load_failed(unsafe { &*(view as *const NSView as *const ImageView) });
+        let iv: &ImageView = unsafe { &*(view as *const NSView as *const ImageView) };
+        // A failed `src` shows nothing, like a broken `<img>`, and measures
+        // as no image; leaving the previous bitmap would also let a late
+        // `on_load` install fire for it.
+        iv.ivars().svg.borrow_mut().take();
+        iv.ivars().svg_raster_scale.set(0.0);
+        iv.ivars().natural_size.set(CGSize::new(-1.0, -1.0));
+        let layer: Retained<NSObject> = unsafe { msg_send_id![view, layer] };
+        let _: () = unsafe { msg_send![&layer, setContents: std::ptr::null_mut::<AnyObject>()] };
+        let _: () = unsafe { msg_send![view, invalidateIntrinsicContentSize] };
+        report_load_failed(iv);
     }
 }
 
-/// Decode a `data:` URI and show it, or report the failure.
-fn apply_data_uri(view: &NSView, src: &str) {
-    let decoded = image_source::parse_data_uri(src).and_then(|uri| {
-        Some(match image_source::decode_bytes(&uri.bytes)? {
-            DecodedSource::Svg(svg) => CachedImage::Svg(Rc::new(svg)),
-            DecodedSource::Bitmap(bytes) => CachedImage::Bitmap(decode_image_from_bytes(&bytes)?),
-        })
-    });
-    match decoded {
-        Some(CachedImage::Bitmap(image)) => set_layer_image(view, &image),
-        Some(CachedImage::Svg(svg)) => show_svg_on(view, svg),
-        None => {
-            backend_apple_core::apple_log(&format!(
-                "[backend-macos] image: could not decode data URI ({}…) — firing on_error",
-                &src[..src.len().min(48)]
-            ));
-            if is_image_view(view) {
-                report_load_failed(unsafe { &*(view as *const NSView as *const ImageView) });
-            }
-        }
-    }
-}
-
-/// Record a failed load: latch `errored` (so a late `on_error` still fires)
-/// and fire the installed handler.
+/// Record a failed load (so a late `on_error` is replayed it) and fire the
+/// installed handler.
 fn report_load_failed(iv: &ImageView) {
-    iv.ivars().errored.set(true);
-    if let Some(h) = iv.ivars().on_error.borrow().clone() {
+    iv.ivars().load.failed();
+    // Clone out before calling: the handler may re-enter this view.
+    let handler = iv.ivars().on_error.borrow().clone();
+    if let Some(h) = handler {
         h();
     }
 }
@@ -561,10 +591,10 @@ fn svg_scale_for(view: &NSView, svg: &SvgImage) -> f64 {
     svg.raster_scale((bounds.size.width, bounds.size.height), screen_scale)
 }
 
-/// `+[NSImage alloc] -[initWithData:]` from a raw `NSData` pointer (the
-/// `NSURLSession` completion hands one back). Same init shape as
-/// `decode_image_from_bytes` without re-wrapping the bytes.
-fn nsimage_from_data_ptr(data: *mut AnyObject) -> Option<Retained<NSObject>> {
+/// `+[NSImage alloc] -[initWithData:]` from a fetched `NSData`. Runs on the
+/// session's background queue (decoding an `NSImage` is thread-safe;
+/// putting it on a layer is not).
+fn nsimage_from_nsdata(data: &AnyObject) -> Option<Retained<NSObject>> {
     let allocated: *mut AnyObject = unsafe { msg_send![objc2::class!(NSImage), alloc] };
     if allocated.is_null() {
         return None;
@@ -576,86 +606,34 @@ fn nsimage_from_data_ptr(data: *mut AnyObject) -> Option<Retained<NSObject>> {
     unsafe { Retained::from_raw(inited.cast::<NSObject>()) }
 }
 
-/// Fetch a remote image URL asynchronously and assign it to `view`'s layer
-/// once it arrives. macOS has no built-in URL→view image loading (unlike
-/// web's `<img src>`), so we drive `NSURLSession.sharedSession`'s data task:
-/// its completion handler runs on a background queue, decodes the bytes into
-/// an `NSImage`, then hops the layer assignment to the main thread (CALayer /
-/// NSView are main-thread-only). The data task retains the completion block —
-/// which retains `view` — until the fetch finishes, so the view outlives an
-/// in-flight load even if briefly detached.
-fn load_url_image_async(view: &Retained<NSView>, url_str: &str) {
-    let ns_url_str = NSString::from_str(url_str);
-    let url: *mut AnyObject =
-        unsafe { msg_send![objc2::class!(NSURL), URLWithString: &*ns_url_str] };
-    if url.is_null() {
-        return;
-    }
-    let session: *mut AnyObject =
-        unsafe { msg_send![objc2::class!(NSURLSession), sharedSession] };
-    if session.is_null() {
-        return;
-    }
+/// Fetch a remote image and put it on `view`'s layer when it arrives (web's
+/// `<img src>` analog). The fetch and the main-thread hop are
+/// `apple_image::fetch_image`, shared with iOS; this supplies the `NSImage`
+/// decoder and applies the result, unless `ticket` has been superseded by a
+/// newer `src` meanwhile, in which case the result is dropped (no image, no
+/// `on_load` / `on_error`).
+fn load_url_image_async(view: &Retained<NSView>, url: &str, ticket: Option<LoadTicket>) {
     let view = view.clone();
-    let completion = RcBlock::new(
-        move |data: *mut AnyObject, _response: *mut AnyObject, _error: *mut AnyObject| {
-            // Runs on a background queue. Crash-loud on panic — the block drains
-            // through libdispatch's `extern "C"` boundary, so an unwind past it
-            // would abort with no message (project policy: log + abort).
-            backend_apple_core::crash::abort_on_panic("image URL completion handler", || {
-                // SVG bytes: hand the NSData to main, which parses +
-                // rasterizes at the view's size (shared with iOS).
-                if !data.is_null()
-                    && image_source::looks_like_svg(unsafe { apple_image::nsdata_bytes(&*data) })
-                {
-                    let _: () = unsafe {
-                        msg_send![
-                            &view,
-                            performSelectorOnMainThread: objc2::sel!(setImageFromSVGData:),
-                            withObject: data,
-                            waitUntilDone: false
-                        ]
-                    };
-                    return;
+    let src = url.to_string();
+    apple_image::fetch_image(url, nsimage_from_nsdata, move |result| {
+        if !is_image_view(&view) {
+            return;
+        }
+        let iv: &ImageView = unsafe { &*(Retained::as_ptr(&view) as *const ImageView) };
+        if !ticket.is_some_and(|t| iv.ivars().load.is_current(t)) {
+            return;
+        }
+        match result {
+            Ok(Fetched::Bitmap(image)) => show_bitmap(&view, &src, &image),
+            Ok(Fetched::Svg(data)) => {
+                match SvgImage::parse(unsafe { apple_image::nsdata_bytes(&data) }) {
+                    Some(svg) => show_svg(iv, Rc::new(svg)),
+                    None => fail_load(&view, &src, SrcFailure::Fetch(policy::FetchError::UndecodableSvg)),
                 }
-                // A network error / 404 yields null data; undecodable bytes
-                // yield no `NSImage`. Either way, hop the `on_error` observer
-                // to main via `imageLoadFailed` (CALayer/NSView + the handler
-                // touch main-thread-only state).
-                let image = if data.is_null() { None } else { nsimage_from_data_ptr(data) };
-                let Some(image) = image else {
-                    let _: () = unsafe {
-                        msg_send![
-                            &view,
-                            performSelectorOnMainThread: objc2::sel!(imageLoadFailed),
-                            withObject: std::ptr::null_mut::<AnyObject>(),
-                            waitUntilDone: false
-                        ]
-                    };
-                    return;
-                };
-                // CALayer/NSView are main-thread-only — hop the assignment to
-                // main via the `setImageFromNSImage:` selector (which calls
-                // `set_layer_image`). `performSelectorOnMainThread:` retains
-                // `image` until it runs.
-                let _: () = unsafe {
-                    msg_send![
-                        &view,
-                        performSelectorOnMainThread: objc2::sel!(setImageFromNSImage:),
-                        withObject: &*image,
-                        waitUntilDone: false
-                    ]
-                };
-            });
-        },
-    );
-    let task: *mut AnyObject = unsafe {
-        msg_send![session, dataTaskWithURL: url, completionHandler: &*completion]
-    };
-    if task.is_null() {
-        return;
-    }
-    let _: () = unsafe { msg_send![task, resume] };
+            }
+            Err(failure) => fail_load(&view, &src, failure),
+        }
+    });
 }
 
 #[cfg(test)]
@@ -746,13 +724,13 @@ mod tests {
         }
         assert!(seen_a.borrow().is_empty(), "no bitmap yet → no on_load");
         let MacosNode::View(v_a) = &node_a else { unreachable!() };
-        set_layer_image(v_a, &image);
+        assert!(set_layer_image(v_a, &image));
         assert_eq!(*seen_a.borrow(), vec![(1.0, 1.0)], "on_load fires on assignment");
 
         // Order B — bitmap assigned first, handler installed after (fires now).
         let node_b = MacosNode::View(Retained::into_super(ImageView::new(mtm)));
         let MacosNode::View(v_b) = &node_b else { unreachable!() };
-        set_layer_image(v_b, &image);
+        assert!(set_layer_image(v_b, &image));
         let seen_b: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
         {
             let s = seen_b.clone();
@@ -824,8 +802,8 @@ mod tests {
     /// Regression (rule 7 parity with Android, 2026-10-08): an `asset://`
     /// id nothing registered, or a `src` no loader handles, left the view
     /// silently blank on Apple while Android fired `on_error`. Every native
-    /// backend now routes through `image_source::classify_src` and reports
-    /// both as a load error.
+    /// backend now routes through `runtime_shared::image_src::classify` and
+    /// reports both as a load error.
     #[test]
     fn regression_unloadable_image_src_was_silently_blank_on_apple() {
         extern "C" {

@@ -57,6 +57,11 @@ xcrun -sdk iphonesimulator swiftc \
     -framework CoreFoundation \
     -framework GameController
 cp "$HOST_DIR/Info.plist" "$APP_BUNDLE/Info.plist"
+# The bundled-asset image case (`asset!("smoke/dot.png")`): the CLI copies a
+# crate's `assets/` dir to `<App>.app/assets/`; mirror that with one 1x1 PNG.
+mkdir -p "$APP_BUNDLE/assets/smoke"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==' \
+    | base64 -D > "$APP_BUNDLE/assets/smoke/dot.png"
 printf 'APPL????' > "$APP_BUNDLE/PkgInfo"
 
 # ── 3. Simulator: SIM_UDID if set, else reuse a booted device, else

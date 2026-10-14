@@ -94,10 +94,18 @@ pub mod text_control_style;
 pub mod cg;
 
 /// CoreGraphics / Foundation glue for the iOS and macOS image views: wraps
-/// a `backend_image_source::SvgRaster` in a `CGImage` and reads `NSData`
-/// bytes. The decoding itself (`data:` URIs, SVG) is the platform-neutral
+/// a `backend_image_source::SvgRaster` in a `CGImage`, reads `NSData`
+/// bytes, fetches URLs with `NSURLSession` and reads `asset!` files from the
+/// app bundle. The decoding itself (`data:` URIs, SVG) is the platform-neutral
 /// `backend-image-source` crate, shared with Android.
 pub mod image_source;
+
+/// The `image()` loading decisions shared by the iOS and macOS image views:
+/// `src` routing through `runtime_shared::image_src`, bundled-asset paths,
+/// what a finished fetch means (non-2xx is an error), and the per-view load
+/// generation that drops a superseded fetch. NOT OS-gated: pure logic,
+/// unit-tested on the host.
+pub mod image_load_policy;
 
 pub mod border;
 
