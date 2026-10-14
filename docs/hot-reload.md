@@ -1776,6 +1776,16 @@ terminal host's own `.idealyst/terminal.log`.
 - `IDEALYST_HOTPATCH_KEEP_NAMES=1` serves the web patch WITH its `name`
   section, so a stack trace through patched code is readable in the
   browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
+- `idealyst dev --web` turns on framework features with `--features
+  idealyst/hot-reload,idealyst/robot,idealyst/ui-overlay,idealyst/hydrate,runtime-core/dev`.
+  Cargo writes a dependency's feature into `Cargo.lock` only when a feature
+  of the app crate names it, so without one every build re-resolves those
+  packages from the registry (`Updating crates.io index`, a second or two
+  and a network round trip each time). The session warns once when the lock
+  misses any, with the line to add; `idealyst new` declares it already:
+  `[features] dev-session = ["idealyst/hot-reload", "idealyst/hydrate",
+  "idealyst/robot", "idealyst/ui-overlay", "runtime-core/dev"]`. Nothing
+  needs to enable it.
 - Compiler flags for the web build. The CLI passes its flags to cargo as
   `CARGO_ENCODED_RUSTFLAGS`, so it first folds in what cargo would have
   used, in cargo's order: env `CARGO_ENCODED_RUSTFLAGS`, else env

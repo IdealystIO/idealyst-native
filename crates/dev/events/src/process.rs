@@ -131,10 +131,13 @@ pub fn run_cargo(
             // finished has nothing left to say, and waiting on it would
             // make the build look slower than it was.
             std::thread::spawn(move || {
-                let total = closure_total(&c);
+                let (total, gaps) = closure_facts(&c);
                 let event = stream.lock().map(|mut s| s.set_total(total));
                 if let Ok(event) = event {
                     reporter.emit(event);
+                }
+                if !gaps.is_empty() && first_warning(&c) {
+                    reporter.warn("dev", lock_gap_message(&c, &gaps));
                 }
             });
         }
@@ -183,25 +186,122 @@ pub fn run_cargo(
 
 type ClosureKey = (PathBuf, Option<String>, Vec<String>);
 type Stamp = (Option<SystemTime>, Option<SystemTime>);
+type Facts = (Option<u32>, Vec<String>);
 
 /// The closure size for `c`, cached per manifest until `Cargo.toml` or
 /// `Cargo.lock` changes: `cargo metadata` costs hundreds of
 /// milliseconds on a large graph, and a dev session asks on every build.
 pub fn closure_total(c: &Closure) -> Option<u32> {
-    static CACHE: OnceLock<Mutex<HashMap<ClosureKey, (Stamp, Option<u32>)>>> = OnceLock::new();
+    closure_facts(c).0
+}
+
+/// [`closure_total`], plus the packages of the closure that the lock file
+/// does not record ([`lock_gaps`]) — from the same `cargo metadata` call.
+pub fn closure_facts(c: &Closure) -> Facts {
+    static CACHE: OnceLock<Mutex<HashMap<ClosureKey, (Stamp, Facts)>>> = OnceLock::new();
     let key = (c.manifest_dir.clone(), c.platform.clone(), c.features.clone());
     let stamp = (mtime(&c.manifest_dir.join("Cargo.toml")), lock_mtime(&c.manifest_dir));
     let cache = CACHE.get_or_init(Default::default);
-    if let Some((s, total)) = cache.lock().ok()?.get(&key) {
-        if *s == stamp {
-            return *total;
+    if let Some((s, facts)) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        if s == stamp {
+            return facts;
         }
     }
-    let total = metadata(c).and_then(|m| crate::cargo::closure_size(&m));
+    let facts = match metadata(c) {
+        Some(m) => {
+            let lock = lock_path(&c.manifest_dir).and_then(|p| std::fs::read_to_string(p).ok());
+            let gaps = lock.map(|l| lock_gaps(&m, &l)).unwrap_or_default();
+            (crate::cargo::closure_size(&m), gaps)
+        }
+        None => (None, Vec::new()),
+    };
     if let Ok(mut cache) = cache.lock() {
-        cache.insert(key, (stamp, total));
+        cache.insert(key, (stamp, facts.clone()));
     }
-    total
+    facts
+}
+
+/// Packages `metadata`'s resolve holds that `lock` (a `Cargo.lock`'s
+/// text) does not, as `name version`, sorted.
+///
+/// Why: cargo writes the lock from a resolve with every feature of the
+/// WORKSPACE MEMBERS on, and a feature of a dependency only if a member
+/// turns it on. A dependency feature named on the command line — the
+/// `--features idealyst/hot-reload,runtime-core/dev` that `idealyst dev`
+/// passes — is resolved for the build but never written, so every such
+/// build re-resolves its packages from the registry: CrewForge paid
+/// `Updating crates.io index`, about 1.7 s and a network round trip, on
+/// every rebuild, and versions that float.
+pub fn lock_gaps(metadata: &serde_json::Value, lock: &str) -> Vec<String> {
+    let locked: std::collections::HashSet<(String, String)> = locked_packages(lock).into_iter().collect();
+    let resolved: std::collections::HashSet<&str> = metadata["resolve"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    let mut gaps: Vec<String> = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["id"].as_str().is_some_and(|id| resolved.contains(id)))
+        .filter_map(|p| Some((p["name"].as_str()?.to_string(), p["version"].as_str()?.to_string())))
+        .filter(|nv| !locked.contains(nv))
+        .map(|(n, v)| format!("{n} {v}"))
+        .collect();
+    gaps.sort();
+    gaps.dedup();
+    gaps
+}
+
+/// `(name, version)` of every `[[package]]` in a `Cargo.lock`. A line
+/// scan: the format is cargo's own and fixed (`name = "…"` then
+/// `version = "…"` in each entry).
+fn locked_packages(lock: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut name: Option<String> = None;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            name = None;
+        } else if let Some(v) = quoted(line, "name") {
+            name = Some(v);
+        } else if let (Some(v), Some(n)) = (quoted(line, "version"), name.take()) {
+            out.push((n, v));
+        }
+    }
+    out
+}
+
+fn quoted(line: &str, key: &str) -> Option<String> {
+    let rest = line.strip_prefix(key)?.trim_start().strip_prefix('=')?.trim();
+    Some(rest.strip_prefix('"')?.strip_suffix('"')?.to_string())
+}
+
+/// The warning for [`lock_gaps`]: what the lock misses, and the one
+/// `[features]` entry that makes the lock cover it (a member feature
+/// nothing enables still counts, so the lock records its packages).
+pub fn lock_gap_message(c: &Closure, gaps: &[String]) -> String {
+    let deps: Vec<String> = c.features.iter().filter(|f| f.contains('/')).map(|f| format!("\"{f}\"")).collect();
+    let shown: Vec<&str> = gaps.iter().take(6).map(String::as_str).collect();
+    let more = gaps.len().saturating_sub(shown.len());
+    format!(
+        "Cargo.lock does not record {} package(s) this build's features pull in ({}{}), so cargo \
+         resolves them from the registry on every build. Declare the features once in {} so the \
+         lock covers them (nothing needs to enable it):\n  [features]\n  dev-session = [{}]",
+        gaps.len(),
+        shown.join(", "),
+        if more > 0 { format!(", and {more} more") } else { String::new() },
+        c.manifest_dir.join("Cargo.toml").display(),
+        deps.join(", "),
+    )
+}
+
+/// Whether this is the first lock-gap warning for `c` in this process.
+fn first_warning(c: &Closure) -> bool {
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<ClosureKey>>> = OnceLock::new();
+    let key = (c.manifest_dir.clone(), c.platform.clone(), c.features.clone());
+    WARNED.get_or_init(Default::default).lock().map(|mut w| w.insert(key)).unwrap_or(false)
 }
 
 fn metadata(c: &Closure) -> Option<serde_json::Value> {
@@ -232,13 +332,69 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 /// The lock file cargo would use: this package's, or the nearest
 /// enclosing workspace's.
 fn lock_mtime(dir: &Path) -> Option<SystemTime> {
-    dir.ancestors().find_map(|d| mtime(&d.join("Cargo.lock")))
+    lock_path(dir).and_then(|p| mtime(&p))
+}
+
+fn lock_path(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().map(|d| d.join("Cargo.lock")).find(|p| p.is_file())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Queue;
+
+    /// Regression (CrewForge): `--features idealyst/hot-reload` pulled in
+    /// packages the lock never records, re-resolved from the registry on
+    /// every build. The real thing, against cargo: a dependency feature
+    /// given on the command line resolves a package `Cargo.lock` lacks,
+    /// and an app feature that names it (enabled by nothing) closes it.
+    #[test]
+    fn regression_a_command_line_dependency_feature_is_missing_from_the_lock() {
+        let tmp = std::env::temp_dir().join(format!("dev-events-lockgap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let w = |p: &str, t: &str| {
+            let p = tmp.join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, t).unwrap();
+        };
+        w("ext/opt/Cargo.toml", "[package]\nname = \"opt\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+        w("ext/opt/src/lib.rs", "");
+        w(
+            "ext/dep/Cargo.toml",
+            "[package]\nname = \"dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+             [dependencies]\nopt = { path = \"../opt\", optional = true }\n[features]\nx = [\"dep:opt\"]\n",
+        );
+        w("ext/dep/src/lib.rs", "");
+        let app = "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+                   [dependencies]\ndep = { path = \"../ext/dep\" }\n";
+        w("app/Cargo.toml", app);
+        w("app/src/lib.rs", "");
+        let dir = tmp.join("app");
+        let lock = || {
+            let ok = Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&dir).status().unwrap();
+            assert!(ok.success());
+        };
+        lock();
+        let c = Closure { manifest_dir: dir.clone(), platform: None, features: vec!["dep/x".into()] };
+        let gaps = lock_gaps(&metadata(&c).expect("metadata"), &std::fs::read_to_string(dir.join("Cargo.lock")).unwrap());
+        assert_eq!(gaps, vec!["opt 0.1.0"]);
+        let msg = lock_gap_message(&c, &gaps);
+        assert!(msg.contains("dev-session = [\"dep/x\"]"), "{msg}");
+
+        // The suggested entry, declared: the lock now covers it.
+        w("app/Cargo.toml", &format!("{app}[features]\ndev-session = [\"dep/x\"]\n"));
+        lock();
+        let gaps = lock_gaps(&metadata(&c).expect("metadata"), &std::fs::read_to_string(dir.join("Cargo.lock")).unwrap());
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn the_lock_scan_reads_every_package_entry() {
+        let lock = "version = 4\n\n[[package]]\nname = \"a\"\nversion = \"1.0.0\"\nsource = \"registry+x\"\n\n[[package]]\nname = \"b\"\nversion = \"0.2.1\"\ndependencies = [\n \"a\",\n]\n";
+        assert_eq!(locked_packages(lock), vec![("a".into(), "1.0.0".into()), ("b".into(), "0.2.1".into())]);
+    }
 
     #[test]
     fn run_lines_emits_every_line_of_both_pipes_before_returning() {

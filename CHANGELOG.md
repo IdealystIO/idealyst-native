@@ -999,6 +999,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst dev` says when Cargo.lock misses what its features pull in**
+  (`dev-events`, `idealyst-cli`). The dev session's `--features
+  idealyst/hot-reload,…,runtime-core/dev` are dependency features, which
+  cargo never writes into the lock unless a feature of the app names them;
+  every wasm build then re-resolved their packages from the registry
+  (CrewForge: `Updating crates.io index` on every rebuild, ~1.7 s and a
+  network round trip). The build's existing `cargo metadata` call now
+  compares its resolve against the lock and warns once with the
+  `[features] dev-session = […]` line that closes the gap, and `idealyst
+  new` declares that feature. *Existing apps:* add the line the warning
+  prints.
+
 - **Cargo-config rustflags reach the web build, and
   `IDEALYST_WASM_RUSTFLAGS` sets flags for it alone** (`build-web`). The CLI
   hands cargo its flags as `CARGO_ENCODED_RUSTFLAGS`, which makes cargo
