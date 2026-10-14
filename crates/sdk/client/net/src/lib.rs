@@ -64,6 +64,11 @@
 //! request sharing that token with [`Error::Cancelled`]. Self-contained
 //! (no `tokio` / `runtime-core` dependency) so the SDK stays standalone.
 //!
+//! Dropping a request future (a component unmounting, a `select` losing)
+//! aborts its exchange on every arm too, with or without a token: reqwest
+//! aborts its I/O task, web aborts the `fetch`, NSURLSession sends the task
+//! `cancel`, and HttpURLConnection is disconnected (or never connects).
+//!
 //! # Permissions
 //!
 //! HTTP needs Android's `INTERNET` permission. This crate declares the
@@ -79,6 +84,10 @@
 mod body;
 mod cancel;
 mod client;
+// The HttpURLConnection arm's worker/aborter hand-off; compiled for tests
+// on every host so its coverage runs anywhere.
+#[cfg(any(test, target_os = "android"))]
+mod conn_slot;
 mod error;
 mod eventsource;
 mod headers;

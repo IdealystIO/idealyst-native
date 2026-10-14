@@ -39,8 +39,8 @@ report="$(adb shell CLASSPATH=/data/local/tmp/net_android_device_probe.dex \
     app_process /system/bin NetProbe /data/local/tmp/libnet_android_device_probe.so)"
 echo "$report"
 passed="$(grep -c '^PASS' <<<"$report" || true)"
-if [[ "$passed" != 5 ]] || grep -q '^FAIL' <<<"$report"; then
-    echo "net android device probe: FAILED ($passed/5 passed)" >&2
+if [[ "$passed" != 7 ]] || grep -q '^FAIL' <<<"$report"; then
+    echo "net android device probe: FAILED ($passed/7 passed)" >&2
     exit 1
 fi
-echo "net android device probe: 5/5 passed"
+echo "net android device probe: 7/7 passed"

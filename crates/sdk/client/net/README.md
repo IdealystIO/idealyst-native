@@ -57,7 +57,11 @@ let user: User = client
   without touching this crate.
 - **Cancellation** — `cancel_token()` → `(CancelHandle, CancelToken)`;
   attach the token with `RequestBuilder::cancel_on` and fire the handle to
-  abort every in-flight request sharing it (`Error::Cancelled`).
+  abort every in-flight request sharing it (`Error::Cancelled`). Dropping
+  the request future aborts that request the same way on every arm, token
+  or not: reqwest aborts its I/O task, web aborts the `fetch`, NSURLSession
+  sends the task `cancel`, and HttpURLConnection is `disconnect()`ed (or,
+  if it had not connected yet, never connects).
   Self-contained — no `tokio` / `runtime-core` dependency.
 
 Every backend delivers the **same shape**: the same `Response`, the same
@@ -154,7 +158,8 @@ verification note above). Tick each item as you exercise it.
 - [x] `cargo test -p net --test websocket` — `close_status`: peer code + reason, normal 1000, 1006 on a dropped connection, 1005 after a local `close()`
 - [x] `cargo test -p net --test foreign_executor` — requests awaited on a bare park/unpark executor (no tokio on the calling thread): success, one `Client` shared across executor threads, mid-flight cancel, timeout; on the reqwest arm a cancel or dropped future also closes the connection. Run on macOS (NSURLSession), Linux (Docker `rust:1-trixie`) and Windows (`--target x86_64-pc-windows-gnu` under Wine)
 - [x] `cargo test -p net --test timeout` — `timeout` is a whole-exchange deadline resolving `Error::Timeout` (never-answering server, trickling body, client default, no false fire) on macOS's NSURLSession arm; the same binary on the iOS simulator: `cargo test -p net --target aarch64-apple-ios-sim --test timeout --no-run`, then `xcrun simctl spawn <device> <test binary>`
-- [x] `tests/android-device/run.sh` — the same timeout cases plus mid-flight cancel through the `HttpURLConnection` arm in a real ART process (`app_process`) on a connected emulator/device
+- [x] `cargo test -p net --lib` on macOS — `ios::tests`: dropping a request future (shared session, and a timeout's own session) or firing its cancel token completes the `NSURLSessionDataTask` with `NSURLErrorCancelled` (asserted at the task: NSURLSession keeps a cancelled task's socket open, so the wire is not the observable); `conn_slot::tests`: the HttpURLConnection worker/aborter hand-off, incl. an abort before the connection exists
+- [x] `tests/android-device/run.sh` — the same timeout cases plus mid-flight cancel and a dropped future (mid-flight, and right after the first poll) through the `HttpURLConnection` arm in a real ART process (`app_process`) on a connected emulator/device
 
 **Behavior**
 - [ ] **Web** — GET/POST to a live endpoint over `fetch`; WebSocket echo over the browser `WebSocket`; SSE stream over the browser's `EventSource`; cancel mid-flight aborts (`Error::Cancelled`)

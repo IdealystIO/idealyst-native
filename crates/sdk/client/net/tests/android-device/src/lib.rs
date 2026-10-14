@@ -6,7 +6,10 @@
 //!
 //! The cases mirror `tests/timeout.rs`, which covers the same contract for
 //! the reqwest and NSURLSession arms (host and iOS simulator), plus the
-//! cancel path the timeout change refactored.
+//! cancel path the timeout change refactored, plus dropping the request
+//! future with no cancel token: that must disconnect the exchange too (it
+//! used to leave the worker blocked on the connection until the server
+//! answered — forever, against a server that never does).
 
 use std::future::Future;
 use std::io::{Read, Write};
@@ -126,6 +129,84 @@ fn case(
     }
 }
 
+/// A server that never answers and reports, per connection, when the
+/// request head arrived and when the client closed the socket.
+fn serve_watching_close() -> (String, mpsc::Receiver<()>, mpsc::Receiver<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (received_tx, received) = mpsc::channel();
+    let (closed_tx, closed) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { break };
+            let received_tx = received_tx.clone();
+            let closed_tx = closed_tx.clone();
+            std::thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => head.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let _ = received_tx.send(());
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => {
+                            let _ = closed_tx.send(());
+                            return;
+                        }
+                        Ok(_) => {}
+                    }
+                }
+            });
+        }
+    });
+    (format!("http://{addr}/"), received, closed)
+}
+
+struct NoopWake;
+impl Wake for NoopWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+/// Poll a request (no cancel token, no timeout) once — and, with
+/// `drop_after_head`, until the server holds its head — then drop the
+/// future, and require that no request stays held open on the server.
+fn drop_case(name: &str, drop_after_head: bool) -> String {
+    let (url, received, closed) = serve_watching_close();
+    let mut fut = Box::pin(Client::new().get(url).send());
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut cx = Context::from_waker(&waker);
+    if let Poll::Ready(r) = fut.as_mut().poll(&mut cx) {
+        return format!("FAIL {name}: resolved early: {r:?}");
+    }
+    if drop_after_head {
+        if received.recv_timeout(IGNORED_AFTER).is_err() {
+            return format!("FAIL {name}: request never reached the server");
+        }
+        if let Poll::Ready(r) = fut.as_mut().poll(&mut cx) {
+            return format!("FAIL {name}: resolved early: {r:?}");
+        }
+    }
+    let start = Instant::now();
+    drop(fut);
+    // Either the exchange never reached the server (aborted before it
+    // connected), or the server sees the client close it.
+    let reached = drop_after_head || received.recv_timeout(Duration::from_secs(2)).is_ok();
+    if !reached {
+        return format!("PASS {name}: never connected");
+    }
+    match closed.recv_timeout(SLACK) {
+        Ok(()) => format!(
+            "PASS {name}: connection closed {} ms after drop",
+            start.elapsed().as_millis()
+        ),
+        Err(_) => format!("FAIL {name}: connection still open {SLACK:?} after drop"),
+    }
+}
+
 fn get(url: String, timeout: Option<Duration>) -> Result<String, Error> {
     block_on(async move {
         let mut req = Client::new().get(url);
@@ -223,6 +304,14 @@ pub extern "system" fn Java_NetProbe_run(env: JNIEnv, _class: JClass) -> jstring
                     })
                 }
             },
+        ),
+        drop_case(
+            "never-responding server, future dropped mid-flight, no cancel token",
+            true,
+        ),
+        drop_case(
+            "future dropped right after the first poll, no cancel token",
+            false,
         ),
     ];
     env.new_string(report.join("\n"))

@@ -11,14 +11,19 @@
 //! a `futures-channel` oneshot.
 //!
 //! Cancellation: as soon as the worker has the connection, it
-//! promotes it to a JNI `GlobalRef` and parks the ref in a shared
-//! `Arc<Mutex<Option<GlobalRef>>>`. When the awaiter's cancel token
-//! fires, the watcher takes that ref out and — on a fresh JVM-
-//! attached thread — calls `conn.disconnect()`. That causes the
-//! worker's blocking `getResponseCode()` / `read()` to throw an
-//! IOException, which we map to `Error::Network`; the worker's
-//! result is then discarded because the awaiter has already
-//! returned `Err(Error::Cancelled)`.
+//! promotes it to a JNI `GlobalRef` and publishes the ref in a shared
+//! [`ConnSlot`]. When the awaiter stops waiting — its cancel token
+//! fires, OR the request future is dropped without one (a component
+//! unmounting, a `select` losing) — an [`AbandonOnDrop`] guard abandons
+//! the slot, takes that ref out and, on a fresh JVM-attached thread,
+//! calls `conn.disconnect()`. That causes the worker's blocking
+//! `getResponseCode()` / `read()` to throw an IOException; the worker's
+//! result is then discarded because nobody holds the receiver any more
+//! (or the awaiter has already returned `Err(Error::Cancelled)`). An
+//! abort that lands before the connection exists marks the slot
+//! abandoned, so the worker's publish is refused and it never connects.
+//! This matches the reqwest arm's `AbortOnDrop` and the web arm's
+//! `AbortController`: no arm keeps transferring for a dropped future.
 //!
 //! Timeout: a request `timeout` is a deadline on the whole exchange, body
 //! included, resolving `Error::Timeout` — the reqwest and web arms'
@@ -36,7 +41,6 @@
 
 use std::future::{poll_fn, Future};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -48,6 +52,7 @@ use crate::error::Error;
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::response::Response;
+use crate::conn_slot;
 use crate::timeout_policy::{self, FirstResult, Watchdog};
 
 pub(crate) struct Transport;
@@ -58,16 +63,33 @@ impl Transport {
     }
 }
 
-/// Shared slot the worker thread parks the connection's `GlobalRef`
-/// into and the cancel watcher takes it out of. `Option` because
-/// either side might claim it first:
+/// Shared slot the worker thread publishes the connection's `GlobalRef`
+/// into and an aborter (drop guard, watchdog) takes it out of — see
+/// [`conn_slot`] for the states. Either side might claim it first:
 ///
-/// - Worker on natural completion: `take()` returns Some, drops the
-///   GlobalRef (which calls `DeleteGlobalRef` on the JVM).
-/// - Cancel watcher on token fire: `take()` returns Some, uses the
-///   ref to call `disconnect()` on a fresh thread, then drops it.
+/// - Worker on completion: `finish()` returns Some, drops the GlobalRef
+///   (which calls `DeleteGlobalRef` on the JVM).
+/// - Aborter: `abandon()` returns Some, uses the ref to call
+///   `disconnect()` on a fresh thread, then drops it.
 /// - Whoever loses the race gets `None` and no-ops.
-type ConnSlot = Arc<Mutex<Option<GlobalRef>>>;
+type ConnSlot = conn_slot::ConnSlot<GlobalRef>;
+
+/// Held by `send` across its await: on drop — the cancel token won, or the
+/// request future was dropped — abandons the exchange and disconnects the
+/// live connection, which unblocks the worker. After a normal completion
+/// the worker has already taken the connection back, so this finds nothing.
+///
+/// The disconnect runs on a fresh thread: `attach_current_thread` and
+/// `disconnect()` can block, and this drop runs on the caller's executor.
+struct AbandonOnDrop(ConnSlot);
+
+impl Drop for AbandonOnDrop {
+    fn drop(&mut self) {
+        if let Some(global) = self.0.abandon() {
+            std::thread::spawn(move || disconnect(global));
+        }
+    }
+}
 
 pub(crate) async fn send(
     _transport: &Transport,
@@ -95,7 +117,7 @@ pub(crate) async fn send(
     // Slot shared between worker (writes the GlobalRef in, takes it
     // out on completion) and the cancel watcher (takes it out on
     // cancel, uses it to disconnect).
-    let conn_slot: ConnSlot = Arc::new(Mutex::new(None));
+    let conn_slot: ConnSlot = ConnSlot::new();
     let slot_for_worker = conn_slot.clone();
 
     // The deadline clock starts here, before the worker even attaches.
@@ -108,9 +130,9 @@ pub(crate) async fn send(
                 // the connection is not published yet (URL / DNS phase),
                 // the worker's own connect/read timeouts bound it instead.
                 // Taken atomically, so a racing cancel or the worker's
-                // cleanup never sees the same ref.
-                let global = slot.lock().unwrap().take();
-                if let Some(global) = global {
+                // cleanup never sees the same ref; abandoning also stops a
+                // worker that has not connected yet from starting.
+                if let Some(global) = slot.abandon() {
                     disconnect(global);
                 }
             }
@@ -125,6 +147,10 @@ pub(crate) async fn send(
         settle.settle(result);
     });
 
+    // Held across the await: returning early (cancel) or this future being
+    // dropped abandons the exchange and disconnects it.
+    let _abandon = AbandonOnDrop(conn_slot);
+
     let receive_future = async move {
         rx.await
             .unwrap_or_else(|_| Err(Error::Other("Android worker thread dropped".into())))
@@ -132,12 +158,12 @@ pub(crate) async fn send(
 
     match cancel {
         None => receive_future.await,
-        Some(token) => race_with_cancel(receive_future, token, conn_slot).await,
+        Some(token) => race_with_cancel(receive_future, token).await,
     }
 }
 
 /// RAII helper: on drop, atomically takes any `GlobalRef` left in
-/// `conn_slot` and drops it. Declared *after* the `AttachGuard` in
+/// `conn_slot` (via [`conn_slot::ConnSlot::finish`]) and drops it. Declared *after* the `AttachGuard` in
 /// `do_request` so it runs first (Rust drops in reverse declaration
 /// order) — that puts the `DeleteGlobalRef` call on the JNI-attached
 /// worker thread, where it's a single FFI hop rather than a
@@ -145,7 +171,7 @@ pub(crate) async fn send(
 struct SlotGuard<'a>(&'a ConnSlot);
 impl Drop for SlotGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.0.lock().unwrap().take();
+        let _ = self.0.finish();
     }
 }
 
@@ -204,8 +230,7 @@ fn do_request(
     // `do_request_inner`'s own `disconnect()`: free the socket now rather
     // than at GC. Safe here — the pending exception was cleared above.
     if result.is_err() {
-        let global = conn_slot.lock().unwrap().take();
-        if let Some(global) = global {
+        if let Some(global) = conn_slot.finish() {
             let _ = env.call_method(global.as_obj(), "disconnect", "()V", &[]);
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_clear();
@@ -263,7 +288,13 @@ fn do_request_inner(
     // -----------------------------------------------------------------
     {
         let global = env.new_global_ref(&conn_obj).map_err(map_jni_err)?;
-        *conn_slot.lock().unwrap() = Some(global);
+        // Refused when the caller already stopped waiting (dropped future,
+        // cancel, watchdog) before there was a connection to disconnect:
+        // stop here, before any network I/O. `openConnection` does not
+        // connect, and the refused ref drops on this attached thread.
+        if conn_slot.publish(global).is_err() {
+            return Err(Error::Cancelled);
+        }
     }
 
     // -----------------------------------------------------------------
@@ -601,18 +632,11 @@ fn disconnect(global: GlobalRef) {
     drop(global);
 }
 
-/// Race the worker's `oneshot` against the cancel token. If cancel
-/// wins, take the connection's `GlobalRef` out of the shared slot
-/// (atomically — the worker will then see `None` on its own
-/// cleanup) and spawn a fresh thread that attaches to the JVM and
-/// calls `conn.disconnect()`. That terminates the worker's
-/// blocking I/O; the worker's `Result` is discarded since the
-/// awaiter has already returned `Err(Error::Cancelled)`.
-async fn race_with_cancel<F>(
-    receive_future: F,
-    token: CancelToken,
-    conn_slot: ConnSlot,
-) -> Result<Response, Error>
+/// Race the worker's `oneshot` against the cancel token. If cancel wins,
+/// resolve `Err(Error::Cancelled)`; `send` then returns and its
+/// [`AbandonOnDrop`] guard disconnects the connection, which terminates the
+/// worker's blocking I/O. The worker's `Result` is discarded.
+async fn race_with_cancel<F>(receive_future: F, token: CancelToken) -> Result<Response, Error>
 where
     F: Future<Output = Result<Response, Error>>,
 {
@@ -620,27 +644,6 @@ where
     let mut cancel_fut = Box::pin(token.cancelled());
     poll_fn(|cx| {
         if let Poll::Ready(()) = Pin::new(&mut cancel_fut).poll(cx) {
-            // Atomic take: only one party (this watcher or the
-            // worker's SlotGuard) sees `Some`. If the worker has
-            // already finished, this is `None` and we skip the
-            // disconnect. Either outcome leaves `Err(Cancelled)` to
-            // the caller, which is what the cancel contract
-            // requires.
-            if let Some(global) = conn_slot.lock().unwrap().take() {
-                // Spawn a one-shot thread to perform the disconnect.
-                // `attach_current_thread` blocks; we can't call it
-                // from inside `poll_fn` without holding up the
-                // entire async runtime, so the disconnect happens
-                // off-thread and we resolve the cancel here. By the
-                // time the disconnect lands, the worker's blocking
-                // JNI call (likely `getResponseCode` or `read`) has
-                // already thrown an IOException and the worker has
-                // exited, dropping its `oneshot::Sender`. The
-                // disconnect on the worker-side socket is then a
-                // no-op; we still need it for the case where the
-                // worker is parked inside that blocking call.
-                std::thread::spawn(move || disconnect(global));
-            }
             return Poll::Ready(Err(Error::Cancelled));
         }
         if let Poll::Ready(result) = Pin::new(&mut fut).poll(cx) {
