@@ -8,7 +8,8 @@
 # Launches with the self-test armed (SIMCTL_CHILD_NEWCORE_SMOKE_SELFTEST=1);
 # the app prints `[SMOKE-SELFTEST] committed=<bool> views=<n>` and
 # exits 0/1 (~2.2 s after launch). Requires Xcode + a bootable iPhone
-# simulator.
+# simulator. With several simulators booted, pick one with
+# SIM_UDID=<udid>.
 set -euo pipefail
 
 HOST_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,8 +32,10 @@ cargo build --manifest-path "$WORKSPACE_ROOT/Cargo.toml" \
 LIB_DIR="$WORKSPACE_ROOT/target/$RUST_TARGET/debug"
 
 # ── 2. Bundle + swiftc link (mirror run-ios compile_and_link; base
-#      framework set: UIKit/Foundation weak, CoreGraphics/QuartzCore
-#      strong — see crates/tools/run/ios/src/frameworks.rs) ──────────
+#      framework set: UIKit/Foundation weak, CoreGraphics/QuartzCore/
+#      CoreText/CoreFoundation strong — see crates/tools/run/ios/src/
+#      frameworks.rs — plus GameController, which backend-ios-mobile
+#      declares in its `package.metadata.idealyst.ios.frameworks`) ────
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE"
 SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
@@ -49,12 +52,19 @@ xcrun -sdk iphonesimulator swiftc \
     -Xlinker -weak_framework -Xlinker UIKit \
     -Xlinker -weak_framework -Xlinker Foundation \
     -framework CoreGraphics \
-    -framework QuartzCore
+    -framework QuartzCore \
+    -framework CoreText \
+    -framework CoreFoundation \
+    -framework GameController
 cp "$HOST_DIR/Info.plist" "$APP_BUNDLE/Info.plist"
 printf 'APPL????' > "$APP_BUNDLE/PkgInfo"
 
-# ── 3. Simulator: reuse a booted device or boot the first iPhone ────
-UDID="$(xcrun simctl list devices booted | grep -Eo '[0-9A-F-]{36}' | head -1 || true)"
+# ── 3. Simulator: SIM_UDID if set, else reuse a booted device, else
+#      boot the first iPhone ──────────────────────────────────────────
+UDID="${SIM_UDID:-}"
+if [[ -z "$UDID" ]]; then
+    UDID="$(xcrun simctl list devices booted | grep -Eo '[0-9A-F-]{36}' | head -1 || true)"
+fi
 if [[ -z "$UDID" ]]; then
     UDID="$(xcrun simctl list devices available | grep -E 'iPhone' | grep -Eo '[0-9A-F-]{36}' | head -1)"
     echo "[run-sim] booting simulator $UDID"

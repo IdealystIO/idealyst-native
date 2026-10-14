@@ -3403,19 +3403,53 @@ impl IosBackend {
                 // message instead of corrupting the tree.
                 self.layout.remove_node(layout_node);
             }
-            // The pointer-keyed side tables, all of which would otherwise
-            // be inherited by whatever view the allocator next puts at
-            // this address — see `layout_for_view`'s re-registration,
-            // which clears the same set for that reason.
-            self.applied_frames.remove(&k);
-            self.keyboard_avoiders.remove(&k);
-            self.layout_style_keys.remove(&k);
-            self.external_content_measures.remove(&k);
-            self.styled_texts.remove(&k);
-            self.label_texts.remove(&k);
-            self.pending_sticky.remove(&k);
-            self.impl_drop_animated_state(k);
+            self.forget_view_key(k);
         }
+    }
+
+    /// Drop every pointer-keyed side table's entry for a view that is
+    /// being torn down. Each would otherwise be inherited by whatever
+    /// view the allocator next puts at this address — see
+    /// `layout_for_view`'s re-registration, which clears the
+    /// registration-time subset for the same reason. Both teardown paths
+    /// ([`Self::unregister_subtree`], [`Self::release_portal_impl`]) call
+    /// this, so a table added later is cleared on both or neither.
+    ///
+    /// `scroll_views` is the entry that crashed: the post-layout
+    /// `contentSize` sync walks it and messages each member as a
+    /// `UIScrollView`. A released scroll view's key used to stay in the
+    /// set; once its `view_to_layout` registration (the last strong ref)
+    /// dropped, UIKit freed it and a new `IdealystTextField` landed at the
+    /// same address, registered under the same key, and the sync sent it
+    /// `contentSize` — `invalid message send … method not found`, fatal
+    /// inside `layoutSubviews` (a kiosk swapping a scrolling picker for a
+    /// screen of text fields).
+    fn forget_view_key(&mut self, k: usize) {
+        self.applied_frames.remove(&k);
+        self.keyboard_avoiders.remove(&k);
+        self.layout_style_keys.remove(&k);
+        self.external_content_measures.remove(&k);
+        self.styled_texts.remove(&k);
+        self.label_texts.remove(&k);
+        self.pending_sticky.remove(&k);
+        self.scroll_views.remove(&k);
+        // Membership only — the data source in `virtualizer_instances` is
+        // released by `release_virtualizer_impl` (its own ordered
+        // teardown), which also removes this; removing twice is a no-op.
+        self.collection_views.remove(&k);
+        // Per-node animation state (opacity/transform caches): a recycled
+        // pointer must not inherit a dead view's transform/alpha (e.g. a
+        // leftover opacity 0 from a closing card's fade).
+        self.impl_drop_animated_state(k);
+    }
+
+    /// How many `UIScrollView`s the post-layout `contentSize` sync walks.
+    /// Introspection for the simulator self-test
+    /// (`crates/dev/newcore-ios-smoke`), which asserts a released scroll
+    /// view leaves this set.
+    #[doc(hidden)]
+    pub fn registered_scroll_view_count(&self) -> usize {
+        self.scroll_views.len()
     }
 
     /// A screen (or any subtree) the framework has DISCARDED: free
@@ -4232,14 +4266,9 @@ impl IosBackend {
             // and the pass SKIPS writing the real frame — the view stays
             // 0×0 / off-screen. That's the "modal re-opens with an empty
             // card" symptom: the card's recycled pointer inherited the
-            // prior teardown's frame and never got laid out.
-            self.applied_frames.remove(&k);
-            self.keyboard_avoiders.remove(&k);
-            // Per-node animation state (opacity/transform caches) keyed by
-            // the same pointer — drop it so a recycled pointer doesn't
-            // inherit a dead view's transform/alpha (e.g. a leftover
-            // opacity 0 from the closing card's fade).
-            self.impl_drop_animated_state(k);
+            // prior teardown's frame and never got laid out. That table and
+            // every other pointer-keyed one are cleared together:
+            self.forget_view_key(k);
         }
 
         // UIKit + anchor-tracker teardown: invalidates the CADisplayLink
@@ -5019,13 +5048,31 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
         // gestures don't scroll (or only bounce, when
         // `alwaysBounceVertical` is on).
         let _t_sync = phase_timer::PhaseTimer::start("scroll_contentsize_sync");
+        let scroll_view_class = objc2::class!(UIScrollView);
+        let mut stale_scroll_keys: Vec<usize> = Vec::new();
         for view_ptr in self.scroll_views.iter().copied() {
-            let Some((_view_ref, scroll_layout)) = self.view_to_layout.values()
-                .find(|(v, _)| (&**v as *const UIView as usize) == view_ptr)
-                .cloned()
+            // `view_to_layout` is keyed by the same pointer, and its entry
+            // holds the strong ref that keeps the view alive.
+            let Some((view_ref, scroll_layout)) = self.view_to_layout.get(&view_ptr).cloned()
             else {
+                // Unregistered: released through a path that skipped
+                // `forget_view_key`. Nothing to size; drop the key.
+                stale_scroll_keys.push(view_ptr);
                 continue;
             };
+            // Teardown drops the key from `scroll_views` (`forget_view_key`),
+            // so the view registered here is the scroll view itself. Check
+            // the class anyway before messaging it as one: a missed release
+            // path would otherwise hand `contentSize` to whatever view
+            // reused the address, which aborts the app from inside
+            // `layoutSubviews` (panics there cannot unwind). A wrong class
+            // means a stale key — drop it.
+            let is_scroll_view: bool =
+                unsafe { msg_send![&*view_ref, isKindOfClass: scroll_view_class] };
+            if !is_scroll_view {
+                stale_scroll_keys.push(view_ptr);
+                continue;
+            }
             // Clip-aware content extent — see
             // `LayoutTree::scroll_content_extent`. The SCROLL axis is the
             // bounding box of descendants (deep walk, so a Spacer-pushed
@@ -5065,6 +5112,9 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
             {
                 let _: () = unsafe { msg_send![&scroll_view, setContentSize: size] };
             }
+        }
+        for key in stale_scroll_keys {
+            self.scroll_views.remove(&key);
         }
 
         // Sync contentSize for external content-measured scrollers (SDK

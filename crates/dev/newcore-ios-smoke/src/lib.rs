@@ -13,7 +13,12 @@
 //! run-loop-turn driver flush), a two-way `toggle`, a structural Dyn
 //! hole (closure child), a keyed list with add/remove/reverse (keyed
 //! reconciliation against live UIViews), and one literal `StyleRules`
-//! (the `StyleOps` delegation on the native apply-style path).
+//! (the `StyleOps` delegation on the native apply-style path). Two
+//! regressions ride the self-test: the root's `safe_area(TOP)` padding
+//! must follow the host's real insets (they arrive after mount, once
+//! the host view is in a window), and a released `scroll_view` must
+//! leave the backend's `contentSize`-sync set (a stale key let the sync
+//! message a recycled `UITextField` as a scroll view and abort).
 //!
 //! The Swift shell lives in `host/` (AppDelegate + ViewController +
 //! bridging header, mirroring the CLI-generated wrapper's
@@ -21,10 +26,10 @@
 //! and launches it on the simulator with the self-test armed.
 
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::{FlexDirection, Length, StyleRules, Tokenized};
+use runtime_shared::{FlexDirection, Length, SafeAreaSides, StyleRules, Tokenized};
 use runtime_scene::{keyed, Element};
 use runtime_vocabulary::builders::IntoSceneElement;
-use runtime_vocabulary::{button, text, toggle, view};
+use runtime_vocabulary::{button, scroll_view, text, toggle, view};
 use runtime_world::signal;
 
 /// A minimal literal style — exercises the `StyleOps` delegation (on
@@ -124,6 +129,7 @@ pub fn app() -> Element {
     let on = signal(false);
     let rows = signal(vec![1u32, 2, 3]);
     let next_row = signal(4u32);
+    let show_scroll = signal(true);
 
     // Headless live-verification hook (`NEWCORE_SMOKE_SELFTEST=1`,
     // delivered by simctl as SIMCTL_CHILD_NEWCORE_SMOKE_SELFTEST):
@@ -146,22 +152,37 @@ pub fn app() -> Element {
     if std::env::var("NEWCORE_SMOKE_SELFTEST").as_deref() == Ok("1") {
         runtime_shared::scheduling::after_ms_detached(1500, move || {
             count.set(41); // stages — the driver must commit it
+            // Release the scroll view (the dyn hole below swaps it for a
+            // text); the second tick checks the backend forgot it.
+            let scrolls_before = selftest::registered_scroll_views();
+            show_scroll.set(false);
             runtime_shared::scheduling::after_ms_detached(700, move || {
                 let committed = count.get() == 41;
                 let views = selftest::live_view_count();
                 let anchors = selftest::check_anchor_shapes();
+                let safe_area = selftest::check_safe_area();
+                let scrolls_after = selftest::registered_scroll_views();
+                // Exactly one scroll view mounted, then released: the
+                // set must shrink by one (pre-fix it stayed at 1).
+                let scroll_released = scrolls_before == 1 && scrolls_after == 0;
+                let line = format!(
+                    "[SMOKE-SELFTEST] committed={committed} views={views} anchors={anchors} \
+                     safe_area={safe_area} scroll_views={scrolls_before}->{scrolls_after}"
+                );
                 // println! goes to stdout, which `simctl launch
                 // --console-pty` captures; also NSLog via the installed
                 // logger so `log show` has it.
-                println!("[SMOKE-SELFTEST] committed={committed} views={views} anchors={anchors}");
-                runtime_shared::log_info!(
-                    "[SMOKE-SELFTEST] committed={committed} views={views} anchors={anchors}"
-                );
+                println!("{line}");
+                runtime_shared::log_info!("{line}");
                 // The static tree alone mounts well over 10 views
                 // (column + 3 texts + 3 buttons + toggle + dyn hole +
                 // 3 keyed rows); a low count means realize/finish
                 // didn't attach.
-                let ok = committed && views > 10 && anchors == "ok";
+                let ok = committed
+                    && views > 10
+                    && anchors == "ok"
+                    && safe_area == "ok"
+                    && scroll_released;
                 std::process::exit(if ok { 0 } else { 1 });
             });
         });
@@ -169,6 +190,15 @@ pub fn app() -> Element {
 
     view()
         .style(padded_column())
+        // The insets are zero at mount (the host view is not in a window
+        // yet) and arrive afterwards; `check_safe_area` asserts the
+        // padding followed them.
+        .safe_area(SafeAreaSides::TOP)
+        .child(
+            view()
+                .style(StyleRules { height: px(4.0), ..StyleRules::default() })
+                .a11y(tagged("safe-probe")),
+        )
         .child(text().content("New-core iOS smoke"))
         .child(text().content(move || format!("count = {}", count.get())))
         .child(
@@ -214,6 +244,17 @@ pub fn app() -> Element {
             |n| text().content(format!("row #{n}")).build(),
         ))
         .child(anchor_shapes())
+        // A scroll view the self-test releases (see `show_scroll`).
+        .child(move || {
+            if show_scroll.get() {
+                scroll_view()
+                    .style(StyleRules { height: px(40.0), ..StyleRules::default() })
+                    .child(text().content("scrolling content"))
+                    .into_scene_element()
+            } else {
+                text().content("scroll view released").into_scene_element()
+            }
+        })
         .build()
 }
 
@@ -276,6 +317,66 @@ mod selftest {
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() < 0.5
+    }
+
+    /// UIKit's `UIEdgeInsets` (objc2-ui-kit 0.2 doesn't ship it).
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct UIEdgeInsets {
+        top: f64,
+        left: f64,
+        bottom: f64,
+        right: f64,
+    }
+
+    unsafe impl objc2::encode::Encode for UIEdgeInsets {
+        const ENCODING: objc2::encode::Encoding = objc2::encode::Encoding::Struct(
+            "UIEdgeInsets",
+            &[f64::ENCODING, f64::ENCODING, f64::ENCODING, f64::ENCODING],
+        );
+    }
+
+    /// Scroll views the backend's `contentSize` sync still walks.
+    pub fn registered_scroll_views() -> usize {
+        backend_ios::with_backend(|b| b.registered_scroll_view_count()).unwrap_or(usize::MAX)
+    }
+
+    /// The root's `safe_area(TOP)` padding tracks the host's live insets,
+    /// and the world's `safe_area_insets()` carries the same value:
+    /// `"ok"`, or the first failing check.
+    pub fn check_safe_area() -> String {
+        ROOT_VIEW.with(|slot| {
+            let slot = slot.borrow();
+            let Some(root) = slot.as_ref() else {
+                return "no-root".to_string();
+            };
+            let host: UIEdgeInsets = unsafe { objc2::msg_send![&**root, safeAreaInsets] };
+            // Every simulator this runs on has a status bar; zero here
+            // means the host never got real insets and the check below
+            // would pass vacuously.
+            if host.top <= 0.0 {
+                return format!("host top inset is {}", host.top);
+            }
+            // NSTimer callbacks run outside `World::enter`; read through
+            // the mounted world.
+            let Some(world) = backend_ios::newcore::mounted_world() else {
+                return "no-world".to_string();
+            };
+            let world_top =
+                world.enter(|| runtime_vocabulary::safe_area::safe_area_insets().peek().top);
+            if !near(world_top as f64, host.top) {
+                return format!("world inset {world_top} != host inset {}", host.top);
+            }
+            let Some(probe) = find_by_identifier(root, "safe-probe") else {
+                return "probe-missing".to_string();
+            };
+            // padded_column's 64pt top padding plus the safe-area inset.
+            let y = frame_in(&probe, root).origin.y;
+            if !near(y, host.top + 64.0) {
+                return format!("probe at y={y}, want {}", host.top + 64.0);
+            }
+            "ok".to_string()
+        })
     }
 
     /// Verify the reactive-anchor shapes in `anchor_shapes` laid out as
