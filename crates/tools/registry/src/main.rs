@@ -625,41 +625,82 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
     // dependents in with it.
     apply_bump_overrides(&mut plan, &r.bump)?;
 
-    // A major bump changes the requirement dependents carry, so they must be
-    // republished too. Minor and patch bumps do not: the caret requirement
-    // already admits them, which is precisely the reuse this migration buys.
+    drag_in_dependents_of_majors(ws, &state, &mut plan)?;
+    force_into_plan(ws, &state, &mut plan, &r.force)?;
+    Ok(plan)
+}
+
+/// Bring the dependents of every major-bumped crate into the plan.
+///
+/// A major bump changes the requirement dependents carry, so they must be
+/// republished. Minor and patch bumps do not: the caret requirement already
+/// admits them, which is precisely the reuse this migration buys.
+///
+/// **A library dependent goes major too**, and so (transitively) do the
+/// libraries that depend on it. Its new release requires the new major of
+/// the dependency, and the dependency's types are in its public surface
+/// (idea-ui-nav renders idea-ui components and shares its theme), so a
+/// consumer on the old line who lets cargo pick up the new release ends up
+/// with two copies of the dependency: separate theme state, and types that
+/// no longer unify. That is what dragging dependents in at a PATCH did:
+/// idea-ui 5.0.0 shipped with idea-ui-nav 1.5.9 and idea-theme-editor 1.5.8,
+/// and a `cargo update` within 1.5 put idea-ui 5 next to the app's idea-ui 4
+/// (CrewForge, 2026-10-14). A library that earned a smaller bump of its own
+/// in the same release is raised to major for the same reason.
+///
+/// A dependent with no library target (the CLI, dev tools, doc sites built
+/// as binaries) cannot leak anything into a consumer, so it is republished
+/// at a patch.
+fn drag_in_dependents_of_majors(
+    ws: &Workspace,
+    state: &ReleaseState,
+    plan: &mut BTreeMap<String, Release>,
+) -> Result<()> {
     let majors: Vec<String> = plan
         .iter()
         .filter(|(_, r)| r.bump == Bump::Major)
         .map(|(n, _)| n.clone())
         .collect();
-    if !majors.is_empty() {
-        for name in ws.dependents_of(majors.iter().map(String::as_str)) {
-            if plan.contains_key(&name) {
+    if majors.is_empty() {
+        return Ok(());
+    }
+    // `dependents_of` is transitive. Every path from a major to a dependent
+    // runs through crates that depend on it, and those are libraries (only a
+    // library can be depended on) — so each library reached here goes major,
+    // and the closure needs no fixpoint.
+    for name in ws.dependents_of(majors.iter().map(String::as_str)) {
+        let Some(p) = ws.packages.get(&name) else { continue };
+        let want = if p.has_lib { Bump::Major } else { Bump::Patch };
+        if let Some(rel) = plan.get_mut(&name) {
+            // Never published: it ships its manifest version as-is.
+            if rel.initial || rel.bump >= want {
                 continue;
             }
-            let Some(p) = ws.packages.get(&name) else { continue };
-            let from = state
-                .crates
-                .get(&name)
-                .map(|r| semver::Version::parse(&r.version))
-                .transpose()?;
-            let base = from.clone().unwrap_or_else(|| p.version.clone());
-            plan.insert(
-                name,
-                Release {
-                    bump: Bump::Patch,
-                    initial: false,
-                    to: Bump::Patch.apply(&base),
-                    from,
-                    forced: Forced::DependencyMajor,
-                    overridden: false,
-                },
-            );
+            if let Some(from) = &rel.from {
+                rel.to = want.apply(from);
+            }
+            rel.bump = want;
+            continue;
         }
+        let from = state
+            .crates
+            .get(&name)
+            .map(|r| semver::Version::parse(&r.version))
+            .transpose()?;
+        let base = from.clone().unwrap_or_else(|| p.version.clone());
+        plan.insert(
+            name,
+            Release {
+                bump: want,
+                initial: false,
+                to: want.apply(&base),
+                from,
+                forced: Forced::DependencyMajor,
+                overridden: false,
+            },
+        );
     }
-    force_into_plan(ws, &state, &mut plan, &r.force)?;
-    Ok(plan)
+    Ok(())
 }
 
 /// Raise the bump level of crates named by `--bump CRATE=LEVEL`.
@@ -1076,6 +1117,7 @@ mod tests {
             nested: vec![],
             deps: Default::default(),
             dev_deps: Default::default(),
+            has_lib: true,
             also_watch: Vec::new(),
             prepackage: None,
         };
@@ -1136,6 +1178,7 @@ mod tests {
                             nested: vec![],
                             deps: Default::default(),
                             dev_deps: Default::default(),
+                            has_lib: true,
                             also_watch: Vec::new(),
                             prepackage: None,
                         },
@@ -1166,6 +1209,72 @@ mod tests {
             forced: Forced::No,
             overridden: false,
         }
+    }
+
+    /// `idea-ui-nav` and `idea-theme-editor` depend on `idea-ui`; `dev-tui`
+    /// depends on `idea-theme-editor` and has no library target;
+    /// `idea-ui-mail` depends on `idea-ui` and earned a minor of its own.
+    fn idea_ui_family() -> (Workspace, ReleaseState) {
+        let mut ws = bare_ws(&[
+            ("idea-ui", "4.1.0"),
+            ("idea-ui-nav", "1.5.8"),
+            ("idea-theme-editor", "1.5.7"),
+            ("idea-ui-mail", "1.5.3"),
+            ("dev-tui", "1.5.5"),
+        ]);
+        let deps = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        ws.packages.get_mut("idea-ui-nav").unwrap().deps = deps(&["idea-ui"]);
+        ws.packages.get_mut("idea-theme-editor").unwrap().deps = deps(&["idea-ui"]);
+        ws.packages.get_mut("idea-ui-mail").unwrap().deps = deps(&["idea-ui"]);
+        let tui = ws.packages.get_mut("dev-tui").unwrap();
+        tui.deps = deps(&["idea-theme-editor"]);
+        tui.has_lib = false;
+        let state = released(&[
+            ("idea-ui", "4.1.0"),
+            ("idea-ui-nav", "1.5.8"),
+            ("idea-theme-editor", "1.5.7"),
+            ("idea-ui-mail", "1.5.3"),
+            ("dev-tui", "1.5.5"),
+        ]);
+        (ws, state)
+    }
+
+    /// Regression: idea-ui 5.0.0 dragged idea-ui-nav in at 1.5.9, so a
+    /// `cargo update` within 1.5 pulled idea-ui 5 in next to an app's idea-ui
+    /// 4 — two copies, separate theme state, mismatched types (CrewForge,
+    /// 2026-10-14). A library dependent of a major must go major itself.
+    #[test]
+    fn regression_major_dependency_bumps_library_dependents_major() {
+        let (ws, state) = idea_ui_family();
+        let mut plan = BTreeMap::from([
+            ("idea-ui".to_string(), planned(Bump::Major, (4, 1, 0))),
+            ("idea-ui-mail".to_string(), planned(Bump::Minor, (1, 5, 3))),
+        ]);
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+
+        let nav = &plan["idea-ui-nav"];
+        assert_eq!(nav.bump, Bump::Major);
+        assert_eq!(nav.to, semver::Version::new(2, 0, 0), "pre-fix: 1.5.9");
+        assert_eq!(nav.forced, Forced::DependencyMajor);
+        assert_eq!(plan["idea-theme-editor"].to, semver::Version::new(2, 0, 0));
+
+        let mail = &plan["idea-ui-mail"];
+        assert_eq!(mail.bump, Bump::Major, "an earned minor is raised to major");
+        assert_eq!(mail.to, semver::Version::new(2, 0, 0));
+        assert_eq!(mail.forced, Forced::No, "it still earned its own release");
+
+        let tui = &plan["dev-tui"];
+        assert_eq!(tui.bump, Bump::Patch, "no library target: nothing leaks to a consumer");
+        assert_eq!(tui.to, semver::Version::new(1, 5, 6));
+    }
+
+    /// No major in the plan: nobody is dragged in, and earned levels stay.
+    #[test]
+    fn minor_dependency_drags_nothing_in() {
+        let (ws, state) = idea_ui_family();
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Minor, (4, 1, 0)))]);
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        assert_eq!(plan.len(), 1);
     }
 
     /// The case the flag exists for: additive public API landed under a

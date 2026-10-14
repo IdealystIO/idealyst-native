@@ -24,6 +24,8 @@ struct RawPackage {
     /// `Some([registry, ..])` for an allow-list, and `None` for "anywhere".
     publish: Option<Vec<String>>,
     dependencies: Vec<RawDep>,
+    #[serde(default)]
+    targets: Vec<RawTarget>,
     /// `[package.metadata]`, as JSON. The tool reads its own table,
     /// `[package.metadata.registry]` — see [`RegistryMeta`].
     #[serde(default)]
@@ -55,6 +57,12 @@ impl RawPackage {
                 .with_context(|| format!("{}: invalid [package.metadata.registry]", self.name)),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTarget {
+    /// `lib`, `rlib`, `proc-macro`, `bin`, `example`, `test`, …
+    kind: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +133,11 @@ pub struct Package {
     /// depends on `wire`, and `idea-ui` dev-depends on `premint-dump`, which
     /// is not published at all.
     pub dev_deps: BTreeSet<String>,
+    /// Whether other crates can depend on this one: it has a library
+    /// target (`lib`, `rlib`, `dylib` or `proc-macro`). A crate without one
+    /// (the CLI, a dev tool) is only ever installed, so nothing it depends
+    /// on can leak into a consumer's types.
+    pub has_lib: bool,
     /// `[package.metadata.registry] also-watch` — see [`RegistryMeta`].
     pub also_watch: Vec<String>,
     /// `[package.metadata.registry] prepackage` — see [`RegistryMeta`].
@@ -208,6 +221,11 @@ impl Workspace {
                     publish: p.publish.as_ref().map(|v| !v.is_empty()).unwrap_or(true),
                     deps,
                     dev_deps,
+                    has_lib: p.targets.iter().any(|t| {
+                        t.kind
+                            .iter()
+                            .any(|k| matches!(k.as_str(), "lib" | "rlib" | "dylib" | "proc-macro"))
+                    }),
                 },
             );
         }
@@ -458,6 +476,32 @@ runtime-template = { workspace = true }
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// `has_lib` decides whether a crate goes major with a dependency's
+    /// major (see `drag_in_dependents_of_majors`), so it has to come from
+    /// the real targets: a bin-only crate is installed, never depended on.
+    #[test]
+    fn has_lib_reads_the_crates_targets() {
+        let (d, ws) = fixture(
+            "has-lib",
+            "[workspace]\nmembers = [\"lib-crate\", \"bin-crate\", \"macro-crate\"]\nresolver = \"2\"\n",
+            &[
+                ("lib-crate", &member("lib-crate", "")),
+                (
+                    "bin-crate",
+                    &member(
+                        "bin-crate",
+                        "autolib = false\n\n[[bin]]\nname = \"bin-crate\"\npath = \"src/lib.rs\"\n",
+                    ),
+                ),
+                ("macro-crate", &member("macro-crate", "[lib]\nproc-macro = true\n")),
+            ],
+        );
+        assert!(ws.packages["lib-crate"].has_lib);
+        assert!(!ws.packages["bin-crate"].has_lib);
+        assert!(ws.packages["macro-crate"].has_lib);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     fn bare(pkgs: &[(&str, &[&str], &[&str])]) -> Workspace {
         let set = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
         Workspace {
@@ -476,6 +520,7 @@ runtime-template = { workspace = true }
                             nested: vec![],
                             deps: set(deps),
                             dev_deps: set(dev),
+                            has_lib: true,
                             also_watch: Vec::new(),
                             prepackage: None,
                         },

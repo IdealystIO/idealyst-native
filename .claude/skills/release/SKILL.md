@@ -165,8 +165,15 @@ subject?
   lands an API in one crate and only a test in another bumps both alike. That's
   accepted (publishing is the safer half of the trade), but say so in the
   release message.
-- Only a **major** bump republishes dependents. That is about *who* gets
-  published, not about the requirement: `apply_plan` moves the released
+- Only a **major** bump republishes dependents, and a dependent with a
+  library target goes **major** with it (transitively; a library that earned
+  a smaller bump of its own is raised). Its new release requires the new
+  major, whose types are in its API, so a patch would let `cargo update` on
+  the old line pull in a second copy of the dependency. That is the
+  `idea-ui-nav 1.5.9` slip: idea-ui 5.0.0 dragged it in at a patch, and an
+  app on idea-ui 4 got idea-ui 5 alongside. Bin-only dependents (the CLI,
+  dev-tui) still go at a patch. See `drag_in_dependents_of_majors`.
+- Which crates get published is separate from the requirement they carry: `apply_plan` moves the released
   crate's floor in `[workspace.dependencies]` for **every** bump, patch
   included, before anything is packaged — so a dependent in the same release
   records the sibling it was actually compiled against. Confirm with
