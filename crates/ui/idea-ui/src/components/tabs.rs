@@ -31,7 +31,7 @@
 
 use runtime_core::{
     component, pressable, resolve_style, text, ui, view, Element, IdealystSchema, IntoElement,
-    Reactive, Signal, StyleApplication, StyleRules, StyleSheet, VariantEnum,
+    Reactive, Signal, StyleApplication, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
 use std::rc::Rc;
 
@@ -145,6 +145,12 @@ pub struct TabsProps {
     /// [`TabIndicator::Dot`] gives the compact dot + chip switcher.
     /// `Reactive<TabIndicator>` — static or live; the strip re-styles in place.
     pub indicator: TabIndicator,
+    /// Take the leftover width of a **row** parent. Default `false`: the bar
+    /// is as wide as its tabs, shrinking and scrolling when the row is too
+    /// narrow, and a column stretches it across. `fill` is a row-only opt-in
+    /// because it is `flex-grow`, which grows along the parent's main axis:
+    /// in a column it would grow the bar's height instead.
+    pub fill: bool,
 }
 
 impl Default for TabsProps {
@@ -156,7 +162,20 @@ impl Default for TabsProps {
             active: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
             indicator: Reactive::Static(TabIndicator::default()),
+            fill: Reactive::Static(false),
         }
+    }
+}
+
+/// The host's style: `TabBarHost`, plus `flex-grow` on the inline layer when
+/// the bar fills a row (inline so the application still premints, as
+/// `Surface`'s `grow` does).
+fn host_style(fill: bool) -> StyleApplication {
+    let app = StyleApplication::new(TabBarHost::sheet());
+    if fill {
+        app.with_inline(StyleRules { flex_grow: Some(Tokenized::Literal(1.0)), ..Default::default() })
+    } else {
+        app
     }
 }
 
@@ -171,6 +190,7 @@ pub fn Tabs(props: TabsProps) -> Element {
     let active = props.active;
     let on_change = props.on_change;
     let indicator = props.indicator;
+    let fill = props.fill;
     let container_style = TabBar();
 
     // Reactive, keyed list — tabs reconcile by `Tab::id` (a surviving tab keeps
@@ -204,9 +224,17 @@ pub fn Tabs(props: TabsProps) -> Element {
         .horizontal(true)
         .with_style(StyleApplication::new(TabBarScroller::sheet()))
         .into_element();
-    ui! {
-        view(style = TabBarHost()) {
-            scroller
+    if fill.is_static() {
+        ui! {
+            view(style = host_style(fill.get())) {
+                scroller
+            }
+        }
+    } else {
+        ui! {
+            view(style = move || host_style(fill.get())) {
+                scroller
+            }
         }
     }
 }
@@ -609,6 +637,41 @@ mod tests {
                 Some(runtime_core::AlignSelf::FlexStart),
                 "the strip must size to its tabs on the CROSS axis too, or \
                  its box clips hit-testing to the viewport"
+            );
+        });
+    }
+
+    /// Regression: `TabBarHost` carried `flex_grow: 1` so a bar in a ROW
+    /// took the row's leftover width. `flex_grow` grows along the parent's
+    /// main axis, so in a COLUMN (a bottom tab bar under the screen area)
+    /// it grew the bar's height and split the screen with the content
+    /// above, on every backend. The default must not grow.
+    #[test]
+    fn regression_tab_bar_does_not_grow_in_a_column_by_default() {
+        with_test_world(|| {
+            theme();
+            let host = runtime_core::resolve_style(&host_style(false));
+            let grow = host.flex_grow.as_ref().map(|t| t.resolve()).unwrap_or(0.0);
+            assert_eq!(grow, 0.0, "a default tab bar must size to its tabs, not grow");
+            assert_eq!(
+                host.min_width.as_ref().map(|t| t.resolve()),
+                Some(runtime_core::Length::Px(0.0)),
+                "a bar in a row must still be able to shrink below its tabs and scroll"
+            );
+        });
+    }
+
+    /// `fill` is the row opt-in: it adds the grow back, on the inline layer
+    /// so the application still premints.
+    #[test]
+    fn fill_takes_a_rows_leftover_width_and_still_premints() {
+        with_test_world(|| {
+            theme();
+            let host = runtime_core::resolve_style(&host_style(true));
+            assert_eq!(host.flex_grow.as_ref().map(|t| t.resolve()), Some(1.0));
+            assert!(
+                host_style(true).preminted_class_list().is_some(),
+                "fill must not disqualify preminting"
             );
         });
     }

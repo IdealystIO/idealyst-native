@@ -1888,13 +1888,14 @@ stylesheet! {
             // of slack; left at the default `flex-start` that slack fell
             // BELOW the tabs and pushed the underline off the rule.
             justify_content: JustifyContent::FlexEnd,
-            // Fill the space the parent offers rather than claiming
-            // `width: 100%`. A tab bar is mounted inside rows as often
-            // as columns (the app's context bar is a ROW), and a
-            // percentage width against a content-sized parent is
-            // circular; `flex_grow` + a zero `min_width` gives the
-            // scroller a bounded viewport in both.
-            flex_grow: 1.0,
+            // No `width: 100%` (circular against a content-sized row) and
+            // NO `flex_grow`: `flex_grow` grows along the PARENT's main
+            // axis, so in a column (a bottom tab bar) it took height and
+            // split the screen with the content above. A column already
+            // stretches the bar across. A bar in a row that should take
+            // the row's leftover width opts in with `Tabs(fill = true)`.
+            // `flex_shrink` + a zero `min_width` let a bar in a row shrink
+            // below its tabs and scroll; neither grows anything.
             flex_shrink: 1.0,
             min_width: Length::Px(0.0),
             // A FLOOR, not a height. A horizontal scroll_view has no

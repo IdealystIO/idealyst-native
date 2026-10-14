@@ -50,6 +50,9 @@ pub struct TabBarProps {
     pub on_select: Rc<dyn Fn(&'static str)>,
     /// How the active tab is marked — see [`TabIndicator`]. Default underline.
     pub indicator: TabIndicator,
+    /// Take the leftover width of a row parent — see `Tabs::fill`. Default
+    /// `false`, which is what a bottom tab bar in a column wants.
+    pub fill: bool,
 }
 
 impl Default for TabBarProps {
@@ -59,6 +62,7 @@ impl Default for TabBarProps {
             active_route: runtime_core::signal(""),
             on_select: Rc::new(|_| {}),
             indicator: runtime_core::Reactive::Static(TabIndicator::default()),
+            fill: runtime_core::Reactive::Static(false),
         }
     }
 }
@@ -73,6 +77,7 @@ pub fn TabBar(props: TabBarProps) -> Element {
     let active_route = props.active_route;
     let on_select = props.on_select;
     let indicator = props.indicator;
+    let fill = props.fill;
 
     // The strip's id-keyed tab list. `Tab::id` is the route name; a fixed bar
     // wraps a literal list in a static `Signal`.
@@ -95,6 +100,6 @@ pub fn TabBar(props: TabBarProps) -> Element {
     });
 
     ui! {
-        Tabs(tabs = tabs, active = active, on_change = on_change, indicator = indicator)
+        Tabs(tabs = tabs, active = active, on_change = on_change, indicator = indicator, fill = fill)
     }
 }

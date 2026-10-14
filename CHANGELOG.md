@@ -11,6 +11,17 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **A tab bar no longer grows by default** (`idea-ui` `Tabs`,
+  `idea-ui-nav` `TabBar`). Its host carried `flex-grow: 1` so a bar in a
+  row would take the row's leftover width. `flex-grow` grows along the
+  parent's main axis, so a bottom tab bar in a column grew in height and
+  split the screen with the content above it, on every backend. The host
+  now sizes to its tabs (a column stretches it across; in a row it still
+  shrinks below its tabs and scrolls). *Migration:* a tab bar in a ROW
+  that should take the row's leftover width passes `fill = true`
+  (`Tabs(.., fill = true)` / `TabBar(.., fill = true)`). CrewForge: check
+  the `Tabs` in row hosts (settings automations/templates, header tabs).
+
 - **`StackHeader` no longer grows** (`idea-ui-nav`). Its bar was a
   `Surface(grow = 1.0)`, i.e. `flex: 1 1 0`. In the usual stack layout (a
   column of header, then the outlet's growing region) it took height
