@@ -521,7 +521,11 @@ The framework decides **what** to mount; the backend decides **when** and
 `set_measured_size`, and owns the visible-window math, the scroll
 handler, and (on native) cell recycling. `virtualizer_data_changed(node)`
 fires from a binding effect on the data signal so the backend can
-re-query and diff. `release_virtualizer` tears down listeners.
+re-query and diff. That effect holds the backend mutably borrowed, so the
+backend must schedule the reload (releasing and remounting rows) for a
+later turn instead of doing it inside the call — web and iOS use a
+microtask, Linux a high-priority glib idle, Android and macOS the
+toolkit's next layout pass. `release_virtualizer` tears down listeners.
 
 Rows mount through `MountCx::realize_detached`, so each row's scope is
 freed when the backend calls `release_item`.

@@ -157,6 +157,12 @@ pub trait VirtualizerOps: ExternalOps {
     }
 
     /// The data set changed: re-query count/key/size and diff.
+    ///
+    /// Called with the backend mutably borrowed (from the handler's data
+    /// effect), so the backend must NOT call `mount_item` / `release_item`
+    /// inside this call — both re-borrow it. Schedule the reload for a
+    /// later turn (web/iOS: a microtask; Linux: a `HIGH_IDLE` glib idle;
+    /// Android/macOS: the toolkit's next layout pass).
     #[allow(unused_variables)]
     fn virtualizer_data_changed(&mut self, node: &Self::Node) {}
 

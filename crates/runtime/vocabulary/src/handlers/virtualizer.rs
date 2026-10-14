@@ -77,7 +77,12 @@ struct RowScope<N> {
 ///   The backend must also NOT invoke `mount_item` synchronously inside
 ///   `create_virtualizer` (the backend is mutably borrowed there; the
 ///   old core had the identical constraint — web/iOS/Android all defer
-///   the initial window fill).
+///   the initial window fill). The same holds for
+///   `virtualizer_data_changed`, which the data effect below calls under
+///   `borrow_mut()`: a backend must defer the reload (its row releases
+///   AND remounts) to a later turn — the GTK backend once reloaded
+///   in-call and panicked "already borrowed" on the first data change
+///   with mounted rows.
 /// - **`release_item` inside `release_virtualizer` is allowed, and is a
 ///   no-op.** The backend IS mutably borrowed there, so the mirror of
 ///   the `mount_item` rule would forbid it — but dropping the callbacks

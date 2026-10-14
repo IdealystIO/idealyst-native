@@ -3668,9 +3668,10 @@ impl LinuxBackend {
     }
 
     fn virtualizer_data_changed(&mut self, node: &LinuxNode) {
-        for cell in virtualizer::data_changed(node.id) {
-            self.free_subtree(cell);
-        }
+        // Deferred: the reload re-borrows the backend (row teardown + row
+        // realize), and the caller holds it — see `virtualizer::data_changed`.
+        // The deferred pass frees the recycled cells itself.
+        virtualizer::data_changed(node.id);
     }
 
     fn release_virtualizer(&mut self, node: &LinuxNode) {

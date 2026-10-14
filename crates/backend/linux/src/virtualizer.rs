@@ -76,6 +76,9 @@ struct State {
     /// Flipped false by `release`; every queued closure checks it and
     /// bails so a scroll/resize event landing after teardown is inert.
     alive: bool,
+    /// A deferred reload (see [`data_changed`]) is queued and has not run
+    /// yet; further data changes in the same turn ride on it.
+    reload_pending: bool,
 }
 
 thread_local! {
@@ -175,6 +178,7 @@ pub(crate) fn create(
         mounted: HashMap::new(),
         handlers: Vec::new(),
         alive: true,
+        reload_pending: false,
     }));
 
     // Re-window on scroll (value-changed) and on viewport/content resize
@@ -223,20 +227,66 @@ pub(crate) fn create(
 /// then re-window). Keyed identity preservation is a future optimization
 /// — mirrors the macOS/iOS `reloadData` shape.
 ///
-/// Returns the recycled cells' root node ids: the caller (the backend,
-/// which holds `&mut self` here) frees their per-node state.
-#[must_use = "recycled cells must be freed by the backend"]
-pub(crate) fn data_changed(node_id: u64) -> Vec<u64> {
+/// **The reload is deferred, never run inside this call.** The vocabulary
+/// invokes `virtualizer_data_changed` from its data effect while holding
+/// `backend.borrow_mut()`, and the reload re-enters the backend twice:
+/// `release_item` drops each row's scope (a styled row's teardown
+/// re-borrows the backend to unstyle its node) and `mount_item` realizes
+/// the new rows (realize borrows the backend). Run synchronously, either
+/// one panics "already borrowed" the first time the data changes while
+/// rows are mounted. Every other backend defers the same way (web and iOS
+/// hop a microtask; Android's `RecyclerView` and macOS's
+/// `NSCollectionView` re-bind on their next layout pass), so the
+/// vocabulary's contract is that `data_changed` never realizes in-call.
+///
+/// The hop is a glib idle at `HIGH_IDLE` priority, not
+/// `runtime_shared::scheduling::schedule_microtask` — that one runs
+/// SYNCHRONOUSLY when no scheduler is installed (see `newcore.rs`), which
+/// would reintroduce the panic. `HIGH_IDLE` (100) runs ahead of GTK's
+/// resize/redraw sources (`GDK_PRIORITY_REDRAW` = `HIGH_IDLE + 20`), so the
+/// next painted frame already shows the new rows. Data changes landing in
+/// the same turn coalesce onto one pending reload (each reload re-reads
+/// count/keys/sizes, so only the last state matters).
+pub(crate) fn data_changed(node_id: u64) {
     let state = STATES.with(|m| m.borrow().get(&node_id).cloned());
-    let Some(state) = state else { return Vec::new() };
-    let recycled = recycle_all(&state);
-    resync(&state);
-    recycled
+    let Some(state) = state else { return };
+    {
+        let mut s = state.borrow_mut();
+        if !s.alive || s.reload_pending {
+            return;
+        }
+        s.reload_pending = true;
+    }
+    glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+        reload(&state);
+        glib::ControlFlow::Break
+    });
+}
+
+/// The deferred body of [`data_changed`]: recycle every mounted cell, free
+/// what the backend kept for each, then re-window. Runs with no backend
+/// borrow held; a released virtualizer (`alive == false`) is left alone —
+/// `release` already recycled its cells.
+fn reload(state: &Rc<RefCell<State>>) {
+    {
+        let mut s = state.borrow_mut();
+        s.reload_pending = false;
+        if !s.alive {
+            return;
+        }
+    }
+    for cell in recycle_all(state) {
+        free_cell(state, cell);
+    }
+    resync(state);
 }
 
 /// Tear down: disconnect signals, recycle mounted cells (dropping their
 /// scopes), drop the state entry. Returns the recycled cells' root node
-/// ids for the backend to free (see [`data_changed`]).
+/// ids for the backend to free — the caller holds `&mut LinuxBackend`
+/// here, and row teardown is safe under that borrow because the
+/// vocabulary drains the row scopes before calling `release_virtualizer`
+/// (so `release_item` is a no-op by now).
 #[must_use = "recycled cells must be freed by the backend"]
 pub(crate) fn release(node_id: u64) -> Vec<u64> {
     let state = STATES.with(|m| m.borrow_mut().remove(&node_id));

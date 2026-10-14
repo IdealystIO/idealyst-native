@@ -1020,6 +1020,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   One helper now clears all of them, and a released subtree is also
   taken out of its parent. `LayoutTree::live_node_count` is new (used by
   the regression test).
+- **Linux: changing a list's data no longer panics** (`backend-linux`).
+  The GTK virtualizer reloaded inside `virtualizer_data_changed`, which
+  the framework calls with the backend borrowed; releasing a mounted row
+  and realizing its replacement both re-borrow it, so the first data
+  change on a `flat_list`/`virtualizer` with rows on screen panicked
+  "already borrowed". The reload now runs from a high-priority idle, as
+  web and iOS already defer theirs, before the next frame paints.
 - **macOS: every bitmap `image()` aborted debug builds** (`backend-macos`).
   `CGImageForProposedRect:` was read back as an object pointer; objc2's
   debug message-type check aborted on the first PNG/JPEG. Now read as a
