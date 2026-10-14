@@ -2,7 +2,7 @@
 //!
 //! - Three Lucide-style icons (outlined stroke, filled, custom color) at a
 //!   couple of sizes, rendered via the GDI+ SVG-path renderer.
-//! - One bitmap image (a gradient BMP generated to `%TEMP%` at startup)
+//! - One image (a gradient SVG passed as a percent-encoded `data:` URI)
 //!   shown at `object-fit: contain` inside a bordered card.
 //!
 //! ```text
@@ -74,56 +74,32 @@ fn image_card(w: f32, h: f32, fit: ObjectFit) -> Rc<StyleSheet> {
     }))
 }
 
-/// Build a `size × size` 24-bit BGR gradient BMP (blue→green diagonal) and
-/// return its bytes. Uncompressed BI_RGB, bottom-up rows padded to 4 bytes.
-fn gradient_bmp(size: u32) -> Vec<u8> {
-    let row_stride = ((size * 3 + 3) / 4) * 4;
-    let pixel_bytes = row_stride * size;
-    let file_size = 54 + pixel_bytes;
-    let mut b = Vec::with_capacity(file_size as usize);
-    // BITMAPFILEHEADER
-    b.extend_from_slice(b"BM");
-    b.extend_from_slice(&file_size.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes()); // reserved
-    b.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
-    // BITMAPINFOHEADER
-    b.extend_from_slice(&40u32.to_le_bytes());
-    b.extend_from_slice(&(size as i32).to_le_bytes());
-    b.extend_from_slice(&(size as i32).to_le_bytes());
-    b.extend_from_slice(&1u16.to_le_bytes()); // planes
-    b.extend_from_slice(&24u16.to_le_bytes()); // bpp
-    b.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
-    b.extend_from_slice(&pixel_bytes.to_le_bytes());
-    b.extend_from_slice(&2835i32.to_le_bytes()); // 72 dpi
-    b.extend_from_slice(&2835i32.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes());
-    // Pixels (BGR, bottom-up).
-    for y in 0..size {
-        let mut written = 0u32;
-        for x in 0..size {
-            let r = (255 * x / size.max(1)) as u8;
-            let g = (255 * y / size.max(1)) as u8;
-            let bl = 200u8;
-            b.push(bl);
-            b.push(g);
-            b.push(r);
-            written += 3;
-        }
-        while written < row_stride {
-            b.push(0);
-            written += 1;
+/// A 64×64 diagonal gradient as an SVG document. Shipped to `image()` as a
+/// percent-encoded `data:` URI — a `src` every backend loads
+/// (`docs/image-src.md`). This example used to stage a BMP to `%TEMP%` and
+/// load it by `file://` URL, which the contract rejects: `file:` is readable
+/// on some platforms only.
+const GRADIENT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0" stop-color="#0000c8"/><stop offset="1" stop-color="#ffffc8"/>
+</linearGradient></defs>
+<rect width="64" height="64" fill="url(#g)"/>
+</svg>"##;
+
+/// `data:image/svg+xml,<percent-encoded document>`.
+fn svg_data_uri(svg: &str) -> String {
+    let mut out = String::from("data:image/svg+xml,");
+    for b in svg.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
-    b
+    out
 }
 
 fn app() -> Element {
-    // Stage a real bitmap to disk and reference it by file:// URL.
-    let mut path = std::env::temp_dir();
-    path.push("idealyst-smoke-gradient.bmp");
-    std::fs::write(&path, gradient_bmp(64)).expect("write temp bmp");
-    let url = format!("file:///{}", path.to_string_lossy().replace('\\', "/"));
+    let url = svg_data_uri(GRADIENT_SVG);
 
     view(vec![
         text("Icons (stroke / filled / colored):").into(),

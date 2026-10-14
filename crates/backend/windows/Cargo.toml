@@ -38,6 +38,15 @@ runtime-layout = { workspace = true }
 runtime-world = { workspace = true }
 runtime-scene = { workspace = true }
 runtime-vocabulary = { workspace = true }
+# `image()` decoding the OS doesn't do: GDI+ has no SVG or WebP codec.
+# `backend-image-source` is the shared resvg rasterizer + SVG sniffing (and
+# re-exports the `runtime_shared::image_src` contract), the same crate the
+# Apple and Android backends use; `image-webp` is the pure-Rust WebP
+# decoder (the lighter half of the `image` crate's WebP support). Both
+# un-gated so `src/image_policy.rs` — the pure routing/decoding policy —
+# also compiles in `tests/image_src.rs` on non-Windows hosts.
+backend-image-source = { workspace = true }
+image-webp = "0.2"
 
 # The `windows` crate ships pre-generated Win32 bindings. Feature
 # flags are per-namespace; we only need the minimum surface to host
@@ -69,6 +78,15 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_DirectComposition",
     # D2D_RECT_F for IDCompositionVisual::SetClip2.
     "Win32_Graphics_Direct2D_Common",
+    # `image()`: GDI+ decodes from an in-memory `IStream`
+    # (`SHCreateMemStream` + `GdipLoadImageFromStream`) instead of staging
+    # bytes to a temp file.
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    # `image()` `http(s)://` sources: WinHTTP on a worker pool
+    # (`image_fetch.rs`) — the OS HTTP stack (proxy settings, system TLS
+    # roots), no extra TLS/runtime dependency.
+    "Win32_Networking_WinHttp",
 ] }
 # `Element::Graphics` hands wgpu a `Win32WindowHandle` through this.
 raw-window-handle = "0.6"

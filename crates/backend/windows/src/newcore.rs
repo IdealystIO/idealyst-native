@@ -126,6 +126,7 @@ use std::rc::{Rc, Weak};
 
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives;
+use runtime_shared::primitives::image::{ImageErrorHandler, ImageLoadHandler};
 use runtime_shared::{
     Action, Color, ColorScheme, Platform, StyleRules,
     VirtualizerCallbacks,
@@ -401,6 +402,14 @@ fn flushing0(f: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
 /// Wrap a one-value author callback (`on_change(String/bool/f32)`,
 /// hover, focus …).
 fn flushing1<A: 'static>(f: Rc<dyn Fn(A)>) -> Rc<dyn Fn(A)> {
+    Rc::new(move |a| {
+        f(a);
+        schedule_flush();
+    })
+}
+
+/// Wrap a by-reference one-value author callback (`on_load(&ImageLoadEvent)`).
+fn flushing1_ref<A: ?Sized + 'static>(f: Rc<dyn Fn(&A)>) -> Rc<dyn Fn(&A)> {
     Rc::new(move |a| {
         f(a);
         schedule_flush();
@@ -725,6 +734,16 @@ impl caps::ImageOps for WindowsBackend {
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
         WindowsBackend::update_image_src(self, node, src)
+    }
+
+    fn install_image_load_handler(&mut self, node: &Self::Node, handler: ImageLoadHandler) {
+        // Dispatch-site glue: image events fire from the image pump
+        // (`image_fetch.rs`), outside any flush, so queue one after.
+        WindowsBackend::install_image_load_handler(self, node, flushing1_ref(handler))
+    }
+
+    fn install_image_error_handler(&mut self, node: &Self::Node, handler: ImageErrorHandler) {
+        WindowsBackend::install_image_error_handler(self, node, flushing0(handler))
     }
 }
 

@@ -114,6 +114,8 @@ mod graphics;
 mod handles;
 mod icon;
 mod image;
+mod image_fetch;
+mod image_policy;
 mod keymap;
 mod pointer_policy;
 pub mod user_activity;
@@ -501,16 +503,6 @@ struct CommandEntry {
     action: Rc<dyn Fn()>,
 }
 
-/// A registered asset resolved to the form the image loader needs.
-enum AssetEntry {
-    /// Build-tool-resolved local file path (`AssetSource::Bundled`).
-    File(String),
-    /// Compile-time-embedded bytes + extension.
-    Bytes { bytes: &'static [u8], ext: String },
-    /// Runtime URL — unsupported by the native image loader.
-    Remote,
-}
-
 // =========================================================================
 // Backend
 // =========================================================================
@@ -550,8 +542,15 @@ pub struct WindowsBackend {
     hwnd_regions: HashMap<isize, Option<RegionSpec>>,
     /// trackbar HWND (as isize) → its `on_change` fire closure.
     slider_handlers: HashMap<isize, Rc<dyn Fn()>>,
-    /// Registered image/font assets keyed by `AssetId`.
-    assets: HashMap<u64, AssetEntry>,
+    /// Registered image assets keyed by `AssetId`.
+    assets: HashMap<u64, image_policy::AssetEntry>,
+    /// Per-image-node load generation, outcome and `on_load`/`on_error`
+    /// handlers (`image_policy::ImageEvents`).
+    image_events: HashMap<u64, image_policy::ImageEvents>,
+    /// Hidden message-only window that brings image fetches and deferred
+    /// image events back to the UI thread (`image_fetch.rs`). Created on
+    /// the first image load.
+    image_pump: Option<image_fetch::ImagePump>,
     /// The shell message font (Segoe UI) applied to native controls and
     /// used when a text style names no typography.
     ui_font: HFONT,
@@ -616,6 +615,8 @@ impl WindowsBackend {
             hwnd_regions: HashMap::new(),
             slider_handlers: HashMap::new(),
             assets: HashMap::new(),
+            image_events: HashMap::new(),
+            image_pump: None,
             ui_font,
             line_height,
             font_cache: font::FontCache::new(),
@@ -1090,6 +1091,9 @@ impl WindowsBackend {
                 runtime_shared::scheduling::after_ms_detached(0, move || lost());
             }
         }
+        // A fetch still in flight for a removed image finds no events
+        // entry and is dropped.
+        self.image_events.remove(&id);
         if let Some(meta) = self.nodes.remove(&id) {
             if let Some(cid) = meta.control_id {
                 self.command_handlers.remove(&cid);
@@ -1367,32 +1371,172 @@ impl WindowsBackend {
         }
     }
 
-    /// Resolve an image `src` to a decoded GDI+ bitmap. Handles
-    /// `asset://{id}`, `data:` base64 URLs, `file://` + bare local
-    /// paths; `None` for remote `http(s)://` (no native fetch) or any
-    /// decode failure — rendered as a blank box.
-    fn decode_src(&self, src: &str) -> Option<image::DecodedImage> {
-        if let Some(rest) = src.strip_prefix("asset://") {
-            let id: u64 = rest.parse().ok()?;
-            return match self.assets.get(&id) {
-                Some(AssetEntry::File(path)) => image::load_image_file(path),
-                Some(AssetEntry::Bytes { bytes, ext }) => image::load_image_bytes(bytes, ext),
-                _ => None,
-            };
+    // ---------------------------------------------------------------
+    // image() loading — `docs/image-src.md`. Routing / decoding policy is
+    // `image_policy` (host-tested in `tests/image_src.rs`); GDI+ is
+    // `image.rs`; the HTTP fetch + UI-thread pump is `image_fetch.rs`.
+    // ---------------------------------------------------------------
+
+    /// Start loading `src` into image node `id`: decode synchronously
+    /// (`data:`, assets), start a fetch (`http(s)`), or fail (rejected /
+    /// malformed / missing). Every outcome reaches `on_load` / `on_error`
+    /// through a deferred delivery — this runs inside a backend borrow.
+    fn load_image_src(&mut self, id: u64, src: &str) {
+        let current = match self.nodes.get(&id).map(|m| &m.kind) {
+            Some(NodeKind::Image(p)) => p.src.as_deref(),
+            _ => return,
+        };
+        let resolution = image_policy::resolve(
+            current,
+            src,
+            &self.assets,
+            runtime_shared::image_src::read_bundled_asset,
+        );
+        if matches!(resolution, image_policy::Resolution::Unchanged) {
+            return;
         }
-        if src.starts_with("data:") {
-            let (bytes, ext) = image::decode_data_url(src)?;
-            return image::load_image_bytes(&bytes, &ext);
+        if let Some(NodeKind::Image(p)) = self.nodes.get_mut(&id).map(|m| &mut m.kind) {
+            p.src = Some(src.to_string());
         }
-        if let Some(path) = src.strip_prefix("file://") {
-            // `file:///C:/x.png` → strip the leading slash(es) before
-            // the drive letter so GDI+ gets a plain Windows path.
-            return image::load_image_file(path.trim_start_matches('/'));
+        let generation = self.image_events.entry(id).or_default().begin();
+        let result = match resolution {
+            image_policy::Resolution::Unchanged => return,
+            image_policy::Resolution::Fetch(url) => {
+                // The previous image stays up until the new one settles
+                // (a browser `<img>` does the same), so a src swap doesn't
+                // flash an empty box.
+                self.ensure_image_pump();
+                match &self.image_pump {
+                    Some(pump) => {
+                        pump.fetch(id, generation, url);
+                        return;
+                    }
+                    None => Err(image_policy::Failure::Network("no UI-thread pump".into())),
+                }
+            }
+            image_policy::Resolution::Ready(decoded) => {
+                image::realize(decoded).ok_or(image_policy::Failure::Undecodable)
+            }
+            image_policy::Resolution::Failed(f) => Err(f),
+        };
+        self.settle_image(id, generation, result);
+        self.queue_image_delivery(id);
+    }
+
+    /// Install load `generation`'s result on node `id` — unless a newer
+    /// `src` superseded it. Sets the bitmap, the intrinsic size (natural
+    /// size on success, 0×0 on failure, like every other backend), and the
+    /// outcome the next delivery reports.
+    fn settle_image(
+        &mut self,
+        id: u64,
+        generation: u64,
+        result: Result<image::ImageSource, image_policy::Failure>,
+    ) {
+        let outcome = match &result {
+            Ok(source) => {
+                let (width, height) = source.natural();
+                image_policy::Outcome::Loaded { width, height }
+            }
+            Err(_) => image_policy::Outcome::Failed,
+        };
+        let Some(events) = self.image_events.get_mut(&id) else { return };
+        if !events.settle(generation, outcome) {
+            return;
         }
-        if src.starts_with("http://") || src.starts_with("https://") {
-            return None;
+        let Some(NodeKind::Image(p)) = self.nodes.get_mut(&id).map(|m| &mut m.kind) else {
+            return;
+        };
+        if let Err(failure) = &result {
+            failure.report(p.src.as_deref().unwrap_or(""));
         }
-        image::load_image_file(src)
+        // Assigning drops the previous image, disposing its GpImage.
+        p.source = result.ok();
+        let (w, h) = match outcome {
+            image_policy::Outcome::Loaded { width, height } => (width.round() as i32, height.round() as i32),
+            image_policy::Outcome::Failed => (0, 0),
+        };
+        let node = WindowsNode { id, hwnd: HWND(std::ptr::null_mut()) };
+        self.set_intrinsic(&node, w, h);
+        self.invalidate();
+    }
+
+    fn ensure_image_pump(&mut self) {
+        if self.image_pump.is_none() {
+            self.image_pump = image_fetch::ImagePump::new(self.self_ref());
+        }
+    }
+
+    /// Fire node `id`'s owed image event from the pump, outside this borrow.
+    fn queue_image_delivery(&mut self, id: u64) {
+        self.ensure_image_pump();
+        if let Some(pump) = &self.image_pump {
+            pump.queue_delivery(id);
+        }
+    }
+
+    /// Pump side of [`Self::queue_image_delivery`]: run the handler call
+    /// node `id` owes with NO backend borrow held (author handlers write
+    /// signals → effects → re-enter the backend). `false` when the backend
+    /// is borrowed right now (a nested message loop inside a backend call)
+    /// — the pump re-posts and tries again.
+    pub(crate) fn deliver_image_events(me: &Weak<RefCell<Self>>, id: u64) -> bool {
+        let Some(rc) = me.upgrade() else { return true };
+        let fire = match rc.try_borrow_mut() {
+            Ok(mut b) => b.image_events.get_mut(&id).and_then(|e| e.take_fire()),
+            Err(_) => return false,
+        };
+        if let Some(fire) = fire {
+            fire.call();
+        }
+        true
+    }
+
+    /// Pump side of a finished fetch: decode, settle (dropped if
+    /// superseded), then fire the owed handler with no borrow held. Hands
+    /// the result back when the backend is borrowed (the pump re-posts).
+    pub(crate) fn apply_image_fetch(
+        me: &Weak<RefCell<Self>>,
+        done: image_fetch::FetchDone,
+    ) -> Result<(), image_fetch::FetchDone> {
+        let Some(rc) = me.upgrade() else { return Ok(()) };
+        let Ok(mut b) = rc.try_borrow_mut() else { return Err(done) };
+        let image_fetch::FetchDone { node_id, generation, result } = done;
+        let result = result.and_then(|bytes| {
+            image_policy::decode(std::borrow::Cow::Owned(bytes))
+                .and_then(|d| image::realize(d).ok_or(image_policy::Failure::Undecodable))
+        });
+        b.settle_image(node_id, generation, result);
+        let fire = b.image_events.get_mut(&node_id).and_then(|e| e.take_fire());
+        drop(b);
+        if let Some(fire) = fire {
+            fire.call();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn install_image_load_handler(
+        &mut self,
+        node: &WindowsNode,
+        handler: runtime_shared::primitives::image::ImageLoadHandler,
+    ) {
+        self.image_events.entry(node.id).or_default().install_load(handler);
+        // Replay: a data:/asset source decoded inside `create_image`,
+        // before the walker installed this.
+        if self.image_events[&node.id].outcome().is_some() {
+            self.queue_image_delivery(node.id);
+        }
+    }
+
+    pub(crate) fn install_image_error_handler(
+        &mut self,
+        node: &WindowsNode,
+        handler: runtime_shared::primitives::image::ImageErrorHandler,
+    ) {
+        self.image_events.entry(node.id).or_default().install_error(handler);
+        if self.image_events[&node.id].outcome().is_some() {
+            self.queue_image_delivery(node.id);
+        }
     }
 }
 
@@ -1856,17 +2000,10 @@ impl WindowsBackend {
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
-        let decoded = self.decode_src(src);
-        let natural = decoded.as_ref().map(|d| d.natural());
-        let node = self.add_node(NodeKind::Image(image::ImagePaint {
-            image: decoded,
-            ..Default::default()
-        }));
-        // Natural pixel size as the intrinsic size; explicit style
-        // width/height overrides via `set_style`.
-        if let Some((w, h)) = natural {
-            self.set_intrinsic(&node, w as i32, h as i32);
-        }
+        let node = self.add_node(NodeKind::Image(image::ImagePaint::default()));
+        // Natural size becomes the intrinsic size once decoded (explicit
+        // style width/height override it via `set_style`).
+        self.load_image_src(node.id, src);
         node
     }
 
@@ -1891,19 +2028,7 @@ impl WindowsBackend {
     }
 
     fn update_image_src(&mut self, node: &WindowsNode, src: &str) {
-        let decoded = self.decode_src(src);
-        let natural = decoded.as_ref().map(|d| d.natural());
-        if let Some(meta) = self.nodes.get_mut(&node.id) {
-            if let NodeKind::Image(p) = &mut meta.kind {
-                // Assigning drops the previous DecodedImage, disposing
-                // the old GpImage.
-                p.image = decoded;
-            }
-        }
-        if let Some((w, h)) = natural {
-            self.set_intrinsic(node, w as i32, h as i32);
-        }
-        self.invalidate();
+        self.load_image_src(node.id, src);
     }
 
     fn update_icon_color(&mut self, node: &WindowsNode, color: &Color) {
@@ -2270,17 +2395,7 @@ impl WindowsBackend {
     }
 
     fn register_asset(&mut self, id: AssetId, _kind: AssetTag, source: &AssetSource) {
-        let entry = match source {
-            AssetSource::Bundled { path } => AssetEntry::File(path.to_string()),
-            AssetSource::Embedded { bytes, extension } => {
-                AssetEntry::Bytes { bytes, ext: extension.to_string() }
-            }
-            AssetSource::BundledEmbedded { bytes, extension, .. } => {
-                AssetEntry::Bytes { bytes, ext: extension.to_string() }
-            }
-            AssetSource::Remote { .. } => AssetEntry::Remote,
-        };
-        self.assets.insert(id.0, entry);
+        self.assets.insert(id.0, image_policy::asset_entry(source));
     }
 
     fn set_app_background(&mut self, color: &runtime_shared::Tokenized<Color>) {
