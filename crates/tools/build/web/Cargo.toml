@@ -51,6 +51,8 @@ wasm-carve = { workspace = true }
 # from `[package.metadata.idealyst.app.icon].source` during bundle
 # staging. Build is a no-op when the icon block is absent.
 icon-gen = { workspace = true }
+# Reads cargo config's `rustflags` for the wasm build (`rustflags`).
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
@@ -59,7 +61,6 @@ tempfile = "3"
 # wasmparser / wasm-carve passes (a walrus parse of CrewForge's base was
 # 4–9 s and ~3.7 GB each).
 walrus = { workspace = true }
-toml = "0.8"
 # The two-crate roundtrip writes rustc captures in the replay's real
 # on-disk format (`replay::CapturedInvocation`, JSON).
 serde_json = { workspace = true }

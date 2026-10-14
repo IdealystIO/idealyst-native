@@ -999,6 +999,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Cargo-config rustflags reach the web build, and
+  `IDEALYST_WASM_RUSTFLAGS` sets flags for it alone** (`build-web`). The CLI
+  hands cargo its flags as `CARGO_ENCODED_RUSTFLAGS`, which makes cargo
+  ignore every other source, and it folded in only env `RUSTFLAGS`: a
+  `[target.wasm32-unknown-unknown]` or `[build] rustflags` in
+  `.cargo/config.toml` was silently dropped, and the only route was env
+  `RUSTFLAGS`, which also lands on host builds (a cranelift flag for the
+  server failed the wasm build). The base flags now follow cargo's own
+  precedence, cfg tables included, and `IDEALYST_WASM_RUSTFLAGS` is appended
+  to the web build only. See `docs/hot-reload.md`.
+
 - **The full-stack server builds once per save** (`dev-reload`). Its
   watcher took the temp half of a temp-then-rename save (most editors,
   `sed -i`) as a change, started a full server cargo build with no saved

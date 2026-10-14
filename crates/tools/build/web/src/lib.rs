@@ -56,6 +56,7 @@ pub mod hotpatch_patch;
 pub mod hotpatch_prepare;
 pub mod hotpatch_wasm;
 pub mod own_glue;
+pub mod rustflags;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
@@ -3008,22 +3009,21 @@ fn cargo_build_wasm(
     // paths, and a space anywhere in them (`/Users/Jane Smith/...`) would
     // split one flag into two garbage arguments under `RUSTFLAGS`.
     //
-    // Setting the encoded form makes cargo ignore `RUSTFLAGS` entirely, so
-    // whatever the user supplied is folded in here to preserve today's
-    // behavior. Cargo prefers `CARGO_ENCODED_RUSTFLAGS` over `RUSTFLAGS`
-    // when both are set; mirror that precedence rather than clobbering an
-    // already-encoded value (its `\x1f` fields are taken verbatim, so
-    // fields containing spaces survive).
-    let mut flags: Vec<String> = match std::env::var("CARGO_ENCODED_RUSTFLAGS") {
-        Ok(encoded) if !encoded.is_empty() => {
-            encoded.split('\x1f').map(str::to_string).collect()
-        }
-        _ => std::env::var("RUSTFLAGS")
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect(),
-    };
+    // Setting the encoded form makes cargo ignore every other rustflags
+    // source — env `RUSTFLAGS` and cargo config alike — so whatever cargo
+    // would have used is folded in first, in cargo's order, plus
+    // `IDEALYST_WASM_RUSTFLAGS` for this build alone (see `rustflags`).
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")));
+    let mut flags: Vec<String> = rustflags::base_wasm_rustflags(
+        project_dir,
+        cargo_home.as_deref(),
+        &|k| std::env::var(k).ok(),
+        &rustflags::wasm_cfg,
+    )
+    .flags;
     // `+simd128`: enable wasm SIMD so SIMD-centric deps (e.g. `vello_cpu`/
     // `fearless_simd`, behind `hayro`'s PDF rasterization) take their vectorized
     // path instead of the scalar fallback — a large speedup for CPU rasterization.

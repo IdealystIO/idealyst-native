@@ -1776,6 +1776,16 @@ terminal host's own `.idealyst/terminal.log`.
 - `IDEALYST_HOTPATCH_KEEP_NAMES=1` serves the web patch WITH its `name`
   section, so a stack trace through patched code is readable in the
   browser (see [What a save costs on the web](#what-a-save-costs-on-the-web)).
+- Compiler flags for the web build. The CLI passes its flags to cargo as
+  `CARGO_ENCODED_RUSTFLAGS`, so it first folds in what cargo would have
+  used, in cargo's order: env `CARGO_ENCODED_RUSTFLAGS`, else env
+  `RUSTFLAGS` (which also reaches every host build), else
+  `[target.wasm32-unknown-unknown]` and matching `[target.'cfg(…)']`
+  rustflags from cargo config (plus
+  `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS`), else `[build]
+  rustflags`. `IDEALYST_WASM_RUSTFLAGS="-Zthreads=8"` is appended to the
+  web build alone, whatever the source. This applies to `idealyst build
+  --web` too.
 - `IDEALYST_MEMORY_LIMIT_MB=<MB>` sets the CLI's memory cap outright
   (`0` disables it). Without it the cap is 4096 MB, raised automatically
   to half of the machine's memory (never below 4096 MB) in any session
