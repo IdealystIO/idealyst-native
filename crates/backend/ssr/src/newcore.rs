@@ -587,13 +587,42 @@ impl caps::ImageOps for SsrBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let mut node = HtmlNode::new("img");
-        node.attrs.push(("src", src.to_string()));
+        if let Some(url) = self.resolve_image_src(src) {
+            node.attrs.push(("src", url));
+        }
         node.attrs.push(("alt", alt.unwrap_or("").to_string()));
         nref(node)
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        set_attr(node,"src", src.to_string());
+        match self.resolve_image_src(src) {
+            Some(url) => set_attr(node, "src", url),
+            None => remove_attr(node, "src"),
+        }
+    }
+}
+
+impl SsrBackend {
+    /// The `docs/image-src.md` contract for server-rendered HTML: the URL
+    /// to emit as `<img src>`, or `None` to emit no `src` at all.
+    ///
+    /// `asset://<id>` is resolved here (it used to leak into the HTML as
+    /// the literal sentinel, which no browser can load). A rejected or
+    /// unregistered src gets no `src` attribute rather than its raw text:
+    /// the browser must not fetch a relative path native platforms can't,
+    /// and the hydrating web backend reaches the same `<img>` with no
+    /// `src`, fails it the same way, and fires `on_error` on the client —
+    /// so SSR and client-only renders agree.
+    fn resolve_image_src(&self, src: &str) -> Option<String> {
+        use runtime_shared::image_src::{self, ImageSrc};
+        match image_src::classify(src) {
+            ImageSrc::Remote(url) | ImageSrc::Data(url) => Some(url.to_string()),
+            ImageSrc::Asset(id) => self.asset_urls.get(&runtime_shared::assets::AssetId(id)).cloned(),
+            ImageSrc::Rejected(reason) => {
+                image_src::warn_rejected(src, reason);
+                None
+            }
+        }
     }
 }
 
@@ -1198,9 +1227,20 @@ impl caps::AssetOps for SsrBackend {
         if self.asset_urls.contains_key(&id) {
             return;
         }
-        // `Embedded` sources have no served URL on a headless server
-        // (they'd need a runtime blob, which is web-only) — skip them.
-        if let Some(url) = css::asset_url(kind, source) {
+        // An `embed_asset!` image has no served file: inline its bytes as
+        // a `data:` URI so the `<img>` paints on first load (the client
+        // then swaps in its own blob URL for the same bytes). Other
+        // `Embedded` assets (fonts) still have no URL on a headless
+        // server — they'd need a runtime blob, which is web-only.
+        let url = match source {
+            runtime_shared::assets::AssetSource::Embedded { bytes, extension }
+                if kind == runtime_shared::assets::AssetTag::Image =>
+            {
+                Some(css::data_uri(css::asset_mime(extension), bytes))
+            }
+            _ => css::asset_url(kind, source),
+        };
+        if let Some(url) = url {
             self.asset_urls.insert(id, url);
         }
     }

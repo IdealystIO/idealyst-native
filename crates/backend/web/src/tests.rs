@@ -3774,6 +3774,209 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
 }
 
 // ---------------------------------------------------------------------------
+// image() src contract — docs/image-src.md, `runtime_shared::image_src`.
+// ---------------------------------------------------------------------------
+
+/// What an `<img>` reported: `on_load` sizes and the `on_error` count.
+#[derive(Default)]
+struct ImgOutcome {
+    loads: Vec<(f32, f32)>,
+    errors: u32,
+}
+
+/// Mount an `image()` the way `runtime_vocabulary::handlers::media::
+/// mount_image` does — create, install `on_load`/`on_error`, then the
+/// unconditional mount-time `update_image_src` with the same src — and
+/// return the `<img>` plus its outcome log.
+fn mount_img(
+    backend: &mut WebBackend,
+    src: &str,
+) -> (web_glue::dom::Element, std::rc::Rc<std::cell::RefCell<ImgOutcome>>) {
+    use std::rc::Rc;
+    let node = backend.create_image_impl(src, None, &Default::default());
+    let out = Rc::new(std::cell::RefCell::new(ImgOutcome::default()));
+    let o = out.clone();
+    backend.install_image_load_handler_impl(
+        &node,
+        Rc::new(move |ev: &runtime_shared::ImageLoadEvent| {
+            o.borrow_mut().loads.push((ev.width, ev.height))
+        }),
+    );
+    let o = out.clone();
+    backend.install_image_error_handler_impl(&node, Rc::new(move || o.borrow_mut().errors += 1));
+    backend.update_image_src_impl(&node, src);
+    let el: web_glue::dom::Element = node.unchecked_into();
+    web_glue::dom::window().unwrap().document().unwrap().body().unwrap().append_child(&el).unwrap();
+    (el, out)
+}
+
+/// Wait until the outcome log has an entry (or ~2 s pass), then a little
+/// longer so a duplicate or stale event would also land.
+async fn settle(out: &std::cell::RefCell<ImgOutcome>) {
+    for _ in 0..100 {
+        if !out.borrow().loads.is_empty() || out.borrow().errors > 0 {
+            break;
+        }
+        sleep_ms(20).await;
+    }
+    sleep_ms(60).await;
+}
+
+/// Every `vectors::SYNC` entry through the real web src path, against a
+/// real browser: `Loads` fires `on_load` once with the natural size,
+/// `Errors` fires `on_error` once — and nothing else.
+#[wasm_bindgen_test]
+async fn image_src_conformance_vectors_on_web() {
+    use runtime_shared::image_src::vectors::{Expect, SYNC};
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    for &(src, expect) in SYNC {
+        let (_img, out) = mount_img(&mut backend, src);
+        settle(&out).await;
+        let out = out.borrow();
+        match expect {
+            Expect::Loads { width, height } => {
+                assert_eq!(out.loads, vec![(width as f32, height as f32)], "{src:?}");
+                assert_eq!(out.errors, 0, "{src:?}");
+            }
+            Expect::Errors => {
+                assert!(out.loads.is_empty(), "{src:?} loaded");
+                assert_eq!(out.errors, 1, "{src:?} must fire on_error exactly once");
+            }
+        }
+    }
+}
+
+/// REGRESSION: a relative `src` went straight into `<img src>`, so the
+/// browser resolved it against the page and it "worked on web" while
+/// iOS/Android drew a blank tile (CrewForge's `/attachments/<id>`). It
+/// must never reach the `<img>`, and `on_error` fires instead. (An error
+/// count alone can't tell: the browser's own 404 fires `error` too.)
+#[wasm_bindgen_test]
+async fn regression_relative_src_is_rejected_on_web_too() {
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    for src in ["/attachments/abc", "logo.png", "//cdn.example.com/x.png", "blob:https://e.com/1"] {
+        let (img, out) = mount_img(&mut backend, src);
+        assert_eq!(img.get_attribute("src"), None, "{src:?} reached <img src>");
+        settle(&out).await;
+        assert_eq!(out.borrow().errors, 1, "{src:?}");
+    }
+}
+
+/// REGRESSION: an unregistered `asset://<id>` went into `<img src>` as
+/// the literal sentinel.
+#[wasm_bindgen_test]
+async fn regression_unregistered_asset_never_reaches_img() {
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let (img, out) = mount_img(&mut backend, "asset://424242");
+    assert_eq!(img.get_attribute("src"), None);
+    settle(&out).await;
+    assert_eq!(out.borrow().errors, 1);
+}
+
+/// REGRESSION: a bundled image asset resolved to the document-relative
+/// `assets/{path}`, which 404s under a nested route (`/settings/profile`
+/// fetches `/settings/assets/…`). It is root-absolute, like SSR's.
+#[wasm_bindgen_test]
+fn regression_bundled_asset_url_is_root_absolute() {
+    use runtime_shared::{AssetId, AssetSource, AssetTag};
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    backend.register_asset_impl(
+        AssetId(0x1A6),
+        AssetTag::Image,
+        &AssetSource::Bundled { path: "images/logo.png" },
+    );
+    let node = backend.create_image_impl("asset://422", None, &Default::default());
+    let img: web_glue::dom::Element = node.unchecked_into();
+    assert_eq!(img.get_attribute("src").as_deref(), Some("/assets/images/logo.png"));
+}
+
+/// An `embed_asset!` image is a blob URL and loads like any other.
+#[wasm_bindgen_test]
+async fn embedded_image_asset_loads() {
+    use runtime_shared::image_src::{parse_data_uri, vectors::PNG_1X1_BASE64};
+    use runtime_shared::{AssetId, AssetSource, AssetTag};
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let bytes: &'static [u8] = Box::leak(parse_data_uri(PNG_1X1_BASE64).unwrap().bytes.into_boxed_slice());
+    backend.register_asset_impl(AssetId(9), AssetTag::Image, &AssetSource::Embedded { bytes, extension: "png" });
+    let (img, out) = mount_img(&mut backend, "asset://9");
+    assert!(img.get_attribute("src").unwrap().starts_with("blob:"));
+    settle(&out).await;
+    assert_eq!(out.borrow().loads, vec![(1.0, 1.0)]);
+    assert_eq!(out.borrow().errors, 0);
+}
+
+/// REGRESSION: an image already in the browser's list of available
+/// images (the same URL decoded earlier — the second row of a list
+/// showing one avatar) is `complete` synchronously, so `install_load`
+/// replayed its load AND the browser's queued `load` event still arrived:
+/// `on_load` fired twice.
+#[wasm_bindgen_test]
+async fn regression_cached_image_on_load_fires_once() {
+    use runtime_shared::image_src::vectors::SVG_2X1_PERCENT;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let (_first, out) = mount_img(&mut backend, SVG_2X1_PERCENT);
+    settle(&out).await;
+    assert_eq!(out.borrow().loads, vec![(2.0, 1.0)]);
+    let (second, out) = mount_img(&mut backend, SVG_2X1_PERCENT);
+    let second: web_glue::dom::HtmlImageElement = second.unchecked_into();
+    assert!(second.complete(), "precondition: the second <img> is served from the image cache");
+    settle(&out).await;
+    assert_eq!(out.borrow().loads, vec![(2.0, 1.0)], "cached image must fire on_load once");
+}
+
+/// A handler installed after a rejected src already failed still hears
+/// it, once (the contract's late-install rule, same as a DOM error).
+#[wasm_bindgen_test]
+async fn rejected_src_on_error_replays_to_a_late_handler() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let node = backend.create_image_impl("logo.png", None, &Default::default());
+    sleep_ms(20).await;
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    backend.install_image_error_handler_impl(&node, Rc::new(move || f.set(f.get() + 1)));
+    sleep_ms(40).await;
+    assert_eq!(fired.get(), 1);
+}
+
+/// Changing `src` supersedes the previous one in both directions: a
+/// valid src's `load` can't land after a switch to a rejected src, and a
+/// rejected src's queued `error` can't land after a switch to a valid one.
+#[wasm_bindgen_test]
+async fn src_change_supersedes_the_previous_outcome() {
+    use runtime_shared::image_src::vectors::PNG_1X1_BASE64;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+
+    let (img, out) = mount_img(&mut backend, PNG_1X1_BASE64);
+    backend.update_image_src_impl(&img.clone().unchecked_into(), "logo.png");
+    settle(&out).await;
+    assert!(out.borrow().loads.is_empty(), "stale load of the old src");
+    assert_eq!(out.borrow().errors, 1);
+
+    let (img, out) = mount_img(&mut backend, "logo.png");
+    backend.update_image_src_impl(&img.clone().unchecked_into(), PNG_1X1_BASE64);
+    settle(&out).await;
+    assert_eq!(out.borrow().errors, 0, "stale error of the old src");
+    assert_eq!(out.borrow().loads, vec![(1.0, 1.0)]);
+}
+
+// ---------------------------------------------------------------------------
 // open_url — the backend's external URL opener.
 // ---------------------------------------------------------------------------
 

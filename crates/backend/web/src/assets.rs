@@ -5,8 +5,9 @@
 //! 1. **URL resolution** — every registered asset (font / image /
 //!    audio / …) is reduced to a single URL string the browser can
 //!    fetch, kept in `WebBackend::asset_urls` keyed by [`AssetId`].
-//!    The image primitive (next PR) will look up the URL on render;
-//!    fonts feed into the [`@font-face`] injection below.
+//!    The image primitive resolves `asset://<id>` through it
+//!    (`primitives::image::resolve_img_src`); fonts feed into the
+//!    [`@font-face`] injection below.
 //!
 //! 2. **`@font-face` injection** — registering a [`Typeface`] inserts
 //!    one CSS `@font-face` rule per face into the shared stylesheet,
@@ -38,39 +39,6 @@ use web_glue::JsValue;
 
 use crate::WebBackend;
 
-/// Path prefix under which `Bundled` assets are expected to live in
-/// the deployed `dist/`. The CLI's `serve` / `build` step is
-/// responsible for copying each declared asset into
-/// `dist/{ASSET_ROUTE}/{path}`. Kept as a const so it's easy to find
-/// when wiring the build step.
-const ASSET_ROUTE: &str = "assets";
-
-/// Browser MIME type for an asset's extension. Drives the `type`
-/// option passed to `Blob` for `Embedded` sources — browsers use it
-/// to decide whether to display, download, or sandbox the resource.
-/// Unknown extensions fall back to `application/octet-stream`.
-fn mime_for(extension: &str) -> &'static str {
-    match extension.to_ascii_lowercase().as_str() {
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "avif" => "image/avif",
-        "ico" => "image/vnd.microsoft.icon",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "ogg" => "audio/ogg",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        _ => "application/octet-stream",
-    }
-}
-
 /// Wrap `bytes` in a `Blob` of the given MIME type and return its
 /// `blob:` URL. Returns `None` if `Blob` or `URL.createObjectURL`
 /// rejects the call — extremely rare; the caller falls back to the
@@ -94,27 +62,23 @@ impl WebBackend {
             return;
         }
         let url = match source {
-            // A font with a bundle path is *linked*, not embedded: emit
-            // a root-absolute served-file URL so `@font-face` can
-            // `src: url("/fonts/…")` it and the browser fetches +
-            // HTTP-caches the file. Root-absolute (not `assets/…`)
-            // because (a) the build stages the project's top-level font
-            // dir verbatim and the dev server serves the project root,
-            // and (b) a relative URL would break under the SPA router
-            // when the document path isn't `/`. Any embedded `bytes`
-            // (BundledEmbedded, present when a byte-consuming backend
-            // shares the build) are ignored here.
-            AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. }
-                if kind == AssetTag::Font =>
-            {
-                format!("/{path}")
-            }
-            AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. } => {
-                format!("{ASSET_ROUTE}/{path}")
-            }
-            AssetSource::Remote { url } => (*url).to_string(),
+            // A bundled asset is *linked*, not embedded: `css::asset_url`
+            // (shared with SSR, so hydration agrees) gives the served
+            // file's root-absolute URL — `/{path}` for a font, so
+            // `@font-face` can `src: url("/fonts/…")` it, and
+            // `/assets/{path}` for everything else (`docs/image-src.md`).
+            // Root-absolute because a document-relative URL breaks under
+            // the SPA router when the document path isn't `/`. Any
+            // embedded `bytes` (BundledEmbedded, present when a
+            // byte-consuming backend shares the build) are ignored here.
+            AssetSource::Bundled { .. }
+            | AssetSource::BundledEmbedded { .. }
+            | AssetSource::Remote { .. } => match css::asset_url(kind, source) {
+                Some(url) => url,
+                None => return,
+            },
             AssetSource::Embedded { bytes, extension } => {
-                let mime = mime_for(extension);
+                let mime = css::asset_mime(extension);
                 match blob_url_for(bytes, mime) {
                     Some(url) => {
                         self.blob_asset_urls.insert(id);

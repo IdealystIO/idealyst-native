@@ -386,7 +386,8 @@ pub struct SsrBackend {
     /// on the SSR first paint exactly like the live web build.
     default_text_font: Option<runtime_shared::FontFamily>,
     /// Served URL per registered asset id (fonts/images), from
-    /// [`Backend::register_asset`]. Fonts feed the `@font-face` rules
+    /// [`Backend::register_asset`] — or, for an `embed_asset!` image, a
+    /// `data:` URI of its bytes. Fonts feed the `@font-face` rules
     /// below; image URLs are read at `create_image` time.
     asset_urls: HashMap<runtime_shared::assets::AssetId, String>,
     /// `@font-face` rules from [`Backend::register_typeface`], emitted in

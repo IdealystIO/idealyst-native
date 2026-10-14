@@ -749,10 +749,13 @@ fn palette_delta_css(
 // Assets + @font-face — single source of truth shared by web + SSR
 // ---------------------------------------------------------------------------
 
-/// Path prefix under which non-font `Bundled` assets are served — the
-/// CLI build stages each declared asset at `{ASSET_ROUTE}/{path}`. Fonts
-/// are the exception: they're served root-absolute (`/{path}`) so
-/// `@font-face { src: url(...) }` resolves regardless of the SPA route.
+/// Directory under which non-font `Bundled` assets are served — the CLI
+/// build stages each declared asset at `{ASSET_ROUTE}/{path}` and the
+/// URL is root-absolute (`/assets/{path}`, see `docs/image-src.md`).
+/// Fonts are the exception: they're served at `/{path}`. Both are
+/// root-absolute so they resolve under any SPA route — a
+/// document-relative `assets/x.png` on `/settings/profile` would fetch
+/// `/settings/assets/x.png`.
 pub const ASSET_ROUTE: &str = "assets";
 
 /// Resolve the served-file URL for an asset, shared by the web backend
@@ -773,11 +776,70 @@ pub fn asset_url(
             Some(format!("/{path}"))
         }
         AssetSource::Bundled { path } | AssetSource::BundledEmbedded { path, .. } => {
-            Some(format!("{ASSET_ROUTE}/{path}"))
+            Some(format!("/{ASSET_ROUTE}/{path}"))
         }
         AssetSource::Remote { url } => Some((*url).to_string()),
         AssetSource::Embedded { .. } => None,
     }
+}
+
+/// Media type for an asset's file extension (case-insensitive). Drives the
+/// web backend's `Blob` type and the `data:` URIs SSR and email inline;
+/// unknown extensions are `application/octet-stream`.
+pub fn asset_mime(extension: &str) -> &'static str {
+    match extension.to_ascii_lowercase().as_str() {
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
+        "ico" => "image/vnd.microsoft.icon",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
+/// The extension of an asset path (`images/logo.png` → `png`), for
+/// [`asset_mime`]. Empty when the file name has none.
+pub fn path_extension(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => &name[dot + 1..],
+        _ => "",
+    }
+}
+
+/// `data:<mime>;base64,<bytes>` — how SSR and email inline an image asset
+/// that has no served URL (an `embed_asset!`, or every asset in an email).
+pub fn data_uri(mime: &str, bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(mime.len() + 13 + bytes.len().div_ceil(3) * 4);
+    out.push_str("data:");
+    out.push_str(mime);
+    out.push_str(";base64,");
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 0x3f) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// Format one `@font-face { … }` rule for a single weight/style face,
@@ -2815,6 +2877,45 @@ mod tests {
         assert!(group.iter().filter(|r| !r.contains(":where(")).all(|r| !r.contains("flex-direction")), "{group:#?}");
     }
 
+    /// A document-relative `assets/x.png` resolved against the page URL, so
+    /// on a nested route (`/settings/profile`) the browser fetched
+    /// `/settings/assets/x.png` — a 404. Bundled assets are root-absolute.
+    #[test]
+    fn regression_bundled_asset_url_is_root_absolute() {
+        use runtime_shared::assets::{AssetSource, AssetTag};
+        let url = asset_url(AssetTag::Image, &AssetSource::Bundled { path: "images/logo.png" });
+        assert_eq!(url.as_deref(), Some("/assets/images/logo.png"));
+        let url = asset_url(
+            AssetTag::Image,
+            &AssetSource::BundledEmbedded { path: "a.svg", bytes: b"", extension: "svg" },
+        );
+        assert_eq!(url.as_deref(), Some("/assets/a.svg"));
+    }
+
+    #[test]
+    fn data_uri_is_standard_base64_with_padding() {
+        assert_eq!(data_uri("image/png", b""), "data:image/png;base64,");
+        assert_eq!(data_uri("text/plain", b"f"), "data:text/plain;base64,Zg==");
+        assert_eq!(data_uri("text/plain", b"fo"), "data:text/plain;base64,Zm8=");
+        assert_eq!(data_uri("text/plain", b"foo"), "data:text/plain;base64,Zm9v");
+        assert_eq!(data_uri("text/plain", b"foobar"), "data:text/plain;base64,Zm9vYmFy");
+        // Round-trips through the image-src parser every backend decodes with.
+        let bytes: Vec<u8> = (0..=255).collect();
+        let parsed = runtime_shared::image_src::parse_data_uri(&data_uri("image/png", &bytes)).unwrap();
+        assert_eq!(parsed.mime, "image/png");
+        assert_eq!(parsed.bytes, bytes);
+    }
+
+    #[test]
+    fn asset_mime_and_extension() {
+        assert_eq!(path_extension("images/logo.PNG"), "PNG");
+        assert_eq!(asset_mime(path_extension("images/logo.PNG")), "image/png");
+        assert_eq!(path_extension("a.b/noext"), "");
+        assert_eq!(path_extension(".hidden"), "");
+        assert_eq!(asset_mime("svg"), "image/svg+xml");
+        assert_eq!(asset_mime("bin"), "application/octet-stream");
+    }
+
     #[test]
     fn asset_url_routes_by_kind() {
         use runtime_shared::assets::{AssetSource, AssetTag};
@@ -2825,7 +2926,7 @@ mod tests {
         );
         assert_eq!(
             asset_url(AssetTag::Image, &AssetSource::Bundled { path: "images/logo.png" }),
-            Some("assets/images/logo.png".into())
+            Some("/assets/images/logo.png".into())
         );
         assert_eq!(
             asset_url(AssetTag::Image, &AssetSource::Remote { url: "https://cdn/x.png" }),

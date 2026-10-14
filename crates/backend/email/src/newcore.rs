@@ -66,7 +66,7 @@ use runtime_shared::StyleRules;
 use runtime_vocabulary::caps;
 use runtime_world::World;
 
-use crate::{add_class, nref, push_style_dedup, set_attr, HtmlNode, LINK_RESET_STYLE};
+use crate::{add_class, nref, push_style_dedup, remove_attr, set_attr, HtmlNode, LINK_RESET_STYLE};
 use crate::{EmailBackend, NodeRef, RenderedEmail};
 
 // ===========================================================================
@@ -310,7 +310,9 @@ impl caps::ImageOps for EmailBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let mut node = HtmlNode::new("img");
-        node.attrs.push(("src", src.to_string()));
+        if let Some(url) = self.resolve_image_src(src) {
+            node.attrs.push(("src", url));
+        }
         node.attrs.push(("alt", alt.unwrap_or("").to_string()));
         // Email images should not stretch; keep intrinsic unless styled.
         node.attrs.push(("border", "0".to_string()));
@@ -318,7 +320,30 @@ impl caps::ImageOps for EmailBackend {
     }
 
     fn update_image_src(&mut self, node: &Self::Node, src: &str) {
-        set_attr(node, "src", src.to_string());
+        match self.resolve_image_src(src) {
+            Some(url) => set_attr(node, "src", url),
+            None => remove_attr(node, "src"),
+        }
+    }
+}
+
+impl EmailBackend {
+    /// The `docs/image-src.md` contract for an email: the `<img src>` to
+    /// emit, or `None` for no `src`. `http(s)`/`data:` pass through; an
+    /// asset resolves to its inlined `data:` URI (see `register_asset`).
+    /// A rejected src (relative, `//host`, `blob:`, …) gets no `src`: a
+    /// mail client would resolve it against nothing, or against its own
+    /// webmail origin.
+    fn resolve_image_src(&self, src: &str) -> Option<String> {
+        use runtime_shared::image_src::{self, ImageSrc};
+        match image_src::classify(src) {
+            ImageSrc::Remote(url) | ImageSrc::Data(url) => Some(url.to_string()),
+            ImageSrc::Asset(id) => self.image_assets.get(&runtime_shared::assets::AssetId(id)).cloned(),
+            ImageSrc::Rejected(reason) => {
+                image_src::warn_rejected(src, reason);
+                None
+            }
+        }
     }
 }
 
@@ -676,7 +701,45 @@ impl caps::StyleOps for EmailBackend {
     }
 }
 
-impl caps::AssetOps for EmailBackend {}
+impl caps::AssetOps for EmailBackend {
+    /// Image assets are inlined as `data:` URIs: an email travels without
+    /// the app's `/assets/` directory. `embed_asset!` bytes are used
+    /// directly; an `asset!` file is read from the bundled-asset locations
+    /// (`<exe dir>/assets/<path>`, then `<cwd>/assets/<path>`). Some
+    /// clients (Gmail among them) strip `data:` images — an image that
+    /// must show everywhere belongs at an `https://` URL.
+    fn register_asset(
+        &mut self,
+        id: runtime_shared::assets::AssetId,
+        kind: runtime_shared::assets::AssetTag,
+        source: &runtime_shared::assets::AssetSource,
+    ) {
+        use runtime_shared::assets::{AssetSource, AssetTag};
+        if kind != AssetTag::Image || self.image_assets.contains_key(&id) {
+            return;
+        }
+        let url = match source {
+            AssetSource::Embedded { bytes, extension }
+            | AssetSource::BundledEmbedded { bytes, extension, .. } => {
+                css::data_uri(css::asset_mime(extension), bytes)
+            }
+            AssetSource::Bundled { path } => {
+                match runtime_shared::image_src::read_bundled_asset(path) {
+                    Some(bytes) => css::data_uri(css::asset_mime(css::path_extension(path)), &bytes),
+                    None => {
+                        #[cfg(debug_assertions)]
+                        runtime_shared::log_warn!(
+                            "image(): bundled asset {path:?} not found under <exe dir>/assets or <cwd>/assets"
+                        );
+                        return;
+                    }
+                }
+            }
+            AssetSource::Remote { url } => (*url).to_string(),
+        };
+        self.image_assets.insert(id, url);
+    }
+}
 
 // ===========================================================================
 // A11y + animation + introspection

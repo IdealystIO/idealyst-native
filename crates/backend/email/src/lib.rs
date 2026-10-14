@@ -24,6 +24,12 @@
 //!   `var(--…)`.
 //! * **No interaction, unreliable `@media`.** So state / breakpoint /
 //!   container overlays are **dropped**; only the resolved base style emits.
+//! * **No `/assets/` directory travels with the message.** An
+//!   `image_asset(..)` is inlined as a `data:` URI (bundled files are read
+//!   from `<exe dir>/assets` or `<cwd>/assets`); a src the `image()`
+//!   contract rejects (`docs/image-src.md`) gets no `src`. Some clients
+//!   (Gmail among them) strip `data:` images, so an image every reader
+//!   must see belongs at an `https://` URL.
 //!
 //! # Un-opinionated by design
 //!
@@ -125,6 +131,11 @@ fn set_attr(node: &NodeRef, name: &'static str, value: String) {
     } else {
         n.attrs.push((name, value));
     }
+}
+
+/// Remove an attribute from a node if present.
+fn remove_attr(node: &NodeRef, name: &'static str) {
+    node.borrow_mut().attrs.retain(|(k, _)| *k != name);
 }
 
 /// Append a space-separated class (kept for parity with author
@@ -322,6 +333,11 @@ pub struct EmailBackend {
     /// Host-surface background captured from `set_app_background`, resolved
     /// and applied to the document `<body>`.
     app_bg: Option<runtime_shared::Tokenized<runtime_shared::Color>>,
+    /// The `<img src>` per registered image asset: always self-contained
+    /// (a `data:` URI of the asset's bytes, or a `Remote` asset's URL) —
+    /// an email has no server to serve `/assets/…` from. A bundled asset
+    /// whose file can't be read has no entry, so its `<img>` gets no `src`.
+    image_assets: std::collections::HashMap<runtime_shared::assets::AssetId, String>,
 }
 
 impl EmailBackend {

@@ -114,3 +114,16 @@ core's testimony with no way to recover it. So:
   that selector is the only byte that moved. Pinned by
   `regression_ssr_state_rules_follow_state_precedence` (backend-ssr) and
   `regression_disabled_state_overrides_hovered_in_css` (css).
+- **2026-10-14, rejected image src** — `static_kitchen_sink.html`: the
+  `<img>` changed from `<img src="logo.png" alt="Logo">` to
+  `<img alt="Logo">`. The scene's `image().src("logo.png")` is a relative
+  path, which the `image()` src contract (`docs/image-src.md`) rejects on
+  every backend: native platforms have no page to resolve it against, so
+  web no longer lets the browser try either. SSR emits no `src` for a
+  rejected src; the hydrating client adopts the same `src`-less `<img>`,
+  rejects the src the same way and fires `on_error`. The scene input is
+  unchanged on purpose — it now pins the rejection. That attribute is the
+  only byte that moved. Pinned by
+  `regression_ssr_rejected_src_has_no_src_attribute`
+  (`tests/image_src.rs`) and backend-web's
+  `regression_relative_src_is_rejected_on_web_too`.
