@@ -1038,6 +1038,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A hot patch redirects only the functions that changed** (`build-web`,
+  `dev-reload`). Every function of every re-emitted crate whose address the
+  patch took got a jump-table entry — 32,195 for a one-line edit in a
+  widely used CrewForge crate, ~1.6 s of a 3.6 s save in link, resolve,
+  strip and the page's table install. Each patch's functions are now
+  compared with the background seed's replay of the base sources (digests
+  that replace every relocation by what it refers to), and only those that
+  differ, or reach one by direct calls, are redirected; only the object
+  files they need are linked. Any crate without a trusted baseline, or a
+  result that cannot be verified, falls back to redirecting everything.
+  Seeds also skip crates built only for the host. See `docs/hot-reload.md`.
+
 - **Less fixed cost on every web rebuild** (`build-web`, `dev-reload`).
   The hot-patch base prep read cargo's whole module a second time and parsed
   its symbol tables serially; it now reads it once and pulls the tables on

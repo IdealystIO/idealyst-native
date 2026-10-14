@@ -52,6 +52,7 @@ pub use premint::PREMINT_CSS_NAME;
 pub mod hotpatch_aliases;
 pub mod hotpatch_base;
 pub mod hotpatch_build;
+pub mod hotpatch_fndiff;
 pub mod hotpatch_patch;
 pub mod hotpatch_prepare;
 pub mod hotpatch_wasm;

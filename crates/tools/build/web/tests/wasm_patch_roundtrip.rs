@@ -479,10 +479,17 @@ fn __Root_hot_impl(n: u32) -> u32 {
     rt_shared::shared_value(n) + rt_shared::shared_card(n)
 }
 
+#[doc(hidden)]
+#[inline(never)]
+fn __Other_hot_impl(n: u32) -> u32 {
+    n ^ 5
+}
+
 #[wasm_bindgen]
 pub fn start() -> u32 {
     let f: fn(u32) -> u32 = __Root_hot_impl;
-    f(1)
+    let g: fn(u32) -> u32 = __Other_hot_impl;
+    f(1) + g(2)
 }
 "#;
 
@@ -680,6 +687,91 @@ fn a_library_crates_patch_carries_its_dependents() {
         !module.imports.iter().any(|i| i.name.contains("12shared_value")),
         "the patch imports shared_value from the base, i.e. the OLD body"
     );
+
+    // ── 4. The same edit, trimmed to what differs from the base ──────
+    //
+    // A builder whose seeds replayed both crates' BASE sources (the probe
+    // says the disk matched the base key before and after) has a baseline
+    // per crate. The patch then redirects what the edit changed and what
+    // reaches it by direct calls — the library's component (calls
+    // `shared_value`) and the app's root (calls it too) — and leaves out
+    // the app's `__Other_hot_impl`, which reaches neither.
+    let other_slot = slot("__Other_hot_impl");
+    assert!(both.jump_table.map.contains_key(&other_slot), "the untrimmed patch redirects everything");
+    std::fs::write(dir.join("shared/src/lib.rs"), SHARED_RS).unwrap();
+    let shared_file = dir.join("shared/src/lib.rs");
+    let probe: build_web::hotpatch_build::SourceProbe = std::sync::Arc::new(move |name: &str| {
+        let edited = std::fs::read_to_string(&shared_file).unwrap() != SHARED_RS;
+        Some(if name == "rt_shared" && edited { "edited" } else { "base" }.to_string())
+    });
+    let trimmed_builder = WasmPatchBuilder::new(
+        &served_path,
+        Some(&alias_path),
+        Some(&data_path),
+        &captures,
+        "rt_app",
+        dir.join("patches-trimmed"),
+    )
+    .unwrap()
+    .with_source_probe(probe);
+    trimmed_builder.seed_all(vec![
+        PatchCrate::carried("rt_app", Some("base".into())),
+        PatchCrate::carried("rt_shared", Some("base".into())),
+    ]);
+    trimmed_builder.wait_for_seeds();
+    std::fs::write(dir.join("shared/src/lib.rs"), SHARED_RS.replace("n + 11", "n + 13")).unwrap();
+    let trimmed = trimmed_builder
+        .build_crates(&[
+            PatchCrate::new("rt_shared", Some("edited".into())),
+            PatchCrate::carried("rt_app", Some("base".into())),
+        ])
+        .unwrap_or_else(|e| panic!("the trimmed patch did not build:\n{e:#}"));
+    assert!(trimmed.timings.iter().any(|(s, _)| *s == "diff"));
+    assert!(trimmed.jump_table.map.contains_key(&card_slot), "{:?}", trimmed.jump_table.map);
+    assert!(trimmed.jump_table.map.contains_key(&root_slot), "{:?}", trimmed.jump_table.map);
+    assert!(!trimmed.jump_table.map.contains_key(&other_slot), "an unchanged, unreaching function was redirected");
+    assert!(
+        trimmed.jump_table.map.len() < both.jump_table.map.len(),
+        "trimmed {} vs untrimmed {}",
+        trimmed.jump_table.map.len(),
+        both.jump_table.map.len()
+    );
+    assert!(trimmed.jump_table.ifunc_count <= both.jump_table.ifunc_count);
+    let named_trimmed = std::fs::read(captures.parent().unwrap().join("last-patch.named.wasm")).unwrap();
+    assert!(named_trimmed.len() < named.len(), "the trimmed link keeps less code");
+    let trimmed_module = walrus::Module::from_buffer(&named_trimmed).unwrap();
+    assert!(
+        trimmed_module.funcs.iter().any(|f| matches!(f.kind, walrus::FunctionKind::Local(_))
+            && f.name.as_deref().is_some_and(|n| n.contains("12shared_value"))),
+        "the trimmed patch carries the new shared_value"
+    );
+    assert!(!trimmed_module.imports.iter().any(|i| i.name.contains("12shared_value")));
+
+    // Regression (welcome, live): edit A, edit B, back to A. The third
+    // patch's source key is the first's, so its digests were reused —
+    // with the first replay's object paths, which the second replay had
+    // emptied out of the crate's object dir. The trimmed link named
+    // missing files and every function was linked instead. It must trim.
+    // (This fixture's replays happen to reuse object names, so here the
+    // stale paths still exist; `regression_cached_digests_count_only_for_
+    // the_files_being_linked` pins the rule itself.)
+    let edit_b = SHARED_RS.replace("n + 11", "n + 17");
+    std::fs::write(dir.join("shared/src/lib.rs"), &edit_b).unwrap();
+    trimmed_builder
+        .build_crates(&[
+            PatchCrate::new("rt_shared", Some("edited-b".into())),
+            PatchCrate::carried("rt_app", Some("base".into())),
+        ])
+        .unwrap();
+    std::fs::write(dir.join("shared/src/lib.rs"), SHARED_RS.replace("n + 11", "n + 13")).unwrap();
+    let again = trimmed_builder
+        .build_crates(&[
+            PatchCrate::new("rt_shared", Some("edited".into())),
+            PatchCrate::carried("rt_app", Some("base".into())),
+        ])
+        .unwrap();
+    assert!(again.jump_table.map.contains_key(&card_slot));
+    assert!(!again.jump_table.map.contains_key(&other_slot), "the third patch was not trimmed");
 
     // The library instantiates wasm-bindgen's cast intrinsic itself (its
     // `Closure`). The base kept a forwarder under the mangled name, and

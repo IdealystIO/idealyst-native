@@ -69,8 +69,9 @@ use build_runtime_server::hotpatch::replay;
 /// was cancelled rather than broken.
 pub use build_runtime_server::hotpatch::replay::Cancelled;
 
+use crate::hotpatch_fndiff::{CrateFns, RedirectPlan};
 use crate::hotpatch_patch::BaseIndex;
-use crate::hotpatch_wasm::{base_slots, build_jump_table_with, WasmJumpTable};
+use crate::hotpatch_wasm::{base_slots, build_jump_table_keeping, WasmJumpTable};
 
 /// One crate a patch re-emits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,7 +177,17 @@ struct SeedQueue {
     captures_dir: PathBuf,
     reporter: dev_events::Reporter,
     jobs: usize,
+    probe: Option<SourceProbe>,
 }
+
+/// A crate's current source key on disk, by rustc crate name — the same
+/// key `PatchCrate::source_key` carries. See [`WasmPatchBuilder::with_source_probe`].
+pub type SourceProbe = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// A finished seed: its crate, its replay, and — when its sources were
+/// proven to be the base's — its functions' digests, the crate's baseline
+/// ([`crate::hotpatch_fndiff`]).
+type SeedDone = (PatchCrate, Result<(Vec<PathBuf>, Duration)>, Option<Arc<CrateFns>>);
 
 #[derive(Default)]
 struct SeedState {
@@ -184,7 +195,7 @@ struct SeedState {
     /// Each running seed and the flag that kills it.
     running: Vec<(PatchCrate, Arc<AtomicBool>)>,
     /// Finished seeds, not yet filed into the builder's object cache.
-    done: Vec<(PatchCrate, Result<(Vec<PathBuf>, Duration)>)>,
+    done: Vec<SeedDone>,
     /// Every crate queued, seeded or replayed against this base: never
     /// queued again.
     known: std::collections::HashSet<String>,
@@ -208,6 +219,7 @@ impl SeedQueue {
             captures_dir: captures_dir.to_path_buf(),
             reporter,
             jobs: seed_jobs(std::env::var("IDEALYST_HOTPATCH_SEED_JOBS").ok().as_deref(), available_cores()),
+            probe: None,
         }
     }
 
@@ -230,7 +242,8 @@ impl SeedQueue {
             let shared = self.shared.clone();
             let captures = self.captures_dir.clone();
             let reporter = self.reporter.clone();
-            workers.push(std::thread::spawn(move || seed_worker(&shared, &captures, &reporter)));
+            let probe = self.probe.clone();
+            workers.push(std::thread::spawn(move || seed_worker(&shared, &captures, &reporter, probe.as_ref())));
         }
         cv.notify_all();
     }
@@ -264,13 +277,17 @@ impl SeedQueue {
     }
 
     /// File every finished seed's objects under its source key, so a patch
-    /// that carries the crate unchanged reuses them.
-    fn file_into(&self, objects: &std::cell::RefCell<ObjectCache>) {
+    /// that carries the crate unchanged reuses them, and its digests as the
+    /// crate's baseline.
+    fn file_into(&self, objects: &std::cell::RefCell<ObjectCache>, baselines: &std::cell::RefCell<Baselines>) {
         let done = std::mem::take(&mut self.shared.0.lock().unwrap().done);
         let mut cache = objects.borrow_mut();
-        for (krate, result) in done {
+        for (krate, result, fns) in done {
             match (result, krate.source_key) {
                 (Ok((objs, _)), Some(key)) => {
+                    if let Some(fns) = fns {
+                        baselines.borrow_mut().insert(krate.crate_name.clone(), (key.clone(), fns));
+                    }
                     cache.insert(krate.crate_name, (key, objs));
                 }
                 // Reported by the worker; a failed seed's dir is empty.
@@ -299,7 +316,12 @@ impl SeedQueue {
     }
 }
 
-fn seed_worker(shared: &(Mutex<SeedState>, Condvar), captures: &Path, reporter: &dev_events::Reporter) {
+fn seed_worker(
+    shared: &(Mutex<SeedState>, Condvar),
+    captures: &Path,
+    reporter: &dev_events::Reporter,
+    probe: Option<&SourceProbe>,
+) {
     let (lock, cv) = shared;
     let mut st = lock.lock().unwrap();
     loop {
@@ -314,11 +336,41 @@ fn seed_worker(shared: &(Mutex<SeedState>, Condvar), captures: &Path, reporter: 
         let kill = Arc::new(AtomicBool::new(false));
         st.running.push((krate.clone(), kill.clone()));
         drop(st);
-        // A crate this base never compiled (a host-only one the workspace
-        // closure reaches) has nothing to seed; said nowhere, as a patch
-        // that carries it says nothing either.
-        let result = if replay::find_capture(captures, &krate.crate_name).is_ok() {
-            Some(replay_crate_at(captures, &krate.crate_name, &|| kill.load(Ordering::SeqCst), true))
+        // A crate this base never compiled into the wasm program has nothing
+        // to seed; said nowhere, as a patch that carries it says nothing
+        // either.
+        let mut baseline = None;
+        // Only a crate compiled INTO the wasm program: a capture from a host
+        // build (a proc-macro's dependency, a build script's — no
+        // `--target wasm32`) emits host objects, which no patch links and no
+        // digest reads. Seeding one only cost time (two of CrewForge's
+        // workspace crates are host-only).
+        let in_wasm = replay::find_capture(captures, &krate.crate_name)
+            .is_ok_and(|c| c.args.windows(2).any(|w| w[0] == "--target" && w[1].starts_with("wasm32")));
+        let result = if in_wasm {
+            // A baseline only when the sources this replay compiled are
+            // provably the base's: on disk, equal to the key the base was
+            // scanned with, both before rustc read them and after it
+            // finished. A save that landed meanwhile would otherwise make
+            // the edited code the baseline, and the edit would look
+            // unchanged — a patch that silently drops it.
+            let on_disk = || probe.and_then(|p| p(&krate.crate_name));
+            let before = on_disk();
+            let result = replay_crate_at(captures, &krate.crate_name, &|| kill.load(Ordering::SeqCst), true);
+            if let Ok((objs, _)) = &result {
+                if krate.source_key.is_some() && before == krate.source_key && on_disk() == krate.source_key {
+                    match CrateFns::of_objects(objs) {
+                        Ok(fns) => baseline = Some(Arc::new(fns)),
+                        // Not fatal: patches that carry the crate redirect
+                        // every function, as they did before digests.
+                        Err(e) => reporter.warn(
+                            "hotpatch",
+                            format!("no function digests for `{}` ({e:#}); its patches redirect everything", krate.crate_name),
+                        ),
+                    }
+                }
+            }
+            Some(result)
         } else {
             None
         };
@@ -349,7 +401,7 @@ fn seed_worker(shared: &(Mutex<SeedState>, Condvar), captures: &Path, reporter: 
                         format!("seeding the replay cache for `{}` failed: {e:#}", krate.crate_name),
                     ),
                 }
-                st.done.push((krate, result));
+                st.done.push((krate, result, baseline));
             }
         }
         if st.queue.is_empty() && st.running.is_empty() {
@@ -411,8 +463,17 @@ pub struct WasmPatchBuilder {
     /// drops the builder and with it every entry.
     objects: std::cell::RefCell<ObjectCache>,
     seeds: SeedQueue,
+    /// Per crate, the source key and function digests of a replay of its
+    /// BASE sources (from a seed): what a patch's functions are compared
+    /// against to decide which differ ([`crate::hotpatch_fndiff`]).
+    baselines: std::cell::RefCell<Baselines>,
+    /// Per crate, the source key and digests of its last analyzed
+    /// objects, so a crate carried unchanged is not digested again.
+    analyzed: std::cell::RefCell<Baselines>,
     reporter: dev_events::Reporter,
 }
+
+type Baselines = std::collections::HashMap<String, (String, Arc<CrateFns>)>;
 
 impl Drop for WasmPatchBuilder {
     /// Seeds still running when the base is replaced are killed and waited
@@ -471,11 +532,23 @@ impl WasmPatchBuilder {
             base_slots,
             serial: std::cell::Cell::new(0),
             objects: Default::default(),
+            baselines: Default::default(),
+            analyzed: Default::default(),
             reporter,
         })
     }
 
     /// Report through `reporter` instead of plain stderr.
+    /// How to read a crate's current source key from disk (rustc crate
+    /// name → `PatchCrate::source_key`). Without one no seed can prove it
+    /// compiled the base's sources, so no crate gets a baseline and every
+    /// patch redirects every function, as before digests existed.
+    pub fn with_source_probe(mut self, probe: SourceProbe) -> Self {
+        // Before any seed is queued, so every worker sees it.
+        self.seeds.probe = Some(probe);
+        self
+    }
+
     pub fn reporting_to(mut self, reporter: dev_events::Reporter) -> Self {
         // Before any seed is queued, so no worker holds the old one.
         self.seeds.reporter = reporter.clone();
@@ -507,7 +580,7 @@ impl WasmPatchBuilder {
     /// A seed still running is not waited for: its objects are filed by
     /// the next patch, or the next call.
     pub fn reusable_objects(&self) -> Vec<(String, String, Vec<PathBuf>)> {
-        self.seeds.file_into(&self.objects);
+        self.seeds.file_into(&self.objects, &self.baselines);
         let mut out: Vec<_> = self
             .objects
             .borrow()
@@ -576,6 +649,20 @@ impl WasmPatchBuilder {
         self.seeds.push(crates);
     }
 
+    /// Wait until no seed is queued or running, and file what they
+    /// produced. For a caller that must know the baselines are in — a test,
+    /// or a diagnostic — never on a save's path.
+    pub fn wait_for_seeds(&self) {
+        {
+            let (lock, cv) = &*self.seeds.shared;
+            let mut st = lock.lock().unwrap();
+            while !(st.queue.is_empty() && st.running.is_empty()) {
+                st = cv.wait(st).unwrap();
+            }
+        }
+        self.seeds.file_into(&self.objects, &self.baselines);
+    }
+
     /// [`Self::seed_all`] of one crate.
     pub fn seed(&self, krate: PatchCrate) {
         self.seed_all(vec![krate]);
@@ -634,60 +721,57 @@ impl WasmPatchBuilder {
             }
         }
         let _resume = Resume(&self.seeds);
-        self.seeds.file_into(&self.objects);
+        self.seeds.file_into(&self.objects, &self.baselines);
         let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
         checkpoint()?;
         let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build, cancel)?;
         let mut objects = Vec::new();
         let mut carried = Vec::with_capacity(in_build.len());
+        let mut per_crate = Vec::with_capacity(in_build.len());
         for (krate, (objs, took)) in in_build.iter().zip(replayed) {
-            objects.extend(objs);
+            objects.extend(objs.iter().cloned());
             carried.push((krate.crate_name.clone(), took));
+            per_crate.push((krate, objs));
         }
         timings.push(("cargo", started.elapsed()));
+        checkpoint()?;
+
+        // Which functions differ from the base, when every crate of the
+        // patch has a baseline to tell (see `hotpatch_fndiff`).
+        let started = Instant::now();
+        let plan = self.redirect_plan(&per_crate);
+        timings.push(("diff", started.elapsed()));
         checkpoint()?;
 
         let serial = self.serial.get() + 1;
         self.serial.set(serial);
         std::fs::create_dir_all(&self.out_dir)
             .with_context(|| format!("create {}", self.out_dir.display()))?;
-        let linked = self.out_dir.join(format!("patch-{serial}.linked.wasm"));
 
-        let started = Instant::now();
-        self.link(&objects, &linked)?;
-        timings.push(("link", started.elapsed()));
-        if let Err(e) = checkpoint() {
-            let _ = std::fs::remove_file(&linked);
-            return Err(e);
-        }
-
-        let started = Instant::now();
-        let raw = std::fs::read(&linked)
-            .with_context(|| format!("read the linked patch {}", linked.display()))?;
-        // Read, not rewritten: the page supplies each import as the plan
-        // appended here says (see `hotpatch_prepare`).
-        let resolved = crate::hotpatch_prepare::prepare(&raw, &self.base)?.wasm;
-        // The pre-resolve module is only useful when a patch misbehaves,
-        // and it is larger than the one we serve. Keeping every one of
-        // them fills a dev session's staging dir.
-        let _ = std::fs::remove_file(&linked);
-        timings.push(("resolve", started.elapsed()));
-        checkpoint()?;
-
-        // Pair while the names are still there: the jump table matches
-        // functions BY NAME, from the `name` section.
-        let started = Instant::now();
-        let jump_table = build_jump_table_with(&self.base_slots, &resolved, &self.aliases)
-            .context("pairing the patch's functions to the base's table slots")?;
-        if jump_table.is_empty() {
-            bail!(
-                "the patch redirects nothing: not one of the functions it takes the address of \
-                 matched a slot in the base's table. Usually the base was built without \
-                 `runtime-core/hot-reload`, so `#[component]` never split any body and there is \
-                 nothing pointing a `fn` pointer at one."
-            );
-        }
-        timings.push(("jump-table", started.elapsed()));
+        // The trimmed patch first; the whole one whenever the trimmed one
+        // cannot be shown to redirect everything it must.
+        let trimmed = match &plan {
+            Some(plan) => match self.assemble(&objects, serial, Some(plan), &checkpoint) {
+                Ok(Some(done)) => Some(done),
+                Ok(None) => None,
+                Err(e) if e.is::<replay::Cancelled>() => return Err(e),
+                Err(e) => {
+                    self.reporter.warn(
+                        "hotpatch",
+                        format!("the trimmed patch failed ({e:#}); linking every function instead"),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let (resolved, jump_table, steps) = match trimmed {
+            Some(done) => done,
+            None => self
+                .assemble(&objects, serial, None, &checkpoint)?
+                .expect("an untrimmed patch always pairs or fails"),
+        };
+        timings.extend(steps);
 
         // Then serve it without them. The `name` section is more than half
         // of a real patch (33 of 60 MB on CrewForge) and nothing at run
@@ -729,6 +813,150 @@ impl WasmPatchBuilder {
         })
     }
 
+    /// The plan for a patch of these crates and their objects: `None`
+    /// (redirect everything) unless every crate has a baseline and every
+    /// object could be digested.
+    fn redirect_plan(&self, per_crate: &[(&PatchCrate, Vec<PathBuf>)]) -> Option<Trim> {
+        let baselines = self.baselines.borrow();
+        let mut nows: Vec<Arc<CrateFns>> = Vec::with_capacity(per_crate.len());
+        for (krate, objs) in per_crate {
+            let (base_key, baseline) = baselines.get(&krate.crate_name)?;
+            // Facts digested earlier are reused only for the very files the
+            // patch links: a crate replayed since (an edit, then its revert)
+            // has the same source key but new object files — the replay
+            // empties its object dir — and the trimmed link names files.
+            let same_files = |f: &CrateFns| digested_from(f, objs);
+            let now = match &krate.source_key {
+                // Its base sources, in the seed's own objects: the baseline.
+                Some(key) if key == base_key && same_files(baseline) => baseline.clone(),
+                Some(key) => {
+                    let cached = self
+                        .analyzed
+                        .borrow()
+                        .get(&krate.crate_name)
+                        .filter(|(k, f)| k == key && same_files(f))
+                        .map(|(_, f)| f.clone());
+                    match cached {
+                        Some(f) => f,
+                        None => {
+                            let f = Arc::new(self.digest(&krate.crate_name, objs)?);
+                            self.analyzed.borrow_mut().insert(krate.crate_name.clone(), (key.clone(), f.clone()));
+                            f
+                        }
+                    }
+                }
+                None => Arc::new(self.digest(&krate.crate_name, objs)?),
+            };
+            nows.push(now);
+        }
+        let pairs: Vec<(&CrateFns, Option<&CrateFns>)> = per_crate
+            .iter()
+            .zip(&nows)
+            .map(|((krate, _), now)| (now.as_ref(), baselines.get(&krate.crate_name).map(|(_, b)| b.as_ref())))
+            .collect();
+        let plan = crate::hotpatch_fndiff::plan(&pairs)?;
+        drop(pairs);
+        Some(Trim { plan, crates: nows })
+    }
+
+    fn digest(&self, crate_name: &str, objs: &[PathBuf]) -> Option<CrateFns> {
+        CrateFns::of_objects(objs)
+            .map_err(|e| {
+                self.reporter.warn(
+                    "hotpatch",
+                    format!("no function digests for `{crate_name}` ({e:#}); this patch redirects everything"),
+                )
+            })
+            .ok()
+    }
+
+    /// Link, resolve and pair one patch. With a plan, only the objects the
+    /// plan needs are linked ([`crate::hotpatch_fndiff::keep_objects`]) and
+    /// only its redirect set is paired —
+    /// and `Ok(None)` when that result cannot be trusted: a function the
+    /// plan must redirect, and whose address the patch's objects take, has
+    /// a slot in the base but none in the patch (its address-taker was not
+    /// kept), or nothing pairs at all. Without a
+    /// plan, everything, as before digests.
+    #[allow(clippy::type_complexity)]
+    fn assemble(
+        &self,
+        objects: &[PathBuf],
+        serial: u64,
+        plan: Option<&Trim>,
+        checkpoint: &dyn Fn() -> Result<()>,
+    ) -> Result<Option<(Vec<u8>, WasmJumpTable, Vec<(&'static str, Duration)>)>> {
+        let mut steps = Vec::new();
+        let linked = self.out_dir.join(format!("patch-{serial}.linked.wasm"));
+        let started = Instant::now();
+        // A trimmed patch links only the objects its plan needs.
+        let kept;
+        let objects = match plan {
+            Some(plan) => {
+                kept = crate::hotpatch_fndiff::keep_objects(&plan.plan, &plan.crates.iter().map(|c| c.as_ref()).collect::<Vec<_>>());
+                &kept[..]
+            }
+            None => objects,
+        };
+        self.link(objects, &linked)?;
+        steps.push(("link", started.elapsed()));
+        if let Err(e) = checkpoint() {
+            let _ = std::fs::remove_file(&linked);
+            return Err(e);
+        }
+
+        let started = Instant::now();
+        let raw = std::fs::read(&linked)
+            .with_context(|| format!("read the linked patch {}", linked.display()))?;
+        // The pre-resolve module is only useful when a patch misbehaves,
+        // and it is larger than the one we serve. Keeping every one of
+        // them fills a dev session's staging dir.
+        let _ = std::fs::remove_file(&linked);
+        // Read, not rewritten: the page supplies each import as the plan
+        // appended here says (see `hotpatch_prepare`).
+        let resolved = crate::hotpatch_prepare::prepare(&raw, &self.base)?.wasm;
+        steps.push(("resolve", started.elapsed()));
+        checkpoint()?;
+
+        // Pair while the names are still there: the jump table matches
+        // functions BY NAME, from the `name` section.
+        let started = Instant::now();
+        let (jump_table, patch_slots) =
+            build_jump_table_keeping(&self.base_slots, &resolved, &self.aliases, plan.map(|p| &p.plan.redirect))
+                .context("pairing the patch's functions to the base's table slots")?;
+        steps.push(("jump-table", started.elapsed()));
+        if let Some(plan) = plan {
+            let has_base_slot = |name: &String| {
+                self.base_slots.contains_key(name)
+                    || self.aliases.get(name).is_some_and(|c| self.base_slots.contains_key(c))
+            };
+            let missing: Vec<&String> =
+                plan.plan.slotted.iter().filter(|r| has_base_slot(r) && !patch_slots.contains_key(*r)).collect();
+            if !missing.is_empty() || jump_table.is_empty() {
+                self.reporter.log(
+                    "hotpatch",
+                    format!(
+                        "the trimmed patch would leave {} function(s) unredirected (first: {}); \
+                         linking every function instead",
+                        missing.len(),
+                        missing.first().map(|s| s.as_str()).unwrap_or("none paired"),
+                    ),
+                );
+                return Ok(None);
+            }
+            return Ok(Some((resolved, jump_table, steps)));
+        }
+        if jump_table.is_empty() {
+            bail!(
+                "the patch redirects nothing: not one of the functions it takes the address of \
+                 matched a slot in the base's table. Usually the base was built without \
+                 `runtime-core/hot-reload`, so `#[component]` never split any body and there is \
+                 nothing pointing a `fn` pointer at one."
+            );
+        }
+        Ok(Some((resolved, jump_table, steps)))
+    }
+
     /// Link the patch's objects — and ONLY those — into a PIC side
     /// module.
     ///
@@ -738,6 +966,7 @@ impl WasmPatchBuilder {
     /// against the running module. Linking the rlibs instead
     /// would produce a self-contained module that duplicates the whole
     /// program in the page's memory.
+    ///
     fn link(&self, objects: &[PathBuf], out: &Path) -> Result<()> {
         let mut cmd = Command::new(&self.wasm_ld);
         cmd.args(PATCH_LINK_ARGS);
@@ -759,6 +988,23 @@ impl WasmPatchBuilder {
         }
         Ok(())
     }
+}
+
+/// Whether `facts` were digested from exactly `objects` — the files a
+/// patch is about to link. See `WasmPatchBuilder::redirect_plan`.
+fn digested_from(facts: &CrateFns, objects: &[PathBuf]) -> bool {
+    let mut had: Vec<&Path> = facts.objects.iter().map(|o| o.path.as_path()).collect();
+    let mut now: Vec<&Path> = objects.iter().map(PathBuf::as_path).collect();
+    had.sort();
+    now.sort();
+    had == now
+}
+
+/// A patch's redirect plan, with the facts of each crate it was made
+/// from (which objects the trimmed link keeps comes from those).
+struct Trim {
+    plan: RedirectPlan,
+    crates: Vec<Arc<CrateFns>>,
 }
 
 /// The patch link's flags, in one place so the roundtrip test links
@@ -1108,11 +1354,6 @@ mod tests {
             Self::with_delay(crates, "0")
         }
 
-        /// Each replay takes 0.2 s, long enough for an overlap to show.
-        fn slow(crates: &[&str]) -> Self {
-            Self::with_delay(crates, "0.2")
-        }
-
         fn with_delay(crates: &[&str], delay: &str) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let tmp = tempfile::tempdir().unwrap();
@@ -1134,7 +1375,7 @@ mod tests {
                      /bin/sleep {delay}\n\
                      echo \"$name\" >> {log}\n\
                      case \"$name\" in broken*) exit 3;; esac\n\
-                     : > \"$out/$name.o\"\n\
+                     printf '\\000asm\\001\\000\\000\\000' > \"$out/$name.o\"\n\
                      echo \"end $name\" >> {trace}\n",
                     log = log.display(),
                     trace = trace.display(),
@@ -1148,7 +1389,7 @@ mod tests {
                 // By hand: this crate has no JSON dependency, and the
                 // shape is `replay::CapturedInvocation`'s four fields.
                 let json = format!(
-                    r#"{{"rustc":"{rustc}","args":["--crate-name","{name}","--out-dir","{deps}"],"cwd":"{cwd}","env":[]}}"#,
+                    r#"{{"rustc":"{rustc}","args":["--crate-name","{name}","--target","wasm32-unknown-unknown","--out-dir","{deps}"],"cwd":"{cwd}","env":[]}}"#,
                     rustc = rustc.display(),
                     deps = root.join("deps").display(),
                     cwd = root.display(),
@@ -1248,16 +1489,28 @@ mod tests {
         let cache = Default::default();
         let q = queue(&caps, 2);
         let key = |k: &str| Some(k.to_string());
+        // A crate built only for the host (a proc-macro's dependency): its
+        // capture has no `--target wasm32`, so it is not in the program.
+        let host = std::fs::read_to_string(caps.dir.join("lib.lib.json"))
+            .unwrap()
+            .replace("\"lib\"", "\"macro_dep\"")
+            .replace("\"--target\",\"wasm32-unknown-unknown\",", "");
+        std::fs::write(caps.dir.join("macro_dep.lib.json"), host).unwrap();
         q.push(vec![
             PatchCrate::carried("app", key("a")),
             PatchCrate::carried("screen_a", key("sa")),
             PatchCrate::carried("screen_b", key("sb")),
             PatchCrate::carried("lib", key("l")),
             PatchCrate::carried("host_only", key("h")),
+            PatchCrate::carried("macro_dep", key("m")),
         ]);
         wait_idle(&q);
-        q.file_into(&cache);
-        assert_eq!(caps.calls(), vec!["app", "lib", "screen_a", "screen_b"], "host_only has no capture");
+        q.file_into(&cache, &Default::default());
+        assert_eq!(
+            caps.calls(),
+            vec!["app", "lib", "screen_a", "screen_b"],
+            "host_only has no capture, and macro_dep is a host build"
+        );
 
         // The library's first patch: only it replays.
         let plan = [
@@ -1298,7 +1551,7 @@ mod tests {
         let t = trace(&caps);
         assert!(t.contains(&"end app".to_string()), "the needed seed finished: {t:?}");
         assert!(!t.contains(&"end other".to_string()), "the other seed was killed: {t:?}");
-        q.file_into(&cache);
+        q.file_into(&cache, &Default::default());
         let got = collect_objects(&caps.dir, &cache, &plan, &|| false).unwrap();
         assert!(got[0].1.is_none(), "the save reused the seed's objects");
         assert!(!trace(&caps).iter().skip(t.len()).any(|l| l.starts_with("start")), "nothing ran during the save");
@@ -1333,6 +1586,67 @@ mod tests {
         // the pipes open past the kill; rustc --emit=obj has no children.)
         assert!(caps.calls().is_empty(), "the running seed ran to the end");
         assert_eq!(trace(&caps), vec!["start a"]);
+    }
+
+    /// A seed's digests become a crate's baseline only when its sources on
+    /// disk were the base's — the key the seed was queued with — both
+    /// before the replay and after it. A save landing in between would
+    /// otherwise make the EDITED code the baseline, and the edit would
+    /// compare as unchanged: a patch that silently drops it.
+    #[test]
+    fn a_seed_is_a_baseline_only_when_the_disk_held_the_base_sources_throughout() {
+        let caps = FakeCaptures::new(&["steady", "edited_before", "edited_during", "unprobed"]);
+        let calls = Arc::new(Mutex::new(std::collections::HashMap::<String, u32>::new()));
+        let seen = calls.clone();
+        let probe: SourceProbe = Arc::new(move |name: &str| {
+            let mut c = seen.lock().unwrap();
+            let n = c.entry(name.to_string()).or_insert(0);
+            *n += 1;
+            match (name, *n) {
+                ("steady", _) => Some("base".into()),
+                ("edited_before", _) => Some("edited".into()),
+                ("edited_during", 1) => Some("base".into()),
+                ("edited_during", _) => Some("edited".into()),
+                _ => None,
+            }
+        });
+        let mut q = queue(&caps, 1);
+        q.probe = Some(probe);
+        q.push(
+            ["steady", "edited_before", "edited_during", "unprobed"]
+                .iter()
+                .map(|n| PatchCrate::carried(*n, Some("base".into())))
+                .collect(),
+        );
+        wait_idle(&q);
+        let objects = Default::default();
+        let baselines: std::cell::RefCell<Baselines> = Default::default();
+        q.file_into(&objects, &baselines);
+        let mut have: Vec<String> = baselines.borrow().keys().cloned().collect();
+        have.sort();
+        assert_eq!(have, vec!["steady"]);
+        assert_eq!(objects.borrow().len(), 4, "every seed's objects are still reused by key");
+        q.stop();
+    }
+
+    /// Regression (welcome, live): edit A, edit B, back to A. The third
+    /// patch reused A's digests, whose object paths B's replay had emptied
+    /// out of the crate's dir (incremental replays name objects anew), and
+    /// the trimmed link named missing files. Cached facts count only for
+    /// the very files being linked.
+    #[test]
+    fn regression_cached_digests_count_only_for_the_files_being_linked() {
+        let facts = |paths: &[&str]| CrateFns {
+            objects: paths
+                .iter()
+                .map(|p| crate::hotpatch_fndiff::ObjectFacts { path: p.into(), ..Default::default() })
+                .collect(),
+            ..CrateFns::default()
+        };
+        let objs = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert!(digested_from(&facts(&["b.o", "a.o"]), &objs(&["a.o", "b.o"])));
+        assert!(!digested_from(&facts(&["app.1abc.o", "app.2def.o"]), &objs(&["app.9xyz.o", "app.2def.o"])));
+        assert!(!digested_from(&facts(&["a.o"]), &objs(&["a.o", "b.o"])));
     }
 
     #[test]

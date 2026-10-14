@@ -127,7 +127,25 @@ pub fn build_jump_table_with(
     patch: &[u8],
     aliases: &crate::hotpatch_aliases::AliasMap,
 ) -> Result<WasmJumpTable> {
-    let patch_slots = table_index_by_name(patch).context("reading the patch module")?;
+    Ok(build_jump_table_keeping(base_slots, patch, aliases, None)?.0)
+}
+
+/// [`build_jump_table_with`], pairing only the functions in `keep` (all
+/// of them when `None`) — the ones that differ from the base or reach
+/// one ([`crate::hotpatch_fndiff`]). Also returns the patch's own
+/// `name → table index`, so the caller can check that every function it
+/// meant to redirect has a slot to redirect to.
+pub fn build_jump_table_keeping(
+    base_slots: &BTreeMap<String, u32>,
+    patch: &[u8],
+    aliases: &crate::hotpatch_aliases::AliasMap,
+    keep: Option<&std::collections::BTreeSet<String>>,
+) -> Result<(WasmJumpTable, BTreeMap<String, u32>)> {
+    let all = table_index_by_name(patch).context("reading the patch module")?;
+    let patch_slots: BTreeMap<String, u32> = match keep {
+        Some(keep) => all.iter().filter(|(n, _)| keep.contains(*n)).map(|(n, i)| (n.clone(), *i)).collect(),
+        None => all.clone(),
+    };
 
     // Exact name matches first, aliases second. The base may know one
     // function by several symbols (see `hotpatch_aliases`), and if the
@@ -153,10 +171,13 @@ pub fn build_jump_table_with(
         }
     }
 
-    Ok(WasmJumpTable {
-        map,
-        ifunc_count: table_slot_count(patch).context("counting the patch's table slots")?,
-    })
+    Ok((
+        WasmJumpTable {
+            map,
+            ifunc_count: table_slot_count(patch).context("counting the patch's table slots")?,
+        },
+        all,
+    ))
 }
 
 /// name → the index that function occupies in

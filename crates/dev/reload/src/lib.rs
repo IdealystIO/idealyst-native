@@ -1446,7 +1446,11 @@ impl HotPatchBase {
     /// finished — an overlay patch, which never needs the index, included.
     /// The first hot patch joins it ([`Self::ensure_builder`]). Failures
     /// are not reported here: that patch retries and says why.
-    fn warm(&mut self, seeds: Vec<build_web::hotpatch_build::PatchCrate>) {
+    fn warm(
+        &mut self,
+        seeds: Vec<build_web::hotpatch_build::PatchCrate>,
+        probe: Option<build_web::hotpatch_build::SourceProbe>,
+    ) {
         if !self.armed || self.retired.is_some() || self.builder.is_some() || self.indexing.is_some() {
             return;
         }
@@ -1457,7 +1461,10 @@ impl HotPatchBase {
         let seeding = seeding_enabled(std::env::var_os("IDEALYST_HOTPATCH_NO_SEED"));
         self.indexing = Some(std::thread::spawn(move || {
             let started = std::time::Instant::now();
-            let builder = index()?;
+            let mut builder = index()?;
+            if let Some(probe) = probe {
+                builder = builder.with_source_probe(probe);
+            }
             reporter.log(
                 "hotpatch",
                 format!("base indexed ahead of the first save in {} ms", started.elapsed().as_millis()),
@@ -1646,7 +1653,7 @@ fn watch_loop(
             persister.write(resume_snapshot(ws, base, &signal, inputs, environment, &kept));
         }
     };
-    base.warm(workspace_seeds(&ws));
+    base.warm(workspace_seeds(&ws), Some(source_probe(&ws)));
     record(&ws, &base, base_inputs.as_ref());
     if ws.crates.len() > 1 {
         let libs: Vec<&str> =
@@ -1869,7 +1876,7 @@ fn watch_loop(
             if !failed || reload_owed {
                 // After the reload is signalled: the page reloads while the
                 // base is indexed, rather than the next save waiting on it.
-                base.warm(workspace_seeds(&ws));
+                base.warm(workspace_seeds(&ws), Some(source_probe(&ws)));
             }
             reload_owed = false;
 
@@ -2008,6 +2015,23 @@ fn workspace_seeds(ws: &dev_overlay::Workspace) -> Vec<build_web::hotpatch_build
             Some(build_web::hotpatch_build::PatchCrate::carried(ws.crate_name(p)?.to_string(), ws.source_key(p)))
         })
         .collect()
+}
+
+/// Each workspace crate's current source key on disk, by rustc crate
+/// name — what a seed checks before and after it runs, so its digests
+/// become a crate's baseline only when it compiled the base's sources
+/// (`WasmPatchBuilder::with_source_probe`). Reads the crate's files: a
+/// background cost, paid by the seed threads.
+fn source_probe(ws: &dev_overlay::Workspace) -> build_web::hotpatch_build::SourceProbe {
+    let dirs: BTreeMap<String, PathBuf> = ws
+        .crates
+        .iter()
+        .filter_map(|(p, c)| Some((ws.crate_name(p)?.to_string(), c.dir.clone())))
+        .collect();
+    Arc::new(move |crate_name: &str| {
+        let dir = dirs.get(crate_name)?;
+        dev_overlay::archive::read_crate(dir).ok().map(|s| s.build_key())
+    })
 }
 
 /// What the loop does next with a save [`handle_save`] looked at.
@@ -2438,19 +2462,6 @@ fn drain<T>(rx: &mpsc::Receiver<T>) -> Vec<T> {
         out.push(item);
     }
     out
-}
-
-/// Whether a watcher batch is a save: it names at least one file that is
-/// not an editor's scratch file (see [`saved_paths`]). Only a save
-/// supersedes work in flight — a `.swp` being rewritten must not restart
-/// a patch.
-fn is_save(
-    events: &std::result::Result<
-        Vec<notify_debouncer_mini::DebouncedEvent>,
-        notify_debouncer_mini::notify::Error,
-    >,
-) -> bool {
-    !saved_paths(&event_paths(events)).is_empty()
 }
 
 /// What one watcher batch amounts to, once its files have been read.
@@ -2964,7 +2975,7 @@ mod tests {
     fn regression_the_base_is_indexed_before_the_first_save() {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
-        base.warm(Vec::new());
+        base.warm(Vec::new(), None);
         assert!(base.builder.is_none() && base.indexing.is_some(), "warm indexes off the watch thread");
         base.ensure_builder().unwrap();
         assert!(base.builder.is_some() && base.indexing.is_none(), "the patch joins it");
@@ -2972,11 +2983,11 @@ mod tests {
         let artifact = armed_base(&tmp.path().join("next")).artifact;
         base.rebuilt(artifact);
         assert!(base.builder.is_none(), "a rebuild must drop the old index");
-        base.warm(Vec::new());
+        base.warm(Vec::new(), None);
         // A rebuild before the index is joined drops it too.
         base.rebuilt(armed_base(&tmp.path().join("next")).artifact);
         assert!(base.builder.is_none() && base.indexing.is_none());
-        base.warm(Vec::new());
+        base.warm(Vec::new(), None);
         base.ensure_builder().unwrap();
         assert!(base.builder.is_some(), "and warm must index the new base");
     }
@@ -2993,7 +3004,7 @@ mod tests {
         std::fs::write(&obj, b"o").unwrap();
         base.serial = 5;
         base.resumed_objects = vec![("app".into(), "key".into(), vec![obj.clone()])];
-        base.warm(Vec::new());
+        base.warm(Vec::new(), None);
         // While the index is made, a resume record still names them.
         assert_eq!(base.resumed_objects.len(), 1);
         base.ensure_builder().unwrap();
@@ -3003,7 +3014,7 @@ mod tests {
 
         base.rebuilt(armed_base(&tmp.path().join("next")).artifact);
         assert_eq!(base.serial(), 5, "the numbering survives a rebuild");
-        base.warm(Vec::new());
+        base.warm(Vec::new(), None);
         base.ensure_builder().unwrap();
         assert!(base.builder.as_ref().unwrap().reusable_objects().is_empty(), "objects of the old base");
     }
@@ -3039,7 +3050,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
         base.armed = false;
-        base.warm(Vec::new());
+        base.warm(Vec::new(), None);
         assert!(base.builder.is_none() && base.indexing.is_none());
     }
 
@@ -4046,9 +4057,10 @@ mod tests {
                 kind: notify_debouncer_mini::DebouncedEventKind::Any,
             }])
         };
-        assert!(is_save(&batch("/w/src/app.rs")));
-        assert!(!is_save(&batch("/w/src/.app.rs.swp")));
-        assert!(!is_save(&Err(notify_debouncer_mini::notify::Error::generic("x"))));
+        let mut seen = SeenContent::default();
+        assert_eq!(seen.classify(&batch("/w/src/app.rs")), Batch::Save);
+        assert_eq!(seen.classify(&batch("/w/src/.app.rs.swp")), Batch::Other);
+        assert_eq!(seen.classify(&Err(notify_debouncer_mini::notify::Error::generic("x"))), Batch::Other);
     }
 
     /// Regression: CrewForge's devcontainer delivered every save as two

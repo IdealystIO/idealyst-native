@@ -602,6 +602,30 @@ Restart the session after rebuilding the CLI. The same applies to
 `cargo clean` on a workspace whose `target/` holds both the binary and
 the session's web target directory.
 
+### A patch redirects only what differs from the base
+
+A patch re-emits whole crates, but its jump table redirects only the
+functions whose code differs from the base's, plus every function that
+reaches one of them through direct calls (a direct call in base code goes
+to the base's copy, so an unchanged caller of a changed function has to be
+redirected too). The link keeps only the object files those need. A
+one-line edit in a crate ~30 others depend on used to redirect 32,195
+functions (CrewForge); on `examples/welcome` an app-crate edit that used to
+redirect 653 redirects 4.
+
+"Differs" is decided per function, against the background seed's replay
+of the crate's base sources (see
+[What a save costs on the web](#what-a-save-costs-on-the-web)): each
+function's body is digested with every relocation replaced by what it
+refers to, data by content. A seed counts as the crate's baseline only when
+the crate's sources on disk matched the base both before and after it ran.
+The filter is off for a patch, which then redirects every function as
+before, when any crate in it has no baseline (its seed has not finished,
+or a save landed while it ran), when an object cannot be digested, and
+when the trimmed patch would leave a redirected function without its table
+slot or pair nothing. The `[hotpatch]` line's `diff` step is the digest
+time.
+
 ### The app root has to be a `#[component]`
 
 A jump table redirects a function by its slot in
