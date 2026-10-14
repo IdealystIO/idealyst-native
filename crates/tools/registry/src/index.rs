@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -69,6 +69,45 @@ pub fn index_path(name: &str) -> String {
         3 => format!("3/{}/{}", &n[..1], n),
         _ => format!("{}/{}/{}", &n[..2], &n[2..4], n),
     }
+}
+
+/// Set the `yanked` flag on `version`'s line of an index file. Returns the new
+/// body and whether anything changed. Every other line is left byte-for-byte
+/// as it was; the edited line is re-serialized (key order may change, which
+/// cargo does not care about). A version with no line is an error: yanking a
+/// typo must not look like success.
+pub fn set_yanked(body: &str, version: &str, yanked: bool) -> Result<(String, bool)> {
+    let mut out = String::with_capacity(body.len());
+    let mut found = false;
+    let mut changed = false;
+    for line in body.split_inclusive('\n') {
+        let text = line.trim_end_matches('\n');
+        if text.trim().is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        let mut v: serde_json::Value =
+            serde_json::from_str(text).context("parsing an index line")?;
+        if v.get("vers").and_then(|x| x.as_str()) != Some(version) {
+            out.push_str(line);
+            continue;
+        }
+        found = true;
+        if v.get("yanked").and_then(|x| x.as_bool()) == Some(yanked) {
+            out.push_str(line);
+            continue;
+        }
+        v["yanked"] = serde_json::Value::Bool(yanked);
+        out.push_str(&serde_json::to_string(&v)?);
+        if line.ends_with('\n') {
+            out.push('\n');
+        }
+        changed = true;
+    }
+    if !found {
+        bail!("version {version} is not in this index file");
+    }
+    Ok((out, changed))
 }
 
 pub fn checksum(crate_file: &Path) -> Result<String> {
@@ -330,5 +369,48 @@ runtime_core = { version = "1.5", package = "runtime-core" }
         assert_eq!(deps[0].package.as_deref(), Some("runtime-core"));
         // Attribution follows the real package, not the local alias.
         assert_eq!(deps[0].registry, None);
+    }
+}
+
+#[cfg(test)]
+mod yank_tests {
+    use super::set_yanked;
+
+    const BODY: &str = concat!(
+        r#"{"name":"idea-ui-nav","vers":"1.5.8","deps":[],"cksum":"aaa","features":{},"yanked":false,"links":null,"v":2}"#,
+        "\n",
+        r#"{"name":"idea-ui-nav","vers":"1.5.9","deps":[],"cksum":"bbb","features":{},"yanked":false,"links":null,"v":2}"#,
+        "\n",
+    );
+
+    /// The 1.5.9 repair: only that version's line flips; 1.5.8 stays
+    /// byte-identical so consumers on it are untouched.
+    #[test]
+    fn yank_flips_only_the_named_version() {
+        let (out, changed) = set_yanked(BODY, "1.5.9", true).unwrap();
+        assert!(changed);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], BODY.lines().next().unwrap(), "1.5.8 untouched");
+        let v: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(v["yanked"], true);
+        assert_eq!(v["cksum"], "bbb", "the rest of the entry survives");
+        assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn yank_is_idempotent_and_undo_restores() {
+        let (once, _) = set_yanked(BODY, "1.5.9", true).unwrap();
+        let (twice, changed) = set_yanked(&once, "1.5.9", true).unwrap();
+        assert!(!changed);
+        assert_eq!(once, twice);
+        let (undone, changed) = set_yanked(&once, "1.5.9", false).unwrap();
+        assert!(changed);
+        let v: serde_json::Value = serde_json::from_str(undone.lines().nth(1).unwrap()).unwrap();
+        assert_eq!(v["yanked"], false);
+    }
+
+    #[test]
+    fn yank_of_a_missing_version_is_an_error() {
+        assert!(set_yanked(BODY, "1.5.10", true).is_err());
     }
 }

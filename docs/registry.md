@@ -273,6 +273,20 @@ patch. The version is the only thing a consumer sees, so it should say that API
 arrived. Raise-only: asking for less than a crate earned is refused, because
 silently under-publishing API is the failure the flag exists to prevent. A
 crate that is not already in the plan is refused too — use `--force` for that.
+`--force` is applied first, so `--force X --bump X=major` re-cuts an unchanged
+crate as a major: the repair for a release published at the wrong level.
+
+A major bump drags its dependents into the plan. A dependent with a library
+target goes **major** too (transitively, and raising a smaller bump it earned
+itself): its new release requires the new major, whose types are in its API, so
+at a patch a `cargo update` on the old line would put two copies of the
+dependency in an app. idea-ui 5.0.0 did exactly that through idea-ui-nav 1.5.9.
+A bin-only dependent (the CLI, dev-tui) goes at a patch.
+
+`yank <CRATE> <VERSION>` marks a published version yanked in its index file
+(`--undo` clears it; without `--execute` it only says what it would do). Cargo
+then never picks that version for a new resolution, while lockfiles that
+already name it keep working; the tarball stays up.
 
 `releases.json` in the bucket records the version and commit each crate was
 last cut from. It is our bookkeeping, not part of cargo's schema — an index

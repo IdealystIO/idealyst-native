@@ -69,6 +69,29 @@ enum Cmd {
         #[arg(long)]
         execute: bool,
     },
+    /// Mark a published version yanked (or, with `--undo`, un-yank it).
+    ///
+    /// Cargo never picks a yanked version for a new resolution, but a lockfile
+    /// that already names it keeps working. The tarball stays up. For a
+    /// release that should not be resolved by default, such as a patch that
+    /// pulled in a dependency's new major.
+    Yank {
+        /// The crate, as published.
+        #[arg(value_name = "CRATE")]
+        name: String,
+        /// The exact version to yank.
+        #[arg(value_name = "VERSION")]
+        version: String,
+        /// Clear the yank instead of setting it.
+        #[arg(long)]
+        undo: bool,
+        #[command(flatten)]
+        remote: RemoteArgs,
+        /// Actually write to S3. Without it the command prints the index line
+        /// it would write and stops.
+        #[arg(long)]
+        execute: bool,
+    },
 }
 
 #[derive(clap::Args, Clone)]
@@ -112,7 +135,8 @@ struct RemoteArgs {
     /// Release these crates at a patch bump even though nothing in their
     /// directory changed. For correcting a published manifest — the source is
     /// fine, the recorded metadata is not — which no source diff will ever
-    /// trigger on its own.
+    /// trigger on its own. Combine with `--bump CRATE=LEVEL` to re-cut it at
+    /// a higher level.
     #[arg(long = "force", value_name = "CRATE")]
     force: Vec<String>,
     /// Raise a crate's bump level: `--bump runtime-shared=minor`. For work
@@ -160,7 +184,32 @@ fn main() -> Result<()> {
             println!("\npublished {} crates to {}", state.len(), remote.url);
             Ok(())
         }
+        Cmd::Yank { name, version, undo, remote, execute } => {
+            yank(&name, &version, !undo, &remote, execute)
+        }
     }
+}
+
+/// `registry yank`: rewrite one line of a crate's index file and upload it.
+fn yank(name: &str, version: &str, yanked: bool, r: &RemoteArgs, execute: bool) -> Result<()> {
+    let target = target(r)?;
+    let ipath = index::index_path(name);
+    let body = deploy::fetch_index_file(&target, &ipath)?
+        .with_context(|| format!("{name} has no index file — never published?"))?;
+    let (new_body, changed) = index::set_yanked(&body, version, yanked)?;
+    let verb = if yanked { "yank" } else { "un-yank" };
+    if !changed {
+        println!("{name} {version} is already {}", if yanked { "yanked" } else { "not yanked" });
+        return Ok(());
+    }
+    if !execute {
+        println!("would {verb} {name} {version} (index/{ipath}) — re-run with --execute");
+        return Ok(());
+    }
+    deploy::put_index(&target, name, &ipath, &new_body)?;
+    deploy::invalidate(&target)?;
+    println!("{verb}ed {name} {version}");
+    Ok(())
 }
 
 /// Narrow a plan to an explicit crate list, for a rehearsal or a re-cut.
@@ -621,12 +670,15 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
         );
     }
 
+    // `--force` first, so `--bump X=major` can raise a forced crate: an
+    // unchanged crate whose published release was the wrong LEVEL (idea-ui-nav
+    // 1.5.9 should have been 2.0.0) is re-cut with `--force X --bump X=major`.
+    force_into_plan(ws, &state, &mut plan, &r.force)?;
     // Before the majors sweep below, so `--bump X=major` correctly drags X's
     // dependents in with it.
     apply_bump_overrides(&mut plan, &r.bump)?;
 
     drag_in_dependents_of_majors(ws, &state, &mut plan)?;
-    force_into_plan(ws, &state, &mut plan, &r.force)?;
     Ok(plan)
 }
 
@@ -717,7 +769,8 @@ fn drag_in_dependents_of_majors(
 /// is a disagreement worth stopping on, and silently under-publishing API is
 /// the failure this flag exists to prevent. A crate that is not already in the
 /// plan is refused too — nothing changed in it, so there is no level to raise;
-/// `--force` is the flag for republishing an unchanged crate.
+/// `--force` is the flag for republishing an unchanged crate, and it runs
+/// first, so `--force X --bump X=major` re-cuts an unchanged crate as a major.
 fn apply_bump_overrides(plan: &mut BTreeMap<String, Release>, specs: &[String]) -> Result<()> {
     for spec in specs {
         let (name, level) = spec
@@ -1369,6 +1422,23 @@ mod tests {
         force_into_plan(&ws, &state, &mut plan, &["idea-ui".to_string()]).unwrap();
         assert_eq!(plan["idea-ui"].to, semver::Version::new(1, 9, 0));
         assert_eq!(plan["idea-ui"].forced, Forced::No);
+    }
+
+    /// The idea-ui-nav repair: 1.5.9 shipped at the wrong LEVEL with nothing
+    /// changed since, so it is re-cut with `--force idea-ui-nav --bump
+    /// idea-ui-nav=major`. `plan` forces before applying overrides, so the
+    /// override finds the crate in the plan and raises it to 2.0.0.
+    #[test]
+    fn bump_raises_a_forced_crate_to_a_major() {
+        let ws = bare_ws(&[("idea-ui-nav", "1.5.9")]);
+        let state = released(&[("idea-ui-nav", "1.5.9")]);
+        let mut plan = BTreeMap::new();
+        force_into_plan(&ws, &state, &mut plan, &["idea-ui-nav".to_string()]).unwrap();
+        apply_bump_overrides(&mut plan, &["idea-ui-nav=major".to_string()]).unwrap();
+        let rel = &plan["idea-ui-nav"];
+        assert_eq!(rel.bump, Bump::Major);
+        assert_eq!(rel.to, semver::Version::new(2, 0, 0));
+        assert_eq!(rel.forced, Forced::Requested);
     }
 
     #[test]

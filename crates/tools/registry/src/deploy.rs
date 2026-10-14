@@ -134,6 +134,11 @@ pub fn put_release(
         &format!("aws s3 cp ({name}-{version}.crate)"),
     )?;
 
+    put_index(target, name, index_path, index_body)
+}
+
+/// Upload one crate's index file (no-cache, like every index file).
+pub fn put_index(target: &Target, name: &str, index_path: &str, index_body: &str) -> Result<()> {
     let tmp = std::env::temp_dir().join(format!("idealyst-index-{name}"));
     std::fs::write(&tmp, index_body)?;
     let res = run(

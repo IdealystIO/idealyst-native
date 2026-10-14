@@ -161,6 +161,10 @@ subject?
   the source is right — an under-declared internal requirement is the case it
   exists for. It works on `plan`, `build` and `publish`, and never downgrades a
   crate that earned a bigger bump on its own.
+- **Repairing a release cut at the wrong level** (idea-ui-nav 1.5.9 should
+  have been 2.0.0): `--force X --bump X=major --only X` re-cuts it, then
+  `cargo run -q -p registry -- yank X <bad version> --execute` (same env vars)
+  stops new resolutions picking the bad one. Lockfiles naming it keep working.
 - The bump is classified from the commit **subject**, per crate. A `feat:` that
   lands an API in one crate and only a test in another bumps both alike. That's
   accepted (publishing is the safer half of the trade), but say so in the
