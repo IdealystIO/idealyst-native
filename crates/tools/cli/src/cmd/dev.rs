@@ -403,7 +403,10 @@ pub struct Args {
     /// Launch a headless Chromium at the served web URL so the app runs (and
     /// dials the robot relay) without any display. AUTO-enabled when the
     /// relay is active and no display is present (container/CI/SSH) — this
-    /// flag forces it on even with a display.
+    /// flag forces it on even with a display. Its profile is
+    /// `.idealyst/headless-client-profile-<port>` and its stderr goes to the
+    /// `.log` beside it; a browser that exits on launch is reported in the
+    /// session log.
     #[arg(long)]
     pub headless_client: bool,
 

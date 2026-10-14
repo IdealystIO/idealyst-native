@@ -999,6 +999,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **The headless web client survives a stale profile lock, and says when
+  it dies** (`idealyst-cli`). `idealyst dev`'s headless Chromium keeps its
+  profile in the project; after the project volume moved to a new host,
+  the profile's `SingletonLock` named the dead host, Chromium exited at
+  once, and with its output sent to null the session never said why — hot
+  patches built and were never applied. The CLI now clears the profile's
+  `Singleton*` files before launching (it owns that per-port profile), keeps
+  the browser's stderr in `.idealyst/headless-client-profile-<port>.log`,
+  and logs the browser's last lines when it exits within 30 s of launch.
+
 - **Editing a `#[server]` body no longer rebuilds the bundle in `idealyst
   dev`** (`runtime-macros-parse`, `dev-overlay`). The dev loop treated a
   `#[server]` fn as a body every dependent compiles (it is `async`), so
