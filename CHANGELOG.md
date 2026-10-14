@@ -11,6 +11,25 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Stack `replace` animates on iOS, and Android stacks get native
+  transitions and system Back** (`ios-navigator-helpers`,
+  `android-navigator-helpers`, `stack-navigator`, `backend-android-mobile`).
+  On iOS, `StackHandle::replace` to a different screen now plays the push
+  transition (`setViewControllers:animated:YES`) instead of cutting; the
+  stack below is kept, so Back still skips the replaced screen. A
+  query-only `replace_with_state` still updates in place. On Android,
+  stacks were a plain outlet swap with no transition, and system Back left
+  the app from any depth. They now get a presenter (`RustStackPresenter`)
+  that plays Material's shared-axis transition for push, pop and replace,
+  and system Back pops the stack while more than one screen is stacked.
+  After a native Back or swipe-back the header now updates to the revealed
+  screen on both platforms (it could keep showing the popped one).
+  *Migration:* none. To keep a cut between screens, use `reset`.
+  On Android a stack screen is laid out against the outlet's size and no
+  longer gives the outlet a content height, so a layout that sized the
+  outlet by its content should size it explicitly (the default outlet style
+  already fills).
+
 - **`image()` takes the same `src` on every platform** (every backend,
   `runtime-shared`, `css`, the CLI). One contract, `docs/image-src.md`:
   `http(s)://` URLs, `data:` URIs (base64 or percent-encoded) and

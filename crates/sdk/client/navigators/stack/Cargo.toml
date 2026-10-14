@@ -18,10 +18,10 @@ license.workspace = true
 # for an app to forget — `stack_navigator::register` survives only as a
 # documented no-op for historical bootstrap code.
 #
-# A NATIVE PUSH SURFACE (real UINavigationController / RustNavigator under
-# the outlet-model handler) is not implemented: that seam lives in the
-# vocabulary navigator handler + the per-backend hosts, not here. The
-# backend-neutral outlet handler runs on every platform meanwhile.
+# Native transitions come from a per-platform STACK PRESENTER installed by
+# `StackNavigator::new` (iOS: UINavigationController; Android: the
+# RustStackPresenter view container). Without one the handler swaps the
+# outlet directly.
 description = "Stack navigator SDK — push/pop depth with author chrome around one outlet."
 
 # No features. The MCP catalog's stack-navigator RECIPE is static data in
@@ -69,13 +69,13 @@ backend-macos = { workspace = true }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 backend-ios-mobile = { workspace = true }
-# Native push surface (src/ios.rs): the shared UINavigationController
-# engine, bar hidden, author StackHeader chrome.
+# Native push surface: `IosStackPresenter` (UINavigationController, bar
+# hidden), installed by `install_native_presenter`; author StackHeader chrome.
 ios-navigator-helpers = { workspace = true }
 
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
-# Native push surface (src/android.rs): the shared Kotlin RustNavigator
-# engine, Toolbar hidden, author StackHeader chrome.
+# Native push surface: `AndroidStackPresenter` (RustStackPresenter.kt),
+# installed by `install_native_presenter`; author StackHeader chrome.
 android-navigator-helpers = { workspace = true }
 jni = "0.21"

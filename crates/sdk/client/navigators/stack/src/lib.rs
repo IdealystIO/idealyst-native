@@ -107,11 +107,13 @@
 //! the install lives in `StackNavigator::new` (idempotent, once per
 //! thread).
 //!
-//! **Android is not wired yet.** The seam is platform-agnostic and
-//! `android-navigator-helpers` carries the engine, but the Kotlin-side
-//! `RustNavigator` presenter has not been written, so an Android stack
-//! still takes the outlet-swap path — correct, but with no transition
-//! and no predictive-back integration.
+//! `android-navigator-helpers::AndroidStackPresenter` is the Android one.
+//! Android has no platform view that owns a stack, so it seats a
+//! view-level container (`RustStackPresenter.kt`) that plays Material's
+//! shared-axis transition and takes system Back while more than one
+//! screen is stacked; its module docs say why that beats FragmentManager.
+//! Predictive back (scrubbing the pop with the gesture) is not wired:
+//! Back runs the pop transition once the gesture commits.
 
 //! # The header-options carrier
 //!
@@ -362,7 +364,11 @@ impl StackHandle {
         self.inner.pop();
     }
 
-    /// Replace the top screen with `route`.
+    /// Replace the top screen with `route`. The screens below stay, so
+    /// Back skips the replaced one. Under a native presenter (iOS,
+    /// Android) the
+    /// new screen slides in like a push; a replace that only changes
+    /// the query updates the live screen in place instead.
     pub fn replace<P: RouteParams + Clone>(&self, route: &Route<P>, params: P) {
         self.inner.replace(route, params);
     }
@@ -423,6 +429,19 @@ fn install_native_presenter() {
         INSTALLED.with(|done| {
             if !done.get() {
                 ios_navigator_helpers::install_stack_presenter();
+                done.set(true);
+            }
+        });
+    }
+    #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+    {
+        use std::cell::Cell;
+        thread_local! {
+            static INSTALLED: Cell<bool> = const { Cell::new(false) };
+        }
+        INSTALLED.with(|done| {
+            if !done.get() {
+                android_navigator_helpers::install_stack_presenter();
                 done.set(true);
             }
         });

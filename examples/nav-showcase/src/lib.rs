@@ -275,6 +275,7 @@ fn wizard_section() -> Element {
 
 const S_HOME: Route<()> = Route::<()>::new("settingshome", "/");
 const S_ABOUT: Route<()> = Route::<()>::new("about", "/about");
+const S_LICENSES: Route<()> = Route::<()>::new("licenses", "/licenses");
 
 fn settings_stack() -> Element {
     let nav: Ref<StackHandle> = Ref::new();
@@ -295,10 +296,29 @@ fn settings_stack() -> Element {
                 Screen::new(body).title("Settings")
             }
         })
-        .screen(S_ABOUT, |_| {
-            Screen::new(simple_page("About", "Nav Showcase — every navigator, nested."))
-                .title("About")
-                .header_right(HeaderButton::text("Docs").on_press(|| {}))
+        .screen(S_ABOUT, {
+            let nav = nav.clone();
+            move |_| {
+                let nav = nav.clone();
+                // `replace`, not `push`: Back from Licenses returns to
+                // Settings in one pop, the linear-flow shape.
+                let licenses = move || {
+                    nav.get().map(|h| h.replace(&S_LICENSES, ())).unwrap_or_default();
+                };
+                let body = ui! {
+                    view(style = page) {
+                        Typography(content = "About".to_string(), kind = idea_ui::typography_kind::H1)
+                        Typography(content = "Nav Showcase — every navigator, nested.".to_string(), muted = true)
+                        button(label = "Licenses (replace)".to_string(), on_click = licenses)
+                    }
+                };
+                Screen::new(body)
+                    .title("About")
+                    .header_right(HeaderButton::text("Docs").on_press(|| {}))
+            }
+        })
+        .screen(S_LICENSES, |_| {
+            Screen::new(simple_page("Licenses", "Replaced About; Back returns to Settings.")).title("Licenses")
         })
         .layout(|nav| stack_layout(nav));
     ui! { builder.bind(nav) }

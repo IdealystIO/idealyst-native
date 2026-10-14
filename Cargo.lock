@@ -226,6 +226,7 @@ dependencies = [
  "jni 0.21.1",
  "log",
  "runtime-shared",
+ "runtime-vocabulary",
 ]
 
 [[package]]

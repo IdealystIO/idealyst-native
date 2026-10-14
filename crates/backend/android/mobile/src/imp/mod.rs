@@ -7,6 +7,7 @@
 mod a11y;
 mod animation;
 pub(crate) mod app_state;
+pub(crate) mod hosted_root;
 /// Cooperative main-thread async executor. Gated on `async-driver` since it
 /// needs `runtime_shared::driver` (which the feature brings in). Mirrors the
 /// Apple backend's `async_executor` module gating.
@@ -1396,14 +1397,37 @@ impl AndroidBackend {
             .map(|(k, (_, n))| (*k, *n))
             .filter(|(_, n)| self.layout.is_root(*n))
             .collect();
+        // A stack presenter's screen is a root computed against its
+        // outlet, not the viewport (`hosted_root_policy`). Split those
+        // off: they need their host's size, which the ordinary roots
+        // produce, so they run second and in nesting order.
+        let mut hosted: Vec<(runtime_layout::LayoutNode, runtime_layout::LayoutNode)> = Vec::new();
         let _t = phase_timer::PhaseTimer::start("layout_taffy_compute");
         for (key, root_node) in &roots {
+            if let Some(host) = hosted_root::host_of(*key)
+                .and_then(|h| self.view_to_layout.get(&h))
+                .map(|(_, n)| *n)
+            {
+                hosted.push((*root_node, host));
+                continue;
+            }
             let (rw, rh) = crate::layout_policy::root_pass(
                 primitives::virtual_grid::cell_box(*key),
                 (vw, vh),
             )
             .compute_against;
             self.layout.compute(*root_node, rw, rh);
+        }
+        let layout = &self.layout;
+        let root_of = |mut n| {
+            while let Some(p) = layout.parent_of(n) {
+                n = p;
+            }
+            n
+        };
+        for (root_node, host) in crate::hosted_root_policy::hosted_root_order(&hosted, root_of) {
+            let host_frame = self.layout.frame_of(host);
+            self.layout.compute(root_node, host_frame.width, host_frame.height);
         }
     }
 

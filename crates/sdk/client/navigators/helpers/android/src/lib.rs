@@ -17,7 +17,16 @@
 //! (keeping `cargo check --workspace` free of JNI /
 //! `backend-android-mobile`).
 //!
-//! # Model
+//! # The live path: the stack presenter
+//!
+//! [`AndroidStackPresenter`] (`presenter.rs`, `RustStackPresenter.kt`)
+//! is what the outlet-model `stack-navigator` uses: it implements the
+//! vocabulary's `nav_native_push` seam, giving the stack its push / pop /
+//! replace transitions and system Back. Everything below this section
+//! describes the legacy `NavCommand` engine (`create_stack`), which no
+//! current navigator calls.
+//!
+//! # Legacy model
 //!
 //! Two flavors of native chrome:
 //!
@@ -59,7 +68,10 @@ use runtime_shared::Signal;
 use std::any::Any;
 use std::rc::Rc;
 
+mod presenter;
 mod stack;
+
+pub use presenter::{install as install_stack_presenter, AndroidStackPresenter};
 
 // =============================================================================
 // Local callback bundle types — paralleling web-navigator-helpers.

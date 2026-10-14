@@ -145,6 +145,12 @@ mod app_key_policy;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod app_pointer_policy;
 
+/// Which Taffy roots are stack-presenter screens and in what order the
+/// pass computes them against their outlet. Un-gated like
+/// `sticky_compute` so the ordering tests run on the host; the registry
+/// lives in `imp/hosted_root.rs`.
+mod hosted_root_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 
@@ -231,6 +237,23 @@ pub fn run_layout_now() {
             rc.borrow_mut().run_layout();
         }
     }
+}
+
+/// Lay `screen` out against `host`'s size instead of the viewport, for
+/// a screen a native stack presenter seats in its own container inside
+/// the navigator outlet `host` rather than inserting it into the outlet.
+/// See `hosted_root_policy` for why. Idempotent; schedules a pass.
+#[cfg(target_os = "android")]
+pub fn host_screen_root(screen: &jni::objects::GlobalRef, host: &jni::objects::GlobalRef) {
+    imp::hosted_root::host(node_key_of(screen), node_key_of(host));
+    imp::scheduler::schedule_layout_pass_retry(0);
+}
+
+/// Undo [`host_screen_root`] once the presenter has taken `screen` off
+/// its stack.
+#[cfg(target_os = "android")]
+pub fn unhost_screen_root(screen: &jni::objects::GlobalRef) {
+    imp::hosted_root::unhost(node_key_of(screen));
 }
 
 #[cfg(not(target_os = "android"))]
