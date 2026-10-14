@@ -3,18 +3,88 @@
 //! `reqwest::Client` is itself an `Arc<...>`, so we hold one per
 //! [`Client`](crate::Client) without further wrapping. Each `send` call
 //! lowers our platform-agnostic `Method` / `Headers` / `Vec<u8>` into
-//! reqwest's types, awaits the response, and lifts everything back.
+//! reqwest's types, runs the exchange, and lifts everything back.
+//!
+//! # Execution model: a process-wide I/O runtime thread
+//!
+//! reqwest's DNS and socket I/O need a tokio reactor, but `net` callers
+//! run on whatever executor they have — the framework's `spawn_async`
+//! driver, a park/unpark loop on a worker thread, a platform event loop
+//! — and none of those is tokio. Awaiting reqwest directly on the caller's
+//! executor panicked with "there is no reactor running" on every Linux /
+//! Windows backend app (`tests/foreign_executor.rs`).
+//!
+//! So the exchange always runs on ONE lazily-started, process-wide
+//! current-thread tokio runtime parked on its own `net-io` thread
+//! ([`io_runtime`]); the caller awaits the result through a
+//! `futures-channel` oneshot, which any executor can poll. Chosen over:
+//!
+//! - **`reqwest::blocking` on worker threads** — a blocked thread cannot be
+//!   interrupted, so `CancelToken` / a dropped future could only abandon
+//!   the request, leaving the socket and thread busy until the server or
+//!   the timeout let go. Here cancel aborts the task, which drops the
+//!   reqwest future and closes the connection immediately.
+//! - **an executor-agnostic HTTP client** (`ureq`, …) — the agnostic ones
+//!   are blocking (same cancellation problem) and would add a second HTTP
+//!   + TLS stack beside the reqwest that `eventsource.rs` already uses.
+//! - **using the caller's runtime when one happens to exist** — two paths
+//!   to test, and reqwest's pooled connections are tasks on the runtime
+//!   that opened them, so a `Client` shared across runtimes (one
+//!   `#[tokio::test]` runtime per test, or a runtime torn down while the
+//!   `Client` lives on) hands out connections whose driver is gone. One
+//!   runtime for the whole process has neither problem.
+//!
+//! tokio is already in the dependency graph through reqwest, so this adds
+//! one parked thread, not a dependency. The runtime is never shut down: it
+//! lives as long as the process, like the connection pool it drives.
 
 use std::future::{poll_fn, Future};
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::Poll;
 use std::time::Duration;
+
+use futures_channel::oneshot;
 
 use crate::cancel::CancelToken;
 use crate::error::Error;
 use crate::headers::Headers;
 use crate::method::Method;
 use crate::response::Response;
+
+/// The process-wide runtime every request's I/O runs on, started on first
+/// use. Built on the calling thread (building one never requires or
+/// conflicts with an ambient runtime) and then moved onto a dedicated
+/// thread that drives it forever; spawned tasks run there because a
+/// current-thread runtime executes its tasks inside `block_on`.
+fn io_runtime() -> &'static tokio::runtime::Handle {
+    static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .thread_name("net-io-blocking")
+            .build()
+            .expect("net: build the I/O runtime");
+        let handle = rt.handle().clone();
+        std::thread::Builder::new()
+            .name("net-io".into())
+            .spawn(move || rt.block_on(std::future::pending::<()>()))
+            .expect("net: spawn the I/O runtime thread");
+        handle
+    })
+}
+
+/// Aborts the I/O task when the caller stops waiting — the request future
+/// was dropped, or the cancel token won the race. Aborting drops the
+/// reqwest future on the I/O thread, which is how reqwest closes an
+/// in-flight connection. Aborting a finished task is a no-op.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// Transport handle owned by the [`ClientInner`](crate::client::ClientInner).
 pub(crate) struct Transport {
@@ -79,16 +149,32 @@ pub(crate) async fn send(
         })
     };
 
+    // Run the exchange on the I/O runtime; the oneshot is the only thing
+    // the caller's executor polls. `_abort` lives across the await, so
+    // returning early (cancel) or being dropped tears the request down.
+    let (tx, rx) = oneshot::channel();
+    let task = io_runtime().spawn(async move {
+        let _ = tx.send(request_future.await);
+    });
+    let _abort = AbortOnDrop(task.abort_handle());
+    let bridged = async move {
+        // `Canceled` = the task ended without sending: it panicked inside
+        // reqwest (the runtime contained it) — there is no other abort
+        // path while `_abort` is held.
+        rx.await
+            .unwrap_or_else(|_| Err(Error::Other("net: request task ended without a result".into())))
+    };
+
     match cancel {
-        None => request_future.await,
-        Some(token) => race_with_cancel(request_future, token).await,
+        None => bridged.await,
+        Some(token) => race_with_cancel(bridged, token).await,
     }
 }
 
 /// Race `request_future` against `token.cancelled()`. Whichever
-/// resolves first wins; if cancel wins the request future is dropped
-/// (which is how reqwest aborts an in-flight request — its `Drop`
-/// closes the connection without sending further bytes).
+/// resolves first wins; if cancel wins, `send` returns and its
+/// [`AbortOnDrop`] aborts the I/O task, dropping the reqwest future
+/// (reqwest's `Drop` closes the connection without sending more bytes).
 ///
 /// Using `poll_fn` rather than `tokio::select!` keeps `net` independent
 /// of tokio's macros feature; correctness is the same.

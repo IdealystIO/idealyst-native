@@ -10352,7 +10352,8 @@ dependencies = [
  "runtime-shared",
  "runtime-vocabulary",
  "runtime-world",
- "tokio",
+ "wasm-bindgen-test",
+ "web-glue",
  "wgpu",
 ]
 

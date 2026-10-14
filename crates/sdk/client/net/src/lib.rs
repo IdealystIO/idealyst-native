@@ -35,15 +35,17 @@
 //!
 //! | Target | HTTP transport |
 //! | --- | --- |
-//! | macOS / Windows / Linux / terminal | [`reqwest`] (rustls — no native-tls / OpenSSL) |
+//! | Windows / Linux / terminal | [`reqwest`] (rustls — no native-tls / OpenSSL) on `net`'s own I/O runtime thread |
 //! | iOS / macOS / tvOS | `NSURLSession` via `objc2` |
 //! | Android | `HttpURLConnection` via JNI on a worker thread |
 //! | web (wasm32) | `fetch` via web-glue bindings (AbortController for cancel and timeout) |
 //!
 //! [`WebSocket`] and [`EventSource`] follow the same split — see their
-//! module docs for the per-target byte sources. No target spins up an async
-//! runtime: native arms drive a blocking I/O worker thread and bridge to
-//! `.await` via `futures-channel`; web/Apple/Android use the OS event loop.
+//! module docs for the per-target byte sources. No arm needs an async runtime
+//! from its caller, so any executor can await it: WebSocket / desktop SSE
+//! drive a blocking I/O worker thread and bridge to `.await` via
+//! `futures-channel`; web/Apple/Android HTTP use the OS event loop; desktop
+//! HTTP runs reqwest on one process-wide runtime thread that `net` owns.
 //!
 //! # Body traits
 //!
@@ -114,8 +116,9 @@ pub use websocket::{WebSocket, WsClose, WsMessage, WsSender};
 // target; each one supplies the `transport` submodule that `client.rs`
 // and `request.rs` reach into.
 // Desktop reqwest path is Linux/Windows only — Apple platforms use the
-// NSURLSession transport below (it needs no Tokio runtime, which a native
-// AppKit/UIKit host doesn't provide; reqwest's tokio I/O would panic).
+// NSURLSession transport below (the platform's own stack). The reqwest arm
+// runs its tokio I/O on a runtime thread it owns (see `native.rs`), so no
+// host — AppKit, GTK, Win32, winit — has to provide a Tokio runtime.
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "ios",

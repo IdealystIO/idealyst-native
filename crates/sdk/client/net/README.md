@@ -69,7 +69,7 @@ diverge in mechanism, not in what you observe.
 
 | Target | HTTP | WebSocket | SSE |
 | --- | --- | --- | --- |
-| macOS / Windows / Linux / terminal | `reqwest` (rustls) | `tungstenite` on an I/O thread (`ws://` + `wss://`) | `reqwest::blocking` on an I/O thread |
+| Windows / Linux / terminal | `reqwest` (rustls) on `net`'s own I/O thread | `tungstenite` on an I/O thread (`ws://` + `wss://`) | `reqwest::blocking` on an I/O thread |
 | iOS / macOS / tvOS | `NSURLSession` (objc2) | `tungstenite` (shared native arm) | `NSURLSession` + `NSURLSessionDataDelegate` |
 | Android | `HttpURLConnection` (JNI) | `tungstenite`, `ws://` only | `HttpURLConnection.getInputStream()` (JNI) |
 | Web (wasm32) | `fetch` (web-glue bindings; `AbortController` for cancel, timeout and a dropped future) | the browser's `WebSocket` (web-glue bindings) | the browser's `EventSource` (web-glue bindings) |
@@ -86,9 +86,15 @@ with `setConnectTimeout` / `setReadTimeout` set to the same value as
 per-phase backstops. Without a timeout, NSURLSession keeps its system 60 s
 idle default and HttpURLConnection waits indefinitely.
 
-No async runtime is introduced anywhere (the framework's execution-model
-invariant): native arms drive a blocking I/O worker thread and bridge to
-`.await` through `futures-channel`; web/Apple/Android use the OS event loop.
+Every arm can be awaited from any executor — the framework's own
+`spawn_async` driver, a park/unpark loop, a tokio runtime — and none needs an
+ambient async runtime from the caller: WebSocket and desktop SSE drive a
+blocking I/O worker thread and bridge to `.await` through `futures-channel`;
+web/Apple/Android HTTP use the OS event loop. Desktop HTTP (reqwest) runs
+every exchange on one lazily-started, process-wide tokio runtime on a
+`net-io` thread that `net` owns, and bridges the result back the same way; a
+cancel or a dropped future aborts the exchange there, closing its connection.
+`tests/foreign_executor.rs` pins this on every native arm.
 TLS on native uses **rustls** (no native-tls, no OpenSSL); Android's HTTP/WS
 stay JNI/`tungstenite` to avoid bundling a second TLS stack — so WebSocket
 on Android is `ws://`-only, with platform-native (OkHttp /
@@ -146,6 +152,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] `cargo build -p net --target wasm32-unknown-unknown` — web (fetch / browser `WebSocket` / browser `EventSource`)
 - [x] `cargo test -p net --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_closure_lifetime.rs`: a refused WebSocket / EventSource connect leaves no dead handler; `tests/web_socket_glue.rs`: text + binary frames both ways, close status, malformed URL → `Error::Network`, SSE messages and close-on-drop (stand-in socket / stream)
 - [x] `cargo test -p net --test websocket` — `close_status`: peer code + reason, normal 1000, 1006 on a dropped connection, 1005 after a local `close()`
+- [x] `cargo test -p net --test foreign_executor` — requests awaited on a bare park/unpark executor (no tokio on the calling thread): success, one `Client` shared across executor threads, mid-flight cancel, timeout; on the reqwest arm a cancel or dropped future also closes the connection. Run on macOS (NSURLSession), Linux (Docker `rust:1-trixie`) and Windows (`--target x86_64-pc-windows-gnu` under Wine)
 - [x] `cargo test -p net --test timeout` — `timeout` is a whole-exchange deadline resolving `Error::Timeout` (never-answering server, trickling body, client default, no false fire) on macOS's NSURLSession arm; the same binary on the iOS simulator: `cargo test -p net --target aarch64-apple-ios-sim --test timeout --no-run`, then `xcrun simctl spawn <device> <test binary>`
 - [x] `tests/android-device/run.sh` — the same timeout cases plus mid-flight cancel through the `HttpURLConnection` arm in a real ART process (`app_process`) on a connected emulator/device
 
