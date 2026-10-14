@@ -999,6 +999,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **The full-stack server builds once per save** (`dev-reload`). Its
+  watcher took the temp half of a temp-then-rename save (most editors,
+  `sed -i`) as a change, started a full server cargo build with no saved
+  path (`[server] changed:`), and built again when the real file arrived;
+  a duplicate event built a third time. It now applies the bundle
+  watcher's filters: scratch-only batches and repeated bytes are not saves.
+
 - **The headless web client survives a stale profile lock, and says when
   it dies** (`idealyst-cli`). `idealyst dev`'s headless Chromium keeps its
   profile in the project; after the project volume moved to a new host,

@@ -185,6 +185,11 @@ The dev loop runs two independent watchers and they do different things:
 | server sources | server rebuilt, **then** the process is restarted | only for the rebind |
 | a crate they share | both — rebuild, restage, restart; the page reloads once, after the restarted server answers | only for the rebind |
 
+Both watchers ignore a batch that names only an editor's scratch files
+(the temp half of a temp-then-rename save, `sed -i`'s `sedXXXXXX`, `.swp`)
+and one that repeats bytes they have already seen, so one save is one
+build.
+
 A save that only moves server code — the body of a `#[server]` fn, or an
 item under `#[cfg(feature = "server")]` — is not a client change, even in a
 crate the bundle shares: the client build compiles only the stub generated

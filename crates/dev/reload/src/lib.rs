@@ -2588,8 +2588,19 @@ where
             let (tx, rx) = mpsc::channel();
             let saves = Arc::new(SaveLog::default());
             let counted = saves.clone();
+            // The bundle watcher's two filters (see `watch_and_rebuild`):
+            // a batch that repeats bytes already seen is dropped here, and
+            // one naming only scratch files is no work below. Without them
+            // a temp-then-rename save started a full server build on the
+            // temp file's batch (CrewForge: `[server] changed:` with no
+            // path, a 7 s cargo pass, then the real save after it).
+            let mut seen = SeenContent::default();
             let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
-                notify_save(&tx, &counted, is_save(&r), r)
+                match seen.classify(&r) {
+                    Batch::Unchanged => {}
+                    Batch::Save => notify_save(&tx, &counted, true, r),
+                    Batch::Other => notify_save(&tx, &counted, false, r),
+                }
             }) {
                 Ok(d) => d,
                 Err(e) => {
@@ -2637,6 +2648,12 @@ where
                     // not steer it; they are what a status view shows as the
                     // save (the full-stack server's row, the page's badge).
                     let paths: Vec<PathBuf> = batches.iter().flat_map(event_paths).collect();
+                    // Only scratch files: the temp half of a temp-and-rename
+                    // save, whose real file arrives in its own batch. A run
+                    // the last attempt owes a wake-up still goes ahead.
+                    if !owed && !names_work(&paths, batches.iter().any(|b| b.is_ok())) {
+                        return Attempt::Finished;
+                    }
                     reporter.emit(dev_events::DevEvent::ChangeDetected {
                         target: label.into(),
                         paths: display_all(&saved_paths(&paths)),
@@ -3350,6 +3367,49 @@ mod tests {
         assert_eq!(target, "server");
         assert!(paths.iter().any(|p| p.ends_with("main.rs")), "{paths:?}");
         assert!(!paths.iter().any(|p| p.ends_with(".main.rs.swp")), "{paths:?}");
+    }
+
+    /// Regression (CrewForge): the full-stack server's watcher built on
+    /// the temp half of every temp-and-rename save (`[server] changed:`
+    /// with no path, a full cargo pass) and again on a batch repeating
+    /// bytes it had already built. Only a batch naming a real file with
+    /// new bytes builds.
+    #[test]
+    fn regression_the_server_watcher_ignores_scratch_only_and_repeated_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let (reporter, q) = capture();
+        let (built_tx, built_rx) = mpsc::channel();
+        let _watch = start_watch(vec![src.clone()], ReloadSignal::new(), "server", reporter, move || {
+            let _ = built_tx.send(());
+            Ok(Rebuilt::Unchanged)
+        })
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !events(&q).iter().any(|e| matches!(e, dev_events::DevEvent::Watching { .. })) {
+            assert!(std::time::Instant::now() < deadline, "the watcher never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let quiet = Duration::from_millis(DEBOUNCE_MS * 4 + 500);
+
+        // The temp file alone, written and removed: no build.
+        let temp = src.join("main.rs.tmp.20647.8b2d7e43908b");
+        std::fs::write(&temp, "fn main() {}\n").unwrap();
+        std::fs::remove_file(&temp).unwrap();
+        assert!(built_rx.recv_timeout(quiet).is_err(), "a scratch-only batch built");
+
+        // The real file: one build.
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("the save ran the build");
+
+        // The same bytes again (a duplicate event, a no-op rewrite): none.
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        assert!(built_rx.recv_timeout(quiet).is_err(), "unchanged bytes built again");
+
+        // New bytes: built.
+        std::fs::write(src.join("main.rs"), "fn main() { let _ = 1; }\n").unwrap();
+        built_rx.recv_timeout(Duration::from_secs(20)).expect("an edit builds");
     }
 
     /// A save is reported by the files it saved, once each — not by the
