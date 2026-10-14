@@ -152,6 +152,32 @@ pub fn run_rustc_emit_obj_cancellable(
     extra: &[String],
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<PathBuf>> {
+    run_rustc_emit_obj_at(captured, extra, cancel, false)
+}
+
+/// [`run_rustc_emit_obj_cancellable`], at the lowest scheduling priority
+/// (`nice` 19): for work nobody is waiting on, such as warming a crate's
+/// incremental session ahead of the first save, which must not slow the
+/// editor, the page or a cargo build the developer started.
+///
+/// Set in the child before `exec`, not on the spawned pid afterwards: on
+/// Linux a nice value belongs to a THREAD, and the threads rustc starts
+/// (one per codegen worker) inherit it only from the thread that is
+/// already niced when they are created.
+pub fn run_rustc_emit_obj_background(
+    captured: &CapturedInvocation,
+    extra: &[String],
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<PathBuf>> {
+    run_rustc_emit_obj_at(captured, extra, cancel, true)
+}
+
+fn run_rustc_emit_obj_at(
+    captured: &CapturedInvocation,
+    extra: &[String],
+    cancel: &(dyn Fn() -> bool + Sync),
+    background: bool,
+) -> Result<Vec<PathBuf>> {
     if cancel() {
         return Err(Cancelled.into());
     }
@@ -171,6 +197,22 @@ pub fn run_rustc_emit_obj_cancellable(
     for (k, v) in &captured.env {
         cmd.env(k, v);
     }
+    #[cfg(unix)]
+    if background {
+        use std::os::unix::process::CommandExt as _;
+        // SAFETY: runs in the forked child before `exec`; `nice` is a
+        // single async-signal-safe syscall and touches no parent state.
+        // A failure (it cannot fail to LOWER priority) is ignored: the
+        // replay is still correct at normal priority.
+        unsafe {
+            cmd.pre_exec(|| {
+                let _ = libc::nice(19);
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = background;
 
     let mut child = cmd
         .stdin(std::process::Stdio::null())
@@ -440,6 +482,37 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A seed replays at the lowest priority, set before exec so every
+    /// thread rustc starts inherits it; a save's replay runs at normal
+    /// priority.
+    #[cfg(unix)]
+    #[test]
+    fn a_background_replay_runs_at_nice_19_and_a_save_does_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let rustc = tmp.path().join("fake-rustc.sh");
+        let report = tmp.path().join("nice.txt");
+        std::fs::write(
+            &rustc,
+            format!("#!/bin/sh\nps -o nice= -p $$ | tr -d ' ' > {}\n", report.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&rustc, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let captured = CapturedInvocation {
+            rustc: rustc.display().to_string(),
+            args: vec!["--crate-name".into(), "app".into(), "--out-dir".into(), tmp.path().join("deps").display().to_string()],
+            cwd: tmp.path().display().to_string(),
+            env: vec![("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+        };
+        let nice = |background: bool| {
+            let _ = run_rustc_emit_obj_at(&captured, &[], &|| false, background);
+            std::fs::read_to_string(&report).unwrap().trim().parse::<i32>().unwrap()
+        };
+        let base = nice(false);
+        assert_eq!(nice(true), 19.max(base));
+        assert_eq!(nice(false), base);
+    }
 
     fn cargo_argv() -> Vec<String> {
         [

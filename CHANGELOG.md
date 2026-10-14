@@ -999,6 +999,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A library crate's first hot patch no longer replays its dependents
+  cold** (`build-web`, `build-runtime-server`, `dev-reload`). Only the app
+  crate's replay cache was seeded after a base build, so the first patch
+  of a widely used library replayed each of its dependents from cold
+  (CrewForge: 30.5–35.0 s, then 3.6 s once warm). Every workspace crate is
+  seeded now, in the background at the lowest CPU priority, a few at a
+  time (`IDEALYST_HOTPATCH_SEED_JOBS`), and a patch carrying a seeded crate
+  unchanged reuses its objects. A save comes first: seeds it needs are
+  waited for, the rest are killed and resumed after it.
+
 - **A hot patch rescans only the files a save moved** (`dev-overlay`,
   `dev-reload`). After each hot patch the dev loop rescanned every file of
   the crates the save edited, beside the compile (3.4 s for CrewForge's

@@ -59,6 +59,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -159,82 +161,230 @@ impl BuiltPatch {
 /// Objects a replay wrote, and the source key they were compiled from.
 type ObjectCache = std::collections::HashMap<String, (String, Vec<PathBuf>)>;
 
-/// A no-edit replay running in the background: see
-/// [`WasmPatchBuilder::seed`].
-struct Seed {
-    krate: PatchCrate,
-    handle: std::thread::JoinHandle<Result<(Vec<PathBuf>, Duration)>>,
+/// The background replays that warm the replay cache after a base build:
+/// see [`WasmPatchBuilder::seed_all`].
+///
+/// A queue of crates replayed with no edit, a few at a time, at the
+/// lowest CPU priority. A save comes first: [`Self::pause_for`] stops new
+/// seeds, kills the running ones the save does not need (they go back on
+/// the queue), and waits for the ones it does — killing those would only
+/// make the save replay them cold. [`Self::resume`] starts them again
+/// when the patch is built.
+struct SeedQueue {
+    shared: Arc<(Mutex<SeedState>, Condvar)>,
+    workers: std::cell::RefCell<Vec<std::thread::JoinHandle<()>>>,
+    captures_dir: PathBuf,
+    reporter: dev_events::Reporter,
+    jobs: usize,
 }
 
-/// At most one seed at a time, and never alongside a real replay.
 #[derive(Default)]
-struct SeedSlot(std::cell::RefCell<Option<Seed>>);
+struct SeedState {
+    queue: std::collections::VecDeque<PatchCrate>,
+    /// Each running seed and the flag that kills it.
+    running: Vec<(PatchCrate, Arc<AtomicBool>)>,
+    /// Finished seeds, not yet filed into the builder's object cache.
+    done: Vec<(PatchCrate, Result<(Vec<PathBuf>, Duration)>)>,
+    /// Every crate queued, seeded or replayed against this base: never
+    /// queued again.
+    known: std::collections::HashSet<String>,
+    paused: bool,
+    stopped: bool,
+    /// The current run of seeds, for the one line that reports it.
+    run: Option<SeedRun>,
+}
 
-impl SeedSlot {
-    /// Start replaying `krate` in the background. A seed already running
-    /// is waited for first: two replays of one crate would share its
-    /// incremental session and its object dir.
-    fn start(
-        &self,
-        captures_dir: &Path,
-        krate: PatchCrate,
-        objects: &std::cell::RefCell<ObjectCache>,
-        reporter: &dev_events::Reporter,
-    ) {
-        self.finish(objects, reporter);
-        let reporter = reporter.clone();
-        let captures = captures_dir.to_path_buf();
-        let name = krate.crate_name.clone();
-        let handle = std::thread::spawn(move || {
-            // Never cancelled: nothing is waiting on a seed but the next
-            // save, which joins it (see `WasmPatchBuilder::seed`).
-            let result = replay_crate(&captures, &name, &|| false);
-            // Said here, when it happens, not when a save joins it: the
-            // session log is how anyone knows the first save will be warm.
-            match &result {
-                Ok((_, took)) => reporter.log(
-                    "hotpatch",
-                    format!("replay cache for `{name}` seeded in {} ms", took.as_millis()),
-                ),
-                // Not fatal: the first real save replays cold, as it did
-                // before seeding existed, and says why if it fails too.
-                Err(e) => reporter.warn(
-                    "hotpatch",
-                    format!("seeding the replay cache for `{name}` failed: {e:#}"),
-                ),
-            }
-            result
-        });
-        *self.0.borrow_mut() = Some(Seed { krate, handle });
+struct SeedRun {
+    started: Instant,
+    seeded: usize,
+    slowest: Option<(String, Duration)>,
+}
+
+impl SeedQueue {
+    fn new(captures_dir: &Path, reporter: dev_events::Reporter) -> Self {
+        Self {
+            shared: Default::default(),
+            workers: Default::default(),
+            captures_dir: captures_dir.to_path_buf(),
+            reporter,
+            jobs: seed_jobs(std::env::var("IDEALYST_HOTPATCH_SEED_JOBS").ok().as_deref(), available_cores()),
+        }
     }
 
-    /// Wait for the running seed, if any, and file its objects under its
-    /// source key: a patch that carries the crate unchanged reuses them.
-    fn finish(&self, objects: &std::cell::RefCell<ObjectCache>, reporter: &dev_events::Reporter) {
-        let Some(seed) = self.0.borrow_mut().take() else { return };
-        let name = seed.krate.crate_name.clone();
-        match seed.handle.join() {
-            Ok(Ok((objs, _))) => {
-                let mut cache = objects.borrow_mut();
-                match seed.krate.source_key {
-                    Some(key) => {
-                        cache.insert(name, (key, objs));
-                    }
-                    None => {
-                        cache.remove(&name);
-                    }
+    /// Queue `crates`, in order, skipping any already known.
+    fn push(&self, crates: Vec<PatchCrate>) {
+        let (lock, cv) = &*self.shared;
+        let mut st = lock.lock().unwrap();
+        for krate in crates {
+            if st.known.insert(krate.crate_name.clone()) {
+                st.queue.push_back(krate);
+            }
+        }
+        if st.queue.is_empty() {
+            return;
+        }
+        st.run.get_or_insert_with(|| SeedRun { started: Instant::now(), seeded: 0, slowest: None });
+        drop(st);
+        let mut workers = self.workers.borrow_mut();
+        while workers.len() < self.jobs {
+            let shared = self.shared.clone();
+            let captures = self.captures_dir.clone();
+            let reporter = self.reporter.clone();
+            workers.push(std::thread::spawn(move || seed_worker(&shared, &captures, &reporter)));
+        }
+        cv.notify_all();
+    }
+
+    /// Make way for a patch of `plan`: see the type docs. Returns with no
+    /// seed running.
+    fn pause_for(&self, plan: &[PatchCrate]) {
+        let (lock, cv) = &*self.shared;
+        let mut st = lock.lock().unwrap();
+        st.paused = true;
+        let needed = |name: &str| plan.iter().any(|k| k.crate_name == name);
+        for (krate, kill) in &st.running {
+            if !needed(&krate.crate_name) {
+                kill.store(true, Ordering::SeqCst);
+            }
+        }
+        // The save replays these itself, which warms them.
+        st.queue.retain(|k| !needed(&k.crate_name));
+        for k in plan {
+            st.known.insert(k.crate_name.clone());
+        }
+        while !st.running.is_empty() {
+            st = cv.wait(st).unwrap();
+        }
+    }
+
+    fn resume(&self) {
+        let (lock, cv) = &*self.shared;
+        lock.lock().unwrap().paused = false;
+        cv.notify_all();
+    }
+
+    /// File every finished seed's objects under its source key, so a patch
+    /// that carries the crate unchanged reuses them.
+    fn file_into(&self, objects: &std::cell::RefCell<ObjectCache>) {
+        let done = std::mem::take(&mut self.shared.0.lock().unwrap().done);
+        let mut cache = objects.borrow_mut();
+        for (krate, result) in done {
+            match (result, krate.source_key) {
+                (Ok((objs, _)), Some(key)) => {
+                    cache.insert(krate.crate_name, (key, objs));
                 }
-            }
-            // Reported by the seed thread itself.
-            Ok(Err(_)) => {
-                objects.borrow_mut().remove(&name);
-            }
-            Err(_) => {
-                reporter.error("hotpatch", format!("the replay-cache seed for `{name}` panicked"));
-                objects.borrow_mut().remove(&name);
+                // Reported by the worker; a failed seed's dir is empty.
+                _ => {
+                    cache.remove(&krate.crate_name);
+                }
             }
         }
     }
+
+    /// Kill every seed and wait for the workers: the base is going away,
+    /// and the next builder must not replay a crate a seed still is.
+    fn stop(&self) {
+        {
+            let (lock, cv) = &*self.shared;
+            let mut st = lock.lock().unwrap();
+            st.stopped = true;
+            for (_, kill) in &st.running {
+                kill.store(true, Ordering::SeqCst);
+            }
+            cv.notify_all();
+        }
+        for w in self.workers.borrow_mut().drain(..) {
+            let _ = w.join();
+        }
+    }
+}
+
+fn seed_worker(shared: &(Mutex<SeedState>, Condvar), captures: &Path, reporter: &dev_events::Reporter) {
+    let (lock, cv) = shared;
+    let mut st = lock.lock().unwrap();
+    loop {
+        if st.stopped {
+            return;
+        }
+        let next = if st.paused { None } else { st.queue.pop_front() };
+        let Some(krate) = next else {
+            st = cv.wait(st).unwrap();
+            continue;
+        };
+        let kill = Arc::new(AtomicBool::new(false));
+        st.running.push((krate.clone(), kill.clone()));
+        drop(st);
+        // A crate this base never compiled (a host-only one the workspace
+        // closure reaches) has nothing to seed; said nowhere, as a patch
+        // that carries it says nothing either.
+        let result = if replay::find_capture(captures, &krate.crate_name).is_ok() {
+            Some(replay_crate_at(captures, &krate.crate_name, &|| kill.load(Ordering::SeqCst), true))
+        } else {
+            None
+        };
+        st = lock.lock().unwrap();
+        st.running.retain(|(k, _)| k.crate_name != krate.crate_name);
+        match result {
+            None => {}
+            // Killed to make way for a save: seeded after it.
+            Some(Err(e)) if e.is::<replay::Cancelled>() => {
+                if !st.stopped {
+                    st.queue.push_front(krate);
+                }
+            }
+            Some(result) => {
+                match &result {
+                    Ok((_, took)) => {
+                        if let Some(run) = st.run.as_mut() {
+                            run.seeded += 1;
+                            if run.slowest.as_ref().is_none_or(|(_, d)| took > d) {
+                                run.slowest = Some((krate.crate_name.clone(), *took));
+                            }
+                        }
+                    }
+                    // Not fatal: the first save that needs the crate
+                    // replays it cold, and says why if it fails too.
+                    Err(e) => reporter.warn(
+                        "hotpatch",
+                        format!("seeding the replay cache for `{}` failed: {e:#}", krate.crate_name),
+                    ),
+                }
+                st.done.push((krate, result));
+            }
+        }
+        if st.queue.is_empty() && st.running.is_empty() {
+            if let Some(run) = st.run.take().filter(|r| r.seeded > 0) {
+                let slowest = run
+                    .slowest
+                    .map(|(n, d)| format!(", slowest `{n}` {} ms", d.as_millis()))
+                    .unwrap_or_default();
+                // The session log is how anyone knows the next save is warm.
+                reporter.log(
+                    "hotpatch",
+                    format!(
+                        "replay cache seeded for {} crate(s) in {} ms{slowest}",
+                        run.seeded,
+                        run.started.elapsed().as_millis()
+                    ),
+                );
+            }
+        }
+        cv.notify_all();
+    }
+}
+
+/// How many seeds run at once: `IDEALYST_HOTPATCH_SEED_JOBS` when it is a
+/// positive number, else a quarter of the cores (at least one, at most
+/// four). Each replay is itself parallel (256 codegen units), so a few
+/// fill the machine; more only add memory.
+fn seed_jobs(env: Option<&str>, cores: usize) -> usize {
+    env.and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| (cores / 4).clamp(1, 4))
+}
+
+fn available_cores() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
 /// Everything that does not change between patches, resolved once so a
@@ -260,16 +410,16 @@ pub struct WasmPatchBuilder {
     /// Valid for the builder's life, which is one base's: a rebuild
     /// drops the builder and with it every entry.
     objects: std::cell::RefCell<ObjectCache>,
-    seed: SeedSlot,
+    seeds: SeedQueue,
     reporter: dev_events::Reporter,
 }
 
 impl Drop for WasmPatchBuilder {
-    /// A seed still running when the base is replaced must finish before
-    /// the next builder can seed or replay the same crate: both would run
-    /// in one incremental session and one object dir.
+    /// Seeds still running when the base is replaced are killed and waited
+    /// for before the next builder can seed or replay the same crate: both
+    /// would run in one incremental session and one object dir.
     fn drop(&mut self) {
-        self.seed.finish(&self.objects, &self.reporter);
+        self.seeds.stop();
     }
 }
 
@@ -308,8 +458,11 @@ impl WasmPatchBuilder {
             format!("indexing the served base module {}", served_wasm.display())
         })?;
         let base_slots = base_slots(&base_wasm)?;
+        let captures_dir = captures_dir.into();
+        let reporter = dev_events::Reporter::default();
         Ok(Self {
-            captures_dir: captures_dir.into(),
+            seeds: SeedQueue::new(&captures_dir, reporter.clone()),
+            captures_dir,
             aliases,
             crate_name: crate_name.into(),
             out_dir: out_dir.into(),
@@ -318,13 +471,14 @@ impl WasmPatchBuilder {
             base_slots,
             serial: std::cell::Cell::new(0),
             objects: Default::default(),
-            seed: SeedSlot::default(),
-            reporter: dev_events::Reporter::default(),
+            reporter,
         })
     }
 
     /// Report through `reporter` instead of plain stderr.
     pub fn reporting_to(mut self, reporter: dev_events::Reporter) -> Self {
+        // Before any seed is queued, so no worker holds the old one.
+        self.seeds.reporter = reporter.clone();
         self.reporter = reporter;
         self
     }
@@ -351,8 +505,9 @@ impl WasmPatchBuilder {
     /// crates a CrewForge session had patched).
     ///
     /// A seed still running is not waited for: its objects are filed by
-    /// the next patch, and recorded with the next call after it.
+    /// the next patch, or the next call.
     pub fn reusable_objects(&self) -> Vec<(String, String, Vec<PathBuf>)> {
+        self.seeds.file_into(&self.objects);
         let mut out: Vec<_> = self
             .objects
             .borrow()
@@ -397,23 +552,33 @@ impl WasmPatchBuilder {
         self.aliases.len()
     }
 
-    /// Replay `krate` once, now, in the background, with no edit.
+    /// Replay each of `crates` once, in the background, with no edit, in
+    /// the order given.
     ///
     /// A replay has its own incremental directory (see
     /// [`replay::replay_args`]), which the base build never fills; so the
-    /// first patch of a session compiled the crate cold — 45.7 s of a
-    /// 49.4 s first save on CrewForge. Seeding right after each base
-    /// build, while the page loads, moves that off the first save: the
-    /// save's replay finds the cache warm. The seed's objects are the
-    /// unedited crate's, filed under `krate.source_key`, so a patch that
-    /// only CARRIES the crate (a library save) reuses them outright.
+    /// first patch of a session compiled each crate it re-emits cold —
+    /// 45.7 s of a 49.4 s first save on CrewForge when only the app crate
+    /// was seeded, and 30.5–35.0 s for a library crate's first patch, whose
+    /// ~30 dependents all replayed cold (32.6 s for the slowest). Seeding
+    /// every patchable crate right after each base build, while the page
+    /// loads, moves that off the first save. A seed's objects are the
+    /// unedited crate's, filed under its `source_key`, so a patch that
+    /// only CARRIES a crate (every dependent of an edited library) reuses
+    /// them outright instead of replaying at all.
     ///
-    /// A save that arrives mid-seed waits for it ([`Self::build_crates`]
-    /// joins it first) rather than starting a second replay beside it,
-    /// which would share the session and the object dir. Nor is the seed
-    /// cancelled: it is the warm cache the save is about to use.
+    /// Seeds run a few at a time ([`seed_jobs`]) at the lowest CPU
+    /// priority ([`replay::run_rustc_emit_obj_background`]), and a save
+    /// always comes first (see [`SeedQueue`]): nobody typing waits on one.
+    /// A crate already queued, seeded or replayed against this base is not
+    /// queued again.
+    pub fn seed_all(&self, crates: Vec<PatchCrate>) {
+        self.seeds.push(crates);
+    }
+
+    /// [`Self::seed_all`] of one crate.
     pub fn seed(&self, krate: PatchCrate) {
-        self.seed.start(&self.captures_dir, krate, &self.objects, &self.reporter);
+        self.seed_all(vec![krate]);
     }
 
     /// A patch of the app crate alone — [`Self::build_crates`] over the
@@ -457,9 +622,19 @@ impl WasmPatchBuilder {
         };
         let mut timings = Vec::new();
 
-        // A seed still running goes first; its wait is part of this save.
+        // Seeds make way: the ones this patch needs are waited for (their
+        // wait is part of this save), the rest are killed and run again
+        // once the patch is built, whatever becomes of it.
         let started = Instant::now();
-        self.seed.finish(&self.objects, &self.reporter);
+        self.seeds.pause_for(crates);
+        struct Resume<'a>(&'a SeedQueue);
+        impl Drop for Resume<'_> {
+            fn drop(&mut self) {
+                self.0.resume();
+            }
+        }
+        let _resume = Resume(&self.seeds);
+        self.seeds.file_into(&self.objects);
         let (in_build, skipped) = in_this_build(&self.captures_dir, crates)?;
         checkpoint()?;
         let replayed = collect_objects(&self.captures_dir, &self.objects, &in_build, cancel)?;
@@ -734,16 +909,28 @@ fn replay_crate(
     crate_name: &str,
     cancel: &(dyn Fn() -> bool + Sync),
 ) -> Result<(Vec<PathBuf>, Duration)> {
+    replay_crate_at(captures_dir, crate_name, cancel, false)
+}
+
+/// [`replay_crate`], at background priority when `background` (a seed).
+fn replay_crate_at(
+    captures_dir: &Path,
+    crate_name: &str,
+    cancel: &(dyn Fn() -> bool + Sync),
+    background: bool,
+) -> Result<(Vec<PathBuf>, Duration)> {
     let started = Instant::now();
     let captured = replay::find_capture(captures_dir, crate_name)?;
-    let objects = match replay::run_rustc_emit_obj_cancellable(
-        &captured,
-        // See the module docs: this rides the replayed command line so
-        // cargo's `-Cmetadata` — and therefore the symbol hashes the jump
-        // table pairs on — stay exactly as the base's.
-        &["-Crelocation-model=pic".to_string()],
-        cancel,
-    ) {
+    // See the module docs: this rides the replayed command line so
+    // cargo's `-Cmetadata` — and therefore the symbol hashes the jump
+    // table pairs on — stay exactly as the base's.
+    let extra = ["-Crelocation-model=pic".to_string()];
+    let run = if background {
+        replay::run_rustc_emit_obj_background
+    } else {
+        replay::run_rustc_emit_obj_cancellable
+    };
+    let objects = match run(&captured, &extra, cancel) {
         Ok(objects) => objects,
         // Not wrapped: the caller tests for it by type.
         Err(e) if e.is::<replay::Cancelled>() => return Err(e),
@@ -1030,41 +1217,132 @@ mod tests {
         assert_eq!(caps.calls().iter().filter(|c| *c == "app").count(), 4);
     }
 
-    /// A seed's objects are filed under its source key, so a later patch
-    /// carrying the crate unchanged does not replay it again.
-    #[test]
-    fn a_seeded_crate_is_reused_by_a_patch_that_carries_it() {
-        let caps = FakeCaptures::new(&["app", "lib"]);
-        let cache = Default::default();
-        let slot = SeedSlot::default();
-        slot.start(&caps.dir, PatchCrate::carried("app", Some("k".into())), &cache, &dev_events::Reporter::new());
-        slot.finish(&cache, &dev_events::Reporter::new());
-        assert_eq!(caps.calls(), vec!["app"]);
-        let got = collect_objects(&caps.dir, &cache, &[PatchCrate::new("lib", None), PatchCrate::carried("app", Some("k".into()))], &|| false)
-        .unwrap();
-        assert!(got[1].1.is_none(), "app came from the seed");
-        assert_eq!(caps.calls(), vec!["app", "lib"]);
+    /// A queue running `jobs` seeds at once, over `caps`.
+    fn queue(caps: &FakeCaptures, jobs: usize) -> SeedQueue {
+        let mut q = SeedQueue::new(&caps.dir, dev_events::Reporter::new());
+        q.jobs = jobs;
+        q
     }
 
-    /// Two replays of one crate must never overlap: they would share an
-    /// incremental session and an object dir. A second seed waits for the
-    /// first, and so does a patch (`build_crates` finishes the seed
-    /// before replaying).
+    /// Wait until no seed is queued or running.
+    fn wait_idle(q: &SeedQueue) {
+        let (lock, cv) = &*q.shared;
+        let mut st = lock.lock().unwrap();
+        while !(st.queue.is_empty() && st.running.is_empty()) {
+            st = cv.wait(st).unwrap();
+        }
+    }
+
+    fn trace(caps: &FakeCaptures) -> Vec<String> {
+        std::fs::read_to_string(&caps.trace).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// Regression (CrewForge): only the app crate was seeded, so a
+    /// library crate's first patch replayed its ~30 dependents cold
+    /// (30.5–35.0 s, then 3.6 s once warm). Every crate seeded is filed
+    /// under its source key, and a patch carrying them unchanged replays
+    /// only the edited one; a crate this base never compiled is skipped.
     #[test]
-    fn a_seed_never_overlaps_another_replay_of_the_crate() {
-        let caps = FakeCaptures::slow(&["app"]);
+    fn regression_seeding_every_crate_leaves_a_library_patch_one_replay() {
+        let caps = FakeCaptures::new(&["lib", "screen_a", "screen_b", "app"]);
         let cache = Default::default();
-        let slot = SeedSlot::default();
-        slot.start(&caps.dir, PatchCrate::carried("app", Some("k1".into())), &cache, &dev_events::Reporter::new());
-        slot.start(&caps.dir, PatchCrate::carried("app", Some("k2".into())), &cache, &dev_events::Reporter::new());
-        slot.finish(&cache, &dev_events::Reporter::new());
-        collect_objects(&caps.dir, &cache, &[PatchCrate::new("app", None)], &|| false).unwrap();
-        let trace = std::fs::read_to_string(&caps.trace).unwrap();
-        assert_eq!(
-            trace.lines().collect::<Vec<_>>(),
-            vec!["start app", "end app", "start app", "end app", "start app", "end app"],
-            "replays of one crate interleaved:\n{trace}"
-        );
+        let q = queue(&caps, 2);
+        let key = |k: &str| Some(k.to_string());
+        q.push(vec![
+            PatchCrate::carried("app", key("a")),
+            PatchCrate::carried("screen_a", key("sa")),
+            PatchCrate::carried("screen_b", key("sb")),
+            PatchCrate::carried("lib", key("l")),
+            PatchCrate::carried("host_only", key("h")),
+        ]);
+        wait_idle(&q);
+        q.file_into(&cache);
+        assert_eq!(caps.calls(), vec!["app", "lib", "screen_a", "screen_b"], "host_only has no capture");
+
+        // The library's first patch: only it replays.
+        let plan = [
+            PatchCrate::new("lib", key("l2")),
+            PatchCrate::carried("screen_a", key("sa")),
+            PatchCrate::carried("screen_b", key("sb")),
+            PatchCrate::carried("app", key("a")),
+        ];
+        q.pause_for(&plan);
+        let got = collect_objects(&caps.dir, &cache, &plan, &|| false).unwrap();
+        q.resume();
+        assert!(got[1..].iter().all(|(_, took)| took.is_none()), "every dependent came from its seed");
+        assert_eq!(caps.calls().iter().filter(|c| *c == "lib").count(), 2);
+        assert_eq!(caps.calls().len(), 5);
+        q.stop();
+    }
+
+    /// A save comes first. A running seed of a crate the save needs is
+    /// waited for, never killed (that would only make the save replay it
+    /// cold); one it does not need is killed, so the save has the cores,
+    /// and seeded again after it. Two replays of one crate never overlap:
+    /// they would share an incremental session and an object dir.
+    #[test]
+    fn a_save_waits_for_the_seeds_it_needs_and_kills_the_rest() {
+        let caps = FakeCaptures::with_delay(&["app", "other"], "0.6");
+        let cache = Default::default();
+        let q = queue(&caps, 2);
+        q.push(vec![PatchCrate::carried("app", Some("a".into())), PatchCrate::carried("other", Some("o".into()))]);
+        // Both running.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while trace(&caps).iter().filter(|l| l.starts_with("start")).count() < 2 {
+            assert!(Instant::now() < deadline, "the seeds never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let plan = [PatchCrate::carried("app", Some("a".into()))];
+        q.pause_for(&plan);
+        let t = trace(&caps);
+        assert!(t.contains(&"end app".to_string()), "the needed seed finished: {t:?}");
+        assert!(!t.contains(&"end other".to_string()), "the other seed was killed: {t:?}");
+        q.file_into(&cache);
+        let got = collect_objects(&caps.dir, &cache, &plan, &|| false).unwrap();
+        assert!(got[0].1.is_none(), "the save reused the seed's objects");
+        assert!(!trace(&caps).iter().skip(t.len()).any(|l| l.starts_with("start")), "nothing ran during the save");
+
+        q.resume();
+        wait_idle(&q);
+        let t = trace(&caps);
+        assert_eq!(t.last().map(String::as_str), Some("end other"), "the killed seed ran again: {t:?}");
+        // `other` started, was killed by the save (no `end`), and ran
+        // again only after it; `app` ran once.
+        let mut sorted = t.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["end app", "end other", "start app", "start other", "start other"], "{t:?}");
+        assert_eq!(&t[2..], ["end app", "start other", "end other"], "{t:?}");
+        q.stop();
+    }
+
+    /// The base going away stops every seed, and nothing runs after.
+    #[test]
+    fn stopping_kills_running_seeds_and_drops_the_queue() {
+        let caps = FakeCaptures::with_delay(&["a", "b", "c"], "2");
+        let q = queue(&caps, 1);
+        q.push(vec![PatchCrate::carried("a", None), PatchCrate::carried("b", None), PatchCrate::carried("c", None)]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while trace(&caps).is_empty() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        q.stop();
+        // Killed rather than waited for: it never wrote its object. (Not
+        // timed: the stand-in rustc is a shell script whose `sleep` keeps
+        // the pipes open past the kill; rustc --emit=obj has no children.)
+        assert!(caps.calls().is_empty(), "the running seed ran to the end");
+        assert_eq!(trace(&caps), vec!["start a"]);
+    }
+
+    #[test]
+    fn seed_jobs_default_to_a_quarter_of_the_cores() {
+        assert_eq!(seed_jobs(None, 8), 2);
+        assert_eq!(seed_jobs(None, 2), 1);
+        assert_eq!(seed_jobs(None, 64), 4);
+        assert_eq!(seed_jobs(Some("6"), 8), 6);
+        assert_eq!(seed_jobs(Some("0"), 8), 2);
+        assert_eq!(seed_jobs(Some("x"), 8), 2);
     }
 
     /// Regression (CrewForge): the workspace closure reaches host-only

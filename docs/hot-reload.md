@@ -829,22 +829,30 @@ per patch.
 
 **The replay cache is seeded after every base build.** A replay has its
 own incremental directory, which the base build never fills, so the
-first patch of a session used to compile the app crate cold (45.7 s of
-a 49.4 s first save in a fresh devcontainer). Right after the base is
-indexed, the app crate is replayed once in the background with no edit,
-while the page loads:
+first patch of a session used to compile every crate it re-emits cold:
+45.7 s of a 49.4 s first save in a fresh devcontainer for the app crate,
+and 30.5–35.0 s for the first patch of a library crate with ~30
+dependents (the slowest dependent alone 32.6 s), where later patches took
+3.6 s. Right after the base is indexed, every crate of the workspace is
+replayed once in the background with no edit, while the page loads: the
+app crate first, then the crates the most edits would re-emit (those
+depending on the most workspace crates). One line says when it is done:
 
 ```text
-[hotpatch] replay cache for `crewforge_main` seeded in 42752 ms
+[hotpatch] replay cache seeded for 31 crate(s) in 38412 ms, slowest `crewforge_screen_projects` 32610 ms
 ```
 
-A save that arrives mid-seed waits for it rather than starting a second
-replay in the same incremental session. Its objects are kept under the
-app crate's source digest, so a library save that only carries the app
-reuses them. Measured on CrewForge with the replay cache cold (loaded
-machine, as in the workspace table): first save 39.1 s save to screen
-(rustc 34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.
-`IDEALYST_HOTPATCH_NO_SEED=1` turns it off, for A/B timing.
+Each seed's objects are kept under the crate's source digest, so a patch
+that only CARRIES a crate (every dependent of an edited library) reuses
+them and replays nothing but the edited crate. Seeds run a few at a time
+(a quarter of the cores, at most four; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
+overrides it) at the lowest CPU priority, and a save always comes first:
+the seeds it needs are waited for (killing one would only make the save
+replay it cold), the others are killed and seeded again after the patch.
+Two replays of one crate never run at once. Measured on CrewForge with
+the app crate seeded alone: first save 39.1 s save to screen (rustc
+34.4 s) without the seed, 18.3 s (rustc 11.7 s) with it.
+`IDEALYST_HOTPATCH_NO_SEED=1` turns seeding off, for A/B timing.
 
 **Before the replay starts** about 70 ms passes: the file watcher's
 50 ms debounce, then reading and deciding. There is no quiet window any
@@ -1767,8 +1775,9 @@ terminal host's own `.idealyst/terminal.log`.
   patch bug.
 - `--split` on `dev --web --local` stands the web hot-patch tier down;
   body edits rebuild and reload.
-- `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replay that warms
-  the replay cache after each base build (see
+- `IDEALYST_HOTPATCH_NO_SEED=1` skips the background replays that warm
+  the replay cache after each base build; `IDEALYST_HOTPATCH_SEED_JOBS=<n>`
+  sets how many run at once (see
   [What a save costs on the web](#what-a-save-costs-on-the-web)).
 - `IDEALYST_DEV_NO_RESUME=1` makes a web session build its base even
   when the last session's could be resumed (see

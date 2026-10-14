@@ -1402,11 +1402,12 @@ impl HotPatchBase {
     }
 
     /// Index a freshly built base now, while the page is reloading,
-    /// instead of at the first save, and start `seed` — the app crate —
-    /// replaying in the background so the first save's replay finds its
-    /// incremental cache warm (`WasmPatchBuilder::seed`). Failures are
+    /// instead of at the first save, and start `seeds` — every patchable
+    /// crate ([`workspace_seeds`]) — replaying in the background so the
+    /// first save's replays find their caches warm, and a crate a patch
+    /// only carries is not replayed at all (`WasmPatchBuilder::seed_all`). Failures are
     /// not reported here: the first save retries and says why.
-    fn warm(&mut self, seed: Option<build_web::hotpatch_build::PatchCrate>) {
+    fn warm(&mut self, seeds: Vec<build_web::hotpatch_build::PatchCrate>) {
         if !self.armed || self.retired.is_some() || self.builder.is_some() {
             return;
         }
@@ -1422,8 +1423,8 @@ impl HotPatchBase {
             // `IDEALYST_HOTPATCH_NO_SEED=1` skips it, for A/B timing of
             // the first save.
             let seeding = seeding_enabled(std::env::var_os("IDEALYST_HOTPATCH_NO_SEED"));
-            if let (Some(seed), Some(builder), true) = (seed, self.builder.as_ref(), seeding) {
-                builder.seed(seed);
+            if let (Some(builder), true) = (self.builder.as_ref(), seeding) {
+                builder.seed_all(seeds);
             }
         }
     }
@@ -1605,7 +1606,7 @@ fn watch_loop(
             persister.write(resume_snapshot(ws, base, &signal, inputs, environment, &kept));
         }
     };
-    base.warm(tip_seed(&ws));
+    base.warm(workspace_seeds(&ws));
     record(&ws, &base, base_inputs.as_ref());
     if ws.crates.len() > 1 {
         let libs: Vec<&str> =
@@ -1828,7 +1829,7 @@ fn watch_loop(
             if !failed || reload_owed {
                 // After the reload is signalled: the page reloads while the
                 // base is indexed, rather than the next save waiting on it.
-                base.warm(tip_seed(&ws));
+                base.warm(workspace_seeds(&ws));
             }
             reload_owed = false;
 
@@ -1936,14 +1937,37 @@ fn seeding_enabled(no_seed: Option<std::ffi::OsString>) -> bool {
     !no_seed.is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// The app crate, as the background replay seed after a base build: keyed
-/// by its sources as scanned, so a library save that carries it unchanged
-/// reuses the seed's objects.
-fn tip_seed(ws: &dev_overlay::Workspace) -> Option<build_web::hotpatch_build::PatchCrate> {
-    Some(build_web::hotpatch_build::PatchCrate::carried(
-        ws.crate_name(&ws.tip)?.to_string(),
-        ws.source_key(&ws.tip),
-    ))
+/// Every crate of the workspace, as the background replay seeds after a
+/// base build, each keyed by its sources as scanned so a patch that
+/// carries it unchanged reuses the seed's objects.
+///
+/// The app crate first (every patch replays or carries it), then the
+/// crates the most edits would re-emit: a crate is in the patch of an
+/// edit to itself or to any workspace crate it depends on, so the more of
+/// those it depends on, the sooner it is needed. Ties by name, so the
+/// order is stable.
+fn workspace_seeds(ws: &dev_overlay::Workspace) -> Vec<build_web::hotpatch_build::PatchCrate> {
+    let reach = |pkg: &str| -> usize {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut stack = vec![pkg];
+        while let Some(p) = stack.pop() {
+            for d in ws.crates.get(p).map(|c| &c.deps).into_iter().flatten() {
+                if seen.insert(d.as_str()) {
+                    stack.push(d.as_str());
+                }
+            }
+        }
+        seen.len()
+    };
+    let mut order: Vec<(&str, bool, usize)> =
+        ws.crates.keys().map(|p| (p.as_str(), *p == ws.tip, reach(p))).collect();
+    order.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(b.0)));
+    order
+        .into_iter()
+        .filter_map(|(p, _, _)| {
+            Some(build_web::hotpatch_build::PatchCrate::carried(ws.crate_name(p)?.to_string(), ws.source_key(p)))
+        })
+        .collect()
 }
 
 /// What the loop does next with a save [`handle_save`] looked at.
@@ -2895,13 +2919,13 @@ mod tests {
     fn regression_the_base_is_indexed_before_the_first_save() {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
-        base.warm(None);
+        base.warm(Vec::new());
         assert!(base.builder.is_some(), "warm did not index the base");
 
         let artifact = armed_base(&tmp.path().join("next")).artifact;
         base.rebuilt(artifact);
         assert!(base.builder.is_none(), "a rebuild must drop the old index");
-        base.warm(None);
+        base.warm(Vec::new());
         assert!(base.builder.is_some(), "and warm must index the new base");
     }
 
@@ -2917,14 +2941,14 @@ mod tests {
         std::fs::write(&obj, b"o").unwrap();
         base.serial = 5;
         base.resumed_objects = vec![("app".into(), "key".into(), vec![obj.clone()])];
-        base.warm(None);
+        base.warm(Vec::new());
         let builder = base.builder.as_ref().expect("indexed");
         assert_eq!(builder.serial(), 5);
         assert_eq!(builder.reusable_objects(), vec![("app".to_string(), "key".to_string(), vec![obj])]);
 
         base.rebuilt(armed_base(&tmp.path().join("next")).artifact);
         assert_eq!(base.serial(), 5, "the numbering survives a rebuild");
-        base.warm(None);
+        base.warm(Vec::new());
         assert!(base.builder.as_ref().unwrap().reusable_objects().is_empty(), "objects of the old base");
     }
 
@@ -2959,7 +2983,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut base = armed_base(tmp.path());
         base.armed = false;
-        base.warm(None);
+        base.warm(Vec::new());
         assert!(base.builder.is_none());
     }
 
@@ -3014,6 +3038,36 @@ mod tests {
     /// A two-crate workspace on disk, the lab's layout: the app at the
     /// root, `lab-shared` in a subdirectory, as `cargo metadata` would
     /// describe it.
+    /// Regression (CrewForge): only the app crate was seeded, so a
+    /// library's first patch replayed every dependent cold (30.5–35.0 s).
+    /// Every workspace crate is seeded now — the app first, then the
+    /// crates the most edits would re-emit.
+    #[test]
+    fn regression_every_workspace_crate_is_seeded_app_first() {
+        let pkg = |id: &str| {
+            serde_json::json!({"id": id, "name": id, "manifest_path": format!("/w/{id}/Cargo.toml"),
+                               "source": null, "targets": [{"kind": ["lib"], "name": id.replace('-', "_")}]})
+        };
+        let node = |id: &str, deps: &[&str]| {
+            serde_json::json!({"id": id, "deps": deps.iter().map(|d| serde_json::json!(
+                {"pkg": d, "dep_kinds": [{"kind": null}]})).collect::<Vec<_>>()})
+        };
+        let meta = serde_json::json!({
+            "packages": [pkg("app"), pkg("screen-b"), pkg("screen-a"), pkg("kit"), pkg("core")],
+            "workspace_members": ["app", "screen-a", "screen-b", "kit", "core"],
+            "resolve": {"root": "app", "nodes": [
+                node("app", &["screen-a", "screen-b", "kit"]),
+                node("screen-a", &["kit", "core"]),
+                node("screen-b", &["kit"]),
+                node("kit", &["core"]),
+                node("core", &[]),
+            ]}
+        });
+        let ws = dev_overlay::Workspace::from_metadata(&meta, Path::new("/w/app")).expect("tip found");
+        let names: Vec<String> = workspace_seeds(&ws).into_iter().map(|c| c.crate_name).collect();
+        assert_eq!(names, vec!["app", "screen_a", "screen_b", "kit", "core"]);
+    }
+
     fn two_crate_workspace(root: &Path) -> dev_overlay::Workspace {
         // Real manifests, so `cargo metadata` over them (a rebuild's
         // workspace reload) sees the same two crates.

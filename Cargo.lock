@@ -2000,6 +2000,7 @@ dependencies = [
  "anyhow",
  "build-ios",
  "dev-events",
+ "libc",
  "object 0.39.1",
  "serde",
  "serde_json",
