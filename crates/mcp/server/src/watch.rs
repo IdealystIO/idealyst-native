@@ -233,7 +233,13 @@ pub(crate) async fn preload_subprocess_catalog(
             output.status,
             stderr
         );
-        svc.mark_build_failed(stderr.as_ref()).await;
+        // Failure is the exit status, never the presence of warnings;
+        // the message leads with that status when stderr holds no error.
+        svc.mark_build_failed(crate::catalog_service::extractor_failure_message(
+            &output.status.to_string(),
+            &stderr,
+        ))
+        .await;
         return;
     }
     let json = String::from_utf8_lossy(&output.stdout);
@@ -287,7 +293,13 @@ async fn run_subprocess_reload(
             output.status,
             stderr
         );
-        svc.mark_build_failed(stderr.as_ref()).await;
+        // Failure is the exit status, never the presence of warnings;
+        // the message leads with that status when stderr holds no error.
+        svc.mark_build_failed(crate::catalog_service::extractor_failure_message(
+            &output.status.to_string(),
+            &stderr,
+        ))
+        .await;
         return;
     }
     let json = String::from_utf8_lossy(&output.stdout);
@@ -332,5 +344,91 @@ async fn reload_and_notify(svc: &Arc<CatalogService>, peer: &Peer<RoleServer>) {
     }
     if let Err(e) = peer.notify_tool_list_changed().await {
         tracing::warn!("failed to notify tool list_changed: {:?}", e);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    //! The rebuild's success/failure decision, driven through real
+    //! subprocesses (`sh -c`) so the exit-status + stderr handling is
+    //! exercised exactly as the extractor's output reaches it.
+    use super::*;
+    use crate::catalog_status::CatalogState;
+
+    /// rustc's rendering of the dead-code warning a downstream app's
+    /// extractor printed when its catalog was wrongly reported STALE.
+    const DEAD_CODE_WARNING: &str = "warning: function `sniff_content_type` is never used\n  \
+        --> crates/ui-shared/src/voice.rs:62:4\n   |\n62 | fn sniff_content_type(bytes: &[u8]) \
+        -> &'static str {\n   |    ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` on by \
+        default\n\nwarning: `ui-shared` (lib) generated 1 warning\n";
+
+    fn sh(script: String) -> impl Fn() -> std::process::Command + Send + Sync + 'static {
+        move || {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(&script);
+            c
+        }
+    }
+
+    /// Single-quote `s` for `sh`.
+    fn quoted(s: &str) -> String {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+
+    #[tokio::test]
+    async fn regression_warning_only_rebuild_is_not_stale() {
+        // The extractor succeeded (exit 0, valid JSON) while printing a
+        // dead-code warning on stderr. That is a good build.
+        let svc = CatalogService::with_robot_mode(false, None);
+        let script = format!(
+            "printf '%s' {} >&2; printf '%s' '{{\"components\":[]}}'",
+            quoted(DEAD_CODE_WARNING)
+        );
+        preload_subprocess_catalog(&svc, &sh(script)).await;
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Current, "warnings must not fail a rebuild: {st:?}");
+        assert!(st.last_error.is_none(), "{st:?}");
+        assert!(st.marker().is_none(), "no STALE marker for a good build: {:?}", st.marker());
+    }
+
+    #[tokio::test]
+    async fn regression_stale_marker_quotes_the_error_not_the_first_warning() {
+        let svc = CatalogService::with_robot_mode(false, None);
+        // A good build first, so the next failure is STALE (not UNAVAILABLE).
+        preload_subprocess_catalog(&svc, &sh("printf '%s' '{\"components\":[]}'".into())).await;
+        let stderr = format!(
+            "{DEAD_CODE_WARNING}error[E0432]: unresolved import `crate::Missing`\n \
+             --> src/lib.rs:3:5\n  |\n3 | use crate::Missing;\n  |     ^^^^^^^\n\n\
+             error: could not compile `my-app` (lib) due to 1 previous error\n"
+        );
+        preload_subprocess_catalog(&svc, &sh(format!("printf '%s' {} >&2; exit 101", quoted(&stderr))))
+            .await;
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Stale);
+        let err = st.last_error.clone().unwrap();
+        assert!(err.starts_with("error[E0432]"), "the error leads: {err}");
+        assert!(err.contains("src/lib.rs:3:5"), "with its location: {err}");
+        assert!(!err.contains("sniff_content_type"), "no warning text: {err}");
+        assert!(st.marker().unwrap().contains("E0432"));
+    }
+
+    #[tokio::test]
+    async fn regression_failure_with_only_warnings_names_the_exit_status() {
+        // The process died (here: exit 137, as a SIGKILL'd child reports
+        // through a shell) having printed nothing but warnings. The
+        // reason must be the exit, not the warning.
+        let svc = CatalogService::with_robot_mode(false, None);
+        preload_subprocess_catalog(&svc, &sh("printf '%s' '{\"components\":[]}'".into())).await;
+        preload_subprocess_catalog(
+            &svc,
+            &sh(format!("printf '%s' {} >&2; exit 137", quoted(DEAD_CODE_WARNING))),
+        )
+        .await;
+        let st = svc.status().await;
+        assert_eq!(st.state, CatalogState::Stale);
+        let err = st.last_error.clone().unwrap();
+        assert!(err.contains("exited with") && err.contains("137"), "{err}");
+        assert!(err.contains("without reporting an error"), "{err}");
+        assert!(!err.contains("sniff_content_type"), "no warning text: {err}");
     }
 }

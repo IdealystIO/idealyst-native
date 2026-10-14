@@ -645,7 +645,8 @@ pub struct SlugRequest {
 /// `search_icons`.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DescribeIconSetRequest {
-    /// Icon pack crate name (e.g. `icons-lucide`).
+    /// Icon pack — crate name (`icons-lucide`), title (`Lucide`), import
+    /// path (`icons_lucide`) or bare family (`lucide`).
     pub name: String,
     /// Pagination offset into the icon list. Default 0.
     #[serde(default)]
@@ -659,9 +660,14 @@ pub struct DescribeIconSetRequest {
 /// and a result cap.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct IconSearchRequest {
-    /// Case-insensitive substring matched against icon names.
+    /// Case-insensitive substring matched against icon names. `-`, `_`
+    /// and spaces are interchangeable, so `qr`, `qr_code`, `QR_CODE` and
+    /// `qr code` all find `qr-code`.
     pub query: String,
-    /// Optional pack name to restrict the search to one icon set.
+    /// Optional pack to restrict the search to one icon set — its crate
+    /// name (`icons-lucide`), its title (`Lucide`), its import path
+    /// (`icons_lucide`) or the bare family (`lucide`). An unknown pack is
+    /// an error, never an empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set: Option<String>,
     /// Max results. Default 50, capped at 200.
@@ -2676,16 +2682,8 @@ impl CatalogService {
         let set = cat
             .icon_sets()
             .iter()
-            .find(|s| s.name == req.name)
-            .ok_or_else(|| {
-                McpError::invalid_params(
-                    format!(
-                        "icon set {:?} not found — use list_icon_sets to see what's available",
-                        req.name
-                    ),
-                    None,
-                )
-            })?;
+            .find(|s| icon_set_matches(s, &req.name))
+            .ok_or_else(|| unknown_icon_set(&req.name, cat.icon_sets()))?;
         let offset = req.offset.unwrap_or(0);
         let limit = req.limit.unwrap_or(100).min(500);
         let icons: Vec<serde_json::Value> = set
@@ -2718,26 +2716,35 @@ impl CatalogService {
             .await)
     }
 
-    #[tool(description = "Search icons across every pack by name keyword (case-insensitive substring) — THE way to find an icon without dumping ~1600 names. Returns up to `limit` (default 50, max 200) matches as { set, name, ident, import }, where `import` is the paste-ready `use icons_lucide::ARROW_RIGHT;` path you drop into the `icon(...)` primitive. Pass `set` to restrict to one pack.")]
+    #[tool(description = "Search icons across every pack by name keyword (case-insensitive substring) — THE way to find an icon without dumping ~1600 names. Returns up to `limit` (default 50, max 200) matches as { set, name, ident, import }, where `import` is the paste-ready `use icons_lucide::ARROW_RIGHT;` path you drop into the `icon(...)` primitive. Pass `set` to restrict to one pack (crate name `icons-lucide`, title `Lucide`, or bare `lucide`); an unknown pack is an error. `-`/`_`/space are interchangeable in the query, so `qr` and `QR_CODE` both find `qr-code`.")]
     async fn search_icons(
         &self,
         Parameters(req): Parameters<IconSearchRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let q = req.query.trim().to_lowercase();
+        let q = normalize_icon_key(&req.query);
         if q.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text("[]".to_string())]));
         }
         let limit = req.limit.unwrap_or(50).min(200);
         let cat = self.catalog.read().await;
+        // Resolve the pack filter up front. It used to be compared to the
+        // crate name byte-for-byte, so `set = "lucide"` (the name every
+        // caller reaches for) skipped every pack and returned `[]` — which
+        // reads as "no such icon", the wrong conclusion entirely.
+        if let Some(want) = &req.set {
+            if !cat.icon_sets().iter().any(|s| icon_set_matches(s, want)) {
+                return Err(unknown_icon_set(want, cat.icon_sets()));
+            }
+        }
         let mut out: Vec<serde_json::Value> = Vec::new();
         'sets: for set in cat.icon_sets() {
             if let Some(want) = &req.set {
-                if set.name != *want {
+                if !icon_set_matches(set, want) {
                     continue;
                 }
             }
             for i in set.icons {
-                if i.name.to_lowercase().contains(&q) {
+                if normalize_icon_key(i.name).contains(&q) {
                     out.push(serde_json::json!({
                         "set": set.name,
                         "name": i.name,
@@ -3218,36 +3225,163 @@ fn matched_terms(terms: &[String], fields: &[&str], body: &str) -> Vec<String> {
     matched
 }
 
-/// Locate an entry by exact short-name match first, then by FQN.
-/// Short-name ambiguity (two entries with the same `name`) returns
-/// the first hit — consumers wanting strict disambiguation should
-/// pass the FQN. The MCP `--check` lint (phase 6) is what surfaces
-/// short-name conflicts at the project level.
+/// The failure reason recorded when the catalog extractor exits
+/// unsuccessfully: its stderr, led by a line naming the exit status when
+/// that stderr holds no error at all.
+///
+/// Failure is decided by the exit status alone — a warning never fails a
+/// rebuild. But a process that dies without printing an error (killed by
+/// a signal, by the CLI's memory cap, by the OOM killer) leaves stderr
+/// holding nothing except the build's warnings, and the STALE marker then
+/// quoted a dead-code warning as the reason the rebuild failed. Leading
+/// with the status keeps the warning from posing as the cause.
+pub(crate) fn extractor_failure_message(status: &str, stderr: &str) -> String {
+    if has_error_diagnostic(stderr) {
+        return stderr.to_string();
+    }
+    let headline = format!(
+        "catalog extractor exited with {status} without reporting an error (its output \
+         holds only warnings or build progress) — it may have been killed, e.g. by a \
+         signal or a memory limit"
+    );
+    if stderr.trim().is_empty() {
+        headline
+    } else {
+        format!("{headline}\n{stderr}")
+    }
+}
+
 /// Trim extractor stderr down to something worth putting in a tool
-/// response: the first few meaningful lines. A full cargo failure runs to
-/// hundreds of lines of warnings, and the useful part is at the top.
+/// response: the error, not the noise around it. A cargo failure is
+/// mostly warnings, and a warning is a multi-line block (`warning: …`,
+/// ` --> file:line`, `12 | code`, `= note: …`); dropping only the
+/// `warning:` header used to let the block's continuation lines through,
+/// so a dead-code warning filled the budget ahead of the real error.
+/// Errors (`error: …`, `error[E…]`, anyhow's `Error:` / `Caused by:`
+/// chain) are preferred; failing those, whatever non-warning, non-progress
+/// line remains; failing that, the raw head — never an empty reason.
 fn trim_error(raw: &str) -> String {
     const MAX_LINES: usize = 4;
     const MAX_CHARS: usize = 600;
-    let mut out: Vec<&str> = Vec::new();
-    for line in raw.lines() {
+    // Colour codes (`CARGO_TERM_COLOR=always`) would hide a `warning:`
+    // header from the prefix checks below.
+    let clean = strip_ansi(raw);
+
+    // Lines outside warning blocks and build progress.
+    let mut kept: Vec<&str> = Vec::new();
+    let mut in_warning = false;
+    for line in clean.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("warning:") || line.starts_with("Compiling") {
+        if line.is_empty() {
+            in_warning = false;
             continue;
         }
-        out.push(line);
-        if out.len() == MAX_LINES {
-            break;
+        if is_diagnostic_header(line, "warning") {
+            in_warning = true;
+            continue;
         }
+        if in_warning && is_diagnostic_continuation(line) {
+            continue;
+        }
+        in_warning = false;
+        if is_build_progress(line) {
+            continue;
+        }
+        kept.push(line);
     }
-    if out.is_empty() {
-        out = raw.lines().take(MAX_LINES).collect();
+
+    // The error lines among them: rustc/cargo error headers and their
+    // location line, and anyhow's error + cause chain.
+    let mut errors: Vec<&str> = Vec::new();
+    let mut prev_was_error_header = false;
+    let mut in_cause_chain = false;
+    for line in &kept {
+        let header = is_diagnostic_header(line, "error") || line.starts_with("Error:");
+        if header || line.starts_with("Caused by:") {
+            in_cause_chain = line.starts_with("Caused by:");
+            if !in_cause_chain {
+                errors.push(line);
+            }
+        } else if (prev_was_error_header && line.starts_with("-->"))
+            || (in_cause_chain && !is_diagnostic_continuation(line))
+        {
+            errors.push(line);
+        }
+        prev_was_error_header = header;
     }
+
+    let mut out: Vec<&str> = if !errors.is_empty() {
+        errors
+    } else if !kept.is_empty() {
+        kept
+    } else {
+        clean.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
+    };
+    out.truncate(MAX_LINES);
     let mut joined = out.join(" / ");
     if joined.chars().count() > MAX_CHARS {
         joined = joined.chars().take(MAX_CHARS).collect::<String>() + "…";
     }
     joined
+}
+
+/// Does `raw` (extractor stderr) contain an actual error, as opposed to
+/// only warnings and progress?
+fn has_error_diagnostic(raw: &str) -> bool {
+    strip_ansi(raw).lines().map(str::trim).any(|l| {
+        is_diagnostic_header(l, "error") || l.starts_with("Error:")
+    })
+}
+
+/// `line` opens a rustc/cargo diagnostic of `level`: `warning: …`,
+/// `warning[E0123]: …`, `error: …`, `error[E0432]: …`. A plain prose line
+/// that merely begins with the word ("errors were found") is not one.
+fn is_diagnostic_header(line: &str, level: &str) -> bool {
+    line.strip_prefix(level)
+        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('['))
+}
+
+/// A continuation line of a rustc diagnostic block — location, gutter,
+/// numbered source, `= note`/`= help`, elision. Never a header.
+fn is_diagnostic_continuation(line: &str) -> bool {
+    line.starts_with("-->")
+        || line.starts_with(":::")
+        || line.starts_with('|')
+        || line.starts_with('=')
+        || line.starts_with("...")
+        || line.starts_with('^')
+        || {
+            // `12 | fn sniff_content_type(...)` / `12 |`
+            let digits = line.chars().take_while(|c| c.is_ascii_digit()).count();
+            digits > 0 && line[digits..].trim_start().starts_with('|')
+        }
+}
+
+/// Cargo's progress lines — never the reason for anything.
+fn is_build_progress(line: &str) -> bool {
+    ["Compiling ", "Checking ", "Finished ", "Blocking ", "Building ", "Fresh ", "Running "]
+        .iter()
+        .any(|p| line.starts_with(p))
+}
+
+/// Remove ANSI CSI escape sequences (`ESC [ … final-byte`).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            // Parameter/intermediate bytes, then one final byte in 0x40..=0x7E.
+            for c in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Does `origin` satisfy an optional `app` filter? An unset filter
@@ -3637,6 +3771,47 @@ fn doc_summary(docs: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+/// Canonical form for icon-name matching: lowercase, with `_` and
+/// whitespace folded to `-`. Icon names are kebab-case (`qr-code`) while
+/// the constants an author reads are SCREAMING_SNAKE (`QR_CODE`); folding
+/// both onto one spelling lets either form of query find the icon.
+fn normalize_icon_key(s: &str) -> String {
+    s.trim()
+        .chars()
+        .map(|c| if c == '_' || c.is_whitespace() { '-' } else { c.to_ascii_lowercase() })
+        .collect()
+}
+
+/// Does `set` answer to the pack name `want`? Accepts every spelling a
+/// caller plausibly has in hand: the crate name (`icons-lucide`), the
+/// title (`Lucide`), the import path (`icons_lucide`) and the bare family
+/// with the `icons-` prefix dropped (`lucide`). Case- and
+/// separator-insensitive. Deliberately NOT a substring match — `set` is a
+/// filter, and `"icons"` silently matching every pack would hide a typo.
+fn icon_set_matches(set: &mcp_catalog::IconSetEntry, want: &str) -> bool {
+    let want = normalize_icon_key(want);
+    if want.is_empty() {
+        return false;
+    }
+    [set.name, set.title, set.import_path].iter().any(|candidate| {
+        let c = normalize_icon_key(candidate);
+        c == want || c.strip_prefix("icons-") == Some(want.as_str())
+    })
+}
+
+/// The error for a pack filter that matched nothing, naming the packs
+/// that DO exist so the caller can retry without another round trip.
+fn unknown_icon_set(want: &str, sets: &[&'static mcp_catalog::IconSetEntry]) -> McpError {
+    let available: Vec<&str> = sets.iter().map(|s| s.name).collect();
+    McpError::invalid_params(
+        format!(
+            "icon set {want:?} not found; available packs: {}",
+            if available.is_empty() { "(none)".to_string() } else { available.join(", ") }
+        ),
+        None,
+    )
 }
 
 /// Robust catalog filter shared by the `list_*` tools. Case-insensitive;
@@ -4493,6 +4668,103 @@ mod tests {
             .is_err(),
             "describe_icon_set on an unknown pack errors",
         );
+    }
+
+    fn qr_icon_catalog() -> ResolvedCatalog {
+        let doc = serde_json::json!({
+            "components": [],
+            "icon_sets": [{
+                "name": "icons-lucide",
+                "title": "Lucide",
+                "docs": "Outlined icon pack.",
+                "import_path": "icons_lucide",
+                "license": "ISC",
+                "homepage": "https://lucide.dev",
+                "icon_count": 4,
+                "icons": [
+                    { "name": "arrow-right", "ident": "ARROW_RIGHT" },
+                    { "name": "qr-code", "ident": "QR_CODE" },
+                    { "name": "scan-qr-code", "ident": "SCAN_QR_CODE" },
+                    { "name": "square", "ident": "SQUARE" },
+                ],
+            }],
+        });
+        ResolvedCatalog::build_from_json(&doc.to_string()).unwrap()
+    }
+
+    async fn icon_search(svc: &CatalogService, query: &str, set: Option<&str>) -> Vec<String> {
+        let res = svc
+            .search_icons(Parameters(IconSearchRequest {
+                query: query.into(),
+                set: set.map(Into::into),
+                limit: None,
+            }))
+            .await
+            .unwrap();
+        parse_array(&res)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["import"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn regression_search_icons_qr_finds_qr_code() {
+        // `search_icons("qr", set = "lucide")` returned `[]`: the `set`
+        // filter compared against the crate name `icons-lucide`
+        // byte-for-byte, so the natural spelling skipped every pack.
+        let svc = CatalogService::new();
+        svc.replace_catalog(qr_icon_catalog()).await;
+        let both = vec![
+            "icons_lucide::QR_CODE".to_string(),
+            "icons_lucide::SCAN_QR_CODE".to_string(),
+        ];
+        for set in [None, Some("lucide"), Some("Lucide"), Some("icons-lucide"), Some("icons_lucide")] {
+            assert_eq!(icon_search(&svc, "qr", set).await, both, "set = {set:?}");
+        }
+        // Either spelling of the name finds it: kebab, SCREAMING_SNAKE, spaced.
+        for q in ["qr-code", "QR_CODE", "qr code", "  QR  "] {
+            assert!(
+                icon_search(&svc, q, Some("lucide")).await.contains(&both[0]),
+                "query {q:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn search_icons_unknown_set_is_an_error_not_an_empty_result() {
+        let svc = CatalogService::new();
+        svc.replace_catalog(qr_icon_catalog()).await;
+        let err = svc
+            .search_icons(Parameters(IconSearchRequest {
+                query: "qr".into(),
+                set: Some("feather".into()),
+                limit: None,
+            }))
+            .await
+            .expect_err("an unknown pack must not read as \"no such icon\"");
+        assert!(err.message.contains("icons-lucide"), "names the real packs: {err:?}");
+        // `set` is a filter, not a fuzzy search: a prefix of every pack
+        // does not match them all.
+        assert!(svc
+            .search_icons(Parameters(IconSearchRequest {
+                query: "qr".into(),
+                set: Some("icons".into()),
+                limit: None,
+            }))
+            .await
+            .is_err());
+        // describe_icon_set resolves the same spellings.
+        let page = svc
+            .describe_icon_set(Parameters(DescribeIconSetRequest {
+                name: "lucide".into(),
+                offset: None,
+                limit: None,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(parse_array(&page)["name"], "icons-lucide");
     }
 
     #[test]
@@ -5467,6 +5739,49 @@ mod tests {
         assert!(out.contains("E0432"), "{out}");
         assert!(!out.contains("warning:"), "{out}");
         assert!(!out.contains("Compiling"), "{out}");
+    }
+
+    #[test]
+    fn regression_trim_error_drops_whole_warning_blocks() {
+        // Dropping only the `warning:` header let the block's continuation
+        // lines through — the STALE marker then quoted a dead-code warning
+        // (`fn sniff_content_type`) instead of the error further down.
+        let raw = "warning: function `sniff_content_type` is never used\n  \
+                   --> crates/ui-shared/src/voice.rs:62:4\n   |\n\
+                   62 | fn sniff_content_type(bytes: &[u8]) -> &'static str {\n   \
+                   |    ^^^^^^^^^^^^^^^^^^\n   |\n   \
+                   = note: `#[warn(dead_code)]` on by default\n\n\
+                   error: could not compile `ui-shared` (lib) due to 1 previous error\n\
+                   Error: build the catalog wrapper (see stderr above)\n\n\
+                   Caused by:\n    cargo build exited with exit status: 101\n";
+        let out = trim_error(raw);
+        assert!(!out.contains("sniff_content_type"), "{out}");
+        assert!(!out.contains("voice.rs"), "{out}");
+        assert!(out.starts_with("error: could not compile"), "{out}");
+        assert!(out.contains("exit status: 101"), "the cause chain is kept: {out}");
+    }
+
+    #[test]
+    fn regression_trim_error_sees_through_ansi_coloured_warnings() {
+        // With CARGO_TERM_COLOR=always the header is `\x1b[33mwarning\x1b[0m:`
+        // and a bare prefix check missed it.
+        let raw = "\u{1b}[1m\u{1b}[33mwarning\u{1b}[0m\u{1b}[1m: function `f` is never used\u{1b}[0m\n\
+                   \u{1b}[1m\u{1b}[31merror[E0425]\u{1b}[0m: cannot find value `x`\n";
+        let out = trim_error(raw);
+        assert_eq!(out, "error[E0425]: cannot find value `x`");
+        assert!(has_error_diagnostic(raw));
+        assert!(!has_error_diagnostic("\u{1b}[33mwarning\u{1b}[0m: unused"));
+    }
+
+    #[test]
+    fn extractor_failure_message_leads_with_status_only_when_no_error() {
+        let warn = "warning: unused import: `Foo`\n --> src/lib.rs:1:5\n";
+        let msg = extractor_failure_message("signal: 9 (SIGKILL)", warn);
+        assert!(trim_error(&msg).starts_with("catalog extractor exited with signal: 9"), "{msg}");
+        // A real error is passed through untouched — it is the reason.
+        let err = "error[E0432]: unresolved import\n";
+        assert_eq!(extractor_failure_message("exit status: 101", err), err);
+        assert!(extractor_failure_message("exit status: 1", "").contains("exit status: 1"));
     }
 
     #[test]
