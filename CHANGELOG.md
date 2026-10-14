@@ -11,6 +11,25 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Windows is per-monitor DPI aware** (`backend-windows`, `host-win32`).
+  The backend was DPI-unaware: layout ran on device pixels, native
+  controls used 96-DPI fonts and SVGs rasterized at 1x, so on a high-DPI
+  monitor everything was small and blurry. Layout, painting, pointer /
+  wheel input and graphics surfaces now work in logical px (device px only
+  at the Win32/GDI+ edge), SVGs rasterize at the monitor's scale, and a
+  move between monitors re-lays out at the new DPI. *Migration:*
+  `host_win32::RunOptions` `width`/`height` are now LOGICAL px, so a window
+  opens at the same physical size as on other platforms (larger in device
+  px on a high-DPI monitor); pointer and graphics coordinates an app
+  receives are logical too.
+
+- **Dropping a request future aborts it on Apple and Android** (`net`).
+  The desktop and web transports already did; on Apple a dropped future
+  let the `NSURLSessionDataTask` download to completion, and on Android
+  the worker stayed blocked in the connection (and an abort that landed
+  before the connection was published was lost). Dropping the future now
+  cancels the task / disconnects, as a `CancelToken` win already did.
+
 - **Views are flex columns on web, as on native** (`backend-web`,
   `backend-ssr`, `css`). On native every view is a flex column. On web a
   view (or pressable, scroll view, link) was a block box unless its own

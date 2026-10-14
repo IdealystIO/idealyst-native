@@ -38,6 +38,34 @@ pub use runtime_shared::image_src::{
     classify, parse_data_uri, warn_rejected, DataUri, ImageSrc, RejectReason, ASSET_URL_PREFIX,
 };
 
+/// The pre-contract classification, kept so this release is additive. Use
+/// [`classify`] / [`ImageSrc`]: they say WHY a src is rejected
+/// ([`RejectReason`]), which `Unsupported` cannot.
+#[deprecated(note = "use `classify` / `ImageSrc` (runtime_shared::image_src)")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrcKind<'a> {
+    /// `asset://{id}`.
+    Asset(u64),
+    /// `data:` URI — decode with [`parse_data_uri`].
+    DataUri,
+    /// `http(s)://`.
+    Remote(&'a str),
+    /// Anything the contract rejects.
+    Unsupported,
+}
+
+/// [`classify`], in the pre-contract [`SrcKind`] shape.
+#[deprecated(note = "use `classify` (runtime_shared::image_src)")]
+#[allow(deprecated)]
+pub fn classify_src(src: &str) -> SrcKind<'_> {
+    match classify(src) {
+        ImageSrc::Asset(id) => SrcKind::Asset(id),
+        ImageSrc::Data(_) => SrcKind::DataUri,
+        ImageSrc::Remote(url) => SrcKind::Remote(url),
+        ImageSrc::Rejected(_) => SrcKind::Unsupported,
+    }
+}
+
 // `looks_like_svg` and the raster-scale rule live in
 // `runtime_shared::image_src` so the wgpu renderer can apply the same rules
 // on the web without linking resvg (it rasterizes SVG with the browser
@@ -132,6 +160,20 @@ pub fn decode_bytes(bytes: &[u8]) -> Option<DecodedSource<'_>> {
 
 #[cfg(test)]
 mod tests {
+    /// `SrcKind` / `classify_src` were public before the shared contract
+    /// moved them; removing them would have made this a major release (and
+    /// dragged every backend to one). They delegate to `classify`.
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_classify_src_maps_the_shared_contract() {
+        use super::{classify_src, SrcKind};
+        assert_eq!(classify_src("asset://7"), SrcKind::Asset(7));
+        assert_eq!(classify_src("data:image/png;base64,AA=="), SrcKind::DataUri);
+        assert_eq!(classify_src("https://x/y.png"), SrcKind::Remote("https://x/y.png"));
+        assert_eq!(classify_src("logo.png"), SrcKind::Unsupported);
+        assert_eq!(classify_src(""), SrcKind::Unsupported);
+    }
+
     use super::*;
 
     /// The shape CrewForge's `BrandLockup` builds: a percent-encoded SVG
