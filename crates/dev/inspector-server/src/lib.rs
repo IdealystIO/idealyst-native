@@ -203,7 +203,7 @@ impl Hub {
     /// Re-read the apps directory; push the list to every front end if it
     /// changed.
     fn rescan(&self) {
-        let now = self.apps_dir.as_deref().map(discovery::list).unwrap_or_default();
+        let now = self.apps_dir.as_deref().map(discovery::list_all).unwrap_or_default();
         let mut apps = self.apps.lock().unwrap();
         if *apps == now {
             return;

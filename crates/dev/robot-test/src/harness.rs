@@ -14,7 +14,7 @@
 //!   instead of red.
 
 use crate::app::App;
-use crate::client::{default_apps_dir, discover, RobotClient};
+use crate::client::{default_apps_dirs, discover, RobotClient};
 use std::net::SocketAddr;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
@@ -92,11 +92,48 @@ fn locate_bridge() -> Result<SocketAddr, String> {
             .map_err(|e| format!("IDEALYST_ROBOT_BRIDGE={raw:?} is not a host:port: {e}"));
     }
 
-    let apps_dir =
-        default_apps_dir().ok_or_else(|| "no HOME, so no ~/.idealyst/apps to search".to_string())?;
+    let apps_dirs = default_apps_dirs();
+    if apps_dirs.is_empty() {
+        return Err("no HOME, so no ~/.idealyst/apps to search".to_string());
+    }
     // Cargo sets CARGO_MANIFEST_DIR for the test binary's package; prefer the
     // app registered for this very project.
     let project = std::env::var_os("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from);
-    discover(project.as_deref(), &apps_dir)
+    discover_in(project.as_deref(), &apps_dirs)
         .ok_or_else(|| "no running app found (start `idealyst dev` or use `idealyst test`)".into())
+}
+
+/// The first registry in `apps_dirs` holding a live app (see [`discover`]).
+/// Every registry, not only `~/.idealyst/apps`: a Windows app under Wine
+/// registers in `apps-wine` beside it (`default_apps_dirs`).
+fn discover_in(project: Option<&std::path::Path>, apps_dirs: &[std::path::PathBuf]) -> Option<SocketAddr> {
+    apps_dirs.iter().find_map(|d| discover(project, d))
+}
+
+#[cfg(test)]
+mod locate_tests {
+    use super::*;
+
+    /// Regression: `#[robot_test]` searched only `~/.idealyst/apps`, so a
+    /// Windows app under Wine (registered in `apps-wine`) was never found,
+    /// although `idealyst test` searched both.
+    #[test]
+    fn regression_harness_finds_an_app_in_the_wine_registry() {
+        let home = std::env::temp_dir().join(format!("robot-test-locate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let native = home.join("apps");
+        let wine = home.join(crate::client::WINE_APPS_DIR_NAME);
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::create_dir_all(&wine).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(
+            wine.join("winapp-32.json"),
+            format!(r#"{{"port":{port},"project_root":""}}"#),
+        )
+        .unwrap();
+        let found = discover_in(None, &[native, wine]);
+        assert_eq!(found.map(|a| a.port()), Some(port));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

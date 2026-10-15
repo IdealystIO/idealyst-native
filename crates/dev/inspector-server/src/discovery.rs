@@ -5,6 +5,11 @@
 //! `{port, pid, name, bundle_id, project_root, platform, proto}` (see
 //! `runtime_shared::robot::bridge` and `robot-relay`). The file stem is
 //! the app's id on the Inspector protocol.
+//!
+//! A Windows app under Wine registers in `~/.idealyst/apps-wine` instead
+//! (`run-windows` sets `IDEALYST_APPS_DIR`): its pid is a Wine pid, which
+//! means nothing on the host, so [`list_all`] reads that directory with a
+//! TCP connect to the port as the liveness check.
 
 use std::path::{Path, PathBuf};
 
@@ -38,9 +43,36 @@ fn pid_is_live(_pid: u32) -> bool {
     true
 }
 
+/// Registry directory, beside `~/.idealyst/apps`, that Wine apps register
+/// in — the name `robot_test::WINE_APPS_DIR_NAME` and `run-windows` use.
+const WINE_APPS_DIR_NAME: &str = "apps-wine";
+
+/// Every live app in the native registry `dir` and in the Wine registry
+/// beside it, name-sorted.
+pub fn list_all(dir: &Path) -> Vec<AppInfo> {
+    let mut out = list(dir);
+    out.extend(list_with(&dir.with_file_name(WINE_APPS_DIR_NAME), |_, port| port_answers(port)));
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+    out
+}
+
+/// Whether something on this machine accepts connections at `port`.
+fn port_answers(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok()
+}
+
 /// Every registered, live app in `dir`, name-sorted. Empty if the
 /// directory is missing or unreadable.
 pub fn list(dir: &Path) -> Vec<AppInfo> {
+    list_with(dir, |pid, _| pid_is_live(pid))
+}
+
+/// [`list`] with the liveness check supplied: `live(pid, port)`.
+fn list_with(dir: &Path, live: impl Fn(u32, u16) -> bool) -> Vec<AppInfo> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -63,7 +95,7 @@ pub fn list(dir: &Path) -> Vec<AppInfo> {
             continue;
         };
         let pid = v["pid"].as_u64().unwrap_or(0) as u32;
-        if !pid_is_live(pid) {
+        if !live(pid, port as u16) {
             // A crashed or killed app's registration (its cleanup never
             // ran). Its port may since belong to an UNRELATED process
             // (`adb` squats on the default 9718) that accepts the socket
@@ -109,6 +141,31 @@ mod tests {
         assert_eq!(todo.id, format!("Todo-{me}"));
         assert_eq!(todo.addr(), "127.0.0.1:5001");
         assert_eq!(todo.platform.as_deref(), Some("web"));
+    }
+
+    /// Regression: Wine apps register in `apps-wine` beside `apps`, which
+    /// the Inspector never read — a Windows app under Wine never appeared.
+    /// Its pid is a Wine pid, so the port decides liveness there.
+    #[test]
+    fn regression_wine_registry_is_listed_by_port() {
+        let home = tempfile::tempdir().unwrap();
+        let native = home.path().join("apps");
+        let wine = home.path().join(WINE_APPS_DIR_NAME);
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::create_dir_all(&wine).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A Wine pid: no host process has it, so a pid check would drop it.
+        std::fs::write(
+            wine.join("WinApp-32.json"),
+            format!(r#"{{"port":{port},"pid":4294967294,"name":"WinApp","platform":"windows","proto":1}}"#),
+        )
+        .unwrap();
+        let apps = list_all(&native);
+        assert_eq!(apps.len(), 1, "{apps:?}");
+        assert_eq!(apps[0].name, "WinApp");
+        drop(listener);
+        assert!(list_all(&native).is_empty(), "a port nobody answers is not live");
     }
 
     #[test]

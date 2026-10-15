@@ -29,6 +29,15 @@
 //! the file is never deleted (the relay removes it; a stale one is just
 //! not live). An entry whose port an `~/.idealyst/apps` entry already
 //! names is the same relay seen from inside, and is skipped.
+//!
+//! ## Wine registrations
+//!
+//! A Windows app running under Wine registers in `~/.idealyst/apps-wine`
+//! instead (`run-windows` sets `IDEALYST_APPS_DIR`): its pid is a Wine pid,
+//! not a host one, so the two kinds cannot share a directory pruned by pid.
+//! Each scan reads that directory too, with the same rule as `robot.json`:
+//! liveness is a TCP connect to the port, and the file is never deleted here
+//! (the bridge inside Wine prunes its own directory by Wine pid).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -122,6 +131,9 @@ fn run_scanner(table: DiscoveryTable) {
     let cwd = std::env::current_dir().ok();
     loop {
         let mut found = apps_dir().map(|dir| scan_apps_dir(&dir)).unwrap_or_default();
+        if let Some(dir) = apps_dir().map(|d| d.with_file_name(WINE_APPS_DIR_NAME)) {
+            add_wine_registrations(&dir, &mut found, relay_is_live);
+        }
         if let Some(cwd) = &cwd {
             add_project_registration(cwd, &mut found, relay_is_live);
         }
@@ -157,6 +169,36 @@ fn add_project_registration(
         return;
     }
     found.insert(format!("{}@{}", app.name, app.bridge_addr), app);
+}
+
+/// Registry directory, beside `~/.idealyst/apps`, that Wine apps register
+/// in — the same name `robot_test::WINE_APPS_DIR_NAME` and `run-windows` use.
+const WINE_APPS_DIR_NAME: &str = "apps-wine";
+
+/// Add every registration in the Wine registry `dir` whose port `live` says
+/// answers (see "Wine registrations" in the module docs). Never deletes: a
+/// Wine pid can't be checked from the host, so a dead entry is just skipped.
+fn add_wine_registrations(
+    dir: &Path,
+    found: &mut HashMap<String, DiscoveredApp>,
+    live: impl Fn(&str) -> bool,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(app) = parse_registration_file(&path) else {
+            continue;
+        };
+        if found.values().any(|a| a.bridge_addr == app.bridge_addr) || !live(&app.bridge_addr) {
+            continue;
+        }
+        found.insert(format!("{}#wine{}", app.name, app.pid), app);
+    }
 }
 
 /// Whether something accepts connections at `addr`.
@@ -294,6 +336,31 @@ mod tests {
         assert!(dead.is_empty(), "a port that does not answer is not live");
         assert!(root.join(".idealyst").join(PROJECT_REGISTRATION).is_file(), "and the file is left alone");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Regression: Wine apps register in `~/.idealyst/apps-wine`, which the
+    /// MCP server never read — a Windows app under Wine was invisible to
+    /// `list_apps`. Its pid is a Wine pid, so liveness is the port, and a
+    /// dead entry is skipped but never deleted.
+    #[test]
+    fn regression_wine_registrations_are_listed_by_port_and_never_pruned() {
+        let dir = std::env::temp_dir().join(format!("mcp-wine-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, port) in [("live-1.json", 4790), ("dead-2.json", 4791)] {
+            std::fs::write(
+                dir.join(file),
+                format!(r#"{{"port":{port},"pid":{port},"name":"winapp","bundle_id":null,"project_root":"","platform":"windows","proto":1}}"#),
+            )
+            .unwrap();
+        }
+        let mut found = HashMap::new();
+        add_wine_registrations(&dir, &mut found, |addr| addr == "127.0.0.1:4790");
+        assert_eq!(found.len(), 1, "only the answering port is live: {found:?}");
+        let app = found.values().next().unwrap();
+        assert_eq!((app.name.as_str(), app.bridge_addr.as_str()), ("winapp", "127.0.0.1:4790"));
+        assert!(dir.join("dead-2.json").is_file(), "a Wine registration is never deleted from the host");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Inside the container the same relay is also in `~/.idealyst/apps`:
