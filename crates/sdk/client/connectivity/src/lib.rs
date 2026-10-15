@@ -67,7 +67,9 @@
 //!   internet connection profile's connectivity level is `InternetAccess`
 //!   (Windows' own verified-internet check, the same bar as the others);
 //!   the profile gives the transport, and `NetworkStatusChanged` drives
-//!   [`watch`] (delivered on a thread-pool thread). See `src/windows.rs`.
+//!   [`watch`], delivered on the UI thread through the host's async
+//!   executor (on WinRT's thread pool when none is installed). See
+//!   `src/windows.rs`.
 //! - **other native (other Unix / tests)** — no platform monitor;
 //!   [`current`] returns the best-effort `{ online: true, transport: Other }`
 //!   fallback and [`watch`] never fires (the guard is inert).
@@ -210,8 +212,8 @@ pub fn current() -> Connectivity {
 ///
 /// The callback runs wherever the platform delivers the change: the main
 /// thread / run loop on web and Apple, a `ConnectivityManager` callback
-/// thread on Android, a watcher thread on Linux, a thread-pool thread on
-/// Windows. Keep it fast and non-blocking; copy out what you need.
+/// thread on Android, a watcher thread on Linux, the UI thread on Windows
+/// (a thread-pool thread when no async executor is installed). Keep it fast and non-blocking; copy out what you need.
 ///
 /// ## Android seam
 ///

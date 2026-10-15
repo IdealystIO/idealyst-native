@@ -80,6 +80,11 @@ ndk-context = "0.1"
 # the internet profile's connectivity level + NetworkStatusChanged.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Networking_Connectivity", "Foundation"] }
+# `watch` delivers on the UI thread: the WinRT handler (a thread-pool
+# thread) sends over a channel to a task on the host's executor
+# (`driver::spawn_async`, behind `async-driver`).
+runtime-core = { workspace = true, features = ["async-driver"] }
+async-channel = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "4.4", default-features = false, features = ["async-io"] }

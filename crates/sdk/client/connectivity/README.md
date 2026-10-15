@@ -55,7 +55,7 @@ mechanism, not in the API you call.
 | iOS / macOS / tvOS | `NWPathMonitor` (Network framework C API): `currentPath.status` for online-ness, `usesInterfaceType:` for the transport; the path-update block bridges to `watch`; the monitor lives in the subscription and is `cancel`led on drop | compile-checked only ⚠️ |
 | Android | `ConnectivityManager`: `getActiveNetwork` + `getNetworkCapabilities` (`NET_CAPABILITY_VALIDATED`, `hasTransport(TRANSPORT_*)`) for `current()` | compile-checked only ⚠️ |
 | Linux (desktop) | NetworkManager over the system D-Bus (`zbus`): online iff `State == CONNECTED_GLOBAL`, `PrimaryConnectionType` for the transport; `watch` runs on a watcher thread off NM's property-change signals | runnable with NetworkManager |
-| Windows | WinRT `NetworkInformation`: online iff the internet profile's level is `InternetAccess` (Windows' NCSI check); WLAN / WWAN / Ethernet from the profile; `NetworkStatusChanged` drives `watch` on a thread-pool thread | verified on a Windows 11 VM (`online`, `Ethernet`; handler registers) |
+| Windows | WinRT `NetworkInformation`: online iff the internet profile's level is `InternetAccess` (Windows' NCSI check); WLAN / WWAN / Ethernet from the profile; `NetworkStatusChanged` drives `watch`, delivered on the UI thread through the host's async executor | verified on a Windows 11 VM (`online`, `Ethernet`; handler registers) |
 | other native (other Unix / tests) | no platform monitor — `current()` returns the best-effort `ASSUME_ONLINE` snapshot; `watch` never fires | inert |
 
 ### Android `watch` seam
