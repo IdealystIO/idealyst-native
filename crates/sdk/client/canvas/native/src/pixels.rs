@@ -32,6 +32,17 @@ pub fn premultiply_rgba8(rgba: &mut [u8]) {
     }
 }
 
+/// Tightly-packed straight-alpha RGBA8 as premultiplied BGRA8 — Direct2D's
+/// `B8G8R8A8_UNORM` / premultiplied bitmap layout (the Windows renderer).
+pub fn rgba8_to_bgra8_premultiplied(rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for px in rgba.chunks_exact(4) {
+        let a = px[3];
+        out.extend_from_slice(&[premul(px[2], a), premul(px[1], a), premul(px[0], a), a]);
+    }
+    out
+}
+
 /// Convert tightly-packed straight-alpha RGBA8 (`width × height`) into Cairo
 /// `ARgb32` rows of `stride` bytes in `out`.
 ///

@@ -7,7 +7,7 @@
 #[path = "../src/pixels.rs"]
 mod pixels;
 
-use pixels::{premul, premultiply_rgba8, rgba8_to_cairo_argb32};
+use pixels::{premul, premultiply_rgba8, rgba8_to_bgra8_premultiplied, rgba8_to_cairo_argb32};
 
 /// Regression: Android `copyPixelsFromBuffer` copies bytes verbatim into a
 /// premultiplied Bitmap, so straight-alpha input composited too bright (a
@@ -71,4 +71,12 @@ fn cairo_argb32_stops_at_short_input() {
     rgba8_to_cairo_argb32(&rgba, 1, 2, 4, &mut out);
     assert_eq!(&out[4..8], &[0; 4]);
     assert_eq!(u32::from_ne_bytes(out[0..4].try_into().unwrap()), 0xFF_0A_14_1E);
+}
+
+/// Direct2D bitmaps are premultiplied BGRA; image and texture pixels arrive
+/// straight RGBA.
+#[test]
+fn bgra8_premultiplied_swaps_red_and_blue_and_premultiplies() {
+    let out = rgba8_to_bgra8_premultiplied(&[255, 0, 64, 128, 10, 20, 30, 255]);
+    assert_eq!(out, vec![32, 0, 128, 128, 30, 20, 10, 255]);
 }

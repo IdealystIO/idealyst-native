@@ -6,9 +6,10 @@
 //! the boot entry's registry seam.
 //!
 //! Per-target impls live in cfg-gated modules; only one compiles per
-//! build. Hosts with no native 2D engine (desktop Linux/Windows, the
-//! terminal, the wgpu host, the test harness) get the
-//! External-placeholder handler — use `canvas-vello` there.
+//! build: Canvas2D on web, CoreGraphics on iOS/macOS, `android.graphics`,
+//! Cairo on Linux, Direct2D on Windows. Hosts with no native 2D engine (the
+//! terminal, the wgpu host, the test harness) get the External-placeholder
+//! handler — use `canvas-vello` there.
 //!
 //! [`Scene`]: canvas_core::Scene
 #![deny(missing_docs)]
@@ -59,6 +60,8 @@ mod macos;
 mod android;
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod linux;
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod windows;
 
 /// Shared mount tail for a concrete-backend canvas handler: author style
 /// onto the node the platform builder returned, then the scope-tied
@@ -162,6 +165,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
             reg.register::<CanvasPrim, _>(mount_canvas_linux);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<CanvasPrim, _>(windows::mount_canvas);
             return;
         }
     }

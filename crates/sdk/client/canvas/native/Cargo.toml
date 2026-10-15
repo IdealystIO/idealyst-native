@@ -17,6 +17,8 @@ license.workspace = true
 #   the iOS op-replay through the `apple` module; only the context
 #   acquisition + bezier/color vtable differ).
 # - Android: `android.graphics.Canvas`.
+# - Linux: Cairo via a GTK4 widget.
+# - Windows: Direct2D on a DirectComposition swapchain.
 # - Other targets: the External placeholder; use `canvas-vello`.
 
 [features]
@@ -100,6 +102,24 @@ objc2-app-kit = { version = "0.2", features = [
 backend-android-mobile = { workspace = true }
 backend-android-core = { workspace = true }
 jni = "0.21"
+
+# Windows renderer — Direct2D on a DirectComposition swapchain (`windows.rs`).
+# The `windows` version matches backend-windows' (one COM wrapper set).
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+backend-windows = { workspace = true }
+windows = { version = "0.58", features = [
+    "Foundation_Numerics",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    # The pixel tests detect Wine (GetProcAddress `wine_get_version`).
+    "Win32_System_LibraryLoader",
+] }
 
 [dev-dependencies]
 # tests/canvas.rs: the placeholder arm on the shared host-mock recording
