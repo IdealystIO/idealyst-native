@@ -121,6 +121,18 @@ pub fn install_async_executor(executor: Box<dyn AsyncExecutor>) {
     let _ = ASYNC_EXECUTOR.set(executor);
 }
 
+/// Whether a backend installed an executor, i.e. whether [`spawn_async`]
+/// returns at the future's first `.await` instead of blocking the calling
+/// thread to completion (the native `pollster` fallback).
+///
+/// For SDK glue that bridges events from another thread onto the UI thread
+/// with a task that waits on a channel: such a task never completes, so
+/// without an executor it would block forever. The glue checks this and
+/// delivers on the platform's own thread instead.
+pub fn async_executor_installed() -> bool {
+    ASYNC_EXECUTOR.get().is_some()
+}
+
 // ---------------------------------------------------------------------------
 // render_loop — driver-trait dispatch
 // ---------------------------------------------------------------------------
