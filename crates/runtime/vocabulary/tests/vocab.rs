@@ -1184,6 +1184,253 @@ mod robot_registry {
         robot.set_scroll(&scroller, 0.0, 10.0).unwrap();
         robot.reset();
     }
+
+    fn tree_of_text(label: &'static str) -> runtime_scene::Element {
+        text().content(label).build()
+    }
+
+    /// A tap recognizer on a view's `on_touch` (an idea-ui Table row, any
+    /// `tap(...)` surface) was unreachable: the view registered with no
+    /// actions, so `click` on it or on anything inside it reported "not
+    /// available". `click` now bubbles from the target like a real tap and
+    /// drives the handler with a synthesized `Began` → `Ended`.
+    #[test]
+    fn regression_click_reaches_on_touch_tap_recognizer() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let taps = Rc::new(Cell::new(0));
+        let sink = taps.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .test_id("row")
+                    .on_touch(runtime_shared::tap(runtime_shared::TapRecognizer::new(), move || {
+                        sink.set(sink.get() + 1)
+                    }))
+                    .child(view().child(tree_of_text("New Hire Intake")).build())
+                    .build(),
+            )
+        });
+        // Clicking the label text — the reported repro — reaches the row.
+        let label = robot.find(Query::label("New Hire Intake")).expect("text registered");
+        robot.click(&label).expect("click bubbles to the row's tap recognizer");
+        assert_eq!(taps.get(), 1);
+        let row = robot.find(Query::test_id("row")).unwrap();
+        robot.click(&row).expect("click on the row itself");
+        assert_eq!(taps.get(), 2);
+        robot.reset();
+    }
+
+    /// A handler that ignores the `Began` lets the tap bubble on, as the
+    /// platform responder chain does.
+    #[test]
+    fn click_bubbles_past_a_handler_that_ignores_the_press() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let outer = Rc::new(Cell::new(0));
+        let sink = outer.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .on_touch(runtime_shared::tap(runtime_shared::TapRecognizer::new(), move || {
+                        sink.set(sink.get() + 1)
+                    }))
+                    .child(
+                        view()
+                            .test_id("inner")
+                            .on_touch(Rc::new(|_| runtime_shared::TouchResponse::IGNORED))
+                            .build(),
+                    )
+                    .build(),
+            )
+        });
+        let inner = robot.find(Query::test_id("inner")).unwrap();
+        robot.click(&inner).expect("bubbles to the outer recognizer");
+        assert_eq!(outer.get(), 1);
+        robot.reset();
+    }
+
+    /// A signature pad (raw `on_touch` stroke capture) could not be drawn
+    /// on: no verb sent a pointer path. `drag` delivers Began → Moved… →
+    /// Ended at element-relative points, spaced one frame apart.
+    #[test]
+    fn regression_drag_delivers_pointer_path_to_on_touch() {
+        use runtime_shared::{TouchPhase, TouchResponse};
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let seen: Rc<RefCell<Vec<(TouchPhase, f32, f32, u64)>>> = Rc::default();
+        let sink = seen.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .test_id("pad")
+                    .on_touch(Rc::new(move |ev| {
+                        sink.borrow_mut().push((
+                            ev.phase,
+                            ev.position.x,
+                            ev.position.y,
+                            ev.timestamp_ns,
+                        ));
+                        TouchResponse::CONSUMED
+                    }))
+                    .build(),
+            )
+        });
+        let pad = robot.find(Query::test_id("pad")).unwrap();
+        robot
+            .drag(&pad, &[(10.0, 20.0), (30.0, 25.0), (60.0, 40.0)])
+            .expect("drag reaches the pad");
+        let seen = seen.borrow();
+        let phases: Vec<_> = seen.iter().map(|e| (e.0, e.1, e.2)).collect();
+        assert_eq!(
+            phases,
+            [
+                (TouchPhase::Began, 10.0, 20.0),
+                (TouchPhase::Moved, 30.0, 25.0),
+                (TouchPhase::Moved, 60.0, 40.0),
+                (TouchPhase::Ended, 60.0, 40.0),
+            ]
+        );
+        assert!(
+            seen.windows(2).all(|w| w[1].3 > w[0].3),
+            "timestamps advance so velocity-based recognizers see motion"
+        );
+        // Nothing to drag on a plain text.
+        let _ = &pad;
+        robot.reset();
+    }
+
+    /// `find_all` returned elements in registry-slot order. Slots are
+    /// recycled through a free list, and a reactive branch realized after
+    /// mount registered with NO parent (the parent stack is empty when the
+    /// driver effect re-runs), so a form step's inputs came back shuffled —
+    /// `type_text` in returned order put values in the wrong fields. Now:
+    /// document order, and late branches keep their parent.
+    #[test]
+    fn regression_find_all_is_document_order_across_branch_swaps() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let (step, root) = h.world.enter(|| {
+            let step = signal(0u8);
+            let root = view()
+                .test_id("form")
+                .child(text_input().placeholder("Before").build())
+                .child(dyn_keyed(
+                    move || step.get(),
+                    |&s| {
+                        if s == 0 {
+                            view()
+                                .child(text_input().placeholder("Old A").build())
+                                .child(text_input().placeholder("Old B").build())
+                                .build()
+                        } else {
+                            view()
+                                .child(text_input().placeholder("Full Name").build())
+                                .child(text_input().placeholder("Email").build())
+                                .child(text_input().placeholder("Phone").build())
+                                .build()
+                        }
+                    },
+                ))
+                .child(text_input().placeholder("After").build())
+                .build();
+            (step, root)
+        });
+        let _realized = h.world.enter(|| realize(&h.backend, &h.registry, root));
+        let labels = || -> Vec<String> {
+            robot
+                .find_all(Query::kind(ElementKind::TextInput))
+                .into_iter()
+                .map(|e| e.label.unwrap_or_default())
+                .collect()
+        };
+        assert_eq!(labels(), ["Before", "Old A", "Old B", "After"]);
+
+        // The swap frees the old branch's slots; the new branch reuses them
+        // and registers after "After".
+        h.world.enter(|| step.set(1));
+        h.world.flush();
+        assert_eq!(labels(), ["Before", "Full Name", "Email", "Phone", "After"]);
+
+        // And the late branch is still IN the tree, under the form.
+        let form = robot.find(Query::test_id("form")).unwrap();
+        let name = robot.find(Query::label("Full Name")).unwrap();
+        let mut up = robot.parent_of(&name);
+        while let Some(p) = up.clone() {
+            if p.id == form.id {
+                break;
+            }
+            up = robot.parent_of(&p);
+        }
+        assert_eq!(up.map(|p| p.id), Some(form.id), "late branch parents under the form");
+        assert_eq!(
+            robot.snapshot().len(),
+            1,
+            "one root — the swapped-in branch is not a detached root"
+        );
+        // `find` (first match) is document order too.
+        assert_eq!(
+            robot.find(Query::kind(ElementKind::TextInput)).and_then(|e| e.label).as_deref(),
+            Some("Before")
+        );
+        robot.reset();
+    }
+
+    /// Every text input reported `label: null`. It now reports its
+    /// accessible name: the a11y label, else the (live) placeholder.
+    #[test]
+    fn regression_text_input_reports_accessible_name_as_label() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let (hint, root) = h.world.enter(|| {
+            let hint = signal(String::from("name@example.com"));
+            let root = view()
+                .child(
+                    text_input()
+                        .test_id("named")
+                        .placeholder("ignored when named")
+                        .a11y(runtime_shared::accessibility::AccessibilityProps {
+                            label: Some("Full Name".into()),
+                            ..Default::default()
+                        })
+                        .build(),
+                )
+                .child(text_input().test_id("placeholder").placeholder("Phone").build())
+                .child(
+                    text_input()
+                        .test_id("live")
+                        .placeholder_dyn(move || Some(hint.get()))
+                        .build(),
+                )
+                .child(text_input().test_id("bare").build())
+                .build();
+            (hint, root)
+        });
+        let _realized = h.world.enter(|| realize(&h.backend, &h.registry, root));
+        let label = |id: &str| robot.find(Query::test_id(id)).and_then(|e| e.label);
+        assert_eq!(label("named").as_deref(), Some("Full Name"));
+        assert_eq!(label("placeholder").as_deref(), Some("Phone"));
+        assert_eq!(label("live").as_deref(), Some("name@example.com"));
+        assert_eq!(label("bare"), None);
+        assert!(robot.find(Query::label("Full Name")).is_some(), "findable by name");
+
+        h.world.enter(|| hint.set("you@crew.example".into()));
+        h.world.flush();
+        assert_eq!(label("live").as_deref(), Some("you@crew.example"));
+        robot.reset();
+    }
+
 }
 
 // ===========================================================================

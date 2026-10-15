@@ -99,23 +99,23 @@ use crate::style_attach::{attach_style, StyleProp, StyleServices};
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "robot")]
-type RobotParent = Option<crate::robot::ElementId>;
+type RobotParent = crate::robot::CapturedParent;
 #[cfg(not(feature = "robot"))]
 type RobotParent = ();
 
 #[cfg(feature = "robot")]
 fn capture_robot_parent() -> RobotParent {
-    crate::robot::current_parent()
+    crate::robot::capture_parent()
 }
 #[cfg(not(feature = "robot"))]
 fn capture_robot_parent() -> RobotParent {}
 
 #[cfg(feature = "robot")]
-fn with_robot_parent<R>(parent: RobotParent, f: impl FnOnce() -> R) -> R {
-    crate::robot::with_parent(parent, f)
+fn with_robot_parent<R>(parent: &RobotParent, f: impl FnOnce() -> R) -> R {
+    crate::robot::with_captured_parent(parent, f)
 }
 #[cfg(not(feature = "robot"))]
-fn with_robot_parent<R>(_parent: RobotParent, f: impl FnOnce() -> R) -> R {
+fn with_robot_parent<R>(_parent: &RobotParent, f: impl FnOnce() -> R) -> R {
     f()
 }
 
@@ -253,7 +253,7 @@ where
                 }
                 let realized = {
                     let _nav = ambient_nav.enter();
-                    with_robot_parent(robot_parent, || {
+                    with_robot_parent(&robot_parent, || {
                         realize(&backend, &registry, component_scope(build))
                     })
                 };

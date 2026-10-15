@@ -116,11 +116,19 @@ pub struct TextareaProps {
     /// disables in place, without rebuilding the native view.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub disabled: bool,
+    /// The input's accessible name — what screen readers announce and what
+    /// the robot reports as the input's `label`. Defaults to `label`. Set
+    /// it when the visible label is drawn OUTSIDE this component (a custom
+    /// label row), so the input is still named. Snapshot at build, like
+    /// every a11y name here.
+    #[prop(static)]
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for TextareaProps {
     fn default() -> Self {
         Self {
+            accessibility_label: None,
             label: Reactive::Static(None),
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
@@ -264,6 +272,12 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     if let Some(p) = props.placeholder.get() {
         input = input.placeholder(p);
     }
+    // Accessible name: the explicit override, else the visible label. The
+    // label is a sibling of the input, so the input can't derive it.
+    // Snapshot — the a11y prop bag is plain data (Checkbox does the same).
+    if let Some(name) = props.accessibility_label.clone().or_else(|| props.label.get()) {
+        input = input.a11y_label(name);
+    }
     // `disabled` rides the primitive (native inert + out of keyboard focus,
     // the `on_change` gate, the DISABLED state bit that resolves the sheet's
     // `state disabled` dim). Attached only when it can be disabled.
@@ -379,6 +393,28 @@ mod tests {
             install_idea_theme(light_theme());
             assert!(flag(Textarea(&TextareaProps { autofocus: true, ..Default::default() })));
             assert!(!flag(Textarea(&TextareaProps::default())));
+        });
+    }
+
+    /// Same gap as Field: the visible label never named the text area.
+    #[test]
+    fn regression_textarea_label_names_its_input() {
+        let name = |ta: Element| -> Option<String> {
+            let P::View { children, .. } = classify(ta) else { panic!("Textarea renders a view wrapper") };
+            children
+                .into_iter()
+                .find_map(|c| match classify(c) {
+                    P::TextArea { a11y_label, .. } => Some(a11y_label),
+                    _ => None,
+                })
+                .expect("Textarea tree has a text_area node")
+        };
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let labeled = TextareaProps { label: Reactive::Static(Some("Notes".into())), ..Default::default() };
+            assert_eq!(name(Textarea(&labeled)).as_deref(), Some("Notes"));
+            let external = TextareaProps { accessibility_label: Some("Home Address".into()), ..Default::default() };
+            assert_eq!(name(Textarea(&external)).as_deref(), Some("Home Address"));
         });
     }
 

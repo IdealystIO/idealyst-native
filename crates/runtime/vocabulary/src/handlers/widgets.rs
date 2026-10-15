@@ -238,6 +238,12 @@ fn bind_disabled<H: StyleServices + 'static>(
     });
 }
 
+/// The robot reports a text field by its accessible name — the author's
+/// a11y label, else the placeholder, the same fallback the browser's
+/// accessible-name computation uses. Without it every input came back
+/// `label: null`, and a form's fields could only be told apart from a
+/// screenshot.
+///
 /// Mount a `text_input` — port of
 /// `walker/text_input.rs::build_text_input`.
 ///
@@ -249,7 +255,7 @@ fn bind_disabled<H: StyleServices + 'static>(
 /// disabled) → ref-fill.
 pub fn mount_text_input<H>(
     cx: &mut MountCx<'_, H>,
-    prim: TextInputPrim,
+    #[cfg_attr(not(feature = "robot"), allow(unused_mut))] mut prim: TextInputPrim,
     _children: Vec<Element>,
 ) -> H::Node
 where
@@ -261,6 +267,26 @@ where
     let initial_placeholder = initial_of(&prim.placeholder);
     #[cfg(feature = "robot")]
     let robot_set_text = prim.on_change.clone();
+    #[cfg(feature = "robot")]
+    let (robot_label, robot_label_fn) = match prim.a11y.label.clone() {
+        Some(label) => (Some(label), None),
+        // A live placeholder is shared with its binding below so the
+        // reported label tracks it.
+        None => match std::mem::replace(&mut prim.placeholder, Value::Const(None)) {
+            Value::Const(p) => {
+                prim.placeholder = Value::Const(p.clone());
+                (p, None)
+            }
+            Value::Dyn(f) => {
+                let f: Rc<dyn Fn() -> Option<String>> = Rc::from(f);
+                let for_binding = f.clone();
+                prim.placeholder = Value::Dyn(Box::new(move || for_binding()));
+                let live: Rc<dyn Fn() -> Option<String>> =
+                    Rc::new(move || runtime_world::untrack(|| f()));
+                (initial_placeholder.clone(), Some(live))
+            }
+        },
+    };
     let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
     let alive = crate::callback_guard::ScopeAlive::current();
     let node = backend.borrow_mut().create_text_input(
@@ -292,8 +318,8 @@ where
             &node,
             crate::robot::ElementKind::TextInput,
             prim.test_id,
-            None,
-            None,
+            robot_label,
+            robot_label_fn,
             crate::robot::MountActions {
                 set_text: Some(robot_set_text),
                 focus: Some(focus),
@@ -394,7 +420,8 @@ where
         &node,
         crate::robot::ElementKind::TextInput,
         prim.test_id,
-        None,
+        // Accessible name, as for `text_input`.
+        prim.a11y.label.clone().or_else(|| prim.placeholder.clone()),
         None,
         crate::robot::MountActions {
             set_text: Some(robot_set_text),

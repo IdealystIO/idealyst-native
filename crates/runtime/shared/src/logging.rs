@@ -113,6 +113,15 @@ pub fn log(level: LogLevel, msg: &str) {
         Some(l) => l.log(level, msg),
         None => DEFAULT_LOGGER.log(level, msg),
     }
+    // Robot builds also record the line for the bridge's `get_logs`.
+    // The platform logger alone never reached that buffer: web logs to
+    // `console.*`, and no backend installs the stdio capture that would
+    // have picked stderr up on native — so `log_info!` from app code was
+    // invisible to `get_logs` everywhere (regression:
+    // `regression_log_macros_reach_robot_get_logs`). Recorded here, once,
+    // rather than per backend logger, so every backend behaves the same.
+    #[cfg(feature = "robot")]
+    crate::robot::logs::push("log", format!("[{}] {}", level.tag(), msg));
 }
 
 /// Emit a `Debug`-level message. Accepts `format!`-style arguments.
@@ -197,6 +206,26 @@ mod tests {
         let logger = StderrLogger;
         logger.log(LogLevel::Debug, "logging::tests::stderr_logger_does_not_panic");
         logger.log(LogLevel::Error, "logging::tests::stderr_logger_does_not_panic");
+    }
+
+    /// `log_info!` from app code never reached the robot's `get_logs`
+    /// buffer on any backend: only the platform logger saw it.
+    #[cfg(feature = "robot")]
+    #[test]
+    fn regression_log_macros_reach_robot_get_logs() {
+        ensure_installed();
+        crate::log_info!("logging::tests::reach_get_logs marker={}", 7);
+        // The buffer is process-wide and other tests push into it, so
+        // match by marker instead of clearing.
+        let hits: Vec<_> = crate::robot::logs::recent(4096)
+            .into_iter()
+            .filter(|e| e.text.contains("reach_get_logs marker=7"))
+            .collect();
+        assert_eq!(hits.len(), 1, "expected one robot log entry, got {hits:?}");
+        assert_eq!(hits[0].source, "log");
+        assert_eq!(hits[0].text, "[INFO] logging::tests::reach_get_logs marker=7");
+        // The platform logger still receives it, unchanged.
+        assert_eq!(drain_matching("reach_get_logs").len(), 1);
     }
 
     #[test]

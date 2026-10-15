@@ -49,7 +49,8 @@ runtime-shared = { workspace = true }
 backend-ssr = { path = "../../../backend/ssr" }
 runtime-world = { path = "../../../runtime/world" }
 runtime-scene = { path = "../../../runtime/scene" }
-runtime-vocabulary = { path = "../../../runtime/vocabulary" }
+# `robot`: `tests/robot.rs` drives the web cells through the robot registry.
+runtime-vocabulary = { path = "../../../runtime/vocabulary", features = ["robot"] }
 
 # No wasm32-specific dependency: the web `<table>` handlers are generic
 # over the vocabulary caps traits, so nothing here touches `web-sys` or

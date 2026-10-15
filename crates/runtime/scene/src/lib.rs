@@ -46,6 +46,7 @@ mod element;
 mod host;
 mod late;
 mod realize;
+mod region_context;
 mod registry;
 
 #[cfg(test)]
@@ -61,6 +62,7 @@ pub use element::{item_tagged, with_tag, NodeTag};
 #[cfg(feature = "ui-overlay")]
 pub use element::with_rebuild;
 pub use host::Host;
+pub use region_context::{install_region_context, RegionScope};
 pub use late::{defer_registration, drain_registrations, has_pending_registrations};
 pub use realize::{
     realize, DeferredLive, DynLive, DynWatch, KeyedLive, KeyedState, LiveNode, MountCx, Realized,

@@ -343,6 +343,17 @@ pub struct RobotTypeText {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotDrag {
+    pub element_id: u64,
+    /// The pointer path as `[x, y]` pairs in logical px, relative to the
+    /// element's top-left: `Began` at the first, `Moved` through the rest,
+    /// `Ended` at the last.
+    pub points: Vec<[f32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotSetToggle {
     pub element_id: u64,
     pub value: bool,
@@ -1228,7 +1239,7 @@ impl CatalogService {
         self.robot_call("find_all_elements", app.as_deref(), body).await
     }
 
-    #[tool(description = "Click/press a Button or Pressable element in the running app. `element_id` comes from a prior find_element call.")]
+    #[tool(description = "Tap an element in the running app, as a finger at its center would. Works on Buttons/Pressables/Links and on anything with a touch handler (e.g. a clickable Table row); clicking a Text inside such a row bubbles up to the row, like a real tap. `element_id` comes from a prior find_element call.")]
     async fn click(
         &self,
         Parameters(args): Parameters<RobotElementId>,
@@ -1236,6 +1247,16 @@ impl CatalogService {
         let app = args.app.clone();
         let body = strip_app(serde_json::to_value(args).unwrap_or_default());
         self.robot_call("click", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Drag one pointer along a path over an element: `points` are [x, y] pairs relative to the element's top-left (logical px). Delivered as real touch events (Began, Moved..., Ended) to the element's touch handler, or the nearest ancestor's. Use it to draw on a signature pad, drag a slider thumb, or drag-to-reorder.")]
+    async fn drag(
+        &self,
+        Parameters(args): Parameters<RobotDrag>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("drag", app.as_deref(), body).await
     }
 
     #[tool(description = "Type text into a TextInput (replaces current value).")]

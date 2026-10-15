@@ -371,6 +371,9 @@ pub(crate) struct DeferredSlot<N> {
     pub(crate) placeholder: Option<N>,
     pub(crate) realized: Option<Realized<N>>,
     pub(crate) nodes: Vec<N>,
+    /// Ambient context captured at park time — the drain runs long after
+    /// the mount that parked the item (see `region_context`).
+    pub(crate) region: crate::region_context::CapturedRegion,
 }
 
 /// Realize one parked item now that its handler is installed. Called by
@@ -395,17 +398,17 @@ pub(crate) fn realize_parked<H: Host>(
     registry: &Rc<Registry<H>>,
     slot: &Rc<RefCell<DeferredSlot<H::Node>>>,
 ) {
-    let (element, parent, base, placeholder) = {
+    let (element, parent, base, placeholder, region) = {
         let mut s = slot.borrow_mut();
         // Already drained (a second registration for the same kind).
         let (Some(element), Some(placeholder)) = (s.element.take(), s.placeholder.take()) else {
             return;
         };
-        (element, s.parent.clone(), s.base.clone(), placeholder)
+        (element, s.parent.clone(), s.base.clone(), placeholder, s.region.clone())
         // borrow released before any handler runs
     };
 
-    let realized = realize(backend, registry, element);
+    let realized = region.enter(|| realize(backend, registry, element));
     let nodes = realized.collect_nodes();
     let index = base.index();
     {
@@ -798,6 +801,7 @@ impl<'a, H: Host> MountCx<'a, H> {
             placeholder: Some(placeholder),
             realized: None,
             nodes: Vec::new(),
+            region: crate::region_context::capture(),
         }));
         self.registry.park(type_id, self.backend.clone(), &slot);
         LiveNode::Deferred(DeferredLive { slot })
@@ -1202,6 +1206,9 @@ fn drive_dyn_anchored<H: Host>(
     let anchor_e = anchor.clone();
     let slot_e = slot.clone();
     let DynSpec { kind, mut retire } = spec;
+    // Captured NOW, while the mount's ambient state is intact; every
+    // later run realizes inside it (see `region_context`).
+    let region = crate::region_context::capture();
 
     // The driver effect registers into the ambient collector (the
     // enclosing Realized's Owned) — dropping that Realized retires the
@@ -1248,7 +1255,7 @@ fn drive_dyn_anchored<H: Host>(
                 }
             }
         }
-        let realized = match &kind {
+        let realized = region.enter(|| match &kind {
             // Plain: the closure runs TRACKED inside the fresh scope —
             // its reads are the rebuild deps (dynamic.rs).
             DynKind::Plain(f) => build_into_anchor(&backend, &registry, &anchor_e, || f(), true),
@@ -1257,7 +1264,7 @@ fn drive_dyn_anchored<H: Host>(
             DynKind::Guarded { build, .. } => {
                 build_into_anchor(&backend, &registry, &anchor_e, || build(), false)
             }
-        };
+        });
         slot_e.borrow_mut().realized = Some(realized);
     });
 
@@ -1324,6 +1331,8 @@ fn drive_dyn_spliced<H: Host>(
     let registry = registry.clone();
     let slot_e = slot.clone();
     let DynSpec { kind, mut retire } = spec;
+    // See `drive_dyn_anchored`.
+    let region = crate::region_context::capture();
 
     let _driver = effect(move || {
         if let DynKind::Guarded { changed, .. } = &kind {
@@ -1372,7 +1381,7 @@ fn drive_dyn_spliced<H: Host>(
         // Build detached, then splice every top node at the region's
         // CURRENT start — resolved now, so an earlier sibling region that
         // grew or shrank since mount is accounted for.
-        let (nodes, realized) = match &kind {
+        let (nodes, realized) = region.enter(|| match &kind {
             DynKind::Plain(f) => {
                 // Tracked producer — see build_realized's tracking split.
                 let realized =
@@ -1383,7 +1392,7 @@ fn drive_dyn_spliced<H: Host>(
                 (nodes, realized)
             }
             DynKind::Guarded { build, .. } => build_detached(&backend, &registry, || build()),
-        };
+        });
         {
             let base_index = base.index();
             let mut b = backend.borrow_mut();
@@ -1428,13 +1437,17 @@ fn drive_keyed_spliced<H: Host>(
     let backend = backend.clone();
     let registry = registry.clone();
     let state_e = state.clone();
+    // See `drive_dyn_anchored`.
+    let region = crate::region_context::capture();
 
     let _driver = effect(move || {
         // TRACKED: enumerating the items is the rebuild dependency set.
         let new_items = items();
-        reconcile(
-            &backend, &registry, &parent, &base, &count, new_items, &render, &state_e,
-        );
+        region.enter(|| {
+            reconcile(
+                &backend, &registry, &parent, &base, &count, new_items, &render, &state_e,
+            )
+        });
     });
 
     state
@@ -1593,6 +1606,8 @@ fn drive_keyed_anchored<H: Host>(
     let registry = registry.clone();
     let anchor_e = anchor.clone();
     let slot_e = slot.clone();
+    // See `drive_dyn_anchored`.
+    let region = crate::region_context::capture();
 
     let _driver = effect(move || {
         let new_items = items(); // TRACKED
@@ -1611,20 +1626,22 @@ fn drive_keyed_anchored<H: Host>(
         // rebuilt Scope. Renders run untracked inside that scope; the
         // fragment wrapper splices flat, so op order matches the old
         // "build all elements, then insert_children" sequence.
-        let realized = build_into_anchor(
-            &backend,
-            &registry,
-            &anchor_e,
-            || {
-                Element::Fragment(
-                    new_items
-                        .into_iter()
-                        .map(|(_key, data)| render(data))
-                        .collect(),
-                )
-            },
-            false,
-        );
+        let realized = region.enter(|| {
+            build_into_anchor(
+                &backend,
+                &registry,
+                &anchor_e,
+                || {
+                    Element::Fragment(
+                        new_items
+                            .into_iter()
+                            .map(|(_key, data)| render(data))
+                            .collect(),
+                    )
+                },
+                false,
+            )
+        });
         *slot_e.borrow_mut() = Some(realized);
     });
 

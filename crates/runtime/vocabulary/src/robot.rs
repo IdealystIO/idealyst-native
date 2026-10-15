@@ -57,6 +57,19 @@
 //! prevents — see `regression_unmount_deregisters_entries` in the
 //! vocabulary test suite.
 //!
+//! # Order, regions, touch
+//!
+//! - Queries (`find`, `find_all`, `count`, `snapshot` roots) walk the tree
+//!   in DOCUMENT order — see [`OrderKey`]. Content a reactive region
+//!   realizes after mount keeps its parent and its place through the
+//!   scene's region-context seam ([`CapturedParent`]).
+//! - `click` and `drag` drive touch handlers with synthesized events, so a
+//!   tap recognizer on a view (or an extension node that registered
+//!   through [`crate::robot_ext`]) is reachable — see [`Robot::click`],
+//!   [`Robot::drag`].
+//! - Text inputs report their accessible name (a11y label, else
+//!   placeholder) as `label`.
+//!
 //! # Duplicate `test_id` policy (mirrors the old core exactly)
 //!
 //! The `by_test_id` index is LAST-WINS: `find(Query::TestId)` resolves
@@ -149,6 +162,11 @@ pub(crate) struct ElementActions {
     pub absolute_frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
     pub device_frame: Option<Rc<dyn Fn() -> Option<ViewportRect>>>,
     pub introspect: Option<Rc<dyn Fn() -> Option<runtime_shared::introspect::NativeNode>>>,
+    /// The raw touch handler a view (or extension node) installed —
+    /// already scope-guarded, exactly the handler the backend calls. The
+    /// robot's `click` and `drag` synthesize touch streams into it (see
+    /// [`Robot::click`] / [`Robot::drag`]).
+    pub touch: Option<runtime_shared::TouchHandler>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -186,8 +204,32 @@ pub(crate) struct RegistryEntry {
     pub label_fn: Option<Rc<dyn Fn() -> Option<String>>>,
     pub actions: ElementActions,
     pub parent: Option<ElementId>,
+    /// Kept sorted by [`order`](Self::order), so a pre-order walk is
+    /// document order.
     pub children: Vec<ElementId>,
+    /// Sibling sort key — see [`OrderKey`].
+    pub order: OrderKey,
 }
+
+/// Where an entry sits among its siblings.
+///
+/// Registration order is NOT document order once reactive regions are
+/// involved: a branch that swaps in (or a keyed row added) later registers
+/// after every sibling that follows it on screen. And slot ids are recycled
+/// through a free list, so id order is meaningless too — which is how
+/// `find_all_elements(kind: "TextInput")` came back with a form step's
+/// fields shuffled.
+///
+/// So: an ordinary registration takes `(seq, 0)` from a monotonic counter
+/// (realize order, which IS document order within one synchronous mount).
+/// A region reserves one `seq` when it is created, and everything it
+/// realizes directly under its parent — at mount or any time later — takes
+/// `(that seq, n)` with `n` counting up. The region's content therefore
+/// always sorts after the siblings before the region and before the ones
+/// after it. Within one region, content added later sorts after content
+/// added earlier, so a keyed row inserted mid-list lists at the end of
+/// that list (the scene does not report row positions to the registry).
+pub type OrderKey = (u64, u64);
 
 impl RegistryEntry {
     fn current_label(&self) -> Option<String> {
@@ -257,14 +299,106 @@ impl Registry {
     fn get(&self, id: ElementId) -> Option<&RegistryEntry> {
         self.entries.get(id.0 as usize).and_then(|s| s.as_ref())
     }
+
+    /// Insert `child` into `parent`'s children at its [`OrderKey`]
+    /// position (after any equal key, so ties keep registration order).
+    fn link_child(&mut self, parent: ElementId, child: ElementId, order: OrderKey) {
+        let keys: Vec<OrderKey> = match self.get(parent) {
+            Some(p) => p
+                .children
+                .iter()
+                .map(|c| self.get(*c).map_or((0, 0), |e| e.order))
+                .collect(),
+            None => return,
+        };
+        let at = keys.partition_point(|k| *k <= order);
+        if let Some(Some(p)) = self.entries.get_mut(parent.0 as usize) {
+            p.children.insert(at, child);
+        }
+    }
+
+    /// Roots — entries with no live parent (none, or a dead/recycled
+    /// slot: the orphan rule) — in [`OrderKey`] order.
+    fn roots(&self) -> Vec<ElementId> {
+        let mut roots: Vec<(OrderKey, ElementId)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                let entry = slot.as_ref()?;
+                let is_root = match entry.parent {
+                    None => true,
+                    Some(pid) => self.get(pid).is_none(),
+                };
+                is_root.then_some((entry.order, ElementId(i as u32)))
+            })
+            .collect();
+        roots.sort_by_key(|(order, _)| *order);
+        roots.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Every live entry in document order: roots in order, each followed
+    /// by its subtree, pre-order. What `find` / `find_all` / `count` walk,
+    /// so "the first match" and "all matches" read top-to-bottom the way
+    /// the screen does rather than in slot-id order.
+    fn document_order(&self) -> Vec<ElementId> {
+        let mut out = Vec::with_capacity(self.entries.len());
+        let mut stack: Vec<ElementId> = self.roots().into_iter().rev().collect();
+        while let Some(id) = stack.pop() {
+            let Some(entry) = self.get(id) else { continue };
+            out.push(id);
+            stack.extend(entry.children.iter().rev().copied());
+        }
+        out
+    }
+}
+
+/// One parent-stack frame: the element registrations nest under, and —
+/// for a frame a region pushed — the region's sibling order (see
+/// [`OrderKey`]).
+#[derive(Clone)]
+struct Frame {
+    id: Option<ElementId>,
+    region: Option<Rc<RegionOrder>>,
+}
+
+struct RegionOrder {
+    base: u64,
+    next: std::cell::Cell<u64>,
 }
 
 thread_local! {
     static REGISTRY: RefCell<Registry> = RefCell::new(Registry::new());
     /// Parent stack: [`register_mount`] pushes before the handler
     /// realizes children; the guard pops on drop. Children peek the top
-    /// to set `parent`.
-    static PARENT_STACK: RefCell<Vec<ElementId>> = const { RefCell::new(Vec::new()) };
+    /// to set `parent`. Regions push a frame around each realize of their
+    /// content (see [`CapturedParent`]).
+    static PARENT_STACK: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    /// Source of [`OrderKey`] sequence numbers.
+    static ORDER_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+    static REGION_HOOK_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn next_seq() -> u64 {
+    ORDER_SEQ.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    })
+}
+
+/// Teach the scene's regions to carry the parent stack into their later
+/// realizations (`runtime_scene::install_region_context`). Installed on
+/// the first registration of the thread: nothing can be parented before
+/// that, so a region created earlier loses nothing.
+fn ensure_region_hook() {
+    if REGION_HOOK_INSTALLED.with(|c| c.replace(true)) {
+        return;
+    }
+    runtime_scene::install_region_context(|| {
+        let captured = capture_parent();
+        Rc::new(move |f: &mut dyn FnMut()| with_captured_parent(&captured, f))
+    });
 }
 
 /// Monotonic change-revision for a live-update push channel — same
@@ -283,46 +417,53 @@ pub(crate) fn bump_component_revision() {
     bump_revision();
 }
 
-/// The current change-revision (read by a bridge/relay transport).
 /// The element a registration would currently be parented under — the top of
 /// the parent stack, or `None` at a realize root.
-///
-/// Captured by handlers that realize a subtree LATER, outside the mount's
-/// dynamic scope (see [`with_parent`]).
 pub fn current_parent() -> Option<ElementId> {
-    PARENT_STACK.with(|s| s.borrow().last().copied())
+    PARENT_STACK.with(|s| s.borrow().last().and_then(|f| f.id))
 }
 
-/// Run `f` with `parent` as the ambient registration parent.
+/// A registration position captured at mount, to be re-entered by content
+/// realized LATER, outside the mount's dynamic scope.
 ///
 /// # Why this exists
 ///
-/// A handler that realizes its subtree asynchronously — `lazy`, once its chunk
-/// arrives — is no longer inside the dynamic scope that `register_mount`'s
-/// parent stack tracks, so everything it mounts registers as a detached
-/// registry ROOT. The elements are all there and individually addressable, but
-/// `get_parent` / `get_children` report nothing linking them to the tree, and
-/// any tooling that scopes by a `test_id` ancestor sees an EMPTY subtree.
-///
-/// Measured on the `idea-ui-docs` web build, whose page bodies are all
-/// `#[component(lazy)]`: the `page-content` anchor had 0 children while a
-/// detached 399-element root held the actual page, so a parity sweep scoped to
-/// that anchor compared nothing at all. Native was unaffected — `lazy` mounts
-/// inline there, through the mount context, which keeps the parenting.
-///
-/// Pass the value [`current_parent`] returned at MOUNT time.
-pub fn with_parent<R>(parent: Option<ElementId>, f: impl FnOnce() -> R) -> R {
-    let Some(parent) = parent else {
-        return f();
-    };
-    PARENT_STACK.with(|s| s.borrow_mut().push(parent));
+/// Content realized after the mount that owns it — a reactive region's
+/// branch swap or new keyed row, a parked late-bound item, a `lazy` body
+/// once its chunk arrives — is no longer inside the dynamic scope the
+/// parent stack tracks, so everything it mounted registered as a detached
+/// registry ROOT: `get_parent` reported nothing, a `test_id`-scoped query
+/// saw an empty subtree (the `idea-ui-docs` `page-content` anchor had 0
+/// children while a detached 399-element root held the page), and
+/// `find_all` ordered the content by recycled slot id. Scene regions
+/// capture one of these through `runtime_scene::install_region_context`;
+/// `lazy` captures one directly.
+#[derive(Clone)]
+pub struct CapturedParent(Frame);
+
+/// Capture the current registration position (see [`CapturedParent`]).
+/// Reserves the sibling-order slot the captured content will sort into.
+pub fn capture_parent() -> CapturedParent {
+    CapturedParent(Frame {
+        id: current_parent(),
+        region: Some(Rc::new(RegionOrder {
+            base: next_seq(),
+            next: std::cell::Cell::new(1),
+        })),
+    })
+}
+
+/// Run `f` registering at the captured position.
+pub fn with_captured_parent<R>(captured: &CapturedParent, f: impl FnOnce() -> R) -> R {
+    PARENT_STACK.with(|s| s.borrow_mut().push(captured.0.clone()));
+    let depth = PARENT_STACK.with(|s| s.borrow().len());
     let out = f();
     PARENT_STACK.with(|s| {
         let mut stack = s.borrow_mut();
         debug_assert_eq!(
-            stack.last(),
-            Some(&parent),
-            "robot parent stack out of order — `with_parent` must nest LIFO with \
+            stack.len(),
+            depth,
+            "robot parent stack out of order — a captured parent must nest LIFO with \
              the `RegisteredPrim` guards realized inside it"
         );
         stack.pop();
@@ -330,6 +471,7 @@ pub fn with_parent<R>(parent: Option<ElementId>, f: impl FnOnce() -> R) -> R {
     out
 }
 
+/// The current change-revision (read by a bridge/relay transport).
 pub fn current_revision() -> u64 {
     ROBOT_REVISION.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -365,8 +507,8 @@ impl Drop for RegisteredPrim {
         PARENT_STACK.with(|s| {
             let mut stack = s.borrow_mut();
             debug_assert_eq!(
-                stack.last(),
-                Some(&self.id),
+                stack.last().and_then(|f| f.id),
+                Some(self.id),
                 "robot parent stack out of order — guards must drop LIFO"
             );
             stack.pop();
@@ -435,8 +577,17 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
             as Rc<dyn Fn() -> Option<runtime_shared::introspect::NativeNode>>
     };
     backend.borrow().note_introspection_root(node);
+    ensure_region_hook();
 
-    let parent = PARENT_STACK.with(|s| s.borrow().last().copied());
+    let (parent, order) = PARENT_STACK.with(|s| match s.borrow().last() {
+        Some(Frame { id, region: Some(region) }) => {
+            let n = region.next.get();
+            region.next.set(n + 1);
+            (*id, (region.base, n))
+        }
+        Some(Frame { id, region: None }) => (*id, (next_seq(), 0)),
+        None => (None, (next_seq(), 0)),
+    });
     let id = REGISTRY.with(|r| {
         r.borrow_mut().insert(RegistryEntry {
             kind,
@@ -455,17 +606,15 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 absolute_frame: Some(absolute_frame),
                 device_frame: Some(device_frame),
                 introspect: Some(introspect),
+                touch: None,
             },
             parent,
             children: Vec::new(),
+            order,
         })
     });
     if let Some(pid) = parent {
-        REGISTRY.with(|r| {
-            if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(pid.0 as usize) {
-                entry.children.push(id);
-            }
-        });
+        REGISTRY.with(|r| r.borrow_mut().link_child(pid, id, order));
     }
     // Element↔component link: every component whose realize hook is
     // entered and unconsumed (`robot_methods` module docs) renders as
@@ -485,8 +634,22 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         bump_revision();
     });
 
-    PARENT_STACK.with(|s| s.borrow_mut().push(id));
+    PARENT_STACK.with(|s| s.borrow_mut().push(Frame { id: Some(id), region: None }));
     RegisteredPrim { id, live: true }
+}
+
+/// Attach the touch handler a mount installed AFTER registering (a view's
+/// `on_touch` goes on once its children and style are in). `handler` must
+/// be the exact, scope-guarded handler the backend received.
+pub(crate) fn attach_touch_action(prim: &RegisteredPrim, handler: runtime_shared::TouchHandler) {
+    if !prim.live {
+        return;
+    }
+    REGISTRY.with(|r| {
+        if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(prim.id.0 as usize) {
+            entry.actions.touch = Some(handler);
+        }
+    });
 }
 
 // =============================================================================
@@ -826,6 +989,18 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
 }
 
+fn query_matches(query: &Query, entry: &RegistryEntry) -> bool {
+    match query {
+        Query::TestId(id) => entry.test_id == Some(id.as_str()),
+        Query::Label(text) => entry.current_label().as_deref() == Some(text.as_str()),
+        Query::LabelContains(text) => entry
+            .current_label()
+            .is_some_and(|l| l.contains(text.as_str())),
+        Query::Kind(kind) => entry.kind == *kind,
+        Query::All => true,
+    }
+}
+
 /// The programmatic controller for a running new-core UI. Thread-local
 /// (same thread as the mount); a ZST indexing the thread-local
 /// registry, cheap to construct.
@@ -855,32 +1030,9 @@ impl Robot {
                     let eid = reg.by_test_id.get(id.as_str()).copied()?;
                     reg.get(eid).map(|e| Element::from_registry(eid, e))
                 }
-                Query::Label(ref text) => {
-                    reg.entries.iter().enumerate().find_map(|(i, slot)| {
-                        let entry = slot.as_ref()?;
-                        (entry.current_label().as_deref() == Some(text.as_str()))
-                            .then(|| Element::from_registry(ElementId(i as u32), entry))
-                    })
-                }
-                Query::LabelContains(ref text) => {
-                    reg.entries.iter().enumerate().find_map(|(i, slot)| {
-                        let entry = slot.as_ref()?;
-                        entry
-                            .current_label()
-                            .is_some_and(|l| l.contains(text.as_str()))
-                            .then(|| Element::from_registry(ElementId(i as u32), entry))
-                    })
-                }
-                Query::Kind(kind) => {
-                    reg.entries.iter().enumerate().find_map(|(i, slot)| {
-                        let entry = slot.as_ref()?;
-                        (entry.kind == kind)
-                            .then(|| Element::from_registry(ElementId(i as u32), entry))
-                    })
-                }
-                Query::All => reg.entries.iter().enumerate().find_map(|(i, slot)| {
-                    slot.as_ref()
-                        .map(|e| Element::from_registry(ElementId(i as u32), e))
+                query => reg.document_order().into_iter().find_map(|id| {
+                    let entry = reg.get(id)?;
+                    query_matches(&query, entry).then(|| Element::from_registry(id, entry))
                 }),
             }
         })
@@ -896,23 +1048,11 @@ impl Robot {
     fn find_all_inner(&self, query: Query) -> Vec<Element> {
         REGISTRY.with(|r| {
             let reg = r.borrow();
-            reg.entries
-                .iter()
-                .enumerate()
-                .filter_map(|(i, slot)| {
-                    let entry = slot.as_ref()?;
-                    let matched = match &query {
-                        Query::TestId(id) => entry.test_id == Some(id.as_str()),
-                        Query::Label(text) => {
-                            entry.current_label().as_deref() == Some(text.as_str())
-                        }
-                        Query::LabelContains(text) => entry
-                            .current_label()
-                            .is_some_and(|l| l.contains(text.as_str())),
-                        Query::Kind(kind) => entry.kind == *kind,
-                        Query::All => true,
-                    };
-                    matched.then(|| Element::from_registry(ElementId(i as u32), entry))
+            reg.document_order()
+                .into_iter()
+                .filter_map(|id| {
+                    let entry = reg.get(id)?;
+                    query_matches(&query, entry).then(|| Element::from_registry(id, entry))
                 })
                 .collect()
         })
@@ -926,12 +1066,113 @@ impl Robot {
         }
     }
 
-    /// Simulate a click/press.
+    /// Tap the element, the way a finger at its center would.
+    ///
+    /// The press goes to the nearest element at or above `element` that
+    /// can take one — the same deepest-first, bubble-up rule real touches
+    /// follow (`runtime_shared::touch` module docs):
+    ///
+    /// - a `pressable` / `button` / `link` runs its press callback;
+    /// - a view (or extension node) with an `on_touch` handler receives a
+    ///   synthesized `Began` → `Ended` at the element's center; if it
+    ///   ignores the `Began`, the tap bubbles on to the next ancestor.
+    ///
+    /// The second case is what makes tap recognizers reachable: an idea-ui
+    /// Table row, for one, is a `tap_with_press` on each cell's `on_touch`,
+    /// and `click` used to report "not available" for everything in it.
     pub fn click(&self, element: &Element) -> Result<(), RobotError> {
-        self.with_actions(element.id, |a| {
-            let f = a.click.clone().ok_or(RobotError::ActionNotAvailable("click"))?;
-            f();
-            Ok(())
+        for (id, actions) in self.press_chain(element.id)? {
+            if let Some(f) = actions.click {
+                f();
+                settle();
+                return Ok(());
+            }
+            if let Some(handler) = actions.touch {
+                let point = self.center_in_window(element.id);
+                let mut stream = SyntheticTouch::new(handler, self.window_origin(id));
+                if stream.deliver(TouchPhase::Began, point) {
+                    stream.deliver(TouchPhase::Ended, point);
+                    return Ok(());
+                }
+            }
+        }
+        Err(RobotError::ActionNotAvailable("click"))
+    }
+
+    /// Drag a single pointer along `points` — coordinates relative to
+    /// `element`'s top-left, in logical px — as `Began` at the first
+    /// point, `Moved` through the rest, `Ended` at the last. Delivered
+    /// through the touch handlers exactly as a platform would deliver
+    /// them (bubbling `Began` from `element` to the first handler that
+    /// consumes it, which then owns the whole stream), so signature pads,
+    /// pan recognizers, sliders and drag-to-reorder all see a real
+    /// gesture. One point is a press-and-release in place.
+    ///
+    /// Events are spaced [`SYNTHETIC_FRAME_NS`] apart, and staged writes
+    /// settle after each one, as a real event loop flushes between
+    /// pointer events.
+    pub fn drag(&self, element: &Element, points: &[(f32, f32)]) -> Result<(), RobotError> {
+        let (&first, rest) = points
+            .split_first()
+            .ok_or(RobotError::ActionNotAvailable("drag (no points)"))?;
+        let origin = self.window_origin(element.id);
+        let to_window = |(x, y): (f32, f32)| TouchPoint::new(origin.x + x, origin.y + y);
+        for (id, actions) in self.press_chain(element.id)? {
+            let Some(handler) = actions.touch else { continue };
+            let mut stream = SyntheticTouch::new(handler, self.window_origin(id));
+            if !stream.deliver(TouchPhase::Began, to_window(first)) {
+                continue;
+            }
+            let last = rest.last().copied().unwrap_or(first);
+            if let Some((_, moves)) = rest.split_last() {
+                for &p in moves {
+                    stream.deliver(TouchPhase::Moved, to_window(p));
+                }
+                stream.deliver(TouchPhase::Moved, to_window(last));
+            }
+            stream.deliver(TouchPhase::Ended, to_window(last));
+            return Ok(());
+        }
+        Err(RobotError::ActionNotAvailable("drag"))
+    }
+
+    /// `id` and its ancestors, innermost first, with their actions cloned
+    /// out so no registry borrow is held while author code runs.
+    fn press_chain(&self, id: ElementId) -> Result<Vec<(ElementId, ElementActions)>, RobotError> {
+        REGISTRY.with(|r| {
+            let reg = r.borrow();
+            let mut chain = Vec::new();
+            let mut cur = Some(id);
+            while let Some(c) = cur {
+                let Some(entry) = reg.get(c) else {
+                    if c == id {
+                        return Err(RobotError::ElementGone);
+                    }
+                    break;
+                };
+                chain.push((c, entry.actions.clone()));
+                cur = entry.parent;
+            }
+            Ok(chain)
+        })
+    }
+
+    /// The element's top-left in window coordinates; the origin when it
+    /// has no layout (headless hosts), which keeps element-relative
+    /// points meaningful for a handler on the element itself.
+    fn window_origin(&self, id: ElementId) -> TouchPoint {
+        let rect = REGISTRY
+            .with(|r| r.borrow().get(id).and_then(|e| e.actions.absolute_frame.clone()))
+            .and_then(|f| f());
+        rect.map_or(TouchPoint::ZERO, |r| TouchPoint::new(r.x, r.y))
+    }
+
+    fn center_in_window(&self, id: ElementId) -> TouchPoint {
+        let rect = REGISTRY
+            .with(|r| r.borrow().get(id).and_then(|e| e.actions.absolute_frame.clone()))
+            .and_then(|f| f());
+        rect.map_or(TouchPoint::ZERO, |r| {
+            TouchPoint::new(r.x + r.width / 2.0, r.y + r.height / 2.0)
         })
     }
 
@@ -1056,20 +1297,7 @@ impl Robot {
     fn snapshot_inner(&self) -> Vec<TreeNode> {
         REGISTRY.with(|r| {
             let reg = r.borrow();
-            let roots: Vec<ElementId> = reg
-                .entries
-                .iter()
-                .enumerate()
-                .filter_map(|(i, slot)| {
-                    let entry = slot.as_ref()?;
-                    let is_root = match entry.parent {
-                        None => true,
-                        Some(pid) => reg.get(pid).is_none(),
-                    };
-                    is_root.then_some(ElementId(i as u32))
-                })
-                .collect();
-            roots
+            reg.roots()
                 .iter()
                 .filter_map(|&id| Self::build_tree_node(&reg, id))
                 .collect()
@@ -1178,6 +1406,61 @@ impl Robot {
         let out = f(&actions);
         settle();
         out
+    }
+}
+
+// =============================================================================
+// Synthetic touch streams (`click` on touch handlers, `drag`)
+// =============================================================================
+
+use runtime_shared::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+
+/// Spacing between synthesized touch events: one 60 Hz frame, so velocity-
+/// and duration-based recognizers see a plausible human gesture (a tap
+/// lands well inside `TapRecognizer`'s max duration; a drag has finite
+/// velocity).
+pub const SYNTHETIC_FRAME_NS: u64 = 16_666_667;
+
+/// The robot's pointer id. Platform ids are small per-finger counters, so
+/// the top of the range cannot collide with a live finger.
+const ROBOT_TOUCH_ID: TouchId = TouchId(u64::MAX);
+
+/// One synthesized pointer stream into one handler.
+struct SyntheticTouch {
+    handler: runtime_shared::TouchHandler,
+    /// The handler's own view origin, in window coordinates —
+    /// `TouchEvent::position` is local to the view that installed it.
+    origin: TouchPoint,
+    timestamp_ns: u64,
+}
+
+impl SyntheticTouch {
+    fn new(handler: runtime_shared::TouchHandler, origin: TouchPoint) -> Self {
+        Self {
+            handler,
+            origin,
+            timestamp_ns: runtime_shared::time::now_micros().saturating_mul(1_000),
+        }
+    }
+
+    /// Deliver one event at `window` and settle. Returns whether the
+    /// handler consumed it.
+    fn deliver(&mut self, phase: TouchPhase, window: TouchPoint) -> bool {
+        let event = TouchEvent {
+            id: ROBOT_TOUCH_ID,
+            phase,
+            position: TouchPoint::new(window.x - self.origin.x, window.y - self.origin.y),
+            window_position: window,
+            timestamp_ns: self.timestamp_ns,
+            force: None,
+        };
+        self.timestamp_ns += SYNTHETIC_FRAME_NS;
+        // A plain primary press, as backends report before each dispatch.
+        runtime_shared::set_pointer_modifiers(runtime_shared::PointerModifiers::default());
+        runtime_shared::set_pointer_button(runtime_shared::PointerButton::Primary);
+        let consumed = (self.handler)(&event).consumed;
+        settle();
+        consumed
     }
 }
 
@@ -1315,6 +1598,20 @@ pub mod bridge {
             "click" => {
                 let el = resolve_element(args)?;
                 robot.click(&el).map_err(|e| e.to_string())?;
+                Ok("\"ok\"".into())
+            }
+            "drag" => {
+                let el = resolve_element(args)?;
+                let points = args["points"]
+                    .as_array()
+                    .ok_or("missing 'points' argument (an array of [x, y] pairs)")?
+                    .iter()
+                    .map(|p| match (p[0].as_f64(), p[1].as_f64()) {
+                        (Some(x), Some(y)) => Ok((x as f32, y as f32)),
+                        _ => Err(format!("each point must be [x, y], got {p}")),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                robot.drag(&el, &points).map_err(|e| e.to_string())?;
                 Ok("\"ok\"".into())
             }
             "type_text" => {
@@ -1800,6 +2097,7 @@ mod tests {
             actions: ElementActions::default(),
             parent: None,
             children: Vec::new(),
+            order: (0, 0),
         }
     }
 
@@ -2133,6 +2431,7 @@ impl Default for RegistryEntry {
             actions: ElementActions::default(),
             parent: None,
             children: Vec::new(),
+            order: (0, 0),
         }
     }
 }

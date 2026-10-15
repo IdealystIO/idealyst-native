@@ -186,6 +186,14 @@ impl<'a> Locator<'a> {
         self.app.act("set_slider", id, json!({ "value": value }));
     }
 
+    /// Drag one pointer along `points` — `[x, y]` in logical px relative
+    /// to the element's top-left (draw a signature, drag a handle).
+    pub fn drag(mut self, points: &[(f32, f32)]) {
+        let id = self.resolve_id();
+        let points: Vec<[f32; 2]> = points.iter().map(|&(x, y)| [x, y]).collect();
+        self.app.act("drag", id, json!({ "points": points }));
+    }
+
     /// Assert the element is present in the live tree.
     pub fn assert_visible(self) {
         let sel = self.sel.clone();

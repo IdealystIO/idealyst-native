@@ -11,6 +11,59 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **A web file pick never opens a second dialog** (`file-picker`). When
+  `showOpenFilePicker()` rejected with anything but `AbortError`, `pick()`
+  fell back to a hidden `<input type=file>`. If the rejection came after the
+  dialog, as in VS Code's embedded Electron browser where the user's choice
+  can be refused after the pick, the user saw a second dialog, their first
+  choice was dropped, and cancelling the second resolved as `Cancelled`. Now
+  the fallback runs only when the File System Access picker is missing, the
+  page is a cross-origin iframe, or the rejection is one the spec raises
+  before any dialog (`SecurityError`, `TypeError`). Any other rejection, or a
+  failing `getFile()` on a picked handle, returns `PickError::Backend` with
+  the browser's reason. The reason is also logged with `log_warn!`. A
+  `getFile()` refused for lack of a read grant asks once for
+  `requestPermission({ mode: 'read' })` and reads again. *Migration:* none
+  needed; handle `Err` from `pick()` as you already must.
+
+- **Robot `click` reaches touch handlers, and a new `drag` verb**
+  (`runtime-vocabulary`, `table`, `mcp-server`). `click` used to work only
+  on buttons, pressables and links, so a tap recognizer on a view's
+  `on_touch` could not be pressed. That covers an idea-ui Table's clickable
+  rows. `click` now taps the way a finger does: it goes to the nearest
+  element at or above the target that takes a press, and drives an
+  `on_touch` handler with a synthesized `Began` → `Ended`. Clicking a Text
+  inside a clickable row therefore presses the row, where it used to fail.
+  `drag(element_id, points)` sends one pointer along element-relative
+  points (`Began`, `Moved`…, `Ended`) for signature pads, pan handles and
+  drag-to-reorder. Scene-Registry extensions register their nodes with
+  `runtime_vocabulary::robot_ext::register_extension_node`. The Table SDK's
+  web cells now do, which adds an `IntrospectionOps` bound to
+  `table::register` / `defer` / `register_from_chunk`; every backend
+  implements it. *Migration:* a test that expected `click` on a non-pressable
+  element to fail may now press an ancestor.
+
+- **Robot queries return document order; text inputs carry a label**
+  (`runtime-scene`, `runtime-vocabulary`, `idea-ui`). `find_all_elements`
+  returned elements in registry-slot order, and slots are recycled.
+  Content a reactive region realized after mount (a step switch, a new
+  keyed row) also registered with no parent. Together, a form's inputs
+  came back shuffled. Queries now walk the tree top to bottom. Regions carry
+  the robot's parent into later realizations through a new scene seam,
+  `runtime_scene::install_region_context`. A text input reports its
+  accessible name as `label` (its a11y label, else its placeholder).
+  idea-ui `Field` and `Textarea` name their input from `label`, or from a
+  new `accessibility_label` prop when the visible label is drawn outside
+  the component. This also fixes screen readers announcing those inputs
+  unnamed. *Migration:* a test that relied on `find_all` order should
+  expect screen order.
+
+- **`log_info!` and friends reach the robot's `get_logs`** (`runtime-shared`).
+  The log macros wrote only to the platform logger. Nothing fed the robot
+  buffer, because no backend installs stdio capture, so `get_logs` was
+  empty on every backend. Each line is now also recorded with source
+  `"log"` and text `"[LEVEL] msg"` in robot builds.
+
 - **Overlay placement is the same on every backend, matching web**
   (`runtime-shared`, `backend-ios-mobile`, `backend-macos`,
   `backend-linux`, `backend-android-mobile`, `backend-web`). Each native

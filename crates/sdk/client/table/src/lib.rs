@@ -140,7 +140,8 @@ use std::rc::Rc;
 
 use runtime_shared::{HoverHandler, TouchHandler};
 use runtime_scene::{item, Element, Host, MountCx, Registry};
-use runtime_vocabulary::caps::InputOps;
+use runtime_vocabulary::caps::{InputOps, IntrospectionOps};
+use runtime_vocabulary::robot_ext::register_extension_node;
 use runtime_vocabulary::glue::{
     self, BuildElement, ChildList, DisplayKind, IntoElement, StyleApplication, StyleRules,
     StyleSheet, TrackSize, VariantSet,
@@ -1484,11 +1485,13 @@ fn mount_table<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: StyleServices + InputOps,
+    H: StyleServices + InputOps + IntrospectionOps,
 {
     let data = prim.take();
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_element("table");
+    // Robot identity, so the cells below parent into a real tree.
+    let _robot = register_extension_node(&backend, &node, None);
     {
         // Reset the browser's default table chrome — apps style via the
         // stylesheet system. `border-collapse: collapse` keeps the cell
@@ -1535,11 +1538,12 @@ fn mount_row<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: StyleServices + InputOps,
+    H: StyleServices + InputOps + IntrospectionOps,
 {
     let data = prim.take();
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_element("tr");
+    let _robot = register_extension_node(&backend, &node, None);
     cx.realize_children_into(&mut node, children);
     if let Some(style) = data.style {
         attach_style(&backend, &node, style);
@@ -1564,12 +1568,13 @@ fn mount_cell<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: StyleServices + InputOps,
+    H: StyleServices + InputOps + IntrospectionOps,
 {
     let data = prim.take();
     let backend = cx.backend().clone();
     let tag = if data.header { "th" } else { "td" };
     let mut node = backend.borrow_mut().create_element(tag);
+    let robot = register_extension_node(&backend, &node, None);
     // `table` resolved any `Rest` span to a count before mount.
     let span = data.span.resolve(1);
     if span > 1 {
@@ -1580,6 +1585,9 @@ where
         attach_style(&backend, &node, style);
     }
     if let Some(h) = data.on_touch {
+        // The clickable-row tap recognizer: robot `click` on anything in
+        // the cell bubbles to it, as a real tap does.
+        robot.attach_touch(&h);
         backend.borrow_mut().install_touch_handler(&node, h);
     }
     if let Some(h) = data.on_hover {
@@ -1601,11 +1609,12 @@ fn mount_foot<H>(
     children: Vec<Element>,
 ) -> H::Node
 where
-    H: StyleServices + InputOps,
+    H: StyleServices + InputOps + IntrospectionOps,
 {
     let _ = prim.take();
     let backend = cx.backend().clone();
     let mut node = backend.borrow_mut().create_element("tfoot");
+    let _robot = register_extension_node(&backend, &node, None);
     cx.realize_children_into(&mut node, children);
     node
 }
@@ -1618,7 +1627,7 @@ where
 /// the vocabulary built-ins.
 pub fn register<H>(registry: &mut Registry<H>)
 where
-    H: StyleServices + InputOps + 'static,
+    H: StyleServices + InputOps + IntrospectionOps + 'static,
 {
     registry.register::<PrimCell<TablePrim>, _>(mount_table::<H>);
     registry.register::<PrimCell<TableRowPrim>, _>(mount_row::<H>);
@@ -1645,7 +1654,7 @@ where
 /// where splitting exists and is a plain `register` elsewhere.
 pub fn defer<H>(registry: &mut Registry<H>)
 where
-    H: Host + StyleServices + InputOps + 'static,
+    H: Host + StyleServices + InputOps + IntrospectionOps + 'static,
 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -1676,7 +1685,7 @@ where
 /// `#[component(lazy)]` body that calls this compiling on every target.
 pub fn register_from_chunk<H>()
 where
-    H: Host + StyleServices + InputOps + 'static,
+    H: Host + StyleServices + InputOps + IntrospectionOps + 'static,
 {
     #[cfg(target_arch = "wasm32")]
     {

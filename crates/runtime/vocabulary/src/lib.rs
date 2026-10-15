@@ -348,6 +348,9 @@ macro_rules! __remote_import {
 pub mod robot;
 #[cfg(feature = "robot")]
 pub(crate) mod robot_highlight;
+// Always compiled (inert without `robot`): extension handlers register
+// their nodes through it unconditionally.
+pub mod robot_ext;
 // Always compiled (stub-shaped without `robot`): every `#[component]`
 // emits `glue::__inspect::…` (and a `#[method]` component `glue::robot::…`)
 // unconditionally (see robot_methods' module docs).

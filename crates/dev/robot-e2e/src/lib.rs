@@ -15,6 +15,7 @@
 //! | `locator.fill()`           | [`Locator::fill`]             | `Robot::type_text`  |
 //! | `locator.setChecked()`     | [`Locator::set_toggle`]       | `Robot::set_toggle` |
 //! | (slider drag)              | [`Locator::set_slider`]       | `Robot::set_slider` |
+//! | `mouse.down/move/up`       | [`Locator::drag`]             | `Robot::drag`       |
 //! | `locator.focus()/.blur()`  | [`Locator::focus`]/[`blur`]   | `Robot::focus`/`blur`|
 //! | `expect(l).toBeVisible()`  | [`Expect::to_be_visible`]     | `find().is_some()`  |
 //! | `expect(l).toHaveText()`   | [`Expect::to_have_text`]      | live `label`        |
@@ -217,6 +218,18 @@ impl Locator {
         let r = Robot::new()
             .set_slider(&el, value)
             .map_err(|e| format!("{}.set_slider() failed: {e:?}", self.desc));
+        settle();
+        r
+    }
+
+    /// Drag one pointer along `points` (element-relative logical px):
+    /// draw on a signature pad, drag a handle. See `Robot::drag`.
+    pub fn drag(&self, points: &[(f32, f32)]) -> Result<(), String> {
+        log(format!("  ▸ {}.drag({} points)", self.desc, points.len()));
+        let el = self.resolve()?;
+        let r = Robot::new()
+            .drag(&el, points)
+            .map_err(|e| format!("{}.drag() failed: {e:?}", self.desc));
         settle();
         r
     }

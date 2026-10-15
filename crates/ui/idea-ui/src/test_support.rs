@@ -129,6 +129,8 @@ pub enum P {
         secure: bool,
         /// The mount-time `autofocus` flag.
         autofocus: bool,
+        /// The input's accessible name (`a11y.label`).
+        a11y_label: Option<String>,
         style: Option<TStyle>,
     },
     TextArea {
@@ -136,6 +138,8 @@ pub enum P {
         max_rows: Option<u32>,
         /// The mount-time `autofocus` flag.
         autofocus: bool,
+        /// The text area's accessible name (`a11y.label`).
+        a11y_label: Option<String>,
         style: Option<TStyle>,
     },
     ScrollView {
@@ -305,6 +309,7 @@ mod imp {
                 on_focus: p.on_focus.is_some(),
                 secure: eval(p.secure),
                 autofocus: p.autofocus,
+                a11y_label: p.a11y.label,
                 style: style(p.style),
             };
         }
@@ -314,6 +319,7 @@ mod imp {
                 min_rows: p.min_rows,
                 max_rows: p.max_rows,
                 autofocus: p.autofocus,
+                a11y_label: p.a11y.label,
                 style: style(p.style),
             };
         }

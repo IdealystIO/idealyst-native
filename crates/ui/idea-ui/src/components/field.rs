@@ -318,11 +318,19 @@ pub struct FieldProps {
     /// and disables in place, without rebuilding the input.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub disabled: bool,
+    /// The input's accessible name — what screen readers announce and what
+    /// the robot reports as the input's `label`. Defaults to `label`. Set
+    /// it when the visible label is drawn OUTSIDE this component (a custom
+    /// label row), so the input is still named. Snapshot at build, like
+    /// every a11y name here.
+    #[prop(static)]
+    pub accessibility_label: Option<String>,
 }
 
 impl Default for FieldProps {
     fn default() -> Self {
         Self {
+            accessibility_label: None,
             label: Reactive::Static(None),
             value: runtime_core::signal(String::new()),
             on_change: Rc::new(|_| {}),
@@ -804,6 +812,12 @@ pub fn Field(props: &FieldProps) -> Element {
         .secure(secure)
         .placeholder_reactive(props.placeholder.clone())
         .autofocus(props.autofocus);
+    // Accessible name: the explicit override, else the visible label. The
+    // label is a sibling of the input, so the input can't derive it.
+    // Snapshot — the a11y prop bag is plain data (Checkbox does the same).
+    if let Some(name) = props.accessibility_label.clone().or_else(|| props.label.get()) {
+        input = input.a11y_label(name);
+    }
     if let Some(field_ref) = props.field_ref.clone() {
         input = input.bind(field_ref);
     }
@@ -1203,6 +1217,37 @@ mod tests {
             };
             assert_eq!(input_autofocus(Field(&adorned)), Some(true), "adorned layout");
             assert_eq!(input_autofocus(Field(&FieldProps::default())), Some(false));
+        });
+    }
+
+    /// The built Field's `text_input` accessible name.
+    fn input_a11y_label(field: Element) -> Option<String> {
+        let P::View { children, .. } = classify(field) else { panic!("Field renders a view wrapper") };
+        children
+            .into_iter()
+            .find_map(|c| match classify(c) {
+                P::TextInput { a11y_label, .. } => Some(a11y_label),
+                _ => None,
+            })
+            .expect("Field tree has a text_input node")
+    }
+
+    /// A Field's input had no accessible name: its visible label is a
+    /// sibling Text, so screen readers announced an unnamed field and the
+    /// robot reported `label: null` for every form input.
+    #[test]
+    fn regression_field_label_names_its_input() {
+        with_test_world(|| {
+            theme();
+            let labeled = FieldProps { label: Reactive::Static(Some("Email".into())), ..Default::default() };
+            assert_eq!(input_a11y_label(Field(&labeled)).as_deref(), Some("Email"));
+            // A label drawn outside the Field names it explicitly.
+            let external = FieldProps {
+                accessibility_label: Some("Full Name".into()),
+                ..Default::default()
+            };
+            assert_eq!(input_a11y_label(Field(&external)).as_deref(), Some("Full Name"));
+            assert_eq!(input_a11y_label(Field(&FieldProps::default())), None);
         });
     }
 

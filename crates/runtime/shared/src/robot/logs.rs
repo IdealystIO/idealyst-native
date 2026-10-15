@@ -1,13 +1,19 @@
 //! Log capture for the robot.
 //!
-//! Two sources feed a shared ring buffer:
+//! Three sources feed a shared ring buffer:
 //!
-//! 1. **Direct calls** — framework / backend code calls
+//! 1. **The framework log macros** — `log_debug!` / `log_info!` /
+//!    `log_warn!` / `log_error!` (and `logging::log`) record every
+//!    line here with source `"log"` and text `"[LEVEL] msg"`, on every
+//!    backend, in addition to the platform logger (`console.*` on web).
+//!
+//! 2. **Direct calls** — framework / backend code calls
 //!    [`push`] (or the [`robot_log!`] macro) to record a structured
-//!    log entry. This is the path with the richest context (level,
-//!    source label).
+//!    log entry under its own source label.
 //!
-//! 2. **Stdout / stderr capture** — when [`start_stdio_capture`] is
+//! 3. **Stdout / stderr capture** — opt-in, and no backend installs a
+//!    [`LogCapture`] today, so raw `println!` / `eprintln!` output is NOT
+//!    captured anywhere. When [`start_stdio_capture`] is
 //!    called early in startup, the platform's stdout and stderr file
 //!    descriptors are spliced through a pipe. A background thread
 //!    reads from the pipe, splits on newlines, pushes each line into

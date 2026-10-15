@@ -77,9 +77,13 @@ where
     {
         let alive = crate::callback_guard::ScopeAlive::current();
         if let Some(h) = prim.on_touch {
-            backend
-                .borrow_mut()
-                .install_touch_handler(&node, alive.wrap_touch(h));
+            let h = alive.wrap_touch(h);
+            // The robot drives `click` / `drag` through this exact handler,
+            // so a tap recognizer (a clickable Table row, a signature pad)
+            // gets the same events a finger would produce.
+            #[cfg(feature = "robot")]
+            crate::robot::attach_touch_action(&_robot, h.clone());
+            backend.borrow_mut().install_touch_handler(&node, h);
         }
         if let Some(h) = prim.on_wheel {
             backend

@@ -69,6 +69,36 @@ impl BuildElement for MapViewProps {
 An unregistered payload panics at realize, by design. That's the loud failure —
 not a reason to move the feature into the framework core.
 
+## Make your nodes visible to the robot
+
+The builtin primitives register themselves with the robot (the registry
+behind `find_element`, `click`, `drag` and the Inspector). Your mount handler
+has to do it explicitly, or everything you mount is invisible: children
+rendered inside your node attach to whatever sits above it, and a touch
+handler you install can't be clicked or dragged by a test.
+
+```rust
+use runtime_vocabulary::robot_ext::register_extension_node;
+
+fn mount_map<H>(cx: &mut MountCx<'_, H>, prim: &Rc<MapPrim>, children: Vec<Element>) -> H::Node
+where
+    H: ExternalOps + StyleServices + IntrospectionOps + 'static,
+{
+    let mut node = /* ...build the platform node... */;
+    // Before the children, so they parent to this node.
+    let robot = register_extension_node(cx.backend(), &node, None);
+    cx.realize_children_into(&mut node, children);
+    if let Some(h) = on_touch {
+        robot.attach_touch(&h); // the same handler the backend receives
+        cx.backend().borrow_mut().install_touch_handler(&node, h);
+    }
+    node
+}
+```
+
+Call it unconditionally: without the `robot` feature it does nothing and
+compiles to nothing.
+
 ## Name your seams exactly this
 
 There are three, and they mean different things. Apps and tooling key off the
@@ -268,6 +298,8 @@ that matters for a server-rendered page, lazy is the wrong default for it.
 ## Before you publish
 
 - [ ] Seam is named `register`, not a synonym.
+- [ ] Mount handlers call `register_extension_node` (and `attach_touch` for any
+      touch handler), so tests can find and drive what you mount.
 - [ ] No no-op `register<B>(_backend: &mut B)` anywhere.
 - [ ] Backend-concrete arms share the seam name under `cfg`.
 - [ ] Payload types are private; anything an app must name has a function.

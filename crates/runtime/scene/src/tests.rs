@@ -2194,3 +2194,72 @@ fn regression_deferred_drain_after_earlier_region_grew() {
     rig.registry.register_deferred::<Heavy, _>(mount_heavy);
     assert_eq!(rig.dom(0), "view[f1 f2 f3 H end]");
 }
+
+// ============================================================================
+// Region context
+// ============================================================================
+
+thread_local! {
+    /// Stand-in for a consumer's ambient mount state (the robot's parent
+    /// stack): set around the initial mount only, so any LATER realize
+    /// sees it only if the region carried it.
+    static AMBIENT: Cell<u32> = const { Cell::new(0) };
+}
+
+fn install_ambient_capture() {
+    install_region_context(|| {
+        let captured = AMBIENT.with(|a| a.get());
+        Rc::new(move |f: &mut dyn FnMut()| {
+            let prev = AMBIENT.with(|a| a.replace(captured));
+            f();
+            AMBIENT.with(|a| a.set(prev));
+        })
+    });
+}
+
+/// A region's later realizations (branch swap, new keyed row) ran with the
+/// mount-time ambient state gone, so the robot registered their elements as
+/// detached roots. Every driver now re-enters the context captured when the
+/// region was created.
+#[test]
+fn regression_region_rerealize_reenters_mount_time_context() {
+    for splice in [false, true] {
+        install_ambient_capture();
+        let rig = Rig::new(splice);
+        let seen: Rc<RefCell<Vec<(&'static str, u32)>>> = Rc::default();
+        let flip = rig.world.enter(|| signal(0));
+        let list = rig.world.enter(|| signal(vec![1i32]));
+        let (seen_d, seen_k) = (seen.clone(), seen.clone());
+        AMBIENT.with(|a| a.set(7));
+        let _shell = rig.realize(v(vec![
+            dyn_element(move || {
+                let _ = flip.get();
+                seen_d.borrow_mut().push(("dyn", AMBIENT.with(|a| a.get())));
+                t("d")
+            }),
+            keyed(
+                move || list.get(),
+                |n| *n,
+                move |n: i32| {
+                    seen_k.borrow_mut().push(("row", AMBIENT.with(|a| a.get())));
+                    t(&format!("r{n}"))
+                },
+            ),
+        ]));
+        AMBIENT.with(|a| a.set(0));
+
+        flip.set(1);
+        list.set(vec![1, 2]);
+        rig.flush();
+        // Mount (dyn + row 1), then the swap and the new row. The anchored
+        // keyed fallback rebuilds row 1 too — every realization counts.
+        let seen = seen.borrow();
+        assert!(seen.len() >= 4, "splice={splice}: regions re-ran: {seen:?}");
+        assert!(
+            seen.iter().all(|&(_, ambient)| ambient == 7),
+            "splice={splice}: later realizations must see the mount-time context: {seen:?}"
+        );
+        // Outside the region the ambient state is untouched.
+        assert_eq!(AMBIENT.with(|a| a.get()), 0);
+    }
+}
