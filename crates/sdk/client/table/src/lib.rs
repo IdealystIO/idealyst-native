@@ -48,8 +48,17 @@
 //!   rows flatten after every body row, wherever the section was written.
 //! - [`TableProps::header_slot`] / [`TableProps::footer_slot`] put
 //!   content inside the styled surface but outside the horizontal
-//!   scroller. Either one gives a plain table the surface wrapper, so the
-//!   author style lands on the wrapper rather than the `<table>`.
+//!   scroller.
+//!
+//! # The author style never lands on the `<table>`
+//!
+//! On web, `.with_style(...)` styles a SURFACE view wrapped around the
+//! `<table>` (the scroller sits between them in scroll-x mode), never the
+//! `<table>` node: its `border-collapse: collapse` reset makes the browser
+//! ignore `border-radius`, so a rounded frame drew square. Native already
+//! styles an outer view around the grid, so both lowerings carry the
+//! author style on the same node. An unstyled plain table stays a bare
+//! `<table>`.
 //!
 //! # Row proxies (drag & drop geometry)
 //!
@@ -181,9 +190,8 @@ pub struct TableProps {
     /// OUTSIDE the horizontal scroller — a caption, a strip of notices,
     /// a toolbar. It keeps still while a `scroll_x` table's columns
     /// scroll sideways beneath it, and it shares the table's border.
-    /// Setting either slot gives a plain table the same surface wrapper
-    /// scroll-x uses (styled surface > content), so the author style
-    /// lands on that wrapper rather than on the `<table>`.
+    /// Slots sit inside the styled surface wrapper (styled surface >
+    /// content), which carries the author style on every table.
     pub header_slot: Option<Element>,
     /// Content drawn inside the frame BELOW the rows, outside the
     /// horizontal scroller — a blank-state sentence, an "Add entry"
@@ -285,8 +293,10 @@ pub struct TableCellProps {
 /// [`PrimCell`] at the item boundary — the registry key is
 /// `PrimCell<TablePrim>`.
 pub struct TablePrim {
-    /// Author style, attached to the `<table>` node after children
-    /// mount (the standard handler ordering).
+    /// Style attached to the `<table>` node after children mount (the
+    /// standard handler ordering). [`table`] never sets it — the author
+    /// style goes on the surface wrapper (see the module docs); it is
+    /// here for direct item construction.
     pub style: Option<StyleProp>,
     /// Horizontal-scroll mode — flips the mount-time width strategy
     /// from `width: 100%` (fill, wrap) to `min-width: 100%; width:
@@ -637,7 +647,8 @@ pub mod item_lowering {
     }
 
     /// The whole web table element — span resolution, the `<table>`
-    /// item, and (scroll-x or a slot) the surface wrapper. What
+    /// item, and (scroll-x, a slot, or an author style) the surface
+    /// wrapper. What
     /// [`table`] builds on wasm32; always compiled so host tests can
     /// render the real web shape through the SSR backend.
     pub fn web_table(
@@ -649,12 +660,19 @@ pub mod item_lowering {
     ) -> Element {
         let parts = TableParts { rows, style, scroll_x, header_slot, footer_slot };
         resolve_spans(&parts.rows);
-        if !parts.wrapped() {
-            return item_lowering::table_item(parts.rows, parts.style, false);
+        // A STYLED plain table is wrapped too, never styled on the
+        // `<table>` itself: the reset gives the `<table>` `border-collapse:
+        // collapse` (so the cells' dividers merge), and CSS ignores
+        // `border-radius` on a table whose borders collapse — the author's
+        // rounded frame rendered square. On a surface view the radius
+        // applies, and the structure matches the native lowering, whose
+        // author style always lands on an outer view around the grid.
+        if !parts.wrapped() && parts.style.is_none() {
+            return item_lowering::table_item(parts.rows, None, false);
         }
         // Structure: styled SURFACE > [header slot, content, footer slot],
         // where content is the horizontal scroller > `<table>` in scroll-x
-        // mode and the bare `<table>` otherwise. The author style
+        // mode and the bare `<table>` otherwise (slots, or just a style). The author style
         // (border/radius/background — idea-ui's themed surface) sits
         // OUTSIDE the scroller so the frame stays put while the columns
         // scroll inside it; a surface inside the scroller rode along with

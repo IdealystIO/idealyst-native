@@ -1048,6 +1048,77 @@ fn slots_on_a_plain_table_wrap_it_in_the_styled_surface_on_web() {
     );
 }
 
+/// Regression (idea-ui 5.2.0, CrewForge): a styled plain table — no
+/// `scroll_x`, no slot — drew SQUARE corners on web although its style
+/// asked for a radius. The style landed on the `<table>`, whose
+/// `border-collapse: collapse` reset makes browsers ignore
+/// `border-radius`. The style must land on a surface view around the
+/// `<table>` instead, as it already did for slotted / scroll-x tables.
+/// (The browser's paint is not reachable from a host test; this pins
+/// the node the radius lands on, which is the whole bug.)
+#[test]
+fn regression_styled_plain_table_rounds_on_a_surface_not_the_collapsed_table() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        let style = glue::StyleRules {
+            border_top_left_radius: Some(glue::Tokenized::Literal(runtime_shared::Length::Px(9.0))),
+            ..Default::default()
+        };
+        item_lowering::web_table(
+            vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(false, ColSpan::default(), Vec::new(), None)],
+                None,
+            )],
+            Some(StyleProp::Static(Rc::new(style))),
+            false,
+            None,
+            None,
+        )
+    });
+    let html = &page.html;
+    let table_at = html.find("<table").expect("table renders");
+    let table_tag_end = table_at + html[table_at..].find('>').unwrap();
+    assert!(
+        html[table_at..table_tag_end].contains("border-collapse: collapse")
+            || html[table_at..table_tag_end].contains("border-collapse:collapse"),
+        "the <table> keeps its collapsed-border reset: {html}"
+    );
+    assert!(
+        !html[table_at..table_tag_end].contains("radius"),
+        "the radius must not land on the collapsed <table>: {html}"
+    );
+    // The surface's style mints a class; its rule carries the radius.
+    let surface = &html[..table_at];
+    let class_at = surface.find("class=\"").expect("surface wrapper carries the style class") + 7;
+    let class = &surface[class_at..class_at + surface[class_at..].find('"').unwrap()];
+    let css = &page.head_css;
+    let rule_at = css.find(&format!(".{class}")).unwrap_or_else(|| panic!("rule for {class}: {css}"));
+    let rule = &css[rule_at..rule_at + css[rule_at..].find('}').unwrap()];
+    assert!(
+        rule.contains("border-top-left-radius"),
+        "the radius lands on the surface wrapping the <table>: {rule}"
+    );
+}
+
+/// An UNSTYLED plain table has no frame to round, so it stays a bare
+/// `<table>` — no wrapper view for nothing.
+#[test]
+fn unstyled_plain_table_stays_a_bare_table_on_web() {
+    let el = item_lowering::web_table(
+        vec![item_lowering::row_item(Vec::new(), None)],
+        None,
+        false,
+        None,
+        None,
+    );
+    match el {
+        Element::Item { data, .. } => assert!(
+            data.downcast_ref::<PrimCell<table::TablePrim>>().is_some(),
+            "root is the <table> item itself"
+        ),
+        _ => panic!("expected the <table> item"),
+    }
+}
+
 /// `map_cell_application` re-selects a STATIC sheet without turning it
 /// reactive (row tone / footer / density must not cost every cell a
 /// style closure), reaches through a span marker, and composes around a

@@ -35,7 +35,7 @@ ui! {
 
 | Target | Mechanism |
 | --- | --- |
-| Web (wasm32) | Real `<table>`/`<tr>`/`<th>`/`<td>` via scene-registry handlers. `border-collapse: collapse; width: 100%; table-layout: auto;` on the `<table>`; the browser sizes every column to fit its widest cell and applies that width to every row. |
+| Web (wasm32) | Real `<table>`/`<tr>`/`<th>`/`<td>` via scene-registry handlers. `border-collapse: collapse; width: 100%; table-layout: auto;` on the `<table>`; the browser sizes every column to fit its widest cell and applies that width to every row. A table's own `.with_style(...)` lands on a surface view around the `<table>`, not on the `<table>` (see Styling). |
 | iOS / Android / macOS / terminal / gpu | Plain views built with the vocabulary glue's `view` builder: rows lower to an `Element::Fragment` (no box) and every cell parents directly under one `display: grid` node with `N` `auto` column tracks. Because the tracks are shared, column `i` is one width across every row. No per-backend handler registration needed. |
 
 `runtime-layout` treats `auto` tracks as the `table-layout: auto`
@@ -100,6 +100,14 @@ ui! {
 Put borders on the **cell**, not on an inner wrapper view —
 `border-collapse: collapse` on the `<table>` merges adjacent cell borders
 into one continuous boundary.
+
+A style on the table itself goes on a surface view wrapped around the
+`<table>` (around the scroller in `scroll_x` mode), never on the
+`<table>` node. Browsers ignore `border-radius` on a table with collapsed
+borders, so a rounded frame on the `<table>` drew square corners. Native
+styles an outer view around its grid, so the frame lands on the same node
+on every backend. To keep cell backgrounds inside rounded corners, give
+the frame `overflow: hidden`.
 
 ## Registration
 
