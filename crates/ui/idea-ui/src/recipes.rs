@@ -120,6 +120,36 @@ recipe!(
 );
 
 recipe!(
+    Select,
+    /// Rows with a muted second line: chain `.with_description(text)` on a
+    /// `SelectOption` to draw a hint (or a note on what picking the row
+    /// does) under its label in the menu. The trigger keeps showing only
+    /// the label; `Autocomplete` takes the same rows and also filters on
+    /// the description.
+    pub fn select_option_descriptions() -> ::runtime_core::Element {
+        use crate::{Select, SelectOption};
+        use ::runtime_core::{signal, ui};
+        use ::std::rc::Rc;
+
+        let value = signal(String::new());
+        let on_change: Rc<dyn Fn(String)> = Rc::new(move |v| value.set(v));
+        ui! {
+            Select(
+                value = value,
+                on_change = on_change,
+                options = vec![
+                    SelectOption::new("form_entry.address", "Address")
+                        .with_description("as its one-line label"),
+                    SelectOption::new("form_entry.address_lines", "Address (multi-line)")
+                        .with_description("one line per address part"),
+                ],
+                placeholder = Some("Insert a field".to_string()),
+            )
+        }
+    }
+);
+
+recipe!(
     Field,
     /// A labeled, controlled text input. The host owns the `value`
     /// signal; `on_change` fires the new text on each edit. Add `help`
@@ -1199,10 +1229,10 @@ recipe!(
 recipe!(
     Autocomplete,
     /// A type-to-filter combo box. The host owns the `value` signal (the
-    /// current text); `on_change` fires as the user types AND when a row
-    /// is picked. `options` are matched against the text — pass the same
-    /// `SelectOption::new(id, label)` rows a `Select` takes. Use
-    /// `empty_text` for the "no matches" line.
+    /// committed option's `id`); `on_change` fires with that id when a row
+    /// is picked. `options` are matched against the typed text (label and
+    /// optional description) — pass the same `SelectOption::new(id, label)`
+    /// rows a `Select` takes. Use `empty_text` for the "no matches" line.
     pub fn autocomplete_filtering() -> ::runtime_core::Element {
         use crate::{Autocomplete, SelectOption};
         use ::runtime_core::{signal, ui};

@@ -1037,6 +1037,39 @@ stylesheet! {
     }
 }
 
+// `SelectOptionBody` stacks a row's label over its optional description
+// (`SelectOption::with_description`); a row without one renders the bare
+// label and never builds it. `SelectOptionDescription` is that muted second
+// line — `FieldHelp`'s muted color + small type, the theme's standard
+// help/caption treatment. Its `active` variant mirrors the row's: on the
+// committed (`on`, solid primary) row the muted color would lose contrast,
+// so it takes the solid text color. Shared by Select and Autocomplete rows.
+
+stylesheet! {
+    pub SelectOptionBody<IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+        }
+    }
+}
+
+stylesheet! {
+    pub SelectOptionDescription<IdeaThemeRef> {
+        base(t) {
+            color: t.color.text_muted(),
+            font_size: t.typography.body_sm_size(),
+        }
+        variant active {
+            #[default]
+            off(t) { color: t.color.text_muted() }
+            on(t)  { color: t.intent.primary.solid_text() }
+        }
+        transitions {
+            color: 150ms EaseOut,
+        }
+    }
+}
+
 // =============================================================================
 // Autocomplete — searchable combobox (input + chevron + filtered menu)
 // =============================================================================
@@ -1827,11 +1860,12 @@ stylesheet! {
 // Tabs — horizontal tab bar + content panel.
 // =============================================================================
 //
-// `TabBar` is the row holding tab buttons. The active button gets
-// the `on` variant on the `active` axis — that styles its background
-// + foreground to look selected. `TabPanel` is the content area
-// below the bar; padding sits there, not on the bar, so the active
-// row sits flush with the bar's bottom border.
+// `TabBar` is the row holding tab buttons; `TabBarHost` frames it and
+// holds the divider (`TabBarRule`). An underline tab is `TabButton`, or
+// `TabButtonActive` when selected; a dot tab is `TabButtonDot` with an
+// `active` axis. `TabPanel` is the content area below the bar; vertical
+// padding sits there, not on the bar, so the active underline stays on
+// the divider.
 
 stylesheet! {
     // The row of tabs itself. The underline moved to `TabBarHost` —
@@ -1864,15 +1898,30 @@ stylesheet! {
             // taps.
             align_self: runtime_core::AlignSelf::FlexStart,
         }
+        // `Tabs(padding_horizontal = …)`: insets the tabs from the bar's
+        // ends while the divider still spans the full width (it is on
+        // the host, outside the scroller). On the strip, so the inset
+        // scrolls with the tabs and the last tab can scroll clear of the
+        // edge. Horizontal only — vertical padding would lift the
+        // underline off the divider.
+        variant pad {
+            #[default]
+            none(_t) { padding_horizontal: Length::Px(0.0) }
+            xs(t)    { padding_horizontal: t.spacing.xs() }
+            sm(t)    { padding_horizontal: t.spacing.sm() }
+            md(t)    { padding_horizontal: t.spacing.md() }
+            lg(t)    { padding_horizontal: t.spacing.lg() }
+            xl(t)    { padding_horizontal: t.spacing.xl() }
+        }
     }
 }
 
 stylesheet! {
-    // The full-width frame around the scrolling strip. It owns the
+    // The full-width frame around the scrolling strip. It holds the
     // DIVIDER ([`TabBarRule`]) — a rule spanning the viewport that stays
     // put while the tabs move over it — and bottom-aligns the strip so
-    // the active tab's underline lands ON that rule rather than two
-    // points above it.
+    // the active tab's 2px underline COVERS that rule rather than
+    // floating above it.
     //
     // That alignment is the whole point of a tab bar's bottom edge: the
     // bar IS the line between chrome and content, and the selection mark
@@ -1905,26 +1954,40 @@ stylesheet! {
             // than overflow. The floor is one tab: `spacing-sm` above
             // and below the body line, plus the 2px selection rule.
             min_height: Length::Px(40.0),
-            // Keep the strip clear of the divider band. A border draws
-            // OUTSIDE the content box and, on a native layer, ON TOP of
-            // the subviews inside it — so with the strip flush to the
-            // host's edge the divider painted over the bottom point of
-            // the active tab's 2px underline and left a 1px mark. One
-            // point of padding is the whole fix: the underline now ends
-            // exactly where the divider begins.
-            padding_bottom: Length::Px(1.0),
-            // The divider itself. A border (not an absolutely positioned
-            // rule) deliberately: out-of-flow content paints ABOVE in-flow
-            // siblings on every backend here, so a rule laid under the
-            // strip covered the active tab's underline instead of the
-            // other way round. As a border it draws just below the strip's
-            // bottom edge, and with `justify_content: FlexEnd` above the
-            // underline sits directly ON it with nothing between.
-            border_bottom_width: 1.0,
-            border_bottom_color: t.color.border(),
+            // No border here: the divider is `TabBarRule`, a child, so
+            // the active underline can paint OVER it. A border cannot be
+            // overlapped — on a native layer it draws on top of every
+            // subview, so a flush strip had the divider cut through the
+            // underline (the reason this once carried 1px of bottom
+            // padding, which kept the underline just above the line).
+        }
+    }
+}
+
+stylesheet! {
+    // The divider: a 1px rule along the host's bottom edge, under the
+    // strip. The active tab's 2px underline sits on the same bottom edge,
+    // so its lower point covers the rule — the selection mark reads as a
+    // thickening of the divider under one tab.
+    //
+    // Paint order is what makes it overlap, and it is the same on every
+    // backend: the rule is the host's FIRST child and the scroller is
+    // positioned too (`TabBarScroller`). Native views paint siblings in
+    // child order whatever their positioning; the web paints positioned
+    // siblings in DOM order, and only puts an absolute element above an
+    // UNpositioned sibling — which is how an earlier version of this rule
+    // ended up covering the underline instead.
+    pub TabBarRule<IdeaThemeRef> {
+        base(t) {
+            position: Position::Absolute,
+            left: Length::Px(0.0),
+            right: Length::Px(0.0),
+            bottom: Length::Px(0.0),
+            height: 1.0,
+            background: t.color.border(),
         }
         transitions {
-            border_bottom_color: 250ms EaseInOut,
+            background: 250ms EaseInOut,
         }
     }
 }
@@ -1955,10 +2018,26 @@ stylesheet! {
             // bar's own styling could remove it; see
             // `ScrollbarVisibility`.
             scrollbar: runtime_core::ScrollbarVisibility::Hidden,
+            // Positioned, so the web paints it above `TabBarRule` (an
+            // absolute element paints over unpositioned siblings there,
+            // whatever the DOM order). Native paints in child order and
+            // ignores this. No offsets: it stays where layout put it.
+            position: Position::Relative,
         }
     }
 }
 
+// Underline tabs: one sheet per selection state, `TabButton` (inactive)
+// and `TabButtonActive`. Two sheets rather than an `active` axis because
+// `state` blocks win over variant arms: on one sheet, the hover underline
+// below would also have turned the ACTIVE tab's primary underline gray.
+// Each sheet states its own hover / focus / press.
+//
+// Every tab sits ON the divider (`TabBarRule`), and a state background
+// fills the whole box, border band included — so a hovered inactive tab
+// would hide the divider under it. Instead its states draw a 2px gray
+// underline over the divider: the line thickens under the hovered tab and
+// never breaks.
 stylesheet! {
     pub TabButton<IdeaThemeRef> {
         base(t) {
@@ -1974,37 +2053,69 @@ stylesheet! {
             font_size: t.typography.body_size(),
             border_radius: 0.0,
             cursor: Cursor::Pointer,
-            // Bottom border draws under the active tab to mark
-            // selection; off-state is transparent so the bar's
-            // own bottom border shows through.
+            // Transparent at rest, so the divider shows through; the
+            // same 2px as the active underline, so selecting a tab never
+            // changes its size.
             border_bottom_width: 2.0,
             border_bottom_color: Color("transparent".into()),
         }
-        variant active {
-            #[default]
-            off(_t) {}
-            on(t) {
-                color: t.color.text(),
-                border_bottom_color: t.intent.primary.solid_bg(),
-            }
-        }
-        // Hover/press now carry a translucent surface scrim (not just a text
-        // brighten) so tabs/segments read as interactive controls — the
-        // toolbar-button feel. `state` blocks are global (appearance-blind), but
-        // a neutral surface wash reads on the transparent-resting tab base.
+        // Hover/press carry a translucent surface scrim (not just a text
+        // brighten) so tabs read as interactive controls — the toolbar-
+        // button feel — plus the gray underline (see above).
         state hovered(t) {
             color: t.color.text(),
             background: t.color.surface_alt(),
+            border_bottom_color: t.color.border(),
         }
         // Focus mirrors hover (a surface wash), not a box border — a rectangular
         // ring reads wrong on an underline tab. Replaces the native macOS ring.
         state focused(t) {
             color: t.color.text(),
             background: t.color.surface_alt(),
+            border_bottom_color: t.color.border(),
         }
         state pressed(t) {
             color: t.color.text(),
             background: t.color.border(),
+            border_bottom_color: t.color.border(),
+        }
+        transitions {
+            color: 150ms EaseOut,
+            background: 120ms EaseOut,
+            border_bottom_color: 200ms EaseOut,
+        }
+    }
+}
+
+stylesheet! {
+    // The selected underline tab. `TabButton`'s box exactly (so a tab
+    // never changes size when selected), with the primary underline, which
+    // every state keeps.
+    pub TabButtonActive<IdeaThemeRef> {
+        base(t) {
+            flex_shrink: 0.0,
+            background: Color("transparent".into()),
+            color: t.color.text(),
+            padding_vertical: t.spacing.sm(),
+            padding_horizontal: t.spacing.md(),
+            font_weight: FontWeight::Medium,
+            font_size: t.typography.body_size(),
+            border_radius: 0.0,
+            cursor: Cursor::Pointer,
+            border_bottom_width: 2.0,
+            border_bottom_color: t.intent.primary.solid_bg(),
+        }
+        state hovered(t) {
+            background: t.color.surface_alt(),
+            border_bottom_color: t.intent.primary.solid_bg(),
+        }
+        state focused(t) {
+            background: t.color.surface_alt(),
+            border_bottom_color: t.intent.primary.solid_bg(),
+        }
+        state pressed(t) {
+            background: t.color.border(),
+            border_bottom_color: t.intent.primary.solid_bg(),
         }
         transitions {
             color: 150ms EaseOut,
@@ -2016,7 +2127,7 @@ stylesheet! {
 
 // Dot-indicator tab: instead of an underline, the active tab gets a chip
 // (surface-alt) background and a colored leading dot. A parallel sheet (rather
-// than a variant axis on TabButton) keeps the `active` arm single-axis, so the
+// than a variant axis on the underline sheets) keeps the `active` arm single-axis, so the
 // "active ⇒ chip background" rule resolves cleanly on every backend.
 stylesheet! {
     pub TabButtonDot<IdeaThemeRef> {
@@ -2305,7 +2416,9 @@ stylesheet! {
 // Table — themed wrapper over the `table` SDK.
 //
 // `Table` is the outer surface (rounded corners + hairline border +
-// surface bg) applied to the `<table>` itself; `TableHeadCell` and
+// surface bg) applied to the SDK's surface view around the `<table>` /
+// native grid — never the `<table>` itself (browsers ignore a radius
+// on a collapsed-border table); `TableHeadCell` and
 // `TableBodyCell` are applied to `<th>` and `<td>` (padding + row
 // divider). Border-bottom on each cell + `border-collapse: collapse`
 // on the table merges into one continuous row boundary per row.
@@ -2333,19 +2446,13 @@ stylesheet! {
             border_top_right_radius: t.radius.lg(),
             border_bottom_left_radius: t.radius.lg(),
             border_bottom_right_radius: t.radius.lg(),
-        }
-        // Scroll-x axis: clip children to the rounded frame. Load-
-        // bearing there — the sheet lands on the surface WRAPPER (a
-        // plain view) around the scroller, and without the clip the
-        // scrolling columns paint square over the rounded corners.
-        // NOT in `base`: on a plain table this sheet lands on the
-        // `<table>` itself, whose `border-collapse: collapse` outer
-        // border straddles the box edge — `overflow: hidden` there
-        // clips the border's outer half (visibly thinned edges).
-        variant scrolling {
-            #[default]
-            off(_t) {}
-            on(_t) { overflow: Overflow::Hidden }
+            // Clip children to the rounded frame: the corner cells'
+            // square backgrounds (the header band) and scroll-x columns
+            // otherwise paint over the rounded corners. Safe on every
+            // table because this sheet lands on the SDK's surface VIEW,
+            // never on the `<table>` — a clip there would shave the outer
+            // half of its collapsed border.
+            overflow: Overflow::Hidden,
         }
         transitions {
             background: 250ms EaseInOut,

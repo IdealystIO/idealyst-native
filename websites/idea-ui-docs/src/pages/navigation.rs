@@ -13,7 +13,7 @@ use icons_lucide::{CHEVRON_RIGHT, COPY, PENCIL, SHARE_2, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Avatar, AvatarSize, Breadcrumbs, Button, Crumb, Field, Icon, List,
     ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator, Pagination, Stack, StackAxis,
-    StackGap, SubMenu, SubMenuSlot, Tab, TabIndicator, Tabs, Typography,
+    StackGap, StackPadding, SubMenu, SubMenuSlot, Tab, TabIndicator, Tabs, Typography,
 };
 
 use crate::pages::body;
@@ -112,7 +112,12 @@ pub fn breadcrumbs() -> Element {
 // =============================================================================
 
 pub fn tabs() -> Element {
-    body(vec![tabs_underline_section(), tabs_pill_section(), tabs_props_section()])
+    body(vec![
+        tabs_underline_section(),
+        tabs_pill_section(),
+        tabs_padding_section(),
+        tabs_props_section(),
+    ])
 }
 
 fn tabs_underline_section() -> Element {
@@ -219,6 +224,44 @@ fn tabs_pill_section() -> Element {
     }
 }
 
+fn tabs_padding_section() -> Element {
+    let active = signal("inbox".to_string());
+    let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| active.set(id));
+
+    ui! {
+        Section(title = "Padding".to_string()) {
+            P(content = "`padding_horizontal` insets the tabs from the bar's ends while the \
+                divider still runs the full width — so the first tab lines up with content \
+                below it instead of the bar's edge. The inset scrolls with the tabs. It is \
+                horizontal only, so the active underline stays on the divider.".to_string())
+            DemoSurface {
+                Tabs(
+                    padding_horizontal = StackPadding::Lg,
+                    active = active,
+                    on_change = on_change,
+                    tabs = signal(vec![
+                        Tab::new("inbox", "Inbox"),
+                        Tab::new("sent", "Sent"),
+                        Tab::new("archive", "Archive"),
+                    ]),
+                )
+            }
+            CodePanel(src = r##"ui! {
+    Tabs(
+        padding_horizontal = StackPadding::Lg,  // None (default), Xs … Xl
+        active = active,
+        on_change = on_change,
+        tabs = signal(vec![
+            Tab::new("inbox", "Inbox"),
+            Tab::new("sent", "Sent"),
+            Tab::new("archive", "Archive"),
+        ]),
+    )
+}"##.to_string())
+        }
+    }
+}
+
 fn tabs_props_section() -> Element {
     ui! {
         Section(title = "Props".to_string()) {
@@ -227,6 +270,8 @@ fn tabs_props_section() -> Element {
                 Prop { name: "active",    ty: "Reactive<String>",   desc: "The active tab's id. Drives the strip highlight and is the caller's source of truth for panel swap." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(String)>", desc: "Fires when the user taps a tab; receives the tapped tab's id." },
                 Prop { name: "indicator", ty: "TabIndicator",       desc: "Underline (default) or Dot (compact dot + chip pill)." },
+                Prop { name: "padding_horizontal", ty: "StackPadding", desc: "Insets the tabs from the bar's ends; the divider still spans the full width. None (default), Xs, Sm, Md, Lg, Xl." },
+                Prop { name: "fill",      ty: "bool",               desc: "Take a row parent's leftover width. Default false: the bar sizes to its tabs, and a column stretches it across." },
             ])
             Callout(label = "Tabs vs Segmented Control".to_string()) {
                 P(content = "Use Tabs when each option opens a distinct content surface. For \

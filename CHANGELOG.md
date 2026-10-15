@@ -11,6 +11,69 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`text_input` `secure` masks on Android; remote and dev-wire versions
+  bumped** (`backend-android-mobile`, `runtime-vocabulary`, `wire`).
+  Android ignored `secure` (a password field showed its text); it now sets
+  the `EditText` input type to the password variation, live toggles
+  included, keeping the field's typeface. The new `keyboard` hint (below)
+  crosses remote bundles as a `Node::TextInput` field, so `CODEC_VERSION`
+  is 5 and an app refuses bundles built against 4; and it crosses
+  runtime-server dev as `Command::UpdateTextInputKeyboard`
+  (`PROTOCOL_VERSION` 24). *Migration:* rebuild remote bundles; update the
+  CLI and the dev client together.
+
+- **Robot `drag` moves a slider** (`runtime-vocabulary`, `mcp-server`). A
+  `slider` is a native widget with no touch handler, so `drag` on one
+  answered "not available", although the tool description said it could
+  drag a thumb. Now each point's x across the slider's width sets the value
+  (left edge = `min`, right edge = `max`). The value goes through the same
+  step-snapped change callback the native control reports to, and the
+  native thumb moves with it. A disabled slider, or one with no laid-out
+  frame, returns an error instead. The tool description now also says that
+  the whole path is sent in one call. A long-press pickup (the dnd SDK's
+  default on iOS/Android) therefore never activates. *Migration:* none.
+
+- **A plain `Table` rounds its corners on web** (`table`, `idea-ui`). A
+  table without `scroll_x` or a slot took its style on the `<table>`
+  itself, whose `border-collapse: collapse` makes browsers ignore
+  `border-radius`, so idea-ui's rounded frame drew square. The table SDK
+  now puts a styled table's style on a surface view around the `<table>`
+  (as native already did around its grid, and as slotted / scroll-x
+  tables already did); an unstyled table stays a bare `<table>`. idea-ui's
+  `Table` sheet clips to its rounded frame on every table (the
+  `scrolling` axis is gone; the clip is in `base`). *Migration:* none —
+  every plain table rounds with no app change.
+
+- **Tabs: the active underline covers the divider; `padding_horizontal`**
+  (`idea-ui`). The divider was a border on the bar with 1px of padding
+  above it, so the active tab's 2px underline sat just above the line
+  instead of on it (a native layer draws its border over every subview,
+  so it could not be covered). The divider is now `TabBarRule`, a 1px rule
+  the tabs paint over on every backend, and the underline covers it.
+  Every tab now sits on the divider, so an inactive tab's hover / focus /
+  press draws a 2px gray underline over it (otherwise its state background
+  would hide the line). That needs a sheet per selection state:
+  `TabButton` (inactive) and the new `TabButtonActive`; `TabButton` loses
+  its `active` axis. New `Tabs(padding_horizontal = StackPadding::…)`
+  insets the tabs while the divider keeps the bar's full width.
+  *Migration:* code that styles with `TabButton` and selects
+  `.with("active", "on")` uses `TabButtonActive` instead.
+
+- **Robot drag-and-drop on iOS/Android: `hold_ms`** (`dnd`,
+  `runtime-vocabulary`, `mcp-server`, `robot-test`, `robot-e2e`). A
+  `Draggable` picks up after a 200 ms long press on phones and tablets,
+  timed by an `after_ms` timer. The robot sends a whole `drag` in one
+  synchronous call, so that timer never ran and the robot could not
+  drag-to-reorder there. `drag` now takes an optional `hold_ms`
+  (`Robot::drag_with_hold`, `Locator::drag_with_hold`): after `Began` it
+  sends a stationary `Moved` stamped `hold_ms` later. The dnd recognizer
+  now also commits a long press when a `Moved` arrives stamped past the
+  hold (still within slop) — the timer stays the path for a finger held
+  still, which sends no events. For a real finger this only matters when
+  the event loop delivers a move before the due timer; the drag then
+  begins at the hold point, as the timer would have. *Migration:* none;
+  pass `hold_ms: 200` (or more) to drive a mobile reorder.
+
 - **A web file pick never opens a second dialog** (`file-picker`). When
   `showOpenFilePicker()` rejected with anything but `AbortError`, `pick()`
   fell back to a hidden `<input type=file>`. If the rejection came after the
@@ -389,6 +452,28 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `place_textures`; build a `CanvasPrim` for `build_canvas`.
 
 ### Added
+
+- **`text_input` `keyboard` hint** (`runtime-vocabulary`, every mobile and
+  HTML backend, `idea-ui`). `keyboard = KeyboardKind::Email` (or `Phone`,
+  `Number`, `Decimal`, `Url`) picks the on-screen keyboard: `UIKeyboardType`
+  + `textContentType` on iOS, `InputType` on Android, `inputmode` +
+  `autocomplete` on web and in SSR HTML. `Email`/`Url` also turn off
+  auto-capitalize and auto-correct. Static or live; composes with `secure`;
+  desktop backends ignore it. idea-ui `Field` forwards it as `keyboard`.
+  See the `TextInput` section of `docs/primitives.md`.
+
+- **`SelectOption` descriptions** (`idea-ui`). A Select or Autocomplete
+  row can show a muted second line under its label: a hint, or a note on
+  what picking the row does. Build it with
+  `SelectOption::new(id, label).with_description(text)` (static or live).
+  The line uses the muted text color and the small body size, like a
+  Field's help text, and switches to the row's solid text color on the
+  committed row. The Select trigger, the Autocomplete input and the
+  multi-select summary still show only the label. Autocomplete's filter
+  matches the description as well as the label. *Migration:* the new
+  public field `description: Option<Reactive<String>>` breaks code that
+  builds `SelectOption { id, label }` as a struct literal; use
+  `SelectOption::new(id, label)` or add `description: None`.
 
 - **`user_activity()` — an app-wide "the person is using the app"
   signal** (`runtime-shared`, `runtime-vocabulary`, every backend). A

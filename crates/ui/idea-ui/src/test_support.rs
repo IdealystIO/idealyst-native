@@ -127,6 +127,8 @@ pub enum P {
         on_focus: bool,
         /// Evaluated current value.
         secure: bool,
+        /// Evaluated current soft-keyboard hint.
+        keyboard: runtime_core::KeyboardKind,
         /// The mount-time `autofocus` flag.
         autofocus: bool,
         /// The input's accessible name (`a11y.label`).
@@ -308,6 +310,7 @@ mod imp {
                 on_change: p.on_change,
                 on_focus: p.on_focus.is_some(),
                 secure: eval(p.secure),
+                keyboard: eval(p.keyboard),
                 autofocus: p.autofocus,
                 a11y_label: p.a11y.label,
                 style: style(p.style),

@@ -8,6 +8,7 @@
 //!         on_change = move |v: String| email.set(v),
 //!         placeholder = "you@example.com",
 //!         help = "We'll never share your email.",
+//!         keyboard = KeyboardKind::Email,
 //!     )
 //! }
 //! ```
@@ -30,6 +31,12 @@
 //! and drops it from keyboard focus, `on_change` never fires, and the input
 //! sheet's `state disabled` overlay dims it. An adorned field dims its row
 //! shell instead (the `dimmed` axis) and disables its `Adornment::Button`s.
+//!
+//! `keyboard` (reactive) picks the on-screen keyboard on phones and tablets
+//! (`KeyboardKind::Email` / `Phone` / `Number` / `Decimal` / `Url`) through
+//! the `text_input` primitive's `keyboard`; desktop platforms ignore it.
+//! `Textarea` has no `keyboard`: multi-line text is prose, and the
+//! email / phone / digit layouts are single-line ones.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -61,6 +68,9 @@ use idea_theme::theme::{IdeaTheme, IdeaThemeRef};
 
 use crate::stylesheets::{FieldGroup, FieldLabel};
 pub use crate::stylesheets::{FieldAppearance, FieldSize};
+/// The soft-keyboard hint [`FieldProps::keyboard`] takes (re-exported so a
+/// form can spell `field::KeyboardKind::Email`).
+pub use runtime_core::KeyboardKind;
 use idea_theme::tokens;
 
 /// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
@@ -259,6 +269,18 @@ pub struct FieldProps {
     /// toggle at runtime (password show/hide) without rebuilding the input.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub secure: Reactive<bool>,
+    /// Which on-screen keyboard a phone or tablet shows for this field —
+    /// `KeyboardKind::Email` (the `@` / `.com` layout, no auto-capitalize or
+    /// auto-correct), `Phone` (a dial pad), `Number` (digits), `Decimal`
+    /// (digits + separator), `Url`, or `Default`. Forwarded to the
+    /// underlying `text_input` primitive's `keyboard`. A hint, not
+    /// validation: the field still accepts any text (paste, a hardware
+    /// keyboard). Composes with `secure` (a masked `Number` field is a PIN
+    /// pad). Desktop platforms have no soft keyboard and ignore it.
+    /// Reactive: a `Signal`/`rx!` re-applies in place without rebuilding the
+    /// input. Default `KeyboardKind::Default`.
+    #[schema(constraint = "reactive: static KeyboardKind or Signal/rx!")]
+    pub keyboard: KeyboardKind,
     /// Leading adornment (icon/element) rendered before the input, inside the
     /// field box. Default [`Adornment::None`]. See [`Adornment`]. An
     /// element-builder (children category) — kept bare; reactivity is internal
@@ -341,6 +363,7 @@ impl Default for FieldProps {
             size: Reactive::Static(FieldSize::default()),
             variant: Reactive::Static(FieldAppearance::default()),
             secure: Reactive::Static(false),
+            keyboard: Reactive::Static(KeyboardKind::Default),
             leading: Adornment::None,
             trailing: Adornment::None,
             min_height: Reactive::Static(None),
@@ -810,6 +833,7 @@ pub fn Field(props: &FieldProps) -> Element {
     // placeholder in place (no rebuild); a `Static` one sets it once.
     let mut input = runtime_core::text_input(value, move |v: String| (on_change)(v))
         .secure(secure)
+        .keyboard(props.keyboard.clone())
         .placeholder_reactive(props.placeholder.clone())
         .autofocus(props.autofocus);
     // Accessible name: the explicit override, else the visible label. The
@@ -1289,6 +1313,59 @@ mod tests {
                 "a reactive `secure` must reach the text_input live, not as a build-time snapshot"
             );
     });
+    }
+
+    /// The built Field's `text_input` keyboard hint, evaluated NOW. Walks
+    /// the whole tree so it finds the input in the plain and the adorned
+    /// (shell-wrapped) layouts alike.
+    fn input_keyboard(el: Element) -> Option<KeyboardKind> {
+        match classify(el) {
+            P::TextInput { keyboard, .. } => Some(keyboard),
+            P::View { children, .. } => children.into_iter().find_map(input_keyboard),
+            _ => None,
+        }
+    }
+
+    /// REGRESSION: `Field` had no keyboard prop, so an email field opened
+    /// the default soft keyboard on iOS/Android (no `@` / `.com` row) and a
+    /// phone field got no digit pad. The kind must reach the `text_input`
+    /// in both layouts, and a live kind must thread through un-snapshotted.
+    #[test]
+    fn regression_field_forwards_keyboard_to_its_input() {
+        with_test_world(|| {
+            theme();
+            assert_eq!(
+                input_keyboard(Field(&FieldProps::default())),
+                Some(KeyboardKind::Default),
+                "no hint by default"
+            );
+            let email = FieldProps { keyboard: Reactive::Static(KeyboardKind::Email), ..Default::default() };
+            assert_eq!(input_keyboard(Field(&email)), Some(KeyboardKind::Email));
+            let adorned = FieldProps {
+                keyboard: Reactive::Static(KeyboardKind::Phone),
+                leading: Adornment::element(|| runtime_core::ui! { view() }),
+                ..Default::default()
+            };
+            assert_eq!(input_keyboard(Field(&adorned)), Some(KeyboardKind::Phone));
+
+            let decimal: Signal<bool> = runtime_core::signal(false);
+            let live = FieldProps {
+                keyboard: runtime_core::rx!(if decimal.get() {
+                    KeyboardKind::Decimal
+                } else {
+                    KeyboardKind::Number
+                }),
+                ..Default::default()
+            };
+            let field = Field(&live);
+            decimal.set(true);
+            idea_theme::testing::commit();
+            assert_eq!(
+                input_keyboard(field),
+                Some(KeyboardKind::Decimal),
+                "a reactive `keyboard` must reach the text_input live, not as a build-time snapshot"
+            );
+        });
     }
 
     // A live `size` (or any style-driving prop) must attach the input style

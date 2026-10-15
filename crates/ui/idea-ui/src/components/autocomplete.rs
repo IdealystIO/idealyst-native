@@ -38,7 +38,9 @@
 //!   the cursor row are styled differently: solid (`active: on`) vs the
 //!   subtle hover surface (`active: cursor`).
 //! - Typing filters the menu (case-insensitive substring on the option
-//!   label) and opens it.
+//!   label OR its optional `description`) and opens it. A row's
+//!   description draws as a muted second line under its label, exactly as
+//!   in `Select`; the input itself only ever shows the label.
 //! - `ArrowDown`/`ArrowUp` move the keyboard cursor, `Enter` commits the
 //!   cursor row, `Escape` closes and reverts the text to the committed
 //!   selection's label.
@@ -136,7 +138,7 @@ use crate::components::date_input::CLEAR_GLYPH;
 use crate::components::field::{adornment_icon_color, adornment_icon_px_for};
 use crate::components::icon::Icon;
 use crate::components::select::{
-    live_options, rotating_chevron, SelectOption, SelectSize, CHEVRON_DOWN,
+    live_options, option_text, rotating_chevron, SelectOption, SelectSize, CHEVRON_DOWN,
 };
 use crate::stylesheets::{
     AutocompleteBox, AutocompleteChevron, AutocompleteClear, AutocompleteEmpty,
@@ -207,7 +209,8 @@ pub struct AutocompleteProps {
     pub value: Signal<String>,
     /// Fires with the chosen option's `id` when the user commits a row.
     pub on_change: Rc<dyn Fn(String)>,
-    /// The rows to offer; the typed query filters this list by label.
+    /// The rows to offer; the typed query filters this list by label and
+    /// by each row's optional [`SelectOption::description`].
     /// Reactive: pass a `Signal<Vec<SelectOption>>` (or `rx!`) and rows that
     /// change after mount show up — in the open menu too, and in the input's
     /// label once the committed id's option arrives. Pass the signal itself,
@@ -310,7 +313,11 @@ fn slot_cx(query: Signal<String>, open: Signal<bool>, revert: Rc<dyn Fn()>) -> A
 
 /// Indices into `labels` that match `query`, in original order.
 ///
-/// Filtering is a case-insensitive substring match on the (trimmed) query.
+/// Filtering is a case-insensitive substring match on the (trimmed) query,
+/// against each option's label OR its description (`descriptions[i]`, the
+/// i-th option's description text; a missing entry or `None` is a row
+/// without one) — a row whose note says what picking it does is findable
+/// by that note.
 /// An empty query matches everything. The one subtlety:
 /// `selected_label` — when the query *equals* the currently-committed
 /// option's label, the field is showing an untouched selection rather than a
@@ -321,6 +328,7 @@ fn slot_cx(query: Signal<String>, open: Signal<bool>, revert: Rc<dyn Fn()>) -> A
 /// tested without a backend.
 pub(crate) fn filter_indices(
     labels: &[String],
+    descriptions: &[Option<String>],
     query: &str,
     selected_label: Option<&str>,
 ) -> Vec<usize> {
@@ -333,7 +341,13 @@ pub(crate) fn filter_indices(
     labels
         .iter()
         .enumerate()
-        .filter(|(_, l)| l.to_lowercase().contains(&q))
+        .filter(|(i, l)| {
+            l.to_lowercase().contains(&q)
+                || descriptions
+                    .get(*i)
+                    .and_then(|d| d.as_deref())
+                    .is_some_and(|d| d.to_lowercase().contains(&q))
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -494,7 +508,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let wrapper_ref: Ref<ViewHandle> = Ref::new();
 
     // Filtered option indices, recomputed when the query, the committed
-    // value, or any option label changes.
+    // value, or any option label or description changes.
     // (No type annotation: `memo` yields a `Memo` — a `Copy` handle with
     // `.get()`.)
     let filtered = {
@@ -502,6 +516,10 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             let q = query.get();
             let options = options.get();
             let labels: Vec<String> = options.iter().map(|o| o.label.get()).collect();
+            let descriptions: Vec<Option<String>> = options
+                .iter()
+                .map(|o| o.description.as_ref().map(|d| d.get()))
+                .collect();
             // The "query equals the committed label ⇒ list everything" trick
             // is single-mode only: in multi mode the input never holds a
             // label, so the query is always a genuine search.
@@ -511,7 +529,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 let sel_id = value.get();
                 options.iter().find(|o| o.id == sel_id).map(|o| o.label.get())
             };
-            filter_indices(&labels, &q, sel_label.as_deref())
+            filter_indices(&labels, &descriptions, &q, sel_label.as_deref())
         })
     };
 
@@ -871,6 +889,7 @@ fn row(
 ) -> Element {
     let id = o.id.clone();
     let label = o.label.clone();
+    let description = o.description.clone();
     let mut kids = Vec::with_capacity(2);
     if let Some(sel) = selection {
         let id = id.clone();
@@ -878,7 +897,13 @@ fn row(
             sel.get().iter().any(|s| s == &id)
         })));
     }
-    kids.push(text(label).into_element());
+    // Label, plus the muted description line when the option has one —
+    // shared with `Select`'s rows. Multi rows never paint solid, so their
+    // description never needs the solid-row contrast swap.
+    let text_id = id.clone();
+    kids.push(option_text(label, description, move || {
+        selection.is_none() && value.get() == text_id
+    }));
     let press_id = id.clone();
     pressable(kids, move || (commit)(&press_id))
         .with_style(move || {
@@ -913,9 +938,9 @@ mod tests {
     fn empty_query_matches_everything() {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Plum"]);
-            assert_eq!(filter_indices(&ls, "", None), vec![0, 1, 2]);
+            assert_eq!(filter_indices(&ls, &[], "", None), vec![0, 1, 2]);
             // Whitespace-only is also "empty" after trim.
-            assert_eq!(filter_indices(&ls, "   ", None), vec![0, 1, 2]);
+            assert_eq!(filter_indices(&ls, &[], "   ", None), vec![0, 1, 2]);
     });
     }
 
@@ -924,9 +949,9 @@ mod tests {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Pineapple"]);
             // "ap" hits Apple + Pineapple, not Pear.
-            assert_eq!(filter_indices(&ls, "ap", None), vec![0, 2]);
+            assert_eq!(filter_indices(&ls, &[], "ap", None), vec![0, 2]);
             // Case folds both ways.
-            assert_eq!(filter_indices(&ls, "PEAR", None), vec![1]);
+            assert_eq!(filter_indices(&ls, &[], "PEAR", None), vec![1]);
     });
     }
 
@@ -934,7 +959,7 @@ mod tests {
     fn no_match_returns_empty() {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear"]);
-            assert!(filter_indices(&ls, "zzz", None).is_empty());
+            assert!(filter_indices(&ls, &[], "zzz", None).is_empty());
     });
     }
 
@@ -946,7 +971,7 @@ mod tests {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Plum"]);
             assert_eq!(
-                filter_indices(&ls, "Apple", Some("Apple")),
+                filter_indices(&ls, &[], "Apple", Some("Apple")),
                 vec![0, 1, 2],
                 "reopening a combobox on its committed value should list every option"
             );
@@ -959,8 +984,64 @@ mod tests {
     fn editing_away_from_selection_filters_normally() {
         with_test_world(|| {
             let ls = labels(&["Apple", "Pear", "Plum"]);
-            assert_eq!(filter_indices(&ls, "plu", Some("Apple")), vec![2]);
+            assert_eq!(filter_indices(&ls, &[], "plu", Some("Apple")), vec![2]);
     });
+    }
+
+    /// The typed query matches an option's DESCRIPTION as well as its
+    /// label: "one-line" finds the row whose note reads "as its one-line
+    /// label" even though its label is "Address".
+    #[test]
+    fn filter_matches_description() {
+        with_test_world(|| {
+            let ls = labels(&["Address", "Phone", "Email"]);
+            let ds = vec![Some("as its one-line label".to_string()), None, Some("Work inbox".to_string())];
+            assert_eq!(filter_indices(&ls, &ds, "one-LINE", None), vec![0]);
+            assert_eq!(filter_indices(&ls, &ds, "inbox", None), vec![2]);
+            // Labels still match, and a row matching on both counts once.
+            assert_eq!(filter_indices(&ls, &ds, "e", None), vec![0, 1, 2]);
+            assert!(filter_indices(&ls, &ds, "zzz", None).is_empty());
+        });
+    }
+
+    /// An Autocomplete row draws its description as a second, muted text
+    /// under the label; a row without one stays the bare label.
+    #[test]
+    fn row_draws_description_only_when_set() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let value: Signal<String> = runtime_core::signal(String::new());
+            let body = |o: SelectOption| {
+                let P::Pressable { mut children, .. } =
+                    classify(row(o, Rc::new(|_: &str| {}), || None, value, None))
+                else {
+                    panic!("a menu row is a pressable");
+                };
+                assert_eq!(children.len(), 1, "a single-mode row holds one text body");
+                classify(children.remove(0))
+            };
+            let P::View { children, .. } = body(
+                SelectOption::new("form_entry.address", "Address")
+                    .with_description("as its one-line label"),
+            ) else {
+                panic!("a described row's body is a [label, description] view");
+            };
+            let texts: Vec<Option<String>> = children
+                .into_iter()
+                .map(|c| match classify(c) {
+                    P::Text { text, .. } => text,
+                    _ => panic!("body children are texts"),
+                })
+                .collect();
+            assert_eq!(
+                texts,
+                vec![Some("Address".to_string()), Some("as its one-line label".to_string())]
+            );
+            let P::Text { text, .. } = body(SelectOption::new("p", "Plain")) else {
+                panic!("an undescribed row's body is the label text alone");
+            };
+            assert_eq!(text.as_deref(), Some("Plain"));
+        });
     }
 
     // Close-on-blur is only safe because the widget's press

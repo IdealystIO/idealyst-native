@@ -70,6 +70,8 @@ where
     H: runtime_vocabulary::style_attach::StyleServices
         + runtime_vocabulary::caps::TextOps
         + runtime_vocabulary::caps::InputOps
+        // table 2.2: web cells register with the robot.
+        + runtime_vocabulary::caps::IntrospectionOps
         + 'static,
 {
     codeblock::register(registry);

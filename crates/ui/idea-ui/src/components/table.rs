@@ -329,19 +329,11 @@ pub struct TableProps {
 /// the same way on every platform. Pass `TableRow`s as children.
 #[component(children)]
 pub fn Table(props: TableProps) -> Element {
-    // The style lands on a surface WRAPPER around the table whenever
-    // there is one (scroll-x, or a slot to draw inside the frame), and
-    // that wrapper must clip its contents to the rounded frame — the
-    // `scrolling` axis (named for its first use; renaming it would churn
-    // every table's preminted class). A plain table keeps the axis off —
-    // its style lands on the `<table>` itself, where a clip would shave
-    // the outer half of the collapsed border (see the sheet).
-    let wrapped = props.scroll_x || props.header_slot.is_some() || props.footer_slot.is_some();
-    let style = if wrapped {
-        TableStyle().into_style_application().with("scrolling", "on")
-    } else {
-        TableStyle().into_style_application()
-    };
+    // The SDK lands this style on a surface VIEW around the `<table>` /
+    // native grid on every table, never on the `<table>`: browsers
+    // ignore `border-radius` on a collapsed-border table. The sheet's
+    // clip keeps the corner cells inside the rounded frame.
+    let style = TableStyle().into_style_application();
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
@@ -382,8 +374,8 @@ pub fn Table(props: TableProps) -> Element {
         ui! { view(style = style) { slot } }
     });
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
-    // `.with_style(...)` to land the themed style on the `<table>`
-    // itself (or the surface wrapper), then convert to Element.
+    // `.with_style(...)` to land the themed style on its surface view,
+    // then convert to Element.
     sdk_table(SdkTableProps {
         children,
         scroll_x: props.scroll_x,
@@ -1281,6 +1273,50 @@ mod tests {
         });
     }
 
+    /// Regression (5.2.0): a plain `Table` — no `scroll_x`, no slot —
+    /// rendered square corners on web, because its sheet landed on the
+    /// collapsed-border `<table>`, where browsers ignore the radius (the
+    /// SDK now wraps it; `table`'s
+    /// `regression_styled_plain_table_rounds_on_a_surface_not_the_collapsed_table`
+    /// pins that placement). The plain table's surface must carry the
+    /// radius AND the clip, or the header band paints square over the
+    /// corners the radius rounds. (It replaces the test that kept the
+    /// plain table UNclipped: that clip would have shaved the collapsed
+    /// border of the `<table>` the sheet used to land on — a node the
+    /// sheet no longer reaches.)
+    #[test]
+    fn regression_plain_table_surface_rounds_and_clips() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![TableRow(TableRowProps {
+                    children: vec![body_cell("a")],
+                    ..Default::default()
+                })],
+                ..Default::default()
+            });
+            let vp = match peel_owned_keepalive(t) {
+                Element::Item { data, .. } => data
+                    .downcast_ref::<runtime_vocabulary::prims::PrimCell<
+                        runtime_vocabulary::prims::ViewPrim,
+                    >>()
+                    .expect("plain table root is the styled surface view")
+                    .take(),
+                _ => panic!("plain table must lower to the surface view"),
+            };
+            let app = match vp.style.expect("surface carries the themed Table sheet") {
+                runtime_vocabulary::StyleProp::Sheet(app) => *app,
+                _ => panic!("Table sheet is a static application"),
+            };
+            let rules = runtime_core::resolve_style(&app);
+            assert!(rules.border_top_left_radius.is_some(), "surface is rounded");
+            assert_eq!(
+                rules.overflow,
+                Some(runtime_core::Overflow::Hidden),
+                "plain table's surface must clip its cells to the rounded frame"
+            );
+        });
+    }
+
     /// `Table(scroll_x = true)` lowers to the themed SURFACE wrapping
     /// the SDK's horizontal scroller — the surface (border/radius/
     /// background + overflow clip) must sit OUTSIDE the scroller so it
@@ -1352,49 +1388,6 @@ mod tests {
                 other => return other,
             }
         }
-    }
-
-    /// Regression: a PLAIN table's surface style must NOT carry the
-    /// overflow clip. The style lands on the `<table>` element itself,
-    /// whose `border-collapse: collapse` outer border straddles the
-    /// box edge — `overflow: hidden` there clips the border's outer
-    /// half and the frame renders visibly thinned. The clip belongs
-    /// only to the scroll-x surface wrapper (the `scrolling` axis),
-    /// which is a plain view the quirk can't touch.
-    #[test]
-    fn regression_plain_table_surface_does_not_clip_its_collapsed_border() {
-        with_test_world(|| {
-            let t = Table(TableProps {
-                children: vec![TableRow(TableRowProps {
-                    children: vec![body_cell("a")],
-                    ..Default::default()
-                })],
-                ..Default::default()
-            });
-            let el = peel_owned_keepalive(t);
-            let style = match el {
-                Element::Item { data, .. } => data
-                    .downcast_ref::<runtime_vocabulary::prims::PrimCell<
-                        runtime_vocabulary::prims::ViewPrim,
-                    >>()
-                    .expect("plain table outer is a view")
-                    .take()
-                    .style
-                    .expect("outer carries the themed Table sheet"),
-                _ => panic!("plain table lowers to the outer view"),
-            };
-            let app = match style {
-                runtime_vocabulary::StyleProp::Sheet(app) => *app,
-                _ => panic!("Table sheet is a static application"),
-            };
-            let rules = runtime_core::resolve_style(&app);
-            assert_eq!(
-                rules.overflow, None,
-                "plain table must not clip — overflow: hidden shaves the \
-                 collapsed border's outer half"
-            );
-            assert!(rules.border_top_width.is_some(), "surface keeps its border");
-        });
     }
 
     /// A plain row (no `on_row_click`) leaves its cells untouched: no

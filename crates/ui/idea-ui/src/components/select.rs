@@ -24,6 +24,10 @@
 //! }
 //! ```
 //!
+//! A row can carry a muted second line under its label —
+//! `SelectOption::new("pear", "Pear").with_description("Soft once ripe")`.
+//! It is drawn in the menu only; the trigger shows the label.
+//!
 //! `options` is reactive: pass a `Signal<Vec<SelectOption>>` (or `rx!`)
 //! and rows that arrive later — a fetch that lands after mount — appear in
 //! the trigger label and the menu, even while it is open. Pass the signal
@@ -47,7 +51,9 @@ use idea_theme::theme::IdeaThemeRef;
 
 // The `icon` primitive builder — the Select trigger's chevron.
 use runtime_core::icon;
-use crate::stylesheets::{SelectOption as SelectOptionStyle, SelectTrigger};
+use crate::stylesheets::{
+    SelectOption as SelectOptionStyle, SelectOptionBody, SelectOptionDescription, SelectTrigger,
+};
 
 /// Full-bleed, fully-transparent backdrop for the open menu: it catches the
 /// outside click (and a re-press of the trigger) that dismisses the dropdown,
@@ -148,8 +154,20 @@ pub(crate) fn live_options(
     list.read_only()
 }
 
-/// One selectable row in a [`Select`]. `id` is the value committed to
-/// the bound signal when chosen; `label` is what the user sees.
+/// One selectable row in a [`Select`] (and in `Autocomplete`'s dropdown).
+/// `id` is the value committed to the bound signal when chosen; `label` is
+/// what the user sees; the optional `description` is a muted second line
+/// drawn under the label in the menu row — a hint, or a note on what
+/// picking the row does.
+///
+/// ```ignore
+/// SelectOption::new("form_entry.address", "Address")
+///     .with_description("as its one-line label")
+/// ```
+///
+/// The description belongs to the MENU ROW only: the Select trigger, the
+/// Autocomplete input, and the multi-select summary keep showing just the
+/// label. `Autocomplete`'s filter matches it as well as the label.
 #[derive(Clone, IdealystSchema, runtime_core::Remote)]
 pub struct SelectOption {
     /// Stable value committed to the `Select`'s `value` signal when this
@@ -158,27 +176,80 @@ pub struct SelectOption {
     pub id: String,
     /// Row label. `Reactive<String>` — static or live (signal/`rx!`).
     pub label: Reactive<String>,
+    /// Optional muted second line under the label in the menu row (smaller
+    /// type, the theme's muted text color). `None` (the default from
+    /// [`SelectOption::new`]) draws the label alone. Static or live
+    /// (signal/`rx!`). Set it with [`SelectOption::with_description`].
+    pub description: Option<Reactive<String>>,
 }
 
-/// Equal when the ids match and the labels are the same text (both
-/// static) or the same live source (both reactive, one `Rc`). This is what
-/// lets a host keep its rows in a `Signal<Vec<SelectOption>>` (signals
-/// skip equal writes) and pass that signal as `options`.
+/// Same text (both static) or the same live source (both reactive, one
+/// `Rc`). A live source can't be compared by value without reading it.
+fn reactive_text_eq(a: &Reactive<String>, b: &Reactive<String>) -> bool {
+    match (a, b) {
+        (Reactive::Static(a), Reactive::Static(b)) => a == b,
+        (Reactive::Dynamic(a), Reactive::Dynamic(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+/// Equal when the ids match and the labels (and descriptions) are the same
+/// text (both static) or the same live source (both reactive, one `Rc`).
+/// This is what lets a host keep its rows in a `Signal<Vec<SelectOption>>`
+/// (signals skip equal writes) and pass that signal as `options`.
 impl PartialEq for SelectOption {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
-            && match (&self.label, &other.label) {
-                (Reactive::Static(a), Reactive::Static(b)) => a == b,
-                (Reactive::Dynamic(a), Reactive::Dynamic(b)) => Rc::ptr_eq(a, b),
+            && reactive_text_eq(&self.label, &other.label)
+            && match (&self.description, &other.description) {
+                (None, None) => true,
+                (Some(a), Some(b)) => reactive_text_eq(a, b),
                 _ => false,
             }
     }
 }
 
 impl SelectOption {
+    /// A row with an id and a label, and no description.
     pub fn new(id: impl Into<String>, label: impl Into<Reactive<String>>) -> Self {
-        Self { id: id.into(), label: label.into() }
+        Self { id: id.into(), label: label.into(), description: None }
     }
+
+    /// Add a muted second line under the label in the menu row. Static
+    /// (`&str`/`String`) or live (`Signal<String>`/`rx!`).
+    pub fn with_description(mut self, description: impl Into<Reactive<String>>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+/// The text content of a menu row: the label alone, or — when the option
+/// has a description — a column of the label over the muted description.
+/// Shared by `Select`'s and `Autocomplete`'s rows so both draw the second
+/// line identically. `selected` is read live by the description's style:
+/// the committed row paints solid primary, where the muted color would
+/// lose contrast, so the description takes the row's solid text color
+/// there instead.
+pub(crate) fn option_text(
+    label: Reactive<String>,
+    description: Option<Reactive<String>>,
+    selected: impl Fn() -> bool + 'static,
+) -> Element {
+    // `label` is a `Reactive<String>` — routed through `IntoTextSource`
+    // (Static→Static, Dynamic→Bound) so a live label re-paints its row.
+    let label = runtime_core::text(label).into_element();
+    let Some(description) = description else {
+        return label;
+    };
+    let description = runtime_core::text(description)
+        .with_style(move || {
+            StyleApplication::new(SelectOptionDescription::sheet())
+                .with("active", if selected() { "on" } else { "off" }.to_string())
+        })
+        .into_element();
+    runtime_core::view(vec![label, description])
+        .with_style(SelectOptionBody())
+        .into_element()
 }
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
@@ -351,6 +422,7 @@ pub fn Select(props: SelectProps) -> Element {
 fn menu_row(
     opt_id: String,
     opt_label: Reactive<String>,
+    opt_description: Option<Reactive<String>>,
     value: Signal<String>,
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
@@ -362,6 +434,7 @@ fn menu_row(
             (menu_close)();
         }
     });
+    let selected_id = opt_id.clone();
     let row_style = move || {
         let _ = idea_theme::active_theme_untracked()
             .downcast_ref::<IdeaThemeRef>()
@@ -369,11 +442,9 @@ fn menu_row(
         let variant = if value.get() == opt_id { "on" } else { "off" };
         StyleApplication::new(SelectOptionStyle::sheet()).with("active", variant.to_string())
     };
-    // `opt_label` is a `Reactive<String>` — route it through
-    // `IntoTextSource` (Static→Static, Dynamic→Bound) so a live option
-    // label re-paints its row.
-    let label_child = runtime_core::text(opt_label).into_element();
-    runtime_core::pressable(vec![label_child], move || (on_click)())
+    let text_child =
+        option_text(opt_label, opt_description, move || value.get() == selected_id);
+    runtime_core::pressable(vec![text_child], move || (on_click)())
         .with_style(row_style)
         .into_element()
 }
@@ -396,10 +467,11 @@ fn menu_build(
             .map(|option| {
                 let opt_id = option.id.clone();
                 let opt_label = option.label.clone();
+                let opt_description = option.description.clone();
                 let on_change = on_change.clone();
                 let menu_close = row_close.clone();
                 let build: EachRowBuild = Box::new(move || {
-                    vec![menu_row(opt_id, opt_label, value, on_change, menu_close)]
+                    vec![menu_row(opt_id, opt_label, opt_description, value, on_change, menu_close)]
                 });
                 (EachKey::new(option.id.clone()), build)
             })
@@ -538,6 +610,127 @@ mod tests {
                 "the resting trigger border must NOT already be the focus ring"
             );
     });
+    }
+
+    /// The `[label, description]` texts of a menu row's text body, plus the
+    /// description's resolved style — `None` description when the row is the
+    /// bare label.
+    fn row_texts(row: Element) -> (Option<String>, Option<(Option<String>, Rc<runtime_core::StyleRules>)>) {
+        let P::Pressable { mut children, .. } = classify(row) else {
+            panic!("a menu row is a pressable");
+        };
+        assert_eq!(children.len(), 1, "a Select row holds one text body");
+        match classify(children.remove(0)) {
+            P::Text { text, .. } => (text, None),
+            P::View { children, .. } => {
+                let mut kids = children.into_iter().map(classify);
+                let Some(P::Text { text: label, .. }) = kids.next() else {
+                    panic!("the body's first child is the label text");
+                };
+                let Some(P::Text { text: desc, style: Some(style), .. }) = kids.next() else {
+                    panic!("the body's second child is the styled description text");
+                };
+                assert!(kids.next().is_none(), "the body is exactly [label, description]");
+                (label, Some((desc, style.resolve())))
+            }
+            _ => panic!("a row body is a text or a [label, description] view"),
+        }
+    }
+
+    /// Feature: a picker row "form_entry.address" can carry the muted note
+    /// "as its one-line label" under its label. The description draws as a
+    /// second text in the row — muted color, small type — and a row with no
+    /// description stays the bare label (no wrapper view).
+    #[test]
+    fn select_row_draws_muted_description_under_label() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let value = runtime_core::signal(String::new());
+            let row = menu_row(
+                "form_entry.address".to_string(),
+                Reactive::Static("Address".to_string()),
+                Some(Reactive::Static("as its one-line label".to_string())),
+                value,
+                Rc::new(|_| {}),
+                Rc::new(|| {}),
+            );
+            let (label, desc) = row_texts(row);
+            assert_eq!(label.as_deref(), Some("Address"));
+            let (desc_text, rules) = desc.expect("a described row draws the description");
+            assert_eq!(desc_text.as_deref(), Some("as its one-line label"));
+            assert_eq!(
+                rules.color.clone().map(|c| c.resolve()),
+                Some(tokens().color.text_muted().resolve()),
+                "the description is the theme's muted text color"
+            );
+            assert_eq!(
+                rules.font_size.clone().map(|f| f.resolve()),
+                Some(tokens().typography.body_sm_size().resolve()),
+                "the description is the small (help-text) type size"
+            );
+
+            let bare = menu_row(
+                "plain".to_string(),
+                Reactive::Static("Plain".to_string()),
+                None,
+                value,
+                Rc::new(|_| {}),
+                Rc::new(|| {}),
+            );
+            let (label, desc) = row_texts(bare);
+            assert_eq!(label.as_deref(), Some("Plain"));
+            assert!(desc.is_none(), "no description → the label alone, no second line");
+        });
+    }
+
+    /// On the committed row (solid primary) the muted color would vanish
+    /// into the fill, so the description switches to the solid text color.
+    #[test]
+    fn select_description_on_committed_row_uses_solid_text() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let value = runtime_core::signal("a".to_string());
+            let row = menu_row(
+                "a".to_string(),
+                Reactive::Static("A".to_string()),
+                Some(Reactive::Static("note".to_string())),
+                value,
+                Rc::new(|_| {}),
+                Rc::new(|| {}),
+            );
+            let (_, desc) = row_texts(row);
+            let (_, rules) = desc.unwrap();
+            // The committed row's own text color (`active: on`).
+            let row_on = resolve_style(
+                &StyleApplication::new(SelectOptionStyle::sheet()).with("active", "on"),
+            );
+            assert_eq!(
+                rules.color.clone().map(|c| c.resolve()),
+                row_on.color.clone().map(|c| c.resolve()),
+                "the description on the solid committed row matches the row's text color"
+            );
+            assert_ne!(
+                rules.color.clone().map(|c| c.resolve()),
+                Some(tokens().color.text_muted().resolve()),
+                "muted text on the solid primary fill loses contrast"
+            );
+        });
+    }
+
+    /// `with_description` is additive: `new` keeps the old two-field shape
+    /// (description `None`), and equality accounts for the description so a
+    /// `Signal<Vec<SelectOption>>` republishes when only a note changes.
+    #[test]
+    fn select_option_description_builder_and_equality() {
+        with_test_world(|| {
+            let plain = SelectOption::new("a", "A");
+            assert!(plain.description.is_none());
+            let noted = SelectOption::new("a", "A").with_description("note");
+            assert!(matches!(&noted.description, Some(Reactive::Static(d)) if d == "note"));
+            assert!(plain != noted, "a description makes the row differ");
+            assert!(noted == SelectOption::new("a", "A").with_description("note"));
+            assert!(noted != SelectOption::new("a", "A").with_description("other"));
+        });
     }
 
     // Field report: on web the Select dropdown options rendered in the

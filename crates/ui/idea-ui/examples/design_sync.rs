@@ -218,6 +218,7 @@ fn manifest_json() -> String {
         ("Skeleton", idea_ui::stylesheets::skeleton_style()),
         ("TabBar", idea_ui::stylesheets::tab_bar_style()),
         ("TabButton", idea_ui::stylesheets::tab_button_style()),
+        ("TabButtonActive", idea_ui::stylesheets::tab_button_active_style()),
         ("TabButtonDot", idea_ui::stylesheets::tab_button_dot_style()),
         ("TabDot", idea_ui::stylesheets::tab_dot_style()),
         ("TabPanel", idea_ui::stylesheets::tab_panel_style()),

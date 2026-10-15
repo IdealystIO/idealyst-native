@@ -35,7 +35,10 @@ use runtime_core::{
 };
 use std::rc::Rc;
 
-use crate::stylesheets::{TabBar, TabBarHost, TabBarScroller, TabButton, TabButtonDot, TabDot};
+use crate::stylesheets::{
+    StackPadding, TabBar, TabBarHost, TabBarRule, TabBarScroller, TabButton, TabButtonActive,
+    TabButtonDot, TabDot,
+};
 
 /// How the active tab is marked.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
@@ -151,6 +154,11 @@ pub struct TabsProps {
     /// because it is `flex-grow`, which grows along the parent's main axis:
     /// in a column it would grow the bar's height instead.
     pub fill: bool,
+    /// Inset the tabs from the bar's left and right ends. Default
+    /// [`StackPadding::None`]. The divider still spans the bar's full width;
+    /// the inset scrolls with the tabs. Horizontal only, so the active
+    /// underline stays on the divider.
+    pub padding_horizontal: StackPadding,
 }
 
 impl Default for TabsProps {
@@ -163,6 +171,7 @@ impl Default for TabsProps {
             on_change: Rc::new(|_| {}),
             indicator: Reactive::Static(TabIndicator::default()),
             fill: Reactive::Static(false),
+            padding_horizontal: Reactive::Static(StackPadding::None),
         }
     }
 }
@@ -179,6 +188,12 @@ fn host_style(fill: bool) -> StyleApplication {
     }
 }
 
+/// The strip's style: `TabBar` with the `pad` arm for `padding_horizontal`
+/// (a static selection, so the strip still premints).
+fn strip_style(pad: StackPadding) -> StyleApplication {
+    TabBar().into_style_application().with("pad", pad.as_variant_str())
+}
+
 /// Renders a clickable tab strip with reactive active highlighting over a
 /// reactive, id-keyed `tabs` list. Pure UI: one pressable per `Tab`; the one
 /// whose `id` equals `active` is highlighted; a tap reports the tapped tab's
@@ -191,15 +206,25 @@ pub fn Tabs(props: TabsProps) -> Element {
     let on_change = props.on_change;
     let indicator = props.indicator;
     let fill = props.fill;
-    let container_style = TabBar();
+    let pad = props.padding_horizontal;
 
     // Reactive, keyed list — tabs reconcile by `Tab::id` (a surviving tab keeps
     // its scope when the list changes). `for` over a `Signal<Vec<_>>` lowers to
     // the keyed `each`; each row is one `tab_button`.
-    let strip = ui! {
-        view(style = container_style) {
-            for tab in tabs, key = tab.id.clone() {
-                tab_button(tab, active.clone(), on_change.clone(), indicator.clone())
+    let strip = if pad.is_static() {
+        ui! {
+            view(style = strip_style(pad.get())) {
+                for tab in tabs, key = tab.id.clone() {
+                    tab_button(tab, active.clone(), on_change.clone(), indicator.clone())
+                }
+            }
+        }
+    } else {
+        ui! {
+            view(style = move || strip_style(pad.get())) {
+                for tab in tabs, key = tab.id.clone() {
+                    tab_button(tab, active.clone(), on_change.clone(), indicator.clone())
+                }
             }
         }
     };
@@ -217,9 +242,11 @@ pub fn Tabs(props: TabsProps) -> Element {
     // narrower than its viewport has nothing to scroll, so wide layouts are
     // unchanged.
     //
-    // The underline lives on the HOST, not on the strip, so it spans the full
-    // width and stays put while the tabs move under it — on the strip it would
+    // The divider lives on the HOST, not on the strip, so it spans the full
+    // width and stays put while the tabs move over it — on the strip it would
     // have been only as wide as the tabs and would have slid away with them.
+    // It is the host's FIRST child so the tabs (and the active underline)
+    // paint over it on every backend — see `TabBarRule`.
     let scroller = runtime_core::primitives::scroll_view::scroll_view(vec![strip])
         .horizontal(true)
         .with_style(StyleApplication::new(TabBarScroller::sheet()))
@@ -227,12 +254,14 @@ pub fn Tabs(props: TabsProps) -> Element {
     if fill.is_static() {
         ui! {
             view(style = host_style(fill.get())) {
+                view(style = TabBarRule())
                 scroller
             }
         }
     } else {
         ui! {
             view(style = move || host_style(fill.get())) {
+                view(style = TabBarRule())
                 scroller
             }
         }
@@ -258,17 +287,22 @@ fn tab_button(
     let id = tab.id;
     let label = tab.label;
 
-    // The button sheet for the chosen indicator — chip (dot) vs underline.
-    // Reads `indicator` live so a reactive indicator re-selects the sheet in
-    // place (the style sink). The DOT CHILD's *presence* is structural, not a
-    // style sink, so it snapshots below (see TODO).
-    let button_sheet = {
+    // The button style for the chosen indicator and selection. Dot is one
+    // sheet with an `active` axis; Underline is a sheet per state
+    // (`TabButton` / `TabButtonActive` — see the stylesheet for why). Reads
+    // `indicator` live so a reactive indicator re-selects the sheet in place
+    // (the style sink). The DOT CHILD's *presence* is structural, not a
+    // style sink, so it snapshots below.
+    let button_app = {
         let indicator = indicator.clone();
-        move || {
+        move |on: bool| {
             if matches!(indicator.get(), TabIndicator::Dot) {
-                TabButtonDot::sheet()
+                StyleApplication::new(TabButtonDot::sheet())
+                    .with("active", if on { "on" } else { "off" })
+            } else if on {
+                StyleApplication::new(TabButtonActive::sheet())
             } else {
-                TabButton::sheet()
+                StyleApplication::new(TabButton::sheet())
             }
         }
     };
@@ -281,11 +315,8 @@ fn tab_button(
     let tab_style = {
         let active = active.clone();
         let id = id.clone();
-        let button_sheet = button_sheet.clone();
-        move || {
-            let variant = if active.get() == id { "on" } else { "off" };
-            StyleApplication::new(button_sheet()).with("active", variant.to_string())
-        }
+        let button_app = button_app.clone();
+        move || button_app(active.get() == id)
     };
 
     let label_style = {
@@ -293,8 +324,7 @@ fn tab_button(
         let id = id.clone();
         move || {
             let on = active.get() == id;
-            let variant = if on { "on" } else { "off" };
-            let app = StyleApplication::new(button_sheet()).with("active", variant.to_string());
+            let app = button_app(on);
             let base = StyleApplication::new(tab_label_base_sheet());
             if app.attaches_preminted() {
                 // Premint web build: the pressable's preminted class carries
@@ -386,11 +416,12 @@ mod tests {
         }
     }
 
-    /// The color the TabButton sheet resolves for a given active state —
-    /// the color the label MUST carry on its own node (native won't
-    /// inherit it from the pressable).
+    /// The color the underline tab sheet resolves for a given active state
+    /// (`TabButtonActive` when "on") — the color the label MUST carry on its
+    /// own node (native won't inherit it from the pressable).
     fn tabbutton_color(active: &str) -> runtime_core::Color {
-        let app = StyleApplication::new(TabButton::sheet()).with("active", active.to_string());
+        let sheet = if active == "on" { TabButtonActive::sheet() } else { TabButton::sheet() };
+        let app = StyleApplication::new(sheet);
         resolve_style(&app)
             .color
             .clone()
@@ -507,8 +538,12 @@ mod tests {
                 crate::test_support::P::View { children, .. } => children,
                 _ => panic!("Tabs lowers to a host view"),
             };
-            assert_eq!(host_children.len(), 1, "the host wraps exactly the scroller");
-            match host_children.remove(0) {
+            assert_eq!(
+                host_children.len(),
+                2,
+                "the host holds the divider rule, then the scroller"
+            );
+            match host_children.remove(1) {
                 Element::Item { data, .. } => assert!(
                     data.downcast_ref::<runtime_vocabulary::prims::PrimCell<
                         runtime_vocabulary::prims::ScrollViewPrim,
@@ -557,14 +592,14 @@ mod tests {
 
     /// The bar IS the divider, and the selection mark sits ON it.
     ///
-    /// The host draws the divider and bottom-aligns the strip, so the
-    /// active tab's underline lands directly on that line. Left at the
-    /// default `flex-start` the host's height FLOOR put its slack below
-    /// the tabs instead, and the underline floated two points clear of
-    /// the divider — a tab bar hovering over a separate rule rather than
-    /// a tab bar that is one.
-    ///
-    /// Both halves are pinned because either alone restores the gap.
+    /// The host bottom-aligns the strip, so the active tab's underline ends
+    /// on the bar's bottom edge — where `TabBarRule` draws the divider, so
+    /// the underline covers it. Left at the default `flex-start` the host's
+    /// height FLOOR put its slack below the tabs and the underline floated
+    /// clear of the divider. The divider is a rule, never a border on the
+    /// host: a native layer draws its border over every subview, so the
+    /// underline could not cover it. Geometry and paint order are pinned
+    /// on a laid-out tree in `tests/tabs_underline_layout.rs`.
     #[test]
     fn the_bar_is_the_divider_and_the_underline_sits_on_it() {
         with_test_world(|| {
@@ -578,12 +613,67 @@ mod tests {
                 "the strip must sit on the bar's bottom edge, or the \
                  underline floats above the divider"
             );
-            assert_eq!(
-                host.border_bottom_width.as_ref().map(|t| t.resolve()),
-                Some(1.0),
-                "the bar draws the divider itself — a screen must not have \
-                 to add one under it"
+            assert!(
+                host.border_bottom_width.is_none() && host.padding_bottom.is_none(),
+                "no border and no bottom padding on the host — either keeps \
+                 the underline off the divider"
             );
+            let rule = runtime_core::resolve_style(&StyleApplication::new(
+                crate::stylesheets::TabBarRule::sheet(),
+            ));
+            assert_eq!(rule.position, Some(runtime_core::Position::Absolute));
+            assert_eq!(
+                rule.bottom.as_ref().map(|t| t.resolve()),
+                Some(runtime_core::Length::Px(0.0)),
+                "the divider sits on the bar's bottom edge"
+            );
+        });
+    }
+
+    /// Every tab sits on the divider, and a state background fills the
+    /// tab's whole box — so a hovered inactive tab hid the divider under
+    /// it. Its states draw a gray underline over the divider instead, and
+    /// the ACTIVE tab's states keep its primary underline (on one sheet
+    /// with an `active` axis they could not: states win over variants).
+    #[test]
+    fn hover_underline_keeps_the_divider_and_the_selection() {
+        with_test_world(|| {
+            theme();
+            let name = |c: &Option<runtime_core::Tokenized<runtime_core::Color>>| {
+                c.as_ref().and_then(|c| c.name()).map(str::to_string)
+            };
+            for state in ["hovered", "focused", "pressed"] {
+                let key = format!("__state_{state}");
+                let inactive = runtime_core::resolve_style(
+                    &StyleApplication::new(TabButton::sheet()).with(key.as_str(), "on"),
+                );
+                assert_eq!(
+                    name(&inactive.border_bottom_color).as_deref(),
+                    Some("color-border"),
+                    "{state} inactive tab: a gray underline over the divider"
+                );
+                let active = runtime_core::resolve_style(
+                    &StyleApplication::new(TabButtonActive::sheet()).with(key.as_str(), "on"),
+                );
+                let primary = runtime_core::resolve_style(&StyleApplication::new(
+                    TabButtonActive::sheet(),
+                ));
+                assert_eq!(
+                    name(&active.border_bottom_color),
+                    name(&primary.border_bottom_color),
+                    "{state} active tab keeps its primary underline"
+                );
+                assert!(name(&primary.border_bottom_color).is_some_and(|n| n != "color-border"));
+            }
+            // Same box either way, so selecting a tab never resizes it.
+            let a = runtime_core::resolve_style(&StyleApplication::new(TabButton::sheet()));
+            let b = runtime_core::resolve_style(&StyleApplication::new(TabButtonActive::sheet()));
+            assert_eq!(
+                a.border_bottom_width.as_ref().map(|t| t.resolve()),
+                b.border_bottom_width.as_ref().map(|t| t.resolve())
+            );
+            assert_eq!(a.padding_top, b.padding_top);
+            assert_eq!(a.padding_left, b.padding_left);
         });
     }
 

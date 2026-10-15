@@ -674,8 +674,8 @@ pub fn select() -> Element {
             value = value,
             on_change = on_change,
             options = vec![
-                SelectOption::new("apple",  "Apple"),
-                SelectOption::new("pear",   "Pear"),
+                SelectOption::new("apple",  "Apple").with_description("Crisp, keeps for weeks"),
+                SelectOption::new("pear",   "Pear").with_description("Soft once ripe"),
                 SelectOption::new("banana", "Banana"),
                 SelectOption::new("cherry", "Cherry"),
             ],
@@ -694,8 +694,9 @@ pub fn select() -> Element {
 
     body(vec![ui! {
         Section(title = "Live demo".to_string()) {
-            P(content = "Controlled dropdown. Options are { id, label } pairs; the bound \
-                `Signal<String>` holds the active id. The value type is a string so it \
+            P(content = "Controlled dropdown. Options are { id, label } pairs, with an \
+                optional muted description line under the label in the menu (the trigger \
+                shows only the label); the bound `Signal<String>` holds the active id. The value type is a string so it \
                 round-trips through URL params, persisted state, and analytics events \
                 without a generic.".to_string())
             Demo(preview = Some(preview), controls = Some(controls))
@@ -705,7 +706,7 @@ pub fn select() -> Element {
             PropsTable(rows = vec![
                 Prop { name: "value",       ty: "Signal<String>",     desc: "The active option's id. The host owns the signal." },
                 Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>", desc: "Fires when the user picks an option; receives the new id." },
-                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Options to show. SelectOption::new(id, label). Reactive: pass a Signal<Vec<SelectOption>> (the signal, not .get()) and rows loaded after mount appear, in the open menu too." },
+                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Options to show. SelectOption::new(id, label), plus .with_description(text) for a muted second line under the label in the menu row (the trigger shows the label only). Reactive: pass a Signal<Vec<SelectOption>> (the signal, not .get()) and rows loaded after mount appear, in the open menu too." },
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — trigger height." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Text shown on the trigger when no option matches the value." },
                 Prop { name: "disabled",    ty: "bool",               desc: "Read-only: the trigger won't open, leaves keyboard focus, and dims; an open menu closes. Takes a Signal/rx! too. Default: false." },
@@ -782,7 +783,7 @@ pub fn autocomplete() -> Element {
             P(content = "A searchable combobox: the constrained-selection sibling of \
                 Select. The value committed to the bound `Signal<String>` is always one \
                 of the options' ids — never free text. Typing filters on a \
-                case-insensitive substring of the label.".to_string())
+                case-insensitive substring of the label or the option's description.".to_string())
             Demo(preview = Some(preview), controls = Some(controls))
         }
     }, ui! {
@@ -790,7 +791,7 @@ pub fn autocomplete() -> Element {
             PropsTable(rows = vec![
                 Prop { name: "value",       ty: "Signal<String>",     desc: "The committed option's id. The host owns the signal." },
                 Prop { name: "on_change",   ty: "Rc<dyn Fn(String)>", desc: "Fires when the user commits a row; receives the option's id." },
-                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Rows to offer. SelectOption::new(id, label); the query filters by label. Reactive: pass a Signal<Vec<SelectOption>> (the signal, not .get()) and rows that arrive later show, in the open menu too." },
+                Prop { name: "options",     ty: "Vec<SelectOption>",  desc: "Rows to offer. SelectOption::new(id, label), optionally .with_description(text) for a muted second line under the label; the query filters by label and description, and the input shows the label only. Reactive: pass a Signal<Vec<SelectOption>> (the signal, not .get()) and rows that arrive later show, in the open menu too." },
                 Prop { name: "size",        ty: "SelectSize",         desc: "Sm / Md / Lg — input height. Shared with Select." },
                 Prop { name: "placeholder", ty: "Option<String>",     desc: "Hint text shown while the input is empty." },
                 Prop { name: "empty_text",  ty: "Option<String>",     desc: "Menu row shown when nothing matches. Default: \"No results\"." },

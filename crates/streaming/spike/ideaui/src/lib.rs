@@ -183,8 +183,8 @@ pub fn forms_demo() -> Element {
                 value = size_pick,
                 on_change = on(move |v| size_pick.set(v)),
                 options = vec![
-                    SelectOption { id: s("s"), label: s("Small").into() },
-                    SelectOption { id: s("m"), label: s("Medium").into() },
+                    SelectOption::new(s("s"), s("Small")),
+                    SelectOption::new(s("m"), s("Medium")),
                 ],
                 size = SelectSize::Sm,
                 placeholder = Some(s("Size")),
@@ -200,7 +200,7 @@ pub fn forms_demo() -> Element {
             Autocomplete(
                 value = city,
                 on_change = on(move |v| city.set(v)),
-                options = vec![SelectOption { id: s("ldn"), label: s("London").into() }],
+                options = vec![SelectOption::new(s("ldn"), s("London"))],
                 placeholder = Some(s("City")),
             )
         }
