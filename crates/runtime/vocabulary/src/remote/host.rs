@@ -491,7 +491,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 Vec::new(),
             )
         }
-        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure, disabled } => {
+        Node::TextInput { common, value: v, on_change, on_key_down, on_blur, on_focus, placeholder, secure, keyboard, disabled } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             let change = handler::<String, ()>(conn, on_change, || ());
             runtime_scene::item(
@@ -510,6 +510,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     }),
                     placeholder: value(conn, placeholder),
                     secure: value(conn, secure),
+                    keyboard: value(conn, keyboard),
                     // A bundle's `autofocus` arrives as a `focus()` handle
                     // call after the fill (`bundle::autofocus_fill`), not as
                     // a field — the app mounts it unfocused.

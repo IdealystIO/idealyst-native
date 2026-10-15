@@ -47,7 +47,7 @@ use host_mock::Harness;
 // vocabulary depends on directly), not through any re-export.
 use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
 use runtime_shared::primitives::icon::IconData;
-use runtime_shared::primitives::text_input::BlurOutcome;
+use runtime_shared::primitives::text_input::{BlurOutcome, KeyboardKind};
 use runtime_shared::FillRule;
 use runtime_scene::realize;
 use runtime_vocabulary::builders::{
@@ -567,6 +567,149 @@ fn reactive_text_input_secure_effect_is_freed_on_teardown() {
         ops_named(&h.take_log(), "update_text_input_secure").is_empty(),
         "after teardown the secure effect must not fire"
     );
+}
+
+// ===========================================================================
+// text_input `keyboard` (soft-keyboard hint)
+// ===========================================================================
+
+/// REGRESSION: `text_input` had no keyboard hint, so an email field opened
+/// the default soft keyboard and a phone field got no digit pad. A static
+/// kind reaches the backend as exactly one `update_text_input_keyboard`,
+/// right after the create — before the style/focus wiring, and before
+/// `autofocus` can raise the keyboard (iOS would need a reload to swap a
+/// keyboard that is already up).
+#[test]
+fn regression_static_text_input_keyboard_reaches_backend_once_after_create() {
+    let h = harness();
+    let realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            text_input()
+                .value("a@b.c")
+                .keyboard(KeyboardKind::Email)
+                .autofocus(true)
+                .build(),
+        )
+    });
+    h.world.flush();
+    let log = h.take_log();
+    assert_eq!(
+        ops_named(&log, "update_text_input_keyboard"),
+        vec!["update_text_input_keyboard n0 Email".to_string()],
+        "{log:?}"
+    );
+    let create = log.iter().position(|l| l == "create n0 text_input").expect("created");
+    let kb = log.iter().position(|l| l.starts_with("update_text_input_keyboard")).unwrap();
+    assert_eq!(kb, create + 1, "the hint lands right after the create: {log:?}");
+    drop(realized);
+}
+
+/// `Default` is what every backend creates with, so a static `Default`
+/// (the builder's default) makes no backend call and installs no effect.
+#[test]
+fn static_default_text_input_keyboard_makes_no_backend_call() {
+    let h = harness();
+    let realized = h.world.enter(|| {
+        realize(&h.backend, &h.registry, text_input().value("x").build())
+    });
+    let log = h.take_log();
+    assert!(ops_named(&log, "update_text_input_keyboard").is_empty(), "{log:?}");
+    drop(realized);
+}
+
+#[test]
+fn reactive_text_input_keyboard_updates_in_place_without_rebuild() {
+    let h = harness();
+    let world = h.world.clone();
+    let (realized, kind) = world.enter(|| {
+        let kind = signal(KeyboardKind::Default);
+        let realized = realize(
+            &h.backend,
+            &h.registry,
+            text_input().value("5").keyboard_dyn(move || kind.get()).build(),
+        );
+        (realized, kind)
+    });
+    // A live kind applies its initial value at mount (even `Default` — the
+    // effect can't know the backend's create-time state is the same).
+    assert_eq!(
+        ops_named(&h.take_log(), "update_text_input_keyboard"),
+        vec!["update_text_input_keyboard n0 Default".to_string()],
+    );
+    kind.set(KeyboardKind::Decimal);
+    world.flush();
+    let log = h.take_log();
+    assert_eq!(
+        ops_named(&log, "update_text_input_keyboard"),
+        vec!["update_text_input_keyboard n0 Decimal".to_string()],
+        "{log:?}"
+    );
+    assert!(ops_named(&log, "create").is_empty(), "no rebuild: {log:?}");
+    drop(realized);
+}
+
+#[test]
+fn reactive_text_input_keyboard_effect_is_freed_on_teardown() {
+    let h = harness();
+    let world = h.world.clone();
+    let (keep, weak) = probe();
+    let (realized, kind) = world.enter(|| {
+        let kind = signal(KeyboardKind::Phone);
+        let realized = realize(
+            &h.backend,
+            &h.registry,
+            text_input()
+                .keyboard_dyn(move || {
+                    let _hold = &keep;
+                    kind.get()
+                })
+                .build(),
+        );
+        (realized, kind)
+    });
+    h.take_log();
+    drop(realized);
+    assert!(weak.upgrade().is_none(), "keyboard binding closure freed with the scope");
+    kind.set(KeyboardKind::Url);
+    world.flush();
+    assert!(
+        ops_named(&h.take_log(), "update_text_input_keyboard").is_empty(),
+        "after teardown the keyboard effect must not fire"
+    );
+}
+
+/// The author surface: `ui!`'s `keyboard = …` lowers to the glue setter,
+/// which takes a plain kind or a live source (`Signal`) through
+/// `Into<Reactive<KeyboardKind>>`.
+#[test]
+fn glue_text_input_keyboard_accepts_plain_and_live_sources() {
+    use runtime_vocabulary::glue::primitives::text_input::text_input as glue_text_input;
+    use runtime_vocabulary::glue::IntoElement;
+    let h = harness();
+    let world = h.world.clone();
+    let (realized, kind) = world.enter(|| {
+        let kind = signal(KeyboardKind::Email);
+        let tree = view()
+            .child(
+                glue_text_input(String::new(), |_| {})
+                    .keyboard(KeyboardKind::Phone)
+                    .into_element(),
+            )
+            .child(glue_text_input(String::new(), |_| {}).keyboard(kind).into_element())
+            .build();
+        (realize(&h.backend, &h.registry, tree), kind)
+    });
+    let ops = ops_named(&h.take_log(), "update_text_input_keyboard");
+    assert_eq!(ops.len(), 2, "{ops:?}");
+    assert!(ops[0].ends_with(" Phone") && ops[1].ends_with(" Email"), "{ops:?}");
+    kind.set(KeyboardKind::Number);
+    world.flush();
+    let ops = ops_named(&h.take_log(), "update_text_input_keyboard");
+    assert_eq!(ops.len(), 1, "only the live field re-applies: {ops:?}");
+    assert!(ops[0].ends_with(" Number"), "{ops:?}");
+    drop(realized);
 }
 
 #[test]

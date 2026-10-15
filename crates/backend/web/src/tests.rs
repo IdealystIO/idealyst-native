@@ -5020,3 +5020,52 @@ fn regression_web_app_state_reports_focus_visibility_and_activation() {
     assert!(app_state::current().focused, "remove() detaches the observers");
     app_state::reset_for_tests();
 }
+
+/// The `text_input` soft-keyboard hint renders as `inputmode` (+ the
+/// autofill / auto-correct attributes), never as a `type` change: `type`
+/// stays owned by `secure`, so the two compose in either order, and a
+/// kind flipped back to `Default` leaves no stale attribute behind.
+/// Before the hint existed an email field opened the plain keyboard on a
+/// phone (no `@` / `.com` row) and a phone field got no digit pad.
+#[wasm_bindgen_test]
+fn regression_text_input_keyboard_sets_inputmode_and_composes_with_secure() {
+    use runtime_shared::primitives::text_input::KeyboardKind;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let node = backend.create_text_input_impl(
+        "",
+        None,
+        Rc::new(|_: String| {}),
+        None,
+        None,
+        false,
+        &Default::default(),
+    );
+    let el: web_glue::dom::Element = node.clone().unchecked_into();
+    let input: web_glue::dom::HtmlInputElement = node.clone().unchecked_into();
+
+    backend.update_text_input_keyboard_impl(&node, KeyboardKind::Email);
+    assert_eq!(el.get_attribute("inputmode").as_deref(), Some("email"));
+    assert_eq!(el.get_attribute("autocomplete").as_deref(), Some("email"));
+    assert_eq!(el.get_attribute("autocapitalize").as_deref(), Some("off"));
+    assert_eq!(input.type_(), "text", "the hint never changes `type`");
+
+    // `secure` after the hint: masked, keyboard kept.
+    backend.update_text_input_secure_impl(&node, true);
+    assert_eq!(input.type_(), "password");
+    assert_eq!(el.get_attribute("inputmode").as_deref(), Some("email"));
+
+    // A hint change while masked keeps the mask.
+    backend.update_text_input_keyboard_impl(&node, KeyboardKind::Number);
+    assert_eq!(input.type_(), "password");
+    assert_eq!(el.get_attribute("inputmode").as_deref(), Some("numeric"));
+    assert_eq!(el.get_attribute("autocomplete"), None, "Email's autofill hint is cleared");
+    assert_eq!(el.get_attribute("autocapitalize"), None);
+
+    backend.update_text_input_keyboard_impl(&node, KeyboardKind::Default);
+    for name in crate::primitives::text_input::KEYBOARD_ATTRS {
+        assert_eq!(el.get_attribute(name), None, "`{name}` cleared for Default");
+    }
+}

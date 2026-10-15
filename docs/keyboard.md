@@ -14,6 +14,11 @@ Two pieces:
 Nothing avoids the keyboard unless you wrap it. The app viewport never
 changes for the keyboard. `examples/keyboard-avoid` is the runnable demo.
 
+Which keyboard comes up (email, phone pad, digits, URL) is a prop of the
+field, not of this page: `text_input`'s `keyboard = KeyboardKind::…` (and
+idea-ui `Field`'s `keyboard`). See the `TextInput` section of
+[`primitives.md`](primitives.md).
+
 ```rust
 use runtime_core::{keyboard_avoiding_view, ui, Element, KeyboardAvoidBehavior, SafeAreaSides};
 

@@ -10,7 +10,7 @@ use runtime_shared::primitives::activity_indicator::{
 use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_shared::primitives::slider::SliderHandle;
 use runtime_shared::primitives::text_area::TextAreaHandle;
-use runtime_shared::primitives::text_input::TextInputHandle;
+use runtime_shared::primitives::text_input::{KeyboardKind, TextInputHandle};
 use runtime_shared::primitives::toggle::ToggleHandle;
 use runtime_shared::Color;
 use runtime_scene::{item, Element};
@@ -246,6 +246,7 @@ pub fn text_input() -> TextInputBuilder {
             on_focus: None,
             placeholder: Value::Const(None),
             secure: Value::Const(false),
+            keyboard: Value::Const(KeyboardKind::Default),
             autofocus: false,
             disabled: None,
             style: None,
@@ -309,6 +310,24 @@ impl TextInputBuilder {
     /// the mask in place without rebuilding the input).
     pub fn secure(mut self, secure: impl IntoValue<bool>) -> Self {
         self.prim.secure = secure.into_value();
+        self
+    }
+
+    /// Static soft-keyboard hint ([`KeyboardKind`]). Mobile backends pick
+    /// the matching on-screen keyboard; backends without a soft keyboard
+    /// ignore it. (A plain setter plus [`Self::keyboard_dyn`], like
+    /// `activity_indicator`'s `size`: `IntoValue` can't be implemented for
+    /// a `runtime-shared` type here — neither the trait nor the type is
+    /// this crate's.)
+    pub fn keyboard(mut self, keyboard: KeyboardKind) -> Self {
+        self.prim.keyboard = Value::Const(keyboard);
+        self
+    }
+
+    /// Live soft-keyboard hint: re-applied in place (no rebuild) whenever
+    /// the closure's dependencies change.
+    pub fn keyboard_dyn(mut self, f: impl Fn() -> KeyboardKind + 'static) -> Self {
+        self.prim.keyboard = Value::Dyn(Box::new(f));
         self
     }
 

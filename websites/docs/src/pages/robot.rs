@@ -105,7 +105,8 @@ docs! {
 
     section(heading = "Interact") {
         list(
-            [code("click"), " — fire a button's or pressable's ", code("on_click"), "."],
+            [code("click"), " — tap an element the way a finger would: a button, pressable or link fires its press, and a view's ", code("on_touch"), " gets a tap. A tap on a Text inside a clickable row reaches the row."],
+            [code("drag"), " — move one pointer along ", code("points"), " (", code("[x, y]"), " in px from the element's top-left): ", code("Began"), ", ", code("Moved"), "…, ", code("Ended"), " into the element's ", code("on_touch"), " or the nearest ancestor's. Draws on a signature pad, drives a pan or drag-to-reorder. On a Slider each point's x along the track sets the value. Pass ", code("hold_ms"), " to press and hold at the first point before moving: drag-and-drop on phones and tablets picks up after a 200 ms hold."],
             [code("type_text"), " — replace a TextInput's value with new text."],
             [code("set_toggle"), " — set a Toggle's ", code("Signal<bool>"), "."],
             [code("set_slider"), " — set a Slider's ", code("Signal<f32>"), "."],

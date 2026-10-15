@@ -369,6 +369,12 @@ inventory::submit! {
                 constraint: "",
             },
             PropFieldSpec {
+                name: "keyboard",
+                type_str: "impl Into<Reactive<KeyboardKind>>",
+                doc: "Soft-keyboard hint: KeyboardKind::{Default, Email, Phone, Number, Decimal, Url}. Picks the on-screen keyboard on iOS (UIKeyboardType + textContentType) and Android (InputType), and sets `inputmode`/`autocomplete` on web; Email/Url also turn off auto-capitalize and auto-correct. A hint, not validation — the field still accepts any text. Composes with `secure`. Desktop backends ignore it. A Signal/rx! source re-applies in place.",
+                constraint: "",
+            },
+            PropFieldSpec {
                 name: "on_key_down",
                 type_str: "Fn(&KeyEvent) -> KeyOutcome",
                 doc: "Keydown hook while focused. Return KeyOutcome::PreventDefault to suppress the platform default — this is how Enter-to-submit is built.",

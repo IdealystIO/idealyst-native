@@ -563,6 +563,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             on_focus: p.on_focus.map(|f| handler(move |v: &bool| f(*v))),
             placeholder: val(p.placeholder),
             secure: val(p.secure),
+            keyboard: val(p.keyboard),
             disabled: p.disabled.map(val),
         };
     }

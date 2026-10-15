@@ -1261,6 +1261,54 @@ mod text_disabled {
     }
 }
 
+/// `text_input`'s soft-keyboard hint crosses (CODEC_VERSION 5): a crossed
+/// field drives the backend's `update_text_input_keyboard` exactly like the
+/// native one — once for a static kind, per change for a live one.
+mod text_keyboard {
+    use super::*;
+    use runtime_shared::primitives::text_input::KeyboardKind;
+    use runtime_vocabulary::builders::text_input;
+
+    fn script(remote: bool) -> Vec<Vec<String>> {
+        let h = Harness::new();
+        h.record_all();
+        let (tree, kind) = h.world.enter(|| {
+            let kind = signal(KeyboardKind::Phone);
+            let tree = view()
+                .child(text_input().keyboard(KeyboardKind::Email))
+                .child(text_input().keyboard_dyn(move || kind.get()))
+                .child(text_input())
+                .build();
+            (tree, kind)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let keyboard_ops = |log: Vec<String>| {
+            log.into_iter()
+                .filter(|l| l.starts_with("update_text_input_keyboard"))
+                .collect::<Vec<_>>()
+        };
+        let mut steps = vec![keyboard_ops(h.take_log())];
+        h.world.enter(|| kind.set(KeyboardKind::Url));
+        h.flush();
+        steps.push(keyboard_ops(h.take_log()));
+        drop(realized);
+        steps
+    }
+
+    #[test]
+    fn a_crossed_keyboard_hint_reaches_the_backend_exactly_like_the_native_one() {
+        let native = script(false);
+        let remote = script(true);
+        assert_eq!(remote, native, "the crossed fields drive the backend like the native ones");
+        assert_eq!(native[0].len(), 2, "static Email + live Phone; Default makes no call: {native:?}");
+        assert!(native[0][0].ends_with(" Email") && native[0][1].ends_with(" Phone"), "{native:?}");
+        assert_eq!(native[1].len(), 1, "{native:?}");
+        assert!(native[1][0].ends_with(" Url"), "{native:?}");
+    }
+}
+
 /// `toggle` / `slider` `disabled` crosses too (CODEC_VERSION 4): a crossed
 /// control goes inert exactly like the native one.
 mod control_disabled {

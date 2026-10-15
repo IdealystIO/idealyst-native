@@ -57,6 +57,9 @@ struct TraceBackend {
     /// triggers the rotor / context-menu action; we expose them on
     /// the side so the end-to-end test can drive that path directly.
     last_view_action_handlers: Vec<(String, Rc<dyn Fn()>)>,
+    /// `(node, kind)` per `update_text_input_keyboard`, on the side like
+    /// `announcements`.
+    keyboards: Vec<(u64, runtime_shared::primitives::text_input::KeyboardKind)>,
 }
 
 impl Host for TraceBackend {
@@ -223,7 +226,29 @@ impl caps::PressableOps for TraceBackend {}
 impl caps::SafeAreaOps for TraceBackend {}
 impl caps::ScrollOps for TraceBackend {}
 impl caps::SliderOps for TraceBackend {}
-impl caps::TextInputOps for TraceBackend {}
+impl caps::TextInputOps for TraceBackend {
+    fn create_text_input(
+        &mut self,
+        _initial_value: &str,
+        _placeholder: Option<&str>,
+        _on_change: Rc<dyn Fn(String)>,
+        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
+        _secure: bool,
+        _a11y: &runtime_shared::accessibility::AccessibilityProps,
+    ) -> u64 {
+        self.next += 1;
+        self.next
+    }
+
+    fn update_text_input_keyboard(
+        &mut self,
+        node: &u64,
+        keyboard: runtime_shared::primitives::text_input::KeyboardKind,
+    ) {
+        self.keyboards.push((*node, keyboard));
+    }
+}
 impl caps::ToggleOps for TraceBackend {}
 impl caps::VirtualizerOps for TraceBackend {}
 impl caps::GridOps for TraceBackend {}
@@ -486,6 +511,40 @@ fn real_realize_drives_recorder() {
         trace.iter().any(|t| matches!(t, Trace::Finish(_))),
         "trace must contain finish"
     );
+}
+
+/// The `text_input` soft-keyboard hint crosses the dev wire
+/// (PROTOCOL_VERSION 24): recorder → JSON → replay reaches the device
+/// backend's `update_text_input_keyboard`. Without it a device under
+/// runtime-server dev showed the default keyboard for an email field that
+/// shows the email keyboard under `--local`.
+#[test]
+fn regression_text_input_keyboard_crosses_the_dev_wire() {
+    use runtime_shared::primitives::text_input::KeyboardKind;
+    use runtime_vocabulary::builders::{text_input, view};
+
+    let recorder = WireRecordingBackend::new();
+    let _session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, || {
+        view()
+            .child(text_input().keyboard(KeyboardKind::Email))
+            .child(text_input())
+            .build()
+    });
+    let commands = recorder.drain_commands();
+    assert_eq!(
+        commands.iter().filter(|c| matches!(c, Command::UpdateTextInputKeyboard { .. })).count(),
+        1,
+        "one hint for the Email field, none for the Default one"
+    );
+    let json = serde_json::to_string(&commands).expect("serialize");
+    let commands: Vec<Command> = serde_json::from_str(&json).expect("deserialize");
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
+    wire_app.apply_batch(commands).expect("replay succeeds");
+    let keyboards = wire_app.backend().borrow().keyboards.clone();
+    assert_eq!(keyboards.len(), 1, "{keyboards:?}");
+    assert_eq!(keyboards[0].1, KeyboardKind::Email);
 }
 
 /// Drive a link element through the recording backend. Verifies

@@ -1154,6 +1154,14 @@ mod ios_impl {
             IosBackend::update_text_input_secure_impl(self, node, secure)
         }
 
+        fn update_text_input_keyboard(
+            &mut self,
+            node: &Self::Node,
+            keyboard: primitives::text_input::KeyboardKind,
+        ) {
+            IosBackend::update_text_input_keyboard_impl(self, node, keyboard)
+        }
+
         fn create_text_area(
             &mut self,
             initial_value: &str,

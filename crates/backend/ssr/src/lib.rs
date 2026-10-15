@@ -235,6 +235,56 @@ fn remove_attr(node: &NodeRef, name: &'static str) {
     node.borrow_mut().attrs.retain(|(k, _)| *k != name);
 }
 
+/// The attributes a `text_input`'s soft-keyboard hint owns. All removed
+/// for `KeyboardKind::Default`.
+const KEYBOARD_ATTRS: [&str; 5] =
+    ["inputmode", "autocomplete", "autocapitalize", "autocorrect", "spellcheck"];
+
+/// The HTML rendering of a `KeyboardKind` — the attributes to set.
+/// Byte-identical to `backend-web`'s `primitives::text_input::keyboard_attrs`
+/// (each crate pins its copy with its own test), so a server-rendered
+/// `<input>` hydrates with exactly what the client would write. See the web
+/// copy for why this is `inputmode` rather than an `<input type>` change.
+fn keyboard_attrs(
+    kind: runtime_shared::primitives::text_input::KeyboardKind,
+) -> &'static [(&'static str, &'static str)] {
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+    match kind {
+        K::Default => &[],
+        K::Email => &[
+            ("inputmode", "email"),
+            ("autocomplete", "email"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
+        K::Phone => &[("inputmode", "tel"), ("autocomplete", "tel")],
+        K::Number => &[("inputmode", "numeric")],
+        K::Decimal => &[("inputmode", "decimal")],
+        K::Url => &[
+            ("inputmode", "url"),
+            ("autocomplete", "url"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
+    }
+}
+
+/// Set a kind's keyboard attributes on `node` and remove the rest.
+pub(crate) fn apply_keyboard_attrs(
+    node: &NodeRef,
+    kind: runtime_shared::primitives::text_input::KeyboardKind,
+) {
+    let set = keyboard_attrs(kind);
+    for name in KEYBOARD_ATTRS {
+        match set.iter().find(|(n, _)| *n == name) {
+            Some((_, value)) => set_attr(node, name, (*value).to_string()),
+            None => remove_attr(node, name),
+        }
+    }
+}
+
 /// Append a space-separated class to a node's `class` attribute (so a
 /// chrome handler can stamp `ui-nav-root` then `ui-nav-drawer-root` on
 /// the same node, matching the live web navigator).

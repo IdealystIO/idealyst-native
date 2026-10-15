@@ -715,6 +715,77 @@ mod tests {
         crate::newcore::stop();
     }
 
+    /// Regression: `runtime_core::log_info!` in a web app (`idealyst dev
+    /// --web --local`) went to `console.info` only, and the robot's
+    /// `get_logs` answered `[]` — nothing fed `robot::logs`, so app
+    /// diagnostics were unreadable through the robot. Drives the exact
+    /// web path: the `console`-backed `WebLogger` installed, a new-core
+    /// app booted (so `dispatch_verb` tries the vocabulary bridge first
+    /// and falls back for `get_logs`), a line logged from the app's
+    /// build and one after mount, then `get_logs` through `dispatch_verb`.
+    /// Also pins that the console still receives the line — the robot
+    /// buffer is in addition to the platform logger, not instead of it.
+    ///
+    /// This pins the `get_logs` verb path on wasm, which runtime-shared's
+    /// native `regression_log_macros_reach_robot_get_logs` (it reads the
+    /// buffer directly, on the host) does not reach.
+    #[wasm_bindgen_test]
+    async fn regression_web_log_info_reaches_robot_get_logs() {
+        crate::install_logger();
+        crate::install_wall_clock_source();
+
+        // Capture `console.info` for the duration of the test.
+        let console = JsValue::global().get("console").unwrap();
+        let original_info = console.get("info").unwrap();
+        let heard: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = heard.clone();
+        let hook = web_glue::Closure::new(move |line: JsValue| {
+            sink.borrow_mut().push(line.as_string().unwrap_or_default());
+        });
+        console.set("info", hook.as_js()).unwrap();
+
+        let _mount = setup_mount();
+        crate::newcore::start(|| {
+            runtime_shared::log_info!("[pick-diag] built n={}", 1);
+            runtime_vocabulary::view().build()
+        });
+        runtime_shared::log_info!("[pick-diag] mounted n={}", 2);
+
+        console.set("info", &original_info).unwrap();
+        drop(hook);
+
+        let raw = dispatch_verb("get_logs", &json!({})).expect("get_logs");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+        let texts: Vec<&str> = entries
+            .iter()
+            .filter(|e| e["source"] == "log")
+            .filter_map(|e| e["text"].as_str())
+            .filter(|t| t.contains("[pick-diag]"))
+            .collect();
+        assert_eq!(
+            texts,
+            ["[INFO] [pick-diag] built n=1", "[INFO] [pick-diag] mounted n=2"],
+            "both lines reach get_logs: {raw}"
+        );
+        assert!(
+            entries
+                .iter()
+                .filter(|e| e["text"].as_str().is_some_and(|t| t.contains("[pick-diag]")))
+                .all(|e| e["ts"].as_u64().unwrap_or(0) > 0),
+            "entries carry the js Date timestamp: {raw}"
+        );
+        let heard = heard.borrow();
+        assert!(
+            heard.iter().any(|l| l == "[pick-diag] built n=1")
+                && heard.iter().any(|l| l == "[pick-diag] mounted n=2"),
+            "console.info still receives the lines: {heard:?}"
+        );
+
+        let promise = web_glue::js::Promise::resolve(&web_glue::JsValue::UNDEFINED);
+        let _ = web_glue::JsFuture::new(&promise).await;
+        crate::newcore::stop();
+    }
+
     /// The P5-remainder verbs resolve against a booted new-core app
     /// through the SAME `dispatch_verb` routing (no transport edits):
     /// `list_components`/`invoke_method` drive a registered component

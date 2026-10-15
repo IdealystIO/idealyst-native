@@ -167,6 +167,10 @@ pub(crate) struct ElementActions {
     /// robot's `click` and `drag` synthesize touch streams into it (see
     /// [`Robot::click`] / [`Robot::drag`]).
     pub touch: Option<runtime_shared::TouchHandler>,
+    /// A slider's drag: set the value at `fraction` (0..=1) of the track
+    /// through the native widget's own change path. `false` when the
+    /// slider is disabled. See [`Robot::drag`].
+    pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -182,6 +186,7 @@ pub(crate) struct MountActions {
     pub focus: Option<Rc<dyn Fn()>>,
     pub blur: Option<Rc<dyn Fn()>>,
     pub set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
 }
 
 // =============================================================================
@@ -551,6 +556,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         focus,
         blur,
         set_scroll,
+        slider_drag,
     } = actions;
     // Geometry / introspection closures: borrow the backend at QUERY
     // time (never held across the query's own callback), mirroring the
@@ -607,6 +613,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 device_frame: Some(device_frame),
                 introspect: Some(introspect),
                 touch: None,
+                slider_drag,
             },
             parent,
             children: Vec::new(),
@@ -1110,18 +1117,54 @@ impl Robot {
     ///
     /// Events are spaced [`SYNTHETIC_FRAME_NS`] apart, and staged writes
     /// settle after each one, as a real event loop flushes between
-    /// pointer events.
+    /// pointer events. The whole path is delivered inside this one call,
+    /// so no real time passes between events. To press and hold before
+    /// moving — a long-press pickup, the dnd SDK's default on phones and
+    /// tablets — use [`drag_with_hold`](Self::drag_with_hold).
+    ///
+    /// On a `slider` (a native widget with no touch handler) each point's
+    /// `x` across the element's width sets the value — `0` is `min`, the
+    /// right edge is `max`, `y` is ignored — through the same step-snapped,
+    /// disabled-gated change callback the native control reports to, and
+    /// the native thumb moves with it. That needs the slider's laid-out
+    /// frame; a disabled slider refuses with an error.
     pub fn drag(&self, element: &Element, points: &[(f32, f32)]) -> Result<(), RobotError> {
+        self.drag_with_hold(element, points, 0)
+    }
+
+    /// [`drag`](Self::drag), pressing and holding at the first point for
+    /// `hold_ms` before the path continues: after `Began`, a stationary
+    /// `Moved` stamped `hold_ms` later.
+    ///
+    /// No real time passes (the call is synchronous, so app timers cannot
+    /// run); the hold is carried by the events' timestamps. Long-press
+    /// recognizers that read the event clock as well as their timer see a
+    /// real hold — the dnd SDK's `DragRecognizer` does, so a long-press
+    /// drag-to-reorder picks up exactly as a held finger would on iOS and
+    /// Android. `hold_ms = 0` is [`drag`](Self::drag). Ignored on a slider.
+    pub fn drag_with_hold(
+        &self,
+        element: &Element,
+        points: &[(f32, f32)],
+        hold_ms: u64,
+    ) -> Result<(), RobotError> {
         let (&first, rest) = points
             .split_first()
             .ok_or(RobotError::ActionNotAvailable("drag (no points)"))?;
+        let chain = self.press_chain(element.id)?;
+        if let Some(slide) = chain.first().and_then(|(_, a)| a.slider_drag.clone()) {
+            return self.drag_slider(element.id, &slide, points);
+        }
         let origin = self.window_origin(element.id);
         let to_window = |(x, y): (f32, f32)| TouchPoint::new(origin.x + x, origin.y + y);
-        for (id, actions) in self.press_chain(element.id)? {
+        for (id, actions) in chain {
             let Some(handler) = actions.touch else { continue };
             let mut stream = SyntheticTouch::new(handler, self.window_origin(id));
             if !stream.deliver(TouchPhase::Began, to_window(first)) {
                 continue;
+            }
+            if hold_ms > 0 {
+                stream.hold(hold_ms, to_window(first));
             }
             let last = rest.last().copied().unwrap_or(first);
             if let Some((_, moves)) = rest.split_last() {
@@ -1134,6 +1177,31 @@ impl Robot {
             return Ok(());
         }
         Err(RobotError::ActionNotAvailable("drag"))
+    }
+
+    /// [`drag`](Self::drag) on a slider: each point's `x` over the track
+    /// width becomes a value, one change per point, settled in between.
+    fn drag_slider(
+        &self,
+        id: ElementId,
+        slide: &Rc<dyn Fn(f32) -> bool>,
+        points: &[(f32, f32)],
+    ) -> Result<(), RobotError> {
+        let width = REGISTRY
+            .with(|r| r.borrow().get(id).and_then(|e| e.actions.absolute_frame.clone()))
+            .and_then(|f| f())
+            .map(|r| r.width)
+            .filter(|w| *w > 0.0)
+            .ok_or(RobotError::ActionNotAvailable(
+                "drag (the slider has no laid-out frame to map points onto)",
+            ))?;
+        for &(x, _) in points {
+            if !slide(x / width) {
+                return Err(RobotError::ActionNotAvailable("drag (the slider is disabled)"));
+            }
+            settle();
+        }
+        Ok(())
     }
 
     /// `id` and its ancestors, innermost first, with their actions cloned
@@ -1432,6 +1500,8 @@ struct SyntheticTouch {
     /// `TouchEvent::position` is local to the view that installed it.
     origin: TouchPoint,
     timestamp_ns: u64,
+    /// `Began`'s timestamp — what a hold is measured from.
+    began_ns: u64,
 }
 
 impl SyntheticTouch {
@@ -1440,7 +1510,18 @@ impl SyntheticTouch {
             handler,
             origin,
             timestamp_ns: runtime_shared::time::now_micros().saturating_mul(1_000),
+            began_ns: 0,
         }
+    }
+
+    /// Hold still at `window` until `hold_ms` after `Began`: one stationary
+    /// `Moved` stamped there (a real held finger sends none; recognizers
+    /// that also read the event clock — see [`Robot::drag_with_hold`] —
+    /// take it as the hold). Later events continue a frame apart.
+    fn hold(&mut self, hold_ms: u64, window: TouchPoint) {
+        let held_until = self.began_ns + hold_ms.saturating_mul(1_000_000);
+        self.timestamp_ns = self.timestamp_ns.max(held_until);
+        self.deliver(TouchPhase::Moved, window);
     }
 
     /// Deliver one event at `window` and settle. Returns whether the
@@ -1454,6 +1535,9 @@ impl SyntheticTouch {
             timestamp_ns: self.timestamp_ns,
             force: None,
         };
+        if phase == TouchPhase::Began {
+            self.began_ns = self.timestamp_ns;
+        }
         self.timestamp_ns += SYNTHETIC_FRAME_NS;
         // A plain primary press, as backends report before each dispatch.
         runtime_shared::set_pointer_modifiers(runtime_shared::PointerModifiers::default());
@@ -1611,7 +1695,13 @@ pub mod bridge {
                         _ => Err(format!("each point must be [x, y], got {p}")),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                robot.drag(&el, &points).map_err(|e| e.to_string())?;
+                let hold_ms = match &args["hold_ms"] {
+                    serde_json::Value::Null => 0,
+                    v => v.as_u64().ok_or(format!("'hold_ms' must be a whole number of ms, got {v}"))?,
+                };
+                robot
+                    .drag_with_hold(&el, &points, hold_ms)
+                    .map_err(|e| e.to_string())?;
                 Ok("\"ok\"".into())
             }
             "type_text" => {

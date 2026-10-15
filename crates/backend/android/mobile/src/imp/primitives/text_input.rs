@@ -182,6 +182,87 @@ fn create_inner(
     })
 }
 
+// `android.text.InputType` bits. A `text_input`'s soft-keyboard hint
+// (`KeyboardKind`) and its `secure` mask are ONE native setting on Android
+// — both are `setInputType` — so they are computed together from the pair
+// the backend keeps per field (`AndroidBackend::text_input_modes`).
+const TYPE_CLASS_TEXT: i32 = 0x0000_0001;
+const TYPE_CLASS_NUMBER: i32 = 0x0000_0002;
+const TYPE_CLASS_PHONE: i32 = 0x0000_0003;
+const TYPE_TEXT_VARIATION_URI: i32 = 0x0000_0010;
+const TYPE_TEXT_VARIATION_EMAIL_ADDRESS: i32 = 0x0000_0020;
+const TYPE_TEXT_VARIATION_PASSWORD: i32 = 0x0000_0080;
+const TYPE_NUMBER_VARIATION_PASSWORD: i32 = 0x0000_0010;
+const TYPE_NUMBER_FLAG_DECIMAL: i32 = 0x0000_2000;
+
+/// The single-line `EditText` input type for a keyboard kind + mask.
+///
+/// The variation is a 4-bit field, so a masked field can't also say
+/// "email": `secure` wins the variation, and the CLASS keeps the keyboard
+/// where Android has a masked form of it — the numeric kinds become
+/// `NUMBER | VARIATION_PASSWORD` (a masked digit pad: a PIN), the text kinds
+/// `TEXT | VARIATION_PASSWORD`. `TYPE_CLASS_PHONE` has no password
+/// variation, so a masked phone field takes the masked digit pad too.
+/// Never `TYPE_TEXT_FLAG_MULTI_LINE`: `text_input` is single-line on every
+/// backend (see `create_inner`).
+pub(crate) fn input_type(kind: runtime_shared::primitives::text_input::KeyboardKind, secure: bool) -> i32 {
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+    match (kind, secure) {
+        (K::Default, false) => TYPE_CLASS_TEXT,
+        (K::Email, false) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+        (K::Url, false) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_URI,
+        (K::Phone, false) => TYPE_CLASS_PHONE,
+        (K::Number, false) => TYPE_CLASS_NUMBER,
+        (K::Decimal, false) => TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL,
+        (K::Default | K::Email | K::Url, true) => TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_PASSWORD,
+        (K::Phone | K::Number, true) => TYPE_CLASS_NUMBER | TYPE_NUMBER_VARIATION_PASSWORD,
+        (K::Decimal, true) => {
+            TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL | TYPE_NUMBER_VARIATION_PASSWORD
+        }
+    }
+}
+
+/// `setInputType` on a single-line field, keeping its typeface.
+///
+/// INVARIANT: `TextView.setInputType` swaps the typeface to MONOSPACE when
+/// the new type is a password variation (and back to the XML default when
+/// it stops being one), which would silently drop the font the style
+/// system applied. The current typeface is read before and restored after,
+/// so a mask toggle changes the glyphs to dots and nothing else — the same
+/// observable result as `secureTextEntry` on iOS and `type=password` on web.
+/// The password transformation itself (dots) is applied by `setInputType`.
+pub(crate) fn apply_input_type(
+    node: &GlobalRef,
+    kind: runtime_shared::primitives::text_input::KeyboardKind,
+    secure: bool,
+) {
+    let t = input_type(kind, secure);
+    with_env(|env| {
+        let current = env
+            .call_method(node.as_obj(), "getInputType", "()I", &[])
+            .ok()
+            .and_then(|v| v.i().ok());
+        if current == Some(t) {
+            return;
+        }
+        let typeface = env
+            .call_method(node.as_obj(), "getTypeface", "()Landroid/graphics/Typeface;", &[])
+            .ok()
+            .and_then(|v| v.l().ok());
+        let _ = env.call_method(node.as_obj(), "setInputType", "(I)V", &[JValue::Int(t)]);
+        if let Some(tf) = typeface {
+            if !tf.is_null() {
+                let _ = env.call_method(
+                    node.as_obj(),
+                    "setTypeface",
+                    "(Landroid/graphics/Typeface;)V",
+                    &[JValue::Object(&tf)],
+                );
+            }
+        }
+    });
+}
+
 /// Apply a programmatic text value to the EditText. Suppresses
 /// `RustTextWatcher` during the `setText` call so runtime-server-driven wire
 /// replays don't echo back to the server as an `EventOccurred` and
@@ -456,3 +537,36 @@ impl TextAreaOps for AndroidTextAreaOps {
     }
 }
 pub(crate) static ANDROID_TEXT_AREA_OPS: AndroidTextAreaOps = AndroidTextAreaOps;
+
+#[cfg(test)]
+mod input_type_tests {
+    use super::input_type;
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+
+    /// Pins the `android.text.InputType` values per kind and their
+    /// composition with `secure` (the two share `setInputType`).
+    #[test]
+    fn input_type_per_kind_and_secure() {
+        assert_eq!(input_type(K::Default, false), 0x01);
+        assert_eq!(input_type(K::Email, false), 0x21);
+        assert_eq!(input_type(K::Url, false), 0x11);
+        assert_eq!(input_type(K::Phone, false), 0x03);
+        assert_eq!(input_type(K::Number, false), 0x02);
+        assert_eq!(input_type(K::Decimal, false), 0x2002);
+        assert_eq!(input_type(K::Default, true), 0x81);
+        assert_eq!(input_type(K::Email, true), 0x81);
+        assert_eq!(input_type(K::Url, true), 0x81);
+        assert_eq!(input_type(K::Number, true), 0x12);
+        assert_eq!(input_type(K::Phone, true), 0x12);
+        assert_eq!(input_type(K::Decimal, true), 0x2012);
+        for k in K::ALL {
+            for secure in [false, true] {
+                assert_eq!(
+                    input_type(k, secure) & 0x0002_0000,
+                    0,
+                    "{k:?}/{secure}: text_input is never multi-line"
+                );
+            }
+        }
+    }
+}

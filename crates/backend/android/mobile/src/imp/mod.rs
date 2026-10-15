@@ -360,6 +360,14 @@ pub struct AndroidBackend {
     /// Live `keyboard_avoiding_view`s, keyed like `view_to_layout`. See
     /// `imp::soft_keyboard`.
     pub(crate) keyboard_avoiders: HashMap<usize, soft_keyboard::Avoider>,
+    /// Per-`text_input` `(keyboard kind, secure)`, keyed like `anim_state`.
+    /// Android has ONE native setting for both (`setInputType`), so a
+    /// change to either recomputes from the pair
+    /// (`primitives::text_input::input_type`). Written fresh by every
+    /// `create_text_input` — which also makes a reused key from a released
+    /// field harmless — and dropped in `on_node_unstyled`.
+    pub(crate) text_input_modes:
+        HashMap<usize, (runtime_shared::primitives::text_input::KeyboardKind, bool)>,
     /// View pointer → (`GlobalRef`, Taffy node). Indexed by the same
     /// raw `JObject*` pointer scheme as `anim_state`. Iterated in the
     /// layout pass to apply computed frames.
@@ -894,6 +902,7 @@ impl AndroidBackend {
             image_states: HashMap::new(),
             layout: runtime_layout::LayoutTree::new(),
             keyboard_avoiders: HashMap::new(),
+            text_input_modes: HashMap::new(),
             view_to_layout: HashMap::new(),
             font_registry: font::FontRegistry::new(),
             sticky_registry: HashMap::new(),
@@ -2894,14 +2903,17 @@ impl AndroidBackend {
         secure: bool,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
-        // TODO(secure): wire `secure` to the EditText input type
-        // (`PasswordTransformationMethod` / `TYPE_TEXT_VARIATION_PASSWORD`).
-        // Stubbed for now so the backend matches the updated Backend trait.
-        // The reactive `update_text_input_secure` toggle inherits the trait's
-        // default no-op until this create-time wiring lands — both are the
-        // same pending JNI work (needs a device to verify), not done blind.
-        let _ = secure;
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        // `secure` and the keyboard hint share `setInputType`; record the
+        // pair (the hint arrives right after via
+        // `update_text_input_keyboard`) and mask now. `create` already set
+        // the plain single-line TYPE_CLASS_TEXT, so an unmasked field needs
+        // no second call.
+        let kind = runtime_shared::primitives::text_input::KeyboardKind::Default;
+        self.text_input_modes.insert(Self::node_key(&node), (kind, secure));
+        if secure {
+            primitives::text_input::apply_input_type(&node, kind, true);
+        }
         // Give the field a Taffy intrinsic size: `View.measure` reports the
         // EditText's single-line height (font + its own padding). Without a
         // measure_fn Taffy had no content size for it, so an unstyled field
@@ -2915,6 +2927,35 @@ impl AndroidBackend {
 
     pub(crate) fn update_text_input_value_impl(&mut self, node: &GlobalRef, value: &str) {
         primitives::text_input::update_value(node, value)
+    }
+
+    /// Live mask toggle: recompute the input type from the stored keyboard
+    /// kind + the new mask (see `text_input_modes`). The EditText is not
+    /// recreated, so the typed value survives (password show/hide).
+    pub(crate) fn update_text_input_secure_impl(&mut self, node: &GlobalRef, secure: bool) {
+        let entry = self
+            .text_input_modes
+            .entry(Self::node_key(node))
+            .or_insert((Default::default(), false));
+        entry.1 = secure;
+        let (kind, secure) = *entry;
+        primitives::text_input::apply_input_type(node, kind, secure);
+    }
+
+    /// Soft-keyboard hint: recompute the input type from the new kind + the
+    /// stored mask, so the two compose in either order.
+    pub(crate) fn update_text_input_keyboard_impl(
+        &mut self,
+        node: &GlobalRef,
+        keyboard: runtime_shared::primitives::text_input::KeyboardKind,
+    ) {
+        let entry = self
+            .text_input_modes
+            .entry(Self::node_key(node))
+            .or_insert((Default::default(), false));
+        entry.0 = keyboard;
+        let (kind, secure) = *entry;
+        primitives::text_input::apply_input_type(node, kind, secure);
     }
 
     pub(crate) fn create_text_area_impl(
@@ -4018,6 +4059,7 @@ impl AndroidBackend {
             );
         });
         self.pending_sticky.remove(&node_key);
+        self.text_input_modes.remove(&node_key);
         // If this node is a ScrollView outer, drop our held inner
         // GlobalRef so the JVM can GC the inner LinearLayout once
         // the outer is released.

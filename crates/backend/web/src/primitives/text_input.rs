@@ -4,7 +4,7 @@
 use crate::WebBackend;
 use runtime_shared::primitives::key::{KeyDownHandler, KeyOutcome};
 use runtime_shared::primitives::text_input::{
-    BlurHandler, BlurOutcome, TextInputHandle, TextInputOps,
+    BlurHandler, BlurOutcome, KeyboardKind, TextInputHandle, TextInputOps,
 };
 use std::any::Any;
 use std::rc::Rc;
@@ -136,6 +136,69 @@ pub(crate) fn update_secure(node: &Node, secure: bool) {
         let want = if secure { "password" } else { "text" };
         if input.type_() != want {
             input.set_type(want);
+        }
+    }
+}
+
+/// The attributes the soft-keyboard hint owns on the `<input>`. Every one
+/// is removed for [`KeyboardKind::Default`], so a live kind flipping back
+/// leaves no stale hint behind (nothing else on a `text_input` sets them).
+pub(crate) const KEYBOARD_ATTRS: [&str; 5] =
+    ["inputmode", "autocomplete", "autocapitalize", "autocorrect", "spellcheck"];
+
+/// The HTML rendering of a [`KeyboardKind`]: the attributes to SET; every
+/// other name in [`KEYBOARD_ATTRS`] is removed. Kept byte-identical to
+/// `backend-ssr`'s copy (same table, its own test) so a server-rendered
+/// `<input>` hydrates with the attributes the client would have written.
+///
+/// Why `inputmode` and not `type=email|tel|number|url`: `type` is already
+/// owned by `secure` (`text` ↔ `password`), and the typed inputs change
+/// behavior beyond the keyboard — `type=email`/`number` make
+/// `selectionStart` throw (the `on_key_down` bridge reads it), `number`
+/// rejects non-numeric text and reports `""` for it, and `email`/`url`
+/// trigger browser constraint validation. `inputmode` changes only the
+/// on-screen keyboard, which is the whole contract. `autocomplete` adds
+/// the autofill hint iOS's `textContentType` gives (email/tel/url).
+/// `Email`/`Url` also switch off auto-capitalize / auto-correct /
+/// spellcheck, matching iOS's `autocapitalizationType`/`autocorrectionType`.
+pub(crate) fn keyboard_attrs(kind: KeyboardKind) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        KeyboardKind::Default => &[],
+        KeyboardKind::Email => &[
+            ("inputmode", "email"),
+            ("autocomplete", "email"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
+        KeyboardKind::Phone => &[("inputmode", "tel"), ("autocomplete", "tel")],
+        KeyboardKind::Number => &[("inputmode", "numeric")],
+        KeyboardKind::Decimal => &[("inputmode", "decimal")],
+        KeyboardKind::Url => &[
+            ("inputmode", "url"),
+            ("autocomplete", "url"),
+            ("autocapitalize", "off"),
+            ("autocorrect", "off"),
+            ("spellcheck", "false"),
+        ],
+    }
+}
+
+/// Apply the soft-keyboard hint to an `<input>`: set the kind's
+/// attributes, remove the rest of [`KEYBOARD_ATTRS`]. Independent of
+/// `secure` (which owns `type`), so the two compose in either order.
+pub(crate) fn update_keyboard(node: &Node, kind: KeyboardKind) {
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::Element>() {
+        let set = keyboard_attrs(kind);
+        for name in KEYBOARD_ATTRS {
+            match set.iter().find(|(n, _)| *n == name) {
+                Some((_, value)) => {
+                    let _ = el.set_attribute(name, value);
+                }
+                None => {
+                    let _ = el.remove_attribute(name);
+                }
+            }
         }
     }
 }

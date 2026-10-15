@@ -231,7 +231,13 @@ pub use payload_serde::{
 /// clock in the sidecar restarts on device touches exactly as under
 /// `--local`. A v22 server can't decode it and drops the message (the
 /// app still runs; only `user_activity()` stays frozen).
-pub const PROTOCOL_VERSION: u32 = 23;
+///
+/// **Bumped to 24 for `Command::UpdateTextInputKeyboard`.** The
+/// `text_input` soft-keyboard hint (`keyboard = KeyboardKind::Email`), so
+/// a device under runtime-server dev shows the same email / phone / digit
+/// keyboard as under `--local`. A new server→client command: a v23
+/// client can't decode it (the field keeps the default keyboard there).
+pub const PROTOCOL_VERSION: u32 = 24;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -908,6 +914,16 @@ pub enum Command {
         node: NodeId,
         placeholder: Option<String>,
     },
+    /// Set an existing text input's soft-keyboard hint (PROTOCOL_VERSION
+    /// 24). Emitted once after `CreateTextInput` for a static non-default
+    /// kind, and per change of a live one — the vocabulary's
+    /// `update_text_input_keyboard` op, verbatim. A separate command
+    /// rather than a `CreateTextInput` field because that is what the op
+    /// is; the scene model replays it after the create in a snapshot.
+    UpdateTextInputKeyboard {
+        node: NodeId,
+        keyboard: WireKeyboardKind,
+    },
     UpdateTextAreaValue {
         node: NodeId,
         value: String,
@@ -1434,6 +1450,26 @@ pub enum WireCursor {
     #[default]
     #[serde(other)]
     Auto,
+}
+
+/// Wire mirror of `runtime_shared::primitives::text_input::KeyboardKind`
+/// (the `text_input` soft-keyboard hint). Converted by the recorder
+/// (`dev-server`) and the replay client (`dev-client`'s `convert`), since
+/// this crate doesn't depend on `runtime-shared`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireKeyboardKind {
+    Email,
+    Phone,
+    Number,
+    Decimal,
+    Url,
+    /// Also the catch-all: a peer that learns a new kind before this one
+    /// does lands on the platform's general keyboard, which is what the
+    /// field had before the hint existed. Must stay last —
+    /// `#[serde(other)]` requires it.
+    #[default]
+    #[serde(other)]
+    Default,
 }
 
 /// Wire mirror of `runtime_core::Position`. The mobile-flavored

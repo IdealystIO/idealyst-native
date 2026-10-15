@@ -68,6 +68,67 @@ pub fn measured_width(known_width: Option<f32>) -> f32 {
 }
 
 
+/// What kind of text a `text_input` expects, so a soft keyboard can show the
+/// right layout: an `@` / `.com` row for email, a digit pad for a phone
+/// number, and so on. A hint about the content, not validation — the field
+/// still accepts whatever text arrives (a paste, a hardware keyboard), and
+/// `on_change` still reports it verbatim.
+///
+/// Platform contract (CLAUDE.md §7 — same intent, native mechanism):
+///
+/// | Kind      | web (`inputmode` / `autocomplete`) | iOS `UIKeyboardType` (+ `textContentType`) | Android `InputType` |
+/// |-----------|------------------------------------|---------------------------------------------|---------------------|
+/// | `Default` | — / —                              | `default`                                   | `TEXT`              |
+/// | `Email`   | `email` / `email`                  | `emailAddress` (`emailAddress`)             | `TEXT \| VARIATION_EMAIL_ADDRESS` |
+/// | `Phone`   | `tel` / `tel`                      | `phonePad` (`telephoneNumber`)              | `PHONE`             |
+/// | `Number`  | `numeric` / —                      | `numberPad`                                 | `NUMBER`            |
+/// | `Decimal` | `decimal` / —                      | `decimalPad`                                | `NUMBER \| FLAG_DECIMAL` |
+/// | `Url`     | `url` / `url`                      | `URL` (`URL`)                               | `TEXT \| VARIATION_URI` |
+///
+/// `Email` and `Url` also switch off auto-capitalization and auto-correction
+/// (iOS `autocapitalizationType` / `autocorrectionType`; web `autocapitalize`
+/// / `autocorrect` / `spellcheck`; Android's email/URI variations already
+/// imply it), since a capitalized or "corrected" address is a wrong address.
+///
+/// Composes with `secure`: a masked field keeps its keyboard where the
+/// platform has a masked form of it (iOS keeps the layout under
+/// `secureTextEntry`; Android uses `NUMBER | VARIATION_PASSWORD` for the
+/// numeric kinds and `TEXT | VARIATION_PASSWORD` for the text kinds; web keeps
+/// `inputmode` on the `type=password` input).
+///
+/// Desktop and drawn backends (macOS, Windows, Linux, wgpu, terminal, CPU)
+/// have no soft keyboard and ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum KeyboardKind {
+    /// The platform's general text keyboard.
+    #[default]
+    Default,
+    /// An email address.
+    Email,
+    /// A telephone number.
+    Phone,
+    /// A whole number (digits only).
+    Number,
+    /// A number that may have a decimal separator.
+    Decimal,
+    /// A web address.
+    Url,
+}
+
+impl KeyboardKind {
+    /// Every kind, in declaration order (for exhaustive backend tests and
+    /// doc controls).
+    pub const ALL: [KeyboardKind; 6] = [
+        KeyboardKind::Default,
+        KeyboardKind::Email,
+        KeyboardKind::Phone,
+        KeyboardKind::Number,
+        KeyboardKind::Decimal,
+        KeyboardKind::Url,
+    ];
+}
+
 /// Shared handler type carried into the backend `create_text_input`. Aliased so
 /// the Backend trait signature stays readable. Mirrors [`KeyDownHandler`].
 ///

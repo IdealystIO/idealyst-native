@@ -77,7 +77,8 @@ pub mod wasm;
 /// - 3: [`Node::View`] carries `keyboard_avoid` (`keyboard_avoiding_view`).
 /// - 4: [`Node::TextInput`], [`Node::TextArea`], [`Node::Toggle`] and
 ///   [`Node::Slider`] carry `disabled`.
-pub const CODEC_VERSION: u32 = 4;
+/// - 5: [`Node::TextInput`] carries `keyboard` (the soft-keyboard hint).
+pub const CODEC_VERSION: u32 = 5;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -210,6 +211,8 @@ pub enum Node {
         on_focus: Option<Cb>,
         placeholder: Val<Option<String>>,
         secure: Val<bool>,
+        /// The soft-keyboard hint (CODEC_VERSION 5).
+        keyboard: Val<runtime_shared::primitives::text_input::KeyboardKind>,
         /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
         disabled: Option<Val<bool>>,
     },

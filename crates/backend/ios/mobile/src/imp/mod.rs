@@ -12,6 +12,7 @@ pub(crate) mod portal;
 pub(crate) mod press_state;
 pub(crate) mod phase_timer;
 pub(crate) mod keyboard;
+pub(crate) mod keyboard_kind;
 pub(crate) mod pending_focus;
 pub(crate) mod pointer;
 pub(crate) mod screenshot;
@@ -2021,6 +2022,18 @@ impl IosBackend {
                 let _: () =
                     msg_send![field, setSecureTextEntry: objc2::runtime::Bool::new(secure)];
             }
+        }
+    }
+
+    pub(crate) fn update_text_input_keyboard_impl(
+        &mut self,
+        node: &IosNode,
+        keyboard: runtime_shared::primitives::text_input::KeyboardKind,
+    ) {
+        // Keyboard layout + AutoFill + autocap/autocorrect, as a unit; the
+        // secure mask is its own trait, so the two compose in any order.
+        if let IosNode::TextField(field) = node {
+            keyboard_kind::apply(&**field, keyboard);
         }
     }
 

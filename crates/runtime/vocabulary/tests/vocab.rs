@@ -1309,6 +1309,291 @@ mod robot_registry {
         robot.reset();
     }
 
+    /// A long-press pickup (dnd's iOS/Android default) could not be driven:
+    /// the path is delivered synchronously, so no timer runs. `hold_ms`
+    /// carries the hold on the event clock — a stationary `Moved` stamped
+    /// `hold_ms` after `Began` — through `Robot` and the wire verb alike.
+    #[test]
+    fn regression_drag_with_hold_stamps_the_hold_on_the_event_clock() {
+        use runtime_shared::{TouchPhase, TouchResponse};
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let seen: Rc<RefCell<Vec<(TouchPhase, f32, f32, u64)>>> = Rc::default();
+        let sink = seen.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .test_id("card")
+                    .on_touch(Rc::new(move |ev| {
+                        sink.borrow_mut().push((
+                            ev.phase,
+                            ev.position.x,
+                            ev.position.y,
+                            ev.timestamp_ns,
+                        ));
+                        TouchResponse::CONSUMED
+                    }))
+                    .build(),
+            )
+        });
+        let card = robot.find(Query::test_id("card")).unwrap();
+        let check = |seen: &[(TouchPhase, f32, f32, u64)]| {
+            let phases: Vec<_> = seen.iter().map(|e| (e.0, e.1, e.2)).collect();
+            assert_eq!(
+                phases,
+                [
+                    (TouchPhase::Began, 10.0, 10.0),
+                    (TouchPhase::Moved, 10.0, 10.0),
+                    (TouchPhase::Moved, 10.0, 90.0),
+                    (TouchPhase::Ended, 10.0, 90.0),
+                ],
+                "a stationary Moved at the press point carries the hold"
+            );
+            assert_eq!(seen[1].3 - seen[0].3, 250_000_000, "stamped hold_ms after Began");
+            assert!(seen.windows(2).all(|w| w[1].3 > w[0].3), "time only moves forward");
+        };
+
+        robot
+            .drag_with_hold(&card, &[(10.0, 10.0), (10.0, 90.0)], 250)
+            .expect("held drag reaches the card");
+        check(&seen.borrow());
+
+        seen.borrow_mut().clear();
+        runtime_vocabulary::robot::bridge::invoke_command(
+            "drag",
+            &runtime_shared::__serde_json::json!({
+                "element_id": card.id.0,
+                "points": [[10, 10], [10, 90]],
+                "hold_ms": 250,
+            }),
+        )
+        .expect("drag verb with hold_ms");
+        check(&seen.borrow());
+
+        let err = runtime_vocabulary::robot::bridge::invoke_command(
+            "drag",
+            &runtime_shared::__serde_json::json!({"element_id": card.id.0, "points": [[1, 1]], "hold_ms": -5}),
+        )
+        .expect_err("a negative hold is rejected");
+        assert!(err.contains("hold_ms"), "{err}");
+        robot.reset();
+    }
+
+    /// Place every mock node at `rect` (the drag reads the target's frame;
+    /// which node number holds it doesn't matter here).
+    fn place_everything_at(h: &Harness, rect: runtime_shared::primitives::portal::ViewportRect) {
+        for n in 0..64 {
+            h.shared.frames.borrow_mut().insert(n, rect);
+        }
+    }
+
+    const TRACK: runtime_shared::primitives::portal::ViewportRect =
+        runtime_shared::primitives::portal::ViewportRect {
+            x: 50.0,
+            y: 100.0,
+            width: 200.0,
+            height: 20.0,
+        };
+
+    /// The `drag` docs promised "drag a slider thumb", but a `slider` is a
+    /// native widget with no touch handler, so `drag` on one answered
+    /// "not available". Now each point's x across the track sets the value
+    /// through the native widget's own change callback (step-snapped) and
+    /// moves the native thumb.
+    #[test]
+    fn regression_drag_moves_a_slider_through_its_native_change_path() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let seen: Rc<RefCell<Vec<f32>>> = Rc::default();
+        let sink = seen.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                slider()
+                    .value(0.0f32)
+                    .range(0.0, 10.0)
+                    .step(0.5)
+                    .on_change(move |v| sink.borrow_mut().push(v))
+                    .test_id("volume")
+                    .build(),
+            )
+        });
+        place_everything_at(&h, TRACK);
+        let volume = robot.find(Query::test_id("volume")).unwrap();
+        robot
+            .drag(&volume, &[(0.0, 10.0), (100.0, 10.0), (167.0, 3.0), (400.0, 10.0)])
+            .expect("drag moves a slider");
+        // 167/200 * 10 = 8.35 snaps to 8.5; past the right edge clamps to max.
+        assert_eq!(*seen.borrow(), vec![0.0, 5.0, 8.5, 10.0]);
+        let thumb: Vec<String> = h
+            .ops()
+            .into_iter()
+            .filter(|o| o.starts_with("update_slider_value"))
+            .collect();
+        assert_eq!(
+            thumb.iter().map(|o| o.rsplit(' ').next().unwrap()).collect::<Vec<_>>()[thumb.len() - 4..],
+            ["0", "5", "8.5", "10"],
+            "the native thumb follows the drag"
+        );
+        robot.reset();
+    }
+
+    /// A disabled slider is inert under a finger, so a robot drag must not
+    /// change it — and says so, rather than reporting success.
+    #[test]
+    fn drag_on_a_disabled_slider_is_refused_and_changes_nothing() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let seen: Rc<RefCell<Vec<f32>>> = Rc::default();
+        let sink = seen.clone();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                slider()
+                    .value(0.0f32)
+                    .range(0.0, 10.0)
+                    .disabled(true)
+                    .on_change(move |v| sink.borrow_mut().push(v))
+                    .test_id("locked")
+                    .build(),
+            )
+        });
+        place_everything_at(&h, TRACK);
+        let before = h.ops().iter().filter(|o| o.starts_with("update_slider_value")).count();
+        let locked = robot.find(Query::test_id("locked")).unwrap();
+        assert_eq!(
+            robot.drag(&locked, &[(10.0, 10.0), (150.0, 10.0)]),
+            Err(RobotError::ActionNotAvailable("drag (the slider is disabled)")),
+        );
+        assert!(seen.borrow().is_empty(), "on_change must not fire on a disabled slider");
+        let after = h.ops().iter().filter(|o| o.starts_with("update_slider_value")).count();
+        assert_eq!(before, after, "the native thumb must not move");
+        robot.reset();
+    }
+
+    /// Without a laid-out frame there is no track to map points onto: a
+    /// clear error, not a silent no-op.
+    #[test]
+    fn drag_on_a_slider_without_a_frame_reports_why() {
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                slider().value(0.0f32).on_change(|_| {}).test_id("unlaid").build(),
+            )
+        });
+        let el = robot.find(Query::test_id("unlaid")).unwrap();
+        assert_eq!(
+            robot.drag(&el, &[(10.0, 0.0)]),
+            Err(RobotError::ActionNotAvailable(
+                "drag (the slider has no laid-out frame to map points onto)"
+            )),
+        );
+        robot.reset();
+    }
+
+    /// The wire verb (`bridge::invoke_command("drag")` — what the MCP tool
+    /// and `robot-test` send) reaches a raw `on_touch` with view-local and
+    /// window positions, and drives a pan recognizer through Began/Moved/
+    /// Ended. Malformed points are an error, not a partial drag.
+    #[test]
+    fn drag_verb_drives_raw_on_touch_and_a_pan_recognizer() {
+        use runtime_shared::__serde_json::json;
+        use runtime_shared::{PanEvent, PanRecognizer, TouchPhase, TouchResponse};
+        use runtime_vocabulary::robot::bridge::invoke_command;
+        let robot = Robot::new();
+        robot.reset();
+        let h = harness();
+        let raw: Rc<RefCell<Vec<(TouchPhase, f32, f32, f32, f32)>>> = Rc::default();
+        let pans: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (raw_sink, pan_sink) = (raw.clone(), pans.clone());
+        let _realized = h.world.enter(|| {
+            realize(
+                &h.backend,
+                &h.registry,
+                view()
+                    .child(
+                        view()
+                            .test_id("pad")
+                            .on_touch(Rc::new(move |ev| {
+                                raw_sink.borrow_mut().push((
+                                    ev.phase,
+                                    ev.position.x,
+                                    ev.position.y,
+                                    ev.window_position.x,
+                                    ev.window_position.y,
+                                ));
+                                TouchResponse::CONSUMED
+                            }))
+                            .build(),
+                    )
+                    .child(
+                        view()
+                            .test_id("handle")
+                            .on_touch(runtime_shared::pan(PanRecognizer::new(), move |e| {
+                                pan_sink.borrow_mut().push(match e {
+                                    PanEvent::Began { .. } => "began".to_string(),
+                                    PanEvent::Moved { delta, .. } => {
+                                        format!("moved {} {}", delta.x, delta.y)
+                                    }
+                                    PanEvent::Ended { .. } => "ended".to_string(),
+                                    PanEvent::Cancelled => "cancelled".to_string(),
+                                })
+                            }))
+                            .build(),
+                    )
+                    .build(),
+            )
+        });
+        place_everything_at(&h, TRACK);
+        let id = |t| robot.find(Query::test_id(t)).unwrap().id.0;
+
+        let ok = invoke_command(
+            "drag",
+            &json!({"element_id": id("pad"), "points": [[5, 6], [20, 8], [40, 12]]}),
+        )
+        .expect("drag verb");
+        assert_eq!(ok, "\"ok\"");
+        assert_eq!(
+            *raw.borrow(),
+            vec![
+                (TouchPhase::Began, 5.0, 6.0, 55.0, 106.0),
+                (TouchPhase::Moved, 20.0, 8.0, 70.0, 108.0),
+                (TouchPhase::Moved, 40.0, 12.0, 90.0, 112.0),
+                (TouchPhase::Ended, 40.0, 12.0, 90.0, 112.0),
+            ],
+            "element-relative points arrive view-local, with window positions offset by the frame"
+        );
+
+        invoke_command(
+            "drag",
+            &json!({"element_id": id("handle"), "points": [[10, 10], [30, 10], [60, 10]]}),
+        )
+        .expect("drag verb on the pan handle");
+        let pans = pans.borrow();
+        assert_eq!(pans.first().map(String::as_str), Some("began"));
+        assert_eq!(pans.last().map(String::as_str), Some("ended"));
+        assert!(
+            pans.iter().any(|p| p == "moved 50 0"),
+            "the pan reports the full travel as its delta, got {pans:?}"
+        );
+
+        let err = invoke_command("drag", &json!({"element_id": id("pad"), "points": [[1]]}))
+            .expect_err("a point without y is rejected");
+        assert!(err.contains("each point must be [x, y]"), "{err}");
+        robot.reset();
+    }
+
     /// `find_all` returned elements in registry-slot order. Slots are
     /// recycled through a free list, and a reactive branch realized after
     /// mount registered with NO parent (the parent stack is empty when the

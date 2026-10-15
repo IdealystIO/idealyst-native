@@ -580,6 +580,14 @@ impl caps::TextInputOps for WireRecordingBackend {
         WireRecordingBackend::update_text_input_secure(self, node, secure)
     }
 
+    fn update_text_input_keyboard(
+        &mut self,
+        node: &Self::Node,
+        keyboard: primitives::text_input::KeyboardKind,
+    ) {
+        WireRecordingBackend::update_text_input_keyboard(self, node, keyboard)
+    }
+
 
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
         WireRecordingBackend::update_text_input_placeholder(self, node, placeholder)

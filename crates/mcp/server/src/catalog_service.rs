@@ -349,6 +349,11 @@ pub struct RobotDrag {
     /// element's top-left: `Began` at the first, `Moved` through the rest,
     /// `Ended` at the last.
     pub points: Vec<[f32; 2]>,
+    /// Press and hold at the first point for this many ms before the path
+    /// continues — a long-press pickup (drag-and-drop's default on
+    /// iOS/Android needs 200). Omit for no hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
 }
@@ -1249,7 +1254,7 @@ impl CatalogService {
         self.robot_call("click", app.as_deref(), body).await
     }
 
-    #[tool(description = "Drag one pointer along a path over an element: `points` are [x, y] pairs relative to the element's top-left (logical px). Delivered as real touch events (Began, Moved..., Ended) to the element's touch handler, or the nearest ancestor's. Use it to draw on a signature pad, drag a slider thumb, or drag-to-reorder.")]
+    #[tool(description = "Drag one pointer along a path over an element: `points` are [x, y] pairs relative to the element's top-left (logical px). Delivered as touch events (Began, Moved..., Ended) to the element's touch handler, or the nearest ancestor's: draw on a signature pad, drive a pan handle, drag-to-reorder. On a Slider, each point's x across the track sets the value (0 = min, right edge = max) through the slider's own change callback; a disabled slider returns an error. Events are one frame apart. To press and hold before moving, pass `hold_ms`: required for drag-and-drop on iOS/Android, where a drag picks up after a 200 ms long press (pass 200 or more). The hold is carried by event timestamps, not real time, so it reaches recognizers that read the event clock (drag-and-drop does), but not other app timers.")]
     async fn drag(
         &self,
         Parameters(args): Parameters<RobotDrag>,

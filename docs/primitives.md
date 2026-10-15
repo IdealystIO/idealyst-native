@@ -473,6 +473,52 @@ ui! {
 `text_area` takes the same `.disabled(…)` setter. Over a remote
 bundle it crosses as a field of the node (`CODEC_VERSION` 4).
 
+**`keyboard`** tells a phone or tablet which on-screen keyboard to
+show. It takes a `KeyboardKind` (`runtime_core::KeyboardKind`), either
+plain or as a live source (`Signal`, `rx!`), which changes the keyboard
+in place:
+
+```rust
+ui! {
+    text_input(value = email, on_change = move |s| email.set(s), keyboard = KeyboardKind::Email)
+}
+```
+
+| Kind | iOS | Android | Web |
+| --- | --- | --- | --- |
+| `Default` | default keyboard | `TYPE_CLASS_TEXT` | no attributes |
+| `Email` | `emailAddress` keyboard, `emailAddress` content type | `TEXT \| VARIATION_EMAIL_ADDRESS` | `inputmode="email"`, `autocomplete="email"` |
+| `Phone` | `phonePad`, `telephoneNumber` content type | `TYPE_CLASS_PHONE` | `inputmode="tel"`, `autocomplete="tel"` |
+| `Number` | `numberPad` | `TYPE_CLASS_NUMBER` | `inputmode="numeric"` |
+| `Decimal` | `decimalPad` | `NUMBER \| FLAG_DECIMAL` | `inputmode="decimal"` |
+| `Url` | `URL` keyboard, `URL` content type | `TEXT \| VARIATION_URI` | `inputmode="url"`, `autocomplete="url"` |
+
+`Email` and `Url` also turn off auto-capitalization and auto-correction
+(on web: `autocapitalize="off"`, `autocorrect="off"`,
+`spellcheck="false"`), because a capitalized or "corrected" address is a
+wrong address. The content type on iOS and `autocomplete` on web let the
+keyboard offer the user's own email, phone number or URL.
+
+It only picks the keyboard. The field still takes any text (a paste, a
+hardware keyboard), and `on_change` reports it as typed. Web uses
+`inputmode` and leaves `type` alone: `type` already switches between
+`text` and `password` for `secure`, and `type="email"` / `"number"` change
+more than the keyboard (they break the selection API that `on_key_down`
+reads, `number` drops non-numeric text, and both turn on browser
+validation).
+
+It works together with `secure`. iOS and web keep the chosen keyboard on a
+masked field. On Android the keyboard and the mask are one setting, so a
+masked `Number`, `Decimal` or `Phone` field gets the masked digit pad (a
+PIN pad), and a masked text kind gets the text password keyboard.
+
+macOS, Windows, Linux and the drawn backends (wgpu, terminal, CPU) have no
+on-screen keyboard and ignore it. SSR writes the same attributes as the web
+backend, so the server-rendered field already has the right keyboard and
+hydrates without a change. Over a remote bundle `keyboard` crosses as a
+field of the node (`CODEC_VERSION` 5), and under runtime-server dev as
+`Command::UpdateTextInputKeyboard` (`PROTOCOL_VERSION` 24).
+
 **Why controlled?** The rest of the framework's reactive shape
 assumes a single source of truth per piece of state. Uncontrolled
 inputs would create a parallel universe where the input's "real"

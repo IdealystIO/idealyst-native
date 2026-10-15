@@ -92,14 +92,45 @@ where
     };
     let (on_change_snapped, disabled_gate) = gate_change(&prim.disabled, on_change_snapped);
     let alive = crate::callback_guard::ScopeAlive::current();
+    let native_on_change = alive.wrap1(on_change_snapped);
+    #[cfg(feature = "robot")]
+    let robot_native_on_change = native_on_change.clone();
     let node = backend.borrow_mut().create_slider(
         initial,
         prim.min,
         prim.max,
         prim.step,
-        alive.wrap1(on_change_snapped),
+        native_on_change,
         &prim.a11y,
     );
+    // Robot `drag`: a pointer along the track, as a finger dragging the
+    // thumb. It goes through the EXACT callback the native widget was
+    // given (step snap + disabled gate + scope guard), so a dragged
+    // slider produces the values a real drag would; `set_slider` stays
+    // the raw-callback verb. The native thumb moves too
+    // (`update_slider_value`), as it does under a finger, even for an
+    // uncontrolled slider. A disabled slider refuses (`false`) — the
+    // native control is inert, so neither the thumb nor `on_change` moves.
+    #[cfg(feature = "robot")]
+    let robot_drag: Rc<dyn Fn(f32) -> bool> = {
+        let b = backend.clone();
+        let n = node.clone();
+        let gate = disabled_gate.clone();
+        let (min, max, step) = (prim.min, prim.max, prim.step);
+        Rc::new(move |fraction: f32| {
+            if gate.as_ref().is_some_and(|g| g.get()) {
+                return false;
+            }
+            let raw = min + fraction.clamp(0.0, 1.0) * (max - min);
+            let value = match step {
+                Some(step) => min + ((raw - min) / step).round() * step,
+                None => raw,
+            };
+            b.borrow_mut().update_slider_value(&n, value);
+            robot_native_on_change(value);
+            true
+        })
+    };
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
@@ -110,6 +141,7 @@ where
         None,
         crate::robot::MountActions {
             set_slider: Some(robot_set_slider),
+            slider_drag: Some(robot_drag),
             ..Default::default()
         },
     );
@@ -248,7 +280,9 @@ fn bind_disabled<H: StyleServices + 'static>(
 /// `walker/text_input.rs::build_text_input`.
 ///
 /// Sequence: `create_text_input(initial value/placeholder/secure,
-/// callbacks)` → attach_style → focus notifier → controlled-value
+/// callbacks)` → keyboard hint (`update_text_input_keyboard`: one call
+/// for a static non-`Default` kind, an effect for a live one) →
+/// attach_style → focus notifier → controlled-value
 /// write-back binding (first fire at mount) → `Dyn`-only secure binding
 /// → `Dyn`-only placeholder binding → disabled binding (gate +
 /// `set_disabled` + `DISABLED` bit) → `autofocus` (skipped when mounted
@@ -298,6 +332,22 @@ where
         initial_secure,
         &prim.a11y,
     );
+    // Soft-keyboard hint, before anything can focus the field (a keyboard
+    // kind set after the keyboard is already up needs a reload on iOS).
+    // A static kind is one call, skipped entirely for `Default` (what every
+    // backend creates with); a live kind binds an effect that applies the
+    // initial value now and re-applies per change.
+    match prim.keyboard {
+        Value::Const(runtime_shared::primitives::text_input::KeyboardKind::Default) => {}
+        Value::Const(kind) => backend.borrow_mut().update_text_input_keyboard(&node, kind),
+        live @ Value::Dyn(_) => {
+            let b = backend.clone();
+            let n = node.clone();
+            bind_dyn(live, move |&k| {
+                b.borrow_mut().update_text_input_keyboard(&n, k);
+            });
+        }
+    }
     // Editable inputs also get `focus`/`blur` so the robot can drive
     // real keyboard focus. Handles are made ON DEMAND from the backend
     // node at call time (the old walker's exact shape).

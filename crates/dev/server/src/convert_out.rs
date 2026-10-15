@@ -38,6 +38,22 @@ pub fn icon_data_to_wire(d: &primitives::icon::IconData) -> WireIconData {
     }
 }
 
+/// The `text_input` soft-keyboard hint, as the wire carries it. Reverse:
+/// `dev_client::convert::wire_keyboard_kind`.
+pub fn keyboard_kind_to_wire(
+    k: runtime_shared::primitives::text_input::KeyboardKind,
+) -> wire::WireKeyboardKind {
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+    match k {
+        K::Default => wire::WireKeyboardKind::Default,
+        K::Email => wire::WireKeyboardKind::Email,
+        K::Phone => wire::WireKeyboardKind::Phone,
+        K::Number => wire::WireKeyboardKind::Number,
+        K::Decimal => wire::WireKeyboardKind::Decimal,
+        K::Url => wire::WireKeyboardKind::Url,
+    }
+}
+
 pub fn easing_to_wire(e: Easing) -> WireEasing {
     match e {
         Easing::Linear => WireEasing::Linear,

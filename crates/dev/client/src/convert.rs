@@ -91,6 +91,21 @@ pub fn wire_text_align(t: WireTextAlign) -> TextAlign {
     }
 }
 
+/// Wire-to-framework reverse of `dev_server::convert_out::keyboard_kind_to_wire`.
+pub fn wire_keyboard_kind(
+    k: wire::WireKeyboardKind,
+) -> runtime_shared::primitives::text_input::KeyboardKind {
+    use runtime_shared::primitives::text_input::KeyboardKind as K;
+    match k {
+        wire::WireKeyboardKind::Default => K::Default,
+        wire::WireKeyboardKind::Email => K::Email,
+        wire::WireKeyboardKind::Phone => K::Phone,
+        wire::WireKeyboardKind::Number => K::Number,
+        wire::WireKeyboardKind::Decimal => K::Decimal,
+        wire::WireKeyboardKind::Url => K::Url,
+    }
+}
+
 pub fn wire_easing(e: WireEasing) -> Easing {
     match e {
         WireEasing::Linear => Easing::Linear,

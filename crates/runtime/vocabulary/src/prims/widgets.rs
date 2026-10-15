@@ -10,7 +10,7 @@ use runtime_shared::primitives::activity_indicator::{
 use runtime_shared::primitives::key::KeyDownHandler;
 use runtime_shared::primitives::slider::SliderHandle;
 use runtime_shared::primitives::text_area::TextAreaHandle;
-use runtime_shared::primitives::text_input::{BlurHandler, FocusHandler, TextInputHandle};
+use runtime_shared::primitives::text_input::{BlurHandler, FocusHandler, KeyboardKind, TextInputHandle};
 use runtime_shared::primitives::toggle::ToggleHandle;
 use runtime_shared::Color;
 use runtime_world::Value;
@@ -99,6 +99,12 @@ pub struct TextInputPrim {
     pub on_focus: Option<FocusHandler>,
     pub placeholder: Value<Option<String>>,
     pub secure: Value<bool>,
+    /// Soft-keyboard hint ([`KeyboardKind`]): which on-screen keyboard
+    /// layout a mobile backend shows (email, phone pad, digits, …).
+    /// Static or live like `secure` — a `Dyn` source re-applies in place
+    /// through `update_text_input_keyboard`; a `Const(Default)` makes no
+    /// backend call at all. Backends without a soft keyboard ignore it.
+    pub keyboard: Value<KeyboardKind>,
     /// Focus this field once, right after it mounts (HTML `autofocus`).
     /// Mount-time only: flipping it later does nothing. Runs through the
     /// same `focus()` a `Ref` handle calls, which is attach-safe — a node

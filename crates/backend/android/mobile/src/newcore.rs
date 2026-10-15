@@ -1155,6 +1155,18 @@ mod native {
             AndroidBackend::update_text_input_value_impl(self, node, value)
         }
 
+        fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+            AndroidBackend::update_text_input_secure_impl(self, node, secure)
+        }
+
+        fn update_text_input_keyboard(
+            &mut self,
+            node: &Self::Node,
+            keyboard: primitives::text_input::KeyboardKind,
+        ) {
+            AndroidBackend::update_text_input_keyboard_impl(self, node, keyboard)
+        }
+
         fn create_text_area(
             &mut self,
             initial_value: &str,

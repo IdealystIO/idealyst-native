@@ -36,6 +36,28 @@ pub trait TextInputOps: ExternalOps {
     #[allow(unused_variables)]
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {}
 
+    /// Set the soft-keyboard hint ([`KeyboardKind`]) on a text input.
+    /// Called once right after `create_text_input` when the author set a
+    /// non-`Default` static kind, and again per change of a live source.
+    /// Must compose with `secure` in either call order (a backend whose
+    /// keyboard and mask share one native setting — Android's `InputType`
+    /// — keeps both and recomputes). Default: no-op, the right answer for
+    /// every backend without a soft keyboard (desktop, drawn, SSR-less).
+    ///
+    /// A separate op rather than a `create_text_input` argument so that
+    /// the many backends with nothing to do inherit the no-op instead of
+    /// each growing an ignored parameter, and so a live kind and a static
+    /// one reach the backend through the same call.
+    ///
+    /// [`KeyboardKind`]: runtime_shared::primitives::text_input::KeyboardKind
+    #[allow(unused_variables)]
+    fn update_text_input_keyboard(
+        &mut self,
+        node: &Self::Node,
+        keyboard: primitives::text_input::KeyboardKind,
+    ) {
+    }
+
     /// Install a focus-change notifier (`handler(true)` on focus gain).
     #[allow(unused_variables)]
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {}

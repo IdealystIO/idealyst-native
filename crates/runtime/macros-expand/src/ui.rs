@@ -1036,8 +1036,8 @@ fn emit_text_input(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2
     } else {
         quote! {}
     };
-    // `secure`, `on_focus`, `on_key_down`, `placeholder_reactive`, `bind`,
-    // `autofocus`, `disabled`.
+    // `secure`, `keyboard`, `on_focus`, `on_key_down`, `placeholder_reactive`,
+    // `bind`, `autofocus`, `disabled`.
     let setters = builder_calls(props, TEXT_INPUT_BUILDER_PROPS);
     quote! {
         ::runtime_core::primitives::text_input::text_input(#value, #on_change) #placeholder_call #setters
@@ -1180,6 +1180,7 @@ const IMAGE_BUILDER_PROPS: &[&str] = &["on_load", "on_error", "alt_reactive", "b
 /// (literal `.into()`).
 const TEXT_INPUT_BUILDER_PROPS: &[&str] = &[
     "secure",
+    "keyboard",
     "on_focus",
     "on_key_down",
     "placeholder_reactive",
@@ -2922,6 +2923,17 @@ mod tests {
             text_input(value = v, autofocus = true)
         });
         assert!(out.contains(". autofocus (true)"), "{out}");
+        assert!(!out.contains("compile_error"), "{out}");
+    }
+
+    /// `text_input(keyboard = KeyboardKind::Email)` lowers to the glue's
+    /// `.keyboard(…)` setter rather than the unknown-prop compile error.
+    #[test]
+    fn ui_text_input_lowers_keyboard() {
+        let out = parse_and_emit(quote::quote! {
+            text_input(value = v, keyboard = KeyboardKind::Email)
+        });
+        assert!(out.contains(". keyboard (KeyboardKind :: Email)"), "{out}");
         assert!(!out.contains("compile_error"), "{out}");
     }
 

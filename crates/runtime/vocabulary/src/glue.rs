@@ -81,6 +81,9 @@ pub use runtime_shared::accessibility::{
     AccessibilityAction, AccessibilityProps, AccessibilityTraits, LiveRegionPriority, Role,
 };
 pub use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
+// The `text_input` soft-keyboard hint (`keyboard = KeyboardKind::Email`):
+// at the root so authors spell it `runtime_core::KeyboardKind`.
+pub use runtime_shared::primitives::text_input::KeyboardKind;
 pub use runtime_shared::primitives::icon::{FillRule, IconData, IconHandle, StrokeAnimation};
 // `Easing` is re-exported (not just imported): the `stylesheet!`
 // emitter spells `::runtime_shared::Easing::…` for `transitions { … }`
@@ -2008,7 +2011,7 @@ pub mod primitives {
     pub mod text_input {
         use super::super::*;
 
-        pub use runtime_shared::primitives::text_input::TextInputHandle;
+        pub use runtime_shared::primitives::text_input::{KeyboardKind, TextInputHandle};
 
         /// `text_input(value, on_change)` (controlled single-line).
         pub fn text_input(
@@ -2066,6 +2069,23 @@ pub mod primitives {
 
             pub fn secure(mut self, secure: impl IntoValue<bool>) -> Self {
                 self.b = self.b.secure(secure);
+                self
+            }
+
+            /// Soft-keyboard hint: which on-screen keyboard a phone or
+            /// tablet shows (`KeyboardKind::Email` → the `@`/`.com`
+            /// layout, `Phone` → a digit pad, …). A plain kind or a live
+            /// source (`Signal`/`Memo`/`rx!`) — a live one re-applies in
+            /// place without rebuilding the input. Desktop backends have
+            /// no soft keyboard and ignore it.
+            pub fn keyboard(
+                mut self,
+                keyboard: impl Into<super::super::Reactive<KeyboardKind>>,
+            ) -> Self {
+                self.b = match keyboard.into() {
+                    super::super::Reactive::Static(kind) => self.b.keyboard(kind),
+                    live => self.b.keyboard_dyn(move || live.get()),
+                };
                 self
             }
 

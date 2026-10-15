@@ -87,7 +87,8 @@ inspect the whole tree at once.
 
 | Tool | What it does |
 | --- | --- |
-| `click` | Fire a button's or pressable's `on_click`. |
+| `click` | Tap an element the way a finger would: a button, pressable or link fires its press, and a view's `on_touch` gets a tap. A tap on a Text inside a clickable row reaches the row. |
+| `drag` | Move one pointer along `points` (`[x, y]` in px from the element's top-left): `Began`, `Moved`…, `Ended` into the element's `on_touch` or the nearest ancestor's. Draws on a signature pad, drives a pan or drag-to-reorder. On a Slider each point's x along the track sets the value. Pass `hold_ms` to press and hold at the first point before moving: drag-and-drop on phones and tablets picks up after a 200 ms hold. |
 | `type_text` | Replace a TextInput's value with new text. |
 | `set_toggle` | Set a Toggle's `Signal<bool>`. |
 | `set_slider` | Set a Slider's `Signal<f32>`. |

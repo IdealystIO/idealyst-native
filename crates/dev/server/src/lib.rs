@@ -1644,6 +1644,18 @@ impl WireRecordingBackend {
         state.emit(Command::UpdateTextInputSecure { node: *node, secure });
     }
 
+    pub fn update_text_input_keyboard(
+        &mut self,
+        node: &NodeId,
+        keyboard: runtime_shared::primitives::text_input::KeyboardKind,
+    ) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextInputKeyboard {
+            node: *node,
+            keyboard: convert_out::keyboard_kind_to_wire(keyboard),
+        });
+    }
+
     pub fn update_text_input_placeholder(&mut self, node: &NodeId, placeholder: Option<&str>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputPlaceholder {

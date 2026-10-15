@@ -739,6 +739,17 @@ impl caps::TextInputOps for SsrBackend {
         set_attr(node, "type", if secure { "password" } else { "text" }.to_string());
     }
 
+    fn update_text_input_keyboard(
+        &mut self,
+        node: &Self::Node,
+        keyboard: runtime_shared::primitives::text_input::KeyboardKind,
+    ) {
+        // Emit the same attributes the web backend writes, so the first
+        // paint already carries the right mobile keyboard and hydration
+        // adopts an `<input>` that matches.
+        crate::apply_keyboard_attrs(node, keyboard);
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

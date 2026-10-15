@@ -225,10 +225,16 @@ impl Locator {
     /// Drag one pointer along `points` (element-relative logical px):
     /// draw on a signature pad, drag a handle. See `Robot::drag`.
     pub fn drag(&self, points: &[(f32, f32)]) -> Result<(), String> {
-        log(format!("  ▸ {}.drag({} points)", self.desc, points.len()));
+        self.drag_with_hold(points, 0)
+    }
+
+    /// [`drag`](Self::drag), holding at the first point for `hold_ms`
+    /// first (a long-press pickup). See `Robot::drag_with_hold`.
+    pub fn drag_with_hold(&self, points: &[(f32, f32)], hold_ms: u64) -> Result<(), String> {
+        log(format!("  ▸ {}.drag({} points, hold {hold_ms} ms)", self.desc, points.len()));
         let el = self.resolve()?;
         let r = Robot::new()
-            .drag(&el, points)
+            .drag_with_hold(&el, points, hold_ms)
             .map_err(|e| format!("{}.drag() failed: {e:?}", self.desc));
         settle();
         r

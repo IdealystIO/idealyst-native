@@ -187,11 +187,20 @@ impl<'a> Locator<'a> {
     }
 
     /// Drag one pointer along `points` — `[x, y]` in logical px relative
-    /// to the element's top-left (draw a signature, drag a handle).
-    pub fn drag(mut self, points: &[(f32, f32)]) {
+    /// to the element's top-left (draw a signature, drag a handle). On a
+    /// slider, each point's x along the track sets the value. For a
+    /// long-press pickup use [`drag_with_hold`](Self::drag_with_hold).
+    pub fn drag(self, points: &[(f32, f32)]) {
+        self.drag_with_hold(points, 0);
+    }
+
+    /// [`drag`](Self::drag), holding at the first point for `hold_ms`
+    /// first — drag-and-drop on iOS/Android picks up after a 200 ms hold.
+    pub fn drag_with_hold(mut self, points: &[(f32, f32)], hold_ms: u64) {
         let id = self.resolve_id();
         let points: Vec<[f32; 2]> = points.iter().map(|&(x, y)| [x, y]).collect();
-        self.app.act("drag", id, json!({ "points": points }));
+        self.app
+            .act("drag", id, json!({ "points": points, "hold_ms": hold_ms }));
     }
 
     /// Assert the element is present in the live tree.

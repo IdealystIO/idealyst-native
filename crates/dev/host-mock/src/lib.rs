@@ -977,6 +977,17 @@ impl caps::TextInputOps for HostMock {
         );
     }
 
+    fn update_text_input_keyboard(
+        &mut self,
+        node: &Node,
+        keyboard: runtime_shared::primitives::text_input::KeyboardKind,
+    ) {
+        self.s.rec_v(
+            "update_text_input_keyboard",
+            format!("update_text_input_keyboard n{node} {keyboard:?}"),
+        );
+    }
+
     fn set_text_input_focus_handler(&mut self, node: &Node, handler: Rc<dyn Fn(bool)>) {
         self.s.rec_v(
             "set_text_input_focus_handler",

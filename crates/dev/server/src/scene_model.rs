@@ -123,6 +123,10 @@ pub struct SceneModel {
     /// Per-node `MarkKeyboardAvoiding`, replayed after `Create*` like the
     /// safe-area opt-in (the client observes its own keyboard).
     node_keyboard_avoid: HashMap<NodeId, Command>,
+    /// Per-text-input latest `UpdateTextInputKeyboard`, replayed after the
+    /// node's `Create*` so a late-joining client shows the same soft
+    /// keyboard (email / phone / digits) as the live one.
+    node_text_input_keyboard: HashMap<NodeId, Command>,
     /// Latest host-surface background (`SetAppBackground`), scrollbar theme
     /// (`SetScrollbarTheme`), and page metadata (`SetPageMetadata`) — each
     /// single-latest (the theme SDK re-emits on swap). Replayed in the
@@ -546,6 +550,7 @@ impl SceneModel {
                 self.node_a11y.remove(node);
                 self.node_safe_area.remove(node);
                 self.node_keyboard_avoid.remove(node);
+                self.node_text_input_keyboard.remove(node);
                 // Releasing this node may have removed the last referent of
                 // a retired style — collect any now-unreferenced rules.
                 self.gc_retired_styles();
@@ -593,6 +598,9 @@ impl SceneModel {
             }
             Command::MarkKeyboardAvoiding { node, .. } => {
                 self.node_keyboard_avoid.insert(*node, cmd.clone());
+            }
+            Command::UpdateTextInputKeyboard { node, .. } => {
+                self.node_text_input_keyboard.insert(*node, cmd.clone());
             }
             // Live-region announcements are transient — they fire once
             // when posted and don't have a persistent identity to
@@ -862,6 +870,9 @@ impl SceneModel {
                 out.push(cmd.clone());
             }
             if let Some(cmd) = self.node_keyboard_avoid.get(id) {
+                out.push(cmd.clone());
+            }
+            if let Some(cmd) = self.node_text_input_keyboard.get(id) {
                 out.push(cmd.clone());
             }
         }
@@ -1294,6 +1305,77 @@ mod tests {
             }
             other => panic!("expected a folded CreateTextInput, got {other:?}"),
         }
+    }
+
+    /// A late-joining client must get the text input's soft-keyboard hint:
+    /// the latest `UpdateTextInputKeyboard` replays AFTER the node's
+    /// `CreateTextInput` (the client can't apply it to a node it hasn't
+    /// made), and a released node drops it. Without the replay, an email
+    /// field rendered for a second device showed the default keyboard.
+    #[test]
+    fn regression_text_input_keyboard_replays_in_snapshot_after_create() {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateTextInput {
+            id: node,
+            initial_value: String::new(),
+            placeholder: None,
+            on_change: wire::HandlerId(0),
+            secure: false,
+            a11y: Default::default(),
+        });
+        model.apply(&Command::UpdateTextInputKeyboard {
+            node,
+            keyboard: wire::WireKeyboardKind::Email,
+        });
+        model.apply(&Command::UpdateTextInputKeyboard {
+            node,
+            keyboard: wire::WireKeyboardKind::Phone,
+        });
+        model.apply(&Command::Finish { root: node });
+        let snap = model.snapshot_commands();
+        let create = snap
+            .iter()
+            .position(|c| matches!(c, Command::CreateTextInput { id, .. } if *id == node))
+            .expect("snapshot creates the input");
+        let keyboards: Vec<(usize, wire::WireKeyboardKind)> = snap
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                Command::UpdateTextInputKeyboard { node: n, keyboard } if *n == node => {
+                    Some((i, *keyboard))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keyboards.len(), 1, "only the latest kind replays: {snap:?}");
+        assert_eq!(keyboards[0].1, wire::WireKeyboardKind::Phone, "latest wins");
+        assert!(keyboards[0].0 > create, "the hint replays after the create");
+
+        model.apply(&Command::ReleaseNode { node });
+        assert!(
+            !model
+                .snapshot_commands()
+                .iter()
+                .any(|c| matches!(c, Command::UpdateTextInputKeyboard { .. })),
+            "a released node's hint is dropped",
+        );
+    }
+
+    /// The wire mirror covers every runtime kind distinctly, and an
+    /// unknown kind from a newer peer decodes to the general keyboard.
+    #[test]
+    fn wire_keyboard_kind_is_distinct_per_kind_and_falls_back() {
+        use runtime_shared::primitives::text_input::KeyboardKind;
+        let wired: Vec<_> =
+            KeyboardKind::ALL.iter().map(|k| crate::convert_out::keyboard_kind_to_wire(*k)).collect();
+        for (i, a) in wired.iter().enumerate() {
+            for b in &wired[i + 1..] {
+                assert_ne!(a, b, "two kinds share a wire value: {wired:?}");
+            }
+        }
+        let unknown: wire::WireKeyboardKind = serde_json::from_str("\"Hologram\"").unwrap();
+        assert_eq!(unknown, wire::WireKeyboardKind::Default);
     }
 }
 
