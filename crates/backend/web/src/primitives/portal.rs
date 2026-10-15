@@ -317,10 +317,18 @@ fn position_styles_for_target(target: &PortalTarget) -> String {
 /// the `inset: 0; margin: auto` centering trick because the trick
 /// requires explicit `width` / `height` and the portal root has
 /// neither — we let it auto-size to its content.
+///
+/// `width: max-content; max-width: 100vw` on `Center`: without it the
+/// root shrink-to-fits against the space RIGHT of `left: 50%`, so content
+/// wrapped at half the viewport (640px in a 1280px window) while every
+/// native backend centers it at natural width up to the full viewport.
+/// The native containers share one placement mapping
+/// (`runtime_shared::primitives::portal::viewport_container_rules`); its
+/// table is the contract this function and that one both implement.
 fn viewport_placement_styles(placement: ViewportPlacement) -> &'static str {
     match placement {
         ViewportPlacement::Center => {
-            "top: 50%; left: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%);"
+            "top: 50%; left: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%); width: max-content; max-width: 100vw;"
         }
         ViewportPlacement::Top => "top: 0; left: 0; right: 0;",
         ViewportPlacement::Bottom => "bottom: 0; left: 0; right: 0;",
@@ -334,7 +342,7 @@ fn viewport_placement_styles(placement: ViewportPlacement) -> &'static str {
 /// Matches the `Center` viewport placement so the portal lands
 /// somewhere sensible until the first-paint rAF re-measures.
 fn centered_fallback_styles() -> &'static str {
-    "top: 50%; left: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%);"
+    "top: 50%; left: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%); width: max-content; max-width: 100vw;"
 }
 
 /// Initial-mount anchor styles. We don't know the portal's rendered

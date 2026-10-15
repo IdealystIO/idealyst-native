@@ -105,10 +105,11 @@ use std::rc::Rc;
 /// Both render into the same kind of host: a full-bleed `FrameLayout`
 /// overlay in the Activity `root`.
 pub(crate) enum PortalHost {
-    /// Viewport-anchored: the content positions itself inside the overlay
-    /// with flex. `release_portal` `removeView`s it from `root` and drops
-    /// its Taffy node.
-    ViewOverlay(GlobalRef),
+    /// Viewport-anchored: the overlay is a full-viewport flex column whose
+    /// justify/align (from `placement`, the mapping every native backend
+    /// shares) put the content where web does. `release_portal`
+    /// `removeView`s it from `root` and drops its Taffy node.
+    ViewOverlay { overlay: GlobalRef, placement: ViewportPlacement },
     /// Element-anchored: the content child is placed against the anchor by
     /// [`AnchorState`]'s placer on every layout pass and every frame.
     Anchored {
@@ -174,14 +175,12 @@ fn create_overlay_portal(
     on_dismiss: Option<Rc<dyn Fn()>>,
     trap_focus: bool,
 ) -> GlobalRef {
-    // `placement` no longer drives window gravity/size — the overlay
-    // always fills the viewport and the content positions itself (the
-    // idea-ui `Modal` centers via a flex-center wrapper; a Top/Bottom
-    // sheet aligns itself with flex). Every viewport placement renders
-    // identically at the backend layer: a full-bleed overlay laid out in
-    // viewport space. Kept in the signature for API parity and in case a
-    // future placement needs a backend-side hint.
-    let _ = placement;
+    // `placement` does not drive window gravity/size — the overlay always
+    // fills the viewport. It drives the overlay's flex justify/align
+    // (`viewport_container_rules`, below), which place the content child
+    // where web and the other native backends put it. Every placement
+    // used to render identically here (content at the top, full width),
+    // so a `Bottom` toast host drew at the top on Android alone.
 
     let dismiss_cb_ptr = leak(OverlayDismissCallback {
         inner: RefCell::new(on_dismiss.clone()),
@@ -198,7 +197,7 @@ fn create_overlay_portal(
     b.portal_instances.insert(
         key,
         PortalInstance {
-            host: PortalHost::ViewOverlay(overlay.clone()),
+            host: PortalHost::ViewOverlay { overlay: overlay.clone(), placement },
             dismiss_cb_ptr,
         },
     );
@@ -212,7 +211,11 @@ fn create_overlay_portal(
     // root. No `set_root_axes_wrap` — that band-aid existed only to let a
     // WRAP_CONTENT Dialog window's gravity center the card; with a
     // full-bleed overlay, centering is pure flex inside the content.
-    b.layout_for_view(&overlay);
+    let node = b.layout_for_view(&overlay);
+    b.layout.set_style(
+        node,
+        &runtime_shared::primitives::portal::viewport_container_rules(placement),
+    );
 
     // The overlay's subtree is inserted by the walker AFTER this returns;
     // `Backend::insert` kicks a coalesced layout pass when it sees an
@@ -314,7 +317,9 @@ fn make_overlay_view(
 
         // Add the overlay on top of the app content in the SAME window.
         // FrameLayout paints children in add order, so this later child
-        // paints above the app tree's root (added first via `finish`).
+        // paints above the app tree's root — which `finish` inserts at
+        // index 0, so that also holds for an overlay mounted during the
+        // first build, before `finish` runs.
         let _ = env.call_method(
             &b.root.as_obj(),
             "addView",
@@ -481,8 +486,13 @@ pub(crate) fn place_anchored_contents(
     }
 }
 
-/// `apply_style` hook: an anchored portal's overlay keeps the content-
-/// sizing container rules under whatever style the portal itself carries.
+/// `apply_style` hook: a portal's overlay keeps its container rules (the
+/// viewport placement, or the anchored content-sizing rules) under
+/// whatever style the portal itself carries. Applying the portal's style
+/// alone would reset the placement — `LayoutTree::set_style` turns an
+/// unset `justify_content` into `FlexStart` — which is how a
+/// click-through overlay's pointer-events-only style pulled a `Bottom`
+/// toast host to the top on the other backends.
 pub(crate) fn overlay_layout_style(
     b: &AndroidBackend,
     node: &GlobalRef,
@@ -492,6 +502,9 @@ pub(crate) fn overlay_layout_style(
         Some(PortalInstance { host: PortalHost::Anchored { .. }, .. }) => {
             Some(anchored_container_rules(style))
         }
+        Some(PortalInstance { host: PortalHost::ViewOverlay { placement, .. }, .. }) => Some(
+            runtime_shared::primitives::portal::viewport_container_rules(*placement).merge(style),
+        ),
         _ => None,
     }
 }
@@ -524,7 +537,7 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
     // out a detached subtree. Dropping an anchored instance also drops its
     // `RafLoop`, cancelling the per-frame tracker.
     let overlay = match &instance.host {
-        PortalHost::ViewOverlay(overlay) | PortalHost::Anchored { overlay, .. } => overlay.clone(),
+        PortalHost::ViewOverlay { overlay, .. } | PortalHost::Anchored { overlay, .. } => overlay.clone(),
     };
     with_env(|env| {
         let _ = env.call_method(

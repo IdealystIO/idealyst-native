@@ -740,6 +740,13 @@ pub struct LinuxBackend {
     ///
     /// [`insert`]: LinuxBackend::insert
     portal_roots: HashSet<u64>,
+    /// Each portal container's target-derived layout rules
+    /// (`portal::placement_style`). `apply_style` lays the portal prim's own
+    /// `style` OVER them rather than replacing them: `LayoutTree::set_style`
+    /// resets an unset `justify_content` to `FlexStart` (and drops the 100%
+    /// size), so a click-through overlay's pointer-events-only style used to
+    /// wipe a `Bottom` placement and pull the content to the top.
+    portal_placements: HashMap<u64, StyleRules>,
     /// Per-image-node load state: the last resolved outcome plus the
     /// author's `on_load` / `on_error` handlers.
     ///
@@ -829,6 +836,7 @@ impl LinuxBackend {
             sticky_nodes: HashMap::new(),
             published_viewport: (0.0, 0.0),
             portal_roots: HashSet::new(),
+            portal_placements: HashMap::new(),
             state_controllers: HashMap::new(),
             portal_anchors: HashMap::new(),
             portal_anchor_child: HashMap::new(),
@@ -1828,6 +1836,7 @@ impl LinuxBackend {
         // / `settle_image`, which find no entry and drop the result.
         self.image_nodes.remove(&id);
         self.portal_roots.remove(&id);
+        self.portal_placements.remove(&id);
         self.portal_anchors.remove(&id);
         self.portal_anchor_child.remove(&id);
         self.portal_anchor_child.retain(|_, child| *child != id);
@@ -2496,8 +2505,18 @@ impl LinuxBackend {
             return;
         };
 
-        // 1. Layout — push flex/size/position/padding/margin into Taffy.
-        self.layout.set_style(layout, style);
+        // 1. Layout — push flex/size/position/padding/margin into Taffy. A
+        // portal container keeps its placement as the base (see
+        // `portal_placements`).
+        match self.portal_placements.get(&id) {
+            Some(placement) => {
+                let layered = placement.clone().merge(style);
+                self.layout.set_style(layout, &layered);
+            }
+            None => {
+                self.layout.set_style(layout, style);
+            }
+        }
 
         // 1-. Record what this node DECLARES for each inheritable property, so
         // descendants that declare none can inherit it (the cascade, which this
@@ -2588,16 +2607,26 @@ impl LinuxBackend {
             // it could be followed, while the sidebar (painted ABOVE the
             // scrim) worked fine and made it look like a scroll bug.
             //
-            // Divergence from CSS, deliberate and narrow: `pointer-events`
-            // inherits, and a child can opt back in with `Auto`. GTK's
-            // `can-target` is per-widget and picking skips a
-            // non-targetable widget's subtree, so a re-enabling child
-            // inside a `None` parent stays inert here. No framework
-            // surface builds that shape today (the Apple backends model
-            // the full chain in `backend-apple-core`'s
-            // `pointer_events_policy`); revisit if one does.
-            st.widget
-                .set_can_target(!matches!(style.pointer_events, Some(PointerEvents::None)));
+            // CSS `pointer-events` inherits and a descendant can opt back
+            // in with `Auto` — the click-through overlay (`ToastHost`) is
+            // built on exactly that. A view container models it in its own
+            // `contains` (see `IdealystView::set_pointer_events`), which
+            // keeps `Auto` descendants pickable; `can-target` would drop
+            // the whole subtree. A leaf widget (a `GtkLabel` is final, so
+            // it has no `contains` of ours) has no framework children to
+            // keep, so `can-target` is exact for its OWN explicit value.
+            // The remaining divergence: a leaf with no value of its own
+            // under a `none` view still picks. The Apple backends walk the
+            // full chain in `backend-apple-core`'s `pointer_events_policy`.
+            match st.widget.downcast_ref::<IdealystView>() {
+                Some(view) => {
+                    view.set_pointer_events(style.pointer_events);
+                    st.widget.set_can_target(true);
+                }
+                None => st
+                    .widget
+                    .set_can_target(!matches!(style.pointer_events, Some(PointerEvents::None))),
+            }
             st.transform.statik = style
                 .transform
                 .as_ref()
@@ -3733,8 +3762,9 @@ impl LinuxBackend {
         // Base placement flex from the target (author/composition style
         // overrides via a later `apply_style`).
         if let Some(layout) = self.nodes.get(&node.id).map(|s| s.layout) {
-            let style = Rc::new(portal::placement_style(&target));
-            self.layout.set_style(layout, &style);
+            let placement = portal::placement_style(&target);
+            self.layout.set_style(layout, &placement);
+            self.portal_placements.insert(node.id, placement);
         }
         portal::configure(
             &view,
@@ -4120,11 +4150,19 @@ mod layout_tests {
             pointer_events: Some(PointerEvents::None),
             ..StyleRules::default()
         });
+        // A view models it in `contains` (so `Auto` descendants stay
+        // pickable — see `IdealystView::set_pointer_events`), not via
+        // `can-target`, which would drop its whole subtree; section 22
+        // proves the pick behavior on a mapped window.
         backend.apply_style(&scrim, &inert);
         assert!(
-            !scrim.widget.can_target(),
-            "pointer_events:None must clear can-target, or an invisible \
-             overlay keeps eating input meant for the content beneath it",
+            crate::view::inherited_pointer_events_none(&scrim.widget),
+            "pointer_events:None must make the view decline its own area, or an \
+             invisible overlay keeps eating input meant for the content beneath it",
+        );
+        assert!(
+            scrim.widget.can_target(),
+            "a `none` view stays targetable so an `Auto` child can still be picked",
         );
 
         let interactive = std::rc::Rc::new(StyleRules {
@@ -4132,7 +4170,18 @@ mod layout_tests {
             ..StyleRules::default()
         });
         backend.apply_style(&scrim, &interactive);
-        assert!(scrim.widget.can_target(), "Auto must restore hit-testing");
+        assert!(
+            !crate::view::inherited_pointer_events_none(&scrim.widget),
+            "Auto must restore hit-testing"
+        );
+
+        // A LEAF widget has no framework children to keep, so its own
+        // `none` still clears `can-target`.
+        let leaf = backend.create_text("label", &a11y);
+        backend.apply_style(&leaf, &inert);
+        assert!(!leaf.widget.can_target(), "a `none` leaf must not be pickable");
+        backend.apply_style(&leaf, &interactive);
+        assert!(leaf.widget.can_target(), "Auto must restore a leaf's hit-testing");
 
         // Unset is Auto: the overwhelmingly common case must stay
         // clickable, so this can't regress into "nothing is interactive".
@@ -4477,6 +4526,51 @@ mod layout_tests {
             !backend.portal_roots.contains(&portal.id),
             "release_portal must un-mark the node",
         );
+
+        // --- 9b. REGRESSION (CrewForge kiosk, 2026-10-15): a click-through
+        // overlay's portal style (`pointer_events: None` only, what
+        // `mount_portal` applies after the children) REPLACED the
+        // container's placement layout. `set_style` resets an unset
+        // `justify_content` to `FlexStart` and drops the 100% size, so a
+        // `Bottom` ToastHost strip landed at the TOP of the window.
+        {
+            const VIEW_W: f32 = 400.0;
+            const VIEW_H: f32 = 300.0;
+            const BAND_H: f32 = 56.0;
+            let mut bottom = backend.create_portal(
+                PortalTarget::Viewport(ViewportPlacement::Bottom),
+                None,
+                false,
+                &a11y,
+            );
+            let strip = backend.create_view(&a11y);
+            backend.apply_style(
+                &strip,
+                &std::rc::Rc::new(StyleRules {
+                    height: Some(runtime_shared::Length::Px(BAND_H).into()),
+                    ..Default::default()
+                }),
+            );
+            backend.insert(&mut bottom, strip.clone());
+            backend.apply_style(
+                &bottom,
+                &std::rc::Rc::new(StyleRules {
+                    pointer_events: Some(PointerEvents::None),
+                    ..Default::default()
+                }),
+            );
+            let root_layout = backend.nodes.get(&bottom.id).unwrap().layout;
+            backend.layout.compute(root_layout, VIEW_W, VIEW_H);
+            let strip_frame =
+                backend.layout.frame_of(backend.nodes.get(&strip.id).unwrap().layout);
+            assert_eq!(
+                strip_frame.y,
+                VIEW_H - BAND_H,
+                "the Bottom placement must survive the portal's click-through style \
+                 (strip frame {strip_frame:?})",
+            );
+            backend.release_portal(&bottom);
+        }
 
         // --- 9a. An ANCHORED portal must pin its content beside the
         // trigger, not at the container's top-left. This backend used to
@@ -5435,6 +5529,11 @@ mod layout_tests {
         // the dismiss-catcher beneath, while its children stay pickable.
         // Lives here for the same one-GTK-thread reason as 20.
         crate::view::input_transparency_tests::an_input_transparent_container_passes_clicks_through_but_keeps_its_children();
+
+        // --- 22. A `pointer_events: None` view passes clicks in its empty
+        // area AND in descendants that declare nothing, while an `Auto`
+        // descendant keeps its own — the click-through overlay shape.
+        crate::view::input_transparency_tests::regression_click_through_none_root_keeps_auto_children_pickable();
     }
 }
 

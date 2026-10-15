@@ -139,6 +139,12 @@ impl OverlayBuilder {
         self
     }
 
+    /// Where the content sits in the viewport — the same on every backend:
+    /// `Top` / `Bottom` / `FullScreen` give it the full width at its natural
+    /// height (top / bottom / top edge); `Left` / `Right` keep its natural
+    /// size in the top corner; `Center` keeps its natural size (up to the
+    /// viewport width) in the middle. The table is on
+    /// [`viewport_container_rules`](runtime_shared::primitives::portal::viewport_container_rules).
     pub fn placement(mut self, p: ViewportPlacement) -> Self {
         self.placement = p;
         self

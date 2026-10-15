@@ -3590,6 +3590,19 @@ impl IosBackend {
                 let touch_view: &touch::IdealystTouchView =
                     unsafe { &*(view as *const UIView as *const touch::IdealystTouchView) };
                 touch_view.set_pointer_events(Some(p));
+            } else {
+                // A portal container — the node `create_portal` returns,
+                // so where an overlay's `click_through(true)` lands. It
+                // enforces the `none` in its own `hitTest:`.
+                let is_portal_container: bool = unsafe {
+                    msg_send![view, isKindOfClass: objc2::class!(IdealystOverlayPassthroughView)]
+                };
+                if is_portal_container {
+                    let container: &callbacks::OverlayPassthroughView = unsafe {
+                        &*(view as *const UIView as *const callbacks::OverlayPassthroughView)
+                    };
+                    container.set_pointer_events(Some(p));
+                }
             }
         }
 
@@ -3819,6 +3832,13 @@ impl IosBackend {
                 // Taffy style may be byte-identical to the previous apply —
                 // invalidate the measure cache explicitly so the box resizes.
                 self.layout.mark_dirty(layout_node);
+            } else if let Some(entry) = self.portal_instances.get(&view_key_for_style) {
+                // Portal container: its target-derived placement stays the
+                // base and the portal's own style layers on top. Applying
+                // `style` alone would reset the placement's
+                // `justify_content` (see `PortalEntry::container_rules`).
+                let layered = entry.container_rules.clone().merge(style);
+                self.layout.set_style(layout_node, &layered);
             } else {
                 self.layout.set_style(layout_node, style);
             }
@@ -4143,6 +4163,7 @@ impl IosBackend {
             self.host_root.as_ref(),
             anchor_spec,
             trap_focus,
+            container_rules.clone(),
         );
         let key = &*content_view as *const UIView as usize;
         self.portal_instances.insert(key, entry);

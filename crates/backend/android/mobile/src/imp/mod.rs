@@ -4227,11 +4227,20 @@ impl AndroidBackend {
                 }
             }
 
+            // Index 0, BELOW every sibling: a viewport overlay mounts
+            // straight into this host (`overlay::make_overlay_view`'s
+            // `addView`) and relies on FrameLayout's add-order painting
+            // to sit above the app. Overlays declared in the FIRST build
+            // (an always-mounted `ToastHost`, a click-through strip) are
+            // added during that build — BEFORE this `finish` — so
+            // appending the root put it on top, and an opaque root hid
+            // every one of them (laid out and VISIBLE, just painted under
+            // the app).
             if let Err(e) = env.call_method(
                 host,
                 "addView",
-                "(Landroid/view/View;)V",
-                &[JValue::Object(child)],
+                "(Landroid/view/View;I)V",
+                &[JValue::Object(child), JValue::Int(0)],
             ) {
                 log::error!("[backend-android] finish(): addView failed: {e:?}");
                 if env.exception_check().unwrap_or(false) {

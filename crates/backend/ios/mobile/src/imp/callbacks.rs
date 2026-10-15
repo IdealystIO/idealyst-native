@@ -740,7 +740,9 @@ declare_class!(
     }
 
     impl DeclaredClass for OverlayPassthroughView {
-        type Ivars = ();
+        // The portal's own `StyleRules::pointer_events`, written by
+        // `apply_style`. See `OverlayPassthroughView::set_pointer_events`.
+        type Ivars = std::cell::Cell<Option<runtime_shared::PointerEvents>>;
     }
 
     unsafe impl OverlayPassthroughView {
@@ -773,14 +775,49 @@ declare_class!(
             }
             objc2::runtime::Bool::NO
         }
+
+        // `pointer-events: none` on the portal ROOT — what
+        // `overlay().click_through(true)` lowers to. `pointInside:` above
+        // only drops the container's EMPTY area; a content child that
+        // spans a band (ToastHost's full-width strip, 56pt tall even with
+        // no toast showing) still resolved as the hit and swallowed every
+        // tap in that band, because the `none` sat here and nothing read
+        // it. Apply the same nearest-explicit-wins walk as
+        // `IdealystTouchView`, with this container as the `none` root, so
+        // only descendants that opt back in with `Auto` (the toast cards)
+        // keep their hits. Single tail expression: `declare_class!` wraps
+        // `#[method_id]` bodies.
+        #[method_id(hitTest:withEvent:)]
+        fn hit_test(
+            &self,
+            point: objc2_foundation::CGPoint,
+            event: Option<&objc2_ui_kit::UIEvent>,
+        ) -> Option<Retained<UIView>> {
+            let result: Option<Retained<UIView>> =
+                unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
+            if matches!(self.ivars().get(), Some(runtime_shared::PointerEvents::None)) {
+                result.and_then(|r| crate::imp::touch::resolve_in_none_root(self, r))
+            } else {
+                result
+            }
+        }
     }
 );
 
 impl OverlayPassthroughView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(());
+        let this = this.set_ivars(std::cell::Cell::new(None));
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Record the portal's explicit `pointer_events` (`None` = unset,
+    /// default hit-testing). A portal container is the node
+    /// `create_portal` hands the framework, so the portal prim's `style`
+    /// is applied HERE rather than to an `IdealystTouchView`; without
+    /// this slot a click-through overlay's `none` was dropped.
+    pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
+        self.ivars().set(v);
     }
 }
 

@@ -19,7 +19,10 @@
 //!   style said `None` — returning `nil` lets AppKit resolve whatever is
 //!   visually behind the subtree.
 //! - **UIKit**: `IdealystTouchView.hitTest:withEvent:` does the same;
-//!   returning `nil` makes UIKit continue with siblings underneath.
+//!   returning `nil` makes UIKit continue with siblings underneath. The
+//!   portal container (`IdealystOverlayPassthroughView`) runs the same walk
+//!   via `touch::resolve_in_none_root`: it is the node `create_portal`
+//!   returns, so `click_through`'s `none` lands there.
 //!
 //! CSS semantics being modeled: `pointer-events` inherits, so the
 //! effective value at the hit view is the NEAREST explicit value walking

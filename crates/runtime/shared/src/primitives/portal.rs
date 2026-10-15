@@ -174,6 +174,64 @@ impl Default for ViewportPlacement {
     }
 }
 
+/// Layout rules for a native backend's viewport-portal CONTAINER: a
+/// full-viewport flex column whose justify/align put the content child
+/// where the web backend puts it. Every Taffy backend (iOS, macOS,
+/// Linux, Android) uses this one mapping, so a placement looks the same
+/// everywhere (Rule #7).
+///
+/// Web is the reference. It pins the portal ROOT itself
+/// (`backend-web` `viewport_placement_styles`) and the content child
+/// lays out as a block inside it: full root width, natural height. The
+/// native container instead spans the viewport, so the same box comes
+/// from flex:
+///
+/// | placement    | web root CSS                         | content box               | justify / align       |
+/// |--------------|--------------------------------------|---------------------------|-----------------------|
+/// | `Top`        | `top: 0; left: 0; right: 0`          | full width, top           | `FlexStart` / `Stretch` |
+/// | `Bottom`     | `bottom: 0; left: 0; right: 0`       | full width, bottom        | `FlexEnd` / `Stretch`   |
+/// | `Left`       | `top: 0; bottom: 0; left: 0`         | natural size, top-left    | `FlexStart` / `FlexStart` |
+/// | `Right`      | `top: 0; bottom: 0; right: 0`        | natural size, top-right   | `FlexStart` / `FlexEnd` |
+/// | `FullScreen` | `inset: 0`                           | full width, top           | `FlexStart` / `Stretch` |
+/// | `Center`     | centered, `max-width: 100vw`         | natural size, centered    | `Center` / `Center`     |
+///
+/// `Left`/`Right` content sits at the TOP, not vertically centered: the
+/// web root spans the viewport height but its block child keeps its
+/// natural height at the root's top. No safety inset anywhere — web has
+/// none, so an oversized child meets the viewport edge on every backend.
+pub fn viewport_container_rules(placement: ViewportPlacement) -> crate::StyleRules {
+    use crate::{AlignItems, FlexDirection, JustifyContent};
+    let (justify, align) = match placement {
+        ViewportPlacement::Top | ViewportPlacement::FullScreen => {
+            (JustifyContent::FlexStart, AlignItems::Stretch)
+        }
+        ViewportPlacement::Bottom => (JustifyContent::FlexEnd, AlignItems::Stretch),
+        ViewportPlacement::Left => (JustifyContent::FlexStart, AlignItems::FlexStart),
+        ViewportPlacement::Right => (JustifyContent::FlexStart, AlignItems::FlexEnd),
+        ViewportPlacement::Center => (JustifyContent::Center, AlignItems::Center),
+    };
+    crate::StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        justify_content: Some(justify),
+        align_items: Some(align),
+        ..Default::default()
+    }
+}
+
+/// Layout rules for a native backend's ANCHORED-portal container: a
+/// neutral top-left column. The content child positions itself with
+/// absolute insets against the anchor, so the container only supplies
+/// the viewport coordinate space.
+pub fn anchored_container_rules() -> crate::StyleRules {
+    use crate::{AlignItems, FlexDirection, JustifyContent};
+    crate::StyleRules {
+        flex_direction: Some(FlexDirection::Column),
+        justify_content: Some(JustifyContent::FlexStart),
+        align_items: Some(AlignItems::FlexStart),
+        ..Default::default()
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ElementSide {

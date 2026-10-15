@@ -11,6 +11,38 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Overlay placement is the same on every backend, matching web**
+  (`runtime-shared`, `backend-ios-mobile`, `backend-macos`,
+  `backend-linux`, `backend-android-mobile`, `backend-web`). Each native
+  backend had its own placement mapping, and they disagreed with web and
+  each other. One shared mapping,
+  `runtime_shared::primitives::portal::viewport_container_rules`, now
+  places the content: `Top` / `Bottom` / `FullScreen` at full width and
+  natural height, `Left` / `Right` at natural size in the top corner,
+  `Center` at natural size in the middle. What moves: Linux no longer
+  centers edge-placed content; iOS drops its 16pt `Center` inset; Android
+  honors placement at all (every overlay used to lay out like `Top`); web
+  `Center` content no longer wraps at half the viewport width.
+  *Migration:* none needed; an overlay that relied on the old per-platform
+  position should style its own content.
+
+- **A click-through overlay no longer swallows taps or loses its
+  placement** (`backend-ios-mobile`, `backend-macos`, `backend-linux`,
+  `backend-android-mobile`). `overlay().click_through(true)` (idea-ui
+  `ToastHost`) marks the portal root `pointer_events: None`. On iOS that
+  style landed on the portal container, which never read it, so an idle
+  toast strip made a band across the screen dead to taps. On iOS, macOS,
+  Linux and Android the same style also REPLACED the container's
+  placement layout, so a `Bottom` toast host drew at the top. On Linux
+  the `None` disabled the whole subtree, so the toast cards themselves
+  could not be clicked. All three are fixed: the empty strip passes
+  input through, `Auto` children keep it, and placement holds.
+
+- **Overlays mounted in an app's first build are visible on Android**
+  (`backend-android-mobile`). The app root was added AFTER them, so an
+  opaque root painted over every overlay present at launch (an
+  always-mounted `ToastHost`, for one). The root now goes underneath.
+
 - **Windows is per-monitor DPI aware** (`backend-windows`, `host-win32`).
   The backend was DPI-unaware: layout ran on device pixels, native
   controls used 96-DPI fonts and SVGs rasterized at 1x, so on a high-DPI

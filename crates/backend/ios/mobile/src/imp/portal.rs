@@ -41,7 +41,7 @@ use runtime_shared::primitives::portal::{
     AnchorTarget, ElementAlign, ElementSide, ViewportPlacement, ViewportRect,
 };
 use runtime_shared::{
-    AlignItems, FlexDirection, JustifyContent, Length, Position, StyleRules, Tokenized,
+    Length, Position, StyleRules, Tokenized,
 };
 
 use crate::imp::callbacks::{DisplayLinkTarget, OverlayPassthroughView};
@@ -61,6 +61,14 @@ pub(crate) struct PortalEntry {
     /// portals or until the first `insert` populates the content
     /// view. Invalidated in `release_portal`.
     pub(crate) anchor_link: Option<Retained<NSObject>>,
+    /// The container's own layout rules, derived from the portal target
+    /// (`container_style_for_placement` / `container_style_for_anchor`).
+    /// `apply_style` lays the portal prim's `style` OVER these rather
+    /// than replacing them: `LayoutTree::set_style` resets an unset
+    /// `justify_content` to `FlexStart`, so a click-through overlay's
+    /// pointer-events-only style used to wipe a `Bottom` placement and
+    /// pull the content to the top of the window.
+    pub(crate) container_rules: StyleRules,
 }
 
 pub(crate) struct AnchorSpec {
@@ -81,6 +89,7 @@ pub(crate) fn create_portal(
     host_root: Option<&Retained<UIView>>,
     anchor: Option<AnchorSpec>,
     trap_focus: bool,
+    container_rules: StyleRules,
 ) -> (Retained<UIView>, PortalEntry) {
     // Always passthrough — the composition layer in runtime-core
     // renders a backdrop as a child primitive when needed; that
@@ -112,69 +121,28 @@ pub(crate) fn create_portal(
         container: container.clone(),
         anchor,
         anchor_link: None,
+        container_rules,
     };
     (container, entry)
 }
 
-/// `StyleRules` for a viewport-placement portal container. Places the
-/// (single) author-supplied content child in the requested viewport
-/// region via flex `justify_content` / `align_items`.
+/// `StyleRules` for a viewport-placement portal container — the shared
+/// mapping every native backend uses, so the content lands where web puts
+/// it (Rule #7). See [`runtime_shared::primitives::portal::viewport_container_rules`].
 pub(crate) fn container_style_for_placement(placement: ViewportPlacement) -> StyleRules {
-    let mut rules = StyleRules::default();
-    rules.flex_direction = Some(FlexDirection::Column);
-    match placement {
-        ViewportPlacement::Center => {
-            rules.justify_content = Some(JustifyContent::Center);
-            rules.align_items = Some(AlignItems::Center);
-            // Safety inset so an oversized child can't touch the
-            // viewport edges. Author `max_width` is stricter and wins.
-            let inset = Tokenized::Literal(Length::Px(VIEWPORT_CENTER_INSET));
-            rules.padding_top = Some(inset);
-            rules.padding_right = Some(inset);
-            rules.padding_bottom = Some(inset);
-            rules.padding_left = Some(inset);
-        }
-        ViewportPlacement::Top => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::Stretch);
-        }
-        ViewportPlacement::Bottom => {
-            rules.justify_content = Some(JustifyContent::FlexEnd);
-            rules.align_items = Some(AlignItems::Stretch);
-        }
-        ViewportPlacement::Left => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::FlexStart);
-        }
-        ViewportPlacement::Right => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::FlexEnd);
-        }
-        ViewportPlacement::FullScreen => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::Stretch);
-        }
-    }
-    rules
+    runtime_shared::primitives::portal::viewport_container_rules(placement)
 }
 
-/// `StyleRules` for an anchored-portal container. Neutral flex layout
-/// — the content child positions itself via `position: absolute` +
-/// insets so the container just needs to span the viewport (where
-/// the absolute coordinates live).
+/// `StyleRules` for an anchored-portal container: neutral top-left, the
+/// content child positions itself with absolute insets. Shared with the
+/// other native backends.
 pub(crate) fn container_style_for_anchor() -> StyleRules {
-    let mut rules = StyleRules::default();
-    rules.flex_direction = Some(FlexDirection::Column);
-    rules.justify_content = Some(JustifyContent::FlexStart);
-    rules.align_items = Some(AlignItems::FlexStart);
-    rules
+    runtime_shared::primitives::portal::anchored_container_rules()
 }
 
-/// Safety padding around `Center`-placed content so an oversized
-/// child can't touch the viewport edges. Authors who want a tighter
-/// or looser margin set their own `max_width`/`margin`; those win
-/// because they're stricter or stacked.
-const VIEWPORT_CENTER_INSET: f32 = 16.0;
+/// Left edge for the unmeasured-anchor fallback in
+/// [`child_style_for_anchor`], until the tracker's first vsync re-pins it.
+const ANCHOR_FALLBACK_LEFT: f32 = 16.0;
 
 /// Fallback "popover height" used in the static-pre-measurement
 /// path. We don't know the popover's measured size before Taffy
@@ -205,7 +173,7 @@ pub(crate) fn child_style_for_anchor(anchor: &AnchorSpec) -> StyleRules {
             let mut rules = StyleRules::default();
             rules.position = Some(Position::Absolute);
             rules.top = Some(Tokenized::Literal(Length::Px(ANCHOR_POPOVER_HEIGHT_FALLBACK)));
-            rules.left = Some(Tokenized::Literal(Length::Px(VIEWPORT_CENTER_INSET)));
+            rules.left = Some(Tokenized::Literal(Length::Px(ANCHOR_FALLBACK_LEFT)));
             return rules;
         }
     };

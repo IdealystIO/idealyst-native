@@ -167,3 +167,11 @@ harness = false
 [[test]]
 name = "image_src"
 harness = false
+
+# Real-AppKit test of a click-through overlay (`ToastHost`): the portal's
+# `pointer_events: None` style keeps the target's placement and passes
+# clicks in the empty band through, except on `Auto` children. Main-thread
+# only, for the same reason as `focus_attach`.
+[[test]]
+name = "portal_click_through"
+harness = false

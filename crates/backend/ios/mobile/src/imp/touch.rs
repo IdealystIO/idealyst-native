@@ -138,40 +138,7 @@ declare_class!(
                     self.ivars().pointer_events.get(),
                     Some(runtime_shared::PointerEvents::None)
                 ) {
-                    result.and_then(|result| {
-                        let self_view: &UIView = self;
-                        if std::ptr::eq(&*result as *const UIView, self_view as *const UIView) {
-                            return None;
-                        }
-                        // Walk hit → … → (excluding) self, collecting each
-                        // framework host's explicit pointer_events for the
-                        // shared nearest-explicit-wins verdict.
-                        let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
-                        let mut cur: Option<Retained<UIView>> = Some(result.clone());
-                        while let Some(v) = cur {
-                            if std::ptr::eq(&*v as *const UIView, self_view as *const UIView) {
-                                break;
-                            }
-                            let is_host: bool = unsafe {
-                                msg_send![&*v, isKindOfClass: objc2::class!(IdealystTouchView)]
-                            };
-                            chain.push(if is_host {
-                                let tv = unsafe {
-                                    &*(&*v as *const UIView as *const IdealystTouchView)
-                                };
-                                tv.ivars().pointer_events.get()
-                            } else {
-                                None
-                            });
-                            cur = unsafe { msg_send_id![&*v, superview] };
-                        }
-                        if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain)
-                        {
-                            Some(result)
-                        } else {
-                            None
-                        }
-                    })
+                    result.and_then(|result| resolve_in_none_root(self, result))
                 } else {
                     result
                 }
@@ -190,6 +157,50 @@ declare_class!(
         }
     }
 );
+
+/// The `pointer-events: none` verdict for a hit UIKit's default
+/// `hitTest:` resolved inside `root`'s subtree, `root` being a view whose
+/// own style says `none`. Returns the hit if a descendant on the path
+/// re-enables with explicit `Auto`, else `nil` so UIKit carries on with
+/// the views underneath.
+///
+/// Shared by every view class that can carry a `none`:
+/// [`IdealystTouchView`] and the portal container
+/// (`OverlayPassthroughView`, the node `create_portal` returns and so the
+/// node an overlay's `click_through` style lands on). Walks hit → … →
+/// (excluding) `root`, collecting each framework host's explicit
+/// `pointer_events` for the nearest-explicit-wins rule in
+/// `backend_apple_core::pointer_events_policy` (shared with macOS,
+/// Rule #7).
+pub(crate) fn resolve_in_none_root(
+    root: &UIView,
+    result: Retained<UIView>,
+) -> Option<Retained<UIView>> {
+    if std::ptr::eq(&*result as *const UIView, root as *const UIView) {
+        return None;
+    }
+    let mut chain: Vec<Option<runtime_shared::PointerEvents>> = Vec::new();
+    let mut cur: Option<Retained<UIView>> = Some(result.clone());
+    while let Some(v) = cur {
+        if std::ptr::eq(&*v as *const UIView, root as *const UIView) {
+            break;
+        }
+        let is_host: bool =
+            unsafe { msg_send![&*v, isKindOfClass: objc2::class!(IdealystTouchView)] };
+        chain.push(if is_host {
+            let tv = unsafe { &*(&*v as *const UIView as *const IdealystTouchView) };
+            tv.ivars().pointer_events.get()
+        } else {
+            None
+        });
+        cur = unsafe { msg_send_id![&*v, superview] };
+    }
+    if backend_apple_core::pointer_events_policy::none_hit_stands(false, &chain) {
+        Some(result)
+    } else {
+        None
+    }
+}
 
 impl IdealystTouchView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {

@@ -31,7 +31,7 @@ use runtime_shared::primitives::portal::{
 };
 use runtime_shared::scheduling::RafLoop;
 use runtime_shared::{
-    AlignItems, FlexDirection, JustifyContent, Length, Position, StyleRules, Tokenized,
+    Length, Position, StyleRules, Tokenized,
 };
 
 /// Per-anchored-portal state, keyed by the container view's pointer.
@@ -66,12 +66,7 @@ pub(crate) type PortalInstances = std::collections::HashMap<usize, PortalEntry>;
 /// viewport-placement path keeps using `portal_container_style` in
 /// `imp::mod`; this is only for the anchor case.
 pub(crate) fn container_style_for_anchor() -> StyleRules {
-    StyleRules {
-        flex_direction: Some(FlexDirection::Column),
-        justify_content: Some(JustifyContent::FlexStart),
-        align_items: Some(AlignItems::FlexStart),
-        ..Default::default()
-    }
+    runtime_shared::primitives::portal::anchored_container_rules()
 }
 
 /// Fallback popover height used before Taffy has measured the content —

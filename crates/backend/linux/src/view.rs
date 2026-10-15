@@ -308,6 +308,9 @@ mod imp {
         /// Decline pointer events on this widget's OWN area while leaving its
         /// children hit-testable. See [`IdealystView::set_input_transparent`].
         pub input_transparent: std::cell::Cell<bool>,
+        /// This view's explicit `StyleRules::pointer_events` (`None` =
+        /// unset). See [`IdealystView::set_pointer_events`].
+        pub pointer_events: std::cell::Cell<Option<runtime_shared::PointerEvents>>,
     }
 
     #[glib::object_subclass]
@@ -413,6 +416,9 @@ mod imp {
         /// that — it removes the whole subtree from picking.
         fn contains(&self, x: f64, y: f64) -> bool {
             if self.input_transparent.get() {
+                return false;
+            }
+            if super::inherited_pointer_events_none(self.obj().upcast_ref::<gtk4::Widget>()) {
                 return false;
             }
             self.parent_contains(x, y)
@@ -696,6 +702,25 @@ impl IdealystView {
         self.imp().input_transparent.set(transparent);
     }
 
+    /// Record this view's explicit `pointer_events` (`None` = unset).
+    ///
+    /// CSS `pointer-events` inherits: a `none` view and every descendant
+    /// that declares nothing are hit-transparent, and a descendant with
+    /// explicit `Auto` opts itself (and its own subtree) back in.
+    /// `set_can_target(false)` cannot express that, because GTK picking
+    /// skips a non-targetable widget's whole subtree, `Auto` children
+    /// included. That shape is what `overlay().click_through(true)` builds
+    /// (idea-ui `ToastHost`: a `none` portal root over a full-width strip,
+    /// cards opted back in), so `can-target` made the toast cards
+    /// unclickable. Instead `contains` declines on the inherited value:
+    /// GTK picks children first and asks a parent's `contains` only when no
+    /// child claimed the point, so an `Auto` card still wins its own area
+    /// while the empty strip falls through. The nearest-explicit-wins rule
+    /// matches `backend_apple_core::pointer_events_policy` (Rule #7).
+    pub fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
+        self.imp().pointer_events.set(v);
+    }
+
     pub fn paint_model(&self) -> PaintModel {
         self.imp().model.borrow().clone()
     }
@@ -745,6 +770,24 @@ mod full_radius_tests {
 }
 
 
+
+/// The inherited `pointer-events` at `widget`: the nearest explicit value on
+/// it or an `IdealystView` ancestor, `true` when that is `None`. Unset all
+/// the way up is `auto`. See [`IdealystView::set_pointer_events`].
+pub(crate) fn inherited_pointer_events_none(widget: &gtk4::Widget) -> bool {
+    let mut cur = Some(widget.clone());
+    while let Some(w) = cur {
+        if let Some(v) = w.downcast_ref::<IdealystView>() {
+            match v.imp().pointer_events.get() {
+                Some(runtime_shared::PointerEvents::None) => return true,
+                Some(runtime_shared::PointerEvents::Auto) => return false,
+                None => {}
+            }
+        }
+        cur = w.parent();
+    }
+    false
+}
 
 #[cfg(test)]
 pub(crate) mod input_transparency_tests {
@@ -833,6 +876,63 @@ pub(crate) mod input_transparency_tests {
             reclaimed.is_some(),
             "a normal container must still claim points inside its allocation"
         );
+    }
+
+    /// REGRESSION (CrewForge kiosk, 2026-10-15): `overlay().click_through(true)`
+    /// marks its portal root `pointer_events: None` and the toast cards opt
+    /// back in with `Auto`. `set_can_target(false)` removed the root's whole
+    /// subtree from picking, cards included. The empty strip (a full-width
+    /// child that declares nothing) must pass the click through; the `Auto`
+    /// card must keep it.
+    pub(crate) fn regression_click_through_none_root_keeps_auto_children_pickable() {
+        let window = gtk4::Window::new();
+        window.set_default_size(400, 300);
+        let overlay = gtk4::Overlay::new();
+        let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        page.set_hexpand(true);
+        page.set_vexpand(true);
+        overlay.set_child(Some(&page));
+
+        // root (none) → strip (unset, full width) → card (auto, left half)
+        let root = IdealystView::new();
+        root.set_hexpand(true);
+        root.set_vexpand(true);
+        let strip = IdealystView::new();
+        strip.set_layout_size(400, 56);
+        let card = IdealystView::new();
+        card.set_layout_size(200, 56);
+        strip.add_child(&card);
+        root.add_child(&strip);
+        overlay.add_overlay(&root);
+        root.set_pointer_events(Some(runtime_shared::PointerEvents::None));
+        card.set_pointer_events(Some(runtime_shared::PointerEvents::Auto));
+
+        window.set_child(Some(&overlay));
+        window.present();
+        let ctx = gtk4::glib::MainContext::default();
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(800) {
+            ctx.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if !window.is_mapped() {
+            eprintln!("SKIP: window never mapped");
+            return;
+        }
+
+        let in_root = |w: &gtk4::Widget| w.is_ancestor(&root) || *w == root.clone().upcast::<gtk4::Widget>();
+        let empty = overlay.pick(300.0, 28.0, gtk4::PickFlags::DEFAULT);
+        assert!(
+            empty.as_ref().is_none_or(|w| !in_root(w)),
+            "a click on the strip's empty half must fall through a `none` root, got {empty:?}"
+        );
+        let on_card = overlay.pick(100.0, 28.0, gtk4::PickFlags::DEFAULT);
+        let card_w: gtk4::Widget = card.clone().upcast();
+        assert!(
+            on_card.as_ref().is_some_and(|w| *w == card_w || w.is_ancestor(&card_w)),
+            "an `Auto` card inside a `none` root must stay pickable, got {on_card:?}"
+        );
+        window.close();
     }
 }
 

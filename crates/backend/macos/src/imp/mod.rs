@@ -227,7 +227,15 @@ pub struct MacosBackend {
     /// renders inline at the declaration site (e.g. a Modal landing at the bottom
     /// of a Settings list with no backdrop). The layout pass computes each against
     /// the viewport so a FullScreen portal fills the window.
-    pub(crate) portal_roots: std::collections::HashSet<usize>,
+    ///
+    /// The value is the container's target-derived layout rules
+    /// (`portal_container_style` / `portal::container_style_for_anchor`).
+    /// `apply_style` lays the portal prim's own `style` OVER them rather
+    /// than replacing them: `LayoutTree::set_style` resets an unset
+    /// `justify_content` to `FlexStart`, so a click-through overlay's
+    /// pointer-events-only style used to wipe a `Bottom` placement and pull
+    /// the content to the top of the window.
+    pub(crate) portal_roots: HashMap<usize, StyleRules>,
     /// Per-ANCHORED-portal state, keyed by the container view pointer (the
     /// same key as in `portal_roots`). Only anchored portals (tooltip /
     /// popover / dropdown) get an entry — it carries the anchor descriptor
@@ -631,7 +639,7 @@ impl MacosBackend {
             image_cache: HashMap::new(),
             virtualizer_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
-            portal_roots: std::collections::HashSet::new(),
+            portal_roots: HashMap::new(),
             portal_instances: HashMap::new(),
             root_layout: None,
         };
@@ -2149,47 +2157,16 @@ mod scroll_compositing_tests {
 /// The Taffy style a `create_portal` container view gets, from its target. The
 /// container is computed as an orphan root against the viewport (Auto axes fill
 /// to the window), so this only carries the flex justify/align that positions the
-/// single content child within that frame. Mirrors iOS
-/// `portal::container_style_for_placement` / `container_style_for_anchor` (Rule
-/// #7 — keep the two backends' portal placement identical). Pure → host-testable.
+/// single content child within that frame — the mapping shared by every native
+/// backend so content lands where web puts it (Rule #7). Anchored/named targets
+/// fall back to `FullScreen`: the anchored path uses
+/// `portal::container_style_for_anchor` instead.
 fn portal_container_style(target: &runtime_shared::primitives::portal::PortalTarget) -> StyleRules {
-    use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
-    use runtime_shared::{AlignItems, FlexDirection, JustifyContent};
-
-    let mut rules = StyleRules { flex_direction: Some(FlexDirection::Column), ..Default::default() };
-    let placement = match target {
-        PortalTarget::Viewport(p) => *p,
-        // Anchored/named portals span the viewport with neutral flex; the content
-        // positions itself (absolute insets). FullScreen is the closest neutral.
-        _ => ViewportPlacement::FullScreen,
-    };
-    match placement {
-        ViewportPlacement::Center => {
-            rules.justify_content = Some(JustifyContent::Center);
-            rules.align_items = Some(AlignItems::Center);
-        }
-        ViewportPlacement::Top => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::Stretch);
-        }
-        ViewportPlacement::Bottom => {
-            rules.justify_content = Some(JustifyContent::FlexEnd);
-            rules.align_items = Some(AlignItems::Stretch);
-        }
-        ViewportPlacement::Left => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::FlexStart);
-        }
-        ViewportPlacement::Right => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::FlexEnd);
-        }
-        ViewportPlacement::FullScreen => {
-            rules.justify_content = Some(JustifyContent::FlexStart);
-            rules.align_items = Some(AlignItems::Stretch);
-        }
+    use runtime_shared::primitives::portal::{viewport_container_rules, PortalTarget, ViewportPlacement};
+    match target {
+        PortalTarget::Viewport(p) => viewport_container_rules(*p),
+        _ => viewport_container_rules(ViewportPlacement::FullScreen),
     }
-    rules
 }
 
 #[cfg(test)]
@@ -2775,7 +2752,7 @@ impl MacosBackend {
         // the viewport. Without this the portal subtree kept a 0/stale frame.
         if !self.portal_roots.is_empty() {
             let portal_size = CGSize { width: width as f64, height: height as f64 };
-            let portal_keys: Vec<usize> = self.portal_roots.iter().copied().collect();
+            let portal_keys: Vec<usize> = self.portal_roots.keys().copied().collect();
             for key in portal_keys {
                 self.layout_detached_root(key, portal_size);
             }
@@ -4461,7 +4438,7 @@ impl MacosBackend {
         // surrounding tree, so it'd render inline at the declaration site (a
         // Modal at the bottom of its screen, no full-window backdrop). Skip it.
         // Mirrors iOS's `portal_instances` guard.
-        if self.portal_roots.contains(&child_key) {
+        if self.portal_roots.contains_key(&child_key) {
             return;
         }
 
@@ -4646,7 +4623,7 @@ impl MacosBackend {
         // their host window, and their Taffy node isn't `parent`'s child. Their
         // teardown runs via the scope-tied release paths. Symmetric with the
         // `insert` skips; mirrors iOS.
-        if self.portal_roots.contains(&child_key)
+        if self.portal_roots.contains_key(&child_key)
             || self.detached_window_roots.contains_key(&child_key)
         {
             return;
@@ -4716,7 +4693,7 @@ impl MacosBackend {
         // Portal / detached-window roots mount themselves into the host window;
         // skip the parent-tree splice the walker tries for them. (Mirror of
         // `insert`.)
-        if self.portal_roots.contains(&child_key)
+        if self.portal_roots.contains_key(&child_key)
             || self.detached_window_roots.contains_key(&child_key)
         {
             return;
@@ -4992,6 +4969,12 @@ impl MacosBackend {
                 s.padding_bottom = None;
                 s.padding_left = None;
                 self.layout.set_style(layout_node, &s)
+            } else if let Some(placement) = self.portal_roots.get(&view_key) {
+                // Portal container: its target-derived placement stays the
+                // base and the portal's own style layers on top (see
+                // `portal_roots`).
+                let layered = placement.clone().merge(style);
+                self.layout.set_style(layout_node, &layered)
             } else {
                 self.layout.set_style(layout_node, style)
             }
@@ -5815,7 +5798,7 @@ impl MacosBackend {
         let layout_node = self.layout_for_view(&content);
         self.layout.set_style(layout_node, &container_rules);
         let portal_key = &*content as *const NSView as usize;
-        self.portal_roots.insert(portal_key);
+        self.portal_roots.insert(portal_key, container_rules);
 
         // Anchored portals carry their descriptor + (later) tracker so `insert`
         // can position the content child against the trigger and `release_portal`

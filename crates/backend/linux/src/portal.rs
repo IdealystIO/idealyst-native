@@ -102,34 +102,17 @@ impl AnchorSpec {
 }
 
 /// Base Taffy style for a portal container: a full-viewport column flex
-/// box whose justify/align place the content child per the target's
-/// placement. Anchored targets use a neutral top-left placement (see the
-/// module doc's anchor gap).
+/// box whose justify/align place the content child where web puts it — the
+/// mapping shared by every native backend (Rule #7). Anchored and named
+/// targets use the neutral top-left container (see the module doc).
 pub(crate) fn placement_style(target: &PortalTarget) -> StyleRules {
+    use runtime_shared::primitives::portal::{anchored_container_rules, viewport_container_rules};
     let full = || Some(Tokenized::Literal(Length::Percent(100.0)));
-    let (justify, align) = match target {
-        PortalTarget::Viewport(p) => match p {
-            ViewportPlacement::Center => (JustifyContent::Center, AlignItems::Center),
-            ViewportPlacement::Top => (JustifyContent::FlexStart, AlignItems::Center),
-            ViewportPlacement::Bottom => (JustifyContent::FlexEnd, AlignItems::Center),
-            ViewportPlacement::Left => (JustifyContent::Center, AlignItems::FlexStart),
-            ViewportPlacement::Right => (JustifyContent::Center, AlignItems::FlexEnd),
-            // Full-screen: stretch the child across both axes.
-            ViewportPlacement::FullScreen => (JustifyContent::Center, AlignItems::Stretch),
-        },
-        // Anchored: neutral top-left (see module doc).
-        PortalTarget::Anchor { .. } | PortalTarget::Named(_) => {
-            (JustifyContent::FlexStart, AlignItems::FlexStart)
-        }
+    let rules = match target {
+        PortalTarget::Viewport(p) => viewport_container_rules(*p),
+        PortalTarget::Anchor { .. } | PortalTarget::Named(_) => anchored_container_rules(),
     };
-    StyleRules {
-        flex_direction: Some(FlexDirection::Column),
-        justify_content: Some(justify),
-        align_items: Some(align),
-        width: full(),
-        height: full(),
-        ..Default::default()
-    }
+    StyleRules { width: full(), height: full(), ..rules }
 }
 
 /// Wire the container widget: fill the overlay, install the detached

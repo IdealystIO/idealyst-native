@@ -378,11 +378,21 @@ Per backend: web/SSR emit the CSS property verbatim; iOS and macOS
 enforce it in the framework host view's hit-test override
 (`hitTest:` returns `nil`), with the verdict logic shared —
 host-testable — in `backend_apple_core::pointer_events_policy`.
-UIKit's `userInteractionEnabled = NO` is deliberately NOT used: it
-disables the whole subtree with no way for a descendant `Auto` to
-re-enable. Android and the GPU backend do not implement
-`pointer_events` yet — an always-mounted `None` overlay will swallow
-input there.
+On iOS that includes the portal container
+(`IdealystOverlayPassthroughView`): it is the node `create_portal`
+returns, so a click-through overlay's `None` lands on it, not on an
+`IdealystTouchView`. UIKit's `userInteractionEnabled = NO` is
+deliberately NOT used: it disables the whole subtree with no way for a
+descendant `Auto` to re-enable. Linux models it in `IdealystView`'s
+`contains` for the same reason (GTK `can-target` drops the whole
+subtree); a leaf widget (a label) only honors its *own* explicit value
+there. Android and the GPU backend do not implement `pointer_events`
+yet — an always-mounted `None` overlay will swallow input there.
+
+A portal's own `style` (what `click_through` sets) is layered OVER the
+container's placement layout on every native backend, never in place
+of it — the placement's `justify_content` / size would otherwise be
+reset and a `Bottom` overlay would land at the top.
 
 ---
 
