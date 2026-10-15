@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.14.0"
+version = "1.15.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.12.0"
+version = "1.13.0"
 dependencies = [
  "backend-image-source",
  "gtk4",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.15.1"
+version = "1.16.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.9.1"
+version = "2.10.0"
 dependencies = [
  "css",
  "dev-client",
@@ -10715,7 +10715,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.23.0"
+version = "1.24.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
