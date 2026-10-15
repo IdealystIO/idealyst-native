@@ -492,6 +492,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `svg` renders through the backend's SVG image path; `clipboard` via
   `arboard` (shared with Linux); `connectivity` via WinRT
   `NetworkInformation`.
+- **`spawn_async` no longer blocks the Windows UI thread** (`host-win32`,
+  `connectivity`). Windows installed no `AsyncExecutor`, so every async SDK
+  call ran to completion on the UI thread (a frozen window, or a hang when
+  the future waited on another thread). The Win32 host now runs a
+  cooperative executor on its scheduler, like the Apple and web ones; the
+  Windows `connectivity` watch delivers on the UI thread through it.
+  `runtime_shared::driver::async_executor_installed()` reports whether a
+  backend installed one.
 - **Run Windows apps off Windows** (`run-windows`, `build-windows`,
   `idealyst-cli`): `idealyst run/dev --windows` cross-compiles and runs under
   Wine (`IDEALYST_WINE`) or on a real Windows machine over SSH
