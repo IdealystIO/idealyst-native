@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
+use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
@@ -104,7 +104,7 @@ pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>
                 .map_err(|e| PickError::Backend(format!("SetFileTypes: {e}")))?;
         }
 
-        match dialog.Show(HWND::default()) {
+        match dialog.Show(None) {
             Ok(()) => {
                 let items: IShellItemArray = dialog
                     .GetResults()

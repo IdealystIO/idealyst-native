@@ -110,12 +110,12 @@ pub(crate) fn build_gdi(
     font_key: font::FontKey,
     fallback_height: f32,
 ) -> (CodeVisual, (i32, i32)) {
-    use windows::Win32::Foundation::{HWND, SIZE};
+    use windows::Win32::Foundation::SIZE;
     use windows::Win32::Graphics::Gdi::{
         GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, HGDIOBJ,
     };
     unsafe {
-        let dc = GetDC(HWND(std::ptr::null_mut()));
+        let dc = GetDC(None);
         if dc.is_invalid() {
             return build_visual(spans, font_key, fallback_height, |_| 0.0);
         }
@@ -135,7 +135,7 @@ pub(crate) fn build_gdi(
             }
         });
         SelectObject(dc, prev);
-        ReleaseDC(HWND(std::ptr::null_mut()), dc);
+        ReleaseDC(None, dc);
         out
     }
 }

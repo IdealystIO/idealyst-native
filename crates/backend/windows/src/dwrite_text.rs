@@ -151,7 +151,7 @@ impl DwText {
         let custom = self.custom.borrow();
         let collection = custom.as_ref()?.collection.as_ref()?;
         let mut index = 0u32;
-        let mut exists = windows::Win32::Foundation::BOOL(0);
+        let mut exists = windows::core::BOOL(0);
         unsafe { collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists).ok()? };
         if exists.as_bool() { collection.cast().ok() } else { None }
     }
@@ -308,7 +308,7 @@ fn matched_font(
         let requested = String::from_utf16_lossy(&name[..len]);
         let find = |collection: &IDWriteFontCollection, family: &str| {
             let mut index = 0u32;
-            let mut exists = windows::Win32::Foundation::BOOL(0);
+            let mut exists = windows::core::BOOL(0);
             collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists).ok()?;
             if !exists.as_bool() {
                 return None;
@@ -419,7 +419,7 @@ mod tests {
         unsafe {
             let Ok(collection) = format.GetFontCollection() else { return false };
             let mut index = 0u32;
-            let mut exists = windows::Win32::Foundation::BOOL(0);
+            let mut exists = windows::core::BOOL(0);
             collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists).is_ok() && exists.as_bool()
         }
     }

@@ -81,7 +81,7 @@ pub fn install(backend: &mut WindowsBackend, spec: MenuBarSpec) {
     // is reachable via `LAST_MENU` and we DestroyMenu it below to
     // release the OS resources.
     let hwnd = backend.host_hwnd();
-    let _ = unsafe { SetMenu(hwnd, new_menu) };
+    let _ = unsafe { SetMenu(hwnd, Some(new_menu)) };
     // Force a redraw so the new bar appears immediately. SetMenu
     // marks the window as needing a non-client redraw on the next
     // message-loop tick; DrawMenuBar nudges it now so the user

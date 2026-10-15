@@ -85,7 +85,7 @@ use windows::Win32::UI::Input::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetAncestor, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageExtraInfo,
-    GetSystemMetrics, SetCursor, SetCursorPos, GA_ROOT, HCURSOR, HTCLIENT, MSG, SM_CXSCREEN,
+    GetSystemMetrics, SetCursor, SetCursorPos, GA_ROOT, HTCLIENT, MSG, SM_CXSCREEN,
     SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN, WA_INACTIVE, WM_ACTIVATE, WM_MOVE,
     WM_SETCURSOR, WM_SIZE,
 };
@@ -209,7 +209,7 @@ impl PointerSlot {
         }
         unsafe {
             if now {
-                SetCursor(HCURSOR::default());
+                SetCursor(None);
             } else {
                 // Re-setting the position makes Windows send WM_SETCURSOR
                 // to the window under the cursor, which picks its own
@@ -433,7 +433,7 @@ impl PointerSlot {
                 // Wheel messages carry SCREEN coordinates.
                 let _ = ScreenToClient(host, &mut p);
             } else if msg.hwnd != host {
-                MapWindowPoints(msg.hwnd, host, std::slice::from_mut(&mut p));
+                MapWindowPoints(Some(msg.hwnd), Some(host), std::slice::from_mut(&mut p));
             }
         }
         let scale = self.scale();
@@ -494,7 +494,7 @@ impl PointerSlot {
             WM_SETCURSOR => {
                 let hit = (lparam.0 as usize & 0xFFFF) as u32;
                 if hit == HTCLIENT && self.cursor_suppressed() {
-                    unsafe { SetCursor(HCURSOR::default()) };
+                    unsafe { SetCursor(None) };
                     return Some(LRESULT(1));
                 }
                 None
@@ -579,7 +579,7 @@ mod tests {
                 y,
                 w,
                 h,
-                parent.unwrap_or_default(),
+                Some(parent.unwrap_or_default()),
                 None,
                 None,
                 None,

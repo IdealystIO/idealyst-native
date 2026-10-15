@@ -134,7 +134,7 @@ objc2-app-kit = { version = "0.2", features = [
 [target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
 backend-windows = { workspace = true, features = ["robot"] }
 runtime-vocabulary = { workspace = true }
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 backend-web = { workspace = true }

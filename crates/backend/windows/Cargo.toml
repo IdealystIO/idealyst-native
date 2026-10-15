@@ -61,7 +61,7 @@ image-webp = "0.2"
 # child controls. More features can be added as primitives go from
 # placeholder → real widget.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     # GDI+ for anti-aliased rounded-rect fills/borders with alpha +
@@ -97,7 +97,6 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
-    "Foundation_Numerics",
     # `image()`: GDI+ decodes from an in-memory `IStream`
     # (`SHCreateMemStream` + `GdipLoadImageFromStream`) instead of staging
     # bytes to a temp file.
@@ -108,19 +107,23 @@ windows = { version = "0.58", features = [
     # roots), no extra TLS/runtime dependency.
     "Win32_Networking_WinHttp",
     # OS file drag-and-drop (`file_drop.rs`): the window's OLE
-    # `IDropTarget`, `CF_HDROP` reads, and `#[implement]` for the COM object.
+    # `IDropTarget` and `CF_HDROP` reads.
     "Win32_System_Ole",
     "Win32_System_SystemServices",
     # STGMEDIUM (IDataObject::GetData) + ReleaseStgMedium.
     "Win32_System_Com_StructuredStorage",
-    "implement",
 ] }
-# `#[implement]` expands to `::windows_core` paths.
-windows-core = "0.58"
+# `#[implement]` (the COM object behind the drop target) — since windows
+# 0.59 it lives here, not behind a `windows` feature, and expands to
+# `::windows_core` paths.
+windows-core = "0.62"
+# `Matrix3x2` / `Vector2` (Direct2D transforms and points) — their own
+# crate since windows 0.60.
+windows-numerics = "0.3"
 # `Element::Graphics` hands wgpu a `Win32WindowHandle` through this.
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 # `file_drop` tests build a real shell data object from file paths
 # (SHParseDisplayName → item array → BHID_DataObject), as Explorer does.
-windows = { version = "0.58", features = ["Win32_UI_Shell_Common"] }
+windows = { version = "0.62", features = ["Win32_UI_Shell_Common"] }

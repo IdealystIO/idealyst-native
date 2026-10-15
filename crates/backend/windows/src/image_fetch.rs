@@ -109,9 +109,9 @@ impl ImagePump {
                 0,
                 0,
                 0,
-                HWND_MESSAGE,
+                Some(HWND_MESSAGE),
                 None,
-                hinstance,
+                Some(hinstance.into()),
                 None,
             )
             .ok()?;
@@ -124,7 +124,7 @@ impl ImagePump {
     /// Fire node `node_id`'s owed image event later, from the pump.
     pub(crate) fn queue_delivery(&self, node_id: u64) {
         unsafe {
-            let _ = PostMessageW(self.hwnd, WM_IMAGE_DELIVER, WPARAM(node_id as usize), LPARAM(0));
+            let _ = PostMessageW(Some(self.hwnd), WM_IMAGE_DELIVER, WPARAM(node_id as usize), LPARAM(0));
         }
     }
 
@@ -158,7 +158,7 @@ unsafe extern "system" fn pump_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         // and the retry lands once that call returns.
         WM_IMAGE_DELIVER if !slot.is_null() => {
             if !WindowsBackend::deliver_image_events(&*slot, wparam.0 as u64) {
-                let _ = PostMessageW(hwnd, msg, wparam, lparam);
+                let _ = PostMessageW(Some(hwnd), msg, wparam, lparam);
             }
             LRESULT(0)
         }
@@ -175,7 +175,7 @@ unsafe extern "system" fn pump_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             // A destroyed window's queued messages are discarded — free the
             // results still in flight so their bytes don't leak.
             let mut m = MSG::default();
-            while PeekMessageW(&mut m, hwnd, WM_IMAGE_FETCHED, WM_IMAGE_FETCHED, PM_REMOVE).as_bool() {
+            while PeekMessageW(&mut m, Some(hwnd), WM_IMAGE_FETCHED, WM_IMAGE_FETCHED, PM_REMOVE).as_bool() {
                 drop(Box::from_raw(m.lParam.0 as *mut FetchDone));
             }
             LRESULT(0)
@@ -196,7 +196,7 @@ unsafe extern "system" fn pump_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 fn post_done(pump: isize, done: FetchDone) {
     let raw = Box::into_raw(Box::new(done));
     let posted = unsafe {
-        PostMessageW(HWND(pump as *mut c_void), WM_IMAGE_FETCHED, WPARAM(0), LPARAM(raw as isize))
+        PostMessageW(Some(HWND(pump as *mut c_void)), WM_IMAGE_FETCHED, WPARAM(0), LPARAM(raw as isize))
     };
     if posted.is_err() {
         drop(unsafe { Box::from_raw(raw) });
@@ -255,7 +255,7 @@ struct Handle(*mut c_void);
 impl Handle {
     fn new(raw: *mut c_void, what: &str) -> Result<Handle, Failure> {
         if raw.is_null() {
-            Err(Failure::Network(format!("{what}: {}", windows::core::Error::from_win32())))
+            Err(Failure::Network(format!("{what}: {}", windows::core::Error::from_thread())))
         } else {
             Ok(Handle(raw))
         }

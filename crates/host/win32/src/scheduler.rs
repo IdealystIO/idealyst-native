@@ -153,7 +153,7 @@ fn post_wake_to(raw_hwnd: isize, latch: &WakeLatch) {
     }
     let hwnd = HWND(raw_hwnd as *mut c_void);
     unsafe {
-        if PostMessageW(hwnd, WM_IDEALYST_SCHED, WPARAM(0), LPARAM(0)).is_err() {
+        if PostMessageW(Some(hwnd), WM_IDEALYST_SCHED, WPARAM(0), LPARAM(0)).is_err() {
             latch.release();
         }
     }
@@ -241,13 +241,13 @@ mod tests {
         unsafe {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE(0), w!("STATIC"), None, WINDOW_STYLE(0), 0, 0, 0, 0,
-                HWND_MESSAGE, None, None, None,
+                Some(HWND_MESSAGE), None, None, None,
             )
             .unwrap();
             let queued = |hwnd: HWND| {
                 let mut msg = MSG::default();
                 let mut n = 0;
-                while PeekMessageW(&mut msg, hwnd, WM_IDEALYST_SCHED, WM_IDEALYST_SCHED, PM_REMOVE).as_bool() {
+                while PeekMessageW(&mut msg, Some(hwnd), WM_IDEALYST_SCHED, WM_IDEALYST_SCHED, PM_REMOVE).as_bool() {
                     n += 1;
                 }
                 n

@@ -168,10 +168,10 @@ fn build_toolbar(props: &Rc<crate::ToolbarProps>, b: &mut WindowsBackend) -> Win
             0,
             0,
             0,
-            host_hwnd,
+            Some(host_hwnd),
             // Null HMENU — the toolbar isn't a "command control"
             // itself; its child buttons each carry their own ids.
-            windows::Win32::UI::WindowsAndMessaging::HMENU(std::ptr::null_mut()),
+            Some(windows::Win32::UI::WindowsAndMessaging::HMENU(std::ptr::null_mut())),
             None,
             None,
         )
@@ -186,8 +186,8 @@ fn build_toolbar(props: &Rc<crate::ToolbarProps>, b: &mut WindowsBackend) -> Win
         let _ = SendMessageW(
             hwnd,
             TB_BUTTONSTRUCTSIZE,
-            WPARAM(std::mem::size_of::<TBBUTTON>()),
-            LPARAM(0),
+            Some(WPARAM(std::mem::size_of::<TBBUTTON>())),
+            Some(LPARAM(0)),
         );
     }
 
@@ -231,11 +231,11 @@ fn apply_items(toolbar_hwnd: HWND, items: &[ToolbarItem]) {
     // Wipe existing buttons. TB_BUTTONCOUNT returns count; we delete
     // from the end so indices stay valid through the loop.
     let count: usize = unsafe {
-        SendMessageW(toolbar_hwnd, TB_BUTTONCOUNT, WPARAM(0), LPARAM(0)).0 as usize
+        SendMessageW(toolbar_hwnd, TB_BUTTONCOUNT, Some(WPARAM(0)), Some(LPARAM(0))).0 as usize
     };
     for idx in (0..count).rev() {
         unsafe {
-            let _ = SendMessageW(toolbar_hwnd, TB_DELETEBUTTON, WPARAM(idx), LPARAM(0));
+            let _ = SendMessageW(toolbar_hwnd, TB_DELETEBUTTON, Some(WPARAM(idx)), Some(LPARAM(0)));
         }
     }
 
@@ -305,15 +305,15 @@ fn apply_items(toolbar_hwnd: HWND, items: &[ToolbarItem]) {
             let _ = SendMessageW(
                 toolbar_hwnd,
                 TB_ADDBUTTONSW,
-                WPARAM(buttons.len()),
-                LPARAM(buttons.as_ptr() as isize),
+                Some(WPARAM(buttons.len())),
+                Some(LPARAM(buttons.as_ptr() as isize)),
             );
         }
     }
 
     // Autosize so column widths match the now-installed labels.
     unsafe {
-        let _ = SendMessageW(toolbar_hwnd, TB_AUTOSIZE, WPARAM(0), LPARAM(0));
+        let _ = SendMessageW(toolbar_hwnd, TB_AUTOSIZE, Some(WPARAM(0)), Some(LPARAM(0)));
     }
 
     // label_storage drops at scope exit; that's safe because

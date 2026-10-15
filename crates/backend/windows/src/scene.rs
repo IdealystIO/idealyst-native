@@ -380,7 +380,7 @@ unsafe fn paint_beyond_ellipse(
     if GdipClonePath(fill_path, &mut ring).0 != 0 || ring.is_null() {
         return;
     }
-    let _ = GdipAddPathPath(ring, ellipse, windows::Win32::Foundation::BOOL(0));
+    let _ = GdipAddPathPath(ring, ellipse, false);
     let _ = GdipSetPathFillMode(ring, FillModeAlternate);
     let escapes = cx - r < 0.0 || cy - r < 0.0 || cx + r > w || cy + r > h;
     let mut state: u32 = 0;
@@ -713,7 +713,7 @@ impl BackBuffer {
     /// Make the buffer compatible with `target` at `w × h`.
     unsafe fn ensure(&mut self, target: HDC, w: i32, h: i32) -> bool {
         if self.dc.is_invalid() {
-            self.dc = CreateCompatibleDC(target);
+            self.dc = CreateCompatibleDC(Some(target));
             if self.dc.is_invalid() {
                 return false;
             }
@@ -821,7 +821,7 @@ pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h:
         let _ = GdipDeleteGraphics(g);
     }
 
-    let _ = BitBlt(target, 0, 0, w, h, back.dc, 0, 0, SRCCOPY);
+    let _ = BitBlt(target, 0, 0, w, h, Some(back.dc), 0, 0, SRCCOPY);
     b.back = back;
 
     // Content over a graphics surface, in composition visuals above it

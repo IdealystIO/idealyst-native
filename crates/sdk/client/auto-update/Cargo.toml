@@ -59,4 +59,4 @@ objc2-foundation = { version = "0.2", features = ["NSString", "NSURL"] }
 
 # Windows: MSIX App Installer / Shell APIs for the installer hand-off.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = ["Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_Foundation"] }

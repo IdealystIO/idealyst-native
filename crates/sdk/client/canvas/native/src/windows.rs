@@ -64,12 +64,12 @@ use runtime_shared::primitives::graphics::{
 use runtime_vocabulary::caps::GraphicsOps;
 
 use windows::core::{Interface, Result};
-use windows::Foundation::Numerics::Matrix3x2;
+use windows_numerics::{Matrix3x2, Vector2};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_DESTINATION_OUT,
     D2D1_COMPOSITE_MODE_SOURCE_COPY, D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_FIGURE_BEGIN_FILLED,
     D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_ALTERNATE, D2D1_FILL_MODE_WINDING,
-    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_U, D2D1_BEZIER_SEGMENT,
+    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U, D2D1_BEZIER_SEGMENT,
     D2D1_BLEND_MODE, D2D1_BLEND_MODE_COLOR, D2D1_BLEND_MODE_COLOR_BURN, D2D1_BLEND_MODE_COLOR_DODGE,
     D2D1_BLEND_MODE_DARKEN, D2D1_BLEND_MODE_DIFFERENCE, D2D1_BLEND_MODE_EXCLUSION,
     D2D1_BLEND_MODE_HARD_LIGHT, D2D1_BLEND_MODE_HUE, D2D1_BLEND_MODE_LIGHTEN,
@@ -373,7 +373,7 @@ unsafe fn create_gpu() -> Result<Gpu> {
         created = D3D11CreateDevice(
             None,
             driver,
-            None,
+            windows::Win32::Foundation::HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             None,
             D3D11_SDK_VERSION,
@@ -598,8 +598,8 @@ fn color(c: Color, alpha: f32) -> D2D1_COLOR_F {
     }
 }
 
-fn pt(x: f32, y: f32) -> D2D_POINT_2F {
-    D2D_POINT_2F { x, y }
+fn pt(x: f32, y: f32) -> Vector2 {
+    Vector2 { X: x, Y: y }
 }
 
 impl Painter {

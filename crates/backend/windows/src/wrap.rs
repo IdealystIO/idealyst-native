@@ -343,13 +343,13 @@ pub(crate) fn build_gdi(
     hfont: windows::Win32::Graphics::Gdi::HFONT,
     fallback_height: f32,
 ) -> WrapPlan {
-    use windows::Win32::Foundation::{HWND, SIZE};
+    use windows::Win32::Foundation::SIZE;
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::{
         GetDC, GetTextExtentExPointW, GetTextExtentPoint32W, ReleaseDC, SelectObject, HGDIOBJ,
     };
     unsafe {
-        let dc = GetDC(HWND(std::ptr::null_mut()));
+        let dc = GetDC(None);
         if dc.is_invalid() {
             return WrapPlan::build_with(text, fallback_height, |s| vec![0.0; s.len()]);
         }
@@ -386,7 +386,7 @@ pub(crate) fn build_gdi(
             }
         });
         SelectObject(dc, prev);
-        ReleaseDC(HWND(std::ptr::null_mut()), dc);
+        ReleaseDC(None, dc);
         plan
     }
 }

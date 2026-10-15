@@ -40,11 +40,12 @@
 use std::collections::HashMap;
 
 use windows::core::{Interface, Result};
-use windows::Foundation::Numerics::Matrix3x2;
+use windows::Win32::Foundation::HMODULE;
+use windows_numerics::{Matrix3x2, Vector2};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW,
     D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_ALTERNATE, D2D1_FILL_MODE_WINDING,
-    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
+    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
     D2D1_BEZIER_SEGMENT,
 };
 use windows::Win32::Graphics::Direct2D::{
@@ -153,8 +154,8 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> D2D_RECT_F {
     D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h }
 }
 
-fn pt(x: f32, y: f32) -> D2D_POINT_2F {
-    D2D_POINT_2F { x, y }
+fn pt(x: f32, y: f32) -> Vector2 {
+    Vector2 { X: x, Y: y }
 }
 
 fn bitmap_props(opts: D2D1_BITMAP_OPTIONS) -> D2D1_BITMAP_PROPERTIES1 {
@@ -189,7 +190,7 @@ impl D2dRenderer {
             D3D11CreateDevice(
                 None,
                 D3D_DRIVER_TYPE_HARDWARE,
-                None,
+                HMODULE::default(),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 None,
                 D3D11_SDK_VERSION,
@@ -644,7 +645,7 @@ impl D2dRenderer {
                         let Ok(path) = self.factory.CreatePathGeometry() else { continue };
                         let Ok(sink) = path.Open() else { continue };
                         sink.BeginFigure(pt(points[0].0, points[0].1), D2D1_FIGURE_BEGIN_HOLLOW);
-                        let rest: Vec<D2D_POINT_2F> = points[1..].iter().map(|(x, y)| pt(*x, *y)).collect();
+                        let rest: Vec<Vector2> = points[1..].iter().map(|(x, y)| pt(*x, *y)).collect();
                         sink.AddLines(&rest);
                         sink.EndFigure(D2D1_FIGURE_END_OPEN);
                         if sink.Close().is_ok() {
@@ -1053,7 +1054,7 @@ mod tests {
                     ..Default::default()
                 };
                 let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-                let bmp = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0).expect("DIB");
+                let bmp = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).expect("DIB");
                 let old = SelectObject(dc, HGDIOBJ(bmp.0));
                 b.paint(dc, w, h);
                 let px = std::slice::from_raw_parts(bits as *const u32, (w * h) as usize)

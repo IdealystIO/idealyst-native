@@ -107,8 +107,7 @@ jni = "0.21"
 # The `windows` version matches backend-windows' (one COM wrapper set).
 [target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
 backend-windows = { workspace = true }
-windows = { version = "0.58", features = [
-    "Foundation_Numerics",
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
@@ -120,6 +119,8 @@ windows = { version = "0.58", features = [
     # The pixel tests detect Wine (GetProcAddress `wine_get_version`).
     "Win32_System_LibraryLoader",
 ] }
+# `Matrix3x2` / `Vector2` (Direct2D transforms and points).
+windows-numerics = "0.3"
 
 [dev-dependencies]
 # tests/canvas.rs: the placeholder arm on the shared host-mock recording

@@ -260,19 +260,18 @@ mod tests {
     /// and the "Dark mode" switch label rendered invisible.
     #[test]
     fn regression_css_font_stack_resolves_to_drawable_family() {
-        use windows::Win32::Foundation::HWND;
         use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
         crate::ensure_gdiplus();
         let stack = r#"system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif"#;
         let family = resolve_family_stack(stack, "Segoe UI");
         assert!(!family.contains(','), "a single concrete family, got {family:?}");
         let key = FontKey { family, size_px: 11, weight: 600, italic: false };
-        let dc = unsafe { GetDC(HWND(std::ptr::null_mut())) };
+        let dc = unsafe { GetDC(None) };
         let mut cache = FontCache::new();
         let entry = entry_for(&mut cache, &key).expect("hfont");
         let gp = gpfont_for(entry, dc);
         unsafe {
-            ReleaseDC(HWND(std::ptr::null_mut()), dc);
+            ReleaseDC(None, dc);
         }
         assert!(!gp.is_null(), "resolved family must be drawable by GDI+");
         // Unknown-first stacks fall through; garbage-only falls back.
@@ -319,10 +318,9 @@ mod tests {
     /// "Dark mode" switch label).
     #[test]
     fn regression_all_css_weights_yield_drawable_gpfont() {
-        use windows::Win32::Foundation::HWND;
         use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
         crate::ensure_gdiplus();
-        let dc = unsafe { GetDC(HWND(std::ptr::null_mut())) };
+        let dc = unsafe { GetDC(None) };
         assert!(!dc.is_invalid());
         let mut cache = FontCache::new();
         let mut failures = Vec::new();
@@ -345,7 +343,7 @@ mod tests {
             }
         }
         unsafe {
-            ReleaseDC(HWND(std::ptr::null_mut()), dc);
+            ReleaseDC(None, dc);
         }
         assert!(failures.is_empty(), "undrawable fonts:\n{}", failures.join("\n"));
     }

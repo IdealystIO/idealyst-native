@@ -444,9 +444,9 @@ unsafe fn create_host_window(hinstance: HINSTANCE, opts: &RunOptions) -> Result<
         win_w,
         win_h,
         // No parent (top-level), no menu, our hInstance, no create param.
-        HWND(std::ptr::null_mut()),
         None,
-        hinstance,
+        None,
+        Some(hinstance),
         None,
     )
     .map_err(|e| format!("CreateWindowExW: {e}"))?;
@@ -848,7 +848,7 @@ fn button_of(msg: u32) -> PointerButton {
 fn wheel_message_pending(hwnd: HWND) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, PM_NOREMOVE};
     let mut msg = MSG::default();
-    unsafe { PeekMessageW(&mut msg, hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_NOREMOVE).as_bool() }
+    unsafe { PeekMessageW(&mut msg, Some(hwnd), WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_NOREMOVE).as_bool() }
 }
 
 #[cfg(test)]
@@ -874,15 +874,15 @@ mod tests {
                 0,
                 0,
                 0,
-                windows::Win32::UI::WindowsAndMessaging::HWND_MESSAGE,
+                Some(windows::Win32::UI::WindowsAndMessaging::HWND_MESSAGE),
                 None,
                 None,
                 None,
             )
             .unwrap();
-            PostMessageW(hwnd, WM_IDEALYST_SCHED, WPARAM(0), LPARAM(0)).unwrap();
-            PostMessageW(hwnd, OTHER, WPARAM(0), LPARAM(0)).unwrap();
-            PostMessageW(hwnd, OTHER, WPARAM(1), LPARAM(0)).unwrap();
+            PostMessageW(Some(hwnd), WM_IDEALYST_SCHED, WPARAM(0), LPARAM(0)).unwrap();
+            PostMessageW(Some(hwnd), OTHER, WPARAM(0), LPARAM(0)).unwrap();
+            PostMessageW(Some(hwnd), OTHER, WPARAM(1), LPARAM(0)).unwrap();
             let order = RefCell::new(Vec::new());
             let code = pump(
                 |msg| {
@@ -932,7 +932,7 @@ mod tests {
             let (hwnd, backend) = host_with_backend();
             let held = backend.borrow_mut();
             for msg in [WM_COMMAND, WM_HSCROLL, WM_LBUTTONUP] {
-                windows::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd, msg, WPARAM(0x0300_0064), LPARAM(0));
+                windows::Win32::UI::WindowsAndMessaging::SendMessageW(hwnd, msg, Some(WPARAM(0x0300_0064)), Some(LPARAM(0)));
             }
             drop(held);
             let _ = ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_HIDE);
@@ -1017,11 +1017,11 @@ mod tests {
         .expect("window");
         assert!(!wheel_message_pending(hwnd), "nothing queued yet");
         unsafe {
-            PostMessageW(hwnd, WM_MOUSEWHEEL, WPARAM(0), LPARAM(0)).unwrap();
-            PostMessageW(hwnd, WM_MOUSEWHEEL, WPARAM(0), LPARAM(0)).unwrap();
+            PostMessageW(Some(hwnd), WM_MOUSEWHEEL, WPARAM(0), LPARAM(0)).unwrap();
+            PostMessageW(Some(hwnd), WM_MOUSEWHEEL, WPARAM(0), LPARAM(0)).unwrap();
         }
         let mut msg = MSG::default();
-        let take = |msg: &mut MSG| unsafe { PeekMessageW(msg, hwnd, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE).as_bool() };
+        let take = |msg: &mut MSG| unsafe { PeekMessageW(msg, Some(hwnd), WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_REMOVE).as_bool() };
         assert!(take(&mut msg));
         assert!(wheel_message_pending(hwnd), "the first notch sees the second: it skips its paint");
         assert!(take(&mut msg));

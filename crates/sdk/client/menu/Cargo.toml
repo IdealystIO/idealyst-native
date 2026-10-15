@@ -41,7 +41,7 @@ objc2-foundation = { version = "0.2", features = [
 
 [target.'cfg(target_os = "windows")'.dependencies]
 backend-windows = { workspace = true }
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }

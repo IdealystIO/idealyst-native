@@ -67,7 +67,7 @@ backend-windows = { workspace = true }
 # Same `windows` crate + version as `backend-windows`. Features cover
 # window-class registration, the message pump, and module-handle
 # lookup for the window class's hInstance.
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",

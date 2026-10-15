@@ -848,7 +848,7 @@ impl WindowsBackend {
                 if let NodeKind::Control { hwnd } = meta.kind {
                     if !hwnd.is_invalid() {
                         unsafe {
-                            SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+                            SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
                         }
                     }
                 }
@@ -985,7 +985,7 @@ impl WindowsBackend {
     /// invalidations into one `WM_PAINT` per message-loop pass.
     pub(crate) fn invalidate(&self) {
         unsafe {
-            let _ = InvalidateRect(self.host_hwnd, None, false);
+            let _ = InvalidateRect(Some(self.host_hwnd), None, false);
         }
     }
 
@@ -1218,8 +1218,8 @@ impl WindowsBackend {
                 0,
                 0,
                 0,
-                self.host_hwnd,
-                hmenu,
+                Some(self.host_hwnd),
+                Some(hmenu),
                 None,
                 None,
             )
@@ -1230,7 +1230,7 @@ impl WindowsBackend {
         // bitmap "System" font.
         if !hwnd.is_invalid() && !self.control_font.is_invalid() {
             unsafe {
-                SendMessageW(hwnd, WM_SETFONT, WPARAM(self.control_font.0 as usize), LPARAM(1));
+                SendMessageW(hwnd, WM_SETFONT, Some(WPARAM(self.control_font.0 as usize)), Some(LPARAM(1)));
             }
         }
         hwnd
@@ -1346,10 +1346,10 @@ impl WindowsBackend {
                     } else {
                         CreateRectRgn(x0, y0, x1, y1)
                     };
-                    let _ = SetWindowRgn(hwnd, rgn, true);
+                    let _ = SetWindowRgn(hwnd, Some(rgn), true);
                 }
                 None => {
-                    let _ = SetWindowRgn(hwnd, windows::Win32::Graphics::Gdi::HRGN::default(), true);
+                    let _ = SetWindowRgn(hwnd, None, true);
                 }
             }
         }
@@ -2039,7 +2039,7 @@ fn measure_text_gdi(text: &str, hfont: HFONT, line_height: i32) -> (i32, i32) {
     }
     let wide: Vec<u16> = text.encode_utf16().collect();
     unsafe {
-        let dc = GetDC(HWND(std::ptr::null_mut()));
+        let dc = GetDC(None);
         if dc.is_invalid() {
             return (0, line_height);
         }
@@ -2047,7 +2047,7 @@ fn measure_text_gdi(text: &str, hfont: HFONT, line_height: i32) -> (i32, i32) {
         let mut size = SIZE::default();
         let ok = GetTextExtentPoint32W(dc, &wide, &mut size).as_bool();
         SelectObject(dc, prev);
-        ReleaseDC(HWND(std::ptr::null_mut()), dc);
+        ReleaseDC(None, dc);
         if ok {
             (size.cx, size.cy)
         } else {
@@ -2120,7 +2120,7 @@ fn create_ui_font() -> (LOGFONTW, HFONT, i32, i32, String) {
             return (logfont, HFONT(std::ptr::null_mut()), FALLBACK.0, FALLBACK.1, base_family);
         }
         let mut line_height = 16;
-        let dc = GetDC(HWND(std::ptr::null_mut()));
+        let dc = GetDC(None);
         if !dc.is_invalid() {
             let prev = SelectObject(dc, HGDIOBJ(font.0));
             let sample: Vec<u16> = "Mg".encode_utf16().collect();
@@ -2129,7 +2129,7 @@ fn create_ui_font() -> (LOGFONTW, HFONT, i32, i32, String) {
                 line_height = size.cy;
             }
             SelectObject(dc, prev);
-            ReleaseDC(HWND(std::ptr::null_mut()), dc);
+            ReleaseDC(None, dc);
         }
         (logfont, font, line_height, base_size, base_family)
     }
@@ -2598,13 +2598,13 @@ impl WindowsBackend {
             SendMessageW(
                 hwnd,
                 BM_SETCHECK,
-                WPARAM(if initial_value { BST_CHECKED as usize } else { 0 }),
-                LPARAM(0),
+                Some(WPARAM(if initial_value { BST_CHECKED as usize } else { 0 })),
+                Some(LPARAM(0)),
             );
         }
         let action: Rc<dyn Fn()> = Rc::new(move || {
             let checked =
-                unsafe { SendMessageW(hwnd, BM_GETCHECK, WPARAM(0), LPARAM(0)) }.0 == BST_CHECKED;
+                unsafe { SendMessageW(hwnd, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) }.0 == BST_CHECKED;
             on_change(checked);
         });
         self.command_handlers
@@ -2642,7 +2642,7 @@ impl WindowsBackend {
         unsafe {
             if disabled && GetFocus() == hwnd {
                 if let Ok(parent) = GetParent(hwnd) {
-                    let _ = SetFocus(parent);
+                    let _ = SetFocus(Some(parent));
                 }
             }
             let _ = EnableWindow(hwnd, !disabled);
@@ -2654,8 +2654,8 @@ impl WindowsBackend {
             SendMessageW(
                 node.hwnd,
                 BM_SETCHECK,
-                WPARAM(if value { BST_CHECKED as usize } else { 0 }),
-                LPARAM(0),
+                Some(WPARAM(if value { BST_CHECKED as usize } else { 0 })),
+                Some(LPARAM(0)),
             );
         }
     }
@@ -2674,12 +2674,12 @@ impl WindowsBackend {
         unsafe {
             // TBM_SETRANGE takes MAKELONG(min, max) in lParam.
             let range = (SLIDER_RESOLUTION as isize) << 16;
-            SendMessageW(hwnd, TBM_SETRANGE, WPARAM(1), LPARAM(range));
+            SendMessageW(hwnd, TBM_SETRANGE, Some(WPARAM(1)), Some(LPARAM(range)));
             let pos = value_to_slider_pos(initial_value, min, max);
-            SendMessageW(hwnd, TBM_SETPOS, WPARAM(1), LPARAM(pos as isize));
+            SendMessageW(hwnd, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(pos as isize)));
         }
         let action: Rc<dyn Fn()> = Rc::new(move || {
-            let pos = unsafe { SendMessageW(hwnd, TBM_GETPOS, WPARAM(0), LPARAM(0)) }.0 as i32;
+            let pos = unsafe { SendMessageW(hwnd, TBM_GETPOS, Some(WPARAM(0)), Some(LPARAM(0))) }.0 as i32;
             let value = min + (pos as f32 / SLIDER_RESOLUTION as f32) * (max - min);
             on_change(value);
         });
@@ -2744,7 +2744,7 @@ impl WindowsBackend {
         ensure_common_controls();
         let hwnd = self.create_control_hwnd(class_progress(), "", PBS_MARQUEE, None);
         unsafe {
-            SendMessageW(hwnd, PBM_SETMARQUEE, WPARAM(1), LPARAM(30));
+            SendMessageW(hwnd, PBM_SETMARQUEE, Some(WPARAM(1)), Some(LPARAM(30)));
         }
         let node = self.add_node(NodeKind::Control { hwnd });
         self.set_intrinsic(&node, 160, 16);
@@ -3330,7 +3330,7 @@ mod disabled_tests {
         let input = be.create_text_input("ab", None, Rc::new(|_| {}), None, None, false, &Default::default());
         let edit = input.hwnd;
         unsafe {
-            let _ = SetFocus(edit);
+            let _ = SetFocus(Some(edit));
         }
         assert_eq!(unsafe { GetFocus() }, edit, "baseline: the enabled EDIT takes focus");
 
@@ -3377,7 +3377,7 @@ mod disabled_tests {
         for node in [&toggle, &slider] {
             let hwnd = node.hwnd;
             unsafe {
-                let _ = SetFocus(hwnd);
+                let _ = SetFocus(Some(hwnd));
             }
             StyleOps::set_disabled(&mut be, node, true);
             assert!(!unsafe { IsWindowEnabled(hwnd) }.as_bool(), "Win32's own disabled state");
@@ -3460,7 +3460,7 @@ mod dpi_tests {
                 ..Default::default()
             };
             let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bmp = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, None, 0)
+            let bmp = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
                 .expect("DIB section");
             let old = SelectObject(dc, HGDIOBJ(bmp.0));
             b.paint(dc, w, h);
@@ -3487,14 +3487,14 @@ mod dpi_tests {
         unsafe {
             let _ = GetWindowRect(ctl, &mut r);
             let mut pts = [POINT { x: r.left, y: r.top }, POINT { x: r.right, y: r.bottom }];
-            MapWindowPoints(None, host, &mut pts);
+            MapWindowPoints(None, Some(host), &mut pts);
             (pts[0].x, pts[0].y, pts[1].x - pts[0].x, pts[1].y - pts[0].y)
         }
     }
 
     fn control_font_height(ctl: HWND) -> i32 {
         unsafe {
-            let font = SendMessageW(ctl, WM_GETFONT, WPARAM(0), LPARAM(0));
+            let font = SendMessageW(ctl, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0)));
             let mut lf = LOGFONTW::default();
             let n = GetObjectW(
                 HGDIOBJ(font.0 as *mut std::ffi::c_void),
@@ -3544,7 +3544,7 @@ mod dpi_tests {
         let _serial = crate::render_test_lock();
         let host = host_window();
         unsafe {
-            let _ = SetWindowPos(host, HWND_TOPMOST, 0, 0, CLIENT.0, CLIENT.1, SWP_SHOWWINDOW);
+            let _ = SetWindowPos(host, Some(HWND_TOPMOST), 0, 0, CLIENT.0, CLIENT.1, SWP_SHOWWINDOW);
         }
         let mut b = WindowsBackend::new(host);
         let a11y = AccessibilityProps::default();
@@ -3573,7 +3573,7 @@ mod dpi_tests {
         unsafe {
             // Fill the canvas's visual with opaque magenta.
             let mut d3d: Option<ID3D11Device> = None;
-            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d3d), None, None)
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, windows::Win32::Foundation::HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d3d), None, None)
                 .expect("d3d11");
             let d3d = d3d.unwrap();
             let factory: IDXGIFactory2 = d3d.cast::<IDXGIDevice>().unwrap().GetAdapter().unwrap().GetParent().unwrap();
@@ -3599,9 +3599,9 @@ mod dpi_tests {
 
             // Paint the scene (GDI+ draws into the window; the lifted box
             // goes to its overlay visual).
-            let dc = GetDC(host);
+            let dc = GetDC(Some(host));
             b.paint(dc, CLIENT.0, CLIENT.1);
-            ReleaseDC(host, dc);
+            ReleaseDC(Some(host), dc);
 
             let start = std::time::Instant::now();
             let mut msg = MSG::default();
@@ -3611,10 +3611,10 @@ mod dpi_tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(15));
             }
-            let screen = GetDC(HWND(std::ptr::null_mut()));
+            let screen = GetDC(None);
             let on_tip = GetPixel(screen, 100, 70).0 & 0x00FF_FFFF;
             let on_canvas = GetPixel(screen, 300, 200).0 & 0x00FF_FFFF;
-            ReleaseDC(HWND(std::ptr::null_mut()), screen);
+            ReleaseDC(None, screen);
             let _ = DestroyWindow(host);
             const MAGENTA: u32 = 0x00FF_00FF; // COLORREF 0x00BBGGRR
             const RED_REF: u32 = 0x0000_00FF;

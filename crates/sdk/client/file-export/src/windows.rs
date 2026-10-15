@@ -8,7 +8,7 @@
 //! resolves only at runtime on Windows.
 
 use windows::core::HSTRING;
-use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
+use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
     COINIT_APARTMENTTHREADED,
@@ -40,7 +40,7 @@ pub(crate) async fn save(request: SaveRequest) -> Result<SaveOutcome, ExportErro
             .SetFileName(&name)
             .map_err(|e| ExportError::Backend(format!("SetFileName: {e}")))?;
 
-        match dialog.Show(HWND::default()) {
+        match dialog.Show(None) {
             Ok(()) => {
                 let item = dialog
                     .GetResult()

@@ -57,14 +57,14 @@ wasm-bindgen-test = "0.3"
 
 # Windows: the native Save dialog (IFileSaveDialog) via the COM Shell API.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_Storage_FileSystem",
 ] }
-windows-core = "0.58"
+windows-core = "0.62"
 
 # Linux: the desktop portal's FileChooser.SaveFile, the sandbox-friendly path
 # (same portal posture screen-recorder's Linux capture takes). `ashpd` wraps

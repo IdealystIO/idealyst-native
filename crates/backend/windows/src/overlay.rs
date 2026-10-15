@@ -10,6 +10,7 @@
 //! window with nothing lifted never makes one.
 
 use windows::core::{Interface, Result};
+use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT};
 use windows::Win32::Graphics::Direct2D::{
@@ -193,7 +194,7 @@ unsafe fn create_gpu() -> Result<Gpu> {
         created = D3D11CreateDevice(
             None,
             driver,
-            None,
+            HMODULE::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             None,
             D3D11_SDK_VERSION,

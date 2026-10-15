@@ -82,11 +82,11 @@ impl WindowsBackend {
             ..Default::default()
         };
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let dib = CreateDIBSection(self.back.dc, &info, DIB_RGB_COLORS, &mut bits, None, 0)
+        let dib = CreateDIBSection(Some(self.back.dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
             .map_err(|e| format!("CreateDIBSection: {e}"))?;
-        let mem = CreateCompatibleDC(self.back.dc);
+        let mem = CreateCompatibleDC(Some(self.back.dc));
         let old = SelectObject(mem, HGDIOBJ(dib.0));
-        let copied = BitBlt(mem, 0, 0, w, h, self.back.dc, 0, 0, SRCCOPY).is_ok();
+        let copied = BitBlt(mem, 0, 0, w, h, Some(self.back.dc), 0, 0, SRCCOPY).is_ok();
         let _ = GdiFlush();
 
         let result = if !copied || bits.is_null() {

@@ -33,7 +33,7 @@ use crate::pointer_policy as policy;
 const WM_DEVICECHANGE: u32 = 0x0219;
 
 fn read_reduce_motion() -> bool {
-    let mut on = windows::Win32::Foundation::BOOL(1);
+    let mut on = windows::core::BOOL(1);
     let ok = unsafe {
         SystemParametersInfoW(
             SPI_GETCLIENTAREAANIMATION,

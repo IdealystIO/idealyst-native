@@ -233,7 +233,7 @@ impl WindowsBackend {
             n.set(keys::TEXT, Some(NativeValue::Text(text)));
         }
         // The control's font as GDI realized it, in device px → logical.
-        let hfont = HFONT(unsafe { SendMessageW(hwnd, WM_GETFONT, WPARAM(0), LPARAM(0)) }.0 as _);
+        let hfont = HFONT(unsafe { SendMessageW(hwnd, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))) }.0 as _);
         if !hfont.is_invalid() {
             if let Some((face, m)) = unsafe { realized_font(hfont) } {
                 n.set(keys::FONT_FAMILY, Some(NativeValue::Text(face)));
@@ -283,7 +283,7 @@ unsafe fn client_rect_of(hwnd: HWND, host: HWND) -> Option<RECT> {
     let mut r = RECT::default();
     GetWindowRect(hwnd, &mut r).ok()?;
     let mut pts = [POINT { x: r.left, y: r.top }, POINT { x: r.right, y: r.bottom }];
-    MapWindowPoints(None, host, &mut pts);
+    MapWindowPoints(None, Some(host), &mut pts);
     Some(RECT { left: pts[0].x, top: pts[0].y, right: pts[1].x, bottom: pts[1].y })
 }
 

@@ -517,7 +517,7 @@ mod z_order_tests {
     //! local Windows desktop).
     use super::*;
     use windows::core::{Interface, PCWSTR};
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
     use windows::Win32::Graphics::Direct3D11::{
         D3D11CreateDevice, ID3D11Device, ID3D11RenderTargetView, ID3D11Texture2D, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -552,17 +552,17 @@ mod z_order_tests {
                 WINDOW_EX_STYLE(0), PCWSTR(windows::core::w!("STATIC").as_ptr()), PCWSTR(windows::core::w!("z-order").as_ptr()),
                 WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, x, y, w, h, None, None, None, None,
             ).expect("host");
-            let _ = SetWindowPos(host, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
+            let _ = SetWindowPos(host, Some(HWND_TOPMOST), x, y, w, h, SWP_SHOWWINDOW);
             let button = CreateWindowExW(
                 WINDOW_EX_STYLE(0), PCWSTR(windows::core::w!("BUTTON").as_ptr()), PCWSTR(windows::core::w!("OK").as_ptr()),
-                WS_CHILD | WS_VISIBLE, 20, 20, 120, 40, host, None, None, None,
+                WS_CHILD | WS_VISIBLE, 20, 20, 120, 40, Some(host), None, None, None,
             ).expect("button");
 
             // A full-window magenta canvas visual.
             let tree = CompositionTree::new(host).expect("composition tree");
             let pair = tree.add_visual().expect("visual");
             let mut d3d: Option<ID3D11Device> = None;
-            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d3d), None, None).expect("d3d11");
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, windows::Win32::Foundation::HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d3d), None, None).expect("d3d11");
             let d3d = d3d.unwrap();
             let factory: IDXGIFactory2 = d3d.cast::<IDXGIDevice>().unwrap().GetAdapter().unwrap().GetParent().unwrap();
             let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -588,10 +588,10 @@ mod z_order_tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(15));
             }
-            let screen = GetDC(HWND(std::ptr::null_mut()));
+            let screen = GetDC(None);
             let on_button = GetPixel(screen, x + 80, y + 40).0 & 0x00FF_FFFF;
             let on_canvas = GetPixel(screen, x + 260, y + 150).0 & 0x00FF_FFFF;
-            ReleaseDC(HWND(std::ptr::null_mut()), screen);
+            ReleaseDC(None, screen);
             let _ = DestroyWindow(button);
             let _ = DestroyWindow(host);
             let _ = (WPARAM(0), LPARAM(0));

@@ -58,7 +58,7 @@ runtime_kotlin = ["runtime/kotlin/io/idealyst/biometrics/RustBiometricPrompt.kt"
 # APIs alongside the WinRT surface.
 [target.'cfg(target_os = "windows")'.dependencies]
 futures-channel = "0.3"
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Security_Credentials_UI",
     "Foundation",
     "Win32_Foundation",
@@ -66,6 +66,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
+# `IAsyncOperation` — its own crate since windows 0.61.
+windows-future = "0.3"
 
 # web: WebAuthn assertion ceremony via `navigator.credentials.get`, through
 # web-glue bindings (`src/web.rs`).

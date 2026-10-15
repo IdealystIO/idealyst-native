@@ -27,7 +27,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Weak;
 
-use windows::core::{implement, Result as WinResult};
+use windows::core::{implement, Ref, Result as WinResult};
 use windows::Win32::Foundation::{HWND, POINT, POINTL};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
@@ -96,12 +96,12 @@ fn set_effect(effect: *mut DROPEFFECT, accepted: bool) {
 impl IDropTarget_Impl for DropTarget_Impl {
     fn DragEnter(
         &self,
-        data: Option<&IDataObject>,
+        data: Ref<'_, IDataObject>,
         _keys: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> WinResult<()> {
-        self.has_files.set(data.is_some_and(offers_files));
+        self.has_files.set(data.as_ref().is_some_and(offers_files));
         self.moved(pt, effect);
         Ok(())
     }
@@ -120,7 +120,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
 
     fn Drop(
         &self,
-        data: Option<&IDataObject>,
+        data: Ref<'_, IDataObject>,
         _keys: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         effect: *mut DROPEFFECT,
@@ -129,7 +129,7 @@ impl IDropTarget_Impl for DropTarget_Impl {
             set_effect(effect, false);
             return Ok(());
         };
-        let files = data.map(dropped_files).unwrap_or_default();
+        let files = data.as_ref().map(dropped_files).unwrap_or_default();
         let (x, y) = self.client_point(pt);
         let ok = view_input::dropped(&b, x, y, files);
         set_effect(effect, ok);

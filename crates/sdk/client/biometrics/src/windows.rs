@@ -21,7 +21,7 @@
 //! exercisable on a Windows host with an enrolled verifier.
 
 use windows::core::HSTRING;
-use windows::Foundation::IAsyncOperation;
+use windows_future::IAsyncOperation;
 use windows::Security::Credentials::UI::{
     UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
 };
@@ -49,7 +49,7 @@ impl BiometricAuthenticator for WindowsHello {
     fn availability(&self) -> Biometry {
         // `CheckAvailabilityAsync` resolves quickly; block the probe on it
         // (`availability` is a synchronous query).
-        match UserConsentVerifier::CheckAvailabilityAsync().and_then(|op| op.get()) {
+        match UserConsentVerifier::CheckAvailabilityAsync().and_then(|op| op.join()) {
             Ok(avail) if avail == UserConsentVerifierAvailability::Available => Biometry::Unknown,
             _ => Biometry::None,
         }
@@ -57,7 +57,7 @@ impl BiometricAuthenticator for WindowsHello {
 
     fn authenticate(&self, request: AuthRequest) -> AuthFuture {
         let message = request.reason.clone();
-        // The Hello modal is synchronous (`IAsyncOperation::get` blocks
+        // The Hello modal is synchronous (`IAsyncOperation::join` blocks
         // until the user responds) and `IAsyncOperation` doesn't implement
         // `IntoFuture` in this build, so run the whole ceremony on a worker
         // thread and bridge its result back over a oneshot. This keeps the
@@ -94,7 +94,7 @@ fn verify_blocking(message: String) -> Result<Authentication, BioError> {
             .map_err(win_err)?
     };
 
-    let result = operation.get().map_err(win_err)?;
+    let result = operation.join().map_err(win_err)?;
     map_result(result)
 }
 
