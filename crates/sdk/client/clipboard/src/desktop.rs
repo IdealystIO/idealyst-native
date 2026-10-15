@@ -1,10 +1,12 @@
-//! Linux (desktop) clipboard backend — `arboard`.
+//! Desktop (Linux + Windows) clipboard backend — `arboard`.
 //!
-//! `arboard` is a cross-platform desktop clipboard crate; on Linux it
+//! `arboard` is a cross-platform desktop clipboard crate. On Linux it
 //! speaks X11 (via `x11rb`) and Wayland (via the `wlr-data-control`
 //! protocol / GTK clipboard, depending on the compositor), so one backend
-//! covers both display servers. This SDK only needs plain text, which is
-//! `arboard`'s `get_text` / `set_text` surface.
+//! covers both display servers; on Windows it is the Win32 clipboard
+//! (`CF_UNICODETEXT`, through `clipboard-win`, which retries while another
+//! process holds the clipboard open). This SDK only needs plain text,
+//! which is `arboard`'s `get_text` / `set_text` surface.
 //!
 //! `arboard`'s API is synchronous. Clipboard ops are cheap, so — matching
 //! the other native arms in this crate (Apple / Android do their work
@@ -12,7 +14,10 @@
 //! `arboard` directly inside the `async fn` rather than offloading to a
 //! blocking pool. No Tokio/async runtime is assumed to be present.
 //!
-//! # Wayland/X11 ownership caveat
+//! # Wayland/X11 ownership caveat (Linux only)
+//!
+//! Windows keeps the clipboard's contents in the OS after `set_text`
+//! returns; nothing below applies there.
 //!
 //! A clipboard on Linux needs a *live display connection* — an X11 server
 //! or a Wayland compositor. In a headless process (no `DISPLAY` /

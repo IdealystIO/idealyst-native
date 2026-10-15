@@ -60,10 +60,11 @@ objc2-foundation = { version = "0.2", features = ["NSString"] }
 jni = "0.21"
 ndk-context = "0.1"
 
-# Linux (desktop): the cross-platform `arboard` clipboard crate. It speaks
-# X11 and Wayland, so one dependency covers both display servers; we use
-# only its plain-text get_text / set_text surface.
-[target.'cfg(target_os = "linux")'.dependencies]
+# Linux + Windows (desktop): the cross-platform `arboard` clipboard crate.
+# On Linux it speaks X11 and Wayland, on Windows the Win32 clipboard (via
+# `clipboard-win` / `windows-sys`, so no second `windows` crate version);
+# we use only its plain-text get_text / set_text surface.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 arboard = "3"
 
 [features]

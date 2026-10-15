@@ -29,8 +29,9 @@ Failures surface as `ClipboardError`:
 - `Backend(String)` — the platform clipboard API failed (a web
   `clipboard-read` permission denial, a missing window, an Obj-C / JNI
   error). The string carries the platform detail.
-- `NotSupported` — no backend on this target (desktop Windows / other
-  native). Linux has a real backend and reports live failures as `Backend`.
+- `NotSupported` — no backend on this target (a native target that is
+  none of web, Apple, Android, Linux, Windows). The real backends report
+  live failures as `Backend`.
 
 The functions are `async` for a uniform surface: the web backend
 (`navigator.clipboard`) is genuinely Promise-based, while the native
@@ -47,7 +48,8 @@ not in the functions you call.
 | macOS | `NSPasteboard.generalPasteboard` `clearContents` + `setString:forType:` / `stringForType:` with `public.utf8-plain-text` (objc2) — compile-checked only |
 | Android | `ClipboardManager` (`Context.CLIPBOARD_SERVICE`) `setPrimaryClip(ClipData.newPlainText(...))` / `getPrimaryClip().getItemAt(0).coerceToText(context)` via JNI — compile-checked only |
 | Linux (desktop) | `arboard` — plain-text `set_text` / `get_text`; covers X11 and Wayland (`wlr-data-control` / GTK) with one crate — runnable under a desktop session |
-| Windows / other native | `NotSupported` (a desktop clipboard crate for these is out of scope) |
+| Windows | `arboard` — the Win32 clipboard (`CF_UNICODETEXT`); the OS keeps the text after the call returns |
+| Other native | `NotSupported` |
 
 The **web** path is the genuinely-runnable backend. The Apple (iOS / tvOS
 / macOS) and Android backends are **compile-checked only** — not yet
@@ -96,10 +98,8 @@ representations are deliberately left to a later, higher-level SDK rather
 than baked in here. The extension seam is clean: "more representations
 alongside text", not a different shape.
 
-**Linux desktop is in scope** (this reverses an earlier exclusion): copy /
-paste is fundamental on desktop, so Linux gets a real `arboard` backend
-covering X11 and Wayland. The remaining desktop targets (Windows / other
-native) are still out of scope and return `NotSupported`.
+**Desktop is in scope**: copy / paste is fundamental there, so Linux
+(X11 and Wayland) and Windows share one `arboard` backend.
 
 ## Testing checklist
 
@@ -117,4 +117,5 @@ verification note above). Tick each item as you exercise it.
 - [ ] **iOS** — copy in-app, paste into Notes/another app — matches; `text()` reads back what another app copied.
 - [ ] **Android** — copy in-app, paste into another app — matches; `text()` round-trips (empty clipboard → `None`).
 - [ ] **macOS** — copy in-app, ⌘V into TextEdit — matches; a second `set_text` after `clearContents` overwrites (not a no-op).
+- [x] **Windows** — `regression_windows_clipboard_round_trips_text` (`tests/portable.rs`) round-trips text (including non-ASCII) and reads an empty clipboard as `None`, on a real Windows 11 VM.
 - [ ] **Linux** — under a desktop session, `cargo test -p clipboard --test portable -- --ignored` (the `linux_round_trip` test); or copy in-app and Ctrl-V into another app — matches. Headless (no `DISPLAY`/`WAYLAND_DISPLAY`) surfaces as `Backend`.

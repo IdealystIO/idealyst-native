@@ -33,7 +33,7 @@ fn error_display_and_eq() {
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 #[tokio::test]
 async fn unsupported_host_reports_not_supported() {
@@ -92,4 +92,22 @@ async fn linux_round_trip() {
     clipboard::set_text(sample).await.expect("set_text should succeed under a desktop session");
     let read_back = clipboard::text().await.expect("text should succeed under a desktop session");
     assert_eq!(read_back, Some(sample.to_string()));
+}
+
+// --- Windows: real `arboard` backend ------------------------------------
+//
+// Windows owns clipboard contents in the OS (no selection owner to keep
+// alive), so a genuine round-trip runs anywhere there is a desktop — the
+// Windows VM through `scripts/windows-vm-runner.sh`. It failed against the
+// old cfg cascade, which routed Windows to the `NotSupported` stub.
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[tokio::test]
+async fn regression_windows_clipboard_round_trips_text() {
+    let sample = "idealyst clipboard ✓ round-trip";
+    clipboard::set_text(sample).await.expect("set_text on Windows");
+    assert_eq!(clipboard::text().await, Ok(Some(sample.to_string())));
+    // An empty clipboard string reads back as "no text", as on every backend.
+    clipboard::set_text("").await.expect("set_text on Windows");
+    assert_eq!(clipboard::text().await, Ok(None));
 }

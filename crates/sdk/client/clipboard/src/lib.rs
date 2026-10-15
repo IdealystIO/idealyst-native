@@ -43,10 +43,10 @@
 // Compile-checked usage recipes (catalog feature only).
 pub mod recipes;
 
-// Platform-native backends. Exactly one of `web`/`apple`/`android`/`linux`
-// is compiled per target; every remaining native target (Windows, other
-// desktops, …) falls back to the `NotSupported`-returning `unsupported`
-// module.
+// Platform-native backends. Exactly one of `web`/`apple`/`android`/`desktop`
+// is compiled per target (`desktop` = arboard, for Linux and Windows);
+// every remaining native target falls back to the `NotSupported`-returning
+// `unsupported` module.
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(all(
@@ -56,13 +56,13 @@ mod web;
 mod apple;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 mod android;
-#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
-mod linux;
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", target_os = "windows")))]
+mod desktop;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 mod unsupported;
 
@@ -76,13 +76,13 @@ use web as backend;
 use apple as backend;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]
 use android as backend;
-#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
-use linux as backend;
+#[cfg(all(not(target_arch = "wasm32"), any(target_os = "linux", target_os = "windows")))]
+use desktop as backend;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 use unsupported as backend;
 
@@ -93,10 +93,10 @@ pub enum ClipboardError {
     /// `readText` permission denial, a missing window, or an Obj-C / JNI
     /// error. The string carries the platform's detail for logging.
     Backend(String),
-    /// The clipboard isn't available on this platform. Returned by the
-    /// desktop (Windows / other native) fallback, which has no in-scope
-    /// backend. Linux has a real backend (`arboard`) and reports live
-    /// failures as [`Backend`](ClipboardError::Backend) instead.
+    /// The clipboard isn't available on this platform. Returned only on a
+    /// native target with no backend (none of web, Apple, Android, Linux,
+    /// Windows). The real backends report live failures as
+    /// [`Backend`](ClipboardError::Backend) instead.
     NotSupported,
 }
 
@@ -121,8 +121,7 @@ impl std::error::Error for ClipboardError {}
 /// # Errors
 ///
 /// Returns [`ClipboardError::Backend`] if the platform clipboard API
-/// fails, or [`ClipboardError::NotSupported`] on a target with no backend
-/// (desktop Windows / other native).
+/// fails, or [`ClipboardError::NotSupported`] on a target with no backend.
 pub async fn set_text(text: &str) -> Result<(), ClipboardError> {
     backend::set_text(text).await
 }
@@ -138,7 +137,7 @@ pub async fn set_text(text: &str) -> Result<(), ClipboardError> {
 /// Returns [`ClipboardError::Backend`] if the platform clipboard API fails
 /// — on **web** this includes a `clipboard-read` permission denial or a
 /// call made without a user gesture — or [`ClipboardError::NotSupported`]
-/// on a target with no backend (desktop Windows / other native).
+/// on a target with no backend.
 pub async fn text() -> Result<Option<String>, ClipboardError> {
     backend::text().await
 }

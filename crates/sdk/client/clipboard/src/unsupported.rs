@@ -1,10 +1,6 @@
-//! Fallback backend for native targets without an in-scope clipboard
-//! implementation (Windows, Linux, other non-Apple/Android desktops).
-//!
-//! A cross-platform desktop clipboard (X11/Wayland/Win32) is deliberately
-//! out of scope for this SDK — it would pull in a heavyweight platform
-//! crate for a surface the framework's primary targets (web / iOS / macOS
-//! / Android) already cover. Both ops return
+//! Fallback backend for native targets with no clipboard implementation
+//! (anything that is not web, Apple, Android, Linux or Windows). Both ops
+//! return
 //! [`ClipboardError::NotSupported`] so callers can branch honestly rather
 //! than silently no-op'ing.
 
