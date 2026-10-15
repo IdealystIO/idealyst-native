@@ -45,7 +45,10 @@ participant; sources and targets that share a context can interact.
 - `Activation` — `Immediate { slop_px }` or `LongPress { threshold_ms, slop_px }`,
   with `Activation::immediate()`, `Activation::long_press()`, and
   `Activation::platform_default()` (long-press on phones/tablets, immediate
-  elsewhere — reads `runtime_core::platform()`).
+  elsewhere — reads `runtime_core::platform()`). A long press commits when
+  its timer fires, or when a `Moved` (still within slop) is stamped past
+  the hold, whichever comes first. The second path is what lets the robot's
+  `drag` with `hold_ms` pick up an item without real time passing.
 - `DragRecognizer` — the underlying gesture FSM, exposed for arbitration; plus
   `DragPhase`, `DragSample`, and the `DEFAULT_DRAG_*` / `SNAP_BACK_*` constants.
 

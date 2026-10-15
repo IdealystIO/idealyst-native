@@ -735,6 +735,199 @@ fn directional_hold_commits_regardless_of_direction() {
 }
 
 // ---------------------------------------------------------------------------
+// On-stream hold — a long-press commits when the touch events' own clock
+// says the hold elapsed, even if the timer has not run (busy loop, or the
+// robot's synchronous `drag(.., hold_ms)`). No `advance_ms` in these tests:
+// the timer never fires, exactly as under the robot.
+// ---------------------------------------------------------------------------
+
+const HOLD_NS: u64 = crate::DEFAULT_DRAG_LONG_PRESS_MS * 1_000_000;
+
+/// Regression: the robot could not drag-reorder on iOS/Android. Its `drag`
+/// delivers the whole gesture in one synchronous call, so the long-press
+/// timer (the mobile default) never fired and the drag never began. A
+/// stationary `Moved` stamped past the hold must commit on its own.
+#[test]
+fn regression_long_press_drag_commits_when_events_carry_the_hold() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let phases: Rc<RefCell<Vec<DragPhase>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = phases.clone();
+    let h = DragRecognizer::new(Activation::long_press(), move |p| sink.borrow_mut().push(p))
+        .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
+    let r = h(&ev(TouchPhase::Moved, 1, 10.0, 10.0, HOLD_NS));
+    assert!(r.consumed && r.claim, "the held press commits and claims the touch");
+    assert!(
+        matches!(phases.borrow().first(), Some(DragPhase::Began(s)) if s.delta == TouchPoint::ZERO),
+        "the drag begins at the hold point: {:?}",
+        phases.borrow()
+    );
+    h(&ev(TouchPhase::Moved, 1, 40.0, 10.0, HOLD_NS + 16_000_000));
+    h(&ev(TouchPhase::Ended, 1, 40.0, 10.0, HOLD_NS + 32_000_000));
+    let phases = phases.borrow();
+    assert!(
+        matches!(phases[phases.len() - 2], DragPhase::Moved(s) if s.delta == TouchPoint::new(30.0, 0.0)),
+        "moves after the pickup track from the hold point: {phases:?}"
+    );
+    assert!(matches!(phases.last(), Some(DragPhase::Ended { .. })), "{phases:?}");
+}
+
+#[test]
+fn hold_short_of_the_threshold_does_not_commit_on_stream() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let committed = Rc::new(Cell::new(false));
+    let sink = committed.clone();
+    let h = DragRecognizer::new(Activation::long_press(), move |p| {
+        if matches!(p, DragPhase::Began(_)) {
+            sink.set(true);
+        }
+    })
+    .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 1_000));
+    let r = h(&ev(TouchPhase::Moved, 1, 10.0, 10.0, 1_000 + HOLD_NS - 1));
+    assert!(!committed.get(), "one nanosecond short of the hold is not a hold");
+    assert!(r.consumed && !r.claim);
+    h(&ev(TouchPhase::Ended, 1, 10.0, 10.0, 1_000 + HOLD_NS));
+    assert!(!committed.get(), "a release is never a pickup");
+}
+
+/// The on-stream commit stands in for the timer, so the timer must not
+/// commit a second time when it finally runs.
+#[test]
+fn on_stream_hold_commit_cancels_the_timer() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let began = Rc::new(Cell::new(0u32));
+    let sink = began.clone();
+    let h = DragRecognizer::new(Activation::long_press(), move |p| {
+        if matches!(p, DragPhase::Began(_)) {
+            sink.set(sink.get() + 1);
+        }
+    })
+    .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 10.0, 10.0, 0));
+    h(&ev(TouchPhase::Moved, 1, 10.0, 10.0, HOLD_NS));
+    advance_ms(crate::DEFAULT_DRAG_LONG_PRESS_MS);
+    assert_eq!(began.get(), 1, "one pickup, not one per path");
+    h(&ev(TouchPhase::Ended, 1, 10.0, 10.0, HOLD_NS + 16_000_000));
+}
+
+/// Directional activation: after a hold, along-axis motion is a drag (the
+/// cross-column case) — on the event clock exactly as on the timer
+/// (`directional_hold_commits_regardless_of_direction`).
+#[test]
+fn directional_hold_on_stream_then_along_axis_drags() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    let phases: Rc<RefCell<Vec<DragPhase>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = phases.clone();
+    let h = DragRecognizer::new(directional_horizontal(), move |p| sink.borrow_mut().push(p))
+        .into_handler();
+
+    h(&ev(TouchPhase::Began, 1, 50.0, 50.0, 0));
+    h(&ev(TouchPhase::Moved, 1, 50.0, 50.0, HOLD_NS));
+    let r = h(&ev(TouchPhase::Moved, 1, 90.0, 50.0, HOLD_NS + 16_000_000));
+    assert!(r.claim, "the held drag keeps the touch along the scroll axis");
+    h(&ev(TouchPhase::Ended, 1, 90.0, 50.0, HOLD_NS + 32_000_000));
+    assert!(
+        matches!(phases.borrow().last(), Some(DragPhase::Ended { .. })),
+        "{:?}",
+        phases.borrow()
+    );
+}
+
+/// End to end on the mobile default: a long-press `Draggable` lands its
+/// payload with no timer ever firing — the gesture the robot sends.
+#[test]
+fn long_press_draggable_lands_payload_on_the_event_clock() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    world(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let dropped: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let drop_sink = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 100.0, 100.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| drop_sink.borrow_mut().push(p))),
+        );
+        let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        let out_sink = outcomes.clone();
+        let drag = Draggable::new(&ctx, || 7u64)
+            .activation(Activation::long_press())
+            .on_release(move |o| out_sink.borrow_mut().push(o));
+        let h = drag.handler();
+
+        h(&ev(TouchPhase::Began, 1, 10.0, 50.0, 0));
+        h(&ev(TouchPhase::Moved, 1, 10.0, 50.0, HOLD_NS));
+        h(&ev(TouchPhase::Moved, 1, 150.0, 50.0, HOLD_NS + 16_000_000));
+        h(&ev(TouchPhase::Ended, 1, 150.0, 50.0, HOLD_NS + 32_000_000));
+
+        assert_eq!(*dropped.borrow(), vec![7], "payload delivered to the zone");
+        assert_eq!(*outcomes.borrow(), vec![DropOutcome::Landed]);
+    });
+}
+
+/// Regression, end to end: the robot could not drag-and-drop on iOS/Android.
+/// A `Draggable` on the mobile long-press activation, mounted on a real view
+/// through the recording host, driven by `Robot::drag_with_hold` — no timer
+/// ever fires (the test scheduler holds them), exactly as under the robot's
+/// synchronous call. Without `hold_ms` the same gesture is not a pickup.
+#[test]
+fn regression_robot_drag_with_hold_reorders_on_mobile_activation() {
+    use runtime_vocabulary::builders::view;
+    use runtime_vocabulary::robot::{Query, Robot};
+    install_test_scheduler_once();
+    reset_test_clock();
+    let robot = Robot::new();
+    robot.reset();
+    let h = host_mock::Harness::new();
+    let dropped: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let outcomes: Rc<RefCell<Vec<DropOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+    let tree = h.world.enter(|| {
+        let ctx: DragContext<u64> = DragContext::new();
+        let drop_sink = dropped.clone();
+        register_zone(
+            &ctx,
+            rect(100.0, 0.0, 100.0, 100.0),
+            signal(false),
+            Rc::new(|_| true),
+            None,
+            None,
+            Some(Rc::new(move |p| drop_sink.borrow_mut().push(p))),
+        );
+        let out_sink = outcomes.clone();
+        let drag = Draggable::new(&ctx, || 42u64)
+            .activation(Activation::long_press())
+            .on_release(move |o| out_sink.borrow_mut().push(o));
+        view().test_id("card").on_touch(drag.handler()).build()
+    });
+    let _realized = h.mount(tree);
+    h.flush();
+    let card = robot.find(Query::test_id("card")).expect("card registered");
+
+    // No hold: the path is a scroll, not a pickup — what the robot did before.
+    robot.drag(&card, &[(10.0, 50.0), (150.0, 50.0)]).expect("drag delivered");
+    assert!(dropped.borrow().is_empty(), "an unheld long-press drag never picks up");
+
+    robot
+        .drag_with_hold(&card, &[(10.0, 50.0), (150.0, 50.0)], crate::DEFAULT_DRAG_LONG_PRESS_MS)
+        .expect("held drag delivered");
+    assert_eq!(*dropped.borrow(), vec![42], "the held drag lands on the zone");
+    assert_eq!(outcomes.borrow().last(), Some(&DropOutcome::Landed));
+    robot.reset();
+}
+
+// ---------------------------------------------------------------------------
 // `drag_layer` — what is actually mounted per drag phase.
 //
 // Realized against `host-mock` (the recording host): the layer's branch is the

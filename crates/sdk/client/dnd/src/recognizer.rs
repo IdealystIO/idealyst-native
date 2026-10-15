@@ -239,6 +239,9 @@ enum State {
     /// for `LongPress` the `timer` is armed and we watch slop to abandon.
     Tracking {
         id: TouchId,
+        /// `Began`'s event timestamp — the hold clock for the on-stream
+        /// long-press check (see `hold_elapsed_on_stream`).
+        began_ts_ns: u64,
         /// View-local landing position (slop reference + base for delta).
         start: TouchPoint,
         /// Most recent positions, so a long-press that commits off the touch
@@ -471,6 +474,7 @@ impl Recognizer for DragRecognizer {
             (TouchPhase::Began, State::Idle) => {
                 *self.state.borrow_mut() = State::Tracking {
                     id: ev.id,
+                    began_ts_ns: ev.timestamp_ns,
                     start: ev.position,
                     last_view: ev.position,
                     last_window: ev.window_position,
@@ -493,7 +497,31 @@ impl Recognizer for DragRecognizer {
             (TouchPhase::Began, _) => (self.state(), TouchResponse::IGNORED),
 
             // ---- Moved -------------------------------------------------
-            (TouchPhase::Moved, State::Tracking { id, start, .. }) if id == ev.id => {
+            // The hold elapsed by the event clock before the timer fired:
+            // commit here exactly as the timer would have (see
+            // `hold_elapsed_on_stream`), then apply this move to the drag.
+            (TouchPhase::Moved, State::Tracking {
+                id,
+                began_ts_ns,
+                last_view,
+                last_window,
+                ..
+            }) if id == ev.id
+                && ctx.may_recognize
+                && hold_elapsed_on_stream(activation, began_ts_ns, ev.timestamp_ns) =>
+            {
+                self.cancel_timer();
+                let held_until = began_ts_ns
+                    + activation.long_press_ms().unwrap_or(0) * 1_000_000;
+                // Begins where the finger was held (start == view), like the
+                // off-stream commit in `poll_async`.
+                self.commit(id, last_view, last_view, last_window, held_until);
+                if ev.position != last_view {
+                    self.update(ev, ctx);
+                }
+                (G::Began, TouchResponse::CLAIMED)
+            }
+            (TouchPhase::Moved, State::Tracking { id, began_ts_ns, start, .. }) if id == ev.id => {
                 let dx = ev.position.x - start.x;
                 let dy = ev.position.y - start.y;
                 let dist2 = dx * dx + dy * dy;
@@ -502,6 +530,7 @@ impl Recognizer for DragRecognizer {
                 // (long-press) begins where the finger actually is.
                 *self.state.borrow_mut() = State::Tracking {
                     id,
+                    began_ts_ns,
                     start,
                     last_view: ev.position,
                     last_window: ev.window_position,
@@ -679,6 +708,29 @@ impl Recognizer for DragRecognizer {
         }
         RecognizerUpdate::new(state, response)
     }
+}
+
+/// Whether a long-press `activation`'s hold has elapsed by the TOUCH
+/// EVENTS' own clock: `now_ts_ns` is at least the threshold past `Began`.
+///
+/// The timer in `arm_timer` is the primary path — a finger held still
+/// sends no events, so only a timer notices the hold. This is the second
+/// path, checked on each `Moved` while still tracking (so the finger is
+/// still within slop): if the event says the hold already elapsed, the
+/// timer was due and simply has not run yet. Two cases reach it:
+///
+/// - a busy event loop that delivers the move before the timer callback;
+/// - a synthetic gesture delivered without yielding to the event loop —
+///   the robot's `drag(.., hold_ms)` sends a stationary `Moved` stamped
+///   `hold_ms` after `Began`. No real time passes there, so the timer can
+///   never fire and this is the only way a long-press drag can start.
+///
+/// Every backend stamps touch events from a monotonic clock; synthesized
+/// events stamped `0` saturate to "no time passed" and never commit early.
+fn hold_elapsed_on_stream(activation: Activation, began_ts_ns: u64, now_ts_ns: u64) -> bool {
+    activation
+        .long_press_ms()
+        .is_some_and(|ms| now_ts_ns.saturating_sub(began_ts_ns) >= ms * 1_000_000)
 }
 
 impl DragRecognizer {

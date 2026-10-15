@@ -64,3 +64,6 @@ runtime-vocabulary = { workspace = true }
 # `drag_layer`'s mount test (`src/tests.rs`) realizes the layer against a
 # recording host to pin what is actually on screen per drag phase.
 host-mock = { path = "../../../dev/host-mock" }
+# The robot's `drag_with_hold` driving a long-press `Draggable` end to end
+# (`src/tests.rs`, `regression_robot_drag_with_hold_reorders_on_mobile_activation`).
+runtime-vocabulary = { workspace = true, features = ["robot"] }
