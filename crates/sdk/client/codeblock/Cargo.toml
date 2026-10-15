@@ -129,6 +129,13 @@ objc2-app-kit = { version = "0.2", features = [
 # break-point parity that the host-mock op log can only name. Run with
 # `cargo test -p codeblock --target wasm32-unknown-unknown` (the workspace
 # runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+# `robot`: the regression test reads the block's painted frame through
+# `IntrospectionOps::introspect_native` (`tests/windows_single_node.rs`).
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+backend-windows = { workspace = true, features = ["robot"] }
+runtime-vocabulary = { workspace = true }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 backend-web = { workspace = true }
 web-glue = { workspace = true }

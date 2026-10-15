@@ -113,6 +113,8 @@ mod ios;
 mod macos;
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod linux;
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod windows;
 
 /// Payload for a code block. Single-take style slot (the vocabulary
 /// `PrimCell` discipline, inlined): the scene hands the handler a
@@ -242,6 +244,20 @@ fn mount_code_block_linux(
     node
 }
 
+/// Windows single-node handler — `Registry<WindowsBackend>`-concrete. One
+/// painted colored-runs leaf in an author-styled view (see `windows.rs`).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+fn mount_code_block_windows(
+    cx: &mut MountCx<'_, backend_windows::WindowsBackend>,
+    prim: &Rc<CodeBlockPrim>,
+    _children: Vec<Element>,
+) -> backend_windows::WindowsNode {
+    let backend = cx.backend().clone();
+    let node = windows::build(&prim.spans, &mut backend.borrow_mut());
+    attach_author_style(&backend, &node, prim);
+    node
+}
+
 /// iOS single-node handler — `Registry<IosBackend>`-concrete.
 #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
 fn mount_code_block_ios(
@@ -275,7 +291,7 @@ fn mount_code_block_android(
 /// `run_with` — against any caps-complete host.
 ///
 /// The platform dispatch happens ONCE here, by registry type: on macOS
-/// / iOS / Android the concrete native registry gets the single-node
+/// / Linux / Windows / iOS / Android the concrete native registry gets the single-node
 /// handler, and anything else (including SSR + SSG builds that run on
 /// those same host OSes) gets the portable `<pre>`/span handler. A cfg
 /// split alone could not express that — `target_os = "macos"` is true
@@ -305,6 +321,18 @@ where
         }
     }
 
+    // Without this arm Windows fell through to the portable `<pre>`/span
+    // handler: one text node per token inside a view, and native views are
+    // flex columns — so every token of a docs code panel stacked on its own
+    // line, in the proportional UI font.
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn std::any::Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<CodeBlockPrim, _>(mount_code_block_windows);
+            return;
+        }
+    }
     #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
     {
         let any: &mut dyn std::any::Any = registry;
