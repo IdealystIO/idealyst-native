@@ -33,6 +33,32 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   the whole path is sent in one call. A long-press pickup (the dnd SDK's
   default on iOS/Android) therefore never activates. *Migration:* none.
 
+- **Windows stack on windows-rs 0.62** (`backend-windows` major, and the
+  crates that build on it). `backend-windows` takes and returns
+  `windows::Win32::Foundation::HWND` in its public API
+  (`WindowsBackend::new`, `hwnd`, `host_hwnd`, `register_external_view`),
+  and that type changed with the 0.58 → 0.62 move. *Migration:* a crate that
+  passes HWNDs to or from `backend-windows` moves to `windows = "0.62"` too.
+
+- **`gpu-surface` 2.0: `Requirements::hardware`, `Unsupported::Software`,
+  `AdapterFacts::device_type`** (`gpu-surface`, `canvas-vello`). vello now
+  steps aside on a software adapter: the WARP shipped with Windows 11
+  crashed in vello's pipeline and took the app down on a GPU-less machine.
+  `canvas-native` (Direct2D) keeps the canvas there; `canvas3d`
+  (`Requirements::NONE`) still runs on WARP. The structs and enum are
+  exhaustive, so the new field and variant are breaking. *Migration:* code
+  that builds `Requirements` / `AdapterFacts` as a struct literal adds the
+  field (or uses `..Default::default()` / `Requirements::NONE`); a `match` on
+  `Unsupported` handles `Software`.
+
+- **`build_runtime_server::BuildOptions::app_features`** (`build-runtime-server`
+  major, `idealyst-cli`). `idealyst dev --features a,b` turns on the app's own
+  features in every mode — native wrappers, the `--local` web bundle, and the
+  runtime-server sidecar's dependency on the app (it carried only `sidecar`,
+  so `--features vello` did nothing there). `BuildOptions` has no `Default`,
+  so the new field breaks struct literals. *Migration:* set `app_features`
+  (empty for none).
+
 - **A plain `Table` rounds its corners on web** (`table`, `idea-ui`). A
   table without `scroll_x` or a slot took its style on the `<table>`
   itself, whose `border-collapse: collapse` makes browsers ignore
@@ -452,6 +478,33 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `place_textures`; build a `CanvasPrim` for `build_canvas`.
 
 ### Added
+
+- **Windows backend** (`backend-windows`, `host-win32`, `gpu-surface`): a
+  Direct2D/DirectWrite scene renderer on a DirectComposition swapchain
+  (opt-in, `IDEALYST_WINDOWS_RENDERER=d2d`); painted views get `on_touch`,
+  `on_wheel` and `on_hover` with mouse capture for drags; OS file
+  drag-and-drop; `ViewHandle::rect` / `on_layout`; reactive regions are
+  `display: contents`; graphics surfaces and painted overlays stack in tree
+  order. The host coalesces scheduler wakes behind queued input (the window
+  went Not Responding behind slow frames).
+- **Windows SDK backends**: `canvas-native` draws with Direct2D (every canvas
+  and chart drew nothing); `codeblock` mounts one painted colored-runs leaf;
+  `svg` renders through the backend's SVG image path; `clipboard` via
+  `arboard` (shared with Linux); `connectivity` via WinRT
+  `NetworkInformation`.
+- **Run Windows apps off Windows** (`run-windows`, `build-windows`,
+  `idealyst-cli`): `idealyst run/dev --windows` cross-compiles and runs under
+  Wine (`IDEALYST_WINE`) or on a real Windows machine over SSH
+  (`IDEALYST_WINDOWS_REMOTE`), tunnelling the robot bridge back. Wine apps
+  register in `~/.idealyst/apps-wine`; `idealyst test`, `#[robot_test]`, the
+  MCP server's `list_apps` and `idealyst inspect` all search it, checking
+  liveness by port (a Wine pid means nothing on the host). See
+  `docs/windows.md`.
+- **Robot `screenshot` on local-mount iOS, Linux and macOS apps** (only the
+  dev-server sidecar answered it); `native-parity` pairs anonymous views by
+  content rather than position; `zone-offset` falls back to the per-year
+  rule where `SystemTimeToTzSpecificLocalTimeEx` is missing (Wine).
+
 
 - **`text_input` `keyboard` hint** (`runtime-vocabulary`, every mobile and
   HTML backend, `idea-ui`). `keyboard = KeyboardKind::Email` (or `Phone`,

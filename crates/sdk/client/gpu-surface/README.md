@@ -62,11 +62,15 @@ flipped vertically.
 
 ## Capability gates, not platform checks
 
-`Requirements` names what a pipeline needs (`downlevel` flags, and f16 on
-Vulkan). `adapter_meets_default` is the gate a renderer checks when it
-registers. vello needs `INDIRECT_EXECUTION` and Vulkan f16, so it steps aside
-on the iOS Simulator and the Android emulator. A plain raster pipeline asks for
-`Requirements::NONE` and runs on both.
+`Requirements` names what a pipeline needs (`downlevel` flags, f16 on Vulkan,
+and `hardware` — refuse a software adapter). `adapter_meets_default` is the
+gate a renderer checks when it registers; `AdapterFacts` carries the adapter's
+device type for it. vello needs `INDIRECT_EXECUTION` and Vulkan f16, so it
+steps aside on the iOS Simulator and the Android emulator, and it sets
+`hardware`, so it steps aside on a software rasterizer (`Unsupported::Software`
+— the WARP that ships with Windows 11 crashes in vello's pipeline, and a CPU
+2D painter beats vello-on-CPU anyway). A plain raster pipeline asks for
+`Requirements::NONE` and runs on all of these, WARP included.
 
 ## Testing
 

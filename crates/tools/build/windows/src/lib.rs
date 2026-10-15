@@ -500,14 +500,6 @@ mod tests {
         assert_eq!(binary_dir(t, None, true), PathBuf::from("/w/target/release"));
     }
 
-    /// Windows wrappers must NOT build into the bare shared `target/`:
-    /// on a cross-OS shared checkout another OS's builds of the same
-    /// crates replace the rlibs / fingerprints in place and the next
-    /// Windows link fails with E0461 ("couldn't find crate `website`
-    /// with expected target triple x86_64-pc-windows-msvc") — or worse,
-    /// silently reuses stale artifacts. See `windows_target_dir`: the dir
-    /// is under the `windows` wrapper, which only the Windows builder
-    /// generates.
     /// The wrapper registered `project_root: None`, so project-scoped
     /// discovery (`discover_all(Some(dir), …)` in the parity runner) skipped
     /// the Windows app and `--parity web,windows` waited out its 300 s timeout
@@ -556,6 +548,14 @@ mod tests {
         assert!(native.get("target").is_none());
     }
 
+    /// Windows wrappers must NOT build into the bare shared `target/`:
+    /// on a cross-OS shared checkout another OS's builds of the same
+    /// crates replace the rlibs / fingerprints in place and the next
+    /// Windows link fails with E0461 ("couldn't find crate `website`
+    /// with expected target triple x86_64-pc-windows-msvc") — or worse,
+    /// silently reuses stale artifacts. See `windows_target_dir`: the dir
+    /// is under the `windows` wrapper, which only the Windows builder
+    /// generates.
     #[test]
     fn regression_cross_os_shared_target_gets_win32_bucket() {
         let wrapper = PathBuf::from("Z:/proj/target/idealyst/demo/windows");

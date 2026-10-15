@@ -926,11 +926,6 @@ mod regression_tests {
         );
     }
 
-    /// The sidecar boots through `dev_server::sidecar::run_newcore` with
-    /// the `register_scene_extensions_recorder` seam, enables
-    /// dev-server's scene feature, and takes a plain
-    /// `features = ["sidecar"]` dep on the user crate (no core pin —
-    /// there is one core).
     /// `idealyst dev --features vello` did nothing in runtime-server mode:
     /// the app's code runs in the sidecar, whose dependency on the app
     /// carried only `sidecar`. The asked-for features ride on that
@@ -944,6 +939,11 @@ mod regression_tests {
         assert_eq!(dep_features(deps, "demo"), vec!["sidecar".to_string(), "vello".to_string()], "{cargo_toml}");
     }
 
+    /// The sidecar boots through `dev_server::sidecar::run_newcore` with
+    /// the `register_scene_extensions_recorder` seam, enables
+    /// dev-server's scene feature, and takes a plain
+    /// `features = ["sidecar"]` dep on the user crate (no core pin —
+    /// there is one core).
     #[test]
     fn sidecar_wrapper_boots_run_newcore_with_recorder_seam() {
         let (sidecar_dir, _host_dir, _tmp) = generate_both();

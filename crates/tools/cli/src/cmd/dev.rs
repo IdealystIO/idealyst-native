@@ -1422,14 +1422,6 @@ fn hot_patch_armed(args: &Args) -> bool {
     args.local && !args.split
 }
 
-/// Cargo features for a `--local` web dev bundle.
-///
-/// `hot_patch` adds the tier's EMISSION half: `#[component]` splits each
-/// body into a `__<Name>_hot_impl` reached through an indirect call a
-/// jump table can redirect, and the page gets the applier that redirects
-/// it. Spelled as one framework feature for the same reason
-/// `ui-overlay` is — the app depends on the `idealyst` facade, and
-/// naming a package it does not depend on is a hard cargo error.
 /// Features of a `--local` web bundle: the dev set plus the app's own
 /// `--features`. The web build compiles the app crate itself, so app
 /// features are passed by their plain names.
@@ -1439,6 +1431,14 @@ fn local_web_features(args: &Args) -> Vec<String> {
     f
 }
 
+/// Cargo features for a `--local` web dev bundle.
+///
+/// `hot_patch` adds the tier's EMISSION half: `#[component]` splits each
+/// body into a `__<Name>_hot_impl` reached through an indirect call a
+/// jump table can redirect, and the page gets the applier that redirects
+/// it. Spelled as one framework feature for the same reason
+/// `ui-overlay` is — the app depends on the `idealyst` facade, and
+/// naming a package it does not depend on is a hard cargo error.
 fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<String> {
     let mut f = web_dev_features(no_robot);
     if hot_patch {
@@ -4863,8 +4863,6 @@ mod tests {
         assert!(opts.head_script.is_none(), "{:?}", opts.head_script);
     }
 
-    /// `--local` is the escape hatch and must be untouched: the full
-    /// dev feature set, the reload script, no sidecar URL.
     /// `idealyst dev` had no `--features`, so an app's own feature (the
     /// charts demo's `vello`) could not be turned on for a dev run —
     /// though the demo's manifest said `idealyst dev --features vello`.
@@ -4888,6 +4886,8 @@ mod tests {
         assert!(app_feature_specs("app", &none.features).is_empty());
     }
 
+    /// `--local` is the escape hatch and must be untouched: the full
+    /// dev feature set, the reload script, no sidecar URL.
     #[test]
     fn a_full_stack_local_bundle_is_unchanged_by_wire_mode() {
         let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);

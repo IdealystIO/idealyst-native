@@ -37,6 +37,7 @@ Every backend renders **one** native node per `code_block(...)` call:
 | Android | A `RustCodeBlock` (HorizontalScrollView + TextView) with a `SpannableString` carrying one `ForegroundColorSpan` per run. One TextView regardless of token count. |
 | iOS | A horizontal `UIScrollView` wrapping an inset-honoring label whose `attributedText` is an `NSAttributedString` with per-run `NSForegroundColorAttributeName` ranges. One label per block. |
 | macOS | A horizontal `NSScrollView` wrapping an `NSTextField` label with per-run `NSColor` ranges. Same shape as iOS. |
+| Windows | One painted colored-runs leaf (`WindowsBackend::create_colored_code_leaf`) inside an author-styled view. |
 | web / SSR / terminal / gpu | The portable handler: one `create_element("pre")` with one colored `create_text` child per run. Backends with no tag concept get a plain view, so the panel still renders — only the one-node-per-block optimization is absent. |
 
 `.with_style(...)` lands on the outer native node (the `<pre>` /

@@ -157,7 +157,7 @@ Pick **one** at the boot entry's registry seam (the scene registry is
 
 | Crate | Engine | Where it runs |
 | ----- | ------ | ------------- |
-| [`canvas-native`](native/) | each platform's native 2D API — web Canvas2D, iOS/macOS CoreGraphics, Android `android.graphics`, Linux Cairo | everywhere with a native 2D API |
+| [`canvas-native`](native/) | each platform's native 2D API — web Canvas2D, iOS/macOS CoreGraphics, Android `android.graphics`, Linux Cairo, Windows Direct2D (on a DirectComposition swapchain; WARP with no GPU) | everywhere with a native 2D API |
 | [`canvas-vello`](vello/) | GPU compute 2D via [`vello`](https://github.com/linebender/vello) on `wgpu` (Metal / Vulkan / DX12) | every native backend with a capable GPU |
 
 `canvas-vello` gets its surface setup, frame target and present step from
@@ -204,6 +204,7 @@ How recording captures frames depends on which renderer is active:
 | iOS **device** | vello (GPU) | GPU→CPU read-back | good |
 | Android **device** | vello (GPU) | GPU→CPU read-back | good |
 | desktop Linux/Windows | vello (GPU) | GPU→CPU read-back | good |
+| Windows with no GPU (WARP) | Direct2D via `canvas-native` (vello steps aside on a software adapter) | — | native |
 | web | Canvas2D | `captureStream()` | native |
 | **iOS Simulator** | CoreGraphics (CPU) | offscreen re-rasterize + read-back | **slow — fallback** |
 | **Android emulator** | `android.graphics` (CPU) | bitmap read-back | **slow — fallback** |
@@ -234,7 +235,11 @@ dispatch** (the GPU reads workgroup counts out of a buffer). That requires
 Emulated/virtualized GPUs (the iOS Simulator, the Android emulator) advertise
 reduced feature sets that omit these, which is why vello can't run there. The
 gate is a **capability check, not a platform check** (`canvas_vello::render`),
-so any GPU lacking a required feature falls back uniformly.
+so any GPU lacking a required feature falls back uniformly. vello also refuses
+a **software** adapter (`gpu_surface::Requirements::hardware`): on a machine
+with no GPU, wgpu offers a CPU rasterizer such as WARP, which crashes in vello's
+pipeline on Windows 11's shipped build and is slower than a native CPU painter
+anyway — so `canvas-native` keeps the canvas there.
 
 ## Testing checklist
 
@@ -265,6 +270,7 @@ renderers (CLAUDE.md §7), so verify the **GPU (`canvas-vello`)** and **CPU
 - [ ] **Web** — register `canvas-native`; a `draw` scene renders via Canvas2D; reactive `Signal` reads re-render on change; self-capture records via `captureStream()`.
 - [ ] **iOS** — on a **device**, `canvas-vello` (GPU) renders the scene and self-capture uses GPU→CPU read-back. On the **Simulator**, vello self-gates off (Metal lacks `INDIRECT_EXECUTION`) → `canvas-native` (CoreGraphics) renders the *same* pixels; recording uses the offscreen re-rasterize fallback and logs the one-time slow-path warning (`NSLog`). ⚠️ device GPU path needs a physical device to confirm.
 - [ ] **Android** — on a **device**, `canvas-vello` (GPU) renders + self-capture via GPU→CPU read-back. On the **emulator**, vello self-gates off (Vulkan lacks `SHADER_F16`) → `android.graphics` CPU renderer, bitmap read-back, one-time `Log.w("canvas", …)` warning. ⚠️ device GPU path needs real Adreno/Mali hardware to confirm.
+- [ ] **Windows** — `canvas-native` (Direct2D) renders the scene; its pixel tests run on Windows only (`cargo test -p canvas-native` on a Windows host or the VM runner). On a GPU-less machine vello steps aside (software adapter) and Direct2D falls back to WARP.
 - [ ] **macOS** — GPU-verified: `canvas-vello` renders the scene and self-capture is zero-copy IOSurface → encoder (no read-back); confirm bulk `shapes` batches draw in one instanced-SDF pass and glyph runs render via vello's glyph pipeline.
 
 No OS permission of its own — drawing and self-capture stay within the app's own surface.
