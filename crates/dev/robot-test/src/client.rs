@@ -74,6 +74,22 @@ pub fn default_apps_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".idealyst").join("apps"))
 }
 
+/// Name of the registry directory, beside [`default_apps_dir`], that Windows
+/// apps running under Wine register into. Wine PIDs are not host PIDs, and
+/// the bridge prunes registrations by PID liveness, so the two kinds of
+/// process cannot share a directory (see `IDEALYST_APPS_DIR` in
+/// `runtime_shared::robot::bridge`). `run-windows` sets the same name.
+pub const WINE_APPS_DIR_NAME: &str = "apps-wine";
+
+/// Every registry directory a host-side tool should scan: the native one and
+/// the Wine one. Discovery here checks liveness by TCP connect, never by PID,
+/// so reading the Wine directory from the host is safe.
+pub fn default_apps_dirs() -> Vec<PathBuf> {
+    let Some(native) = default_apps_dir() else { return Vec::new() };
+    let wine = native.with_file_name(WINE_APPS_DIR_NAME);
+    vec![native, wine]
+}
+
 #[derive(serde::Deserialize)]
 struct AppReg {
     port: u16,

@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use robot_test::{default_apps_dir, discover, discover_all, RobotClient};
+use robot_test::{default_apps_dirs, discover, discover_all, RobotClient};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -166,9 +166,9 @@ pub fn run(args: Args) -> Result<()> {
 
     // Wait for the relay registration for this project (a cold build can take a
     // while), then for web open the page headlessly so the app dials.
-    let apps_dir = default_apps_dir().context("no HOME for ~/.idealyst/apps")?;
+    let apps_dirs = registry_dirs()?;
     eprintln!("[test] waiting for the app to come up…");
-    let addr = wait_for_registration(&dir, &apps_dir, Duration::from_secs(300))
+    let addr = wait_for_registration(&dir, &apps_dirs, Duration::from_secs(300))
         .context("the app never registered with the relay (build failed? run `idealyst dev` to see)")?;
 
     if platform == "web" && !args.attach {
@@ -272,13 +272,13 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
 
     let viewport = parse_viewport(&args.viewport)?;
     let self_exe = std::env::current_exe().context("locating the idealyst binary")?;
-    let apps_dir = default_apps_dir().context("no HOME for ~/.idealyst/apps")?;
+    let apps_dirs = registry_dirs()?;
     eprintln!("[parity] viewport pinned to {}x{} on every platform", viewport.0, viewport.1);
 
     let mut kill = Kill(Vec::new());
     // Apps already registered for this project before we launch anything — so a
     // dev session the user left running isn't mistaken for one of ours.
-    let mut seen: HashSet<SocketAddr> = discover_all(Some(dir), &apps_dir).into_iter().collect();
+    let mut seen: HashSet<SocketAddr> = discover_all_in(dir, &apps_dirs).into_iter().collect();
     let mut bridges: Vec<(String, SocketAddr)> = Vec::new();
 
     for platform in &args.parity {
@@ -290,7 +290,7 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
         // bridge that wasn't there before. The registration file carries no
         // platform field, so "new since launch" is how we attribute it — which
         // is why launches are sequential, not concurrent.
-        let addr = wait_for_new_registration(dir, &apps_dir, &seen, Duration::from_secs(300))
+        let addr = wait_for_new_registration(dir, &apps_dirs, &seen, Duration::from_secs(300))
             .with_context(|| {
                 format!(
                     "the {platform} app never registered (build failed? \
@@ -325,7 +325,7 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
         // into `seen`, so if this launch wrote more than one (a relay + a
         // self-host, say) the extras can't be misattributed to the next
         // platform's launch.
-        seen.extend(discover_all(Some(dir), &apps_dir));
+        seen.extend(discover_all_in(dir, &apps_dirs));
     }
 
     // Run the pre-built parity test with every platform's bridge in the env it
@@ -456,17 +456,30 @@ fn normalize_platform(p: &str) -> Result<String> {
     }
 }
 
+/// The app-registry directories to scan: `~/.idealyst/apps` plus the Wine
+/// one, where a `windows` app launched under Wine registers.
+fn registry_dirs() -> Result<Vec<PathBuf>> {
+    let dirs = default_apps_dirs();
+    anyhow::ensure!(!dirs.is_empty(), "no HOME for ~/.idealyst/apps");
+    Ok(dirs)
+}
+
+/// Every live, project-matching bridge across all registry directories.
+fn discover_all_in(project_dir: &Path, apps_dirs: &[PathBuf]) -> Vec<SocketAddr> {
+    apps_dirs.iter().flat_map(|d| discover_all(Some(project_dir), d)).collect()
+}
+
 /// Poll for a live, project-matching bridge whose address isn't already in
 /// `seen` — i.e. the app the most recent launch produced.
 fn wait_for_new_registration(
     project_dir: &Path,
-    apps_dir: &Path,
+    apps_dirs: &[PathBuf],
     seen: &HashSet<SocketAddr>,
     timeout: Duration,
 ) -> Option<SocketAddr> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(addr) = discover_all(Some(project_dir), apps_dir)
+        if let Some(addr) = discover_all_in(project_dir, apps_dirs)
             .into_iter()
             .find(|a| !seen.contains(a))
         {
@@ -499,12 +512,12 @@ fn wait_until_ready(addr: SocketAddr, timeout: Duration) -> Result<()> {
 
 fn wait_for_registration(
     project_dir: &Path,
-    apps_dir: &Path,
+    apps_dirs: &[PathBuf],
     timeout: Duration,
 ) -> Option<SocketAddr> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(addr) = discover(Some(project_dir), apps_dir) {
+        if let Some(addr) = apps_dirs.iter().find_map(|d| discover(Some(project_dir), d)) {
             return Some(addr);
         }
         if Instant::now() >= deadline {

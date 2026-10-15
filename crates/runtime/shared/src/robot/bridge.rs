@@ -394,14 +394,32 @@ fn write_project_port_file(port: u16, identity: &AppIdentity) {
     }
 }
 
-/// `~/.idealyst/apps/`. Returns `None` if the home dir is undiscoverable
-/// — registration silently no-ops in that case.
+/// `~/.idealyst/apps/`, or `$IDEALYST_APPS_DIR` when set. Returns `None`
+/// if neither is discoverable — registration silently no-ops in that case.
 #[cfg(not(target_arch = "wasm32"))]
 fn apps_registry_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)?;
-    Some(home.join(".idealyst").join("apps"))
+    apps_registry_dir_from(
+        std::env::var_os("IDEALYST_APPS_DIR"),
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")),
+    )
+}
+
+/// The override exists for processes whose PIDs live in a different
+/// namespace from the host's — a Windows app under Wine. Registrations in
+/// one directory are pruned by PID liveness (`prune_dead_registrations`), so
+/// a Wine process sharing `~/.idealyst/apps` with native apps would read
+/// every native PID as dead and delete their files, and native apps would
+/// do the same to its. The Wine launcher points this at a directory of its
+/// own (`apps-wine`), where every PID is a Wine PID.
+#[cfg(not(target_arch = "wasm32"))]
+fn apps_registry_dir_from(
+    override_dir: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    Some(PathBuf::from(home?).join(".idealyst").join("apps"))
 }
 
 /// Remove `*.json` registration files in `dir` whose process is gone.
@@ -1612,6 +1630,29 @@ mod tests {
         assert_eq!(parsed["port"].as_u64(), Some(12345));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// A Wine-hosted app registered into the shared `~/.idealyst/apps` and its
+    /// startup prune — liveness-checking macOS PIDs from inside Wine — deleted
+    /// every native app's registration. `IDEALYST_APPS_DIR` gives it its own.
+    #[test]
+    fn regression_apps_dir_override_separates_pid_namespaces() {
+        use std::ffi::OsString;
+        let home = Some(OsString::from("/home/u"));
+        assert_eq!(
+            apps_registry_dir_from(None, home.clone()),
+            Some(PathBuf::from("/home/u/.idealyst/apps"))
+        );
+        assert_eq!(
+            apps_registry_dir_from(Some(OsString::from("/home/u/.idealyst/apps-wine")), home.clone()),
+            Some(PathBuf::from("/home/u/.idealyst/apps-wine"))
+        );
+        // Empty override = unset, not "register in the cwd".
+        assert_eq!(
+            apps_registry_dir_from(Some(OsString::new()), home),
+            Some(PathBuf::from("/home/u/.idealyst/apps"))
+        );
+        assert_eq!(apps_registry_dir_from(None, None), None);
     }
 
     #[test]

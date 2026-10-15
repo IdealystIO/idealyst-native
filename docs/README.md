@@ -87,6 +87,14 @@ If you're new to the codebase, read the docs in this order:
     / `wasm-bindgen` themselves; a missing capability becomes a row there
     and an SDK method.
 
+## Platforms
+
+- [`windows.md`](./windows.md). The Windows backend's two renderers (GDI+,
+  the default, and the opt-in Direct2D one) and how to choose between them;
+  running Windows builds on a Mac with Wine, including the Wine-Staging +
+  DXVK setup the Direct2D renderer needs; and running Windows builds, and
+  `--parity` checks, on a real Windows machine or VM over SSH.
+
 ## Tooling
 
 - [`hot-reload.md`](./hot-reload.md). What a save costs. `idealyst dev`

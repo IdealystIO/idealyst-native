@@ -1,9 +1,17 @@
 //! Windows launcher. Builds via `build-windows`, then spawns the
 //! `.exe` — foreground for one-shot `idealyst run windows` (blocks
 //! until the window closes), detached for `idealyst dev`.
+//!
+//! On a non-Windows host `build-windows` cross-compiles and this launches
+//! the `.exe` under Wine — see [`wine`] — or, with `IDEALYST_WINDOWS_REMOTE`
+//! set, on a real Windows machine over SSH — see [`remote`].
+
+pub mod remote;
+pub mod wine;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+
 
 use anyhow::{Context, Result};
 use build_ios::FrameworkSource;
@@ -56,21 +64,28 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         opts.background,
     );
 
-    let child = if opts.background {
-        let mut cmd = Command::new(&built.binary);
-        cmd.stdin(Stdio::null());
-        for (k, v) in &opts.env_vars {
-            cmd.env(k, v);
+    // A real Windows machine instead of Wine (see `remote`).
+    if !cfg!(target_os = "windows") {
+        if let Some(remote) = remote::Remote::from_env() {
+            let mut child = remote.launch(&built.binary, project_dir, &opts.env_vars)?;
+            if opts.background {
+                return Ok(RunArtifact { binary: built.binary, child: Some(child) });
+            }
+            let status = child.wait().context("waiting for the remote session")?;
+            anyhow::ensure!(status.success(), "remote session ended with {status}");
+            return Ok(RunArtifact { binary: built.binary, child: None });
         }
+    }
+
+    let child = if opts.background {
+        let mut cmd = launch_command(&built.binary, &opts.env_vars)?;
+        cmd.stdin(Stdio::null());
         let child = cmd
             .spawn()
             .with_context(|| format!("spawn Windows binary {}", built.binary.display()))?;
         Some(child)
     } else {
-        let mut cmd = Command::new(&built.binary);
-        for (k, v) in &opts.env_vars {
-            cmd.env(k, v);
-        }
+        let mut cmd = launch_command(&built.binary, &opts.env_vars)?;
         let status = cmd
             .status()
             .with_context(|| format!("spawn Windows binary {}", built.binary.display()))?;
@@ -84,4 +99,16 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         binary: built.binary,
         child,
     })
+}
+
+/// The command that runs `binary` on this host with `env_vars` set: the
+/// `.exe` itself on Windows, `wine <exe>` everywhere else.
+fn launch_command(binary: &Path, env_vars: &[(String, String)]) -> Result<Command> {
+    if cfg!(target_os = "windows") {
+        let mut cmd = Command::new(binary);
+        cmd.envs(env_vars.iter().map(|(k, v)| (k, v)));
+        Ok(cmd)
+    } else {
+        wine::command(binary, env_vars)
+    }
 }
