@@ -1,5 +1,5 @@
 //! Inert reachability impl for native targets with no platform monitor
-//! (Windows / Linux / CI hosts).
+//! (other Unix / CI hosts).
 //!
 //! There's no cheap, dependency-free synchronous reachability query that's
 //! correct across these platforms, so [`current`] returns the documented

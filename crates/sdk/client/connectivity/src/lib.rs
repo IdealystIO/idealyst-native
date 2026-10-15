@@ -63,7 +63,12 @@
 //!   thread down. Needs a running system bus + NetworkManager; if absent,
 //!   [`current`] degrades to the best-effort `ASSUME_ONLINE` and [`watch`] is
 //!   inert. See `src/linux.rs`.
-//! - **other native (Windows / other Unix / tests)** — no platform monitor;
+//! - **Windows** — WinRT `Windows.Networking.Connectivity`: online iff the
+//!   internet connection profile's connectivity level is `InternetAccess`
+//!   (Windows' own verified-internet check, the same bar as the others);
+//!   the profile gives the transport, and `NetworkStatusChanged` drives
+//!   [`watch`] (delivered on a thread-pool thread). See `src/windows.rs`.
+//! - **other native (other Unix / tests)** — no platform monitor;
 //!   [`current`] returns the best-effort `{ online: true, transport: Other }`
 //!   fallback and [`watch`] never fires (the guard is inert).
 //!
@@ -103,14 +108,18 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
-// Everything else with no native monitor (Windows / other Unix / CI hosts):
-// the inert best-effort fallback. Note the added `not(target_os = "linux")` —
-// Linux now selects the NetworkManager backend above, not this one.
+// Windows: real reachability via WinRT `NetworkInformation`.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[path = "windows.rs"]
+mod imp;
+
+// Everything else with no native monitor (other Unix / CI hosts): the inert
+// best-effort fallback.
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 #[path = "fallback.rs"]
 mod imp;
@@ -201,7 +210,8 @@ pub fn current() -> Connectivity {
 ///
 /// The callback runs wherever the platform delivers the change: the main
 /// thread / run loop on web and Apple, a `ConnectivityManager` callback
-/// thread on Android. Keep it fast and non-blocking; copy out what you need.
+/// thread on Android, a watcher thread on Linux, a thread-pool thread on
+/// Windows. Keep it fast and non-blocking; copy out what you need.
 ///
 /// ## Android seam
 ///
@@ -291,7 +301,7 @@ mod tests {
         not(target_arch = "wasm32"),
         not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
         not(target_os = "android"),
-        not(target_os = "linux")
+        not(any(target_os = "linux", target_os = "windows"))
     ))]
     #[test]
     fn fallback_assumes_online() {

@@ -2787,6 +2787,7 @@ dependencies = [
  "runtime-vocabulary",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
  "zbus",
 ]
 

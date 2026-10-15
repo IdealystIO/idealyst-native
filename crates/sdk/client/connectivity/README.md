@@ -54,7 +54,9 @@ mechanism, not in the API you call.
 | web (wasm32) | `navigator.onLine` + `online`/`offline` window events; `navigator.connection` (NetworkInformation) for the transport hint where present | runnable on web |
 | iOS / macOS / tvOS | `NWPathMonitor` (Network framework C API): `currentPath.status` for online-ness, `usesInterfaceType:` for the transport; the path-update block bridges to `watch`; the monitor lives in the subscription and is `cancel`led on drop | compile-checked only ⚠️ |
 | Android | `ConnectivityManager`: `getActiveNetwork` + `getNetworkCapabilities` (`NET_CAPABILITY_VALIDATED`, `hasTransport(TRANSPORT_*)`) for `current()` | compile-checked only ⚠️ |
-| other native (Windows / Linux / tests) | no platform monitor — `current()` returns the best-effort `ASSUME_ONLINE` snapshot; `watch` never fires | inert |
+| Linux (desktop) | NetworkManager over the system D-Bus (`zbus`): online iff `State == CONNECTED_GLOBAL`, `PrimaryConnectionType` for the transport; `watch` runs on a watcher thread off NM's property-change signals | runnable with NetworkManager |
+| Windows | WinRT `NetworkInformation`: online iff the internet profile's level is `InternetAccess` (Windows' NCSI check); WLAN / WWAN / Ethernet from the profile; `NetworkStatusChanged` drives `watch` on a thread-pool thread | verified on a Windows 11 VM (`online`, `Ethernet`; handler registers) |
+| other native (other Unix / tests) | no platform monitor — `current()` returns the best-effort `ASSUME_ONLINE` snapshot; `watch` never fires | inert |
 
 ### Android `watch` seam
 
@@ -100,6 +102,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] **Web** — `current()` reports `online`/`transport` from `navigator.onLine`/`connection`; toggle the network (DevTools offline / real Wi-Fi off) and confirm `watch()` fires with the new `online` value.
 - [ ] **iOS** — `current()` reflects the live `NWPathMonitor` state; toggle airplane mode / Wi-Fi and `watch()` fires with the new `online`/`transport`; the monitor is cancelled on drop.
 - [ ] **macOS** — same `NWPathMonitor` flow: pull the ethernet/Wi-Fi and `watch()` reports the change.
+- [ ] **Windows** — `current()` verified on a VM (`regression_windows_reads_the_internet_profile_and_watches_it`); still to do: disconnect the network and confirm `watch()` fires with `online: false`.
 - [ ] **Android** — `current()` is authoritative (`getActiveNetwork` + capabilities). `watch()` requires the host `NetworkCallback` Java-subclass shim forwarding events back across JNI — currently inert; poll `current()` until that shim is wired, then verify `watch()` fires.
 
 **Permissions**
