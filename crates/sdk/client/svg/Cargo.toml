@@ -49,7 +49,7 @@ license.workspace = true
 # The walker can be extended for any of these without touching the
 # per-backend painter surface — see `src/tree_walker.rs` for the
 # `SvgPainter` trait that bridges to native primitives.
-description = "Third-party SVG renderer SDK — browser SVG on web, native vector walk on iOS/Android."
+description = "Third-party SVG renderer SDK — browser SVG on web, native vector walk on iOS/Android, resvg raster on Linux and Windows."
 
 [dependencies]
 # The scene registry + the vocabulary caps the handlers drive
@@ -116,6 +116,20 @@ runtime-core = { workspace = true }
 gtk4 = { version = "0.9", features = ["v4_12"] }
 resvg = "0.45"
 tiny-skia = "0.11"
+
+# Windows leaf: an `image()` node fed an SVG `data:` URI — the backend's
+# own resvg path draws it. `resvg` (already in the graph through
+# `backend-image-source`, same version and features) only PARSES here, for
+# `on_error`'s message and the handle's intrinsic size.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+backend-windows = { workspace = true }
+resvg = { version = "0.45", default-features = false }
+
+# `tests/windows_svg.rs`: a real HWND + the painter's layout, read back
+# through the robot's native introspection.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+backend-windows = { workspace = true, features = ["robot"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }

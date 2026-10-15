@@ -12260,6 +12260,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-linux",
  "backend-web",
+ "backend-windows",
  "fontdb 0.18.0",
  "gtk4",
  "host-mock",
@@ -12277,6 +12278,7 @@ dependencies = [
  "usvg 0.42.0",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
 ]
 
 [[package]]

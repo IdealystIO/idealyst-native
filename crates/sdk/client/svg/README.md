@@ -48,7 +48,9 @@ output. The *mechanism* differs per platform:
 | Web (wasm32) | `innerHTML` into a wrapper `<div>` (built with web-glue, the framework's own JS bindings) — the browser is the SVG renderer |
 | iOS | `usvg` parse → replay into a `UIView` subclass's `drawRect:` `CGContext` (resolution-independent, no raster step) |
 | Android | `usvg` parse → walk into a `Picture` → `PictureDrawable` on an `ImageView` (scales with bounds, no raster step) |
-| Other (SSR, wgpu desktop, terminal, …) | the frozen External "not supported" placeholder |
+| Linux (GTK4) | `resvg` raster into a `gtk::Picture` texture, supersampled 2× |
+| Windows | one `image()` node whose `src` is the markup as a `data:image/svg+xml,` URI — the backend's own `resvg` path, re-rasterized at the displayed size and DPI. SVG `<text>` is not drawn (the native image decoder carries no fonts) |
+| Other (macOS, SSR, wgpu desktop, terminal, …) | the frozen External "not supported" placeholder |
 
 The native backends re-draw the parsed vector tree at the view's
 current bounds every frame, so output stays crisp through resize,
@@ -99,5 +101,9 @@ item as you exercise it.
   `on_load`/`on_error` fire; `intrinsic_size()` populated.
 - [ ] **Android** — ⚠️ not yet device-confirmed. `usvg` → `Picture` → `PictureDrawable`
   on an `ImageView` scales crisply with bounds; same observable output as iOS + web.
+- [x] **Windows** — `tests/windows_svg.rs` on a real Windows 11 HWND (the
+  UTM VM): lays out at the intrinsic size, `on_load` fires, `intrinsic_size()`
+  populated, a markup change re-renders and re-lays out, bad markup reaches
+  `on_error` and keeps the last image.
 - [ ] **macOS / other** — no handler registered; verify the framework's `External`
   "not supported" placeholder renders cleanly (no layout artifact or crash).

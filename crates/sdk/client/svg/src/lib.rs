@@ -16,7 +16,12 @@
 //!   step — the view's `drawRect:` / `PictureDrawable.draw(canvas)`
 //!   re-runs at the layout-time pixel resolution, so the output stays
 //!   crisp at any scale and through transform animations.
-//! - **Every other host (SSR, terminal, gpu, host-mock)** — the frozen
+//! - **Linux** — resvg rasterizes into a `gtk::Picture` texture.
+//! - **Windows** — one `image()` node whose `src` is the markup as a
+//!   `data:image/svg+xml,` URI: the backend's own SVG image path
+//!   (resvg, re-rasterized at the displayed size and DPI). SVG `<text>`
+//!   is not drawn there (the native image decoder carries no fonts).
+//! - **Every other host (macOS, SSR, terminal, gpu, host-mock)** — the frozen
 //!   External-placeholder degradation path
 //!   ([`ExternalOps::create_external`]): children + author style + ref
 //!   fill + `release_external` teardown still flow, but nothing is
@@ -93,6 +98,8 @@ mod android;
 mod ios;
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod linux;
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod windows;
 
 // The walker translates a parsed `usvg::Tree` into trait-driven calls
 // against per-backend native vector primitives. Only the iOS and
@@ -257,11 +264,14 @@ static OPS: &dyn SvgOps = crate::ios::OPS;
 static OPS: &dyn SvgOps = crate::android::OPS;
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 static OPS: &dyn SvgOps = crate::linux::OPS;
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+static OPS: &dyn SvgOps = crate::windows::OPS;
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "ios",
     target_os = "android",
-    target_os = "linux"
+    target_os = "linux",
+    target_os = "windows"
 )))]
 static OPS: &dyn SvgOps = &UnsupportedOps;
 
@@ -436,6 +446,20 @@ fn mount_svg_linux(
     node
 }
 
+/// Windows mount handler — `Registry<WindowsBackend>`-concrete: an image
+/// node fed the markup as an SVG `data:` URI (see `windows.rs`).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+fn mount_svg_windows(
+    cx: &mut MountCx<'_, backend_windows::WindowsBackend>,
+    prim: &Rc<SvgPrim>,
+    _children: Vec<Element>,
+) -> backend_windows::WindowsNode {
+    let backend = cx.backend().clone();
+    let node = crate::windows::build(&prim.props, &backend);
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 /// Android mount handler — `Registry<AndroidBackend>`-concrete.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 fn mount_svg_android(
@@ -485,6 +509,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
             reg.register::<SvgPrim, _>(mount_svg_linux);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<SvgPrim, _>(mount_svg_windows);
             return;
         }
     }
