@@ -734,6 +734,18 @@ mod ios_impl {
         // Point the Robot bridge at the registry this boot actually fills.
         #[cfg(feature = "robot")]
         install_robot_env();
+        // The live `screenshot` verb, answered by this backend's real capture.
+        // Without it local-mount native apps answered `unknown command:
+        // screenshot` — only the dev-server sidecar registered one, so an
+        // `idealyst dev --local` app could be driven but never seen.
+        #[cfg(feature = "robot")]
+        {
+            let weak = std::rc::Rc::downgrade(&backend);
+            runtime_shared::robot::screenshot::register_native_screenshot(move |done| match weak.upgrade() {
+                Some(b) => caps::IntrospectionOps::capture_screenshot(&*b.borrow(), done),
+                None => done(Err("the app has been torn down".into())),
+            });
+        }
         NewCoreApp {
             realized,
             _backend: backend,

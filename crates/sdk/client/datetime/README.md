@@ -90,7 +90,7 @@ is not covered.
 | iOS, macOS | `SystemTime` | libc `localtime_r` (`tm_gmtoff`) | `$TZ`, else CFTimeZone |
 | Android | `SystemTime` | bionic `localtime_r` | `$TZ`, else the `persist.sys.timezone` property |
 | Linux, BSD | `SystemTime` | libc `localtime_r` | `$TZ`, else `/etc/localtime` / `/etc/timezone` |
-| Windows | `SystemTime` | `SystemTimeToTzSpecificLocalTimeEx` with the dynamic zone (per-year DST rules) | the WinRT calendar zone |
+| Windows | `SystemTime` | `SystemTimeToTzSpecificLocalTimeEx` with the dynamic zone (per-year DST rules); where that export is missing (Wine), the same per-year rule via `GetTimeZoneInformationForYear` + `SystemTimeToTzSpecificLocalTime` | the WinRT calendar zone |
 | anything else (e.g. wasm32-wasi) | `SystemTime` | UTC | `None` |
 
 The web arm binds `Date` and `Intl` through web-glue, so it works in a page

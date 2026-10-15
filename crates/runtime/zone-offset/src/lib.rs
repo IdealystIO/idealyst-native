@@ -94,24 +94,92 @@ mod imp {
 }
 
 // ---------------------------------------------------------------------------
-// Windows: `SystemTimeToTzSpecificLocalTimeEx`
+// Windows: `SystemTimeToTzSpecificLocalTimeEx`, resolved at run time
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
 mod imp {
     use crate::filetime;
-    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::{BOOL, FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
     use windows_sys::Win32::System::Time::{
-        FileTimeToSystemTime, GetDynamicTimeZoneInformation, SystemTimeToFileTime,
-        SystemTimeToTzSpecificLocalTimeEx, DYNAMIC_TIME_ZONE_INFORMATION,
+        FileTimeToSystemTime, GetDynamicTimeZoneInformation, GetTimeZoneInformationForYear,
+        SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime, DYNAMIC_TIME_ZONE_INFORMATION,
+        TIME_ZONE_INFORMATION,
     };
+
+    type ToLocalEx = unsafe extern "system" fn(
+        *const DYNAMIC_TIME_ZONE_INFORMATION,
+        *const SYSTEMTIME,
+        *mut SYSTEMTIME,
+    ) -> BOOL;
+
+    /// `SystemTimeToTzSpecificLocalTimeEx`, looked up once instead of
+    /// imported.
+    ///
+    /// Every Windows since 7 exports it, but Wine does not (Wine bug 53355):
+    /// a static import there resolves to an abort stub, so the first offset
+    /// lookup killed the process — under the debugger Wine attaches, a
+    /// silent hang. That took down the docs app's date pages in a
+    /// `--parity …,windows` run under Wine. Resolving at run time turns a
+    /// missing export into a `None` and the fallback below.
+    fn to_local_ex() -> Option<ToLocalEx> {
+        static EX: OnceLock<Option<ToLocalEx>> = OnceLock::new();
+        *EX.get_or_init(|| {
+            let name: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
+            // SAFETY: kernel32 is mapped into every Win32 process; the
+            // name is NUL-terminated; a non-null result is the export
+            // whose documented signature is `ToLocalEx`.
+            unsafe {
+                let module = GetModuleHandleW(name.as_ptr());
+                if module.is_null() {
+                    return None;
+                }
+                GetProcAddress(module, c"SystemTimeToTzSpecificLocalTimeEx".as_ptr().cast())
+                    .map(|f| std::mem::transmute::<_, ToLocalEx>(f))
+            }
+        })
+    }
+
+    /// UTC → local under `tz`'s rule for `utc`'s year: the `Ex` call when
+    /// the system has it, else the same rule fetched explicitly
+    /// (`GetTimeZoneInformationForYear`) and applied with the plain call.
+    /// The two agree — the dynamic zone's per-year rule is what `Ex`
+    /// applies — except within hours of New Year in a zone whose rules
+    /// change between those two years, where the fallback uses the UTC
+    /// year's rule.
+    pub(crate) fn to_local(
+        tz: &DYNAMIC_TIME_ZONE_INFORMATION,
+        utc: &SYSTEMTIME,
+        use_ex: bool,
+    ) -> Option<SYSTEMTIME> {
+        // SAFETY: every pointer is to a local we own, sized for the call.
+        unsafe {
+            let mut local: SYSTEMTIME = std::mem::zeroed();
+            if let Some(ex) = to_local_ex().filter(|_| use_ex) {
+                return (ex(tz, utc, &mut local) != 0).then_some(local);
+            }
+            let mut rule: TIME_ZONE_INFORMATION = std::mem::zeroed();
+            if GetTimeZoneInformationForYear(utc.wYear, tz, &mut rule) == 0 {
+                return None;
+            }
+            (SystemTimeToTzSpecificLocalTime(&rule, utc, &mut local) != 0).then_some(local)
+        }
+    }
 
     /// Convert the UTC instant to local time under the *dynamic* zone
     /// information (which carries the historical DST rules per year — the
-    /// non-`Ex` call would apply this year's rule to every year), then
+    /// non-dynamic call would apply this year's rule to every year), then
     /// subtract. The tick arithmetic lives in [`filetime`] so it is tested
-    /// on every host; only the three Win32 calls are Windows-only.
+    /// on every host; only the Win32 calls are Windows-only.
     pub(crate) fn offset_seconds_at(unix_seconds: i64) -> i32 {
+        offset_seconds_with(unix_seconds, true)
+    }
+
+    /// [`offset_seconds_at`], optionally forcing the fallback conversion
+    /// (tests compare the two paths).
+    pub(crate) fn offset_seconds_with(unix_seconds: i64, use_ex: bool) -> i32 {
         let Some(ticks) = filetime::ticks_from_unix_seconds(unix_seconds) else {
             // Before 1601 or past FILETIME's range: no rule to apply.
             return 0;
@@ -139,10 +207,9 @@ mod imp {
             if FileTimeToSystemTime(&utc_ft, &mut utc) == 0 {
                 return 0;
             }
-            let mut local: SYSTEMTIME = std::mem::zeroed();
-            if SystemTimeToTzSpecificLocalTimeEx(&tz, &utc, &mut local) == 0 {
+            let Some(local) = to_local(&tz, &utc, use_ex) else {
                 return 0;
-            }
+            };
             // Both sides go back through SYSTEMTIME so they carry the same
             // millisecond truncation; their difference is the offset exactly.
             let mut local_ft: FILETIME = std::mem::zeroed();
@@ -155,17 +222,40 @@ mod imp {
             filetime::offset_seconds(from_ft(&utc_ms_ft), from_ft(&local_ft))
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Runs on a Windows target — real Windows, or Wine via
+        /// `cargo test --target x86_64-pc-windows-gnu` with a Wine runner.
+        /// Under Wine this aborted the test process before the fix (the
+        /// `Ex` import is an abort stub there); now the lookup falls back.
+        /// Where `Ex` exists, the fallback must agree with it.
+        #[test]
+        fn regression_offset_lookup_survives_a_kernel32_without_the_ex_export() {
+            // Mid-January and mid-July, now and in 2006 (pre-2007 US rules).
+            for t in [1_705_320_000_i64, 1_721_044_800, 1_137_326_400, 1_153_051_200] {
+                let fallback = offset_seconds_with(t, false);
+                assert!(fallback.abs() <= 14 * 3600, "{t}: {fallback}");
+                if to_local_ex().is_some() {
+                    assert_eq!(offset_seconds_with(t, true), fallback, "paths disagree at {t}");
+                }
+            }
+        }
+    }
 }
 
 /// FILETIME tick arithmetic for the Windows arm, compiled on every target.
 ///
 /// Pure on purpose: Windows' zone APIs read the registry and ignore `$TZ`,
 /// and this repo's CI host is macOS, so the Win32 path cannot be driven
-/// with a chosen zone in a test. Everything around the three Win32 calls —
+/// with a chosen zone in a test. Everything around the Win32 calls —
 /// the epoch shift, the 100 ns scaling, the range edges, the low/high word
 /// split, the difference → seconds conversion — lives here and is unit
 /// tested on the host; the Win32 calls themselves are covered by
-/// `cargo check --target x86_64-pc-windows-gnu`.
+/// `cargo check --target x86_64-pc-windows-gnu`, and by the `imp` tests
+/// run on a Windows target (under Wine on the macOS dev machine).
 #[cfg_attr(not(windows), allow(dead_code))]
 mod filetime {
     /// FILETIME counts 100 ns ticks since 1601-01-01; this many seconds

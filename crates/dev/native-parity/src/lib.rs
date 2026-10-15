@@ -133,10 +133,19 @@ fn collect_paths(node: &Value, path: &str, out: &mut Vec<(String, u64)>) {
 // introspects each side's id at that path and diffs only genuinely-corresponding
 // elements.
 //
-// Limitation: greedy sibling matching does not see through *wrapper-depth*
-// differences (A nesting `View > View > Text` vs B `View > Text`) — the extra
-// wrapper, and everything under it, reports as unmatched. That's a genuine
-// structural divergence worth surfacing, not silently bridging.
+// Anonymous views (no `test_id`, no label) have no identity, so they pair by
+// CONTENT — the identifiable elements beneath them — never by position; a
+// content-free view takes a content-free partner first.
+//
+// Wrapper-depth differences (A nesting `View > View > Text` vs B
+// `View > Text`) are bridged: when a level has leftovers on both sides, an
+// unmatched anonymous wrapper is looked through and its children compete for
+// the other side's leftovers. The wrapper itself is still reported once, as
+// the structural divergence it is; only the content under it is no longer
+// written off. Before this, the `table` SDK's native lowering (passthrough >
+// grid > cell, where web's `<table>` DOM is not in the robot tree at all)
+// buried every docs props-table cell as ~500 "only in web" lines per sweep —
+// identical against GTK and Win32 — with none of those cells ever compared.
 // ===========================================================================
 
 /// A framework element from `get_snapshot`. `kind`/`test_id`/`label` are stable
@@ -226,7 +235,7 @@ pub struct Alignment {
 
 /// Align two `get_snapshot` trees (A, B) by signature, returning the
 /// corresponding element pairs plus the structurally-unmatched nodes on each
-/// side. See the module-level note for the matching strategy + its limitation.
+/// side. See the module-level note for the matching strategy.
 pub fn align(a: &[SnapNode], b: &[SnapNode]) -> Alignment {
     let mut out = Alignment::default();
     align_lists(a, b, "", &mut out);
@@ -238,59 +247,187 @@ fn align_lists(a: &[SnapNode], b: &[SnapNode], parent: &str, out: &mut Alignment
     // Per-signature occurrence counter under this parent, so two same-signature
     // siblings get distinct, stable paths (`View#0`, `View#1`).
     let mut occ: BTreeMap<String, usize> = BTreeMap::new();
-    let seg_path = |parent: &str, seg: &str| {
-        if parent.is_empty() { seg.to_string() } else { format!("{parent}/{seg}") }
+    let mut seg = |n: &SnapNode| {
+        let sig = signature(n);
+        let k = occ.entry(sig.clone()).or_insert(0);
+        let s = format!("{sig}#{k}");
+        *k += 1;
+        if parent.is_empty() { s } else { format!("{parent}/{s}") }
     };
 
+    let mut left_a: Vec<(String, &SnapNode)> = Vec::new();
+    // Content-free anonymous views match in a second pass, once this level's
+    // leftovers are known (see below).
+    let mut deferred: Vec<(String, &SnapNode)> = Vec::new();
     for na in a {
         let sig = signature(na);
-        let n = occ.entry(sig.clone()).or_insert(0);
-        let seg = format!("{sig}#{n}");
-        *n += 1;
-        let path = seg_path(parent, &seg);
-
+        let path = seg(na);
+        if is_anonymous_view(na) && identities(na).is_empty() {
+            deferred.push((path, na));
+            continue;
+        }
         // Greedy: the first not-yet-used B sibling with the same signature, in
-        // order — so insertions/removals/reorders don't cascade.
-        let matched = b
-            .iter()
-            .enumerate()
-            .find(|(j, nb)| !b_used[*j] && signature(nb) == sig)
-            .map(|(j, _)| j);
-
+        // order — so insertions/removals/reorders don't cascade. An anonymous
+        // view has no identity to match on, so it pairs by CONTENT instead
+        // (see `wrapper_partner`).
+        let matched = if is_anonymous_view(na) {
+            wrapper_partner(na, b, &b_used)
+        } else {
+            b.iter()
+                .enumerate()
+                .find(|(j, nb)| !b_used[*j] && signature(nb) == sig)
+                .map(|(j, _)| j)
+        };
         match matched {
             Some(j) => {
                 b_used[j] = true;
                 out.pairs.push(AlignedPair { path: path.clone(), id_a: na.id, id_b: b[j].id });
                 align_lists(&na.children, &b[j].children, &path, out);
             }
-            None => {
-                // Report the unmatched subtree at its root (not every descendant
-                // — one "missing here" line, not a flood).
-                out.unmatched.push(Unmatched {
-                    path,
-                    id: na.id,
-                    kind: na.kind.clone(),
-                    in_a: true,
-                });
-            }
+            None => left_a.push((path, na)),
         }
+    }
+    // A content-free view (empty, or only unlabeled boxes) has nothing to
+    // pair on. It takes a content-free partner first; failing that, the first
+    // candidate in order (an emptied-out container still pairs with its
+    // filled counterpart, the missing content reported once) — EXCEPT a
+    // candidate holding content this level is already missing from A, which
+    // is that content, wrapped, and belongs to the look-through step. The
+    // docs' props tables hit both cases: web's section ends in an empty view
+    // beside the hoisted cell texts; native's holds the table passthrough,
+    // then its own empty view.
+    let missing: std::collections::BTreeSet<String> = left_a
+        .iter()
+        .flat_map(|(_, n)| {
+            let mut ids = identities(n);
+            if is_identifiable(n) {
+                ids.insert(signature(n));
+            }
+            ids
+        })
+        .collect();
+    for (path, na) in deferred {
+        let sig = signature(na);
+        let unused = || b.iter().enumerate().filter(|(j, nb)| !b_used[*j] && signature(nb) == sig);
+        let pick = unused()
+            .find(|(_, nb)| identities(nb).is_empty())
+            .or_else(|| unused().find(|(_, nb)| identities(nb).is_disjoint(&missing)))
+            .map(|(j, _)| j);
+        match pick {
+            Some(j) => {
+                b_used[j] = true;
+                out.pairs.push(AlignedPair { path: path.clone(), id_a: na.id, id_b: b[j].id });
+                align_lists(&na.children, &b[j].children, &path, out);
+            }
+            None => left_a.push((path, na)),
+        }
+    }
+    let left_b: Vec<(String, &SnapNode)> = b
+        .iter()
+        .enumerate()
+        .filter(|(j, _)| !b_used[*j])
+        .map(|(_, nb)| (seg(nb), nb))
+        .collect();
+
+    // Look through anonymous wrappers when both sides have leftovers.
+    //
+    // A platform may wrap content in extra unlabeled views the other does not
+    // have: the `table` SDK's native lowering is passthrough > grid > cell >
+    // content, while on web the `<table>`/`<tr>`/`<td>` DOM is not in the
+    // robot tree at all and the cell texts sit directly under the section.
+    // Matched level by level, the native passthrough found no partner and
+    // every cell text on the web side was reported missing — ~500 bogus
+    // "only in web" lines per sweep, identical on GTK and Win32, burying the
+    // real findings. Splicing an unmatched wrapper's children into the level
+    // lets them pair with the other side's leftovers; the wrapper itself is
+    // still reported once, as the real (if usually harmless) structural
+    // difference it is.
+    let wraps = |l: &[(String, &SnapNode)]| l.iter().any(|(_, n)| is_anonymous_wrapper(n));
+    if !left_a.is_empty() && !left_b.is_empty() && (wraps(&left_a) || wraps(&left_b)) {
+        let mut expand = |left: Vec<(String, &SnapNode)>, in_a: bool| -> Vec<SnapNode> {
+            let mut level = Vec::new();
+            for (path, n) in left {
+                if is_anonymous_wrapper(n) {
+                    out.unmatched.push(Unmatched { path, id: n.id, kind: n.kind.clone(), in_a });
+                    level.extend(n.children.iter().cloned());
+                } else {
+                    level.push(n.clone());
+                }
+            }
+            level
+        };
+        let level_a = expand(left_a, true);
+        let level_b = expand(left_b, false);
+        // `…` marks a looked-through level, so its segments can never collide
+        // with this parent's direct children's.
+        let inner = if parent.is_empty() { "…".to_string() } else { format!("{parent}/…") };
+        align_lists(&level_a, &level_b, &inner, out);
+        return;
     }
 
-    for (j, nb) in b.iter().enumerate() {
-        if b_used[j] {
-            continue;
-        }
-        let sig = signature(nb);
-        let n = occ.entry(sig.clone()).or_insert(0);
-        let seg = format!("{sig}#{n}");
-        *n += 1;
-        out.unmatched.push(Unmatched {
-            path: seg_path(parent, &seg),
-            id: nb.id,
-            kind: nb.kind.clone(),
-            in_a: false,
-        });
+    // Report each unmatched subtree at its root (not every descendant — one
+    // "missing here" line, not a flood).
+    for (path, n) in left_a {
+        out.unmatched.push(Unmatched { path, id: n.id, kind: n.kind.clone(), in_a: true });
     }
+    for (path, n) in left_b {
+        out.unmatched.push(Unmatched { path, id: n.id, kind: n.kind.clone(), in_a: false });
+    }
+}
+
+/// The B sibling an anonymous view `na` WITH identifiable descendants should
+/// pair with: the unused same-signature sibling sharing the most of them;
+/// `None` if none shares any — two boxes holding different content are not
+/// the same container, and positional pairing of anonymous views is what
+/// stranded the docs' props-table cells. (Content-free views are matched in
+/// `align_lists`' second pass.)
+fn wrapper_partner(na: &SnapNode, b: &[SnapNode], b_used: &[bool]) -> Option<usize> {
+    let mine = identities(na);
+    debug_assert!(!mine.is_empty(), "content-free views match in align_lists' second pass");
+    b.iter()
+        .enumerate()
+        .filter(|(j, nb)| !b_used[*j] && signature(nb) == signature(na))
+        .map(|(j, nb)| (j, identities(nb).intersection(&mine).count()))
+        .filter(|(_, overlap)| *overlap > 0)
+        // Most overlap wins; ties keep sibling order.
+        .fold(None, |best: Option<(usize, usize)>, (j, o)| match best {
+            Some((_, bo)) if bo >= o => best,
+            _ => Some((j, o)),
+        })
+        .map(|(j, _)| j)
+}
+
+/// Has an identity of its own: a `test_id` or a non-empty label.
+fn is_identifiable(n: &SnapNode) -> bool {
+    n.test_id.is_some() || n.label.as_deref().is_some_and(|l| !l.is_empty())
+}
+
+/// Signatures of every identifiable descendant (a `test_id` or a label).
+fn identities(n: &SnapNode) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut stack: Vec<&SnapNode> = n.children.iter().collect();
+    while let Some(c) = stack.pop() {
+        if is_identifiable(c) {
+            out.insert(signature(c));
+        }
+        stack.extend(c.children.iter());
+    }
+    out
+}
+
+/// A view with no identity of its own — no `test_id`, no label. Pairs by
+/// content (`wrapper_partner`), never by position: an EMPTY one is exactly
+/// what stole the docs' props-table passthrough (web's section ends in a
+/// childless view; native's has the passthrough first, then its own empty
+/// view).
+fn is_anonymous_view(n: &SnapNode) -> bool {
+    n.kind == "View" && n.test_id.is_none() && n.label.as_deref().map_or(true, str::is_empty)
+}
+
+/// An anonymous view with something inside it: pure structure, which a
+/// platform may or may not have, and which alignment may look through.
+fn is_anonymous_wrapper(n: &SnapNode) -> bool {
+    is_anonymous_view(n) && !n.children.is_empty()
 }
 
 /// Deserialize one element's `introspect_native` payload. `null` (the backend
@@ -1251,5 +1388,145 @@ mod tests {
         assert_eq!(matched(&al, 1), Some(1));
         assert_eq!(al.unmatched.len(), 1);
         assert!(al.unmatched[0].in_a && al.unmatched[0].kind == "Overlay");
+    }
+
+    /// The props-table shape: web lifts cell texts straight under the section
+    /// (its `<table>` DOM is not in the robot tree), native nests them in
+    /// passthrough > grid > cell views. Every cell text was reported "only in
+    /// web" (~500 lines per sweep, identical on GTK and Win32).
+    #[test]
+    fn regression_table_cells_align_through_native_wrapper_views() {
+        let web = snap(serde_json::json!([{ "id": 1, "kind": "View", "children": [
+            { "id": 2, "kind": "Text", "label": "Props", "children": [] },
+            { "id": 3, "kind": "Text", "label": "Prop", "children": [] },
+            { "id": 4, "kind": "Text", "label": "label", "children": [] }
+        ]}]));
+        let native = snap(serde_json::json!([{ "id": 11, "kind": "View", "children": [
+            { "id": 12, "kind": "Text", "label": "Props", "children": [] },
+            { "id": 13, "kind": "View", "children": [          // passthrough
+                { "id": 14, "kind": "View", "children": [      // grid
+                    { "id": 15, "kind": "View", "children": [  // cell
+                        { "id": 16, "kind": "Text", "label": "Prop", "children": [] }
+                    ]},
+                    { "id": 17, "kind": "View", "children": [
+                        { "id": 18, "kind": "Text", "label": "label", "children": [] }
+                    ]}
+                ]}
+            ]}
+        ]}]));
+        let al = align(&web, &native);
+        assert_eq!(matched(&al, 2), Some(12));
+        assert_eq!(matched(&al, 3), Some(16), "cell text pairs through the wrappers");
+        assert_eq!(matched(&al, 4), Some(18));
+        // Only the wrappers themselves are structural findings, each once,
+        // all on the native side — never the texts.
+        assert!(al.unmatched.iter().all(|u| !u.in_a && u.kind == "View"), "{:?}", al.unmatched);
+        assert_eq!(al.unmatched.len(), 4, "passthrough + grid + two cells");
+    }
+
+    /// Looking through wrappers must not invent matches: content that exists
+    /// on one side only is still reported, and a wrapper is not expanded when
+    /// the other side has nothing left over to pair with.
+    #[test]
+    fn wrapper_look_through_keeps_real_divergences() {
+        let a = snap(serde_json::json!([{ "id": 1, "kind": "View", "children": [
+            { "id": 2, "kind": "Text", "label": "Only here", "children": [] }
+        ]}]));
+        let b = snap(serde_json::json!([{ "id": 11, "kind": "View", "children": [
+            { "id": 12, "kind": "View", "children": [
+                { "id": 13, "kind": "Text", "label": "Something else", "children": [] }
+            ]}
+        ]}]));
+        let al = align(&a, &b);
+        assert!(al.unmatched.iter().any(|u| u.in_a && u.id == 2));
+        assert!(al.unmatched.iter().any(|u| !u.in_a && u.id == 13));
+
+        // No leftovers on A: B's extra wrapper is one finding, not expanded.
+        let a = snap(serde_json::json!([{ "id": 1, "kind": "View", "children": [] }]));
+        let al = align(&a, &b);
+        assert_eq!(al.unmatched.len(), 1);
+        assert_eq!(al.unmatched[0].id, 12);
+    }
+
+    /// The docs' actual props-table shape: web's section ALSO holds an
+    /// unrelated anonymous view beside the hoisted cell texts. Paired by
+    /// position with native's table passthrough, it stranded every cell text.
+    #[test]
+    fn regression_unrelated_anonymous_view_does_not_steal_the_table_wrapper() {
+        let web = snap(serde_json::json!([{ "id": 1, "kind": "View", "children": [
+            { "id": 2, "kind": "Text", "label": "Props", "children": [] },
+            { "id": 5, "kind": "View", "children": [
+                { "id": 6, "kind": "Text", "label": "Footer note", "children": [] }
+            ]},
+            { "id": 3, "kind": "Text", "label": "Prop", "children": [] },
+            { "id": 4, "kind": "Text", "label": "label", "children": [] }
+        ]}]));
+        let native = snap(serde_json::json!([{ "id": 11, "kind": "View", "children": [
+            { "id": 12, "kind": "Text", "label": "Props", "children": [] },
+            { "id": 13, "kind": "View", "children": [
+                { "id": 14, "kind": "View", "children": [
+                    { "id": 16, "kind": "Text", "label": "Prop", "children": [] },
+                    { "id": 18, "kind": "Text", "label": "label", "children": [] }
+                ]}
+            ]},
+            { "id": 15, "kind": "View", "children": [
+                { "id": 17, "kind": "Text", "label": "Footer note", "children": [] }
+            ]}
+        ]}]));
+        let al = align(&web, &native);
+        assert_eq!(matched(&al, 5), Some(15), "wrappers pair by shared content");
+        assert_eq!(matched(&al, 6), Some(17));
+        assert_eq!(matched(&al, 3), Some(16), "cell text pairs through the table wrapper");
+        assert_eq!(matched(&al, 4), Some(18));
+        assert!(al.unmatched.iter().all(|u| !u.in_a && u.kind == "View"), "{:?}", al.unmatched);
+    }
+
+    /// The variant actually seen on the docs' Badge page: web's extra
+    /// anonymous view holds NO identifiable content. Falling back to "first
+    /// candidate in order" paired it with native's table passthrough.
+    #[test]
+    fn regression_content_free_view_never_pairs_with_the_table_wrapper() {
+        let web = snap(serde_json::json!([{ "id": 1, "kind": "View", "children": [
+            { "id": 5, "kind": "View", "children": [
+                { "id": 6, "kind": "View", "children": [] }
+            ]},
+            { "id": 3, "kind": "Text", "label": "Prop", "children": [] }
+        ]}]));
+        let native = snap(serde_json::json!([{ "id": 11, "kind": "View", "children": [
+            { "id": 13, "kind": "View", "children": [
+                { "id": 16, "kind": "Text", "label": "Prop", "children": [] }
+            ]}
+        ]}]));
+        let al = align(&web, &native);
+        assert_eq!(matched(&al, 3), Some(16));
+        assert_eq!(matched(&al, 5), None, "a content-free box is not the table wrapper");
+    }
+
+    /// The exact Badge-page shape, read from the live apps: web's section ends
+    /// in a CHILDLESS view, native's holds the passthrough and then its own
+    /// childless view. Positional pairing gave web's empty view the
+    /// passthrough.
+    #[test]
+    fn regression_empty_view_pairs_with_empty_view_not_the_table_wrapper() {
+        let web = snap(serde_json::json!([{ "id": 1, "kind": "View", "children": [
+            { "id": 2, "kind": "Text", "label": "Props", "children": [] },
+            { "id": 3, "kind": "Text", "label": "Prop", "children": [] },
+            { "id": 9, "kind": "View", "children": [] }
+        ]}]));
+        let native = snap(serde_json::json!([{ "id": 11, "kind": "View", "children": [
+            { "id": 12, "kind": "Text", "label": "Props", "children": [] },
+            { "id": 13, "kind": "View", "children": [
+                { "id": 14, "kind": "View", "children": [
+                    { "id": 15, "kind": "View", "children": [
+                        { "id": 16, "kind": "Text", "label": "Prop", "children": [] }
+                    ]}
+                ]}
+            ]},
+            { "id": 19, "kind": "View", "children": [] }
+        ]}]));
+        let al = align(&web, &native);
+        assert_eq!(matched(&al, 9), Some(19), "empty pairs with empty");
+        assert_eq!(matched(&al, 3), Some(16), "cell text pairs through the wrappers");
+        assert!(al.unmatched.iter().all(|u| !u.in_a), "{:?}", al.unmatched);
     }
 }

@@ -36,4 +36,6 @@ description = "The local UTC offset at an instant, read from the OS zone databas
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Time"] }
+# `LibraryLoader`: the `Ex` conversion is resolved at run time (see the
+# Windows arm in `src/lib.rs`).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Time", "Win32_System_LibraryLoader"] }
