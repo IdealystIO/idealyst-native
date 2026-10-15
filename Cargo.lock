@@ -4264,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -6380,7 +6380,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "5.1.0"
+version = "5.2.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -7634,7 +7634,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.20.0"
+version = "1.21.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7659,7 +7659,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10529,7 +10529,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -10695,7 +10695,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "runtime-world",
  "rustc-hash 2.1.2",
@@ -10715,7 +10715,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.24.0"
+version = "1.25.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10744,7 +10744,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -12656,7 +12656,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
