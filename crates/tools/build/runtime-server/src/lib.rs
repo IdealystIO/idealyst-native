@@ -69,6 +69,13 @@ pub struct BuildOptions {
     /// with a path-dep gets a wrapper that uses the same path — no
     /// local-checkout-alongside-the-project assumption.
     pub source: FrameworkSource,
+    /// The app crate's own cargo features (`idealyst dev --features`).
+    /// The app's code runs in the sidecar, so they go on the sidecar
+    /// wrapper's dependency on the app — written into its `Cargo.toml`
+    /// rather than passed on one `cargo build` line, so every build of
+    /// the sidecar (the fat build here, a respawn's rebuild later) gets
+    /// them.
+    pub app_features: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -125,6 +132,7 @@ fn build_sidecar_mode(
         &opts.source,
         &cargo_target,
         manifest,
+        &opts.app_features,
     )?;
     generate_host_wrapper(
         &wrapper_dir,
@@ -246,12 +254,23 @@ fn sidecar_binary_name(project_name: &str) -> String {
 // Sidecar wrapper generation
 // ---------------------------------------------------------------------------
 
+/// The sidecar's dependency on the app crate: its `sidecar` feature plus
+/// the app features the developer asked for.
+fn sidecar_user_dep(project_dir: &Path, app_features: &[String]) -> String {
+    let features: Vec<String> = std::iter::once("sidecar")
+        .chain(app_features.iter().map(String::as_str))
+        .map(|f| format!("{f:?}"))
+        .collect();
+    format!("{{ path = \"{}\", features = [{}] }}", project_dir.display(), features.join(", "))
+}
+
 fn generate_sidecar_wrapper(
     sidecar_dir: &Path,
     project_dir: &Path,
     source: &FrameworkSource,
     cargo_target: &Path,
     manifest: &Manifest,
+    app_features: &[String],
 ) -> Result<()> {
     fs::create_dir_all(sidecar_dir.join("src"))
         .with_context(|| format!("create {}", sidecar_dir.display()))?;
@@ -368,8 +387,7 @@ strip = "debuginfo"
         shared_dep = shared_dep,
         dev_server_dep = dev_server_dep,
         user_name = manifest.name,
-        user_dep =
-            format!("{{ path = \"{}\", features = [\"sidecar\"] }}", project_dir.display()),
+        user_dep = sidecar_user_dep(project_dir, app_features),
         patch_block = source.patch_block(),
     );
 
@@ -762,6 +780,10 @@ mod regression_tests {
     /// Generate both wrappers into a temp dir; the `TempDir` guard is
     /// returned so the caller keeps them alive.
     fn generate_both() -> (PathBuf, PathBuf, tempfile::TempDir) {
+        generate_both_with(&[])
+    }
+
+    fn generate_both_with(app_features: &[String]) -> (PathBuf, PathBuf, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("project");
         let sidecar_dir = tmp.path().join("sidecar");
@@ -778,6 +800,7 @@ mod regression_tests {
             &source,
             &cargo_target,
             &manifest,
+            app_features,
         )
         .expect("generate sidecar wrapper");
         generate_host_wrapper(
@@ -908,6 +931,19 @@ mod regression_tests {
     /// dev-server's scene feature, and takes a plain
     /// `features = ["sidecar"]` dep on the user crate (no core pin —
     /// there is one core).
+    /// `idealyst dev --features vello` did nothing in runtime-server mode:
+    /// the app's code runs in the sidecar, whose dependency on the app
+    /// carried only `sidecar`. The asked-for features ride on that
+    /// dependency.
+    #[test]
+    fn regression_app_features_reach_the_sidecar_dependency() {
+        let (sidecar_dir, _host_dir, _tmp) = generate_both_with(&["vello".to_string()]);
+        let cargo_toml = std::fs::read_to_string(sidecar_dir.join("Cargo.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&cargo_toml).expect("valid TOML");
+        let deps = parsed.get("dependencies").expect("deps table");
+        assert_eq!(dep_features(deps, "demo"), vec!["sidecar".to_string(), "vello".to_string()], "{cargo_toml}");
+    }
+
     #[test]
     fn sidecar_wrapper_boots_run_newcore_with_recorder_seam() {
         let (sidecar_dir, _host_dir, _tmp) = generate_both();

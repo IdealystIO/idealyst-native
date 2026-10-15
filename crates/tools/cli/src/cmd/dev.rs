@@ -123,8 +123,20 @@ use build_ios::{parse_manifest, Target};
 /// while `runtime-shared/robot` is the bridge TRANSPORT the templates
 /// call into (`robot::bridge::set_app_identity`) — the vocabulary's
 /// `robot` feature does not forward it.
-fn dev_user_features_native() -> Vec<String> {
-    vec!["dev".to_string()]
+///
+/// The app's own `--features` ride along as `<app>/<feature>`: the
+/// wrapper is the package cargo builds, and it depends on the app under
+/// the app's package name.
+fn dev_user_features_native(dir: &Path, args: &Args) -> Vec<String> {
+    let mut f = vec!["dev".to_string()];
+    f.extend(app_feature_specs(&project_app_name(dir), &args.features));
+    f
+}
+
+/// `features` of the app package `app`, spelled for a cargo build of a
+/// package that depends on it.
+fn app_feature_specs(app: &str, features: &[String]) -> Vec<String> {
+    features.iter().filter(|f| !f.is_empty()).map(|f| format!("{app}/{f}")).collect()
 }
 
 /// Compute the env vars the dev launcher sets on the spawned app.
@@ -378,6 +390,15 @@ pub struct Args {
     /// Pass this for a leaner dev session with no robot transport.
     #[arg(long)]
     pub no_robot: bool,
+
+    /// Cargo features to turn on in the app crate, comma-separated
+    /// (`--features vello,beta`), as `cargo build --features` would.
+    /// They reach wherever the app's code is compiled: the native
+    /// wrappers (as `<app>/<feature>`), the local web and SSR bundles,
+    /// and the runtime-server sidecar. The browser bundle in
+    /// runtime-server mode runs none of the app's code and gets none.
+    #[arg(long, value_delimiter = ',')]
+    pub features: Vec<String>,
 
     /// Open the Inspector on this app in the browser. The Inspector server
     /// (the same one `idealyst inspect` runs) is hosted in this process for
@@ -808,7 +829,7 @@ pub fn run(args: Args) -> Result<()> {
     // wait loop after the worker join.
     let mut host_pid: Option<u32> = None;
     let runtime_server_port: Option<u16> = if !args.local {
-        let host_binary = build_runtime_server_host(&dir)?;
+        let host_binary = build_runtime_server_host(&dir, &args.features)?;
         let port_file = runtime_server_port_file(&dir);
         // Clear any stale value from a previous session before
         // letting the host overwrite it — keeps reads from picking
@@ -1360,7 +1381,7 @@ fn dedup_preserve_order(xs: Vec<Target>) -> Vec<Target> {
 /// Build (or rebuild) the runtime-server host binary for this project. The host
 /// is what serves the wire WebSocket; runs as a child process for the
 /// rest of this session.
-fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
+fn build_runtime_server_host(dir: &Path, app_features: &[String]) -> Result<PathBuf> {
     crate::dlog!("dev", "building runtime-server host…");
     let source = crate::framework_source::resolve(dir)?;
     let artifact = build_runtime_server::build(
@@ -1368,6 +1389,7 @@ fn build_runtime_server_host(dir: &Path) -> Result<PathBuf> {
         build_runtime_server::BuildOptions {
             release: false,
             source,
+            app_features: app_features.to_vec(),
         },
     )?;
     Ok(artifact.host_binary)
@@ -1408,6 +1430,15 @@ fn hot_patch_armed(args: &Args) -> bool {
 /// it. Spelled as one framework feature for the same reason
 /// `ui-overlay` is — the app depends on the `idealyst` facade, and
 /// naming a package it does not depend on is a hard cargo error.
+/// Features of a `--local` web bundle: the dev set plus the app's own
+/// `--features`. The web build compiles the app crate itself, so app
+/// features are passed by their plain names.
+fn local_web_features(args: &Args) -> Vec<String> {
+    let mut f = web_dev_features_with(args.no_robot, hot_patch_armed(args));
+    f.extend(args.features.iter().filter(|f| !f.is_empty()).cloned());
+    f
+}
+
 fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<String> {
     let mut f = web_dev_features(no_robot);
     if hot_patch {
@@ -1562,7 +1593,7 @@ fn launch_windows(
             release: false,
             source,
             background: true,
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             env_vars,
         },
     )
@@ -1622,7 +1653,7 @@ fn launch_linux(
             mode: run_linux::RunMode::Local,
             source,
             background: true,
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             env_vars,
         },
     )
@@ -1668,7 +1699,7 @@ fn launch_terminal(dir: &Path, args: &Args, runtime_server_port: Option<u16>) ->
             release: false,
             mode,
             source,
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             env_vars,
         },
     )
@@ -1892,7 +1923,7 @@ fn launch_web(
                     // Robot is on by default in dev → add the wrapper-local
                     // `robot` feature (→ `backend-web/robot`) so the local web
                     // bundle dials the relay run() hosts. --no-robot opts out.
-                    features: web_dev_features_with(args.no_robot, hot_patch_armed(args)),
+                    features: local_web_features(args),
                     bundle_out_dir: None,
                     // `dev-http` injects the relay URL at serve time on
                     // this path (see below) — there is no staged
@@ -2202,7 +2233,7 @@ fn launch_ssr(
             premint_report: false,
                 release: false,
                 source: source.clone(),
-                user_features: Vec::new(),
+                user_features: args.features.clone(),
                 bundle_out_dir: Some(bundle_dir.clone()),
                 robot_relay_url: None,
                 head_script: None,
@@ -2242,7 +2273,7 @@ fn launch_ssr(
         build_ssr::BuildOptions {
             release: false,
             source: source.clone(),
-            user_features: Vec::new(),
+            user_features: app_feature_specs(&project_app_name(dir), &args.features),
             // Follows the session's resolved core (runtime-v2
             // defaults flip). Premint posture mirrors the wasm leg above
             // so server-stamped classes match the hydrating bundle's.
@@ -2520,7 +2551,7 @@ fn full_stack_bundle_options(
     let features = if wire {
         vec!["runtime-server".to_string()]
     } else {
-        web_dev_features_with(args.no_robot, hot_patch_armed(args))
+        local_web_features(args)
     };
     Ok(dev_reload::BuildOptions {
         source: source.clone(),
@@ -4285,7 +4316,7 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
             release: false,
             mode,
             source,
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             // The dev loop relaunches on every change; the default
             // terminate-before-install (inside `run`) already keeps the
             // simulator from re-foregrounding a stale process. A full
@@ -4345,7 +4376,7 @@ fn launch_android(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> 
             mode,
             runtime_server_port,
             source,
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             // The dev process hosts the relay and exported its URL; pass it so
             // run-android bakes it into the manifest + sets up `adb reverse`.
             robot_relay_url: std::env::var("IDEALYST_ROBOT_RELAY_URL").ok(),
@@ -4395,7 +4426,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             release: false,
             mode: build_mode,
             source: source.clone(),
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             universal: false, // dev: fast host-arch build
         },
     )
@@ -4426,7 +4457,7 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
             mode,
             source,
             background: true,
-            user_features: dev_user_features_native(),
+            user_features: dev_user_features_native(dir, args),
             env_vars,
         },
     )
@@ -4614,6 +4645,7 @@ impl Args {
             debuginfo: self.debuginfo.clone(),
             dev_opt: self.dev_opt.clone(),
             no_robot: self.no_robot,
+            features: self.features.clone(),
             inspect: false,
             shared_target: self.shared_target,
             stream_port: self.stream_port,
@@ -4833,6 +4865,29 @@ mod tests {
 
     /// `--local` is the escape hatch and must be untouched: the full
     /// dev feature set, the reload script, no sidecar URL.
+    /// `idealyst dev` had no `--features`, so an app's own feature (the
+    /// charts demo's `vello`) could not be turned on for a dev run —
+    /// though the demo's manifest said `idealyst dev --features vello`.
+    /// Native wrappers name it through their dependency on the app; the
+    /// local web bundle builds the app crate and takes it as is.
+    #[test]
+    fn regression_dev_features_reach_the_app_crate() {
+        let args = parse_dev(&["idealyst", "dev", "--windows", "--local", "--features", "vello,beta"]);
+        assert_eq!(args.features, ["vello", "beta"]);
+        // Each platform launches from a `shallow_clone` of the args.
+        assert_eq!(args.shallow_clone().features, args.features);
+        assert_eq!(app_feature_specs("charts-demo", &args.features), ["charts-demo/vello", "charts-demo/beta"]);
+
+        let web = parse_dev(&["idealyst", "dev", "--web", "--local", "--features", "vello"]);
+        let features = local_web_features(&web);
+        assert_eq!(features.last().map(String::as_str), Some("vello"));
+        assert!(features.starts_with(&web_dev_features_with(false, hot_patch_armed(&web))));
+
+        let none = parse_dev(&["idealyst", "dev", "--web", "--local"]);
+        assert!(none.features.is_empty());
+        assert!(app_feature_specs("app", &none.features).is_empty());
+    }
+
     #[test]
     fn a_full_stack_local_bundle_is_unchanged_by_wire_mode() {
         let args = parse_dev(&["idealyst", "dev", "--web", "--local"]);

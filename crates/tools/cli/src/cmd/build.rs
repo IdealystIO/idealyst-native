@@ -962,6 +962,7 @@ fn build_runtime_server_host(dir: &std::path::Path, args: &Args) -> Result<()> {
         build_runtime_server::BuildOptions {
             release: args.release,
             source,
+            app_features: Vec::new(),
         },
     )?;
     eprintln!(

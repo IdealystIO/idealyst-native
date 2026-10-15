@@ -28,6 +28,16 @@ Source: `layers.rs`, `overlay.rs`.
 The `canvas` SDK's default renderer (`canvas-native`) draws with Direct2D
 on Windows. It needs Windows 10 or later, like the Direct2D scene renderer.
 
+The GPU renderer (`canvas-vello`) takes over when an app registers it and
+the machine has a real GPU. On a software adapter, which is what a machine
+or VM without a GPU has (WARP), it steps aside and `canvas-native` keeps
+the canvas: the WARP that ships with Windows 11 (10.0.26100) crashes in
+vello's compute shaders. Microsoft's redistributable WARP
+(`Microsoft.Direct3D.WARP` 1.0.20, `d3d10warp.dll` placed next to the
+`.exe`) runs them correctly. Headless `canvas_vello::render_to_rgba` still
+uses a software adapter when there is no GPU, so a GPU-less Windows server
+needs that DLL. Source: `gpu-surface/src/config.rs` (`Requirements.hardware`).
+
 Files dragged in from Explorer reach `on_file_drop` the same way: the window
 registers one OLE drop target (when the first `on_file_drop` view mounts),
 offers each drag position to views deepest first, and shows the copy cursor
@@ -255,6 +265,10 @@ instead of the desktop (faster, but there is no desktop for window tests).
 A UTM or other VM without 3D acceleration runs the Direct2D renderer on
 WARP, Windows' software rasterizer: right for checking output and crashes,
 not for timing.
+To try the vello GPU path there anyway, put the redistributable WARP DLL in
+the app's folder on the VM (`C:\idealyst\<app>-windows\`; the remote launch
+does not clear it) and lift `hardware` in `canvas-vello`'s
+`VELLO_REQUIREMENTS` for that run.
 
 ## Testing on a Windows machine or VM by hand
 
