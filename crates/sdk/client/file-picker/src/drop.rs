@@ -25,9 +25,9 @@
 //! // ui! { view().on_file_drop(dz.handler()) { text("Drop files here") } }
 //! ```
 //!
-//! Delivered on **web**, **macOS**, and **Linux** (GTK4) — the desktop-class
-//! backends. On iOS / Android (no OS file-drag) and the scaffold Windows
-//! backend the `on_file_drop` view slot is a no-op, so the handler simply
+//! Delivered on **web**, **macOS**, **Linux** (GTK4) and **Windows** (OLE
+//! `IDropTarget`) — the desktop-class backends. On iOS / Android (no OS
+//! file-drag) the `on_file_drop` view slot is a no-op, so the handler simply
 //! never fires — the zone renders inertly, exactly like a wheel handler on a
 //! phone.
 

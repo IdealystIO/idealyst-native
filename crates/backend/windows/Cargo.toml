@@ -28,6 +28,14 @@ license.workspace = true
 crate-type = ["rlib"]
 
 [features]
+# Robot/automation surface. Turns on the vocabulary's element REGISTRY (which
+# the walker registers every mounted primitive into) and the shared bridge
+# TRANSPORT, compiles `newcore::install_robot_env` into the boot path, and
+# enables the `IntrospectionOps` reader (`src/introspect.rs`). Both halves are
+# needed and neither implies the other — with only the transport the bridge
+# answers every verb from an empty registry. Same contract as
+# `backend-linux/robot`.
+robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
 # The permanent substrate both cores compiled against (style engine,
@@ -81,6 +89,15 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_DirectComposition",
     # D2D_RECT_F for IDCompositionVisual::SetClip2.
     "Win32_Graphics_Direct2D_Common",
+    # The Direct2D renderer (`d2d.rs`, `dwrite_text.rs`): Direct2D drawing,
+    # DirectWrite text, a D3D11 device + DXGI composition swapchain.
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Foundation_Numerics",
     # `image()`: GDI+ decodes from an in-memory `IStream`
     # (`SHCreateMemStream` + `GdipLoadImageFromStream`) instead of staging
     # bytes to a temp file.
@@ -90,6 +107,20 @@ windows = { version = "0.58", features = [
     # (`image_fetch.rs`) — the OS HTTP stack (proxy settings, system TLS
     # roots), no extra TLS/runtime dependency.
     "Win32_Networking_WinHttp",
+    # OS file drag-and-drop (`file_drop.rs`): the window's OLE
+    # `IDropTarget`, `CF_HDROP` reads, and `#[implement]` for the COM object.
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    # STGMEDIUM (IDataObject::GetData) + ReleaseStgMedium.
+    "Win32_System_Com_StructuredStorage",
+    "implement",
 ] }
+# `#[implement]` expands to `::windows_core` paths.
+windows-core = "0.58"
 # `Element::Graphics` hands wgpu a `Win32WindowHandle` through this.
 raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+# `file_drop` tests build a real shell data object from file paths
+# (SHParseDisplayName → item array → BHID_DataObject), as Explorer does.
+windows = { version = "0.58", features = ["Win32_UI_Shell_Common"] }

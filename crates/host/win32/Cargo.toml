@@ -19,6 +19,12 @@ license.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+# Forwards to `backend-windows/robot` (element registry + bridge transport +
+# native introspection). The CLI-generated wrapper's `dev` feature enables it,
+# exactly as the GTK wrapper enables `host-gtk/robot`.
+robot = ["backend-windows/robot"]
+
 [dependencies]
 # `async-driver` exposes `runtime_core::driver` — the host installs a
 # raf-backed `RenderLoopDriver` so embedded wgpu hosts
@@ -33,6 +39,8 @@ runtime-shared = { workspace = true }
 # Pure rlib, cheap, and reuses the workspace's cached build artifacts.
 [dev-dependencies]
 welcome = { path = "../../../examples/welcome" }
+# The caps traits, for tests that drive the backend as a mount does.
+runtime-vocabulary = { workspace = true }
 
 [[example]]
 name = "smoke"

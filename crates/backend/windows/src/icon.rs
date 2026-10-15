@@ -513,7 +513,7 @@ impl PathEmitter for GdiPlusEmitter {
 /// Lucide authors strokes at width 2 in a 24-unit view box; the painter
 /// scales that by the glyph's fit-scale so a `size(N)` icon keeps the same
 /// relative stroke weight at any size.
-const BASE_STROKE_WIDTH: f32 = 2.0;
+pub(crate) const BASE_STROKE_WIDTH: f32 = 2.0;
 
 /// Paint state for one icon node, held on its `NodeMeta`.
 pub(crate) struct IconPaint {

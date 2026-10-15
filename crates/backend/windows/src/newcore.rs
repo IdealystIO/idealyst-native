@@ -126,8 +126,12 @@ use std::rc::{Rc, Weak};
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives;
 use runtime_shared::primitives::image::{ImageErrorHandler, ImageLoadHandler};
+#[cfg(feature = "robot")]
+use runtime_shared::introspect::NativeNode;
+#[cfg(feature = "robot")]
+use runtime_shared::primitives::portal::ViewportRect;
 use runtime_shared::{
-    Action, Color, ColorScheme, Platform, StyleRules,
+    Action, Color, ColorScheme, FileDropHandler, HoverHandler, Platform, StyleRules, TouchHandler, WheelHandler,
     VirtualizerCallbacks,
 };
 use runtime_shared::animation::AnimProp;
@@ -305,12 +309,65 @@ pub fn start_with<S, R, B>(
         runtime_shared::app_state::report(fact);
     }
     schedule_flush();
+    // Point the Robot bridge at the registry this boot actually fills.
+    #[cfg(feature = "robot")]
+    install_robot_env();
+    // The live `screenshot` verb, answered by this backend's real capture.
+    // Without it local-mount native apps answered `unknown command:
+    // screenshot` — only the dev-server sidecar registered one, so an
+    // `idealyst dev --local` app could be driven but never seen.
+    #[cfg(feature = "robot")]
+    {
+        let weak = std::rc::Rc::downgrade(&backend);
+        runtime_shared::robot::screenshot::register_native_screenshot(move |done| match weak.upgrade() {
+            Some(b) => caps::IntrospectionOps::capture_screenshot(&*b.borrow(), done),
+            None => done(Err("the app has been torn down".into())),
+        });
+    }
     NewCoreApp {
         realized,
         _backend: backend,
         _registry: registry,
         world,
     }
+}
+
+/// Point the Robot bridge at the vocabulary registry and give it a way to
+/// enter the mounted world — the same wiring, for the same reason, as
+/// `backend_linux::newcore::install_robot_env` (read its doc for the full
+/// story).
+///
+/// In short: the shared bridge dispatches to the substrate's own (legacy,
+/// EMPTY) registry by default, so an app that merely starts the bridge answers
+/// `get_snapshot` with `[]` and `find_element` with `null` on a perfectly
+/// healthy tree — a silently blinded driver. `install_verb_router` routes to
+/// the vocabulary registry the v2 walker fills, falling back on the exact
+/// `unknown command:` marker so substrate-owned verbs (`get_logs`, host
+/// commands) still resolve. `install_driver_env` runs queries inside the
+/// mounted world (a reactive `label_fn` reads world signals) and settles
+/// actions through a flush so a `click` returns after its writes commit.
+#[cfg(feature = "robot")]
+fn install_robot_env() {
+    runtime_vocabulary::robot::install_driver_env(
+        |f| match FLUSH_WORLD.with(|w| w.borrow().clone()) {
+            Some(world) => world.enter(|| f()),
+            // Pre-boot / post-stop: no world; static labels still resolve.
+            None => f(),
+        },
+        || {
+            if let Some(world) = FLUSH_WORLD.with(|w| w.borrow().clone()) {
+                if !world.is_flushing() {
+                    world.flush();
+                }
+            }
+        },
+    );
+    runtime_shared::robot::bridge::install_verb_router(|cmd, args| {
+        match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
+            Err(e) if e.starts_with("unknown command:") => None,
+            other => Some(other),
+        }
+    });
 }
 
 fn set_flush_world(world: Option<World>) {
@@ -547,8 +604,15 @@ impl Host for WindowsBackend {
     /// the iOS/macOS `create_anchor_impl`. Left as-is until an agent can
     /// build and exercise this backend's rendering + input on the real
     /// target to verify the frame-pass and hit-test halves.
+    /// A layout- and hit-transparent node: this backend's
+    /// `display: contents`, as on web, iOS, macOS and Android. This backend
+    /// anchors EVERY reactive region (`supports_splice` is false), and a
+    /// plain view here was a flex item the author never wrote: a
+    /// `height: 100%` / `flex_grow` child under an `if` laid out at 0 (the
+    /// charts demo's plot), a row's children under a `for` stacked into a
+    /// column, and `gap` stopped separating them.
     fn create_anchor(&mut self) -> Self::Node {
-        self.create_view(&AccessibilityProps::default())
+        WindowsBackend::create_anchor(self)
     }
 
     /// Explicit `false` — the port of the old
@@ -647,7 +711,45 @@ impl caps::ViewOps for WindowsBackend {
     }
 }
 
-impl caps::InputOps for WindowsBackend {}
+/// Painted views have no HWNDs: the handlers go into the backend's
+/// `view_input` tables, and the host routes mouse messages to them along
+/// the hit chain (`crate::view_input`). Wrapped to flush after author
+/// code, like every other dispatch site here.
+impl caps::InputOps for WindowsBackend {
+    fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler) {
+        let f = handler;
+        let handler: TouchHandler = Rc::new(move |ev| {
+            let response = f(ev);
+            schedule_flush();
+            response
+        });
+        self.view_input.touch.insert(node.id, handler);
+    }
+
+    fn install_wheel_handler(&mut self, node: &Self::Node, handler: WheelHandler) {
+        let f = handler;
+        let handler: WheelHandler = Rc::new(move |ev| {
+            let response = f(ev);
+            schedule_flush();
+            response
+        });
+        self.view_input.wheel.insert(node.id, handler);
+    }
+
+    fn install_hover_handler(&mut self, node: &Self::Node, handler: HoverHandler) {
+        self.view_input.hover.insert(node.id, flushing1(handler));
+    }
+
+    fn install_file_drop_handler(&mut self, node: &Self::Node, handler: FileDropHandler) {
+        let f = handler;
+        let handler: FileDropHandler = Rc::new(move |ev| {
+            let response = f(ev);
+            schedule_flush();
+            response
+        });
+        self.install_file_drop_handler_impl(node.id, handler);
+    }
+}
 
 impl caps::PressableOps for WindowsBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
@@ -1172,7 +1274,46 @@ impl caps::AnimationOps for WindowsBackend {
     }
 }
 
-impl caps::IntrospectionOps for WindowsBackend {}
+// EVERY method here is behind `robot`: this trait is the DIAGNOSTIC surface
+// (the bridge's `get_frame` / `get_absolute_frame` / `introspect_native`
+// verbs) and a shipped app must not carry it. With the feature off the
+// trait's defaults apply (`None`, `supports_* -> false`), the honest answer
+// for a build that cannot serve them. The geometry helpers themselves
+// (`node_frame` / `node_abs_frame`) stay ungated — `ViewHandle::absolute_frame`
+// is a production author API.
+impl caps::IntrospectionOps for WindowsBackend {
+    #[cfg(feature = "robot")]
+    fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        self.node_frame(node.id)
+            .map(|(x, y, width, height)| ViewportRect { x, y, width, height })
+    }
+
+    #[cfg(feature = "robot")]
+    fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+        self.node_abs_frame(node.id)
+            .map(|(x, y, width, height)| ViewportRect { x, y, width, height })
+    }
+
+    #[cfg(feature = "robot")]
+    fn supports_native_introspection(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "robot")]
+    fn introspect_native(&self, node: &Self::Node) -> Option<NativeNode> {
+        self.introspect_native_impl(node.id)
+    }
+
+    #[cfg(feature = "robot")]
+    fn supports_screenshot(&self) -> bool {
+        self.supports_screenshot_impl()
+    }
+
+    #[cfg(feature = "robot")]
+    fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>) {
+        self.capture_screenshot_impl(done)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Batch + wire bindings

@@ -31,17 +31,35 @@
 //! color (exact for non-overlapping content; the standard immediate-mode
 //! trade-off vs. offscreen subtree compositing).
 //!
+//! ## Gradients
+//!
+//! A linear gradient under an axis-aligned world transform (every node
+//! that isn't rotated, skewed or mirrored) is computed on the CPU straight
+//! onto the device-pixel grid and copied 1:1 (`gradient_raster`) — GDI+'s
+//! per-pixel brush shading made the welcome vignettes ~85 ms of a ~90 ms
+//! frame under Wine, the copy costs ~3 ms. The output reproduces the line
+//! brush (same preset-blend ramp, same pixel grid, anti-aliased rounded
+//! shape); rotated nodes and radial gradients still use GDI+ brushes.
+//!
 //! ## Hit testing
 //!
-//! With no per-view HWNDs, clicks land on the host window. [`pressable_at`]
+//! With no per-view HWNDs, clicks land on the host window. [`hit_chain`]
 //! walks the tree top-most-first (reverse paint order) applying the same
-//! frame + translate offsets and returns the deepest pressable containing
-//! the point. Scale/rotate are ignored in hit tests — documented
-//! approximation; nothing interactive animates transforms today.
+//! frame + translate offsets, finds the deepest node containing the point
+//! (the hit target) and returns it with its ancestors, deepest first —
+//! the responder chain every input channel bubbles along: pressables
+//! ([`pressable_at`]), touch, wheel and hover (`crate::view_input`).
+//! `pointer_events: none` makes a node transparent as a TARGET (the hit
+//! falls to whatever is painted behind it) without removing it from a
+//! descendant's bubble path; the nearest explicit value up the tree wins,
+//! so a descendant's `auto` re-enables it — the same verdict as CSS and
+//! `backend_apple_core::pointer_events_policy`. Scale/rotate are ignored
+//! in hit tests — documented approximation; nothing interactive animates
+//! transforms today.
 
 use std::rc::Rc;
 
-use runtime_shared::{Length, TextAlign, Transform};
+use runtime_shared::{Length, PointerEvents, TextAlign, Transform};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::COLORREF;
@@ -50,20 +68,22 @@ use windows::Win32::Graphics::Gdi::{
     HBITMAP, HDC, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::Graphics::GdiPlus::{
-    CombineModeIntersect, FillModeWinding, GdipAddPathArc, GdipAddPathRectangle,
+    CombineModeIntersect, FillModeWinding, GdipAddPathArc, GdipAddPathLine, GdipAddPathRectangle,
     GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreatePen1, GdipCreateSolidFill,
     GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDrawPath,
     GdipDrawString, GdipFillPath, GdipGraphicsClear, GdipRestoreGraphics, GdipRotateWorldTransform,
     GdipSaveGraphics, GdipScaleWorldTransform, GdipSetClipPath, GdipSetSmoothingMode,
     GdipSetTextRenderingHint, GdipStringFormatGetGenericTypographic, GdipTranslateWorldTransform,
     GpBrush, GpGraphics, GpPath, GpPen, GpSolidFill, GpStringFormat, MatrixOrderPrepend, RectF,
-    SmoothingModeAntiAlias, TextRenderingHintAntiAlias, UnitPixel,
+    SmoothingModeAntiAlias, TextRenderingHintAntiAlias, UnitPixel, GdipCreateBitmapFromScan0,
+    GdipDisposeImage, GdipGetImageGraphicsContext, GpBitmap, GpImage,
 };
 
 use crate::font;
+use crate::layers::{self, LayerPlan};
 use crate::border_pattern::{self, BorderMark};
 use crate::{
-    icon, image, uniform_border, AnimTransform, BorderSide, GradKind, GradientPaint, NodeKind,
+    icon, image, uniform_border, AnimTransform, BorderSide, GradKind, GradientPaint, NodeKind, NodeMeta,
     ViewVisual, WindowsBackend,
 };
 
@@ -90,13 +110,7 @@ pub(crate) fn argb_with_alpha(argb: u32, alpha: f32) -> u32 {
 // Transform composition (pure — unit-tested)
 // =========================================================================
 
-/// One resolved world-transform op, in application order.
-#[derive(Debug, PartialEq)]
-pub(crate) enum XOp {
-    Translate(f32, f32),
-    Scale(f32, f32),
-    Rotate(f32),
-}
+pub(crate) use crate::painted_geom::XOp;
 
 /// Resolve a node's transform chain against its `w × h` box:
 /// animated translate first (origin-independent), then the
@@ -175,6 +189,11 @@ pub(crate) fn z_sorted(pairs: &[(u64, f32)]) -> Vec<u64> {
 /// so a centered stroke stays inside the node rect. Square corners
 /// (all radii ~0) use a plain rectangle; otherwise each corner is a
 /// 90° arc and GDI+ connects consecutive arcs with the straight edges.
+///
+/// A square corner among rounded ones (radius < 0.5, the same threshold
+/// as the all-square case) is a single POINT, never a zero-size arc:
+/// `AddArc` rejects a zero width/height, so the corner was silently
+/// dropped and the figure cut diagonally between its neighbours.
 pub(crate) unsafe fn build_round_rect_path(
     path: *mut GpPath,
     w: f32,
@@ -199,10 +218,17 @@ pub(crate) unsafe fn build_round_rect_path(
     let rmax = bw.min(bh) / 2.0;
     let c = |i: usize| radii[i].clamp(0.0, rmax);
     let (tl, tr, br, bl) = (c(0), c(1), c(2), c(3));
-    let _ = GdipAddPathArc(path, left, top, 2.0 * tl, 2.0 * tl, 180.0, 90.0);
-    let _ = GdipAddPathArc(path, right - 2.0 * tr, top, 2.0 * tr, 2.0 * tr, 270.0, 90.0);
-    let _ = GdipAddPathArc(path, right - 2.0 * br, bottom - 2.0 * br, 2.0 * br, 2.0 * br, 0.0, 90.0);
-    let _ = GdipAddPathArc(path, left, bottom - 2.0 * bl, 2.0 * bl, 2.0 * bl, 90.0, 90.0);
+    let corner = |r: f32, arc_x: f32, arc_y: f32, start: f32, at: (f32, f32)| {
+        if r < 0.5 {
+            let _ = GdipAddPathLine(path, at.0, at.1, at.0, at.1);
+        } else {
+            let _ = GdipAddPathArc(path, arc_x, arc_y, 2.0 * r, 2.0 * r, start, 90.0);
+        }
+    };
+    corner(tl, left, top, 180.0, (left, top));
+    corner(tr, right - 2.0 * tr, top, 270.0, (right, top));
+    corner(br, right - 2.0 * br, bottom - 2.0 * br, 0.0, (right, bottom));
+    corner(bl, left, bottom - 2.0 * bl, 90.0, (left, bottom));
     let _ = GdipClosePathFigure(path);
 }
 
@@ -252,48 +278,32 @@ pub(crate) fn blend_arrays(
 /// uses a path-gradient brush over an ellipse of the computed radius,
 /// clamped outside so box corners beyond the radius keep the edge color.
 /// Multi-stop ramps go through the preset-blend APIs.
+///
+/// A linear gradient under an axis-aligned transform skips the brush:
+/// [`paint_linear_raster`] draws the same pixels ~6× faster under Wine
+/// (see `gradient_raster`). `radii` is the shape `fill_path` was built
+/// with, which the raster reproduces.
 unsafe fn paint_gradient(
     g: *mut GpGraphics,
     gp: &GradientPaint,
     fill_path: *mut GpPath,
     w: f32,
     h: f32,
+    radii: [f32; 4],
     alpha: f32,
 ) {
     use windows::Win32::Graphics::GdiPlus::{
-        GdipAddPathEllipse, GdipCreateLineBrush, GdipCreatePathGradientFromPath,
-        GdipSetLinePresetBlend, GdipSetPathGradientCenterColor, GdipSetPathGradientCenterPoint,
-        GdipSetPathGradientPresetBlend, GdipSetPathGradientSurroundColorsWithCount,
-        GdipSetPathGradientWrapMode, GpLineGradient, GpPathGradient, PointF, WrapModeClamp,
-        WrapModeTile,
+        GdipAddPathEllipse, GdipCreatePathGradientFromPath, GdipSetPathGradientCenterColor,
+        GdipSetPathGradientCenterPoint, GdipSetPathGradientPresetBlend,
+        GdipSetPathGradientSurroundColorsWithCount, GdipSetPathGradientWrapMode, GpPathGradient,
+        PointF, WrapModeClamp,
     };
 
     match gp.kind {
         GradKind::Linear { angle_deg } => {
             let (s, e) = crate::linear_points(angle_deg, w, h);
-            let p1 = PointF { X: s.0, Y: s.1 };
-            let p2 = PointF { X: e.0, Y: e.1 };
-            let first = gp.stops.first().map(|s| argb_from_srgba(s.1, alpha)).unwrap_or(0);
-            let last = gp.stops.last().map(|s| argb_from_srgba(s.1, alpha)).unwrap_or(first);
-            let mut brush: *mut GpLineGradient = std::ptr::null_mut();
-            // The axis already spans the box's full projected extent (see
-            // `linear_points`), so no pixel projects outside [0, 1] and
-            // the wrap mode is never exercised — `WrapModeTile` is just
-            // the required non-null argument.
-            if GdipCreateLineBrush(&p1, &p2, first, last, WrapModeTile, &mut brush).0 == 0
-                && !brush.is_null()
-            {
-                let (colors, positions) = blend_arrays(&gp.stops, alpha, false);
-                if colors.len() >= 2 {
-                    let _ = GdipSetLinePresetBlend(
-                        brush,
-                        colors.as_ptr(),
-                        positions.as_ptr(),
-                        colors.len() as i32,
-                    );
-                }
-                let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
-                let _ = GdipDeleteBrush(brush as *mut GpBrush);
+            if !paint_linear_raster(g, gp, s, e, w, h, radii, alpha) {
+                paint_linear_brush(g, gp, s, e, fill_path, alpha);
             }
         }
         GradKind::Radial { center, radius, farthest } => {
@@ -323,16 +333,220 @@ unsafe fn paint_gradient(
                         colors.len() as i32,
                     );
                 }
-                // Clamp so pixels outside the ellipse (box corners past
-                // the radius) keep the outermost stop color rather than
-                // tiling the ramp.
+                // Clamp: don't tile the ramp. A path-gradient brush paints
+                // nothing OUTSIDE its path whatever the wrap mode, so the
+                // box beyond the ellipse is filled separately below.
                 let _ = GdipSetPathGradientWrapMode(brush, WrapModeClamp);
                 let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
                 let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                paint_beyond_ellipse(g, fill_path, ellipse, (cx, cy, r), w, h, outer);
             }
             let _ = GdipDeletePath(ellipse);
         }
     }
+}
+
+/// CSS paints a radial gradient's last stop beyond its ending shape; a
+/// GDI+ path-gradient brush leaves everything outside its path blank (the
+/// corners of a `closest-side` circle in a box were unpainted). Fill the
+/// box minus the ellipse with `outer`: one path holding the shape and the
+/// ellipse, alternate fill, so the overlap cancels — never painting under
+/// the ellipse, where a translucent outer stop would composite twice. When
+/// the ellipse leaves the box its outside part would fill too, so the box
+/// then clips the fill.
+unsafe fn paint_beyond_ellipse(
+    g: *mut GpGraphics,
+    fill_path: *mut GpPath,
+    ellipse: *mut GpPath,
+    (cx, cy, r): (f32, f32, f32),
+    w: f32,
+    h: f32,
+    outer: u32,
+) {
+    use windows::Win32::Graphics::GdiPlus::{
+        FillModeAlternate, GdipAddPathPath, GdipClonePath, GdipSetPathFillMode,
+    };
+    if outer >> 24 == 0 {
+        return;
+    }
+    // The ellipse covers the whole box: nothing lies beyond it.
+    let covers = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)]
+        .iter()
+        .all(|(x, y)| (x - cx).powi(2) + (y - cy).powi(2) <= r * r);
+    if covers {
+        return;
+    }
+    let mut ring: *mut GpPath = std::ptr::null_mut();
+    if GdipClonePath(fill_path, &mut ring).0 != 0 || ring.is_null() {
+        return;
+    }
+    let _ = GdipAddPathPath(ring, ellipse, windows::Win32::Foundation::BOOL(0));
+    let _ = GdipSetPathFillMode(ring, FillModeAlternate);
+    let escapes = cx - r < 0.0 || cy - r < 0.0 || cx + r > w || cy + r > h;
+    let mut state: u32 = 0;
+    if escapes {
+        let _ = GdipSaveGraphics(g, &mut state);
+        let _ = GdipSetClipPath(g, fill_path, CombineModeIntersect);
+    }
+    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+    if GdipCreateSolidFill(outer, &mut brush).0 == 0 {
+        let _ = GdipFillPath(g, brush as *mut GpBrush, ring);
+        let _ = GdipDeleteBrush(brush as *mut GpBrush);
+    }
+    if escapes {
+        let _ = GdipRestoreGraphics(g, state);
+    }
+    let _ = GdipDeletePath(ring);
+}
+
+/// The GDI+ line-brush linear gradient — the path for transforms the
+/// raster can't express (rotation, skew, mirroring).
+unsafe fn paint_linear_brush(
+    g: *mut GpGraphics,
+    gp: &GradientPaint,
+    s: (f32, f32),
+    e: (f32, f32),
+    fill_path: *mut GpPath,
+    alpha: f32,
+) {
+    use windows::Win32::Graphics::GdiPlus::{
+        GdipCreateLineBrush, GdipSetLinePresetBlend, GpLineGradient, PointF, WrapModeTileFlipX,
+    };
+    let p1 = PointF { X: s.0, Y: s.1 };
+    let p2 = PointF { X: e.0, Y: e.1 };
+    let first = gp.stops.first().map(|s| argb_from_srgba(s.1, alpha)).unwrap_or(0);
+    let last = gp.stops.last().map(|s| argb_from_srgba(s.1, alpha)).unwrap_or(first);
+    let mut brush: *mut GpLineGradient = std::ptr::null_mut();
+    // The axis spans the box's full projected extent (see
+    // `linear_points`), so pixels project into [0, 1] — but a pixel
+    // centre exactly ON the far edge projects to t = 1.0, which
+    // `WrapModeTile` wraps to 0: a 1-px seam of the START color along the
+    // far edge (GDI+ centres pixels on integers, so any whole-pixel edge
+    // hits it). Mirroring keeps t = 1.0 at the end color.
+    if GdipCreateLineBrush(&p1, &p2, first, last, WrapModeTileFlipX, &mut brush).0 == 0
+        && !brush.is_null()
+    {
+        let (colors, positions) = blend_arrays(&gp.stops, alpha, false);
+        if colors.len() >= 2 {
+            let _ = GdipSetLinePresetBlend(
+                brush,
+                colors.as_ptr(),
+                positions.as_ptr(),
+                colors.len() as i32,
+            );
+        }
+        let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
+        let _ = GdipDeleteBrush(brush as *mut GpBrush);
+    }
+}
+
+/// The fast linear path: rasterize onto the device grid
+/// ([`gradient_raster::linear`]) and copy it 1:1. `false` when the world
+/// transform isn't axis-aligned — the caller then uses the brush. `true`
+/// covers "drawn" and "nothing visible".
+#[allow(clippy::too_many_arguments)]
+unsafe fn paint_linear_raster(
+    g: *mut GpGraphics,
+    gp: &GradientPaint,
+    start: (f32, f32),
+    end: (f32, f32),
+    w: f32,
+    h: f32,
+    radii: [f32; 4],
+    alpha: f32,
+) -> bool {
+    use crate::gradient_raster::{self, Raster};
+    use windows::Win32::Graphics::GdiPlus::{
+        GdipCreateBitmapFromScan0, GdipCreateMatrix, GdipDeleteMatrix, GdipDisposeImage,
+        GdipDrawImageRectRectI, GdipGetMatrixElements, GdipGetVisibleClipBoundsI,
+        GdipGetWorldTransform, GdipResetWorldTransform, GdipSetInterpolationMode,
+        GdipSetPixelOffsetMode, GpBitmap, GpImage, InterpolationModeNearestNeighbor, Matrix,
+        PixelOffsetModeHalf, Rect, UnitPixel,
+    };
+    /// `PixelFormat32bppPARGB` from `gdipluspixelformats.h` — a `#define`,
+    /// so the `windows` crate carries no constant for it.
+    const PIXEL_FORMAT_32BPP_PARGB: i32 = 0x000E_200B;
+
+    let mut m: *mut Matrix = std::ptr::null_mut();
+    if GdipCreateMatrix(&mut m).0 != 0 || m.is_null() {
+        return false;
+    }
+    let mut el = [0f32; 6];
+    let ok = GdipGetWorldTransform(g, m).0 == 0 && GdipGetMatrixElements(m, el.as_mut_ptr()).0 == 0;
+    let _ = GdipDeleteMatrix(m);
+    let Some(map) = ok.then(|| gradient_raster::axis_aligned(el)).flatten() else {
+        return false;
+    };
+    // GDI+'s default `PixelOffsetModeNone` centres device pixel p at p, not
+    // p + 0.5 — every other shape in the scene is rasterized that way. The
+    // raster centres pixels at p + 0.5, so shift the box by half a pixel to
+    // land on the same grid; otherwise each gradient sits half a pixel
+    // down-right of its own background fill and border.
+    let map = gradient_raster::DeviceMap { dx: map.dx + 0.5, dy: map.dy + 0.5, ..map };
+
+    // Everything below draws in DEVICE space; the save/restore puts the
+    // world transform (and the modes) back. The clip region is held in
+    // device space, so resetting the transform leaves ancestor clips intact
+    // and the visible bounds read here are device pixels.
+    let mut state: u32 = 0;
+    let _ = GdipSaveGraphics(g, &mut state);
+    let _ = GdipResetWorldTransform(g);
+    let mut vis = Rect::default();
+    if GdipGetVisibleClipBoundsI(g, &mut vis).0 != 0 {
+        let _ = GdipRestoreGraphics(g, state);
+        return false;
+    }
+    let (colors, positions) = blend_arrays(&gp.stops, alpha, false);
+    let raster = gradient_raster::linear(
+        start,
+        end,
+        &colors,
+        &positions,
+        w,
+        h,
+        radii,
+        map,
+        (vis.X, vis.Y, vis.Width, vis.Height),
+    );
+    if let Some(Raster { x, y, width, height, mut pixels }) = raster {
+        let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+        // Wraps `pixels` without copying; disposed before `pixels` drops.
+        if GdipCreateBitmapFromScan0(
+            width,
+            height,
+            width * 4,
+            PIXEL_FORMAT_32BPP_PARGB,
+            Some(pixels.as_mut_ptr() as *const u8),
+            &mut bmp,
+        )
+        .0 == 0
+            && !bmp.is_null()
+        {
+            // Nearest + half-pixel offset: an integer-aligned, unscaled
+            // copy, no resampling blur at the raster's edges.
+            let _ = GdipSetInterpolationMode(g, InterpolationModeNearestNeighbor);
+            let _ = GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+            let _ = GdipDrawImageRectRectI(
+                g,
+                bmp as *mut GpImage,
+                x,
+                y,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                UnitPixel,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+            );
+            let _ = GdipDisposeImage(bmp as *mut GpImage);
+        }
+    }
+    let _ = GdipRestoreGraphics(g, state);
+    true
 }
 
 /// Paint a view's border. Solid borders take the original path
@@ -547,6 +761,7 @@ pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h:
     if b.layout_dirty {
         b.layout_pass();
     }
+    let plan = b.layer_plan();
     // Split-borrow the back buffer out so `b`'s other fields stay
     // reachable below.
     let mut back = std::mem::replace(&mut b.back, BackBuffer::new());
@@ -601,18 +816,82 @@ pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h:
         }
 
         if let Some(root) = b.root_id {
-            paint_node(b, g, root, 1.0);
+            paint_node(b, g, root, 1.0, LayerFilter { plan: &plan, layer: 0 });
         }
         let _ = GdipDeleteGraphics(g);
     }
 
     let _ = BitBlt(target, 0, 0, w, h, back.dc, 0, 0, SRCCOPY);
     b.back = back;
+
+    // Content over a graphics surface, in composition visuals above it
+    // (`crate::layers`).
+    let lifted: Vec<crate::overlay::LayerPixels> = plan
+        .lifted()
+        .filter_map(|(k, o)| {
+            let bounds = layers::pixel_box(o.bounds?);
+            let pixels = paint_layer_pixels(b, &plan, k, bounds)?;
+            Some(crate::overlay::LayerPixels { above: o.above, bounds, pixels })
+        })
+        .collect();
+    b.present_overlays(lifted);
+}
+
+/// Which nodes a paint walk draws: those `plan` puts in `layer`. The walk
+/// still visits every node, so transforms, clips and opacity apply.
+#[derive(Clone, Copy)]
+pub(crate) struct LayerFilter<'a> {
+    pub plan: &'a LayerPlan,
+    pub layer: usize,
+}
+
+impl LayerFilter<'_> {
+    pub(crate) fn draws(&self, id: u64) -> bool {
+        self.plan.layer(id) == self.layer
+    }
+}
+
+/// GDI+ `PixelFormat32bppPARGB` (gdipluspixelformats.h): premultiplied
+/// BGRA, the layout a composition surface takes.
+const PIXEL_FORMAT_32BPP_PARGB: i32 = 0x000E_200B;
+
+/// Paint lifted layer `layer` into premultiplied BGRA pixels covering the
+/// device box `(x, y, w, h)`, transparent where it draws nothing.
+unsafe fn paint_layer_pixels(
+    b: &WindowsBackend,
+    plan: &LayerPlan,
+    layer: usize,
+    (x, y, w, h): (i32, i32, u32, u32),
+) -> Option<Vec<u8>> {
+    let root = b.root_id?;
+    let stride = w as usize * 4;
+    let mut pixels = vec![0u8; stride * h as usize];
+    let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+    if GdipCreateBitmapFromScan0(w as i32, h as i32, stride as i32, PIXEL_FORMAT_32BPP_PARGB, Some(pixels.as_mut_ptr()), &mut bmp).0 != 0
+        || bmp.is_null()
+    {
+        return None;
+    }
+    let mut g: *mut GpGraphics = std::ptr::null_mut();
+    if GdipGetImageGraphicsContext(bmp as *mut GpImage, &mut g).0 == 0 && !g.is_null() {
+        let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+        let _ = GdipSetTextRenderingHint(g, TextRenderingHintAntiAlias);
+        let _ = GdipTranslateWorldTransform(g, -x as f32, -y as f32, MatrixOrderPrepend);
+        let scale = b.dpi.factor();
+        if scale != 1.0 {
+            let _ = GdipScaleWorldTransform(g, scale, scale, MatrixOrderPrepend);
+        }
+        paint_node(b, g, root, 1.0, LayerFilter { plan, layer });
+        let _ = GdipDeleteGraphics(g);
+    }
+    // The bitmap draws into `pixels` (its scan0); disposing it flushes.
+    let _ = GdipDisposeImage(bmp as *mut GpImage);
+    Some(pixels)
 }
 
 /// Paint one node + its subtree. `alpha` is the cumulative ancestor
 /// opacity.
-unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32) {
+unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32, layer: LayerFilter<'_>) {
     let Some(meta) = b.nodes.get(&id) else {
         return;
     };
@@ -645,75 +924,98 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
         }
     }
 
-    // Own visual.
-    match &meta.kind {
-        NodeKind::View(v) => {
-            let has_bg = v.effective_background().map(|c| c[3] > 0.0).unwrap_or(false);
-            let has_gradient = v.gradient.as_ref().map(|gr| !gr.stops.is_empty()).unwrap_or(false);
-            if (has_bg || has_gradient) && w > 0.0 && h > 0.0 {
-                let mut fill_path: *mut GpPath = std::ptr::null_mut();
-                if GdipCreatePath(FillModeWinding, &mut fill_path).0 == 0 && !fill_path.is_null() {
-                    build_round_rect_path(fill_path, w, h, v.radii, 0.0);
-                    if let Some(bg) = v.effective_background().filter(|c| c[3] > 0.0) {
-                        let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-                        if GdipCreateSolidFill(argb_from_srgba(bg, alpha), &mut brush).0 == 0 {
-                            let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
-                            let _ = GdipDeleteBrush(brush as *mut GpBrush);
+    // Own visual. A painted leaf draws inside its padding (see
+    // `NodeMeta::content_inset`); views have a zero inset.
+    let (cx, cy, w, h) = crate::painted_geom::content_box(w, h, meta.content_inset);
+    if cx != 0.0 || cy != 0.0 {
+        let _ = GdipTranslateWorldTransform(g, cx, cy, MatrixOrderPrepend);
+    }
+    if layer.draws(id) {
+        match &meta.kind {
+            NodeKind::View(v) => {
+                let has_bg = v.effective_background().map(|c| c[3] > 0.0).unwrap_or(false);
+                let has_gradient = v.gradient.as_ref().map(|gr| !gr.stops.is_empty()).unwrap_or(false);
+                if (has_bg || has_gradient) && w > 0.0 && h > 0.0 {
+                    let mut fill_path: *mut GpPath = std::ptr::null_mut();
+                    if GdipCreatePath(FillModeWinding, &mut fill_path).0 == 0 && !fill_path.is_null() {
+                        build_round_rect_path(fill_path, w, h, v.radii, 0.0);
+                        if let Some(bg) = v.effective_background().filter(|c| c[3] > 0.0) {
+                            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+                            if GdipCreateSolidFill(argb_from_srgba(bg, alpha), &mut brush).0 == 0 {
+                                let _ = GdipFillPath(g, brush as *mut GpBrush, fill_path);
+                                let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                            }
                         }
+                        if let Some(gr) = v.gradient.as_ref().filter(|gr| !gr.stops.is_empty()) {
+                            paint_gradient(g, gr, fill_path, w, h, v.radii, alpha);
+                        }
+                        let _ = GdipDeletePath(fill_path);
                     }
-                    if let Some(gr) = v.gradient.as_ref().filter(|gr| !gr.stops.is_empty()) {
-                        paint_gradient(g, gr, fill_path, w, h, alpha);
-                    }
-                    let _ = GdipDeletePath(fill_path);
                 }
+                paint_border(g, v, w, h, alpha);
             }
-            paint_border(g, v, w, h, alpha);
-        }
-        NodeKind::Text(t) => {
-            if !t.content.is_empty() {
-                let key = t.font_key.clone().unwrap_or_else(|| b.default_font_key.clone());
-                if let Some(entry) = b.font_cache.get(&key) {
-                    if !entry.gpfont.is_null() {
-                        let color = t
-                            .anim_color
-                            .map(|c| argb_from_srgba(c, alpha))
-                            .unwrap_or_else(|| argb_with_alpha(t.color.to_argb_u32(), alpha));
-                        let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-                        if GdipCreateSolidFill(color, &mut brush).0 == 0 {
-                            // Zero-size layout rects = draw from the
-                            // origin, no GDI+ wrap, no clip. Wrapping is
-                            // OURS: the line cache `layout_pass` filled
-                            // from the node's WrapPlan (same breaks the
-                            // measure fn reported to Taffy). Each line is
-                            // its own draw at `advance` steps, offset by
-                            // the CSS half-leading and per-line align.
-                            match (&t.lines, &t.plan) {
-                                (Some(cache), Some(plan)) => {
-                                    let advance =
-                                        t.line_height.unwrap_or(plan.font_height).max(1.0);
-                                    let lead = ((advance - plan.font_height) / 2.0).max(0.0);
-                                    for (i, line) in cache.lines.iter().enumerate() {
-                                        if line.text16.is_empty() {
-                                            continue;
-                                        }
-                                        // `Justify` unsupported → Left.
-                                        let x = match t.align {
-                                            TextAlign::Center => {
-                                                ((w - line.width) / 2.0).max(0.0)
+            NodeKind::Text(t) => {
+                if !t.content.is_empty() {
+                    let key = t.font_key.clone().unwrap_or_else(|| b.default_font_key.clone());
+                    if let Some(entry) = b.font_cache.get(&key) {
+                        if !entry.gpfont.is_null() {
+                            let color = t
+                                .anim_color
+                                .map(|c| argb_from_srgba(c, alpha))
+                                .unwrap_or_else(|| argb_with_alpha(t.color.to_argb_u32(), alpha));
+                            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+                            if GdipCreateSolidFill(color, &mut brush).0 == 0 {
+                                // Zero-size layout rects = draw from the
+                                // origin, no GDI+ wrap, no clip. Wrapping is
+                                // OURS: the line cache `layout_pass` filled
+                                // from the node's WrapPlan (same breaks the
+                                // measure fn reported to Taffy). Each line is
+                                // its own draw at `advance` steps, offset by
+                                // the CSS half-leading and per-line align.
+                                match (&t.lines, &t.plan) {
+                                    (Some(cache), Some(plan)) => {
+                                        let advance =
+                                            t.line_height.unwrap_or(plan.font_height).max(1.0);
+                                        let lead = ((advance - plan.font_height) / 2.0).max(0.0);
+                                        for (i, line) in cache.lines.iter().enumerate() {
+                                            if line.text16.is_empty() {
+                                                continue;
                                             }
-                                            TextAlign::Right => (w - line.width).max(0.0),
-                                            TextAlign::Left | TextAlign::Justify => 0.0,
-                                        };
-                                        let layout = RectF {
-                                            X: x,
-                                            Y: lead + i as f32 * advance,
-                                            Width: 0.0,
-                                            Height: 0.0,
-                                        };
+                                            // `Justify` unsupported → Left.
+                                            let x = match t.align {
+                                                TextAlign::Center => {
+                                                    ((w - line.width) / 2.0).max(0.0)
+                                                }
+                                                TextAlign::Right => (w - line.width).max(0.0),
+                                                TextAlign::Left | TextAlign::Justify => 0.0,
+                                            };
+                                            let layout = RectF {
+                                                X: x,
+                                                Y: lead + i as f32 * advance,
+                                                Width: 0.0,
+                                                Height: 0.0,
+                                            };
+                                            let _ = GdipDrawString(
+                                                g,
+                                                PCWSTR(line.text16.as_ptr()),
+                                                line.text16.len() as i32,
+                                                entry.gpfont,
+                                                &layout,
+                                                typographic_format(),
+                                                brush as *mut GpBrush,
+                                            );
+                                        }
+                                    }
+                                    // No plan/cache yet (paint racing the
+                                    // first layout fill) — single-line draw.
+                                    _ => {
+                                        let wide: Vec<u16> = t.content.encode_utf16().collect();
+                                        let layout =
+                                            RectF { X: 0.0, Y: 0.0, Width: 0.0, Height: 0.0 };
                                         let _ = GdipDrawString(
                                             g,
-                                            PCWSTR(line.text16.as_ptr()),
-                                            line.text16.len() as i32,
+                                            PCWSTR(wide.as_ptr()),
+                                            wide.len() as i32,
                                             entry.gpfont,
                                             &layout,
                                             typographic_format(),
@@ -721,66 +1023,54 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
                                         );
                                     }
                                 }
-                                // No plan/cache yet (paint racing the
-                                // first layout fill) — single-line draw.
-                                _ => {
-                                    let wide: Vec<u16> = t.content.encode_utf16().collect();
-                                    let layout =
-                                        RectF { X: 0.0, Y: 0.0, Width: 0.0, Height: 0.0 };
-                                    let _ = GdipDrawString(
-                                        g,
-                                        PCWSTR(wide.as_ptr()),
-                                        wide.len() as i32,
-                                        entry.gpfont,
-                                        &layout,
-                                        typographic_format(),
-                                        brush as *mut GpBrush,
-                                    );
-                                }
+                                let _ = GdipDeleteBrush(brush as *mut GpBrush);
                             }
-                            let _ = GdipDeleteBrush(brush as *mut GpBrush);
                         }
                     }
                 }
             }
-        }
-        NodeKind::Code(c) => {
-            if let Some(entry) = b.font_cache.get(&c.font_key) {
-                if !entry.gpfont.is_null() {
-                    for (i, line) in c.lines.iter().enumerate() {
-                        let y = i as f32 * c.line_height;
-                        let mut x = 0.0_f32;
-                        for run in line {
-                            if !run.text16.is_empty() {
-                                let color = argb_with_alpha(run.color.to_argb_u32(), alpha);
-                                let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-                                if GdipCreateSolidFill(color, &mut brush).0 == 0 {
-                                    let layout =
-                                        RectF { X: x, Y: y, Width: 0.0, Height: 0.0 };
-                                    let _ = GdipDrawString(
-                                        g,
-                                        PCWSTR(run.text16.as_ptr()),
-                                        run.text16.len() as i32,
-                                        entry.gpfont,
-                                        &layout,
-                                        typographic_format(),
-                                        brush as *mut GpBrush,
-                                    );
-                                    let _ = GdipDeleteBrush(brush as *mut GpBrush);
+            NodeKind::Code(c) => {
+                if let Some(entry) = b.font_cache.get(&c.font_key) {
+                    if !entry.gpfont.is_null() {
+                        for (i, line) in c.lines.iter().enumerate() {
+                            let y = i as f32 * c.line_height;
+                            let mut x = 0.0_f32;
+                            for run in line {
+                                if !run.text16.is_empty() {
+                                    let color = argb_with_alpha(run.color.to_argb_u32(), alpha);
+                                    let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+                                    if GdipCreateSolidFill(color, &mut brush).0 == 0 {
+                                        let layout =
+                                            RectF { X: x, Y: y, Width: 0.0, Height: 0.0 };
+                                        let _ = GdipDrawString(
+                                            g,
+                                            PCWSTR(run.text16.as_ptr()),
+                                            run.text16.len() as i32,
+                                            entry.gpfont,
+                                            &layout,
+                                            typographic_format(),
+                                            brush as *mut GpBrush,
+                                        );
+                                        let _ = GdipDeleteBrush(brush as *mut GpBrush);
+                                    }
                                 }
+                                x += run.width;
                             }
-                            x += run.width;
                         }
                     }
                 }
             }
+            NodeKind::Icon(p) => icon::paint_into(g, p, w, h, alpha),
+            NodeKind::Image(p) => image::paint_into(g, p, w, h, b.dpi.svg_screen_scale()),
+            // Native controls paint themselves in their own HWNDs (the
+            // host's WS_CLIPCHILDREN keeps our blit off them).
+            NodeKind::Control { .. } | NodeKind::External { .. } => {}
         }
-        NodeKind::Icon(p) => icon::paint_into(g, p, w, h, alpha),
-        NodeKind::Image(p) => image::paint_into(g, p, w, h, b.dpi.svg_screen_scale()),
-        // Native controls paint themselves in their own HWNDs (the
-        // host's WS_CLIPCHILDREN keeps our blit off them).
-        NodeKind::Control { .. } | NodeKind::External { .. } => {}
     }
+    if cx != 0.0 || cy != 0.0 {
+        let _ = GdipTranslateWorldTransform(g, -cx, -cy, MatrixOrderPrepend);
+    }
+    let (_, _, w, h) = meta.frame;
 
     // Children: clip when overflow hidden (honoring corner radii), apply
     // scroll offset, and paint in stable z order.
@@ -816,7 +1106,7 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
         .filter_map(|cid| b.nodes.get(cid).map(|m| (*cid, m.z)))
         .collect();
     for cid in z_sorted(&pairs) {
-        paint_node(b, g, cid, alpha);
+        paint_node(b, g, cid, alpha, layer);
     }
     let _ = GdipRestoreGraphics(g, state);
 }
@@ -825,15 +1115,36 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
 // Hit testing
 // =========================================================================
 
-/// The deepest pressable under client-space `(px, py)`, honoring z order
-/// (topmost first) and animated/author translations. Scale/rotate are
-/// ignored — nothing interactive animates transforms today.
-pub(crate) fn pressable_at(b: &WindowsBackend, px: f32, py: f32) -> Option<Rc<dyn Fn()>> {
-    let root = b.root_id?;
-    hit_node(b, root, px, py, 0.0, 0.0)
+/// One node on a hit path: its id and window-space (logical px) origin,
+/// the point its local coordinates are measured from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PathNode {
+    pub id: u64,
+    pub origin: (f32, f32),
 }
 
-fn node_origin(b: &WindowsBackend, id: u64, ox: f32, oy: f32) -> Option<(f32, f32, f32, f32)> {
+/// The hit target under client-space `(px, py)` followed by its
+/// ancestors, deepest first; empty when nothing (not even the root) is
+/// hit. See the module docs for the target rules.
+pub(crate) fn hit_chain(b: &WindowsBackend, px: f32, py: f32) -> Vec<PathNode> {
+    let mut out = Vec::new();
+    if let Some(root) = b.root_id {
+        hit_walk(b, root, px, py, 0.0, 0.0, false, &mut out);
+    }
+    out
+}
+
+/// The pressable that takes a click at `(px, py)`: the nearest one on the
+/// hit chain. A view painted over a pressable takes the click itself (as
+/// on web), so the pressable underneath does not fire.
+pub(crate) fn pressable_at(b: &WindowsBackend, px: f32, py: f32) -> Option<Rc<dyn Fn()>> {
+    hit_chain(b, px, py).into_iter().find_map(|n| match &b.nodes.get(&n.id)?.kind {
+        NodeKind::View(v) => v.on_click.clone(),
+        _ => None,
+    })
+}
+
+pub(crate) fn node_origin(b: &WindowsBackend, id: u64, ox: f32, oy: f32) -> Option<(f32, f32, f32, f32)> {
     let meta = b.nodes.get(&id)?;
     let (fx, fy, w, h) = meta.frame;
     // Translation-only approximation of the transform chain.
@@ -849,53 +1160,99 @@ fn node_origin(b: &WindowsBackend, id: u64, ox: f32, oy: f32) -> Option<(f32, f3
     Some((ox + fx + dx, oy + fy + dy, w, h))
 }
 
-fn hit_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: f32) -> Option<Rc<dyn Fn()>> {
-    let (nx, ny, w, h) = node_origin(b, id, ox, oy)?;
-    let meta = b.nodes.get(&id)?;
+/// Where `id`'s children are laid out from: its origin minus its scroll
+/// offset.
+pub(crate) fn content_origin(meta: &NodeMeta, nx: f32, ny: f32) -> (f32, f32) {
+    match &meta.kind {
+        NodeKind::View(ViewVisual { scroll: Some(s), .. }) => (nx - s.offset_x, ny - s.offset_y),
+        _ => (nx, ny),
+    }
+}
+
+/// Appends the hit path below `id` (deepest first, `id` last) and returns
+/// whether anything under `id` was hit. `none_above` is the
+/// `pointer_events` verdict inherited from the nearest explicit ancestor.
+#[allow(clippy::too_many_arguments)]
+fn hit_walk(
+    b: &WindowsBackend,
+    id: u64,
+    px: f32,
+    py: f32,
+    ox: f32,
+    oy: f32,
+    none_above: bool,
+    out: &mut Vec<PathNode>,
+) -> bool {
+    let Some((nx, ny, w, h)) = node_origin(b, id, ox, oy) else {
+        return false;
+    };
+    let Some(meta) = b.nodes.get(&id) else {
+        return false;
+    };
     if meta.hidden {
-        return None;
+        return false;
     }
     if meta.effective_opacity() <= 0.003 {
         // Invisible subtrees don't take clicks (matches web/Apple:
         // opacity 0 still hits, but our pre-act layers overlap the
         // content layer full-screen — treat as transparent to input so
         // the visible content underneath stays clickable).
-        return None;
+        return false;
     }
+    let inside = px >= nx && px < nx + w && py >= ny && py < ny + h;
     // A clipping node's children are not visible outside its box —
     // they must not be clickable there either (a scrolled-out sidebar
     // link would otherwise take clicks meant for whatever is painted
     // in its place).
-    if meta.clips_children() && !(px >= nx && px < nx + w && py >= ny && py < ny + h) {
-        return None;
+    if meta.clips_children() && !inside {
+        return false;
     }
+    let none = match meta.pointer_events {
+        Some(PointerEvents::None) => true,
+        Some(PointerEvents::Auto) => false,
+        None => none_above,
+    };
     // Children first, topmost (highest z, later insertion) first.
-    let (mut cx, mut cy) = (nx, ny);
-    if let NodeKind::View(v) = &meta.kind {
-        if let Some(s) = &v.scroll {
-            cx -= s.offset_x;
-            cy -= s.offset_y;
-        }
-    }
+    let (cx, cy) = content_origin(meta, nx, ny);
     if let Some(child_ids) = b.children.get(&id) {
         let pairs: Vec<(u64, f32)> = child_ids
             .iter()
             .filter_map(|cid| b.nodes.get(cid).map(|m| (*cid, m.z)))
             .collect();
         for cid in z_sorted(&pairs).into_iter().rev() {
-            if let Some(f) = hit_node(b, cid, px, py, cx, cy) {
-                return Some(f);
+            if hit_walk(b, cid, px, py, cx, cy, none, out) {
+                out.push(PathNode { id, origin: (nx, ny) });
+                return true;
             }
         }
     }
-    if let NodeKind::View(v) = &meta.kind {
-        if let Some(cb) = &v.on_click {
-            if px >= nx && px < nx + w && py >= ny && py < ny + h {
-                return Some(cb.clone());
-            }
-        }
+    // An anchor (`contents`) only passes hits through to its children.
+    if inside && !none && !meta.contents {
+        out.push(PathNode { id, origin: (nx, ny) });
+        return true;
     }
-    None
+    false
+}
+
+/// Window-space origin of `target` as the hit walk computes it (scroll
+/// offsets and translations included), whether or not anything is under
+/// the pointer: a captured drag keeps measuring local positions from the
+/// node it started on even after leaving it. `None` once the node is
+/// gone or hidden.
+pub(crate) fn window_origin(b: &WindowsBackend, target: u64) -> Option<(f32, f32)> {
+    fn walk(b: &WindowsBackend, id: u64, target: u64, ox: f32, oy: f32) -> Option<(f32, f32)> {
+        let (nx, ny, _, _) = node_origin(b, id, ox, oy)?;
+        let meta = b.nodes.get(&id)?;
+        if meta.hidden {
+            return None;
+        }
+        if id == target {
+            return Some((nx, ny));
+        }
+        let (cx, cy) = content_origin(meta, nx, ny);
+        b.children.get(&id)?.iter().find_map(|cid| walk(b, *cid, target, cx, cy))
+    }
+    walk(b, b.root_id?, target, 0.0, 0.0)
 }
 
 /// Route a mouse-wheel tick to the deepest scroll view under `(px, py)`.
@@ -1338,5 +1695,257 @@ mod border_render_tests {
         // Round, not square: the dot's bounding-box corner is outside the
         // circle.
         assert!(alpha(&px, w, 8, 0) < 128, "dot corner is cut: {}", alpha(&px, w, 8, 0));
+    }
+}
+
+#[cfg(test)]
+mod gradient_render_tests {
+    //! The raster linear path against the GDI+ line brush it replaces,
+    //! pixel for pixel, on real GDI+ (Windows, or Wine off Windows). The
+    //! raster exists only for speed (`gradient_raster`), so any visible
+    //! difference from the brush is a regression.
+    use super::*;
+    use crate::{GradKind, GradientPaint};
+    use windows::Win32::Graphics::GdiPlus::{
+        GdipBitmapGetPixel, GdipCreateBitmapFromScan0, GdipDisposeImage,
+        GdipGetImageGraphicsContext, GdipTranslateWorldTransform, GpBitmap, GpImage,
+    };
+
+    const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200A;
+    const SURFACE: (i32, i32) = (160, 120);
+
+    /// One linear gradient on a transparent surface, positioned and scaled
+    /// the way `paint_scene` + `paint_node` would, through either path.
+    /// Returns `[a, r, g, b]` per pixel (straight).
+    fn render(gp: &GradientPaint, at: (f32, f32), size: (f32, f32), scale: f32, radii: [f32; 4], raster: bool) -> Vec<[u8; 4]> {
+        crate::ensure_gdiplus();
+        let (sw, sh) = SURFACE;
+        unsafe {
+            let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+            assert_eq!(GdipCreateBitmapFromScan0(sw, sh, 0, PIXEL_FORMAT_32BPP_ARGB, None, &mut bmp).0, 0);
+            let mut g: *mut GpGraphics = std::ptr::null_mut();
+            assert_eq!(GdipGetImageGraphicsContext(bmp as *mut GpImage, &mut g).0, 0);
+            let _ = GdipGraphicsClear(g, 0);
+            let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+            let _ = GdipScaleWorldTransform(g, scale, scale, MatrixOrderPrepend);
+            let _ = GdipTranslateWorldTransform(g, at.0, at.1, MatrixOrderPrepend);
+            let (w, h) = size;
+            let GradKind::Linear { angle_deg } = gp.kind else { panic!("linear only") };
+            let (s, e) = crate::linear_points(angle_deg, w, h);
+            if raster {
+                assert!(paint_linear_raster(g, gp, s, e, w, h, radii, 1.0), "fast path not taken");
+            } else {
+                let mut path: *mut GpPath = std::ptr::null_mut();
+                assert_eq!(GdipCreatePath(FillModeWinding, &mut path).0, 0);
+                build_round_rect_path(path, w, h, radii, 0.0);
+                paint_linear_brush(g, gp, s, e, path, 1.0);
+                let _ = GdipDeletePath(path);
+            }
+            let _ = GdipDeleteGraphics(g);
+            let mut out = Vec::with_capacity((sw * sh) as usize);
+            for y in 0..sh {
+                for x in 0..sw {
+                    let mut argb = 0u32;
+                    let _ = GdipBitmapGetPixel(bmp, x, y, &mut argb);
+                    out.push(argb.to_be_bytes());
+                }
+            }
+            let _ = GdipDisposeImage(bmp as *mut GpImage);
+            out
+        }
+    }
+
+    /// The paths agree: away from the shape's edge, alpha within 2 and
+    /// straight color within rounding; overall coverage within half a
+    /// pixel of the perimeter.
+    ///
+    /// Edge pixels are only compared in aggregate: the raster's are
+    /// area-coverage anti-aliased (what the scene's `SmoothingModeAntiAlias`
+    /// asks for), but Wine's GDI+ fills paths ALIASED — a pixel is in or out
+    /// by its centre — so per-pixel edge values legitimately differ there.
+    fn assert_agree(name: &str, gp: &GradientPaint, at: (f32, f32), size: (f32, f32), scale: f32, radii: [f32; 4]) {
+        let brush = render(gp, at, size, scale, radii, false);
+        let fast = render(gp, at, size, scale, radii, true);
+        let (sw, sh) = SURFACE;
+        let alpha_at = |v: &Vec<[u8; 4]>, x: i32, y: i32| -> Option<u8> {
+            (x >= 0 && y >= 0 && x < sw && y < sh).then(|| v[(y * sw + x) as usize][0])
+        };
+        let (mut sum_b, mut sum_f, mut interior) = (0f64, 0f64, 0usize);
+        for y in 0..sh {
+            for x in 0..sw {
+                let (b, f) = (brush[(y * sw + x) as usize], fast[(y * sw + x) as usize]);
+                sum_b += b[0] as f64;
+                sum_f += f[0] as f64;
+                let a = b[0];
+                let edge = f[0] != a && (f[0] != 0 && f[0] != 255 || a == 0)
+                    || [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        .iter()
+                        .any(|(dx, dy)| alpha_at(&brush, x + dx, y + dy).map_or(true, |n| n == 0) && a != 0);
+                if edge || a == 0 {
+                    continue;
+                }
+                interior += 1;
+                let da = (a as i32 - f[0] as i32).abs();
+                assert!(da <= 2, "{name}: alpha at ({x}, {y}) brush {b:?} raster {f:?}");
+                // Straight color from 8-bit premultiplied storage loses
+                // precision as alpha drops. Wine's brush also samples its
+                // ramp up to a pixel off the CSS geometry the raster follows
+                // exactly, so the raster must match the brush at this pixel
+                // or a 4-neighbour.
+                let tol = 3 + 255 / a.max(1) as i32;
+                let near = |q: [u8; 4]| (1..4).all(|k| (q[k] as i32 - f[k] as i32).abs() <= tol);
+                let ok = near(b)
+                    || [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
+                        let (nx, ny) = (x + dx, y + dy);
+                        nx >= 0 && ny >= 0 && nx < sw && ny < sh && near(brush[(ny * sw + nx) as usize])
+                    });
+                assert!(ok, "{name}: color at ({x}, {y}) brush {b:?} raster {f:?}");
+            }
+        }
+        assert!(interior > 100, "{name}: only {interior} interior pixels compared");
+        // Aliased vs anti-aliased edges differ by at most half a pixel
+        // along the perimeter; a shape or grid error is far larger.
+        let perimeter = 2.0 * (size.0 + size.1) as f64 * scale as f64;
+        let bound = 0.5 * 255.0 * perimeter;
+        assert!((sum_b - sum_f).abs() <= bound, "{name}: coverage {sum_b} vs {sum_f} (bound {bound})");
+    }
+
+    fn paint(angle_deg: f32, stops: &[(f32, [f32; 4])]) -> GradientPaint {
+        GradientPaint { kind: GradKind::Linear { angle_deg }, stops: stops.to_vec() }
+    }
+
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+    const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+
+    #[test]
+    fn welcome_vignette_raster_matches_the_line_brush() {
+        // The welcome vignette band that cost ~21 ms per frame through the
+        // brush under Wine: warm color at the edge fading to transparent,
+        // at 2× DPI.
+        let warm = [1.0, 0.66, 0.24, 0.7];
+        let clear = [1.0, 0.66, 0.24, 0.0];
+        assert_agree("vignette", &paint(270.0, &[(0.0, clear), (1.0, warm)]), (0.0, 0.0), (40.0, 60.0), 2.0, [0.0; 4]);
+    }
+
+    /// Render one radial gradient through `paint_gradient` on a `w × h`
+    /// transparent surface; `[a, r, g, b]` per pixel.
+    fn render_radial(gp: &GradientPaint, w: i32, h: i32) -> Vec<[u8; 4]> {
+        crate::ensure_gdiplus();
+        unsafe {
+            let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+            assert_eq!(GdipCreateBitmapFromScan0(w, h, 0, PIXEL_FORMAT_32BPP_ARGB, None, &mut bmp).0, 0);
+            let mut g: *mut GpGraphics = std::ptr::null_mut();
+            assert_eq!(GdipGetImageGraphicsContext(bmp as *mut GpImage, &mut g).0, 0);
+            let _ = GdipGraphicsClear(g, 0);
+            let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+            let mut path: *mut GpPath = std::ptr::null_mut();
+            assert_eq!(GdipCreatePath(FillModeWinding, &mut path).0, 0);
+            build_round_rect_path(path, w as f32, h as f32, [0.0; 4], 0.0);
+            paint_gradient(g, gp, path, w as f32, h as f32, [0.0; 4], 1.0);
+            let _ = GdipDeletePath(path);
+            let _ = GdipDeleteGraphics(g);
+            let mut out = Vec::with_capacity((w * h) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let mut argb = 0u32;
+                    let _ = GdipBitmapGetPixel(bmp, x, y, &mut argb);
+                    out.push(argb.to_be_bytes());
+                }
+            }
+            let _ = GdipDisposeImage(bmp as *mut GpImage);
+            out
+        }
+    }
+
+    #[test]
+    fn regression_radial_gradient_paints_its_last_stop_beyond_the_circle() {
+        // `closest-side` on 100×60: the circle (r 30) leaves the box's
+        // corners and sides outside it. CSS paints them the last stop; a
+        // path-gradient brush painted nothing there.
+        let (w, h) = (100, 60);
+        let half_blue = [0.0, 0.0, 1.0, 0.5];
+        let gp = GradientPaint {
+            kind: GradKind::Radial { center: (0.5, 0.5), radius: 1.0, farthest: false },
+            stops: vec![(0.0, [1.0, 1.0, 1.0, 1.0]), (1.0, half_blue)],
+        };
+        let px = render_radial(&gp, w, h);
+        let at = |x: i32, y: i32| px[(y * w + x) as usize];
+        for (x, y) in [(1, 1), (98, 1), (1, 58), (98, 58), (5, 30)] {
+            let p = at(x, y);
+            assert!((p[0] as i32 - 128).abs() <= 2 && p[3] > 240, "beyond the circle at ({x}, {y}): {p:?}");
+        }
+        // Inside, the gradient itself — and no second outer-color layer
+        // under it: the centre stays the opaque white first stop.
+        let c = at(50, 30);
+        assert!(c[0] > 250 && c[1] > 240 && c[2] > 240, "centre {c:?}");
+        // Just inside the circle the translucent outer stop is not doubled.
+        let rim = at(50, 3);
+        assert!(rim[0] < 200, "rim alpha {} (doubling would push it toward opaque)", rim[0]);
+    }
+
+    #[test]
+    fn regression_square_corner_among_rounded_ones_is_not_cut() {
+        // radii [16, 4, 30, 0]: the square bottom-left corner was a
+        // zero-size arc, which GDI+ rejects — the figure then ran straight
+        // from the bottom-right arc to the top-left one, cutting the box
+        // diagonally.
+        crate::ensure_gdiplus();
+        let (sw, sh) = SURFACE;
+        unsafe {
+            let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+            assert_eq!(GdipCreateBitmapFromScan0(sw, sh, 0, PIXEL_FORMAT_32BPP_ARGB, None, &mut bmp).0, 0);
+            let mut g: *mut GpGraphics = std::ptr::null_mut();
+            assert_eq!(GdipGetImageGraphicsContext(bmp as *mut GpImage, &mut g).0, 0);
+            let _ = GdipGraphicsClear(g, 0);
+            let mut path: *mut GpPath = std::ptr::null_mut();
+            assert_eq!(GdipCreatePath(FillModeWinding, &mut path).0, 0);
+            build_round_rect_path(path, 100.0, 80.0, [16.0, 4.0, 30.0, 0.0], 0.0);
+            let mut brush: *mut GpSolidFill = std::ptr::null_mut();
+            let _ = GdipCreateSolidFill(0xFF00_0000, &mut brush);
+            let _ = GdipFillPath(g, brush as *mut GpBrush, path);
+            let _ = GdipDeleteBrush(brush as *mut GpBrush);
+            let _ = GdipDeletePath(path);
+            let _ = GdipDeleteGraphics(g);
+            let at = |x, y| {
+                let mut v = 0u32;
+                let _ = GdipBitmapGetPixel(bmp, x, y, &mut v);
+                v >> 24
+            };
+            // Inside the square corner, and the middle of the diagonal the
+            // broken figure cut away.
+            assert_eq!(at(2, 77), 255, "bottom-left corner");
+            assert_eq!(at(20, 60), 255, "below the old diagonal");
+            // The rounded corners are still rounded.
+            assert_eq!(at(0, 0), 0, "top-left arc");
+            assert_eq!(at(99, 79), 0, "bottom-right arc");
+            let _ = GdipDisposeImage(bmp as *mut GpImage);
+        }
+    }
+
+    #[test]
+    fn regression_line_brush_far_edge_has_no_start_color_seam() {
+        // 0deg = to top: the top row is t = 1.0. With `WrapModeTile` that
+        // row wrapped to the START color (red) — a 1-px seam the welcome
+        // vignettes showed at the screen edge.
+        let stops = [(0.0, RED), (1.0, BLUE)];
+        let px = render(&paint(0.0, &stops), (8.0, 6.0), (120.0, 90.0), 1.0, [0.0; 4], false);
+        let top = px[(6 * SURFACE.0 + 60) as usize];
+        assert!(top[3] > 200 && top[1] < 40, "top edge should be blue, got {top:?}");
+    }
+
+    #[test]
+    fn raster_matches_the_brush_at_every_axis_angle_and_multi_stop() {
+        let stops = [(0.0, RED), (0.4, GREEN), (1.0, BLUE)];
+        for angle in [0.0, 90.0, 180.0, 270.0, 45.0, 120.0] {
+            assert_agree(&format!("{angle}deg"), &paint(angle, &stops), (8.0, 6.0), (120.0, 90.0), 1.0, [0.0; 4]);
+        }
+    }
+
+    #[test]
+    fn raster_matches_the_brush_with_fractional_position_and_rounded_corners() {
+        let stops = [(0.0, RED), (1.0, BLUE)];
+        assert_agree("rounded", &paint(90.0, &stops), (10.25, 7.5), (100.0, 80.0), 1.0, [16.0, 4.0, 30.0, 0.0]);
+        assert_agree("rounded 2x", &paint(0.0, &stops), (3.5, 2.25), (60.0, 40.0), 2.0, [12.0; 4]);
     }
 }

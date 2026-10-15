@@ -1635,6 +1635,7 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "windows 0.58.0",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -2302,6 +2303,7 @@ dependencies = [
  "backend-linux",
  "backend-macos",
  "backend-web",
+ "backend-windows",
  "canvas-core",
  "host-mock",
  "inventory",
@@ -2320,6 +2322,7 @@ dependencies = [
  "wasm-bindgen-test",
  "web-glue",
  "web-sys",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -2675,6 +2678,7 @@ dependencies = [
  "runtime-world",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.58.0",
 ]
 
 [[package]]
@@ -5903,6 +5907,7 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
+ "runtime-vocabulary",
  "welcome",
  "windows 0.58.0",
 ]
@@ -10644,6 +10649,7 @@ dependencies = [
  "anyhow",
  "build-ios",
  "build-windows",
+ "serde_json",
 ]
 
 [[package]]

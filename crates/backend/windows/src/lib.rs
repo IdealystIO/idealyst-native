@@ -1,12 +1,15 @@
-//! Native Win32 backend — single-surface GDI+ scene renderer.
+//! Native Win32 backend — single-surface painted scene.
 //!
 //! Implements the scene seam — `runtime_scene::Host` plus the `caps::*Ops`
 //! capability traits, both in [`newcore`] — with a **painted scene model**:
 //! the host's top-level HWND is one canvas, and the view / text / icon /
-//! image tree is painted with GDI+ into a double-buffered memory DC in
-//! tree order (see [`scene`]). Only genuinely-native interactive
-//! controls — button, edit, checkbox, trackbar, progress — are real
-//! child HWNDs, positioned on top by the layout pass.
+//! image tree is painted in tree order by one of two renderers
+//! ([`RendererKind`]): the GDI+ painter ([`scene`], a double-buffered memory
+//! DC; the default) or the Direct2D + DirectWrite renderer (`d2d.rs`, a
+//! DirectComposition swapchain; `IDEALYST_WINDOWS_RENDERER=d2d`). Only
+//! genuinely-native interactive controls — button, edit, checkbox,
+//! trackbar, progress — are real child HWNDs, positioned on top by the layout pass.
+//! See `docs/windows.md` for choosing a renderer and running under Wine.
 //!
 //! The per-primitive bodies live in this module as **inherent** methods on
 //! [`WindowsBackend`]; `newcore`'s caps impls delegate to them. That is the
@@ -109,12 +112,19 @@ pub mod app_pointer;
 pub mod app_situation;
 mod border_pattern;
 mod code;
+mod d2d;
 mod dcomp;
 /// Logical ↔ device pixel policy (per-monitor DPI). Public so the host
 /// shell sizes its window and handles `WM_DPICHANGED` with the same rules.
 pub mod dpi;
+mod dwrite_text;
+mod file_drop;
 mod font;
+mod gradient_raster;
 mod graphics;
+mod layers;
+mod overlay;
+mod layout_subs;
 mod handles;
 mod icon;
 mod image;
@@ -122,8 +132,14 @@ mod image_fetch;
 mod image_policy;
 mod keymap;
 mod pointer_policy;
+mod painted_geom;
+#[cfg(feature = "robot")]
+mod introspect;
+#[cfg(feature = "robot")]
+mod screenshot;
 pub mod user_activity;
 mod scene;
+pub mod view_input;
 mod wrap;
 
 // =========================================================================
@@ -477,6 +493,22 @@ pub(crate) struct NodeMeta {
     /// Portal-hidden (navigation off a portal's screen without
     /// teardown): the painter and hit tester skip the whole subtree.
     pub hidden: bool,
+    /// The author's padding `[top, right, bottom, left]` on a painted LEAF
+    /// (text / code / icon / image), which paints its own content inside
+    /// it. Taffy already sizes the frame to content + padding, but a leaf
+    /// has no child to offset — so without this inset its content painted
+    /// from the frame's top-left corner, flush against the padding edge
+    /// (the docs sidebar's section labels sat on the item above them with
+    /// the padding gap below). The GTK backend solves the same problem
+    /// with widget margins. Always zero for views: their children are
+    /// positioned by Taffy.
+    pub content_inset: [f32; 4],
+    /// `StyleRules::pointer_events` as authored (`None` = not set, so the
+    /// nearest explicit ancestor decides). Read by the hit walk
+    /// (`scene::hit_chain`).
+    pub pointer_events: Option<runtime_shared::PointerEvents>,
+    /// A reactive anchor (`create_anchor`): layout- and hit-transparent.
+    pub contents: bool,
 }
 
 impl NodeMeta {
@@ -493,6 +525,9 @@ impl NodeMeta {
             overflow_hidden: false,
             control_id: None,
             hidden: false,
+            content_inset: [0.0; 4],
+            pointer_events: None,
+            contents: false,
         }
     }
 
@@ -561,7 +596,7 @@ pub struct WindowsBackend {
     /// graphics surfaces are visuals in this tree (see `dcomp.rs`).
     /// Lazily created by the first `create_graphics`; `None` before
     /// that or if DComp init failed.
-    comp: Option<dcomp::CompositionTree>,
+    pub(crate) comp: Option<dcomp::CompositionTree>,
     /// Last window region applied per child HWND (key: hwnd as isize)
     /// so `layout_pass` only calls `SetWindowRgn` on actual changes —
     /// every set forces a repaint of the child.
@@ -573,6 +608,16 @@ pub struct WindowsBackend {
     /// Per-image-node load generation, outcome and `on_load`/`on_error`
     /// handlers (`image_policy::ImageEvents`).
     image_events: HashMap<u64, image_policy::ImageEvents>,
+    /// Per-view `on_touch` / `on_wheel` / `on_hover` handlers and the live
+    /// gesture, fed by the host's mouse messages (see `view_input`).
+    pub(crate) view_input: view_input::ViewInput,
+    /// The host window's OLE drop target, registered with the first
+    /// `on_file_drop` handler (`file_drop.rs`).
+    drop_target: Option<windows::Win32::System::Ole::IDropTarget>,
+    /// Visuals showing painted content lifted above graphics surfaces
+    /// (`layers`, `overlay`). A `RefCell` because the Direct2D frame
+    /// presents them from `&self`.
+    overlays: RefCell<overlay::Overlays>,
     /// Hidden message-only window that brings image fetches and deferred
     /// image events back to the UI thread (`image_fetch.rs`). Created on
     /// the first image load.
@@ -622,6 +667,71 @@ pub struct WindowsBackend {
     /// host shell ([`WindowsBackend::pointer_slot`]) like the keyboard
     /// slot. See `app_pointer.rs`.
     pointer: app_pointer::PointerSlot,
+    /// Which renderer paints the scene (see [`RendererKind`]).
+    renderer: RendererKind,
+    /// The Direct2D renderer, created at the first paint (it needs the
+    /// window). A `RefCell` so it can draw while borrowing the scene it
+    /// reads from `self`. Declared BEFORE `dwrite` so it drops first: its
+    /// cached text layouts reference DirectWrite's registered fonts.
+    d2d: RefCell<Option<d2d::D2dRenderer>>,
+    /// DirectWrite measurement, present iff `renderer` is `D2d`: text must
+    /// be measured by the engine that draws it (`dwrite_text.rs`).
+    pub(crate) dwrite: Option<dwrite_text::DwText>,
+}
+
+/// Serializes tests that use DirectWrite / Direct2D. The backend only uses
+/// them from the UI thread; the test harness runs tests on parallel
+/// threads, and Wine's DirectWrite/Direct2D are not safe for that (page
+/// faults inside `dwrite.dll` when tests overlapped, never when run one at a
+/// time). Windows' shared factory is documented thread-safe — the lock
+/// keeps the tests to the backend's real, single-threaded use.
+#[cfg(test)]
+pub(crate) fn under_wine() -> bool {
+    // Wine exports `wine_get_version` from ntdll; Windows doesn't.
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    unsafe {
+        GetModuleHandleW(windows::core::w!("ntdll.dll"))
+            .ok()
+            .and_then(|m| GetProcAddress(m, windows::core::s!("wine_get_version")))
+            .is_some()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn render_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Which renderer draws the painted scene.
+///
+/// - `Gdi`: the GDI+ painter (`scene.rs`) — CPU rasterization into a back
+///   buffer blitted on `WM_PAINT`. The default.
+/// - `D2d`: Direct2D + DirectWrite on the GPU, presented through
+///   DirectComposition (`d2d.rs`). Requires Direct3D 11 + DirectComposition:
+///   any Windows 10+, or under Wine, Wine-Staging with DXVK.
+///
+/// Native controls, layout, input and hit testing are the same either way;
+/// only how the scene reaches pixels — and therefore how text is measured —
+/// differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererKind {
+    Gdi,
+    D2d,
+}
+
+impl RendererKind {
+    /// `IDEALYST_WINDOWS_RENDERER=d2d` selects Direct2D; unset or `gdi`
+    /// selects GDI+. Any other value is a configuration error and panics
+    /// (a misspelt renderer silently falling back would hide which one is
+    /// being measured).
+    pub fn from_env() -> Self {
+        match std::env::var("IDEALYST_WINDOWS_RENDERER").as_deref() {
+            Err(_) | Ok("") | Ok("gdi") => RendererKind::Gdi,
+            Ok("d2d") => RendererKind::D2d,
+            Ok(other) => panic!("IDEALYST_WINDOWS_RENDERER={other:?}: expected \"gdi\" or \"d2d\""),
+        }
+    }
 }
 
 impl WindowsBackend {
@@ -629,7 +739,20 @@ impl WindowsBackend {
     /// the window; the backend paints its client area and creates child
     /// controls underneath.
     pub fn new(host_hwnd: HWND) -> Self {
+        Self::with_renderer(host_hwnd, RendererKind::from_env())
+    }
+
+    /// [`Self::new`] with an explicit renderer. Selecting `D2d` on a system
+    /// without DirectWrite panics: the caller asked for it by name.
+    pub fn with_renderer(host_hwnd: HWND, renderer: RendererKind) -> Self {
         ensure_gdiplus();
+        let dwrite = match renderer {
+            RendererKind::Gdi => None,
+            RendererKind::D2d => Some(
+                dwrite_text::DwText::new()
+                    .unwrap_or_else(|e| panic!("Direct2D renderer: DirectWrite unavailable: {e}")),
+            ),
+        };
         let (ui_logfont, ui_font, line_height, base_size, base_family) = create_ui_font();
         // `GetDpiForWindow` answers 0 for a null/invalid window (tests
         // build headless backends) — `from_dpi` reads that as 96.
@@ -660,6 +783,9 @@ impl WindowsBackend {
             slider_handlers: HashMap::new(),
             assets: HashMap::new(),
             image_events: HashMap::new(),
+            view_input: view_input::ViewInput::default(),
+            drop_target: None,
+            overlays: RefCell::new(overlay::Overlays::default()),
             image_pump: None,
             ui_font,
             ui_logfont,
@@ -674,7 +800,15 @@ impl WindowsBackend {
             layout_dirty: false,
             keyboard: app_keys::KeyboardSlot::default(),
             pointer,
+            renderer,
+            d2d: RefCell::new(None),
+            dwrite,
         }
+    }
+
+    /// The renderer this backend paints with.
+    pub fn renderer(&self) -> RendererKind {
+        self.renderer
     }
 
     /// The window's current DPI scale (device px per logical px).
@@ -766,6 +900,19 @@ impl WindowsBackend {
         self.pointer.set_pointer_lock(locked);
     }
 
+    /// Installs an `on_file_drop` handler, registering the window's drop
+    /// target the first time. A window that cannot take one (no OLE in this
+    /// apartment) keeps working; its drop views just never fire.
+    pub(crate) fn install_file_drop_handler_impl(&mut self, id: u64, handler: runtime_shared::FileDropHandler) {
+        self.view_input.file_drop.insert(id, handler);
+        if self.drop_target.is_none() && !self.host_hwnd.is_invalid() {
+            match file_drop::register(self.host_hwnd, self.self_ref.clone()) {
+                Ok(t) => self.drop_target = Some(t),
+                Err(e) => eprintln!("[backend-windows] file drop unavailable: RegisterDragDrop failed: {e}"),
+            }
+        }
+    }
+
     pub(crate) fn set_cursor_hidden_impl(&mut self, hidden: bool) {
         self.pointer.set_cursor_hidden(hidden);
     }
@@ -816,11 +963,19 @@ impl WindowsBackend {
         );
         // 13px matches the sibling handlers' 13pt mono size.
         let key = font::FontKey { family, size_px: 13, weight: 400, italic: false };
-        let hfont = font::entry_for(&mut self.font_cache, &key)
-            .map(|e| e.hfont)
-            .unwrap_or(self.ui_font);
-        let (visual, (w, h)) =
-            code::build_gdi(spans, hfont, key, self.line_height as f32);
+        let (visual, (w, h)) = match &self.dwrite {
+            Some(dw) => {
+                let line_height = dw.line_height(&key).unwrap_or(self.line_height as f32);
+                let measure_key = key.clone();
+                code::build_visual(spans, key, line_height, |s| dw.width(s, &measure_key))
+            }
+            None => {
+                let hfont = font::entry_for(&mut self.font_cache, &key)
+                    .map(|e| e.hfont)
+                    .unwrap_or(self.ui_font);
+                code::build_gdi(spans, hfont, key, self.line_height as f32)
+            }
+        };
         let node = self.add_node(NodeKind::Code(visual));
         self.set_intrinsic(&node, w, h);
         node
@@ -837,9 +992,63 @@ impl WindowsBackend {
     /// Paint the scene into `hdc` at `w × h`. The host calls this from
     /// its `WM_PAINT`.
     pub fn paint(&mut self, hdc: HDC, w: i32, h: i32) {
-        unsafe {
-            scene::paint_scene(self, hdc, w, h);
+        match self.renderer {
+            RendererKind::Gdi => unsafe { scene::paint_scene(self, hdc, w, h) },
+            RendererKind::D2d => self.paint_d2d(w, h),
         }
+    }
+
+    /// The Direct2D frame. `hdc` is unused: the scene reaches the screen
+    /// through the composition swapchain, not the window's DC.
+    fn paint_d2d(&mut self, w: i32, h: i32) {
+        // Same contract as the GDI painter: paint against current geometry.
+        if self.layout_dirty {
+            self.layout_pass();
+        }
+        // The scene visual lives in the backend's one composition tree,
+        // under the graphics visuals (see `dcomp::CompositionTree::new`).
+        if self.comp.is_none() {
+            self.comp = dcomp::CompositionTree::new(self.host_hwnd);
+        }
+        let mut slot = self.d2d.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(
+                d2d::D2dRenderer::new()
+                    .unwrap_or_else(|e| panic!("Direct2D renderer: device creation failed: {e}")),
+            );
+        }
+        let result = slot.as_mut().expect("just created").render_window(self, w, h);
+        if let Err(e) = result {
+            // A lost device (driver update, GPU reset) invalidates every
+            // resource: drop the renderer and rebuild it on the next paint.
+            eprintln!("backend-windows: Direct2D frame failed ({e}); recreating the renderer");
+            *slot = None;
+            drop(slot);
+            self.invalidate();
+        }
+    }
+
+    /// The Direct2D renderer's pixels for the current scene at `w × h`
+    /// device px (top-down premultiplied BGRA), or `None` on the GDI
+    /// renderer. Screenshots and tests.
+    #[cfg_attr(not(any(test, feature = "robot")), allow(dead_code))]
+    pub(crate) fn render_d2d_offscreen(&self, w: i32, h: i32) -> Option<Result<Vec<u8>, String>> {
+        if self.renderer != RendererKind::D2d {
+            return None;
+        }
+        let mut slot = self.d2d.borrow_mut();
+        if slot.is_none() {
+            match d2d::D2dRenderer::new() {
+                Ok(r) => *slot = Some(r),
+                Err(e) => return Some(Err(format!("Direct2D device creation failed: {e}"))),
+            }
+        }
+        Some(
+            slot.as_mut()
+                .expect("just created")
+                .render_offscreen(self, w, h)
+                .map_err(|e| format!("Direct2D offscreen frame failed: {e}")),
+        )
     }
 
     /// The pressable handler under the client-area point `(x, y)` — in
@@ -1053,6 +1262,9 @@ impl WindowsBackend {
     /// 56 px headline in the 12 px shell font lays it out ~4× too
     /// narrow and the layout clips it.
     fn measure_with_key(&mut self, text: &str, key: Option<&font::FontKey>) -> (i32, i32) {
+        if let Some(dw) = &self.dwrite {
+            return dw.measure_line(text, key.unwrap_or(&self.default_font_key), self.line_height);
+        }
         let hfont = match key {
             Some(k) => font::entry_for(&mut self.font_cache, k)
                 .map(|e| e.hfont)
@@ -1079,13 +1291,24 @@ impl WindowsBackend {
         let key = t.font_key.clone();
         let style_advance = t.line_height;
         let max_lines = t.max_lines;
-        let hfont = match &key {
-            Some(k) => font::entry_for(&mut self.font_cache, k)
-                .map(|e| e.hfont)
-                .unwrap_or(self.ui_font),
-            None => self.ui_font,
-        };
-        let plan = Rc::new(wrap::build_gdi(&content, hfont, self.line_height as f32));
+        let plan = Rc::new(match &self.dwrite {
+            // DirectWrite measures in the font it draws — with no key, the
+            // default key the painter draws with.
+            Some(dw) => dw.build_plan(
+                &content,
+                key.as_ref().unwrap_or(&self.default_font_key),
+                self.line_height as f32,
+            ),
+            None => {
+                let hfont = match &key {
+                    Some(k) => font::entry_for(&mut self.font_cache, k)
+                        .map(|e| e.hfont)
+                        .unwrap_or(self.ui_font),
+                    None => self.ui_font,
+                };
+                wrap::build_gdi(&content, hfont, self.line_height as f32)
+            }
+        });
         if let Some(meta) = self.nodes.get_mut(&node_id) {
             if let NodeKind::Text(t) = &mut meta.kind {
                 t.plan = Some(plan.clone());
@@ -1201,6 +1424,7 @@ impl WindowsBackend {
         // A fetch still in flight for a removed image finds no events
         // entry and is dropped.
         self.image_events.remove(&id);
+        self.view_input.forget(id);
         if let Some(meta) = self.nodes.remove(&id) {
             if let Some(cid) = meta.control_id {
                 self.command_handlers.remove(&cid);
@@ -1237,7 +1461,7 @@ impl WindowsBackend {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        self.layout.compute(root_layout, width, height);
+        self.compute_layout_roots(root_layout, width, height);
 
         // Parent-relative frames for every laid-out node.
         let ids: Vec<u64> = self.layout_for_id.keys().copied().collect();
@@ -1252,17 +1476,21 @@ impl WindowsBackend {
                 // (read-only) never re-wraps. Same pure `lines_limited`
                 // the measure fn used → breaks (and `max_lines` cuts)
                 // can't disagree with the height Taffy was told.
+                // Wrap at the CONTENT width: the measure fn reported the
+                // content box, and Taffy added the padding around it.
+                let (_, _, content_w, _) =
+                    painted_geom::content_box(frame.width, frame.height, meta.content_inset);
                 if let NodeKind::Text(t) = &mut meta.kind {
                     if let Some(plan) = t.plan.clone() {
                         let stale = t
                             .lines
                             .as_ref()
-                            .map(|l| (l.width - frame.width).abs() > 0.25)
+                            .map(|l| (l.width - content_w).abs() > 0.25)
                             .unwrap_or(true);
                         if stale {
                             t.lines = Some(wrap::WrappedLines {
-                                width: frame.width,
-                                lines: plan.lines_limited(frame.width, t.max_lines),
+                                width: content_w,
+                                lines: plan.lines_limited(content_w, t.max_lines),
                             });
                         }
                     }
@@ -1304,6 +1532,58 @@ impl WindowsBackend {
                 dispatch_graphics_events(&weak, &gfx_events);
             });
         }
+
+        // `on_layout` subscribers whose view changed size — on a fresh
+        // turn, for the same reason as the graphics events.
+        let due = self.layout_subs_due();
+        if !due.is_empty() {
+            runtime_shared::scheduling::after_ms_detached(0, move || layout_subs::fire(due));
+        }
+    }
+
+    /// Which painted nodes go above which graphics surfaces this frame
+    /// (`layers`). Nothing to plan without graphics nodes.
+    pub(crate) fn layer_plan(&self) -> layers::LayerPlan {
+        if self.graphics.is_empty() {
+            return layers::LayerPlan::default();
+        }
+        layers::plan(self, |id| {
+            self.graphics.get(&id).is_some_and(|st| st.visible.load(std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
+    /// Show this frame's lifted layers (and drop last frame's that are
+    /// gone).
+    pub(crate) fn present_overlays(&self, lifted: Vec<overlay::LayerPixels>) {
+        let Some(comp) = &self.comp else { return };
+        let graphics = &self.graphics;
+        self.overlays.borrow_mut().present(
+            comp,
+            |id| graphics.get(&id).map(|st| st.visuals.container.clone()),
+            lifted,
+        );
+    }
+
+    /// Lay out from `node`, filling the window. A root that is itself a
+    /// reactive anchor has no box: its children (through any nested
+    /// anchors) are the layout roots.
+    fn compute_layout_roots(&mut self, node: runtime_layout::LayoutNode, width: f32, height: f32) {
+        if self.layout.is_contents(node) {
+            for child in self.layout.logical_children_of(node) {
+                self.compute_layout_roots(child, width, height);
+            }
+        } else {
+            self.layout.compute(node, width, height);
+        }
+    }
+
+    /// The `on_layout` callbacks owed a size by the current frames
+    /// (`layout_subs::due`). Hidden nodes keep their last size.
+    pub(crate) fn layout_subs_due(&self) -> layout_subs::Due {
+        if !layout_subs::any() {
+            return Vec::new();
+        }
+        layout_subs::due(|id| self.nodes.get(&id).filter(|m| !m.hidden).map(|m| (m.frame.2, m.frame.3)))
     }
 
     /// Recompute window-relative origins and reposition + re-clip every
@@ -1934,6 +2214,16 @@ fn resolve_radius(t: &Option<runtime_shared::Tokenized<Length>>) -> f32 {
     }
 }
 
+/// A padding side in px, or 0. Px only, like the GTK backend's leaf
+/// margins: a percentage resolves against the PARENT's width, which Taffy
+/// knows and the painter does not.
+fn resolve_padding(t: &Option<runtime_shared::Tokenized<Length>>) -> f32 {
+    match t.as_ref().map(|x| x.resolve()) {
+        Some(Length::Px(v)) => v.max(0.0),
+        _ => 0.0,
+    }
+}
+
 /// Border-width slot in px, or 0.
 fn resolve_width(t: &Option<runtime_shared::Tokenized<f32>>) -> f32 {
     t.as_ref().map(|x| x.resolve()).unwrap_or(0.0)
@@ -1996,10 +2286,16 @@ pub(crate) fn uniform_border(sides: &[BorderSide; 4]) -> Option<(f32, Rgba)> {
 /// left→right, `180°` = top→bottom. Identical formula to the Linux
 /// backend's `gradient::linear_points` so the two backends place stops
 /// identically.
+///
+/// Direction components within float noise of zero snap TO zero, so the
+/// axis angles are exactly axis-aligned: `sin(180°)` in f32 is −8.7e-8,
+/// and Wine's GDI+ line brush fills a NEARLY-vertical axis with one solid
+/// color (the whole 180° gradient painted as its first stop).
 pub(crate) fn linear_points(angle_deg: f32, w: f32, h: f32) -> ((f32, f32), (f32, f32)) {
     let rad = angle_deg.to_radians();
-    let dx = rad.sin();
-    let dy = -rad.cos();
+    let snap = |v: f32| if v.abs() < 1e-6 { 0.0 } else { v };
+    let dx = snap(rad.sin());
+    let dy = snap(-rad.cos());
     let half = (dx.abs() * w + dy.abs() * h) / 2.0;
     let (cx, cy) = (w / 2.0, h / 2.0);
     let start = (cx - dx * half, cy - dy * half);
@@ -2044,6 +2340,21 @@ impl WindowsBackend {
 
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> WindowsNode {
         self.add_node(NodeKind::View(ViewVisual::default()))
+    }
+
+    /// A reactive region's anchor over a `display: contents` layout node
+    /// (`LayoutTree::new_contents_node`): its children lay out in the
+    /// nearest real ancestor's flex context, and its frame is that
+    /// ancestor's box at the origin, so the painter and hit walk place them
+    /// with no translation. It paints nothing and is never a hit target.
+    pub(crate) fn create_anchor(&mut self) -> WindowsNode {
+        let id = self.alloc_id();
+        let layout = self.layout.new_contents_node();
+        self.layout_for_id.insert(id, layout);
+        let mut meta = NodeMeta::new(NodeKind::View(ViewVisual::default()));
+        meta.contents = true;
+        self.nodes.insert(id, meta);
+        WindowsNode { id, hwnd: HWND(std::ptr::null_mut()) }
     }
 
     fn create_pressable(
@@ -2554,7 +2865,14 @@ impl WindowsBackend {
             return;
         }
         for face in faces {
+            // GDI: native controls and the GDI painter.
             font::install_face(&face.source);
+            // DirectWrite can't see GDI-private fonts (`dwrite_text`).
+            if let Some(dw) = &self.dwrite {
+                if let Err(e) = dw.register_face(&face.source) {
+                    eprintln!("backend-windows: DirectWrite could not load a face of typeface {}: {e}", id.0);
+                }
+            }
         }
     }
 
@@ -2647,6 +2965,16 @@ impl WindowsBackend {
                 .unwrap_or(1.0);
             meta.author_transform = style.transform.clone().unwrap_or_default();
             meta.overflow_hidden = matches!(style.overflow, Some(Overflow::Hidden));
+            meta.pointer_events = style.pointer_events;
+            meta.content_inset = match &meta.kind {
+                NodeKind::Text(_) | NodeKind::Code(_) | NodeKind::Icon(_) | NodeKind::Image(_) => [
+                    resolve_padding(&style.padding_top),
+                    resolve_padding(&style.padding_right),
+                    resolve_padding(&style.padding_bottom),
+                    resolve_padding(&style.padding_left),
+                ],
+                _ => [0.0; 4],
+            };
 
             match &mut meta.kind {
                 NodeKind::View(v) => {
@@ -2813,6 +3141,20 @@ mod tests {
         let (s, e) = linear_points(180.0, 100.0, 100.0);
         approx(s, (50.0, 0.0));
         approx(e, (50.0, 100.0));
+    }
+
+    #[test]
+    fn regression_axis_angles_are_exactly_axis_aligned() {
+        // A float-noise tilt (sin 180° = -8.7e-8 in f32) made Wine's line
+        // brush paint the whole 180° gradient as one solid color.
+        for angle in [0.0, 180.0, 360.0, -180.0] {
+            let (s, e) = linear_points(angle, 120.0, 90.0);
+            assert_eq!(s.0, e.0, "{angle}deg must be exactly vertical");
+        }
+        for angle in [90.0, 270.0, -90.0] {
+            let (s, e) = linear_points(angle, 120.0, 90.0);
+            assert_eq!(s.1, e.1, "{angle}deg must be exactly horizontal");
+        }
     }
 
     // --- radial radius reference ---
@@ -3173,6 +3515,166 @@ mod dpi_tests {
     /// painted, native, and hit-tested — and dropping back to 96 DPI
     /// (`WM_DPICHANGED`) must restore 1:1.
     #[test]
+    /// A chart's tooltip — painted content over a graphics surface — showed
+    /// UNDER the surface: everything painted sat below every composition
+    /// visual. What the user sees (the desktop's composited pixels): the
+    /// painted box is on top where it overlaps the canvas, the canvas
+    /// everywhere else. Needs the real desktop compositor, so it skips
+    /// under Wine (screen capture is black there).
+    fn regression_painted_content_over_a_canvas_is_shown_above_it() {
+        use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+        use windows::Win32::Graphics::Direct3D11::{
+            D3D11CreateDevice, ID3D11Device, ID3D11RenderTargetView, ID3D11Texture2D,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+        use windows::Win32::Graphics::Dxgi::{
+            IDXGIDevice, IDXGIFactory2, DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        };
+        use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, SetWindowPos, HWND_TOPMOST, MSG, PM_REMOVE, SWP_SHOWWINDOW,
+        };
+        use windows::core::Interface;
+        if crate::under_wine() {
+            eprintln!("SKIP regression_painted_content_over_a_canvas_is_shown_above_it: needs the real desktop compositor");
+            return;
+        }
+        let _serial = crate::render_test_lock();
+        let host = host_window();
+        unsafe {
+            let _ = SetWindowPos(host, HWND_TOPMOST, 0, 0, CLIENT.0, CLIENT.1, SWP_SHOWWINDOW);
+        }
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        // A 400×300 canvas, then a red box overlapping it (absolute, so
+        // it lies over the canvas) — after it in paint order.
+        let canvas = runtime_vocabulary::caps::GraphicsOps::create_graphics(
+            &mut b,
+            Box::new(|_| {}),
+            Box::new(|_| {}),
+            Box::new(|| {}),
+            &a11y,
+        );
+        b.apply_style(&canvas, &sized(400.0, 300.0, None));
+        let canvas_id = canvas.id;
+        let tip = b.create_view(&a11y);
+        let mut ts = (*sized(100.0, 40.0, Some("#ff0000"))).clone();
+        ts.position = Some(Position::Absolute.into());
+        ts.left = Some(Length::Px(50.0).into());
+        ts.top = Some(Length::Px(50.0).into());
+        b.apply_style(&tip, &Rc::new(ts));
+        b.insert(&mut root, canvas);
+        b.insert(&mut root, tip);
+        b.finish(root);
+
+        unsafe {
+            // Fill the canvas's visual with opaque magenta.
+            let mut d3d: Option<ID3D11Device> = None;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d3d), None, None)
+                .expect("d3d11");
+            let d3d = d3d.unwrap();
+            let factory: IDXGIFactory2 = d3d.cast::<IDXGIDevice>().unwrap().GetAdapter().unwrap().GetParent().unwrap();
+            let desc = DXGI_SWAP_CHAIN_DESC1 {
+                Width: 400,
+                Height: 300,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                BufferCount: 2,
+                SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+                AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+                ..Default::default()
+            };
+            let swap = factory.CreateSwapChainForComposition(&d3d, &desc, None).expect("swapchain");
+            let back: ID3D11Texture2D = swap.GetBuffer(0).unwrap();
+            let mut rtv: Option<ID3D11RenderTargetView> = None;
+            d3d.CreateRenderTargetView(&back, None, Some(&mut rtv)).unwrap();
+            d3d.GetImmediateContext().unwrap().ClearRenderTargetView(&rtv.unwrap(), &[1.0, 0.0, 1.0, 1.0]);
+            swap.Present(0, DXGI_PRESENT(0)).ok().unwrap();
+            b.graphics[&canvas_id].visuals.content.SetContent(&swap).unwrap();
+            b.comp.as_ref().unwrap().commit();
+
+            // Paint the scene (GDI+ draws into the window; the lifted box
+            // goes to its overlay visual).
+            let dc = GetDC(host);
+            b.paint(dc, CLIENT.0, CLIENT.1);
+            ReleaseDC(host, dc);
+
+            let start = std::time::Instant::now();
+            let mut msg = MSG::default();
+            while start.elapsed().as_millis() < 700 {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            let screen = GetDC(HWND(std::ptr::null_mut()));
+            let on_tip = GetPixel(screen, 100, 70).0 & 0x00FF_FFFF;
+            let on_canvas = GetPixel(screen, 300, 200).0 & 0x00FF_FFFF;
+            ReleaseDC(HWND(std::ptr::null_mut()), screen);
+            let _ = DestroyWindow(host);
+            const MAGENTA: u32 = 0x00FF_00FF; // COLORREF 0x00BBGGRR
+            const RED_REF: u32 = 0x0000_00FF;
+            assert_eq!(on_canvas, MAGENTA, "the canvas shows where nothing covers it");
+            assert_eq!(on_tip, RED_REF, "the painted box shows over the canvas");
+        }
+    }
+
+    #[test]
+    /// Reactive anchors were plain views — flex items the author never
+    /// wrote — so a `height: 100%` child under an `if` laid out at 0 (the
+    /// charts demo's plot stayed blank) and a row's children under a `for`
+    /// stacked into a column, losing the gap. They are `display: contents`
+    /// now: children lay out in the anchor's parent.
+    fn regression_reactive_anchor_is_layout_transparent() {
+        use runtime_scene::Host;
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+
+        // A 300px-tall box → anchor → a child filling it by percentage.
+        let mut boxed = b.create_view(&a11y);
+        b.apply_style(&boxed, &sized(800.0, 300.0, None));
+        let mut anchor = Host::create_anchor(&mut b);
+        let fill = b.create_view(&a11y);
+        let mut fs = StyleRules::default();
+        fs.width = Some(Length::pct(100.0).into());
+        fs.height = Some(Length::pct(100.0).into());
+        b.apply_style(&fill, &Rc::new(fs));
+        let fill_id = fill.id;
+        b.insert(&mut anchor, fill);
+        b.insert(&mut boxed, anchor);
+
+        // A row with a gap → anchor → two 50px chips.
+        let mut row = b.create_view(&a11y);
+        let mut rs = StyleRules::default();
+        rs.flex_direction = Some(runtime_shared::FlexDirection::Row.into());
+        rs.gap = Some(Length::Px(10.0).into());
+        b.apply_style(&row, &Rc::new(rs));
+        let mut chips = Host::create_anchor(&mut b);
+        let a = b.create_view(&a11y);
+        let c = b.create_view(&a11y);
+        b.apply_style(&a, &sized(50.0, 50.0, None));
+        b.apply_style(&c, &sized(50.0, 50.0, None));
+        let (a_id, c_id) = (a.id, c.id);
+        b.insert(&mut chips, a);
+        b.insert(&mut chips, c);
+        b.insert(&mut row, chips);
+
+        b.insert(&mut root, boxed);
+        b.insert(&mut root, row);
+        b.finish(root);
+
+        assert_eq!(b.node_frame(fill_id), Some((0.0, 0.0, 800.0, 300.0)), "the percentage resolves through the anchor");
+        assert_eq!(b.node_frame(a_id), Some((0.0, 0.0, 50.0, 50.0)));
+        assert_eq!(b.node_frame(c_id), Some((60.0, 0.0, 50.0, 50.0)), "the row and its gap reach through the anchor");
+    }
+
+    #[test]
     fn regression_layout_units_scale_with_dpi() {
         let host = host_window();
         let mut b = WindowsBackend::new(host);
@@ -3224,6 +3726,49 @@ mod dpi_tests {
         let px = render(&mut b);
         assert_eq!(at(&px, 50, 25), RED);
         assert_ne!(at(&px, 150, 75), RED, "1:1 again");
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    /// A painted text leaf drew its glyphs from its frame's top-left
+    /// corner, ignoring its own padding: Taffy sized the frame to content +
+    /// padding, but a leaf has no child to offset, so the docs sidebar's
+    /// section labels (`padding-top`) sat flush on the item above with the
+    /// whole gap below them. The glyphs must start inside the padding box.
+    #[test]
+    fn regression_text_leaf_paints_inside_its_padding() {
+        const TOP: f32 = 24.0;
+        const LEFT: f32 = 30.0;
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let label = b.create_text("Hg", &a11y);
+        let mut st = StyleRules::default();
+        st.padding_top = Some(Length::Px(TOP).into());
+        st.padding_left = Some(Length::Px(LEFT).into());
+        st.align_self = Some(runtime_shared::AlignSelf::FlexStart);
+        b.apply_style(&label, &Rc::new(st));
+        b.insert(&mut root, label);
+        b.set_dpi(96);
+        b.finish(root);
+
+        let px = render(&mut b);
+        let inked = |x: i32, y: i32| {
+            let p = at(&px, x, y);
+            // Any visibly non-white pixel: the default text is near-black.
+            ((p >> 16) & 0xFF) < 0xC0 || ((p >> 8) & 0xFF) < 0xC0 || (p & 0xFF) < 0xC0
+        };
+        let ink: Vec<(i32, i32)> = (0..120)
+            .flat_map(|y| (0..200).map(move |x| (x, y)))
+            .filter(|&(x, y)| inked(x, y))
+            .collect();
+        assert!(!ink.is_empty(), "the label must paint");
+        let first_row = ink.iter().map(|p| p.1).min().unwrap();
+        let first_col = ink.iter().map(|p| p.0).min().unwrap();
+        assert!(first_row >= TOP as i32, "glyphs start at y={first_row}, inside the {TOP}px top padding");
+        assert!(first_col >= LEFT as i32, "glyphs start at x={first_col}, inside the {LEFT}px left padding");
         unsafe {
             let _ = DestroyWindow(host);
         }

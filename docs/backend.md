@@ -61,7 +61,9 @@ worth calling out:
   frames apply unchanged under the anchor's native view) and makes the
   native view hit-transparent for itself (iOS/macOS override `hitTest:`
   to try the subviews and never answer with the anchor; Android needs
-  nothing — a non-clickable `ViewGroup` falls through). A plain view is
+  nothing — a non-clickable `ViewGroup` falls through; Windows, whose
+  views are painted, skips the anchor as a target in its hit walk). A
+  plain view is
   NOT a correct anchor: it is a flex item, and a default flex item hugs a
   `flex_grow` child to nothing, stacks a row parent's children vertically
   and swallows its `gap` — the shapes `runtime_layout`'s contents-node

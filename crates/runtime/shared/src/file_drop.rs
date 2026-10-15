@@ -14,11 +14,12 @@
 //!
 //! Only the desktop-class backends source these: **web** (`dragenter` /
 //! `dragover` / `dragleave` / `drop`), **macOS** (`draggingEntered:` /
-//! `draggingExited:` / `performDragOperation:`), and **Linux** (GTK4
-//! `DropTarget` `enter`/`motion`/`leave`/`drop`). iOS / Android leave the
-//! trait method at its no-op default — there is no OS file-drag concept on a
-//! phone — and the scaffold Windows backend will fill it in (IDropTarget) when
-//! it matures. This is genuine input availability, not a per-platform hack.
+//! `draggingExited:` / `performDragOperation:`), **Linux** (GTK4
+//! `DropTarget` `enter`/`motion`/`leave`/`drop`) and **Windows** (the host
+//! window's OLE `IDropTarget`, routed to views by hit test). iOS / Android
+//! leave the trait method at its no-op default — there is no OS file-drag
+//! concept on a phone. This is genuine input availability, not a
+//! per-platform hack.
 //!
 //! The `file-picker` SDK wraps this raw channel in a friendly `FileDropZone`
 //! that turns each [`DroppedFile`] into the same `PickedFile` handle a picker

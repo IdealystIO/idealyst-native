@@ -49,11 +49,16 @@ impl CompositionTree {
     /// supported Windows version, so failure means something is deeply
     /// wrong with the session).
     ///
-    /// `topmost = true` on the target: the visual tree composes above
-    /// the host's child windows, matching the old z-order where the
-    /// canvas HWND was created after (above) the native controls. The
-    /// GDI-painted scene lives on the window's redirection surface,
-    /// which composes below the target's visuals either way.
+    /// `topmost = false` on the target: the visual tree composes BELOW
+    /// the host's child windows (the native controls) and above the
+    /// window's redirection surface. Native controls are already above
+    /// painted content in this backend; with a topmost tree a 3D canvas
+    /// also covered them, so a HUD of buttons over a canvas (canvas3d's
+    /// demo) was invisible on Windows while web and Apple drew it on
+    /// top. The tree's bottom child is the Direct2D renderer's scene
+    /// ([`Self::add_scene_visual`]); graphics visuals stack above it.
+    /// One tree for both because a window can have only one target of
+    /// each `topmost` kind.
     pub(crate) fn new(host_hwnd: HWND) -> Option<Self> {
         unsafe {
             let device: IDCompositionDevice =
@@ -64,7 +69,7 @@ impl CompositionTree {
                         return None;
                     }
                 };
-            let target = match device.CreateTargetForHwnd(host_hwnd, true) {
+            let target = match device.CreateTargetForHwnd(host_hwnd, false) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("[backend-windows] CreateTargetForHwnd failed: {e}");
@@ -111,6 +116,34 @@ impl CompositionTree {
             container.AddVisual(&content, true, None::<&IDCompositionVisual>).ok()?;
             self.root.AddVisual(&container, true, None::<&IDCompositionVisual>).ok()?;
             Some(VisualPair { container, content })
+        }
+    }
+
+    /// A visual at the BOTTOM of the tree, under every graphics visual:
+    /// where the Direct2D renderer shows the painted scene.
+    pub(crate) fn add_scene_visual(&self) -> Option<IDCompositionVisual> {
+        unsafe {
+            let v = self.device.CreateVisual().ok()?;
+            // insertAbove = FALSE with no reference: behind all children.
+            self.root.AddVisual(&v, false, None::<&IDCompositionVisual>).ok()?;
+            Some(v)
+        }
+    }
+
+    /// A visual directly above `reference` (a graphics node's container):
+    /// where content lifted over that node shows (`crate::overlay`).
+    pub(crate) fn add_visual_above(&self, reference: &IDCompositionVisual) -> Option<IDCompositionVisual> {
+        unsafe {
+            let v = self.device.CreateVisual().ok()?;
+            self.root.AddVisual(&v, true, reference).ok()?;
+            Some(v)
+        }
+    }
+
+    /// Detach a single root-level visual. The caller commits.
+    pub(crate) fn remove_child(&self, v: &IDCompositionVisual) {
+        unsafe {
+            let _ = self.root.RemoveVisual(v);
         }
     }
 
@@ -471,5 +504,99 @@ mod tests {
             p,
             Placement { x: 100, y: 100, square: Some((0.0, 0.0, 0.0, 0.0)), rounded: None }
         );
+    }
+}
+
+#[cfg(test)]
+mod z_order_tests {
+    //! What the user SEES: the desktop's composited pixels (`GetDC(NULL)`
+    //! + `GetPixel`), so DirectComposition and child windows are both in
+    //! the reading. That only works on real Windows in a desktop session
+    //! — under Wine on macOS the capture is black — so this skips under
+    //! Wine and needs `scripts/windows-vm-runner.sh`'s desktop mode (or a
+    //! local Windows desktop).
+    use super::*;
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11CreateDevice, ID3D11Device, ID3D11RenderTargetView, ID3D11Texture2D, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        D3D11_SDK_VERSION,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+    use windows::Win32::Graphics::Dxgi::{
+        IDXGIDevice, IDXGIFactory2, DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+        DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    };
+    use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, SetWindowPos, HWND_TOPMOST, MSG, PM_REMOVE,
+        SWP_SHOWWINDOW, WINDOW_EX_STYLE, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP, WS_VISIBLE,
+    };
+
+    const MAGENTA: u32 = 0x00FF_00FF; // COLORREF 0x00BBGGRR
+
+    /// A canvas visual covered the window's native controls: canvas3d's
+    /// HUD buttons were invisible on Windows. The control must show over
+    /// the canvas, and the canvas everywhere else.
+    #[test]
+    fn regression_native_controls_compose_above_graphics_visuals() {
+        if crate::under_wine() {
+            eprintln!("SKIP regression_native_controls_compose_above_graphics_visuals: needs the real desktop compositor (screen capture is black under Wine)");
+            return;
+        }
+        let _serial = crate::render_test_lock();
+        unsafe {
+            let (x, y, w, h) = (120, 120, 320, 200);
+            let host = CreateWindowExW(
+                WINDOW_EX_STYLE(0), PCWSTR(windows::core::w!("STATIC").as_ptr()), PCWSTR(windows::core::w!("z-order").as_ptr()),
+                WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, x, y, w, h, None, None, None, None,
+            ).expect("host");
+            let _ = SetWindowPos(host, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW);
+            let button = CreateWindowExW(
+                WINDOW_EX_STYLE(0), PCWSTR(windows::core::w!("BUTTON").as_ptr()), PCWSTR(windows::core::w!("OK").as_ptr()),
+                WS_CHILD | WS_VISIBLE, 20, 20, 120, 40, host, None, None, None,
+            ).expect("button");
+
+            // A full-window magenta canvas visual.
+            let tree = CompositionTree::new(host).expect("composition tree");
+            let pair = tree.add_visual().expect("visual");
+            let mut d3d: Option<ID3D11Device> = None;
+            D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, None, D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut d3d), None, None).expect("d3d11");
+            let d3d = d3d.unwrap();
+            let factory: IDXGIFactory2 = d3d.cast::<IDXGIDevice>().unwrap().GetAdapter().unwrap().GetParent().unwrap();
+            let desc = DXGI_SWAP_CHAIN_DESC1 {
+                Width: w as u32, Height: h as u32, Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                BufferCount: 2, SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, AlphaMode: DXGI_ALPHA_MODE_IGNORE, ..Default::default()
+            };
+            let swap = factory.CreateSwapChainForComposition(&d3d, &desc, None).expect("swapchain");
+            let back: ID3D11Texture2D = swap.GetBuffer(0).unwrap();
+            let mut rtv: Option<ID3D11RenderTargetView> = None;
+            d3d.CreateRenderTargetView(&back, None, Some(&mut rtv)).unwrap();
+            d3d.GetImmediateContext().unwrap().ClearRenderTargetView(&rtv.unwrap(), &[1.0, 0.0, 1.0, 1.0]);
+            swap.Present(0, DXGI_PRESENT(0)).ok().unwrap();
+            pair.content.SetContent(&swap).unwrap();
+            tree.commit();
+
+            // Let DWM compose a few frames.
+            let start = std::time::Instant::now();
+            let mut msg = MSG::default();
+            while start.elapsed().as_millis() < 700 {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    DispatchMessageW(&msg);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            let screen = GetDC(HWND(std::ptr::null_mut()));
+            let on_button = GetPixel(screen, x + 80, y + 40).0 & 0x00FF_FFFF;
+            let on_canvas = GetPixel(screen, x + 260, y + 150).0 & 0x00FF_FFFF;
+            ReleaseDC(HWND(std::ptr::null_mut()), screen);
+            let _ = DestroyWindow(button);
+            let _ = DestroyWindow(host);
+            let _ = (WPARAM(0), LPARAM(0));
+            assert_eq!(on_canvas, MAGENTA, "the canvas visual is on screen where no control is");
+            assert_ne!(on_button, MAGENTA, "the native button shows over the canvas");
+        }
     }
 }

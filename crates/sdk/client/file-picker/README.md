@@ -90,9 +90,10 @@ tracks the `active` signal, and converts dropped files to `PickedFile`s for
 `on_drop`. Optional `on_enter` / `on_leave` fire on the hover transitions.
 
 Drag-*in* is a desktop/web affordance: it's delivered on **web** (HTML5
-`DataTransfer`) and **macOS** (`NSDraggingDestination`). On iOS / Android (no OS
-file-drag concept) and the scaffold Windows / Linux backends the `on_file_drop`
-view slot is a no-op, so the zone renders inertly — exactly like a wheel handler
+`DataTransfer`), **macOS** (`NSDraggingDestination`), **Linux** (GTK4
+`DropTarget`) and **Windows** (OLE `IDropTarget`). On iOS / Android (no OS
+file-drag concept) the `on_file_drop` view slot is a no-op, so the zone renders
+inertly — exactly like a wheel handler
 on a phone. Dropping app content *out* to Finder (a native drag **source**) is a
 separate, not-yet-built feature.
 

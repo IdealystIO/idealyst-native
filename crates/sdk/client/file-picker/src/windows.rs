@@ -54,9 +54,8 @@ impl PickedFile {
 }
 
 /// Convert a dropped OS file into a `PickedFile` from its real path. The
-/// scaffold Windows backend does not yet source file drops (its
-/// `install_file_drop_handler` is the no-op default), so this is dead until an
-/// IDropTarget impl lands — but it's ready for it.
+/// Windows backend's drop target (`backend_windows::file_drop`) reads real
+/// paths from the drag's `CF_HDROP` list, so every dropped file has one.
 #[cfg(feature = "drop")]
 pub(crate) fn picked_from_dropped(f: &runtime_shared::DroppedFile) -> Option<PickedFile> {
     let path = f.path.clone()?;

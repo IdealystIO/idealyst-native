@@ -22,9 +22,12 @@
 //!   `PostMessageW`-ing `WM_IDEALYST_SCHED` to the host window (winit
 //!   sends an `EventLoopProxy` event). `PostMessageW` is thread-safe
 //!   and the canonical cross-thread wake for a Win32 message pump.
-//! - The window's `WndProc` handles `WM_IDEALYST_SCHED` by calling
-//!   [`drain_due`], which runs every callback whose deadline has
-//!   passed plus one tick of each live `raf_loop` client.
+//!   At most one wake is queued at a time (`WakeLatch`).
+//! - The message loop (`app::pump`) runs [`drain_due`] once nothing
+//!   else is queued, so input and paint go before a drain; a wake that a
+//!   modal loop dispatches drains in the `WndProc`. The drain runs every
+//!   callback whose deadline has passed plus one tick of each live
+//!   `raf_loop` client.
 //!
 //! Cancellation is cooperative: a handle's `Drop` removes the entry
 //! from `MAIN_QUEUE`; the worker discovers the absence on its next
@@ -34,7 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Mutex;
 use std::thread;
@@ -62,6 +65,11 @@ enum WorkerCmd {
 struct PendingTimer {
     f: Option<Box<dyn FnOnce() + 'static>>,
     deadline: Instant,
+    /// A framework microtask (`schedule_microtask` rides a 0 ms timer).
+    /// Microtasks never fire the dispatch hook: the reactive flush is
+    /// itself a microtask, so firing after it would schedule another flush
+    /// from inside the flush, forever.
+    microtask: bool,
 }
 
 /// One active raf-loop client. `alive` is shared with the matching
@@ -102,17 +110,52 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// pulses for other live clients.
 static RAF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Post the wake message to the host window. Thread-safe; called from
-/// the worker thread. A `false` return means the window is gone (app
-/// tearing down) — harmless, the worker exits when the channel drops.
+/// At most one `WM_IDEALYST_SCHED` in the queue at a time. The worker
+/// pulses every 16 ms whatever the main thread is doing; when a drain
+/// (a 3D frame on a software adapter) takes longer than that, posting
+/// every pulse grows the queue without bound. Posted messages are
+/// retrieved before input, so mouse and keyboard were never read, and
+/// after 5 s Windows marked the window "Not Responding". One pending
+/// wake carries every deadline that passes while it waits, because
+/// [`drain_due`] fires all due timers and ticks every raf client.
+struct WakeLatch(AtomicBool);
+
+impl WakeLatch {
+    const fn new() -> Self {
+        WakeLatch(AtomicBool::new(false))
+    }
+
+    /// Whether the caller should post a wake (none is pending). Marks
+    /// one pending when it returns `true`.
+    fn claim(&self) -> bool {
+        !self.0.swap(true, Ordering::AcqRel)
+    }
+
+    /// The pending wake was retrieved (or never made it into the queue).
+    fn release(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+static WAKE_PENDING: WakeLatch = WakeLatch::new();
+
+/// Post the wake message to the host window, unless one is already
+/// pending. Thread-safe; called from the worker thread. A failed post
+/// means the window is gone (app tearing down) — harmless, the worker
+/// exits when the channel drops.
 fn post_wake() {
-    let raw = WAKE_HWND.load(Ordering::Relaxed);
-    if raw == 0 {
+    post_wake_to(WAKE_HWND.load(Ordering::Relaxed), &WAKE_PENDING);
+}
+
+fn post_wake_to(raw_hwnd: isize, latch: &WakeLatch) {
+    if raw_hwnd == 0 || !latch.claim() {
         return;
     }
-    let hwnd = HWND(raw as *mut c_void);
+    let hwnd = HWND(raw_hwnd as *mut c_void);
     unsafe {
-        let _ = PostMessageW(hwnd, WM_IDEALYST_SCHED, WPARAM(0), LPARAM(0));
+        if PostMessageW(hwnd, WM_IDEALYST_SCHED, WPARAM(0), LPARAM(0)).is_err() {
+            latch.release();
+        }
     }
 }
 
@@ -182,6 +225,77 @@ mod tests {
     //! cascade needs.
 
     use super::*;
+
+    /// The worker posted a wake every 16 ms pulse even while the main
+    /// thread was still busy with the last one, so a slow frame grew the
+    /// queue without bound and input (retrieved after posted messages)
+    /// was starved: the canvas3d demo went "Not Responding" on Windows.
+    #[test]
+    fn regression_wakes_do_not_pile_up_while_a_drain_is_pending() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, PeekMessageW, HWND_MESSAGE, MSG, PM_REMOVE, WINDOW_EX_STYLE,
+            WINDOW_STYLE,
+        };
+        use windows::core::w;
+        let latch = WakeLatch::new();
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE(0), w!("STATIC"), None, WINDOW_STYLE(0), 0, 0, 0, 0,
+                HWND_MESSAGE, None, None, None,
+            )
+            .unwrap();
+            let queued = |hwnd: HWND| {
+                let mut msg = MSG::default();
+                let mut n = 0;
+                while PeekMessageW(&mut msg, hwnd, WM_IDEALYST_SCHED, WM_IDEALYST_SCHED, PM_REMOVE).as_bool() {
+                    n += 1;
+                }
+                n
+            };
+            // Three pulses while the main thread is busy: one wake queued.
+            for _ in 0..3 {
+                post_wake_to(hwnd.0 as isize, &latch);
+            }
+            assert_eq!(queued(hwnd), 1, "pulses during a pending wake must not queue more");
+            // The drain releases the latch: the next pulse wakes again.
+            latch.release();
+            post_wake_to(hwnd.0 as isize, &latch);
+            assert_eq!(queued(hwnd), 1);
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    static HOOK_FIRES: AtomicUsize = AtomicUsize::new(0);
+    fn count_hook() {
+        HOOK_FIRES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The dispatch hook (which schedules the reactive flush) never fired
+    /// after scheduler callbacks, so writes made in a timer or an animation
+    /// frame stayed uncommitted until an input event flushed — canvas3d's
+    /// fox animated only while the mouse was held down. Timers and raf
+    /// iterations fire it; microtasks (the flush itself rides one) must not.
+    #[test]
+    fn regression_scheduler_callbacks_fire_the_dispatch_hook() {
+        backend_windows::dispatch_hook::install_dispatch_hook(count_hook);
+        let sched = Win32Scheduler;
+        let before = HOOK_FIRES.load(Ordering::SeqCst);
+        std::mem::forget(sched.after_ms(0, Box::new(|| {})));
+        drain_due();
+        assert_eq!(HOOK_FIRES.load(Ordering::SeqCst) - before, 1, "a timer fires the hook");
+
+        let before = HOOK_FIRES.load(Ordering::SeqCst);
+        sched.schedule_microtask(Box::new(|| {}));
+        drain_due();
+        assert_eq!(HOOK_FIRES.load(Ordering::SeqCst) - before, 0, "a microtask does not");
+
+        let before = HOOK_FIRES.load(Ordering::SeqCst);
+        let mut raf = sched.raf_loop(Box::new(|| {}));
+        drain_due();
+        assert_eq!(HOOK_FIRES.load(Ordering::SeqCst) - before, 1, "a raf tick fires the hook");
+        raf.cancel();
+        backend_windows::dispatch_hook::clear_dispatch_hook();
+    }
 
     #[test]
     fn regression_timer_cancel_drop_cascade_does_not_reenter_queue() {
@@ -319,10 +433,13 @@ fn apply(
 /// Drain every due timer + tick every live raf client. Called from the
 /// host `WndProc` on `WM_IDEALYST_SCHED`.
 pub(crate) fn drain_due() {
+    // Released before running anything, so a deadline that passes during
+    // this drain posts a fresh wake instead of being lost.
+    WAKE_PENDING.release();
     let now = Instant::now();
     // Move due `FnOnce`s out under a short borrow so a callback that
     // re-enters `after_ms` doesn't trip the RefCell.
-    let to_fire: Vec<Box<dyn FnOnce() + 'static>> = MAIN_QUEUE.with(|q| {
+    let to_fire: Vec<(Box<dyn FnOnce() + 'static>, bool)> = MAIN_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         let due_ids: Vec<u64> = q
             .timers
@@ -333,14 +450,24 @@ pub(crate) fn drain_due() {
         for id in due_ids {
             if let Some(mut pt) = q.timers.remove(&id) {
                 if let Some(f) = pt.f.take() {
-                    out.push(f);
+                    out.push((f, pt.microtask));
                 }
             }
         }
         out
     });
-    for f in to_fire {
+    // Author code run from the scheduler (an `after_ms` that sets a signal,
+    // an animation tick) has no wrapped callback to flush its staged writes:
+    // the backend's dispatch hook schedules that flush (see
+    // `backend_windows::newcore`, "Scheduler installed"). Without it a
+    // signal written per animation frame — canvas3d's clock — committed only
+    // when some input event happened to flush, so 3D animation advanced only
+    // while the mouse was pressed or moving.
+    for (f, microtask) in to_fire {
         f();
+        if !microtask {
+            backend_windows::dispatch_hook::fire_dispatch_hook();
+        }
     }
 
     // Tick raf clients. Swap the Vec out so a closure can register new
@@ -348,10 +475,15 @@ pub(crate) fn drain_due() {
     // via `alive`), otherwise a re-registration would resurrect a
     // just-cancelled entry.
     let mut taken: Vec<RafEntry> = MAIN_QUEUE.with(|q| std::mem::take(&mut q.borrow_mut().rafs));
+    let mut ran_raf = false;
     for entry in taken.iter_mut() {
         if entry.alive.get() {
             (entry.f)();
+            ran_raf = true;
         }
+    }
+    if ran_raf {
+        backend_windows::dispatch_hook::fire_dispatch_hook();
     }
     // Drop mid-tick-cancelled entries BEFORE re-borrowing the queue:
     // a dead raf closure's captures can cascade into further handle
@@ -385,7 +517,7 @@ impl Scheduler for Win32Scheduler {
         // lands it in the next message-loop iteration. Forget the
         // handle — microtasks are fire-and-forget; dropping it would
         // cancel the timer the framework just scheduled.
-        std::mem::forget(self.after_ms(0, f));
+        std::mem::forget(enqueue_timer(0, f, true));
     }
 
     fn after_animation_frame(&self, f: Box<dyn FnOnce() + 'static>) -> Box<dyn ScheduleHandle> {
@@ -393,17 +525,7 @@ impl Scheduler for Win32Scheduler {
     }
 
     fn after_ms(&self, delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> Box<dyn ScheduleHandle> {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let deadline = Instant::now() + Duration::from_millis(delay_ms.max(0) as u64);
-        MAIN_QUEUE.with(|q| {
-            q.borrow_mut()
-                .timers
-                .insert(id, PendingTimer { f: Some(f), deadline });
-        });
-        if let Some(tx) = CMD_TX.lock().unwrap().clone() {
-            let _ = tx.send(WorkerCmd::AfterMs { id, deadline });
-        }
-        Box::new(TimerHandle { id })
+        enqueue_timer(delay_ms, f, false)
     }
 
     fn raf_loop(&self, f: Box<dyn FnMut() + 'static>) -> Box<dyn ScheduleHandle> {
@@ -424,6 +546,20 @@ impl Scheduler for Win32Scheduler {
         }
         Box::new(RafHandle { id, alive })
     }
+}
+
+fn enqueue_timer(delay_ms: i32, f: Box<dyn FnOnce() + 'static>, microtask: bool) -> Box<dyn ScheduleHandle> {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_millis(delay_ms.max(0) as u64);
+    MAIN_QUEUE.with(|q| {
+        q.borrow_mut()
+            .timers
+            .insert(id, PendingTimer { f: Some(f), deadline, microtask });
+    });
+    if let Some(tx) = CMD_TX.lock().unwrap().clone() {
+        let _ = tx.send(WorkerCmd::AfterMs { id, deadline });
+    }
+    Box::new(TimerHandle { id })
 }
 
 struct TimerHandle {

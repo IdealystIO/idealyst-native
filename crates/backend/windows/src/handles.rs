@@ -24,7 +24,7 @@ use std::rc::Weak;
 
 use runtime_shared::animation::AnimProp;
 use runtime_shared::primitives::portal::ViewportRect;
-use runtime_shared::{TextHandle, TextOps, ViewHandle, ViewOps};
+use runtime_shared::{LayoutSubscription, TextHandle, TextOps, ViewHandle, ViewOps};
 
 use crate::{WindowsBackend, WindowsNode};
 
@@ -88,6 +88,32 @@ impl ViewOps for Win32ViewOps {
             height: h,
         })
     }
+
+    /// Window-relative, like `absolute_frame` — overlays anchor to it and
+    /// charts seed their plot size from it. The zero rect is the documented
+    /// "not laid out yet" sentinel.
+    fn rect(&self, node: &dyn Any) -> ViewportRect {
+        self.absolute_frame(node).unwrap_or(ViewportRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 })
+    }
+
+    /// See `crate::layout_subs`. The first size is delivered on the next
+    /// scheduler turn (not from inside this call, which may run under a
+    /// mount walk that holds the backend).
+    fn subscribe_layout(&self, node: &dyn Any, callback: Box<dyn Fn(f32, f32)>) -> LayoutSubscription {
+        let Some(state) = node.downcast_ref::<HandleState>() else {
+            return LayoutSubscription::noop();
+        };
+        let sub = crate::layout_subs::subscribe(state.node.id, callback);
+        let backend = state.backend.clone();
+        runtime_shared::scheduling::after_ms_detached(0, move || {
+            let Some(b) = backend.upgrade() else { return };
+            let Ok(b) = b.try_borrow() else { return };
+            let due = b.layout_subs_due();
+            drop(b);
+            crate::layout_subs::fire(due);
+        });
+        sub
+    }
 }
 
 pub(crate) fn make_view_handle(backend: &WindowsBackend, node: &WindowsNode) -> ViewHandle {
@@ -123,4 +149,47 @@ pub(crate) fn make_text_handle(backend: &WindowsBackend, node: &WindowsNode) -> 
         }) as std::rc::Rc<dyn Any>,
         &WIN32_TEXT_OPS,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{NodeKind, NodeMeta, ViewVisual};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use windows::Win32::Foundation::HWND;
+
+    /// A component that sizes itself from its laid-out box (the charts SDK's
+    /// plot) read `rect()` and subscribed `on_layout` through its view handle;
+    /// on Windows `rect()` was the zero rect and the subscription a no-op, so
+    /// the plot stayed 0×0 and every chart drew nothing.
+    #[test]
+    fn regression_view_handle_reports_rect_and_layout_size() {
+        let backend = Rc::new(RefCell::new(WindowsBackend::new(HWND(std::ptr::null_mut()))));
+        backend.borrow_mut().set_self_ref(Rc::downgrade(&backend));
+        let node = {
+            let mut b = backend.borrow_mut();
+            let mut m = NodeMeta::new(NodeKind::View(ViewVisual::default()));
+            m.frame = (4.0, 6.0, 226.0, 40.0);
+            m.abs = (24.0, 704.0);
+            b.nodes.insert(9, m);
+            b.root_id = Some(9);
+            WindowsNode { id: 9, hwnd: HWND(std::ptr::null_mut()) }
+        };
+        let handle = make_view_handle(&backend.borrow(), &node);
+        let r = runtime_shared::primitives::portal::AnchorableHandle::rect(&handle);
+        assert_eq!((r.x, r.y, r.width, r.height), (24.0, 704.0, 226.0, 40.0));
+
+        let seen: Rc<RefCell<Vec<(f32, f32)>>> = Default::default();
+        let s = seen.clone();
+        // No scheduler is installed in tests, so the first delivery runs
+        // synchronously.
+        let _sub = handle.on_layout(move |w, h| s.borrow_mut().push((w, h)));
+        assert_eq!(*seen.borrow(), [(226.0, 40.0)], "the current size on subscribe");
+
+        backend.borrow_mut().nodes.get_mut(&9).unwrap().frame = (4.0, 6.0, 300.0, 40.0);
+        let due = backend.borrow().layout_subs_due();
+        crate::layout_subs::fire(due);
+        assert_eq!(*seen.borrow(), [(226.0, 40.0), (300.0, 40.0)], "and each new size after a pass");
+    }
 }

@@ -25,3 +25,6 @@ where
     eprintln!("host-win32 only runs on Windows targets");
     1
 }
+
+/// Off-Windows nothing ever runs a loop, so the callback is dropped.
+pub fn on_main_loop_start<F: FnOnce() + 'static>(_f: F) {}

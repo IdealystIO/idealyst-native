@@ -386,8 +386,11 @@ deliberately NOT used: it disables the whole subtree with no way for a
 descendant `Auto` to re-enable. Linux models it in `IdealystView`'s
 `contains` for the same reason (GTK `can-target` drops the whole
 subtree); a leaf widget (a label) only honors its *own* explicit value
-there. Android and the GPU backend do not implement `pointer_events`
-yet — an always-mounted `None` overlay will swallow input there.
+there. Windows applies the same rule in its hit walk
+(`backend_windows::scene::hit_chain`), which every painted-view input
+channel shares: pressable clicks, `on_touch`, `on_wheel` and `on_hover`.
+Android and the GPU backend do not implement `pointer_events` yet — an
+always-mounted `None` overlay will swallow input there.
 
 A portal's own `style` (what `click_through` sets) is layered OVER the
 container's placement layout on every native backend, never in place

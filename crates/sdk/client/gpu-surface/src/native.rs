@@ -2,19 +2,28 @@
 //!
 //! Two kinds of `graphics` target reach a renderer:
 //!
-//! - **RawWindow** (macOS/iOS/Android/Windows): a window handle wgpu turns into
-//!   a swapchain surface. The frame target is blitted into the acquired
-//!   surface texture and presented.
+//! - **RawWindow** (macOS/iOS/Android): a window handle wgpu turns into a
+//!   swapchain surface. The frame target is blitted into the acquired
+//!   surface texture and presented. On Windows the same variant carries a
+//!   DirectComposition visual instead ([`GraphicsSurface::composed_target`]):
+//!   the backend's graphics surfaces are visuals in its composition tree, not
+//!   windows, and deliberately answer `window_handle()` with `Unavailable`.
+//!   wgpu mounts the swapchain on the visual
+//!   (`SurfaceTargetUnsafe::CompositionVisual`); without that path no surface
+//!   could be created there and every 3D / Vello canvas stayed blank.
 //! - **Gl** (Linux/GTK4): GTK4 has no per-widget native window, so the
 //!   primitive lends a live GL context (`GtkGLArea`). It is adopted through
 //!   wgpu's GL backend, and the frame target is flip-blitted into the area's
 //!   framebuffer from INSIDE GTK's render signal ([`GpuSurface::blit_to_fbo`]).
 
-use crate::config::{check_adapter, choose_alpha_mode, choose_surface_format, AdapterFacts};
+use crate::config::{
+    check_adapter, choose_alpha_mode, choose_surface_format, composition_alpha_mode, AdapterFacts,
+};
 use crate::present::{surface_wants_premultiplied, PresentBlit};
 use crate::{make_target, FrameAlpha, Requirements};
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::primitives::graphics::{GraphicsTarget, OnReadyEvent, OnResizeEvent};
+use runtime_shared::primitives::graphics::{ComposedTarget, GraphicsTarget, OnReadyEvent, OnResizeEvent};
+use std::sync::Arc;
 use runtime_vocabulary::caps::GraphicsOps;
 
 use std::cell::RefCell;
@@ -64,6 +73,11 @@ pub struct GpuSurface {
     adapter: wgpu::Adapter,
     /// Swapchain surface (RawWindow targets); `None` on the GL path.
     surface: Option<wgpu::Surface<'static>>,
+    /// The composition visual the swapchain is mounted on (Windows), whose
+    /// tree must be committed after every configure: wgpu binds the new
+    /// swapchain to the visual but can't commit the backend's composition
+    /// device, so the frame stays invisible until something else commits.
+    composed: Option<Arc<dyn ComposedTarget>>,
     /// GL present path (GTK4); `Some` exactly when `surface` is `None`.
     #[cfg(target_os = "linux")]
     gl: Option<GlPresent>,
@@ -114,9 +128,23 @@ impl GpuSurface {
                     // GLES/Wayland need an explicit display handle).
                     display: None,
                 });
-                // `GraphicsSurface` is 'static + Send + Sync and implements the
-                // raw-window-handle traits → `Surface<'static>`.
-                let surf = instance.create_surface(surface_target).ok()?;
+                let composed = surface_target.composed_target().cloned();
+                let surf = match &composed {
+                    // SAFETY: the visual is a live IDCompositionVisual; the
+                    // provider (kept in `composed` for this surface's
+                    // lifetime) owns a reference and wgpu adds its own.
+                    #[cfg(target_os = "windows")]
+                    Some(ct) => unsafe {
+                        instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(
+                            ct.visual().as_ptr(),
+                        ))
+                    }
+                    .map_err(|e| log::warn!("{label}: composition surface: {e}"))
+                    .ok()?,
+                    // `GraphicsSurface` is 'static + Send + Sync and implements
+                    // the raw-window-handle traits → `Surface<'static>`.
+                    _ => instance.create_surface(surface_target).ok()?,
+                };
                 let adapter =
                     pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -132,7 +160,11 @@ impl GpuSurface {
 
                 let caps = surf.get_capabilities(&adapter);
                 let format = choose_surface_format(&caps.formats)?;
-                let alpha_mode = choose_alpha_mode(&caps.alpha_modes, false);
+                let alpha_mode = if composed.is_some() {
+                    composition_alpha_mode(&caps.alpha_modes)
+                } else {
+                    choose_alpha_mode(&caps.alpha_modes, false)
+                };
                 let config = wgpu::SurfaceConfiguration {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                     format,
@@ -144,6 +176,9 @@ impl GpuSurface {
                     view_formats: vec![],
                 };
                 surf.configure(&device, &config);
+                if let Some(ct) = &composed {
+                    ct.commit();
+                }
                 let present = PresentBlit::new(
                     &device,
                     format,
@@ -157,6 +192,7 @@ impl GpuSurface {
                     queue,
                     adapter,
                     surface: Some(surf),
+                    composed,
                     #[cfg(target_os = "linux")]
                     gl: None,
                     config,
@@ -199,6 +235,7 @@ impl GpuSurface {
                         queue,
                         adapter,
                         surface: None,
+                        composed: None,
                         gl: Some(GlPresent { target: gl_target }),
                         config,
                         target,
@@ -284,6 +321,9 @@ impl GpuSurface {
         self.make_current();
         if let Some(surface) = &self.surface {
             surface.configure(&self.device, &self.config);
+            if let Some(ct) = &self.composed {
+                ct.commit();
+            }
         }
         let (target, target_view) =
             make_target(&self.device, self.config.width, self.config.height, self.label);

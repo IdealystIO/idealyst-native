@@ -57,15 +57,57 @@ impl Default for RunOptions {
     }
 }
 
+impl RunOptions {
+    /// Apply an `IDEALYST_WINDOW_SIZE` value (`1280x800`; `X` or `,` also
+    /// accepted) over the requested client size. This is how
+    /// `idealyst test --parity` pins every platform to the SAME viewport —
+    /// without it the Win32 window opened at the app's own 1024x768 while the
+    /// headless browser ran at the parity viewport, so every responsive-layout
+    /// difference between the two read as a divergence. Same contract as
+    /// `host-gtk`. Unparseable or non-positive values leave the size alone.
+    pub(crate) fn with_size_override(mut self, raw: Option<&str>) -> Self {
+        if let Some((w, h)) = raw.and_then(parse_window_size) {
+            self.width = w;
+            self.height = h;
+        }
+        self
+    }
+}
+
+pub(crate) fn parse_window_size(raw: &str) -> Option<(i32, i32)> {
+    let (w, h) = raw.split_once(['x', 'X', ','])?;
+    let w = w.trim().parse::<i32>().ok()?;
+    let h = h.trim().parse::<i32>().ok()?;
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regression_parity_viewport_pins_the_win32_window() {
+        let base = RunOptions::default();
+        let pinned = base.clone().with_size_override(Some("1280x800"));
+        assert_eq!((pinned.width, pinned.height), (1280, 800));
+        let pinned = base.clone().with_size_override(Some(" 390 , 844 "));
+        assert_eq!((pinned.width, pinned.height), (390, 844));
+        for bad in [None, Some("garbage"), Some("0x800"), Some("-5x5")] {
+            let o = base.clone().with_size_override(bad);
+            assert_eq!((o.width, o.height), (base.width, base.height), "{bad:?}");
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod app;
 #[cfg(target_os = "windows")]
 mod scheduler;
 
 #[cfg(target_os = "windows")]
-pub use app::{run, run_with};
+pub use app::{on_main_loop_start, run, run_with};
 
 #[cfg(not(target_os = "windows"))]
 mod stub;
 #[cfg(not(target_os = "windows"))]
-pub use stub::{run, run_with};
+pub use stub::{on_main_loop_start, run, run_with};

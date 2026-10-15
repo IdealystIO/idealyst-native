@@ -69,6 +69,42 @@ impl DecodedImage {
     pub(crate) fn natural_px(&self) -> (u32, u32) {
         self.natural
     }
+
+    /// Stable identity for caches built from this image (the Direct2D
+    /// renderer's uploaded bitmap): a new decode or re-raster is a new
+    /// `GpImage`.
+    pub(crate) fn identity(&self) -> usize {
+        self.image as usize
+    }
+
+    /// The pixels as premultiplied BGRA rows (`width * 4` bytes each),
+    /// decoded by GDI+ — what the Direct2D renderer uploads. `None` when
+    /// GDI+ can't lock the bitmap.
+    pub(crate) fn pargb_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+        use windows::Win32::Graphics::GdiPlus::{
+            BitmapData, GdipBitmapLockBits, GdipBitmapUnlockBits, GpBitmap, ImageLockModeRead, Rect,
+        };
+        let (w, h) = self.natural;
+        if self.image.is_null() || w == 0 || h == 0 {
+            return None;
+        }
+        unsafe {
+            let area = Rect { X: 0, Y: 0, Width: w as i32, Height: h as i32 };
+            let mut data = BitmapData::default();
+            let bmp = self.image as *mut GpBitmap;
+            if GdipBitmapLockBits(bmp, &area, ImageLockModeRead.0 as u32, PIXEL_FORMAT_32BPP_PARGB, &mut data).0 != 0 {
+                return None;
+            }
+            let row = w as usize * 4;
+            let mut out = Vec::with_capacity(row * h as usize);
+            for y in 0..h as usize {
+                let src = (data.Scan0 as *const u8).offset(y as isize * data.Stride as isize);
+                out.extend_from_slice(std::slice::from_raw_parts(src, row));
+            }
+            let _ = GdipBitmapUnlockBits(bmp, &mut data);
+            Some((w, h, out))
+        }
+    }
 }
 
 impl Drop for DecodedImage {
@@ -266,6 +302,28 @@ pub(crate) unsafe fn paint_into(
     h: f32,
     screen_scale: f64,
 ) {
+    with_drawable(p, w, h, screen_scale, |image, (dx, dy, dw, dh)| {
+        // `Cover` deliberately overflows the box; clip so the crop matches
+        // the other backends.
+        let mut state: u32 = 0;
+        let _ = GdipSaveGraphics(g, &mut state);
+        let _ = GdipSetClipRect(g, 0.0, 0.0, w, h, CombineModeIntersect);
+        let _ = GdipDrawImageRectI(g, image.image, dx, dy, dw.max(1), dh.max(1));
+        let _ = GdipRestoreGraphics(g, state);
+    });
+}
+
+/// The image an `ImagePaint` draws in a `w × h` (logical px) box and its
+/// destination rect, handed to `draw` — the part both renderers share
+/// (`object_fit` placement, SVG re-rasterization for the drawn size). Not
+/// called for an empty or unloaded image.
+pub(crate) fn with_drawable(
+    p: &ImagePaint,
+    w: f32,
+    h: f32,
+    screen_scale: f64,
+    draw: impl FnOnce(&DecodedImage, (i32, i32, i32, i32)),
+) {
     let Some(source) = &p.source else {
         return;
     };
@@ -273,30 +331,24 @@ pub(crate) unsafe fn paint_into(
     if cw <= 0 || ch <= 0 {
         return;
     }
-    let (dx, dy, dw, dh) = dest_rect(source.natural(), cw, ch, p.object_fit);
-    let svg_guard;
-    let image = match source {
-        ImageSource::Bitmap(d) => d.image,
+    let dest = dest_rect(source.natural(), cw, ch, p.object_fit);
+    match source {
+        ImageSource::Bitmap(d) => {
+            if !d.image.is_null() {
+                draw(d, dest);
+            }
+        }
         // Rasterize for the size actually drawn (the dest rect, which
         // `Cover` makes larger than the box).
         ImageSource::Svg { svg, raster } => {
-            svg_guard = svg_raster(svg, raster, dw as f32, dh as f32, screen_scale);
-            match svg_guard.as_ref() {
-                Some((_, d)) => d.image,
-                None => return,
+            let guard = svg_raster(svg, raster, dest.2 as f32, dest.3 as f32, screen_scale);
+            if let Some((_, d)) = guard.as_ref() {
+                if !d.image.is_null() {
+                    draw(d, dest);
+                }
             }
         }
-    };
-    if image.is_null() {
-        return;
     }
-    // `Cover` deliberately overflows the box; clip so the crop matches
-    // the other backends.
-    let mut state: u32 = 0;
-    let _ = GdipSaveGraphics(g, &mut state);
-    let _ = GdipSetClipRect(g, 0.0, 0.0, w, h, CombineModeIntersect);
-    let _ = GdipDrawImageRectI(g, image, dx, dy, dw.max(1), dh.max(1));
-    let _ = GdipRestoreGraphics(g, state);
 }
 
 #[cfg(test)]

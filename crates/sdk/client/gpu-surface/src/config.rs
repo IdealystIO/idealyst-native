@@ -112,9 +112,31 @@ pub fn choose_alpha_mode(
     }
 }
 
+/// The alpha mode for a swapchain created for a COMPOSITION visual
+/// (Windows: `CreateSwapChainForComposition`). Such swapchains accept only
+/// premultiplied or ignored alpha: wgpu's leading `Auto` maps to "unspecified"
+/// and post-multiplied to "straight", both of which the call rejects, so the
+/// swapchain failed at its first configure. Premultiplied when offered (a
+/// transparent frame stays transparent over the scene), else `Opaque`.
+pub fn composition_alpha_mode(modes: &[wgpu::CompositeAlphaMode]) -> wgpu::CompositeAlphaMode {
+    if modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+        wgpu::CompositeAlphaMode::PreMultiplied
+    } else {
+        wgpu::CompositeAlphaMode::Opaque
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regression_composition_swapchains_never_get_auto_or_straight_alpha() {
+        assert_eq!(composition_alpha_mode(&[A::Auto, A::Opaque, A::PreMultiplied]), A::PreMultiplied);
+        assert_eq!(composition_alpha_mode(&[A::Auto, A::Opaque]), A::Opaque);
+        assert_eq!(composition_alpha_mode(&[A::Auto, A::PostMultiplied]), A::Opaque);
+        assert_eq!(composition_alpha_mode(&[]), A::Opaque);
+    }
     use wgpu::{Backend, CompositeAlphaMode as A, DownlevelFlags as D, Features, TextureFormat as F};
 
     fn facts(backend: Backend, features: Features, downlevel: D) -> AdapterFacts {
