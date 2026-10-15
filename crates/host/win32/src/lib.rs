@@ -103,6 +103,8 @@ mod tests {
 mod app;
 #[cfg(target_os = "windows")]
 mod scheduler;
+#[cfg(target_os = "windows")]
+mod async_executor;
 
 #[cfg(target_os = "windows")]
 pub use app::{on_main_loop_start, run, run_with};

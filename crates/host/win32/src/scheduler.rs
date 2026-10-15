@@ -140,10 +140,11 @@ impl WakeLatch {
 static WAKE_PENDING: WakeLatch = WakeLatch::new();
 
 /// Post the wake message to the host window, unless one is already
-/// pending. Thread-safe; called from the worker thread. A failed post
+/// pending. Thread-safe; called from the worker thread and from async
+/// task wakers (`crate::async_executor`). A failed post
 /// means the window is gone (app tearing down) — harmless, the worker
 /// exits when the channel drops.
-fn post_wake() {
+pub(crate) fn post_wake() {
     post_wake_to(WAKE_HWND.load(Ordering::Relaxed), &WAKE_PENDING);
 }
 
@@ -178,6 +179,9 @@ pub(crate) fn install(hwnd: HWND) {
             .expect("spawn scheduler worker");
     }
     install_scheduler(Box::new(Win32Scheduler));
+    // `spawn_async` polls cooperatively on this pump instead of blocking
+    // the UI thread (see `crate::async_executor`).
+    crate::async_executor::install();
     // Embedded wgpu hosts (host-windows-desktop behind the website's
     // Simulator) tick via `runtime_core::driver::render_loop`; without
     // an installed driver the returned handle is inert and the canvas
@@ -436,6 +440,8 @@ pub(crate) fn drain_due() {
     // Released before running anything, so a deadline that passes during
     // this drain posts a fresh wake instead of being lost.
     WAKE_PENDING.release();
+    // Async tasks woken (from any thread) since the last drain.
+    crate::async_executor::poll_ready();
     let now = Instant::now();
     // Move due `FnOnce`s out under a short borrow so a callback that
     // re-enters `after_ms` doesn't trip the RefCell.
