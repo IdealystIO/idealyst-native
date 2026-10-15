@@ -1,6 +1,13 @@
 //! Web open: the File System Access API `showOpenFilePicker()` where available
 //! (Chromium), falling back to a hidden `<input type=file>` everywhere else
-//! (Safari/Firefox).
+//! (Safari/Firefox, and cross-origin iframes, where Chromium refuses the
+//! FSA picker).
+//!
+//! One `pick()` shows at most ONE dialog: the `<input>` fallback runs only when
+//! the FSA picker provably never showed (see `crate::fsa_rejection` for which
+//! rejections those are, per the spec). A rejection after the dialog — the
+//! user's choice refused by the embedder, a handle's `getFile()` failing — is
+//! logged and surfaced as an error, never answered with a second dialog.
 //!
 //! Every browser call is a web-glue binding (docs/proposals/own-web-bindings.md).
 //! Either path yields `File` (`Blob`) objects — `web_glue::dom::File`, the same
@@ -13,22 +20,57 @@ use web_glue::dom::File;
 use web_glue::js::{Array, Uint8Array};
 use web_glue::{string, JsCast, JsError, JsFuture, JsValue};
 
+use runtime_shared::log_warn;
+
+use crate::fsa_rejection::{classify_fsa_rejection, FsaRejection, FsaStage};
 use crate::{PickError, PickKind, PickRequest};
 
 web_glue::import! {
-    // 1 when `window.showOpenFilePicker` (File System Access) is callable.
+    // 1 when `window.showOpenFilePicker` (File System Access) is callable
+    // AND this document is not a cross-origin subframe. Chromium (and Electron)
+    // refuse the FSA picker in a cross-origin iframe — Electron since
+    // Chromium 150 with `NotAllowedError`, a name that is otherwise a
+    // post-dialog refusal (`crate::fsa_rejection`) and so must not trigger the
+    // fallback. Detecting the frame up front sends it straight to the
+    // `<input>`, which works there. Reading `top.location.href` throws exactly
+    // when `top` is cross-origin.
     fn js_has_fsa() -> u32 =
-        "() => typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function' ? 1 : 0";
+        "() => { if (typeof window === 'undefined' || typeof window.showOpenFilePicker !== 'function') return 0; \
+           try { if (window.top !== window.self) void window.top.location.href; } catch (_) { return 0; } \
+           return 1; }";
     // `showOpenFilePicker({ multiple, types })` → a Promise of the picked
     // `File`s (each handle's `getFile()`). `accept` is the MIME list joined by
     // '\n'; empty means any file (no `types`).
+    //
+    // A rejection is re-thrown as an `Error` carrying the original `name` and
+    // message plus `stage` — 'picker' (showOpenFilePicker rejected) or 'read'
+    // (a returned handle's getFile() rejected, with `file` = the handle's
+    // name) — so Rust can tell pre- from post-dialog (`crate::fsa_rejection`).
+    //
+    // A getFile() `NotAllowedError` means the handle has no read grant yet
+    // (spec: getFile rejects unless read permission is "granted"). The user
+    // already chose the file, so ask for the grant once through the spec's
+    // `requestPermission({ mode: 'read' })` — a permission prompt at most,
+    // never a file dialog — and read again; if that is refused or throws, the
+    // ORIGINAL error is reported.
     #[catch]
     fn js_fsa_pick(ap: usize, al: usize, multiple: u32) -> u32 =
         "(ap, al, m) => { const acc = G.str(ap, al); const o = { multiple: m !== 0 }; \
            if (acc.length) { const a = {}; for (const t of acc.split('\\n')) a[t] = []; \
              o.types = [{ description: 'Files', accept: a }]; } \
-           return G.add(window.showOpenFilePicker(o) \
-             .then((hs) => Promise.all(Array.from(hs, (h) => h.getFile())))); }";
+           const tag = (stage, e, file) => { \
+             const x = new Error(e != null && e.message != null ? e.message : String(e)); \
+             x.name = (e != null && e.name) || 'Error'; x.stage = stage; \
+             if (file != null) x.file = file; return x; }; \
+           const read = async (h) => { \
+             try { return await h.getFile(); } catch (e) { \
+               if (e != null && e.name === 'NotAllowedError' && typeof h.requestPermission === 'function') { \
+                 let st; try { st = await h.requestPermission({ mode: 'read' }); } catch (_) {} \
+                 if (st === 'granted') { try { return await h.getFile(); } catch (e2) { throw tag('read', e2, h.name); } } } \
+               throw tag('read', e, h.name); } }; \
+           return G.add(window.showOpenFilePicker(o).then( \
+             (hs) => Promise.all(Array.from(hs, read)), \
+             (e) => { throw tag('picker', e); })); }";
     // The hidden `<input type=file>` fallback, whole: build it, append it,
     // `click()` it (synchronously, inside the caller's gesture), and resolve
     // the returned Promise with the selected `File`s on `change` — or an
@@ -160,28 +202,68 @@ pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>
         match pick_via_fsa(&accept, multiple).await {
             // Got a result (files or a clean cancel) — done.
             Ok(outcome) => return Ok(outcome),
-            // FSA present but unusable here (e.g. cross-origin iframe) — fall
-            // through to the input fallback.
-            Err(()) => {}
+            // A dialog may have been shown: report, never open a second one.
+            Err(FsaFailure::Fail(e)) => return Err(e),
+            // FSA provably never showed a dialog — the input may still work.
+            Err(FsaFailure::Fallback) => {}
         }
     }
 
     pick_via_input(&accept.replace('\n', ","), multiple).await
 }
 
+/// Why [`pick_via_fsa`] produced no outcome.
+enum FsaFailure {
+    /// No dialog was shown — try the `<input type=file>`.
+    Fallback,
+    /// A dialog may have been shown — this is the call's result.
+    Fail(PickError),
+}
+
 /// `showOpenFilePicker({ multiple, types })`. `Ok(Some(..))` = files,
-/// `Ok(None)` = user cancelled, `Err(())` = couldn't use FSA → fall back.
-async fn pick_via_fsa(accept: &str, multiple: bool) -> Result<Option<Vec<PickedFile>>, ()> {
+/// `Ok(None)` = user cancelled, `Err(..)` per [`classify_fsa_rejection`].
+async fn pick_via_fsa(accept: &str, multiple: bool) -> Result<Option<Vec<PickedFile>>, FsaFailure> {
     let (ap, al) = string::abi(accept);
     // SAFETY: a borrowed string for the call; the result is a fresh Promise.
-    let promise = unsafe { js_fsa_pick(ap, al, multiple as u32) }
-        .map(|p| unsafe { JsValue::from_raw(p) })
-        .map_err(|_| ())?;
-    match JsFuture::new(&promise).await {
-        Ok(files) => Ok(Some(files_of(files))),
-        // The user dismissing the dialog rejects with AbortError.
-        Err(e) if is_abort(&e) => Ok(None),
-        Err(_) => Err(()),
+    let promise = match unsafe { js_fsa_pick(ap, al, multiple as u32) } {
+        Ok(p) => unsafe { JsValue::from_raw(p) },
+        // A synchronous throw: `showOpenFilePicker` never returned a promise,
+        // so no dialog exists.
+        Err(e) => {
+            log_warn!("file-picker: showOpenFilePicker threw ({}); using <input type=file>", e.message());
+            return Err(FsaFailure::Fallback);
+        }
+    };
+    let e = match JsFuture::new(&promise).await {
+        Ok(files) => return Ok(Some(files_of(files))),
+        Err(e) => e,
+    };
+    let str_prop = |k: &str| e.get(k).ok().and_then(|v| v.as_string());
+    let stage = match str_prop("stage").as_deref() {
+        Some("read") => FsaStage::Read,
+        _ => FsaStage::Picker,
+    };
+    let name = str_prop("name").unwrap_or_default();
+    let detail = e.message();
+    match classify_fsa_rejection(stage, &name) {
+        FsaRejection::Dismissed => Ok(None),
+        FsaRejection::Fallback => {
+            log_warn!("file-picker: showOpenFilePicker refused before showing ({detail}); using <input type=file>");
+            Err(FsaFailure::Fallback)
+        }
+        FsaRejection::Fail => {
+            let msg = match stage {
+                FsaStage::Read => format!(
+                    "could not read the picked file {:?} ({detail})",
+                    str_prop("file").unwrap_or_default()
+                ),
+                FsaStage::Picker => format!(
+                    "the browser refused the pick ({detail}); an embedded browser may deny file-system access"
+                ),
+            };
+            log_warn!("file-picker: {msg}");
+            Err(FsaFailure::Fail(PickError::Backend(msg)))
+        }
     }
 }
 
@@ -221,9 +303,4 @@ fn accept_list(request: &PickRequest) -> Vec<String> {
             .map(|s| s.to_string())
             .collect(),
     }
-}
-
-/// Is this rejection an `AbortError` (the user cancelling)?
-fn is_abort(e: &JsError) -> bool {
-    e.get("name").ok().and_then(|n| n.as_string()).is_some_and(|n| n == "AbortError")
 }

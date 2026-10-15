@@ -122,6 +122,19 @@ One cfg-gated backend compiles per target:
 | Linux | portal `FileChooser.OpenFile` | same (mime/glob filter) | yes | file on disk |
 | web | `showOpenFilePicker()` / `<input type=file>` | same (`accept` filter) | no | `Blob` stream |
 
+On **web**, one `pick()` shows at most one dialog. The `<input type=file>`
+fallback runs only when `showOpenFilePicker()` is missing or provably never
+showed its dialog: a cross-origin iframe, or a `SecurityError` / `TypeError`
+rejection, which the File System Access spec raises before any prompt. Any
+other rejection can come after the user already chose a file. One example is an
+embedded browser such as Electron denying file-system access after the pick.
+Those rejections, and a picked handle whose `getFile()` fails, return a
+`PickError::Backend` carrying the browser's reason, and the reason is also
+logged with `log_warn!`. A second dialog is never opened. Dismissing the dialog
+(`AbortError`) is `Cancelled`. When `getFile()` is refused for lack of a read
+grant, the picker asks once for `requestPermission({ mode: 'read' })` and
+reads again.
+
 The Android Kotlin shim (`runtime/kotlin/.../RustFilePicker.kt`) is
 auto-discovered and compiled by `idealyst run android` via the
 `[package.metadata.idealyst.android]` block — no `MainActivity` edits needed.
@@ -139,7 +152,8 @@ exercise it.
 **Automated**
 - [ ] `cargo test -p file-picker` — portable request/outcome types, `PickedFile` handle plumbing
 - [ ] `cargo build -p file-picker --target wasm32-unknown-unknown` — web (`showOpenFilePicker` / `<input type=file>`) target compiles
-- [x] `cargo test -p file-picker --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_file_picker.rs`: a dropped file (a `web_glue::dom::File` in `DroppedFile::source`, as backend-web hands it over) becomes a `PickedFile` that streams its bytes; the `<input type=file>` fallback resolves a dismiss as `Cancelled` and removes its input
+- [x] `cargo test -p file-picker --target wasm32-unknown-unknown` (headless Chrome through the workspace runner) — `tests/web_file_picker.rs`: a dropped file (a `web_glue::dom::File` in `DroppedFile::source`, as backend-web hands it over) becomes a `PickedFile` that streams its bytes; the `<input type=file>` fallback resolves a dismiss as `Cancelled` and removes its input; a post-dialog rejection (`NotAllowedError`, a failing `getFile()`) is an error with no second dialog, a pre-dialog `SecurityError` falls back exactly once, and a `getFile()` without a read grant recovers through `requestPermission`
+- [x] `cargo test -p file-picker` — `fsa_rejection` classifies which `showOpenFilePicker()` rejections may fall back (`regression_post_dialog_rejection_never_reopens_picker`)
 
 **Behavior**
 
