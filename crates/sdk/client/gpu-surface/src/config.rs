@@ -16,12 +16,22 @@ pub struct Requirements {
     /// `SHADER_F16` feature on Vulkan only (Metal/DX12 don't require it). vello's
     /// `flatten` shader is the case; the Android emulator's Vulkan lacks it.
     pub f16_on_vulkan: bool,
+    /// The pipeline needs a hardware GPU: a software adapter (WARP on
+    /// Windows, llvmpipe, SwiftShader — wgpu's `DeviceType::Cpu`) is
+    /// refused. vello is the case: its GPU-driven compute pipeline on a
+    /// software rasterizer is slower than the platform's own CPU painter
+    /// (`canvas-native`), and the WARP that ships with Windows 11 (10.0.26100)
+    /// crashes running it — an access violation inside `d3d10warp.dll` that
+    /// takes the app down (the redistributable WARP 1.0.20 renders it fine,
+    /// but an app cannot count on having it). A plain raster pipeline
+    /// (canvas3d) runs fine on WARP and does not set this.
+    pub hardware: bool,
 }
 
 impl Requirements {
     /// No capability beyond a working adapter (a plain raster pipeline).
     pub const NONE: Requirements =
-        Requirements { downlevel: wgpu::DownlevelFlags::empty(), f16_on_vulkan: false };
+        Requirements { downlevel: wgpu::DownlevelFlags::empty(), f16_on_vulkan: false, hardware: false };
 }
 
 impl Default for Requirements {
@@ -37,14 +47,17 @@ pub struct AdapterFacts {
     pub backend: wgpu::Backend,
     pub features: wgpu::Features,
     pub downlevel: wgpu::DownlevelFlags,
+    pub device_type: wgpu::DeviceType,
 }
 
 impl AdapterFacts {
     pub fn of(adapter: &wgpu::Adapter) -> Self {
+        let info = adapter.get_info();
         AdapterFacts {
-            backend: adapter.get_info().backend,
+            backend: info.backend,
             features: adapter.features(),
             downlevel: adapter.get_downlevel_capabilities().flags,
+            device_type: info.device_type,
         }
     }
 }
@@ -56,6 +69,8 @@ pub enum Unsupported {
     Downlevel(wgpu::DownlevelFlags),
     /// Vulkan without `SHADER_F16` while the pipeline needs f16.
     VulkanWithoutF16,
+    /// A software adapter while the pipeline needs a hardware GPU.
+    Software,
 }
 
 impl std::fmt::Display for Unsupported {
@@ -63,12 +78,16 @@ impl std::fmt::Display for Unsupported {
         match self {
             Unsupported::Downlevel(missing) => write!(f, "lacks downlevel {missing:?}"),
             Unsupported::VulkanWithoutF16 => f.write_str("is Vulkan without SHADER_F16"),
+            Unsupported::Software => f.write_str("is a software rasterizer, not a GPU"),
         }
     }
 }
 
 /// Can an adapter with `facts` run a pipeline needing `req`?
 pub fn check_adapter(facts: AdapterFacts, req: Requirements) -> Result<(), Unsupported> {
+    if req.hardware && facts.device_type == wgpu::DeviceType::Cpu {
+        return Err(Unsupported::Software);
+    }
     let missing = req.downlevel - facts.downlevel;
     if !missing.is_empty() {
         return Err(Unsupported::Downlevel(missing));
@@ -140,11 +159,26 @@ mod tests {
     use wgpu::{Backend, CompositeAlphaMode as A, DownlevelFlags as D, Features, TextureFormat as F};
 
     fn facts(backend: Backend, features: Features, downlevel: D) -> AdapterFacts {
-        AdapterFacts { backend, features, downlevel }
+        AdapterFacts { backend, features, downlevel, device_type: wgpu::DeviceType::DiscreteGpu }
     }
 
     const VELLO: Requirements =
-        Requirements { downlevel: D::INDIRECT_EXECUTION, f16_on_vulkan: true };
+        Requirements { downlevel: D::INDIRECT_EXECUTION, f16_on_vulkan: true, hardware: true };
+
+    /// WARP (the Windows software rasterizer, `DeviceType::Cpu`) offers
+    /// everything vello asks for, so vello took the canvas and WARP crashed
+    /// inside its compute shaders, killing the app. A pipeline that needs
+    /// hardware refuses it; one that doesn't (canvas3d) still runs there.
+    #[test]
+    fn regression_software_adapter_rejected_when_hardware_required() {
+        let warp = AdapterFacts { device_type: wgpu::DeviceType::Cpu, ..facts(Backend::Dx12, Features::all(), D::all()) };
+        assert_eq!(check_adapter(warp, VELLO), Err(Unsupported::Software));
+        assert_eq!(check_adapter(warp, Requirements::default()), Ok(()));
+        for hw in [wgpu::DeviceType::DiscreteGpu, wgpu::DeviceType::IntegratedGpu, wgpu::DeviceType::VirtualGpu, wgpu::DeviceType::Other] {
+            let gpu = AdapterFacts { device_type: hw, ..warp };
+            assert_eq!(check_adapter(gpu, VELLO), Ok(()), "{hw:?}");
+        }
+    }
 
     #[test]
     fn no_requirements_accepts_any_adapter() {

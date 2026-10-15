@@ -33,8 +33,9 @@ pub(crate) fn new_vello_renderer(device: &wgpu::Device, single_threaded_init: bo
 }
 
 /// Can vello's GPU pipeline run on `adapter`? ([`crate::VELLO_REQUIREMENTS`]:
-/// compute + indirect dispatch, f16 on Vulkan.) `false` on WebGL2, the iOS
-/// Simulator and the Android emulator.
+/// compute + indirect dispatch, f16 on Vulkan, a hardware GPU.) `false` on
+/// WebGL2, the iOS Simulator, the Android emulator and software rasterizers
+/// (WARP, llvmpipe).
 pub fn adapter_can_run_vello(adapter: &wgpu::Adapter) -> bool {
     let compute = adapter
         .get_downlevel_capabilities()

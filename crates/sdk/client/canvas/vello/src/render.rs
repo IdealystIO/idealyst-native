@@ -46,9 +46,10 @@ pub use gpu_surface::RenderedImage;
 ///
 /// **Self-gating:** only takes over (from canvas-native, registered first) if
 /// this GPU can actually run vello's shaders ([`VELLO_REQUIREMENTS`]: Vulkan
-/// with f16, and indirect dispatch). The known-incompatible GPUs are the
-/// Android emulator's Vulkan (no f16) and the iOS Simulator's Metal (no
-/// INDIRECT_EXECUTION). So an app can register both canvas-native and
+/// with f16, indirect dispatch, real hardware). The known-incompatible
+/// adapters are the Android emulator's Vulkan (no f16), the iOS Simulator's
+/// Metal (no INDIRECT_EXECUTION) and software rasterizers such as WARP on a
+/// GPU-less Windows machine. So an app can register both canvas-native and
 /// canvas-vello uniformly on every platform: vello wins on a real GPU and steps
 /// aside there, leaving canvas-native — no per-environment `cfg` or
 /// `is_simulator()` needed.
@@ -209,7 +210,11 @@ pub(crate) fn make_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Textu
 /// canvas uses, pointed at an offscreen texture instead of a surface.
 ///
 /// Acquires a GPU adapter, falling back to a **software** adapter (Mesa lavapipe
-/// / DX WARP) when no GPU is present, so it runs on a headless server. Fonts and
+/// / DX WARP) when no GPU is present, so it runs on a headless server. On
+/// Windows the WARP that ships with the OS (10.0.26100) crashes in vello's
+/// shaders; a GPU-less Windows server needs the redistributable WARP
+/// (`Microsoft.Direct3D.WARP` ≥ 1.0.20, `d3d10warp.dll` next to the exe),
+/// which renders correctly. Fonts and
 /// images travel inside the scene's ops (`FontResource` / `ImageSource`), so the
 /// result is self-contained — no system font / asset loading.
 ///
@@ -878,7 +883,8 @@ mod tests {
             force_fallback_adapter: false,
             compatible_surface: None,
         }))
-        .ok()?;
+        .ok()
+        .filter(crate::scene_renderer::adapter_can_run_vello)?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("canvas-test"),
             ..Default::default()
@@ -1271,7 +1277,8 @@ mod tests {
             force_fallback_adapter: false,
             compatible_surface: None,
         }))
-        .ok()?;
+        .ok()
+        .filter(crate::scene_renderer::adapter_can_run_vello)?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("canvas-plan-test"),
             ..Default::default()
@@ -1440,7 +1447,10 @@ mod tests {
                     compatible_surface: None,
                 },
             ))
-            .ok()?;
+            .ok()
+            // The production gate: skip where vello would never be installed
+            // (a software rasterizer such as WARP crashes in its shaders).
+            .filter(crate::scene_renderer::adapter_can_run_vello)?;
             let (device, queue) = pollster::block_on(adapter.request_device(
                 &wgpu::DeviceDescriptor { label: Some("cached-test"), ..Default::default() },
             ))

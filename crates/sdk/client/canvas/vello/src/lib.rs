@@ -24,12 +24,16 @@
 pub(crate) const LABEL: &str = "canvas-vello";
 
 /// What an adapter must offer for vello's GPU-driven compute pipeline: indirect
-/// dispatch (the iOS Simulator's Metal lacks it) and, on Vulkan, explicit f16
-/// for the `flatten` shader (the Android emulator's Vulkan lacks it). A GPU
-/// without these leaves the payload to `canvas-native`.
+/// dispatch (the iOS Simulator's Metal lacks it), on Vulkan explicit f16 for
+/// the `flatten` shader (the Android emulator's Vulkan lacks it), and real GPU
+/// hardware (a software rasterizer is slower than `canvas-native`'s CPU
+/// painter, and the WARP that ships with Windows 11 crashes in vello's
+/// shaders). An adapter without these leaves the payload to
+/// `canvas-native`.
 pub(crate) const VELLO_REQUIREMENTS: gpu_surface::Requirements = gpu_surface::Requirements {
     downlevel: wgpu::DownlevelFlags::INDIRECT_EXECUTION,
     f16_on_vulkan: true,
+    hardware: true,
 };
 
 // Overscan for cached layers (env-tuned), shared by the native and web paths.
