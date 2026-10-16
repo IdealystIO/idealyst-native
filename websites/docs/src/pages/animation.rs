@@ -79,7 +79,7 @@ docs! {
             // current velocity, so motion continues smoothly across
             // the swap. This is the move that makes drag-and-release
             // feel right.
-            scale.animate(SpringTo::new(1.0).stiffness(280).damping(22));
+            scale.animate(SpringTo::new(1.0).stiffness(280.0).damping(22.0));
         "##),
 
         p("The ", code("_sub"), " plumbing is by design — author code (or a \
@@ -224,8 +224,8 @@ docs! {
     section(heading = "Spring — physics that feels alive") {
         code(rust, r##"
             SpringTo::new(target)
-                .stiffness(280)
-                .damping(22)
+                .stiffness(280.0)
+                .damping(22.0)
         "##),
 
         p("Semi-implicit Euler integration over current value + velocity. Spring \
@@ -273,7 +273,7 @@ docs! {
             value.animate(
                 SequenceFactory::new()
                     .then(TweenTo::new(1.0, Duration::from_millis(48)).linear())
-                    .then(SpringTo::new(1.0).stiffness(180))
+                    .then(SpringTo::new(1.0).stiffness(180.0))
             );
         "##),
 
@@ -344,7 +344,7 @@ docs! {
         code(rust, r##"
             // 4 cards springing in, 40ms between each.
             stagger(&card_scales, Duration::from_millis(40), |_i| {
-                SpringTo::new(1.0).stiffness(220).damping(20)
+                SpringTo::new(1.0).stiffness(220.0).damping(20.0)
             });
         "##),
     },
@@ -384,9 +384,12 @@ docs! {
                 TranslateX, TranslateY,
                 Scale, ScaleX, ScaleY,
                 RotateZ,
+                ZIndex,
+                MaxHeight,
                 // Color ([f32; 4] sRGB)
                 BackgroundColor,
                 ForegroundColor,
+                GradientStopColor(u8),
             }
         "##),
 
@@ -482,13 +485,15 @@ docs! {
            properties across distinct moments in time. Each ",
           code("at => { ... }"),
           " clause fires every ", code("av: animator"),
-          " pair simultaneously at that moment. The macro auto- \
-           clones each handle into its task closure and returns \
-           a ", code("Vec<ScheduledTask>"), " for the caller to \
-           keep alive:"),
+          " pair simultaneously at that moment. The macro clones \
+           each handle into its timer closure and returns ",
+          code("()"),
+          ": the timers belong to the enclosing reactive scope and \
+           are cancelled when it drops, so there is nothing to keep \
+           alive."),
 
         code(rust, r##"
-            use runtime_core::{animated, effect, on_cleanup, timeline};
+            use runtime_core::{animated, effect, timeline};
             use runtime_core::animation::{SpringTo, TweenTo};
             use std::time::Duration;
 
@@ -497,7 +502,7 @@ docs! {
             let translate_y = animated!(24.0_f32);
 
             effect!({
-                let tasks = timeline! {
+                timeline! {
                     400 => {
                         opacity: TweenTo::new(1.0, Duration::from_millis(700)).ease_out(),
                         scale:   SpringTo::new(1.0).stiffness(170.0).damping(22.0),
@@ -507,66 +512,39 @@ docs! {
                         opacity: TweenTo::new(0.0, Duration::from_millis(500)).ease_in_out(),
                         translate_y: TweenTo::new(-28.0, Duration::from_millis(500)).ease_in_out(),
                     },
-                };
-                on_cleanup(move || drop(tasks));
+                }
             });
         "##),
 
-        p("Each clause is one ", code("after_ms"),
-          " task per ", code("av: animator"),
-          " pair — the macro hides the per-task clone + push + \
-           closure boilerplate that you'd otherwise write by \
-           hand. The phase boundaries (the times on the left of ",
-          code("=>"),
-          ") read as visual chapter markers; the inner pairs \
-           read like a struct literal."),
+        p("Each pair becomes one ", code("session::after_ms"),
+          " timer — the macro hides the per-timer clone + closure \
+           boilerplate you'd otherwise write by hand. The phase \
+           boundaries (the times on the left of ", code("=>"),
+          ") read as chapter markers; the inner pairs read like a \
+           struct literal."),
 
         p("Constraints worth knowing:"),
         list(
             [code("$av"), " must be a bare identifier (",
              code("opacity"), ", ", code("welcome_color"),
              "). The macro writes ", code("$av.clone()"),
-             " — field-access expressions don't match the ident \
-              pattern. For those, use the single-task ",
-             code("animate_at!"), " primitive directly."],
+             ", so field-access expressions don't match. Bind the \
+              handle to a local first (",
+             code("let glare = refs.glare.clone();"), ")."],
+            ["Times are milliseconds after the session epoch, not \
+              after the call. On first mount that's the same thing. \
+              After a hot-patch rerender the epoch is kept, so acts \
+              whose time has already passed fire at once and the scene \
+              lands in its post-act state instead of replaying."],
             ["Time expressions on the left of ", code("=>"),
-             " can be any ", code("i32"), "-yielding expression: \
-              literals, ", code("act_2_start + 200"),
+             " can be any numeric expression (cast to ", code("u64"),
+             "): literals, ", code("act_2_start + 200"),
              ", named consts, whatever's in scope."],
-            ["The returned Vec is yours to manage. Inside an ",
-             code("effect!"), " the canonical pattern is ",
-             code("on_cleanup(move || drop(tasks))"),
-             " so the timers stay alive for the scope's lifetime \
-              and are cancelled together when the scope drops."],
         ),
-    },
 
-    section(heading = "animate_at! — single-task primitive") {
-        p("The building block ", code("timeline!"),
-          " expands to. Use it when you want one scheduled \
-           animation but not a full multi-phase block:"),
-
-        code(rust, r##"
-            use runtime_core::{animate_at, on_cleanup};
-            use runtime_core::animation::SpringTo;
-
-            effect!({
-                let task = animate_at!(
-                    800,
-                    opacity,
-                    SpringTo::new(1.0).stiffness(180.0).damping(20.0),
-                );
-                on_cleanup(move || drop(task));
-            });
-        "##),
-
-        p("Returns a single ", code("ScheduledTask"),
-          ". Unlike ", code("timeline!"),
-          ", the AnimatedValue source can be any expression — \
-           the clone is emitted as ", code("($av).clone()"),
-          " around your expression. Reach for it when the av is \
-           accessed through indirection (struct fields, closures) \
-           that ", code("timeline!"), "'s ident pattern can't bind."),
+        p("For a single delayed animation, call ",
+          code("after_ms_scoped(delay_ms, move || av.animate(...))"),
+          " directly; it is also cancelled when its scope drops."),
     },
 
     section(heading = "AnimationClock and threading") {

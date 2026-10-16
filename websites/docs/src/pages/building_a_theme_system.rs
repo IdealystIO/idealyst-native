@@ -54,11 +54,11 @@ docs! {
              " — a trait your theme struct implements to enumerate the \
               tokens it provides."],
             [code("install_theme(theme)"),
-             " — call once at app boot. Stores the theme in a global \
-              slot and pushes its tokens into the registry."],
+             " — call once at app boot. Stores the theme as the active \
+              theme and pushes its tokens into the registry."],
             [code("set_theme(theme)"),
-             " — call to swap. Updates the global slot and refreshes \
-              the registry (per-token reactivity does the rest)."],
+             " — call to swap. Replaces the active theme and updates the \
+              registry; the framework re-applies styles from there."],
         ),
         code(rust, r##"
             use runtime_core::{Color, Length, Tokenized, TokenEntry, TokenValue};
@@ -123,12 +123,13 @@ docs! {
         "##),
         p("That's the whole convention. ", code("install_theme(t)"),
           " stores ", code("t"),
-          " in a global slot and calls ",
-          code("install_tokens(t.tokens())"), " under the hood. ",
+          " as the active theme and calls ",
+          code("install_tokens(&t.tokens())"), " under the hood. ",
           code("set_theme(t)"),
-          " replaces the global slot and calls ",
-          code("update_tokens(t.tokens())"),
-          ", which the per-token signals pick up automatically."),
+          " replaces the active theme and calls ",
+          code("update_tokens(&t.tokens())"),
+          ", which bumps the theme version signal so styled nodes \
+           re-apply."),
     },
 
     section(heading = "Three things to notice about the design") {
@@ -143,52 +144,76 @@ docs! {
              code("background: var(--bg, ...)"),
              " be reused across themes on web. The class never has to \
               change; only the variable's value does."],
-            ["Fallbacks are the resolved value when no token store is \
-              active. On iOS / Android (no runtime variable system), \
-              the fallback IS the rendered value. So a theme's ",
-             code("light()"),
-             " constructor isn't just bootstrapping — it's also the \
-              authoritative source of truth for backends that don't \
-              run a token registry. The web backend resolves through \
-              variables AND uses fallbacks; native backends just use \
-              fallbacks."],
+            ["Fallbacks are the value used when no token value is \
+              installed. Once tokens are installed, every backend shows \
+              the installed value: web through ",
+             code("var(--name, fallback)"),
+             ", native backends (iOS, Android, macOS) by resolving the \
+              token when they apply a rule (",
+             code("Tokenized::resolve()"),
+             "). The fallback only shows before install, or for a name \
+              the theme never installed."],
             ["The ", code("ThemeTokens"),
              " impl is mechanical. It's a deterministic projection \
               from the theme struct's typed fields to a flat ",
              code("Vec<TokenEntry>"),
-             ". This is what the framework needs to install — the \
-              theme struct itself stays type-rich so your stylesheets \
-              can access fields by name with full IDE completion."],
+             ". This is what the framework needs to install. \
+              Stylesheets never see the theme struct; they reference \
+              tokens by name (see the next section)."],
         ),
     },
 
     section(heading = "Using the theme inside stylesheets") {
-        p("Stylesheets can take ", code("MyTheme"),
-          " as their context type. The macro generates code that pulls \
-           the active theme out of the global slot at resolution time, \
-           hands it to the stylesheet's closures as ",
-          code("&MyTheme"),
-          ", and your closures access tokens through typed fields:"),
+        p("A stylesheet does not receive the theme. Its ", code("<…>"),
+          " slot names a token vocabulary — a type implementing ",
+          code("TokenVocabulary"),
+          " — and each block's binding is that vocabulary's accessor \
+           namespace. An accessor returns a token reference (name + \
+           fallback); the value comes from the installed tokens when \
+           the rule resolves, so every theme over the same names works \
+           with the same sheet. A minimal vocabulary for ",
+          code("MyTheme"), "'s tokens:"),
         code(rust, r##"
-            use runtime_core::stylesheet;
+            use runtime_core::{stylesheet, Color, Length, TokenVocabulary, Tokenized};
+
+            // Zero-sized: it carries token names, not values.
+            #[derive(Default, Clone, Copy)]
+            pub struct MyTokens;
+
+            impl MyTokens {
+                pub fn bg(&self) -> Tokenized<Color> {
+                    Tokenized::token("bg", Color::from("#ffffff"))
+                }
+                pub fn text(&self) -> Tokenized<Color> {
+                    Tokenized::token("text", Color::from("#111111"))
+                }
+                pub fn space_md(&self) -> Tokenized<Length> {
+                    Tokenized::token("space-md", Length::Px(16.0))
+                }
+            }
+
+            impl TokenVocabulary for MyTokens {
+                type Tokens = Self;
+            }
 
             stylesheet! {
-                pub Card<MyTheme> {
-                    base(theme) {
-                        background: theme.background.clone(),
-                        color:      theme.text.clone(),
-                        padding:    theme.spacing_md.clone(),
+                pub Card<MyTokens> {
+                    base(t) {
+                        background: t.bg(),
+                        color:      t.text(),
+                        padding:    t.space_md(),
                         border_radius: 8.0,
                     }
                 }
             }
         "##),
-        p("Equivalent of the same stylesheet without the theme \
-           context — referencing tokens by name directly:"),
+        p("The same stylesheet without a vocabulary — ", code("<()>"),
+          ", the binding written ", code("_t"),
+          ", tokens referenced by name directly:"),
         code(rust, r##"
             stylesheet! {
                 pub Card<()> {
-                    base(_) {
+                    base(_t) {
                         background: Tokenized::token("bg",       Color::from("#ffffff")),
                         color:      Tokenized::token("text",     Color::from("#111111")),
                         padding:    Tokenized::token("space-md", Length::Px(16.0)),
@@ -197,11 +222,13 @@ docs! {
                 }
             }
         "##),
-        p("Both forms produce the same content key and the same CSS \
-           class on web. The typed form gains compile-time field \
-           checking + IDE autocomplete; the bare-token form gains \
-           zero coupling to a specific theme type. Pick whichever \
-           fits — the framework treats them identically."),
+        p("Both forms produce the same token references, so the same \
+           content key and the same CSS class on web. The vocabulary \
+           form gains compile-time name checking + IDE autocomplete \
+           (a misspelled token is a missing method); the string form \
+           needs no extra type. idea-ui's sheets use the vocabulary \
+           form: ", code("stylesheet! { pub Card<IdeaThemeRef> { base(t) { background: t.color.surface(), … } } }"),
+          "."),
     },
 
     section(heading = "Reading the active theme imperatively") {
@@ -231,24 +258,25 @@ docs! {
         p("Walk through what happens when you call ",
           code("set_theme(MyTheme::dark())"), ":"),
         list(
-            ["The global theme slot is replaced. Anything that read \
-              the active theme inside an Effect re-runs."],
-            [code("update_tokens(theme.tokens())"),
-             " walks the registry and updates each token's signal. \
-              Per-token reactivity means only effects that read a \
-              changed token are notified."],
+            ["The active theme is replaced. Anything that read ",
+             code("active_theme()"), " inside an Effect re-runs."],
+            [code("update_tokens(&theme.tokens())"),
+             " writes the new values into the registry, clears the \
+              style resolution cache, and bumps one theme version \
+              signal."],
             ["On the web backend, that's it. The token registry's \
               tokens map 1:1 to CSS custom properties on ",
              code(":root"),
-             "; updating a token's signal triggers the backend to ",
+             "; the theme driver effect hands the changed values to the \
+              backend, which writes ",
              code("setProperty(\"--name\", new_value)"),
              ". DOM elements never know."],
-            ["On iOS / Android backends, each styled node's apply-\
-              style Effect re-fires if it transitively reads a changed \
-              token. The stylesheet closure runs with the new fallback \
-              values, the new ", code("StyleRules"),
-             " hit the backend, the backend mutates the native \
-              widget's properties."],
+            ["On iOS / Android / macOS, the theme driver effect then \
+              re-applies every styled node (the static-style cohort). \
+              Each re-apply resolves its rules against the new token \
+              values and the backend updates the native widget's \
+              properties. This is not filtered by which token changed: \
+              a swap re-applies all styled nodes, through one effect."],
             ["On Roku and other generator backends, the device-side \
               variable store is updated via a wire-protocol command. \
               The device-side runtime re-reads its variables and \
@@ -256,9 +284,10 @@ docs! {
         ),
         p("The hot path on web is genuinely ", code("O(tokens)"),
           " — touch the variables, the browser handles the rest. The \
-           hot path on native is ", code("O(styled nodes that read a changed token)"),
-          ". Both are dramatically smaller than the rebuild-the-tree \
-           cost a less granular system would pay."),
+           hot path on native is ", code("O(styled nodes)"),
+          ": one style re-apply per node, with no component bodies \
+           re-running. Both are much smaller than rebuilding the \
+           tree."),
     },
 
     section(heading = "Variations on the convention") {
@@ -306,27 +335,27 @@ docs! {
              " — register a flat list of ", code("(name, value)"),
              " pairs in the token store. Call at app boot."],
             [code("update_tokens(entries)"),
-             " — swap the values for already-registered names. \
-              Per-token signals fire; subscribed effects re-run."],
+             " — swap the values for already-registered names. The theme \
+              version signal bumps; styled nodes re-apply."],
             [code("Tokenized::token(name, fallback)"),
              " — reference a token from a stylesheet (or anywhere \
               else)."],
             [code("Tokenized::<T>::resolve()"),
-             " — read a token's current value. Subscribes the calling \
-              effect to that specific token."],
+             " — read a token's current value. Inside an effect, the \
+              effect re-runs on the next token swap."],
         ),
         code(rust, r##"
             use runtime_core::{install_tokens, update_tokens, TokenEntry, TokenValue, Color};
 
             // Boot — no theme struct involved.
-            install_tokens(vec![
+            install_tokens(&[
                 TokenEntry { name: "bg",      value: TokenValue::Color(Color::from("#fff")) },
                 TokenEntry { name: "text",    value: TokenValue::Color(Color::from("#111")) },
                 TokenEntry { name: "primary", value: TokenValue::Color(Color::from("#3b82f6")) },
             ]);
 
             // Later — swap any subset.
-            update_tokens(vec![
+            update_tokens(&[
                 TokenEntry { name: "bg",   value: TokenValue::Color(Color::from("#000")) },
                 TokenEntry { name: "text", value: TokenValue::Color(Color::from("#eee")) },
             ]);
@@ -343,8 +372,11 @@ docs! {
 
     section(heading = "What `idea-ui` does") {
         p(code("idea-ui"),
-          "'s ", code("IdeaTheme"),
-          " is an example of the convention applied to a real \
+          "'s theme (the ", code("IdeaTheme"),
+          " trait; ", code("light_theme()"), " / ", code("dark_theme()"),
+          " return an ", code("IdeaThemeDefaults"),
+          ", and sheets name ", code("IdeaThemeRef"),
+          " as their vocabulary) is an example of the convention applied to a real \
            component library. Worth reading as a reference even if you \
            don't use it directly:"),
         list(
@@ -353,9 +385,11 @@ docs! {
              ", ", code("Success"), ", ", code("Danger"),
              ", ", code("Warning"), ", ", code("Info"),
              ") instead of role-named colors. Each intent has a full \
-              swatch (base, hover, pressed, on-color)."],
+              swatch: ", code("solid_bg"), ", ", code("solid_text"), ", ",
+             code("soft_bg"), ", ", code("soft_text"), ", ", code("fg"),
+             ", ", code("border"), "."],
             ["Each component stylesheet picks the right intent based \
-              on its ", code("variant intent"),
+              on its ", code("tone"),
              " axis, so a button can be \"primary danger\" and pick \
               up the right palette without code per intent."],
             ["Ships preset constructors (", code("light_theme()"),
@@ -374,12 +408,14 @@ docs! {
              " — the primitives this page builds on: stylesheets, \
               tokens, variants, overrides, states, transitions."],
             [link("Reactivity", to = "reactivity"),
-             " — per-token signals are how stylesheets stay subscribed \
-              to only the values they actually read."],
+             " — the theme version signal and the theme driver effect \
+              ride the same effect graph everything else uses."],
             [link("Writing a backend", to = "writing-a-backend"),
              " — the backend-side of token handling: ",
-             code("install_theme_variables"),
-             " on web, fallback-only on native."],
+             code("StyleOps::install_tokens"), " / ",
+             code("update_tokens"),
+             " write CSS custom properties on web; native backends \
+              resolve tokens when they apply a rule."],
         ),
     },
 }

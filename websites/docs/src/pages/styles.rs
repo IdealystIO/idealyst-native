@@ -38,16 +38,17 @@ docs! {
             [code("Stylesheet"), " — declared with the ",
               code("stylesheet!"),
               " macro. A typed builder that produces a ", code("StyleRules"),
-              " from a tracked context. Stylesheets can be parameterized \
-              over any context type (your own app's config struct, \
-              \"theme\" struct, whatever) — the macro doesn't impose a \
-              shape."],
+              ". A stylesheet may name a token vocabulary (a type \
+              implementing ", code("TokenVocabulary"),
+              ") so its rules spell tokens as checked paths, or ",
+              code("()"), " to name none."],
             [code("Tokenized<T>"), " — a ", code("(name, fallback)"),
               " pair, or just a literal value. Stylesheets emit ",
               code("Tokenized"), " property values; backends with a \
-              runtime variable system (web) resolve through the named \
-              store, backends without one (iOS, Android) read the \
-              fallback baked into the rule."],
+              runtime variable system (web) emit a variable reference, \
+              backends without one (iOS, Android, macOS) look up the \
+              installed token value when they apply the rule, and use \
+              the fallback only when no value is installed."],
             [code("StyleRules"), " — the concrete output. Every \
               primitive's ", code("style"),
               " slot eventually gets one of these."],
@@ -78,7 +79,7 @@ docs! {
           ". The backend decides what to do with it. Tokens are \
            installed (and updated) via ", code("install_tokens(...)"),
           " / ", code("update_tokens(...)"),
-          " — both take a flat ", code("Vec<TokenEntry>"),
+          " — both take a flat ", code("&[TokenEntry]"),
           " so any code path can register or refresh the token store."),
 
         p("What the web backend does: tokens are installed as CSS \
@@ -115,17 +116,15 @@ docs! {
            over DOM elements. It doesn't change class names. It \
            doesn't touch any rule body."),
 
-        p("What native backends do: iOS and Android don't have a \
-           runtime variable system, so they ignore the token name and \
-           read the ", code(".value()"),
-          " (the fallback). When tokens change, every styled node has \
-           a per-token reactive subscription via the framework's ",
-          code("TOKEN_REGISTRY"),
-          "; only nodes whose resolved style references the changed \
-           token re-apply. The rule-set cache deduplicates: if two \
-           token configurations produce identical rules for the same ",
-          code("(sheet, variants)"),
-          " pair, the second resolution is a refcount bump."),
+        p("What native backends do: iOS, Android and macOS have no \
+           runtime variable system, so they resolve each token when \
+           they apply a rule (", code("Tokenized::resolve()"),
+          "): the installed value if there is one, the fallback if \
+           not. When tokens change, the framework bumps one theme \
+           version signal; a single theme driver effect then re-applies \
+           every styled node (the static-style cohort). The re-apply is \
+           not filtered by which token changed — a swap re-applies all \
+           styled nodes, through one effect rather than one per node."),
 
         p("What generator backends do: Roku and other generator \
            backends can't ship closures to the device. They get a \
@@ -139,20 +138,25 @@ docs! {
 
     section(heading = "Stylesheets") {
         p("The ", code("stylesheet!"), " macro is how you declare a \
-           typed stylesheet. The generic parameter is the context type \
-           the stylesheet's closures receive — your own app's config \
-           struct, your token bundle, a \"theme\" struct (one pattern \
-           authors use), or ", code("()"),
-          " if you don't need a context. Grammar:"),
+           typed stylesheet. The ", code("<…>"),
+          " slot names a token vocabulary — a type implementing ",
+          code("TokenVocabulary"), " — and each block's binding (",
+          code("base(t)"), ") is that vocabulary's accessor namespace, \
+           so ", code("t.spacing.md()"),
+          " names the ", code("spacing-md"), " token. ", code("<()>"),
+          " names no vocabulary: bind ", code("_t"),
+          " (a binding must be an identifier; ", code("_"),
+          " does not parse) and reference tokens with ",
+          code("Tokenized::token(\"name\", fallback)"), ". Grammar:"),
 
         code(rust, r##"
-            use runtime_core::{stylesheet, Color, Length, Tokenized};
+            use runtime_core::{stylesheet, Color, Length, Shadow, Tokenized};
 
-            // Token-only example. No context type needed; the
-            // stylesheet directly references token names.
+            // No vocabulary (`<()>`): the stylesheet names its
+            // tokens directly as strings.
             stylesheet! {
                 pub Card<()> {
-                    base(_) {
+                    base(_t) {
                         background: Tokenized::token("bg",       Color::from("#ffffff")),
                         color:      Tokenized::token("text",     Color::from("#111111")),
                         padding:    Tokenized::token("space-md", Length::Px(16.0)),
@@ -160,27 +164,28 @@ docs! {
                     }
 
                     variant size {
-                        small(_)  { padding: Length::Px(8.0) }
+                        small(_t)  { padding: Length::Px(8.0) }
                         #[default]
-                        medium(_) {}
-                        large(_)  { padding: Length::Px(24.0) }
+                        medium(_t) {}
+                        large(_t)  { padding: Length::Px(24.0) }
                     }
 
                     variant kind {
                         #[default]
-                        elevated(_) {
-                            shadow: Shadow { x: 0.0, y: 2.0, blur: 8.0, color: Color::from("#0001") },
+                        elevated(_t) {
+                            shadow: Shadow { x: 0.0, y: 2.0, blur: 8.0, color: Color::from("#0001").into() },
                         }
-                        outlined(_) {
+                        outlined(_t) {
                             background: Color::from("transparent"),
-                            border: (2.0, Tokenized::token("text", Color::from("#111111"))),
+                            border_width: 2.0,
+                            border_color: Tokenized::token("text", Color::from("#111111")),
                         }
                     }
 
                     override padding: Length
 
-                    state hovered(_) { opacity: 0.92 }
-                    state pressed(_) { opacity: 0.85 }
+                    state hovered(_t) { opacity: 0.92 }
+                    state pressed(_t) { opacity: 0.85 }
 
                     transitions {
                         background: 200ms EaseOut
@@ -190,28 +195,28 @@ docs! {
             }
         "##),
 
-        p("Pass a context type (anything you want — most apps that go \
-           this route define a struct holding their tokens grouped \
-           semantically) when stylesheet closures should consume \
-           typed values instead of repeating token names everywhere. \
-           Both shapes are first-class; see ",
+        p("Name a vocabulary instead of ", code("()"),
+          " when you want the compiler to check token names rather \
+           than repeating strings everywhere. The binding carries names \
+           only; values come from the installed tokens at resolve \
+           time. Both shapes are first-class; see ",
           link("Building a theme system", to = "building-a-theme-system"),
-          " for the bundled-context pattern."),
+          " for defining a vocabulary."),
 
         p("What the macro generates from this declaration:"),
         list(
             [code("pub fn card_style() -> Rc<StyleSheet>"), " — the registered \
               stylesheet. Cached in a thread-local; repeat calls return the same ",
               code("Rc"), "."],
-            [code("pub fn Card() -> CardBuilder"), " — the entry point you call at use sites."],
+            [code("pub struct Card"), " — the builder: one setter per variant \
+              axis and per override. Each setter accepts either a typed value or a ",
+              code("Signal<T>"), " — pass a signal and the variant axis becomes reactive."],
+            [code("pub fn Card() -> Card"), " — the entry point you call at use sites."],
             [code("pub enum CardSize { Small, Medium, Large }"), " — one enum per \
               variant axis, with a ", code("Default"), " impl that picks the ",
               code("#[default]"), " arm."],
             [code("pub enum CardKind { Elevated, Outlined }"), " — same."],
-            ["A ", code("CardBuilder"), " struct with one setter per variant axis and \
-              per override. Each setter accepts either a typed value or a ",
-              code("Signal<T>"), " — pass a signal and the variant axis becomes reactive."],
-            [code("impl IntoStyleSource for CardBuilder"), " — so the builder can be \
+            [code("impl IntoStyleProp for Card"), " — so the builder can be \
               passed to ", code(".with_style(...)"), " or as ", code("style = ..."),
               " inside ", code("ui!"), "."],
         ),
@@ -220,7 +225,7 @@ docs! {
             Card()
                 .size(CardSize::Large)
                 .kind(CardKind::Outlined)
-                .padding(20.0)
+                .padding(Length::Px(20.0))
         "##),
 
         p("Using a stylesheet:"),
@@ -254,7 +259,7 @@ docs! {
 
     section(heading = "How resolution works") {
         p("Resolution is a function from ",
-          code("(stylesheet, variants, context, overrides)"),
+          code("(stylesheet, variants, overrides)"),
           " to a concrete ",
           code("Rc<StyleRules>"),
           ". The framework caches the result so the same combination \
@@ -265,8 +270,6 @@ docs! {
             ["Stylesheet is identified by ", code("Rc"), " pointer."],
             ["Variants are an ordered set of ", code("(axis, value)"),
              " strings."],
-            ["Context (whatever the stylesheet is parameterized over) \
-              is identified by ", code("Rc"), " pointer."],
             ["Overrides are serialized into a content key."],
         ),
 
@@ -285,12 +288,11 @@ docs! {
 
         compare(from = React) {
             p("Where React-style libraries typically rebuild on Context \
-               value change (every consumer re-renders), Idealyst keeps \
-               the per-node style Effects subscribed to a small set of \
-               tokens through the ", code("TOKEN_REGISTRY"),
-              " — only effects that actually read a changed token \
-               re-fire. On web the per-node effects are bypassed \
-               entirely because CSS variables do the work in the \
+               value change (every consumer re-renders), Idealyst \
+               re-renders nothing: a token swap re-applies styles only. \
+               On native one theme driver effect re-applies every styled \
+               node; no component bodies run. On web even that is \
+               skipped, because CSS variables do the work in the \
                browser."),
             p("From styled-components / Emotion: each themed component \
                usually generates a new class name when context-derived \
@@ -305,9 +307,9 @@ docs! {
               " strategy with custom properties). Same payoff: a class \
                flip on ", code(":root"),
               " updates colors downstream without touching anything \
-               else. Idealyst's split between literal fallbacks (for \
-               non-web backends) and variable references (for web) \
-               gives you the same payoff automatically — you don't \
+               else. Idealyst's split between variable references (web) and \
+               apply-time token resolution (native) gives you the same \
+               payoff automatically — you don't \
                choose between the two strategies, the backend \
                chooses."),
         },
@@ -323,7 +325,7 @@ docs! {
            and ", code("Default"), " impls."),
 
         p("Overrides are per-instance continuous values. The author passes \
-           a specific value at the use site (", code("Card().padding(20.0)"),
+           a specific value at the use site (", code("Card().padding(Length::Px(20.0))"),
           "), and that value lands in the override slot of the resolved rule set. \
            Use overrides when the value isn't from a finite menu — a specific \
            size, color, or duration."),
@@ -338,12 +340,12 @@ docs! {
         code(rust, r##"
             stylesheet! {
                 pub Button<()> {
-                    base(_) {
+                    base(_t) {
                         background: Tokenized::token("primary", Color::from("#3b82f6")),
                     }
-                    state hovered(_)  { opacity: 0.9 }
-                    state pressed(_)  { opacity: 0.8 }
-                    state disabled(_) { opacity: 0.5 }
+                    state hovered(_t)  { opacity: 0.9 }
+                    state pressed(_t)  { opacity: 0.8 }
+                    state disabled(_t) { opacity: 0.5 }
                 }
             }
         "##),
@@ -367,7 +369,7 @@ docs! {
             transitions {
                 background: 200ms EaseOut
                 opacity:    150ms Linear
-                padding:    250ms CubicBezier(0.2, 0.0, 0.0, 1.0)
+                padding:    250ms cubic_bezier(0.2, 0.0, 0.0, 1.0)
             }
         "##),
 
@@ -423,9 +425,9 @@ docs! {
           ". Nothing in it is idea-ui-specific. To build your own \
            component library or just some app-local styles:"),
         list(
-            ["Pick a context type, or use ", code("()"),
-             " if your stylesheets don't need one. (The bundled-context \
-              \"theme\" pattern is covered separately in ",
+            ["Pick a token vocabulary, or use ", code("()"),
+             " if your stylesheets don't need one. (Defining a \
+              vocabulary and a \"theme\" over it is covered in ",
              link("Building a theme system", to = "building-a-theme-system"),
              ".)"],
             ["Write ", code("stylesheet!"),
@@ -438,7 +440,7 @@ docs! {
         ),
 
         p("You can mix styling sources freely. A primitive's ",
-          code("style"), " slot takes any ", code("IntoStyleSource"),
+          code("style"), " slot takes any ", code("IntoStyleProp"),
           " — a stylesheet builder, a raw ", code("StyleRules"),
           ", a closure that returns one. You can hand-write rule sets \
            for one-off cases and use the macro for the rest."),
@@ -447,9 +449,8 @@ docs! {
     section(heading = "Pre-generation") {
         p("For backends that benefit from up-front rule emission \
            (web), the framework calls ",
-          code("Backend::register_stylesheet"), " once per ",
-          code("(stylesheet, context)"),
-          " pair and hands it the pre-resolved rules for every \
+          code("StyleOps::register_stylesheet"), " once per \
+           stylesheet and hands it the pre-resolved rules for every \
            variant combination. The web backend mints CSS classes \
            eagerly; subsequent ", code("apply_style"),
           " calls just set ", code("className"),
@@ -489,14 +490,15 @@ docs! {
              " — the cookbook for bundling tokens into a typed \"theme\" \
               struct with install/swap-at-runtime mechanics."],
             [link("Reactivity", to = "reactivity"),
-             " — how per-token signals plug into the same effect graph \
-              everything else uses."],
+             " — how the theme version signal plugs into the same effect \
+              graph everything else uses."],
             ["idea-ui — a complete stylesheet system built on this \
               page's primitives. Use it, fork it, or read it for ideas."],
             [link("Backends", to = "backends"),
              " — what the ", code("apply_style"), ", ",
              code("register_stylesheet"),
-             ", and token APIs look like from a backend's side."],
+             ", and token APIs (the ", code("StyleOps"),
+             " capability) look like from a backend's side."],
         ),
     },
 }

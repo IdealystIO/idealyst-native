@@ -28,7 +28,9 @@ docs! {
            level surface: a ", code("<div>"), " on ",
           code("document.body"), " for the web, ",
           code("keyWindow.addSubview:"), " on iOS, ",
-          code("WindowManager.addView"), " on Android, and so on. \
+          "a full-bleed ", code("FrameLayout"), " added with ",
+          code("root.addView"), " to the activity's root container on \
+           Android, and so on. \
            Children laid out inside the portal use the same flex model \
            as everywhere else — the portal container itself is what \
            does the escape."),
@@ -66,23 +68,26 @@ docs! {
 
     section(heading = "Direct portal use") {
         p("Most apps reach for the compositions below instead, but if \
-           you're building a novel floating UX, ", code("portal(...)"),
-          " is the entry point. It takes a target and a children list, \
-           and exposes ", code(".on_dismiss(...)"), ", ",
-          code(".trap_focus(...)"), ", ", code(".bind(...)"), "."),
+           you're building a novel floating UX, ", code("portal(target)"),
+          " is the entry point. It lives in ", code("runtime_vocabulary"),
+          " (not re-exported from ", code("runtime_core"),
+          "), takes the target, and takes children through ",
+          code(".child(...)"), " / ", code(".children(...)"),
+          ". It also exposes ", code(".on_dismiss(...)"), ", ",
+          code(".trap_focus(...)"), ", ", code(".style(...)"), ", ",
+          code(".a11y(...)"), " and ", code(".on_handle(...)"),
+          " (receives the ", code("PortalHandle"),
+          " at mount); ", code(".build()"), " returns the ",
+          code("Element"), "."),
         code(rust, r##"
-            use runtime_core::{portal, PortalTarget, ViewportPlacement, view, text};
+            use runtime_core::{ui, PortalTarget, ViewportPlacement};
+            use runtime_vocabulary::portal;
 
-            portal(
-                PortalTarget::Viewport(ViewportPlacement::Center),
-                vec![
-                    view(vec![
-                        text("Custom floating layer").into(),
-                    ]).into(),
-                ],
-            )
-            .on_dismiss(move || open.set(false))
-            .trap_focus(true)
+            portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                .child(ui! { view { text { "Custom floating layer" } } })
+                .on_dismiss(move || open.set(false))
+                .trap_focus(true)
+                .build()
         "##),
         p(code("on_dismiss"), " fires only for platform-level dismissal \
            events — Escape on web, back gesture on Android, swipe-down \
@@ -190,7 +195,7 @@ docs! {
           " fits your need — say you want a sheet with a drag-handle, \
            a non-rectangular overlay, or a sidebar that's neither \
            viewport-pinned nor anchor-tracked — reach for ",
-          code("portal(target, children)"),
+          code("portal(target)"),
           " and compose your own. The portal primitive is the seam; \
            everything else is user-space code that happens to live in \
            runtime-core because it's broadly useful."),
@@ -213,9 +218,10 @@ docs! {
              " / ", code("anchored_overlay()"),
              " / ", code("portal()"), "."],
             [link("Third-party primitives", to = "third-party-primitives"),
-             " — the ", code("External"),
-             " escape hatch for primitives that need per-platform \
-              FFI, outside what compositions on portal can express."],
+             " — registering a payload handler on the scene ",
+             code("Registry"),
+             " for primitives that need per-platform FFI, outside what \
+              compositions on portal can express."],
         ),
     },
 }

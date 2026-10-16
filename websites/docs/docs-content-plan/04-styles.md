@@ -1,16 +1,15 @@
 # Styles and Themes
 
 Styling in Idealyst is a layered system: a **theme** holds named
-values; **stylesheets** are functions that take the active theme and
-produce concrete rule sets; the framework caches the rule sets and
-applies them through the same reactive substrate everything else
-uses.
+token values; **stylesheets** declare rule sets that reference those
+tokens by name; the framework caches the rule sets and applies them
+through the same reactive substrate everything else uses.
 
 What makes the system interesting is what happens on a theme change.
 On web, the framework updates a handful of CSS custom properties.
 DOM elements aren't touched. Class names don't change. No node
-re-renders. On native, the same change re-fires only the per-node
-style Effects whose values actually depended on the changed tokens.
+re-renders. On native, one theme driver effect re-applies every
+styled node's style; no component body re-runs.
 This page explains how that works, then shows you how to write your
 own theme and your own stylesheets.
 
@@ -21,13 +20,16 @@ There are four moving parts:
 - **Theme** — a Rust struct you define. Holds whatever values your
   app needs: colors, spacing, typography, breakpoints, anything
   else.
-- **Tokens** — named values inside the theme. A token is a
-  `(name, fallback)` pair. Stylesheets reference tokens by name; the
-  fallback is what backends use when no runtime variable system is
-  available.
+- **Tokens** — named values inside the theme. A token reference is
+  a `(name, fallback)` pair. Stylesheets reference tokens by name;
+  the fallback is what backends use when no value is installed for
+  that name.
 - **Stylesheets** — declared with the `stylesheet!` macro. A
-  stylesheet is a typed builder that takes the active theme and
-  produces a `StyleRules` (a flat bag of optional property values).
+  stylesheet is a typed builder that produces a `StyleRules` (a flat
+  bag of optional property values). Its `<…>` slot names a token
+  vocabulary (a `TokenVocabulary` type), not the theme: blocks see
+  token names, and values arrive from the installed tokens at
+  resolve time.
 - **`StyleRules`** — the concrete output. Every primitive's `style`
   slot eventually gets one of these.
 
@@ -91,13 +93,14 @@ Three things to notice:
    the same names (`"bg"`, `"text"`, `"primary"`, `"space-md"`) with
    different fallback values. That's deliberate — see "Why classes
    don't change on theme swap" below.
-2. **Tokens declare a fallback.** The fallback is the value the
-   token resolves to when there's no runtime variable system (iOS,
-   Android, server-rendered HTML). On web, the fallback also fills
-   in if the CSS variable hasn't been written yet.
-3. **The `ThemeTokens` impl is mechanical.** It just lists the
-   tokens that should be installed as variables. For backends
-   without runtime variables, this impl is effectively unused.
+2. **Tokens declare a fallback.** The fallback is the value a
+   token resolves to when no value is installed under its name. On
+   web it is the second argument of `var(--name, fallback)`; native
+   backends use it when `Tokenized::resolve()` finds no installed
+   value.
+3. **The `ThemeTokens` impl is mechanical.** It lists the tokens to
+   install. Every backend uses them: web as CSS variables, native
+   backends through `Tokenized::resolve()` when they apply a rule.
 
 ### Installing a theme
 
@@ -117,11 +120,11 @@ fn app() -> Element {
 set_theme(MyTheme::dark());
 ```
 
-`install_theme(t)` registers the theme at app boot and is what
-stylesheet closures see when they run. `set_theme(t)` swaps it
-later. Both write to the same arena slot — internally, the active
-theme is stored as a `Signal<Rc<dyn Any>>`, so anything that reads
-it participates in reactivity.
+`install_theme(t)` registers the theme at app boot and installs its
+tokens. `set_theme(t)` swaps it later and updates the tokens. Both
+write the same active-theme slot — a signal holding the theme as
+`Rc<dyn Any>` — so code that reads `active_theme()` inside an effect
+re-runs on a swap.
 
 You can swap themes at any time, from any code path that runs in
 the main thread. A dark-mode toggle is a one-liner:
@@ -147,8 +150,8 @@ pub enum Tokenized<T> {
 }
 ```
 
-A stylesheet receiving `theme.primary` reads a `Tokenized<Color>` —
-either a literal color, or a token reference like
+A stylesheet property is a `Tokenized<Color>` (or `Length`, `f32`) —
+either a literal value, or a token reference like
 `Token { name: "primary", fallback: Color("#3b82f6") }`. The
 backend decides what to do with it.
 
@@ -186,18 +189,19 @@ It doesn't touch any rule body.
 
 ### What native backends do
 
-iOS and Android don't have a runtime variable system, so they
-ignore the token name and read the `.value()` (the fallback). When
-the theme swaps, every styled node has an Effect wrapping its
-apply-style call; that Effect re-fires with the new theme, the
-stylesheet closure re-runs, the new rules go to the backend, the
-backend mutates the native widget's properties.
+iOS, Android and macOS don't have a runtime variable system, so
+they resolve each token when they apply a rule
+(`Tokenized::resolve()`): the installed value if there is one, the
+fallback if not. When the theme swaps, `update_tokens` bumps one
+theme version signal and clears the resolution cache. A single
+theme driver effect then re-applies every styled node (the
+static-style cohort); each re-apply resolves against the new
+values and the backend mutates the native widget's properties.
+The re-apply is not filtered by which token changed.
 
 This is more work per swap than the web's variable-update model,
-but it's still proportional to the number of styled nodes — not
-the size of the tree. And the rule-set cache deduplicates: if two
-themes produce identical rules for the same `(sheet, variants)`,
-the second swap is a refcount bump.
+but it's proportional to the number of styled nodes, runs through
+one effect, and never re-runs component bodies.
 
 ### What generator backends do
 
@@ -210,44 +214,50 @@ model.
 
 ## Stylesheets
 
-The `stylesheet!` macro is how you declare a typed, themed
-stylesheet. Grammar:
+The `stylesheet!` macro is how you declare a typed stylesheet. The
+`<…>` slot names a token vocabulary — a type implementing
+`TokenVocabulary` (see "Building your own theme system" below) — and
+each block's binding (`base(t)`) is that vocabulary's accessor
+namespace, so `t.space_md()` names the `space-md` token. Bindings
+must be identifiers: write `_t`, not `_`, for a block that reads no
+tokens. Grammar:
 
 ```rust
-use runtime_core::{stylesheet, Color, Length};
+use runtime_core::{stylesheet, Color, Length, Shadow};
 
 stylesheet! {
-    pub Card<MyTheme> {
-        base(theme) {
-            background: theme.background.clone(),
-            color: theme.text.clone(),
-            padding: theme.spacing_md,
+    pub Card<MyTokens> {
+        base(t) {
+            background: t.bg(),
+            color: t.text(),
+            padding: t.space_md(),
             border_radius: 8.0,
         }
 
         variant size {
-            small(theme)  { padding: theme.spacing_md.value().clone() }
+            small(_t)  { padding: Length::Px(8.0) }
             #[default]
-            medium(_)     {}
-            large(theme)  { padding: 24.0 }
+            medium(_t) {}
+            large(_t)  { padding: Length::Px(24.0) }
         }
 
         variant kind {
             #[default]
-            elevated(theme) {
-                background: theme.background.clone(),
-                shadow: Shadow { x: 0.0, y: 2.0, blur: 8.0, color: Color::from("#0001") },
+            elevated(t) {
+                background: t.bg(),
+                shadow: Shadow { x: 0.0, y: 2.0, blur: 8.0, color: Color::from("#0001").into() },
             }
-            outlined(theme) {
+            outlined(t) {
                 background: Color::from("transparent"),
-                border: (2.0, theme.text.clone()),
+                border_width: 2.0,
+                border_color: t.text(),
             }
         }
 
         override padding: Length
 
-        state hovered(theme) { opacity: 0.92 }
-        state pressed(_)     { opacity: 0.85 }
+        state hovered(_t) { opacity: 0.92 }
+        state pressed(_t) { opacity: 0.85 }
 
         transitions {
             background: 200ms EaseOut
@@ -262,23 +272,23 @@ What the macro generates from this declaration:
 - **`pub fn card_style() -> Rc<StyleSheet>`** — the registered
   stylesheet. Cached in a thread-local; repeat calls return the
   same `Rc`.
-- **`pub fn Card() -> CardBuilder`** — the entry point you call at
-  use sites.
+- **`pub fn Card() -> Card`** — the entry point you call at use
+  sites.
 - **`pub enum CardSize { Small, Medium, Large }`** — one enum per
   variant axis, with a `Default` impl that picks the `#[default]`
   arm.
 - **`pub enum CardKind { Elevated, Outlined }`** — same.
-- **A `CardBuilder` struct** with one setter per variant axis and
-  per override:
+- **A `pub struct Card` builder** with one setter per variant axis
+  and per override:
   ```rust
   Card()
       .size(CardSize::Large)
       .kind(CardKind::Outlined)
-      .padding(20.0)
+      .padding(Length::Px(20.0))
   ```
   Each setter accepts either a typed value or a `Signal<T>` — pass
   a signal and the variant axis becomes reactive.
-- **`impl IntoStyleSource for CardBuilder`** — so the builder can
+- **`impl IntoStyleProp for Card`** — so the builder can
   be passed to `.with_style(...)` or as `style = ...` inside `ui!`.
 
 ### Using a stylesheet
@@ -312,7 +322,7 @@ the View's node only.
 ## How resolution works
 
 Resolution is a function from
-`(stylesheet, variants, theme, overrides)` to a concrete
+`(stylesheet, variants, overrides)` to a concrete
 `Rc<StyleRules>`. The framework caches the result so the same
 combination of inputs returns the same `Rc` instance.
 
@@ -320,14 +330,12 @@ The cache key is interesting:
 
 - **Stylesheet** is identified by `Rc` pointer.
 - **Variants** are an ordered set of `(axis, value)` strings.
-- **Theme** is identified by `Rc` pointer.
 - **Overrides** are serialized into a content key.
 
-So `Card().size(Large).kind(Outlined)` under `MyTheme::light()`
-maps to one cached `Rc<StyleRules>`. The same builder under
-`MyTheme::dark()` maps to a different one.
+A theme swap clears the cache (`update_tokens`), so the next
+resolution reads the new token values.
 
-But — and this is what makes the web backend's swap cheap — the
+What makes the web backend's swap cheap is that the
 **content key** that the web backend uses to mint a CSS class
 hashes tokens by their **name**, not by their resolved value. So
 `Card().size(Large).kind(Outlined)` produces the **same content
@@ -340,10 +348,10 @@ nodes).
 > **From React.** Theming in React typically goes through Context;
 > a context value change re-renders every consumer. Even with
 > `React.memo` and selectors, every styled component participates
-> in the dependency graph and pays some per-swap cost. Here the
-> graph is one signal (the active theme); only the per-node style
-> Effects subscribe to it, and on web the Effects are bypassed
-> entirely because CSS variables do the work.
+> in the dependency graph and pays some per-swap cost. Here a swap
+> re-renders nothing: on native one theme driver effect re-applies
+> styles, and on web even that is skipped because CSS variables do
+> the work.
 
 > **From styled-components / Emotion.** Each themed component
 > usually generates a new class name when the theme changes, which
@@ -356,8 +364,8 @@ nodes).
 > in Tailwind (the `darkMode: "class"` strategy with custom
 > properties). Same payoff: a class flip on `:root` updates colors
 > downstream without touching anything else. Idealyst's split
-> between literal fallbacks (for non-web backends) and
-> variable references (for web) gives you the same payoff
+> between variable references (web) and apply-time token
+> resolution (native) gives you the same payoff
 > automatically — you don't choose between the two strategies, the
 > backend chooses.
 
@@ -371,7 +379,7 @@ modes — `size: Small | Medium | Large`, `kind: Solid | Soft |
 Outlined`. The macro generates enum types and `Default` impls.
 
 **Overrides** are per-instance continuous values. The author passes
-a specific value at the use site (`Card().padding(20.0)`), and that
+a specific value at the use site (`Card().padding(Length::Px(20.0))`), and that
 value lands in the override slot of the resolved rule set. Use
 overrides when the value isn't from a finite menu — a specific
 size, color, or duration.
@@ -385,11 +393,11 @@ framework applies the overlay.
 
 ```rust
 stylesheet! {
-    pub Btn<MyTheme> {
-        base(theme) { background: theme.primary.clone() }
-        state hovered(_)  { opacity: 0.9 }
-        state pressed(_)  { opacity: 0.8 }
-        state disabled(_) { opacity: 0.5 }
+    pub Btn<MyTokens> {
+        base(t) { background: t.primary() }
+        state hovered(_t)  { opacity: 0.9 }
+        state pressed(_t)  { opacity: 0.8 }
+        state disabled(_t) { opacity: 0.5 }
     }
 }
 ```
@@ -412,7 +420,7 @@ itself — backends use their native interpolators:
 transitions {
     background: 200ms EaseOut
     opacity:    150ms Linear
-    padding:    250ms CubicBezier(0.2, 0.0, 0.0, 1.0)
+    padding:    250ms cubic_bezier(0.2, 0.0, 0.0, 1.0)
 }
 ```
 
@@ -441,13 +449,15 @@ additions. The categories:
 - **Padding / margin / border radius / border width / border
   color** — per-side fields, with shorthand expansion in the macro.
 - **Position**: `position`, `top`, `right`, `bottom`, `left`.
-- **Visual**: `opacity`, `overflow`, `shadow`, `transform`.
+- **Visual**: `opacity`, `overflow`, `shadow` (box), `text_shadow`
+  (glyphs), `transform`, `cursor`, `user_select`.
 - **Per-property transitions** for every animatable property
   above.
 
-There is no display/grid/float. Every node uses flexbox; the
-framework relies on the browser (web) or Taffy (native) to do the
-layout.
+Layout is flexbox by default on every node, with real CSS grid
+available via `display: DisplayKind::Grid` + `grid_template_columns`
+(idea-ui's `Grid` component rides it). There is no float; the
+browser (web) or Taffy (native) does the layout.
 
 ## Building your own theme system
 
@@ -461,21 +471,42 @@ steps:
    `high_contrast()`). Each constructor returns a fully-populated
    instance.
 3. **Implement `ThemeTokens`** to list the `(name, value)` pairs
-   the web backend will install as CSS variables.
+   to install (CSS variables on web; resolved at apply time on
+   native).
 4. **Install at boot** via `install_theme(MyTheme::light())`.
 5. **Swap at runtime** via `set_theme(MyTheme::dark())`.
 
-The theme type is generic over the stylesheets that consume it.
-`stylesheet! { pub Foo<MyTheme> { ... } }` ties a stylesheet to a
-specific theme type; the stylesheet's `base(theme)` closure
-receives a `&MyTheme`, so you have full IDE completion and type
-checking on theme access.
+6. **Define a token vocabulary** so stylesheets can name tokens as
+   checked paths. A vocabulary is a zero-sized type whose accessors
+   return token references, plus a `TokenVocabulary` impl:
 
-You can also write a stylesheet without a theme context by using
-`<()>`. The closures don't receive a theme; instead the
-stylesheet directly references token names with
+```rust
+use runtime_core::{Color, Length, TokenVocabulary, Tokenized};
+
+#[derive(Default, Clone, Copy)]
+pub struct MyTokens;
+
+impl MyTokens {
+    pub fn bg(&self) -> Tokenized<Color> { Tokenized::token("bg", Color::from("#ffffff")) }
+    pub fn text(&self) -> Tokenized<Color> { Tokenized::token("text", Color::from("#111111")) }
+    pub fn primary(&self) -> Tokenized<Color> { Tokenized::token("primary", Color::from("#3b82f6")) }
+    pub fn space_md(&self) -> Tokenized<Length> { Tokenized::token("space-md", Length::Px(16.0)) }
+}
+
+impl TokenVocabulary for MyTokens {
+    type Tokens = Self;
+}
+```
+
+`stylesheet! { pub Foo<MyTokens> { ... } }` then binds `MyTokens` in
+each block (`base(t)`), so you get IDE completion and a compile error
+for a misspelled token. The stylesheet never sees the `MyTheme`
+value; every theme that installs the same names works with it.
+
+You can also write a stylesheet without a vocabulary by using
+`<()>`. Bind `_t` and reference token names directly with
 `Tokenized::token("name", fallback)`. This is the lightest path
-— no struct, no `ThemeTokens` impl — and works fine for app-local
+— no vocabulary type — and works fine for app-local
 styles that don't need typed theme access:
 
 ```rust
@@ -483,7 +514,7 @@ use runtime_core::{stylesheet, Color, Length, Tokenized};
 
 stylesheet! {
     pub Card<()> {
-        base(_) {
+        base(_t) {
             background: Tokenized::token("bg",       Color::from("#ffffff")),
             color:      Tokenized::token("text",     Color::from("#111111")),
             padding:    Tokenized::token("space-md", Length::Px(16.0)),
@@ -493,18 +524,23 @@ stylesheet! {
 }
 ```
 
-The `<MyTheme>` form is the right call when you want IDE
-completion on a richly-typed theme; the `<()>` form is the right
-call when bare token references are enough.
+The vocabulary form is the right call when you want IDE completion
+and checked token names; the `<()>` form is the right call when
+bare token references are enough.
 
 If you want multiple themes at once (light + dark + high-contrast
 selectable from a menu), the pattern is to make `MyTheme` an enum
 or a configurable struct whose constructors produce the variant
 you want. The framework just sees one type.
 
-idea-ui's `IdeaTheme` is one example of this pattern, organized
-around intent palettes (Primary, Secondary, Neutral, Success,
-Danger, Warning, Info) instead of role-named colors. You can read
+idea-ui's theme is one example of this pattern (the `IdeaTheme`
+trait; `light_theme()` / `dark_theme()` return an
+`IdeaThemeDefaults`, and its sheets name `IdeaThemeRef` as their
+vocabulary), organized around intent palettes (Primary, Secondary,
+Neutral, Success, Danger, Warning, Info) instead of role-named
+colors. Each intent's swatch has `solid_bg`, `solid_text`,
+`soft_bg`, `soft_text`, `fg` and `border`, and component sheets
+pick the intent from their `tone` axis. You can read
 its source as a reference, copy it, or ignore it entirely and roll
 your own.
 
@@ -516,22 +552,21 @@ some app-local styles:
 
 1. **Declare your theme** as above.
 2. **Write `stylesheet!`** blocks for each styled surface (`Card`,
-   `Btn`, `Heading`, …). Each one ties to your theme type via the
-   `<MyTheme>` generic.
+   `Btn`, `Heading`, …). Each one names your vocabulary in its
+   `<MyTokens>` slot.
 3. **Attach stylesheets** to primitives at the call site via the
    `style = ...` prop inside `ui!`.
 
 You can mix styling sources freely. A primitive's `style` slot
-takes any `IntoStyleSource` — a stylesheet builder, a raw
+takes any `IntoStyleProp` — a stylesheet builder, a raw
 `StyleRules`, a closure that returns one. You can hand-write rule
 sets for one-off cases and use the macro for the rest.
 
 ## Pre-generation
 
 For backends that benefit from up-front rule emission (web), the
-framework calls `Backend::register_stylesheet` once per
-`(stylesheet, theme)` pair and hands it the pre-resolved rules for
-every variant combination. The web backend mints CSS classes
+framework calls `StyleOps::register_stylesheet` once per stylesheet
+and hands it the pre-resolved rules for every variant combination. The web backend mints CSS classes
 eagerly; subsequent `apply_style` calls just set `className`. This
 is what keeps the per-node apply path cheap on web — no string
 building, no rule-text emission inside the hot path.
@@ -542,11 +577,15 @@ about backend internals is less surprising.
 
 ## Where to read more
 
-- [Reactivity](#) — how the active theme being a signal makes the
-  reactive substrate do most of the work for free.
-- [idea-ui](#) — a complete theme + stylesheet system built on this
+- [Reactivity](reactivity) — how the theme version signal and the
+  theme driver effect ride the same effect graph everything else
+  uses.
+- [Building a theme system](building-a-theme-system) — the full
+  cookbook for themes and vocabularies.
+- idea-ui — a complete theme + stylesheet system built on this
   page's primitives. Use it, fork it, or read it for ideas.
-- [Backends](#) — what the `apply_style`, `register_stylesheet`,
-  and token APIs look like from a backend's side.
-- [Animations](#) — how transitions fold into the broader animation
+- [Backends](backends) — what the `apply_style`,
+  `register_stylesheet`, and token APIs (the `StyleOps` capability)
+  look like from a backend's side.
+- [Animation](animation) — how transitions fold into the broader animation
   story (Presence, GPU effects, gesture-driven motion).
