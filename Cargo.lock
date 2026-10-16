@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "auto-update"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "ed25519-dalek",
  "net",
@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1528,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "connectivity"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -3319,7 +3319,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "datetime"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "chrono",
  "iana-time-zone",
@@ -3729,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "host-mock",
  "runtime-core",
@@ -4727,7 +4727,7 @@ dependencies = [
 
 [[package]]
 name = "gesture"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "runtime-shared",
  "runtime-tls",
@@ -5851,7 +5851,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "host-win32"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "backend-windows",
  "runtime-core",
@@ -6170,7 +6170,7 @@ dependencies = [
 
 [[package]]
 name = "i18n"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "i18n-macros",
  "net",
@@ -6383,7 +6383,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6404,7 +6404,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6502,7 +6502,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6518,7 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7452,7 +7452,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "location"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "async-io",
  "futures-channel",
@@ -7661,7 +7661,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.24.0"
+version = "1.24.1"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7686,7 +7686,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -7752,7 +7752,7 @@ dependencies = [
 
 [[package]]
 name = "media-stream"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "futures-channel",
  "runtime-tls",
@@ -7830,7 +7830,7 @@ dependencies = [
 
 [[package]]
 name = "menu"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-ios-mobile",
  "backend-linux",
@@ -8863,7 +8863,7 @@ dependencies = [
 
 [[package]]
 name = "offload"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "futures",
  "futures-channel",
@@ -9271,7 +9271,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissions"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-windows",
  "block2 0.5.1",
@@ -10084,7 +10084,7 @@ dependencies = [
 
 [[package]]
 name = "random"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -10593,7 +10593,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -10737,7 +10737,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10760,7 +10760,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.10.0"
+version = "1.10.1"
 dependencies = [
  "runtime-tls",
  "runtime-world",
@@ -10781,7 +10781,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10815,7 +10815,7 @@ version = "0.1.0"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -10835,7 +10835,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "runtime-tls",
  "rustc-hash 2.1.2",
@@ -11132,7 +11132,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screen-recorder"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -11576,7 +11576,7 @@ dependencies = [
 
 [[package]]
 name = "share"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "ashpd",
  "async-channel",
@@ -12350,7 +12350,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -12765,7 +12765,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
@@ -13224,7 +13224,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "toolbar"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-linux",
  "backend-macos",
@@ -14044,7 +14044,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -14721,7 +14721,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
