@@ -510,6 +510,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`random` SDK: random numbers that are the same on every platform**
+  (`random`, new). `random::range(1..=6)`, `float`, `bool`, `chance`,
+  `shuffle`, `choose` and `u64` draw from a per-thread xoshiro256++
+  generator seeded from OS entropy; `random::seed(n)` (or an owned
+  `random::Rng::seeded(n)`) makes them reproducible, and a seed yields the
+  identical sequence on iOS, Android, desktop and web — the generator and
+  every derived operation are the crate's own integer arithmetic, not
+  `Math.random` / `arc4random` / `java.util.Random`. `secure_bytes` /
+  `secure_u64` read the OS cryptographic source (`getentropy`,
+  `getrandom(2)`, `ProcessPrng`, `crypto.getRandomValues`) for tokens and
+  keys. On web, entropy goes through web-glue, so using it keeps an app out
+  of the hybrid (wasm-bindgen) build.
+
 - **Windows backend** (`backend-windows`, `host-win32`, `gpu-surface`): a
   Direct2D/DirectWrite scene renderer on a DirectComposition swapchain
   (opt-in, `IDEALYST_WINDOWS_RENDERER=d2d`); painted views get `on_touch`,

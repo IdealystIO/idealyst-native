@@ -247,6 +247,8 @@ members = [
     "crates/sdk/client/media-stream",
     "crates/sdk/client/qr",
     "crates/sdk/client/qr/examples/qr-demo",
+    # OS entropy + a seedable generator that is identical on every platform.
+    "crates/sdk/client/random",
     "crates/sdk/client/media-writer",
     "crates/sdk/client/video-compose",
     "crates/sdk/client/denoise",
@@ -657,6 +659,7 @@ microphone = { path = "crates/sdk/client/microphone", version = "1.6.2", registr
 camera = { path = "crates/sdk/client/camera", version = "1.8.0", registry = "idealyst" }
 media-stream = { path = "crates/sdk/client/media-stream", version = "1.8.0", registry = "idealyst" }
 qr = { path = "crates/sdk/client/qr", version = "0.1.1", registry = "idealyst" }
+random = { path = "crates/sdk/client/random", version = "0.1.0", registry = "idealyst" }
 media-writer = { path = "crates/sdk/client/media-writer", version = "1.8.0", registry = "idealyst" }
 video-compose = { path = "crates/sdk/client/video-compose", version = "2.0.0", registry = "idealyst" }
 denoise = { path = "crates/sdk/client/denoise", version = "1.5.2", registry = "idealyst" }

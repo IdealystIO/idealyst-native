@@ -87,6 +87,7 @@ an OS grant flow.
 | `share` | [`share/`](./client/share) | The system share sheet (outbound) — hand text/url/files to another app. The inverse of `file-picker`. |
 | `deep-link` | [`deep-link/`](./client/deep-link) | Inbound URL handling — `initial_link()` + `on_link()` deliver the parsed launch/resume URL (custom scheme / universal / app link). |
 | `connectivity` | [`connectivity/`](./client/connectivity) | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport. |
+| `random` | [`random/`](./client/random) | OS entropy for secrets (`secure_bytes`) plus a seedable xoshiro256++ `Rng` and `range` / `shuffle` / `choose` that produce the same sequence on every platform. |
 | `haptics` | [`haptics/`](./client/haptics) | Tactile feedback — `impact` / `notify` / `selection`. Best-effort, fire-and-forget. |
 | `datetime` | [`datetime/`](./client/datetime) | The current date and time — `now_utc()`, `local_offset_at(t)` (DST-correct), `local_timezone()`; `chrono` feature replaces `Utc::now()` / `Local::now()` without chrono's `wasmbind`. |
 | `audio` | [`audio/`](./client/audio) | Sound playback — `load(AudioSource)` → a `Sound` you `play()`. The playback peer of the capture SDKs. |
@@ -198,6 +199,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `notifications` | 🧪 unit (id resolution, builder) | 🟢 web immediate `Notification` run-exercised; ⚠️ **Apple `UNUserNotificationCenter` + Android `NotificationManager` compile-checked only**; push token + delay-scheduling are documented seams |
 | `location` | 🧪 unit (Position mapping, oneshot) | 🟢 web `geolocation` run-exercised; ⚠️ **Apple `CLLocationManager` + Android `LocationManager` compile-checked only**; Android `watch` needs a host `LocationListener` shim |
 | `clipboard` | 🧪 unit (error Display) | 🟢 web `navigator.clipboard` run-exercised; ⚠️ **Apple `UIPasteboard`/`NSPasteboard` + Android `ClipboardManager` compile-checked only** |
+| `random` | 🧪 reference vectors + 10k-draw differential vs `rand_xoshiro`, ranges, shuffle | 🟢 web `crypto.getRandomValues` + the same golden sequences run-exercised in the browser; native entropy via `getrandom`, compile-checked for iOS / Android / Windows |
 | `share` | 🧪 unit (builder, empty-guard) | 🟢 web `navigator.share` where supported; ⚠️ **Apple `UIActivityViewController`/`NSSharingServicePicker` + Android `ACTION_SEND` compile-checked only**; Android file-share needs a `FileProvider` seam |
 | `deep-link` | 🧪 unit (URL parse, dedupe, dispatch, RAII unsubscribe) | 🟢 web `location.href` run-exercised; ⚠️ **Apple/Android launch-URL forwarding is a host seam (the parse/dispatch core is pure Rust)** |
 | `connectivity` | 🧪 unit (snapshot consistency, transport) | 🟢 web `navigator.onLine` run-exercised; ⚠️ **Apple `NWPathMonitor` + Android `ConnectivityManager` compile-checked only**; Android `watch` needs a host `NetworkCallback` shim |

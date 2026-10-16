@@ -481,6 +481,12 @@ sdk!(
     "System copy/paste of plain text — `clipboard::set_text` / `text`. UIPasteboard / NSPasteboard / ClipboardManager / `navigator.clipboard`."
 );
 sdk!(
+    "random",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Random numbers, identical on every platform — `random::range(1..=6)` / `float` / `shuffle` / `choose`, a seedable xoshiro256++ `Rng` (`random::seed(n)` for reproducible runs), and `secure_bytes` / `secure_u64` from the OS entropy source for tokens and keys. Use it instead of `Math.random` / `js_sys` / `getrandom`."
+);
+sdk!(
     "location",
     SdkCategory::Device,
     SdkKind::Api,

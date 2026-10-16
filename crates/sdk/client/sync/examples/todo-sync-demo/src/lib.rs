@@ -96,14 +96,8 @@ fn device_id() -> String {
         if let Ok(Some(existing)) = store.get_now(KEY) {
             return existing;
         }
-        // Wall-clock millis plus the monotonic clock's microsecond reading
-        // (`performance.now()` on web) — enough to tell two browsers apart
-        // without a dedicated RNG.
-        let fresh = format!(
-            "device-{}-{}",
-            now_millis(),
-            runtime_core::time::now_micros()
-        );
+        // 64 bits of OS entropy, so two browsers never mint the same id.
+        let fresh = format!("device-{}-{:016x}", now_millis(), random::secure_u64());
         if store.set_now(KEY, &fresh).is_ok() {
             return fresh;
         }

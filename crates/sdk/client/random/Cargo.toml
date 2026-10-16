@@ -1,0 +1,48 @@
+[package]
+name = "random"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Random numbers for Idealyst apps: OS entropy for secrets, and a seedable xoshiro256++ generator that produces the same sequence on every platform."
+
+# Two layers, split on purpose (see src/lib.rs):
+#   - entropy: the OS cryptographic source — `getrandom` on native,
+#     `crypto.getRandomValues` through web-glue on web.
+#   - generator: xoshiro256++ implemented in this crate, so a seed yields the
+#     identical sequence on every backend.
+
+[dependencies]
+# Recipes (compile-checked usage examples) compile only under `catalog`;
+# `runtime-vocabulary` because the `ui!` emission inside them spells
+# absolute `::runtime_vocabulary::glue::…` paths. Without `catalog` this
+# crate has no framework dependency at all.
+runtime-core = { workspace = true, optional = true }
+runtime-vocabulary = { workspace = true, optional = true }
+
+# Native entropy: getentropy / getrandom(2) / BCryptGenRandom /
+# SecRandomCopyBytes. NOT used on wasm32: getrandom's web backend goes
+# through wasm-bindgen, which would put every app using this crate into the
+# hybrid build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom = "0.3"
+
+# Web entropy: `crypto.getRandomValues` through a web-glue binding
+# (src/entropy/web.rs) — the framework's own JS boundary, no wasm-bindgen.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-glue = { workspace = true }
+
+[features]
+# Compile + register the `recipe!` usage examples (off in production builds).
+catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog"]
+
+[dev-dependencies]
+# Differential test: the reference xoshiro256++ (seeded through SplitMix64)
+# must produce the same stream as `Rng::seeded`.
+rand_xoshiro = "0.6"
+rand_core = "0.6"
+
+# Browser tests (`tests/web_random.rs`) — run with
+# `cargo test -p random --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
