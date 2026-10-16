@@ -304,6 +304,11 @@ what shipped and how it was checked:
 - The verification: which targets were checked, and what the external consumer
   resolved.
 
+`CHANGELOG.md` has no "Unreleased" section to cut: crates version
+independently, so each entry goes into the matching group (behaviour
+changes / added / changed / fixed) above `## 1.0.1` and names the crates it
+touches. Add entries for what this release carries if the commits didn't.
+
 Do **not** add `Co-Authored-By: Claude` or any AI attribution trailer
 (`CLAUDE.md` §0a).
 

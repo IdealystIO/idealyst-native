@@ -1,9 +1,13 @@
 # Changelog
 
-Notable changes per release. Upgrade instructions live in `docs/` —
-each entry links to its migration guide.
+Notable changes. Upgrade instructions live in `docs/` — each entry links
+to its migration guide.
 
-## Unreleased
+Crates are versioned and published to the registry individually, so the
+entries above `## 1.0.1` are not grouped by version: they are grouped by
+kind (behaviour changes, added, changed, fixed), and each names the crates
+it touches. The sections from `## 1.0.1` down are the older workspace-wide
+releases.
 
 ### Behaviour changes — read before upgrading
 
