@@ -1,0 +1,98 @@
+//! Real AppKit input for the robot (`IntrospectionOps::hit_contains` /
+//! `native_pointer`).
+//!
+//! Points arrive in `absolute_frame`'s space: the window's flipped content
+//! view, top-left origin. `convertPoint:toView:nil` takes them to window
+//! base coordinates (bottom-left), which is both an `NSEvent`'s
+//! `locationInWindow` and what `-[contentView hitTest:]` expects (the
+//! point in the content view's superview, the frame view, whose space is
+//! the window's).
+//!
+//! Events are POSTED (`-[NSApplication postEvent:atStart:NO]`), not sent:
+//! a view's `mouseDown:` may run a tracking loop that pulls the matching
+//! `mouseUp:` off the queue (NSButton, NSSlider do), so `sendEvent:` of the
+//! down would block until an up arrives. Posting both lets the run loop
+//! deliver them in order through `-[NSApplication sendEvent:]` — local
+//! monitors (the app pointer sink), the window, hit testing, the view —
+//! exactly as a user's clicks.
+
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, msg_send_id};
+use objc2_app_kit::NSView;
+use objc2_foundation::CGPoint;
+use runtime_vocabulary::caps::{NativeInjection, PointerStep, PointerStepPhase};
+
+use crate::imp::MacosNode;
+
+// NSEventType values.
+const LEFT_MOUSE_DOWN: usize = 1;
+const LEFT_MOUSE_UP: usize = 2;
+const LEFT_MOUSE_DRAGGED: usize = 6;
+
+/// The node's window and its content view, when it is in one.
+fn window_of(view: &NSView) -> Option<(Retained<AnyObject>, *mut NSView)> {
+    let window: Option<Retained<AnyObject>> = unsafe { msg_send_id![view, window] };
+    let window = window?;
+    let content: *mut NSView = unsafe { msg_send![&*window, contentView] };
+    (!content.is_null()).then_some((window, content))
+}
+
+/// A content-view point (top-left) in window base coordinates.
+fn to_window_base(content: *mut NSView, x: f32, y: f32) -> CGPoint {
+    let nil: *mut NSView = std::ptr::null_mut();
+    unsafe { msg_send![content, convertPoint: CGPoint { x: x as f64, y: y as f64 }, toView: nil] }
+}
+
+pub(crate) fn hit_contains(node: &MacosNode, x: f32, y: f32) -> Option<bool> {
+    let view = node.as_view();
+    let (_window, content) = window_of(view)?;
+    let point = to_window_base(content, x, y);
+    let hit: *mut NSView = unsafe { msg_send![content, hitTest: point] };
+    if hit.is_null() {
+        return Some(false);
+    }
+    Some(unsafe { msg_send![hit, isDescendantOf: view] })
+}
+
+pub(crate) fn native_pointer(node: &MacosNode, steps: &[PointerStep]) -> Option<NativeInjection> {
+    let (window, content) = window_of(node.as_view())?;
+    // Converted now, while the layout the robot measured is current.
+    let events: Vec<(usize, CGPoint)> = steps
+        .iter()
+        .map(|s| {
+            let kind = match s.phase {
+                PointerStepPhase::Down => LEFT_MOUSE_DOWN,
+                PointerStepPhase::Move => LEFT_MOUSE_DRAGGED,
+                PointerStepPhase::Up => LEFT_MOUSE_UP,
+            };
+            (kind, to_window_base(content, s.x, s.y))
+        })
+        .collect();
+    Some(Box::new(move || {
+        let number: isize = unsafe { msg_send![&*window, windowNumber] };
+        let info: *mut AnyObject = unsafe { msg_send![class!(NSProcessInfo), processInfo] };
+        let app: *mut AnyObject = unsafe { msg_send![class!(NSApplication), sharedApplication] };
+        let ctx: *mut AnyObject = std::ptr::null_mut();
+        for (kind, location) in events {
+            let now: f64 = unsafe { msg_send![info, systemUptime] };
+            let event: Option<Retained<AnyObject>> = unsafe {
+                msg_send_id![
+                    class!(NSEvent),
+                    mouseEventWithType: kind,
+                    location: location,
+                    modifierFlags: 0usize,
+                    timestamp: now,
+                    windowNumber: number,
+                    context: ctx,
+                    eventNumber: 0isize,
+                    clickCount: 1isize,
+                    pressure: if kind == LEFT_MOUSE_UP { 0.0f32 } else { 1.0f32 },
+                ]
+            };
+            let event = event.ok_or("NSEvent refused the mouse event")?;
+            let _: () = unsafe { msg_send![app, postEvent: &*event, atStart: false] };
+        }
+        Ok(())
+    }))
+}

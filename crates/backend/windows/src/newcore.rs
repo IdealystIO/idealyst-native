@@ -1190,6 +1190,16 @@ impl caps::IntrospectionOps for WindowsBackend {
     }
 
     #[cfg(feature = "robot")]
+    fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
+        self.hit_contains_impl(node.id, x, y)
+    }
+
+    #[cfg(feature = "robot")]
+    fn native_pointer(&self, _node: &Self::Node, steps: &[caps::PointerStep]) -> Option<caps::NativeInjection> {
+        self.native_pointer_impl(steps)
+    }
+
+    #[cfg(feature = "robot")]
     fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
         self.node_frame(node.id)
             .map(|(x, y, width, height)| ViewportRect { x, y, width, height })

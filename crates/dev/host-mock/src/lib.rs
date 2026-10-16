@@ -240,6 +240,14 @@ pub struct Shared {
     /// Nodes `IntrospectionOps::is_shown` reports hidden (every other node
     /// is shown) — set by a test as a toolkit would hide a view.
     pub hidden: RefCell<std::collections::BTreeSet<Node>>,
+    /// Nodes something else covers: `IntrospectionOps::hit_contains`
+    /// answers `false` for them (inside their frame, `true` for the rest;
+    /// `None` for a node with no frame).
+    pub covered: RefCell<std::collections::BTreeSet<Node>>,
+    /// `IntrospectionOps::native_pointer`: `None` (the default) = no native
+    /// input; `Some(deliver)` = the injection calls `deliver` with the
+    /// steps, after the robot has released the backend borrow.
+    pub native_input: RefCell<Option<Rc<dyn Fn(&[caps::PointerStep]) -> Result<(), String>>>>,
     /// The app-level keyboard sink currently installed
     /// (`AppEnvOps::set_keyboard_sink`) — drive it like a native key source.
     pub keyboard_sink: RefCell<Option<primitives::key::KeyboardSink>>,
@@ -295,6 +303,8 @@ impl Default for Shared {
             scroll_offsets: RefCell::new(BTreeMap::new()),
             frames: RefCell::new(BTreeMap::new()),
             hidden: RefCell::new(std::collections::BTreeSet::new()),
+            covered: RefCell::new(std::collections::BTreeSet::new()),
+            native_input: RefCell::new(None),
             keyboard_sink: RefCell::new(None),
             pointer_sink: RefCell::new(None),
         }
@@ -1574,6 +1584,18 @@ impl caps::IntrospectionOps for HostMock {
 
     fn supports_screenshot(&self) -> bool {
         self.s.screenshot.get()
+    }
+
+    fn hit_contains(&self, node: &Node, x: f32, y: f32) -> Option<bool> {
+        let r = self.s.frames.borrow().get(node).copied()?;
+        let inside = x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        Some(inside && !self.s.covered.borrow().contains(node))
+    }
+
+    fn native_pointer(&self, _node: &Node, steps: &[caps::PointerStep]) -> Option<caps::NativeInjection> {
+        let deliver = self.s.native_input.borrow().clone()?;
+        let steps = steps.to_vec();
+        Some(Box::new(move || deliver(&steps)))
     }
 }
 

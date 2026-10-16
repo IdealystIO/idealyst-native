@@ -66,3 +66,37 @@ fn robot_functions_set_the_counter(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
     app.signal("count").assert_eq(0);
 }
+
+/// A tap through the platform's own input path reaches the button: real
+/// events where the backend synthesizes them, UIKit's hit test on iOS.
+#[robot_test]
+fn a_native_tap_presses_the_button(app: &mut App) {
+    app.call_function("demo.set_count", json!({ "value": 0 }));
+    let how = app.test_id("inc").tap_native();
+    assert!(how == "native" || how == "hit_test", "{how}");
+    app.signal("count").assert_eq(1);
+    app.call_function("demo.set_count", json!({ "value": 0 }));
+    app.signal("count").assert_eq(0);
+}
+
+/// Under an overlay, a native tap doesn't reach the button: a backend with
+/// a hit test refuses and says what covers it; every backend leaves the
+/// count alone.
+#[robot_test]
+fn an_overlay_stops_a_native_tap(app: &mut App) {
+    app.call_function("demo.set_count", json!({ "value": 0 }));
+    app.call_function("demo.set_cover", json!({ "on": true }));
+    app.test_id("cover-label").assert_visible();
+    let id = app.call("find_element", json!({ "test_id": "inc" }))["id"].clone();
+    match app.try_call("tap_native", json!({ "element_id": id })) {
+        Err(e) => {
+            assert!(e.to_string().contains("covers"), "{e}");
+            eprintln!("[native tap under the overlay] refused by the hit test: {e}");
+        }
+        Ok(how) => eprintln!("[native tap under the overlay] injected ({how}); the overlay took it"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    app.signal("count").assert_eq(0);
+    app.call_function("demo.set_cover", json!({ "on": false }));
+    app.test_id("cover-label").assert_hidden();
+}

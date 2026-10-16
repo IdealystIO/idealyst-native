@@ -425,9 +425,73 @@ impl<'a> Locator<'a> {
 
     // --- actions ---
 
-    /// Click / press the element.
+    /// Click / tap the element as a user would: once it is visible and
+    /// enabled, a real platform tap at its center (`tap_native`) — through
+    /// the toolkit's hit testing, so an overlay on top or an element
+    /// scrolled out of the window makes it wait, then fail, as it would a
+    /// user. On a backend that can't synthesize input it falls back to the
+    /// element's own press handler ([`dispatch_click`](Self::dispatch_click)).
     pub fn click(self) {
+        self.tap(true);
+    }
+
+    /// A real platform tap at the element's center, with no fallback:
+    /// panics on a backend that can't synthesize input. Returns how it
+    /// reached the element: `"native"` (platform events) or `"hit_test"`
+    /// (the backend's hit test confirmed the point, then the press ran —
+    /// iOS, where an app can't create touches).
+    pub fn tap_native(self) -> String {
+        self.tap(false)
+    }
+
+    /// Run the element's press handler directly (the robot's `click`),
+    /// skipping the platform's event path — for an element a user can't
+    /// reach on purpose, or a backend with no native input.
+    pub fn dispatch_click(self) {
         self.act("click", json!({}));
+    }
+
+    /// Drag with real platform input along `points` (relative to the
+    /// element's top-left, as [`drag`](Self::drag) takes them). Panics on a
+    /// backend that can't synthesize input.
+    pub fn drag_native(self, points: &[(f32, f32)]) {
+        let pts: Vec<[f32; 2]> = points.iter().map(|&(x, y)| [x, y]).collect();
+        self.act("drag_native", json!({ "points": pts }));
+    }
+
+    fn tap(mut self, fallback: bool) -> String {
+        let desc = format!("{}.{}", self.desc, if fallback { "click" } else { "tap_native" });
+        let deadline = Instant::now() + self.app.timeout;
+        loop {
+            let attempt = self.resolve().and_then(|el| {
+                if el["visible"] == false {
+                    return Err("the element is not visible".to_string());
+                }
+                if el["state"]["disabled"] == true {
+                    return Err("the element is disabled".to_string());
+                }
+                let id = Self::id_of(&el)?;
+                match self.app.try_call("tap_native", json!({ "element_id": id })) {
+                    Ok(v) => Ok(v["mechanism"].as_str().unwrap_or("native").to_string()),
+                    Err(e) if fallback && e.to_string().contains("unsupported") => self
+                        .app
+                        .try_call("click", json!({ "element_id": id }))
+                        .map(|_| "robot".to_string())
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            });
+            match attempt {
+                Ok(how) => return how,
+                Err(e) if e.contains("not available") || (!fallback && e.contains("unsupported")) => {
+                    panic!("{desc}: {e}")
+                }
+                Err(e) if Instant::now() >= deadline => {
+                    panic!("{desc} — still failing after {:?}: {e}", self.app.timeout)
+                }
+                Err(_) => std::thread::sleep(POLL),
+            }
+        }
     }
 
     /// Replace a text field's text (like Playwright `fill`).

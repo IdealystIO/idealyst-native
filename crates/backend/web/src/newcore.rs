@@ -1969,6 +1969,16 @@ impl caps::IntrospectionOps for WebBackend {
         crate::introspect::is_shown(node)
     }
 
+    #[cfg(feature = "robot")]
+    fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
+        crate::introspect::hit_contains(node, x, y)
+    }
+
+    #[cfg(feature = "robot")]
+    fn native_pointer(&self, _node: &Self::Node, steps: &[caps::PointerStep]) -> Option<caps::NativeInjection> {
+        Some(crate::introspect::native_pointer(steps))
+    }
+
     // Geometry: the same DOM measurements a view ref's `frame()` and
     // overlay anchoring already use (`WebViewOps`). Unwired, the robot's
     // `get_frame` / `get_absolute_frame` answered `null` on web and the

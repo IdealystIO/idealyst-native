@@ -120,4 +120,54 @@ pub trait IntrospectionOps: Host {
     fn capture_screenshot(&self, done: Box<dyn FnOnce(Result<Screenshot, String>)>) {
         done(Err("screenshot capture is not supported on this backend".into()));
     }
+
+    /// Whether the topmost view at `(x, y)` — logical px in
+    /// [`absolute_frame`](Self::absolute_frame)'s space, in `node`'s
+    /// window — is `node` or one of its descendants: whether a real tap
+    /// there would reach it, or something on top (an overlay, a scrim, a
+    /// sibling drawn later) would take it. Honors `pointer_events`.
+    /// `None` = this backend can't tell.
+    #[allow(unused_variables)]
+    fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
+        None
+    }
+
+    /// Real platform input for `node`'s window: the pointer `steps` (in
+    /// [`absolute_frame`](Self::absolute_frame)'s space) as events the
+    /// toolkit receives the way it receives a user's — hit testing,
+    /// gesture recognizers, the native disabled state, the app pointer
+    /// sink. `None` = this backend can't synthesize input.
+    ///
+    /// Returns the injection rather than performing it: the robot runs it
+    /// after releasing the backend borrow, because delivering an event
+    /// runs author code that may borrow the backend itself (as a real
+    /// event, which arrives with nothing borrowed, can). An injection may
+    /// deliver synchronously or queue the events for the toolkit's own
+    /// event loop; the robot's callers wait for the effect either way.
+    #[allow(unused_variables)]
+    fn native_pointer(&self, node: &Self::Node, steps: &[PointerStep]) -> Option<NativeInjection> {
+        None
+    }
 }
+
+/// One step of a [`IntrospectionOps::native_pointer`] gesture: the primary
+/// button (or one finger) going down, moving while down, or lifting, at
+/// `(x, y)` logical px in the window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerStep {
+    pub phase: PointerStepPhase,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// See [`PointerStep`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerStepPhase {
+    Down,
+    Move,
+    Up,
+}
+
+/// A prepared [`IntrospectionOps::native_pointer`] injection; `Err` says
+/// why the platform refused it.
+pub type NativeInjection = Box<dyn FnOnce() -> Result<(), String>>;

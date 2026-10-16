@@ -415,6 +415,17 @@ pub struct RobotInvokeMethod {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotDragNative {
+    pub element_id: u64,
+    /// The pointer path as `[x, y]` pairs in logical px, relative to the
+    /// element's top-left: down at the first, moving through the rest, up
+    /// at the last.
+    pub points: Vec<[f32; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotOpenLink {
     /// The URL to deliver, e.g. `myapp://items/42`.
     pub url: String,
@@ -1515,6 +1526,26 @@ impl CatalogService {
     ) -> Result<CallToolResult, McpError> {
         let msg = self.do_tap(args).await?;
         Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    #[tool(description = "Tap an element with REAL platform input at its center, through the toolkit's own event path — hit testing, overlays, gesture recognizers and the native disabled state take part, which `click` (the element's handler, called directly) skips. Refuses like a finger would fail: the element is not visible, its center is outside the window (scroll it into view), or another element covers it (the error names it). Returns { mechanism }: \"native\" (platform events: web DOM events, macOS NSEvents, Android MotionEvents, Windows window messages, Linux XTest) or \"hit_test\" (iOS, where an app can't create touches: UIKit's hit test confirms the point, then the element's press runs). Errors with \"unsupported\" on a backend with neither — use `click`. On Android, `tap` injects at the OS level instead (adb).")]
+    async fn tap_native(
+        &self,
+        Parameters(args): Parameters<RobotElementId>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("tap_native", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Drag with REAL platform input along `points` ([x, y] relative to the element's top-left, logical px): down at the first, moves, up at the last, through the toolkit's event path. The first point is checked like `tap_native`'s. Errors with \"unsupported\" where the backend can't synthesize input (iOS) — use `drag`.")]
+    async fn drag_native(
+        &self,
+        Parameters(args): Parameters<RobotDragNative>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("drag_native", app.as_deref(), body).await
     }
 
     #[tool(description = "Read an element's own STATE — what a user would see, with no help from the app: { value (a TextInput's text, a Slider's value), checked (a Toggle), disabled, focused (a TextInput) }. Fields the element doesn't have are omitted; a View/Text/Image returns {}. `find_element` results carry the same object under `state`. Robot actions on a disabled element fail with \"refused: the element is disabled\", as the control refuses a user.")]
@@ -6349,6 +6380,10 @@ mod tests {
             .unwrap();
         svc.list_functions(Parameters(RobotAppOnly { app: None })).await.unwrap();
         svc.open_link(Parameters(RobotOpenLink { url: "myapp://items/4".into(), app: None })).await.unwrap();
+        svc.tap_native(Parameters(RobotElementId { element_id: 5, app: None })).await.unwrap();
+        svc.drag_native(Parameters(RobotDragNative { element_id: 5, points: vec![[1.0, 2.0], [3.0, 4.0]], app: None }))
+            .await
+            .unwrap();
 
         let seen = seen.lock().unwrap().clone();
         let expected = vec![
@@ -6365,6 +6400,8 @@ mod tests {
             ("get_identity", json!({})),
             ("list_functions", json!({})),
             ("open_link", json!({ "url": "myapp://items/4" })),
+            ("tap_native", json!({ "element_id": 5 })),
+            ("drag_native", json!({ "element_id": 5, "points": [[1.0, 2.0], [3.0, 4.0]] })),
         ];
         let got: Vec<(&str, serde_json::Value)> = seen.iter().map(|(c, a)| (c.as_str(), a.clone())).collect();
         assert_eq!(got, expected);

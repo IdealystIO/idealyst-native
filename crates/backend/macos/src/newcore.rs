@@ -1504,6 +1504,18 @@ impl caps::IntrospectionOps for MacosBackend {
         Some(crate::imp::handles::is_node_shown(node))
     }
 
+    fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
+        crate::imp::native_input::hit_contains(node, x, y)
+    }
+
+    fn native_pointer(
+        &self,
+        node: &Self::Node,
+        steps: &[caps::PointerStep],
+    ) -> Option<caps::NativeInjection> {
+        crate::imp::native_input::native_pointer(node, steps)
+    }
+
     fn supports_native_introspection(&self) -> bool {
         MacosBackend::supports_native_introspection_impl(self)
     }

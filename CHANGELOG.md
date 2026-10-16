@@ -563,6 +563,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `SegmentedControl(block = true)` fills its container and splits it evenly
   between the segments, like Button's `block`.
 
+- **Native input for the robot: `tap_native` / `drag_native`**
+  (`runtime-vocabulary`, `backend-web`, `backend-macos`,
+  `backend-ios-mobile`, `backend-android-mobile`, `backend-windows`,
+  `host-mock`, `robot-test`, `mcp-server`; dev builds only). New
+  `IntrospectionOps::hit_contains` and `native_pointer`: a tap through the
+  platform's real event path (DOM events on web, posted `NSEvent`s on
+  macOS, `MotionEvent`s on Android, posted window messages on Windows; on
+  iOS, UIKit's hit test then the element's press). The verb refuses an
+  invisible element, a point outside the window, and a covered element
+  (naming what covers it). **`robot-test`'s `Locator::click()` now taps
+  natively first** and falls back to the handler only where the backend
+  has no native input; `dispatch_click()` is the old behaviour. MCP:
+  `tap_native`, `drag_native`. Linux has no native tier yet.
+
 - **Robot functions: tests call app and SDK code by name**
   (`runtime-vocabulary`, `runtime-macros`, `runtime-macros-expand`,
   `runtime-core`, `robot-test`, `mcp-server`, `location`, `connectivity`,
@@ -1468,6 +1482,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`idealyst test --web` could test code that was no longer the source**
+  (`idealyst-cli`). The launched dev session resumed the last session's
+  bundle and replayed its hot patches, and a patch only reaches code the
+  page calls after it lands — the suite ran against an overlay the source
+  had changed. The test session now sets `IDEALYST_DEV_NO_RESUME` and
+  builds.
 
 - **A Card sheet built from some variants no longer drops the built-ins**
   (`idea-ui`). `build_card_sheet(variants, tones)` registered only the

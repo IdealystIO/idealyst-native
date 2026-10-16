@@ -100,6 +100,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // sites live in the host shell (`host-win32`); no-op default.
 pub mod dispatch_hook;
 
+#[cfg(feature = "robot")]
+mod native_input;
+
 /// `runtime_scene::Host` + the 30 capability traits on
 /// [`WindowsBackend`], plus the boot entry and flush driver.
 pub mod newcore;

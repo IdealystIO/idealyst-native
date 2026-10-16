@@ -1634,6 +1634,14 @@ mod native {
             crate::imp::view_rect::view_is_shown(node)
         }
 
+        fn native_pointer(
+            &self,
+            _node: &Self::Node,
+            steps: &[caps::PointerStep],
+        ) -> Option<caps::NativeInjection> {
+            crate::imp::view_rect::native_pointer(steps)
+        }
+
         fn supports_screenshot(&self) -> bool {
             AndroidBackend::supports_screenshot_impl(self)
         }

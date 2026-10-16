@@ -89,6 +89,9 @@ pub fn app() -> Element {
     COUNT.with(|c| c.set(Some(count)));
     runtime_vocabulary::robot_fn::register(set_count::robot());
     runtime_vocabulary::robot_fn::register(set_count_later::robot());
+    let covered: Signal<bool> = signal(false);
+    COVERED.with(|c| c.set(Some(covered)));
+    runtime_vocabulary::robot_fn::register(set_cover::robot());
 
     // Kick off the E2E suite shortly after mount, once the first render
     // has populated the Robot registry. `after_ms_detached` self-manages
@@ -104,13 +107,48 @@ pub fn app() -> Element {
         runtime_core::after_ms_detached(INITIAL_RUN_DELAY_MS, run_suite);
     }
 
-    screen(count, show_secret, name)
+    // A window-covering overlay, shown by `demo.set_cover`: what a native
+    // tap must not reach through. FullScreen with an inset-0 backdrop is
+    // what covers the window on every backend (idea-ui's click-away
+    // catchers are built the same way).
+    let cover = ui! {
+        if covered.get() {
+            runtime_core::overlay(vec![text("Covered").test_id("cover-label").into_element()])
+                .placement(runtime_core::primitives::portal::ViewportPlacement::FullScreen)
+                .backdrop_style(std::rc::Rc::new(runtime_core::StyleRules {
+                    position: Some(runtime_core::Position::Absolute),
+                    top: Some(runtime_core::Length::Px(0.0).into()),
+                    left: Some(runtime_core::Length::Px(0.0).into()),
+                    right: Some(runtime_core::Length::Px(0.0).into()),
+                    bottom: Some(runtime_core::Length::Px(0.0).into()),
+                    ..Default::default()
+                }))
+                .on_dismiss(move || covered.set(false))
+        }
+    };
+    ui! {
+        view() {
+            screen(count, show_secret, name)
+            cover
+        }
+    }
 }
 
 thread_local! {
     /// The counter, for the robot functions below (free functions: they
     /// can't capture the `app()` local).
     static COUNT: std::cell::Cell<Option<Signal<i32>>> = const { std::cell::Cell::new(None) };
+}
+
+thread_local! {
+    static COVERED: std::cell::Cell<Option<Signal<bool>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Show (or hide) a full-window overlay over the screen.
+#[runtime_core::robot_fn(name = "demo.set_cover")]
+fn set_cover(on: bool) -> Result<(), String> {
+    COVERED.with(|c| c.get()).ok_or("the app has not mounted")?.set(on);
+    Ok(())
 }
 
 /// Set the counter to `value`.

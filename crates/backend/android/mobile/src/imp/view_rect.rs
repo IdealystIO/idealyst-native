@@ -123,3 +123,90 @@ pub(crate) fn view_is_shown(node: &jni::objects::GlobalRef) -> Option<bool> {
         Some(alpha > TRANSPARENT_ALPHA)
     })
 }
+
+
+/// `IntrospectionOps::native_pointer`: each step as a `MotionEvent`
+/// (`ACTION_DOWN` / `ACTION_MOVE` / `ACTION_UP`, touchscreen source) handed
+/// to the decor view's `dispatchTouchEvent` — the entry the window's input
+/// stage calls for a real finger, so the view tree's own dispatch, hit
+/// testing (`onInterceptTouchEvent`, clickable views, disabled state) and
+/// gesture detectors all run. Delivered synchronously on the UI thread.
+/// Points are viewport dp (the `absolute_frame` space); the conversion
+/// reads the root's position and density when the injection runs.
+pub(crate) fn native_pointer(
+    steps: &[runtime_vocabulary::caps::PointerStep],
+) -> Option<runtime_vocabulary::caps::NativeInjection> {
+    use runtime_vocabulary::caps::PointerStepPhase;
+    let root = VIEWPORT_ROOT.with(|r| r.borrow().clone())?;
+    let steps = steps.to_vec();
+    Some(Box::new(move || {
+        let root_rect = view_screen_rect(&root);
+        let decor = super::with_env(|env| -> Result<jni::objects::GlobalRef, String> {
+            let v = env
+                .call_method(root.as_obj(), "getRootView", "()Landroid/view/View;", &[])
+                .and_then(|v| v.l());
+            match v {
+                Ok(v) if !v.is_null() => env.new_global_ref(v).map_err(|e| e.to_string()),
+                Ok(_) => Err("the app root has no root view".into()),
+                Err(e) => {
+                    let _ = env.exception_clear();
+                    Err(format!("getRootView: {e}"))
+                }
+            }
+        })?;
+        let decor_rect = view_screen_rect(&decor);
+        let density = super::with_env(|env| super::density_of(env, &root.as_obj())).unwrap_or(1.0);
+        super::with_env(|env| {
+            let fail = |env: &mut jni::JNIEnv, what: &str, e: jni::errors::Error| {
+                let _ = env.exception_clear();
+                format!("{what}: {e}")
+            };
+            let now = |env: &mut jni::JNIEnv| {
+                env.call_static_method("android/os/SystemClock", "uptimeMillis", "()J", &[]).and_then(|v| v.j())
+            };
+            let down_time = now(env).map_err(|e| fail(env, "uptimeMillis", e))?;
+            for s in steps {
+                let action = match s.phase {
+                    PointerStepPhase::Down => 0,
+                    PointerStepPhase::Up => 1,
+                    PointerStepPhase::Move => 2,
+                };
+                let (x, y) = crate::anchored_portal_policy::viewport_dp_to_view_px(
+                    (s.x, s.y),
+                    (root_rect.x, root_rect.y),
+                    (decor_rect.x, decor_rect.y),
+                    density,
+                );
+                let t = now(env).map_err(|e| fail(env, "uptimeMillis", e))?;
+                let ev = env
+                    .call_static_method(
+                        "android/view/MotionEvent",
+                        "obtain",
+                        "(JJIFFI)Landroid/view/MotionEvent;",
+                        &[
+                            JValue::Long(down_time),
+                            JValue::Long(t),
+                            JValue::Int(action),
+                            JValue::Float(x),
+                            JValue::Float(y),
+                            JValue::Int(0),
+                        ],
+                    )
+                    .and_then(|v| v.l())
+                    .map_err(|e| fail(env, "MotionEvent.obtain", e))?;
+                // InputDevice.SOURCE_TOUCHSCREEN: a finger, not a mouse.
+                let _ = env.call_method(&ev, "setSource", "(I)V", &[JValue::Int(0x1002)]);
+                let dispatched = env.call_method(
+                    decor.as_obj(),
+                    "dispatchTouchEvent",
+                    "(Landroid/view/MotionEvent;)Z",
+                    &[JValue::Object(&ev)],
+                );
+                let _ = env.call_method(&ev, "recycle", "()V", &[]);
+                let _ = env.delete_local_ref(ev);
+                dispatched.map_err(|e| fail(env, "dispatchTouchEvent", e))?;
+            }
+            Ok(())
+        })
+    }))
+}

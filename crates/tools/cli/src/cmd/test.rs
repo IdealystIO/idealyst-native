@@ -194,15 +194,7 @@ pub fn run(args: Args) -> Result<()> {
         // by default, so the app dials the relay; killing the child tears it down.
         let self_exe = std::env::current_exe().context("locating the idealyst binary")?;
         eprintln!("[test] launching {platform} app via `idealyst dev`…");
-        let mut cmd = Command::new(&self_exe);
-        cmd.arg("dev").arg("--local").arg(format!("--{platform}"));
-        if platform == "web" {
-            cmd.args(["--port", &args.port.to_string()]);
-        }
-        // Mark the app as externally-driven so it suppresses any in-app self-test
-        // that would race the suite for shared state.
-        cmd.env("IDEALYST_TEST_DRIVER", "1");
-        cmd.env("IDEALYST_WINDOW_SIZE", format!("{}x{}", viewport.0, viewport.1));
+        let mut cmd = dev_command(&self_exe, platform, args.port, viewport);
         // The session's build + launch output goes to a log file, named when
         // the app doesn't come up — discarding it left "did not become ready"
         // with nothing to go on.
@@ -417,6 +409,29 @@ fn run_parity(args: &Args, dir: &Path) -> Result<()> {
     }
 }
 
+/// The `idealyst dev --local` session a test run launches its app with
+/// (the project directory is appended by the caller).
+///
+/// - `IDEALYST_TEST_DRIVER`: the app is externally driven, so an in-app
+///   self-test stands down instead of racing the suite for shared state.
+/// - `IDEALYST_WINDOW_SIZE`: the native window at the test viewport (the
+///   headless browser is pinned via `--window-size` at launch).
+/// - `IDEALYST_DEV_NO_RESUME`: build the sources. A web session otherwise
+///   resumes the last session's base and replays its hot patches, and a
+///   patch only reaches code the page calls after it lands — so the
+///   suite could run code that is not the source on disk.
+fn dev_command(self_exe: &Path, platform: &str, port: u16, viewport: (u32, u32)) -> Command {
+    let mut cmd = Command::new(self_exe);
+    cmd.arg("dev").arg("--local").arg(format!("--{platform}"));
+    if platform == "web" {
+        cmd.args(["--port", &port.to_string()]);
+    }
+    cmd.env("IDEALYST_TEST_DRIVER", "1");
+    cmd.env("IDEALYST_WINDOW_SIZE", format!("{}x{}", viewport.0, viewport.1));
+    cmd.env("IDEALYST_DEV_NO_RESUME", "1");
+    cmd
+}
+
 /// Spawn one platform's app as a backgrounded `idealyst dev --local` child
 /// (same launch the single-platform path uses).
 fn spawn_dev_app(
@@ -427,15 +442,7 @@ fn spawn_dev_app(
     viewport: (u32, u32),
     kill: &mut Kill,
 ) -> Result<()> {
-    let mut cmd = Command::new(self_exe);
-    cmd.arg("dev").arg("--local").arg(format!("--{platform}"));
-    if platform == "web" {
-        cmd.args(["--port", &port.to_string()]);
-    }
-    cmd.env("IDEALYST_TEST_DRIVER", "1");
-    // Pin the native window to the parity viewport (the macOS host reads this);
-    // the headless browser is pinned via `--window-size` at launch.
-    cmd.env("IDEALYST_WINDOW_SIZE", format!("{}x{}", viewport.0, viewport.1));
+    let mut cmd = dev_command(self_exe, platform, port, viewport);
     cmd.arg(dir).stdout(Stdio::null()).stderr(Stdio::null());
     kill.0.push(cmd.spawn().context("spawning `idealyst dev`")?);
     Ok(())
@@ -685,7 +692,23 @@ mod tests {
     /// before, still closing its SSH session to a remote Windows app): the
     /// launcher must wait for the new one. It used the old one and drove the
     /// wrong app — the SDK gallery that held the remote bridge port.
-    #[test]
+    /// A test run builds the sources it tests: the launched dev session must
+/// not resume the last session's base and replay its hot patches — that
+/// ran the suite against a demo overlay that was no longer in the source.
+#[test]
+fn regression_the_test_session_builds_instead_of_resuming_a_patched_base() {
+    let cmd = dev_command(Path::new("idealyst"), "web", 8080, (1280, 900));
+    let envs: Vec<(String, String)> = cmd
+        .get_envs()
+        .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+        .collect();
+    assert!(envs.contains(&("IDEALYST_DEV_NO_RESUME".into(), "1".into())), "{envs:?}");
+    assert!(envs.contains(&("IDEALYST_TEST_DRIVER".into(), "1".into())), "{envs:?}");
+    let argv: Vec<&str> = cmd.get_args().filter_map(|a| a.to_str()).collect();
+    assert_eq!(argv, ["dev", "--local", "--web", "--port", "8080"]);
+}
+
+#[test]
     fn regression_the_launcher_ignores_registrations_from_before_its_launch() {
         use std::net::TcpListener;
         let apps = std::env::temp_dir().join(format!("idealyst-test-fresh-{}", std::process::id()));

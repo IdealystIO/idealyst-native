@@ -30,6 +30,10 @@ struct Mock {
     late_fn_calls: u32,
     /// `poll_function` calls on the pending "demo.slow" call.
     slow_polls: u32,
+    /// `tap_native` attempts on "cta": covered by a scrim for two.
+    cta_attempts: u32,
+    /// Native taps "cta" received.
+    cta_taps: u32,
 }
 
 /// A mock app:
@@ -76,12 +80,27 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
             Some("field") => field(m, 11),
             // Mounted, but its overlay is closed: not visible.
             Some("closed") => json!({ "id": 20, "kind": "View", "label": null, "test_id": "closed", "visible": false }),
+            Some("cta") => json!({ "id": 30, "kind": "Button", "label": format!("Taps: {}", m.cta_taps), "test_id": "cta", "visible": true, "state": { "disabled": false } }),
             Some("below") => json!({ "id": 21, "kind": "View", "label": null, "test_id": "below", "visible": true, "in_viewport": false }),
             _ => Value::Null,
         },
         "find_all_elements" => match args.get("kind").and_then(|v| v.as_str()) {
             Some("TextInput") => json!([field(m, 11), field(m, 12)]),
             _ => json!([]),
+        },
+        // "inc" is on a backend without native input; "cta" is covered by
+        // a scrim for two attempts, then takes a native tap.
+        "tap_native" => match args["element_id"].as_u64() {
+            Some(30) => {
+                m.cta_attempts += 1;
+                if m.cta_attempts <= 2 {
+                    return Err("action 'tap_native' refused: another element covers the point (60, 20) — View test_id=\"scrim\" would receive the tap".into());
+                }
+                m.cta_taps += 1;
+                json!({ "mechanism": "native" })
+            }
+            Some(3) => return Err("action 'click' not available on this element".into()),
+            _ => return Err("action 'tap_native' unsupported: this backend has no native input".into()),
         },
         "click" => match args["element_id"].as_u64() {
             Some(7) => {
@@ -310,4 +329,23 @@ fn robot_functions_are_called_awaited_and_waited_for() {
         app.call_function("never.registered", json!({}));
     });
     assert!(msg.contains("still not registered"), "got: {msg}");
+}
+
+/// `click` is a native tap first: it waits while something covers the
+/// element, then taps; on a backend without native input it presses
+/// through the handler. `tap_native` has no fallback.
+#[test]
+fn click_taps_natively_waits_for_a_cover_and_falls_back() {
+    let mut app = app();
+    app.test_id("cta").click();
+    app.test_id("cta").assert_text("Taps: 1");
+    assert_eq!(app.test_id("cta").tap_native(), "native");
+
+    // "inc" has no native input: click falls back to the handler.
+    app.test_id("inc").click();
+    app.signal("count").assert_eq(1);
+    let msg = panic_message(|| {
+        app.test_id("inc").tap_native();
+    });
+    assert!(msg.contains("unsupported"), "got: {msg}");
 }

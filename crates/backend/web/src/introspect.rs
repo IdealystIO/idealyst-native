@@ -255,6 +255,80 @@ pub(crate) fn is_shown(node: &web_glue::dom::Node) -> Option<bool> {
     }
 }
 
+web_glue::import! {
+    /// 1 when the topmost element at the viewport point `(x, y)` is `n`
+    /// or inside it (`elementFromPoint` honors `pointer-events`), else 0;
+    /// 2 can't tell (`n` is not an element).
+    fn js_hit_contains(n: u32, x: f64, y: f64) -> u32 =
+        "(n, x, y) => { const e = G.get(n); if (!e || e.nodeType !== 1) return 2; \
+           const t = document.elementFromPoint(x, y); return t && (t === e || e.contains(t)) ? 1 : 0; }";
+
+    /// One step of a synthesized primary-pointer gesture at the viewport
+    /// point `(x, y)`: `phase` 0 down, 1 move, 2 up. Returns 0 when there
+    /// is nothing at the down point.
+    ///
+    /// Dispatched as a browser dispatches a touch: `pointerdown` +
+    /// `mousedown` on the topmost element there, moves and the up to that
+    /// same element (a touch's implicit pointer capture — untrusted events
+    /// can't take explicit capture), then `click` on the nearest common
+    /// ancestor of the down and up targets. An untrusted `mousedown` runs
+    /// no default action, so the focus a press gives a focusable target is
+    /// given here, unless a listener prevented it.
+    fn js_pointer_step(phase: u32, x: f64, y: f64) -> u32 =
+        "(phase, x, y) => { \
+           const s = (globalThis.__idealystNativePointer ||= { down: null }); \
+           const o = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, \
+                       button: 0, buttons: phase === 2 ? 0 : 1, pointerId: 1, pointerType: 'touch', \
+                       isPrimary: true, view: window, detail: 1 }; \
+           if (phase === 0) { \
+             const t = document.elementFromPoint(x, y); if (!t) return 0; s.down = t; \
+             t.dispatchEvent(new PointerEvent('pointerdown', o)); \
+             if (t.dispatchEvent(new MouseEvent('mousedown', o))) { \
+               const f = t.closest('input, textarea, select, button, a[href], [tabindex], [contenteditable]'); \
+               if (f && typeof f.focus === 'function') f.focus(); } \
+             return 1; } \
+           const t = s.down || document.elementFromPoint(x, y); if (!t) return 0; \
+           if (phase === 1) { t.dispatchEvent(new PointerEvent('pointermove', o)); t.dispatchEvent(new MouseEvent('mousemove', o)); return 1; } \
+           t.dispatchEvent(new PointerEvent('pointerup', o)); t.dispatchEvent(new MouseEvent('mouseup', o)); \
+           let c = t; const at = document.elementFromPoint(x, y); \
+           while (c && at && !c.contains(at)) c = c.parentElement; \
+           s.down = null; \
+           if (c && at) c.dispatchEvent(new MouseEvent('click', o)); \
+           return 1; }";
+}
+
+/// See `IntrospectionOps::hit_contains`: the browser's `elementFromPoint`.
+pub(crate) fn hit_contains(node: &web_glue::dom::Node, x: f32, y: f32) -> Option<bool> {
+    let raw = AsRef::<web_glue::JsValue>::as_ref(node).raw();
+    match unsafe { js_hit_contains(raw, x as f64, y as f64) } {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+/// See `IntrospectionOps::native_pointer`: DOM pointer + mouse events,
+/// dispatched synchronously when the injection runs.
+pub(crate) fn native_pointer(
+    steps: &[runtime_vocabulary::caps::PointerStep],
+) -> runtime_vocabulary::caps::NativeInjection {
+    use runtime_vocabulary::caps::PointerStepPhase;
+    let steps = steps.to_vec();
+    Box::new(move || {
+        for s in steps {
+            let phase = match s.phase {
+                PointerStepPhase::Down => 0,
+                PointerStepPhase::Move => 1,
+                PointerStepPhase::Up => 2,
+            };
+            if unsafe { js_pointer_step(phase, s.x as f64, s.y as f64) } == 0 {
+                return Err(format!("nothing in the page at ({}, {})", s.x, s.y));
+            }
+        }
+        Ok(())
+    })
+}
+
 #[cfg(all(test, target_arch = "wasm32"))]
 mod is_shown_tests {
     use wasm_bindgen_test::*;
@@ -289,6 +363,57 @@ mod is_shown_tests {
         assert_eq!(shown(&el(&hidden_parent, "")), Some(false), "an ancestor hides it");
         let detached = doc.create_element("div").unwrap();
         assert_eq!(shown(&detached), Some(false), "not in the document");
+        root.remove();
+    }
+
+    web_glue::import! {
+        fn js_is_active(n: u32) -> u32 = "(n) => document.activeElement === G.get(n) ? 1 : 0";
+    }
+
+    /// The robot's native tap on web: the page's own listeners receive
+    /// pointerdown / pointerup / click at the point, a focusable target
+    /// takes focus, and an element on top fails the hit test (and would
+    /// take the events instead).
+    #[wasm_bindgen_test]
+    fn a_native_tap_reaches_the_page_s_listeners_and_respects_what_is_on_top() {
+        use runtime_vocabulary::caps::{PointerStep, PointerStepPhase};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        root.set_attribute("style", "position:fixed;left:0;top:0;width:200px;height:200px").unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+        let target = doc.create_element("input").unwrap();
+        target.set_attribute("style", "position:absolute;left:10px;top:10px;width:80px;height:30px").unwrap();
+        root.append_child(&target).unwrap();
+
+        let seen: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        let mut keep = Vec::new();
+        for kind in ["pointerdown", "pointerup", "click"] {
+            let seen = seen.clone();
+            let cb = web_glue::Closure::new(move |_| seen.borrow_mut().push(kind));
+            let t: &web_glue::dom::EventTarget = target.as_ref();
+            t.add_event_listener(kind, &cb, web_glue::dom::ListenerOptions::default());
+            keep.push(cb);
+        }
+        let node: &web_glue::dom::Node = target.as_ref();
+        assert_eq!(super::hit_contains(node, 50.0, 25.0), Some(true));
+        let tap = [
+            PointerStep { phase: PointerStepPhase::Down, x: 50.0, y: 25.0 },
+            PointerStep { phase: PointerStepPhase::Up, x: 50.0, y: 25.0 },
+        ];
+        super::native_pointer(&tap)().unwrap();
+        assert_eq!(seen.borrow().as_slice(), ["pointerdown", "pointerup", "click"]);
+        let raw = AsRef::<web_glue::JsValue>::as_ref(node).raw();
+        assert_eq!(unsafe { js_is_active(raw) }, 1, "a tapped input takes focus");
+
+        let cover = doc.create_element("div").unwrap();
+        cover.set_attribute("style", "position:absolute;left:0;top:0;width:200px;height:200px").unwrap();
+        root.append_child(&cover).unwrap();
+        assert_eq!(super::hit_contains(node, 50.0, 25.0), Some(false), "the cover takes the point");
+        cover.set_attribute("style", "position:absolute;left:0;top:0;width:200px;height:200px;pointer-events:none").unwrap();
+        assert_eq!(super::hit_contains(node, 50.0, 25.0), Some(true), "pointer-events: none lets it through");
         root.remove();
     }
 }

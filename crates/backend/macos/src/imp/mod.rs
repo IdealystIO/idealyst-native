@@ -15,6 +15,7 @@ pub(crate) mod callbacks;
 pub(crate) mod gradient;
 pub(crate) mod graphics;
 pub(crate) mod handles;
+pub(crate) mod native_input;
 pub(crate) mod icon;
 pub(crate) mod image;
 pub(crate) mod introspect;

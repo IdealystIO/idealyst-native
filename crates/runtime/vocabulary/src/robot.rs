@@ -86,7 +86,7 @@ use std::rc::Rc;
 
 use runtime_shared::primitives::portal::ViewportRect;
 
-use crate::caps::IntrospectionOps;
+use crate::caps::{IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase};
 
 // The component `#[method]` registry + element link, and the signal
 // watch registry, re-exported under `robot::…` (the same paths
@@ -267,6 +267,13 @@ pub(crate) struct ElementActions {
     pub state: Option<Rc<dyn Fn() -> ElementState>>,
     /// The toolkit's answer to "is it shown" ([`IntrospectionOps::is_shown`]).
     pub shown: Option<Rc<dyn Fn() -> Option<bool>>>,
+    /// Whether a real tap at a window point reaches this element
+    /// ([`IntrospectionOps::hit_contains`]).
+    pub hit: Option<Rc<dyn Fn(f32, f32) -> Option<bool>>>,
+    /// Real platform input in this element's window
+    /// ([`IntrospectionOps::native_pointer`]): the injection, built under
+    /// the backend borrow and run after it is released.
+    pub native_pointer: Option<Rc<dyn Fn(&[PointerStep]) -> Option<NativeInjection>>>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -400,6 +407,10 @@ impl Registry {
 
     fn get(&self, id: ElementId) -> Option<&RegistryEntry> {
         self.entries.get(id.0 as usize).and_then(|s| s.as_ref())
+    }
+
+    fn entries(&self) -> impl Iterator<Item = (ElementId, &RegistryEntry)> {
+        self.entries.iter().enumerate().filter_map(|(i, e)| e.as_ref().map(|e| (ElementId(i as u32), e)))
     }
 
     /// Insert `child` into `parent`'s children at its [`OrderKey`]
@@ -684,6 +695,18 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         let n = node.clone();
         Rc::new(move || b.borrow().is_shown(&n)) as Rc<dyn Fn() -> Option<bool>>
     };
+    let hit = {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move |x, y| b.borrow().hit_contains(&n, x, y)) as Rc<dyn Fn(f32, f32) -> Option<bool>>
+    };
+    let native_pointer = {
+        let b = backend.clone();
+        let n = node.clone();
+        // The borrow ends with this expression: the injection runs later.
+        Rc::new(move |steps: &[PointerStep]| b.borrow().native_pointer(&n, steps))
+            as Rc<dyn Fn(&[PointerStep]) -> Option<NativeInjection>>
+    };
     backend.borrow().note_introspection_root(node);
     ensure_region_hook();
 
@@ -718,6 +741,8 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 slider_drag,
                 state,
                 shown: Some(shown),
+                hit: Some(hit),
+                native_pointer: Some(native_pointer),
             },
             parent,
             children: Vec::new(),
@@ -1062,7 +1087,7 @@ impl Query {
 }
 
 /// Errors returned by robot control operations.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RobotError {
     /// The element has been unmounted since it was queried.
     ElementGone,
@@ -1073,6 +1098,19 @@ pub enum RobotError {
     /// The element is disabled, so it refuses the action — as the control
     /// refuses a user.
     Disabled(&'static str),
+    /// A native action needs the element visible.
+    NotVisible(&'static str),
+    /// A native action's point is outside the window: a user couldn't
+    /// reach it without scrolling.
+    OutsideWindow { action: &'static str, x: f32, y: f32 },
+    /// Something else is on top at the action's point and would take a
+    /// real tap — an overlay, a scrim, a sibling drawn later. `by`
+    /// describes the topmost registered element there, when one is.
+    Covered { action: &'static str, x: f32, y: f32, by: Option<String> },
+    /// This backend can't synthesize native input for the action.
+    Unsupported(&'static str),
+    /// The platform refused the synthesized input.
+    Native(String),
 }
 
 impl std::fmt::Display for RobotError {
@@ -1084,6 +1122,22 @@ impl std::fmt::Display for RobotError {
             }
             Self::NotFound => write!(f, "no element matched the query"),
             Self::Disabled(action) => write!(f, "action '{action}' refused: the element is disabled"),
+            Self::NotVisible(action) => write!(f, "action '{action}' refused: the element is not visible"),
+            Self::OutsideWindow { action, x, y } => write!(
+                f,
+                "action '{action}' refused: the point ({x}, {y}) is outside the window (scroll the element into view)"
+            ),
+            Self::Covered { action, x, y, by } => {
+                write!(f, "action '{action}' refused: another element covers the point ({x}, {y})")?;
+                match by {
+                    Some(by) => write!(f, " — {by} would receive the tap"),
+                    None => Ok(()),
+                }
+            }
+            Self::Unsupported(action) => {
+                write!(f, "action '{action}' unsupported: this backend has no native input")
+            }
+            Self::Native(msg) => write!(f, "the platform refused the input: {msg}"),
         }
     }
 }
@@ -1096,6 +1150,57 @@ fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<
         Some(state) if state().is_disabled() => Err(RobotError::Disabled(action)),
         _ => Ok(()),
     }
+}
+
+/// How [`Robot::tap_native`] reached the element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TapMechanism {
+    /// Real platform input, through the toolkit's event path.
+    Native,
+    /// The backend's hit test confirmed the point, then the element's
+    /// press ran as `click` runs it (a backend that can't synthesize
+    /// input).
+    HitTest,
+}
+
+impl TapMechanism {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TapMechanism::Native => "native",
+            TapMechanism::HitTest => "hit_test",
+        }
+    }
+}
+
+/// The deepest registered element the backend's hit test puts under
+/// `(x, y)`, described for an error message.
+fn topmost_at(x: f32, y: f32) -> Option<String> {
+    let candidates: Vec<(ElementId, Rc<dyn Fn(f32, f32) -> Option<bool>>)> = REGISTRY.with(|r| {
+        r.borrow().entries().filter_map(|(id, e)| e.actions.hit.clone().map(|h| (id, h))).collect()
+    });
+    let depth = |id: ElementId| {
+        let mut d = 0;
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            cur = REGISTRY.with(|r| r.borrow().get(c).and_then(|e| e.parent));
+            d += 1;
+        }
+        d
+    };
+    let (id, _) = candidates
+        .into_iter()
+        .filter(|(_, hit)| hit(x, y) == Some(true))
+        .map(|(id, _)| (id, depth(id)))
+        .max_by_key(|&(_, d)| d)?;
+    REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let e = reg.get(id)?;
+        Some(match (e.test_id, e.current_label()) {
+            (Some(t), _) => format!("{:?} test_id={t:?}", e.kind),
+            (None, Some(l)) => format!("{:?} {l:?}", e.kind),
+            (None, None) => format!("{:?} #{}", e.kind, id.0),
+        })
+    })
 }
 
 /// Element `id`'s [`Visibility`]; `None` once it has unmounted.
@@ -1256,6 +1361,108 @@ impl Robot {
             }
         }
         Err(RobotError::ActionNotAvailable("click"))
+    }
+
+    /// Tap `element` with real platform input: the backend's
+    /// [`native_pointer`](IntrospectionOps::native_pointer) presses and
+    /// lifts at the element's center through the toolkit's own event path,
+    /// so hit testing, overlays, gesture recognizers and the native
+    /// disabled state all take part — what [`click`](Self::click), which
+    /// calls the element's handler directly, cannot test.
+    ///
+    /// Refuses, as a user would fail, when the element is not visible,
+    /// its center is outside the window, or the backend's hit test
+    /// ([`hit_contains`](IntrospectionOps::hit_contains)) finds something
+    /// else on top. A backend with a hit test but no input injection taps
+    /// through the hit test: the point is checked, then the element's press
+    /// runs as [`click`](Self::click) runs it ([`TapMechanism::HitTest`]).
+    /// With neither, [`RobotError::Unsupported`].
+    pub fn tap_native(&self, element: &Element) -> Result<TapMechanism, RobotError> {
+        const ACTION: &str = "tap_native";
+        let (x, y) = self.native_point(element.id, None, ACTION)?;
+        let hit = self.check_hit(element.id, x, y, ACTION)?;
+        let steps = [
+            PointerStep { phase: PointerStepPhase::Down, x, y },
+            PointerStep { phase: PointerStepPhase::Up, x, y },
+        ];
+        if self.inject(element.id, &steps)? {
+            return Ok(TapMechanism::Native);
+        }
+        if hit == Some(true) {
+            self.click(element)?;
+            return Ok(TapMechanism::HitTest);
+        }
+        Err(RobotError::Unsupported(ACTION))
+    }
+
+    /// Drag with real platform input along `points` — relative to
+    /// `element`'s top-left, logical px, as [`drag`](Self::drag) takes
+    /// them: down at the first, moving through the rest, up at the last.
+    /// The first point is checked as [`tap_native`](Self::tap_native)
+    /// checks its center. No hit-test fallback: a backend without input
+    /// injection answers [`RobotError::Unsupported`] (use `drag`).
+    pub fn drag_native(&self, element: &Element, points: &[(f32, f32)]) -> Result<(), RobotError> {
+        const ACTION: &str = "drag_native";
+        let (&first, rest) = points.split_first().ok_or(RobotError::ActionNotAvailable("drag_native (no points)"))?;
+        let (x0, y0) = self.native_point(element.id, Some(first), ACTION)?;
+        self.check_hit(element.id, x0, y0, ACTION)?;
+        let origin = self.window_origin(element.id);
+        let mut steps = vec![PointerStep { phase: PointerStepPhase::Down, x: x0, y: y0 }];
+        for &(x, y) in rest {
+            steps.push(PointerStep { phase: PointerStepPhase::Move, x: origin.x + x, y: origin.y + y });
+        }
+        let last = steps.last().map(|s| (s.x, s.y)).unwrap_or((x0, y0));
+        steps.push(PointerStep { phase: PointerStepPhase::Up, x: last.0, y: last.1 });
+        if self.inject(element.id, &steps)? {
+            Ok(())
+        } else {
+            Err(RobotError::Unsupported(ACTION))
+        }
+    }
+
+    /// The window point a native action on `id` starts at: `offset` from
+    /// its top-left, or its center. Refuses an invisible element and a
+    /// point outside the window.
+    fn native_point(&self, id: ElementId, offset: Option<(f32, f32)>, action: &'static str) -> Result<(f32, f32), RobotError> {
+        let vis = visibility_of(id).ok_or(RobotError::ElementGone)?;
+        if !vis.visible {
+            return Err(RobotError::NotVisible(action));
+        }
+        let rect = REGISTRY
+            .with(|r| r.borrow().get(id).and_then(|e| e.actions.absolute_frame.clone()))
+            .and_then(|f| f())
+            .ok_or(RobotError::Unsupported(action))?;
+        let (x, y) = match offset {
+            Some((dx, dy)) => (rect.x + dx, rect.y + dy),
+            None => (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
+        };
+        let window = runtime_shared::viewport::viewport_size().get();
+        if window.width > 0.0 && window.height > 0.0 && !(x >= 0.0 && y >= 0.0 && x < window.width && y < window.height) {
+            return Err(RobotError::OutsideWindow { action, x, y });
+        }
+        Ok((x, y))
+    }
+
+    /// The backend's hit test at `(x, y)` for `id`: `Err(Covered)` when
+    /// something else would take the tap.
+    fn check_hit(&self, id: ElementId, x: f32, y: f32, action: &'static str) -> Result<Option<bool>, RobotError> {
+        let hit = REGISTRY.with(|r| r.borrow().get(id).and_then(|e| e.actions.hit.clone()));
+        let answer = hit.and_then(|h| h(x, y));
+        if answer == Some(false) {
+            return Err(RobotError::Covered { action, x, y, by: topmost_at(x, y) });
+        }
+        Ok(answer)
+    }
+
+    /// Run the backend's injection for `steps`; `false` when it has none.
+    fn inject(&self, id: ElementId, steps: &[PointerStep]) -> Result<bool, RobotError> {
+        let prepare = REGISTRY
+            .with(|r| r.borrow().get(id).and_then(|e| e.actions.native_pointer.clone()))
+            .ok_or(RobotError::ElementGone)?;
+        let Some(injection) = prepare(steps) else { return Ok(false) };
+        injection().map_err(RobotError::Native)?;
+        settle();
+        Ok(true)
     }
 
     /// Drag a single pointer along `points` — coordinates relative to
@@ -1857,17 +2064,20 @@ pub mod bridge {
                 robot.click(&el).map_err(|e| e.to_string())?;
                 Ok("\"ok\"".into())
             }
+            "tap_native" => {
+                let el = resolve_element(args)?;
+                let how = robot.tap_native(&el).map_err(|e| e.to_string())?;
+                Ok(format!("{{\"mechanism\":\"{}\"}}", how.as_str()))
+            }
+            "drag_native" => {
+                let el = resolve_element(args)?;
+                let points = parse_points(args)?;
+                robot.drag_native(&el, &points).map_err(|e| e.to_string())?;
+                Ok("{\"mechanism\":\"native\"}".into())
+            }
             "drag" => {
                 let el = resolve_element(args)?;
-                let points = args["points"]
-                    .as_array()
-                    .ok_or("missing 'points' argument (an array of [x, y] pairs)")?
-                    .iter()
-                    .map(|p| match (p[0].as_f64(), p[1].as_f64()) {
-                        (Some(x), Some(y)) => Ok((x as f32, y as f32)),
-                        _ => Err(format!("each point must be [x, y], got {p}")),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let points = parse_points(args)?;
                 let hold_ms = match &args["hold_ms"] {
                     serde_json::Value::Null => 0,
                     v => v.as_u64().ok_or(format!("'hold_ms' must be a whole number of ms, got {v}"))?,
@@ -2221,6 +2431,19 @@ pub mod bridge {
             }
             _ => Err(format!("unknown command: {cmd}")),
         }
+    }
+
+    /// `points`: an array of `[x, y]` pairs.
+    fn parse_points(args: &serde_json::Value) -> Result<Vec<(f32, f32)>, String> {
+        args["points"]
+            .as_array()
+            .ok_or("missing 'points' argument (an array of [x, y] pairs)")?
+            .iter()
+            .map(|p| match (p[0].as_f64(), p[1].as_f64()) {
+                (Some(x), Some(y)) => Ok((x as f32, y as f32)),
+                _ => Err(format!("each point must be [x, y], got {p}")),
+            })
+            .collect()
     }
 
     /// Same bytes as runtime-shared's bridge `nav_snapshot_json`.

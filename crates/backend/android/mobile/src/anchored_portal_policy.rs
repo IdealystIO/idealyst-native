@@ -74,6 +74,26 @@ pub(crate) fn screen_px_to_viewport_dp(
     }
 }
 
+/// The inverse of [`screen_px_to_viewport_dp`] for one point, landing in
+/// a target view's own coordinates: a viewport point (dp, origin at the
+/// Activity root) as physical px relative to the top-left of the view
+/// at `target_origin_px` on screen — what `dispatchTouchEvent` on that
+/// view reads from a `MotionEvent`. The robot's native taps use it with
+/// the root's root view (the decor view) as the target.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn viewport_dp_to_view_px(
+    point_dp: (f32, f32),
+    root_origin_px: (f32, f32),
+    target_origin_px: (f32, f32),
+    density: f32,
+) -> (f32, f32) {
+    let d = if density > 0.0 { density } else { 1.0 };
+    (
+        root_origin_px.0 + point_dp.0 * d - target_origin_px.0,
+        root_origin_px.1 + point_dp.1 * d - target_origin_px.1,
+    )
+}
+
 /// Per-portal placement state: lives exactly as long as the anchored
 /// portal (so the placer's settled side survives every re-place) and
 /// remembers the last top-left it handed out.
@@ -222,6 +242,22 @@ mod tests {
         assert_eq!(r, ViewportRect { x: 100.0, y: 200.0, width: 80.0, height: 40.0 });
         // A zero density (failed read) degrades to px rather than inf.
         assert_eq!(screen_px_to_viewport_dp(px, (0.0, 0.0), 0.0), px);
+    }
+
+    /// A robot tap's viewport point lands where the element is: the dp
+    /// point the absolute frame reports, mapped back to the decor view's
+    /// px, round-trips through `screen_px_to_viewport_dp`.
+    #[test]
+    fn viewport_dp_maps_back_to_the_target_view_s_px() {
+        // Root 30 px right of the screen origin and 72 px down (below the
+        // status bar); the decor view at the screen origin; density 3.
+        let (x, y) = viewport_dp_to_view_px((100.0, 200.0), (30.0, 72.0), (0.0, 0.0), 3.0);
+        assert_eq!((x, y), (330.0, 672.0));
+        let back = screen_px_to_viewport_dp(ViewportRect { x, y, width: 0.0, height: 0.0 }, (30.0, 72.0), 3.0);
+        assert_eq!((back.x, back.y), (100.0, 200.0));
+        // A target that is itself offset reads relative coordinates.
+        assert_eq!(viewport_dp_to_view_px((10.0, 10.0), (0.0, 0.0), (5.0, 5.0), 2.0), (15.0, 15.0));
+        assert_eq!(viewport_dp_to_view_px((10.0, 10.0), (0.0, 0.0), (0.0, 0.0), 0.0), (10.0, 10.0));
     }
 
     #[test]

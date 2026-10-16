@@ -97,7 +97,41 @@ image reports `{}`.
 
 These actions run inside the app, through the framework: they test the
 framework's logic and the backend's widget updates, not the OS's event
-delivery or hit testing.
+delivery or hit testing. For that, use the native tier below.
+
+## Native input: `tap_native`, `drag_native`
+
+`tap_native {element_id}` taps the element's center with real platform
+input, through the toolkit's own event path — hit testing, overlays,
+gesture recognizers, the native disabled state and the app pointer sink
+all take part. `drag_native {element_id, points}` does the same for a
+path (points relative to the element's top-left, as `drag` takes them).
+
+It refuses as a finger would fail, with a retryable error: the element is
+not visible, its center is outside the window ("scroll the element into
+view"), or the backend's hit test finds something else on top ("another
+element covers the point … — View test_id=\"scrim\" would receive the
+tap"). It answers `{mechanism}`:
+
+| Backend | Mechanism | How |
+|---|---|---|
+| Web | `native` | DOM `pointerdown`/`mousedown`/…/`click` at `elementFromPoint` (moves and the up go to the down target, a touch's implicit capture); a focusable target takes focus |
+| macOS | `native` | `NSEvent` mouse events posted to the app (`postEvent:`), so tracking loops get their mouse-up |
+| Android | `native` | `MotionEvent`s to the decor view's `dispatchTouchEvent` |
+| Windows | `native` | `WM_LBUTTONDOWN`/`WM_MOUSEMOVE`/`WM_LBUTTONUP` posted to the child window a real click lands on |
+| iOS | `hit_test` | An app can't create touches: UIKit's hit test checks the point, then the element's press runs as `click` |
+| Linux | — | Not yet (XTest); `unsupported` |
+
+The hit test (`IntrospectionOps::hit_contains`) is the toolkit's own:
+`elementFromPoint`, `-[NSView hitTest:]`, `-[UIWindow hitTest:]`, the
+Windows scene's hit walk. Android has none (Android delivers a touch to
+the deepest clickable view, which geometry can't tell), so there the
+injected event is the whole check.
+
+robot-test's `Locator::click()` is native-first: it waits for the element
+to be visible and enabled, then `tap_native`, falling back to the robot's
+`click` only where the backend answers `unsupported`. `tap_native()` has
+no fallback; `dispatch_click()` is the robot's `click` on purpose.
 
 ## Functions
 
@@ -190,8 +224,9 @@ fn sign_in(app: &mut App) {
 
 - Locate: `test_id`, `text` (label substring), `label` (exact), `role` (kind),
   then `.nth(i)`.
-- Act: `click`, `fill` / `type_text`, `set_toggle`, `set_slider`, `focus`,
-  `blur`, `scroll_to`, `drag`, `drag_with_hold`.
+- Act: `click` (native tap first, see above), `tap_native`,
+  `dispatch_click`, `fill` / `type_text`, `set_toggle`, `set_slider`,
+  `focus`, `blur`, `scroll_to`, `drag`, `drag_with_hold`, `drag_native`.
 - Read: `state()` ([`ElementState`]), `is_visible()`, `label()`, `count()`.
 - Assert: `assert_visible`, `assert_hidden`, `assert_in_viewport`, `assert_text`,
   `assert_text_contains`, `assert_value`, `assert_checked`,
@@ -230,7 +265,7 @@ launch environment, and a web page as a global the dev server injects.
 ### MCP server
 
 Every verb is reachable: dedicated tools for the element verbs (`find_element`, `click`,
-`get_state`, `set_scroll`, …), `list_navigators` / `get_navigator_state` /
+`tap_native`, `drag_native`, `get_state`, `set_scroll`, …), `list_navigators` / `get_navigator_state` /
 `navigate`, `list_watched_signals` / `read_signal` / `write_signal`,
 `list_component_instances` / `get_component_instance` / `invoke_method`
 (`list_components` is the *catalog*), `open_link`, `list_functions` /

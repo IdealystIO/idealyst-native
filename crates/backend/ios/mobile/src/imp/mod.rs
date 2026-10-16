@@ -4086,6 +4086,27 @@ impl IosBackend {
         })
     }
 
+    /// `IntrospectionOps::hit_contains`: UIKit's own hit test at the
+    /// window point — the view a finger there would land on, honoring
+    /// `pointer_events`, hidden views and overlays, since every portal
+    /// lives in the same window — is `node` or inside it. iOS gives an
+    /// app no way to create touches, so the robot's native tap here is
+    /// this check plus the element's press (`TapMechanism::HitTest`).
+    pub(crate) fn hit_contains_impl(&self, node: &IosNode, x: f32, y: f32) -> Option<bool> {
+        let view = node.as_view();
+        let window: *mut UIView = unsafe { msg_send![view, window] };
+        if window.is_null() {
+            return None;
+        }
+        let point = objc2_foundation::CGPoint { x: x as f64, y: y as f64 };
+        let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
+        let hit: *mut UIView = unsafe { msg_send![window, hitTest: point, withEvent: nil] };
+        if hit.is_null() {
+            return Some(false);
+        }
+        Some(unsafe { msg_send![hit, isDescendantOfView: view] })
+    }
+
     pub(crate) fn set_disabled_impl(&mut self, node: &IosNode, disabled: bool) {
         let enabled = !disabled;
         match node {

@@ -28,7 +28,7 @@ mod text;
 mod widgets;
 mod wire;
 
-pub use a11y::{A11yOps, AnimationOps, IntrospectionOps};
+pub use a11y::{A11yOps, AnimationOps, IntrospectionOps, NativeInjection, PointerStep, PointerStepPhase};
 pub use app::{AppEnvOps, LifecycleOps};
 pub use batch::BatchOps;
 pub use external::{DocumentOps, ExternalOps};

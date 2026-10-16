@@ -1648,6 +1648,10 @@ mod ios_impl {
             Some(IosBackend::is_shown_impl(self, node))
         }
 
+        fn hit_contains(&self, node: &Self::Node, x: f32, y: f32) -> Option<bool> {
+            IosBackend::hit_contains_impl(self, node, x, y)
+        }
+
         fn supports_screenshot(&self) -> bool {
             IosBackend::supports_screenshot_impl(self)
         }
