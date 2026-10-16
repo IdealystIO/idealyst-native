@@ -51,7 +51,7 @@ everywhere:
 | Android | `Camera2` + `ImageReader` (via a Kotlin shim) | `YUV_420_888` → `RGBA8` |
 | Web (wasm32) | `getUserMedia` + a `<video>`/`<canvas>` frame pump | canvas `RGBA8` |
 | desktop Linux | GStreamer **V4L2** (`v4l2src ! videoconvert ! appsink`) | device layout → `RGBA8` |
-| desktop Windows | *not yet implemented* — returns `Unsupported` | — |
+| desktop Windows | Media Foundation: `MFEnumDeviceSources` + an `IMFSourceReader` with video processing, on a capture thread (the first camera for every facing) | `RGB32` (BGRX, row order per stride) → `RGBA8` |
 
 **iOS Simulator note:** the iOS Simulator has no camera hardware
 (`AVCaptureSession` finds no device), so on the simulator `Camera::open` returns

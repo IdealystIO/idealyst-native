@@ -2219,6 +2219,7 @@ dependencies = [
 name = "camera"
 version = "1.7.2"
 dependencies = [
+ "async-channel",
  "futures-channel",
  "glib",
  "gstreamer",
@@ -2229,10 +2230,12 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
+ "pollster 0.4.0",
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
 ]
 
 [[package]]

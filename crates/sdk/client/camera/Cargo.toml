@@ -62,6 +62,15 @@ permissions = { workspace = true }
 # subclass), the same way the `net` SDK drives NSURLSession. No typed
 # framework crate — we link AVFoundation/CoreMedia/CoreVideo directly and
 # call the C surface for the CVPixelBuffer bytes.
+# Windows: Media Foundation capture (MFEnumDeviceSources + a source reader
+# converting to RGB32) on a capture thread; `open` waits for it over a channel.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
+async-channel = "2"
+
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+pollster = "0.4"
+
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }

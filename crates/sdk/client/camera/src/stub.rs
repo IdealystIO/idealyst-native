@@ -1,5 +1,5 @@
-//! Fallback backend for targets without a camera implementation yet
-//! (desktop Linux/Windows). Every entry point reports
+//! Fallback backend for targets without a camera implementation (anything
+//! not web, Android, Apple, Linux or Windows). Every entry point reports
 //! [`CameraError::Unsupported`] rather than silently doing nothing, so a
 //! caller on an unsupported host gets a clear, handleable error instead of
 //! a stream that never fires.

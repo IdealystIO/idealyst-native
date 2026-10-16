@@ -18,9 +18,9 @@
 //!   policy → `Restricted`, not decided yet → `Undetermined`. [`request`]
 //!   asks through `Geolocator::RequestAccessAsync`, which shows Windows'
 //!   "Let Windows and apps access your location?" prompt when undecided.
-//! - **Camera / microphone** — `Unsupported` (usable): the capturing SDKs
-//!   read the privacy switch when they open the device and report a denial
-//!   as their own error.
+//! - **Camera / microphone** — the privacy settings, read the same way
+//!   (`AppCapability` `"webcam"` / `"microphone"`); [`request`] asks with
+//!   `AppCapability::RequestAccessAsync` when undecided.
 
 use windows::core::{HRESULT, HSTRING};
 use windows::Devices::Geolocation::{GeolocationAccessStatus, Geolocator};
@@ -33,7 +33,8 @@ pub(super) async fn status(permission: Permission) -> PermissionStatus {
     match permission {
         Permission::Notifications => notifications(),
         Permission::LocationWhenInUse | Permission::LocationAlways => capability("location"),
-        _ => PermissionStatus::Unsupported,
+        Permission::Camera => capability("webcam"),
+        Permission::Microphone => capability("microphone"),
     }
 }
 
@@ -52,7 +53,24 @@ pub(super) async fn request(permission: Permission) -> PermissionStatus {
                 Err(_) => capability("location"),
             }
         }
-        _ => status(permission).await,
+        Permission::Camera => request_capability("webcam").await,
+        Permission::Microphone => request_capability("microphone").await,
+        Permission::Notifications => status(permission).await,
+    }
+}
+
+/// `capability(name)`, asking first when undecided.
+async fn request_capability(name: &str) -> PermissionStatus {
+    if capability(name) != PermissionStatus::Undetermined {
+        return capability(name);
+    }
+    let asked = match AppCapability::Create(&HSTRING::from(name)).and_then(|c| c.RequestAccessAsync()) {
+        Ok(op) => op.await,
+        Err(e) => Err(e),
+    };
+    match asked {
+        Ok(access) => from_access(access),
+        Err(_) => capability(name),
     }
 }
 
@@ -125,7 +143,7 @@ mod tests {
         let s = pollster::block_on(status(Permission::Notifications));
         assert_eq!(s, PermissionStatus::Granted);
         assert_eq!(pollster::block_on(request(Permission::Notifications)), s);
-        assert_eq!(pollster::block_on(status(Permission::Camera)), PermissionStatus::Unsupported);
+        let _ = pollster::block_on(status(Permission::Camera));
     }
 
     #[test]
@@ -145,5 +163,13 @@ mod tests {
         let s = pollster::block_on(status(Permission::LocationWhenInUse));
         assert_ne!(s, PermissionStatus::Unsupported);
         assert_eq!(pollster::block_on(status(Permission::LocationAlways)), s);
+    }
+
+    /// Camera and microphone read `Unsupported` on Windows; they are the
+    /// privacy settings now (never `Unsupported` on Windows 11).
+    #[test]
+    fn regression_windows_camera_and_microphone_status_are_the_privacy_settings() {
+        assert_ne!(pollster::block_on(status(Permission::Camera)), PermissionStatus::Unsupported);
+        assert_ne!(pollster::block_on(status(Permission::Microphone)), PermissionStatus::Unsupported);
     }
 }

@@ -135,12 +135,18 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
+// Windows: Media Foundation capture (source reader → RGB32).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+#[path = "windows.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
-    target_os = "linux"
+    target_os = "linux",
+    target_os = "windows"
 )))]
 #[path = "stub.rs"]
 mod imp;
