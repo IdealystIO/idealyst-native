@@ -1,20 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    # The author surface: a paper-thin re-export of
-    # `runtime_vocabulary::glue` plus the macro set, published under the
-    # name every consumer already spells (`runtime_core::…`). The pre-v2
-    # walker that used to live here — Element, the Backend mega-trait,
-    # the render walker, Bound/builders — is deleted.
     # The app-facing facade + entry macro: what lets an app crate be
     # built by plain `cargo build` instead of through a generated
     # per-platform wrapper crate.
     "crates/idealyst",
     "crates/idealyst-macros",
+    # The author surface: a paper-thin re-export of
+    # `runtime_vocabulary::glue` plus the macro set, published under the
+    # name every consumer spells (`runtime_core::…`).
     "crates/runtime/core",
     # The permanent shared substrate: the style engine, assets, animation,
-    # touch, scheduling, robot, and the shared prop/handle types — every
-    # part of the old runtime-core that outlives the walker.
+    # touch, scheduling, robot, and the shared prop/handle types.
     "crates/runtime/shared",
     "crates/runtime/macros",
     "crates/runtime/macros-parse",
@@ -25,8 +22,7 @@ members = [
     # structural drivers, on the runtime-world kernel. Its recorded
     # behavior is pinned by the committed goldens in crates/dev/scene-parity.
     "crates/runtime/scene",
-    # Capability-trait split of the deleted Backend mega-trait:
-    # per-primitive Ops traits over the scene Host seam, the built-in
+    # The capability traits: per-primitive Ops traits over the scene Host seam, the built-in
     # primitive handlers, and `glue` — the author-surface module
     # `runtime-core` re-exports.
     "crates/runtime/vocabulary",
@@ -34,8 +30,8 @@ members = [
     # signatures + patch validation. Deps: runtime-scene and serde only.
     "crates/runtime/template",
     "crates/runtime/layout",
-    # Framework-owned wasm <-> JS bindings (phase 1 PoC of
-    # docs/proposals/own-web-bindings.md). Zero deps; no wasm-bindgen.
+    # Framework-owned wasm <-> JS bindings (see
+    # docs/proposals/own-web-bindings.md). Zero deps.
     "crates/runtime/web-glue",
     # The local UTC offset at an instant (libc / Win32). Below both
     # runtime-shared's native wall clock and the datetime SDK.
@@ -105,9 +101,8 @@ members = [
     "crates/dev/web-host",
     "crates/dev/runtime-server-shell",
     "crates/dev/mock-backend",
-    # New-core test substrate: scene Host + all-30-caps recording mock
-    # (replaces the per-suite `impl Backend for Mini` + LegacyBridge
-    # combos, so new-core tests survive the old Backend trait's deletion).
+    # Test substrate: a scene Host + recording mock of every capability
+    # trait, for tests that need a backend without a real toolkit.
     "crates/dev/host-mock",
     # Streamed components (spike): a wasm guest bound to the host's
     # reactive graph through wasmi. See crates/streaming/README.md.
@@ -137,7 +132,7 @@ members = [
     "crates/ota/console",
     # The over-the-air resolution service (an app's update answer, per build).
     "crates/ota/resolver",
-    # Frozen-artifact substrate for the cross-core parity suites (wave 2c).
+    # Committed golden artifacts the backend parity suites compare against.
     "crates/dev/parity-goldens",
     "crates/dev/headless-screenshot",
     "crates/dev/robot-e2e",
@@ -152,26 +147,24 @@ members = [
     "crates/dev/scene-parity",
     # Proves `ui!`'s DIRECT and TEMPLATE lowerings build identical scenes.
     "crates/dev/ui-lowering-parity",
-    # Smoke app for backend-web's new-core boot path (idea-lite P3b).
+    # Smoke app for backend-web's boot path (`backend_web::newcore`).
     "crates/dev/newcore-web-smoke",
-    # Smoke app for the External-SDK wave: the canvas SDK (scene-registry
-    # renderer) on the new-core web boot — the wave's live-verification
-    # vehicle (an author draw closure + reactive repaint through a world
-    # effect, rendered by canvas-native's Canvas2D handler).
+    # Smoke app for a scene-registry SDK on the web boot: the canvas SDK
+    # (an author draw closure + reactive repaint through a world effect,
+    # rendered by canvas-native's Canvas2D handler).
     "crates/dev/newcore-canvas-smoke",
-    # Smoke app for backend-macos's new-core boot path (idea-lite P4a).
+    # Smoke app for backend-macos's boot path.
     "crates/dev/newcore-macos-smoke",
-    # Smoke app for backend-ios-mobile's new-core boot path (idea-lite,
-    # iOS mirror of P4a). Staticlib + checked-in Swift shell; see its
+    # Smoke app for backend-ios-mobile's boot path. Staticlib +
+    # checked-in Swift shell; see its
     # host/run-sim.sh for the simulator launch.
     "crates/dev/newcore-ios-smoke",
-    # Smoke app for backend-android-mobile's new-core boot path
-    # (idea-lite P5). A normal idealyst project hosted by the generated
-    # JNI wrapper's `new-core` feature; `--features launcher --bin
-    # launch` drives the existing build/run tooling end-to-end.
+    # Smoke app for backend-android-mobile's boot path. A normal
+    # idealyst project hosted by the generated JNI wrapper; `--features
+    # launcher --bin launch` drives the build/run tooling end-to-end.
     "crates/dev/newcore-android-smoke",
-    # Smoke app for render-wgpu's new-core boot path (idea-lite P5, GPU).
-    # Windowed via host-winit's `new-core` feature; also a headless
+    # Smoke app for render-wgpu's boot path. Windowed via host-winit;
+    # also a headless
     # offscreen-capture mode (NEWCORE_SMOKE_HEADLESS) for real-GPU PNG
     # evidence without a window.
     "crates/dev/newcore-gpu-smoke",
@@ -180,8 +173,7 @@ members = [
     # through macro -> builders -> handlers -> drivers -> kernel, plus the
     # recipe compile-and-realize gate.
     "crates/dev/newcore-app",
-    # New-core leg of the MCP catalog-emission suite (idea-lite wave 2c):
-    # compiles the SAME shared suite body as
+    # Facade leg of the MCP catalog-emission suite: compiles the SAME shared suite body as
     # crates/mcp/catalog/tests/registers_component.rs under the facade
     # alias, so both `__mcp` anchors are covered and the resulting
     # inventory is proven identical. Its own crate because mcp-catalog
@@ -215,8 +207,8 @@ members = [
     "crates/sdk/client/webview",
     "crates/sdk/client/video",
     "crates/sdk/client/svg",
-    # `canvas` 2D-drawing SDK: umbrella facade + renderer-agnostic core.
-    # Renderer crates (canvas-vello / canvas-native) added in later phases.
+    # `canvas` 2D-drawing SDK: umbrella facade + renderer-agnostic core +
+    # the two renderers (canvas-native, canvas-vello).
     "crates/sdk/client/canvas",
     "crates/sdk/client/canvas/core",
     "crates/sdk/client/canvas/native",
@@ -307,7 +299,7 @@ members = [
     "crates/sdk/server/cache",
     "crates/sdk/server/config",
 
-    # SDK — navigator-kind extensions (Primitive::NavigatorExt).
+    # SDK — navigator-kind extensions (scene-Registry payloads).
     # Grouped under navigators/: the three SDK features (stack/tab/
     # drawer) plus the shared per-platform machinery in helpers/ that
     # all three depend on.

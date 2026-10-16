@@ -15,7 +15,7 @@
 # There is no global version tag any more. Each crate carries its own version
 # and is republished only when its own files changed — which is the whole
 # point: a consumer that upgrades after a release touching one leaf crate
-# rebuilds that leaf, not the 38-crate framework graph it used to.
+# rebuilds that leaf, not the whole framework graph.
 #
 # The job commits the computed version bumps back to master. That commit is
 # what makes the NEXT release's "changed since" comparison meaningful, since
