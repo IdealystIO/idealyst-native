@@ -91,7 +91,8 @@ PCM; only the decode stack differs.
 | iOS / macOS | `AVPlayer` + `AVPlayerItemVideoOutput` (frames) + an `MTAudioProcessingTap` on the item's audio mix (PCM) |
 | Android | `MediaExtractor` + `MediaCodec` via a Kotlin shim |
 | Web (wasm32) | hidden `<video>` + offscreen `<canvas>` frame pump; WebAudio `MediaElementSource → ScriptProcessor` PCM tap |
-| desktop Linux / Windows | *not implemented* — returns `VideoDecodeError::Unsupported` |
+| desktop Linux | GStreamer (`decodebin ! videoconvert ! appsink`) pulling `RGBA8` frames; transport via the pipeline |
+| Windows | Media Foundation's Media Engine (frame server): the engine plays the clip and drives the transport; a decode thread copies each new frame to the CPU through a staging texture (`BGRA`). **No PCM tap** — `audio()` is `None` (the clip is still heard) |
 
 ## Permissions
 

@@ -46,8 +46,10 @@
 //! - **Android** — `MediaExtractor` + `MediaCodec` via a Kotlin shim.
 //! - **Linux (desktop)** — a GStreamer pipeline (`decodebin ! videoconvert !
 //!   appsink`) pulling `RGBA8` frames; play/pause/seek/rate via the pipeline.
-//! - **other (desktop Windows / …)** — not implemented; returns
-//!   [`VideoDecodeError::Unsupported`].
+//! - **Windows** — Media Foundation's Media Engine in frame-server mode: the
+//!   engine plays the clip and drives the transport; a decode thread copies
+//!   each new frame to the CPU as `BGRA`. No PCM tap — `audio()` is `None`.
+//! - **other** — not implemented; returns [`VideoDecodeError::Unsupported`].
 
 #![deny(missing_docs)]
 
@@ -88,12 +90,18 @@ mod imp;
 #[doc(hidden)]
 pub use imp::debug_pull_first_frame;
 
+// Windows: Media Foundation's Media Engine in frame-server mode (no PCM tap).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+#[path = "windows.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
-    target_os = "linux"
+    target_os = "linux",
+    target_os = "windows"
 )))]
 #[path = "stub.rs"]
 mod imp;

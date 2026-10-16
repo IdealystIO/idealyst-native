@@ -46,6 +46,25 @@ runtime-shared = { workspace = true }
 # MTAudioProcessingTap, driven through the Obj-C runtime (objc2 msg_send), the
 # same posture as the `camera`/`video` SDKs. We link AVFoundation/CoreMedia/
 # CoreVideo/AudioToolbox and call their C surface for pixels + PCM.
+# Windows: Media Foundation's Media Engine (frame server) + a decode thread
+# copying frames to the CPU through a staging texture.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D10",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+windows-core = "0.62"
+async-channel = "2"
+
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+pollster = "0.4"
+
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }
