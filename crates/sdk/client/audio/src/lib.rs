@@ -57,8 +57,11 @@
 //!   looping. Remote `http(s)` URLs are **progressively streamed** via
 //!   `souphttpsrc`, matching the mobile players and the browser. Verified on
 //!   Linux (headless preroll tests + real remote-URL streaming).
-//! - **Windows / other native** — no pure-Rust player is pulled in (kept
-//!   dependency-light on purpose), so [`load`] returns
+//! - **Windows** — Media Foundation's Media Engine, audio-only: decodes
+//!   what Windows has codecs for (wav/mp3/aac/flac/wma …) and streams
+//!   `http(s)` URLs; [`load`] waits for the engine to open the source, so
+//!   an undecodable one fails there. See `src/windows.rs`.
+//! - **other native** — no player, so [`load`] returns
 //!   [`AudioError::NotSupported`]. Honest fallback rather than a silent
 //!   no-op.
 //!
@@ -100,11 +103,16 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
+// Windows: Media Foundation's Media Engine (audio-only).
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[path = "windows.rs"]
+mod imp;
+
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 #[path = "unsupported.rs"]
 mod imp;

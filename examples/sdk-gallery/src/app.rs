@@ -26,6 +26,7 @@ pub fn app() -> Element {
                 NotificationsPanel()
                 WebViewPanel()
                 VideoPanel()
+                AudioPanel()
             }
         }
     }
@@ -232,6 +233,58 @@ pub fn WebViewPanel() -> Element {
                 .with_style(styles::WebFill())
                 .bind(handle.clone())
                 .into_element() }
+            }
+            Status(line = rx!(status.get()))
+        }
+    }
+}
+
+/// A public MP3 (SoundHelix's example track).
+const SONG: &str = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+
+/// `audio` — load a streamed MP3, play / pause / stop it.
+#[component]
+pub fn AudioPanel() -> Element {
+    let status = signal("Not loaded.".to_string());
+    // The running playback; dropping it stops the sound.
+    let playback: Rc<std::cell::RefCell<Option<audio::Playback>>> = Rc::default();
+    let pb = playback.clone();
+    let play = Rc::new(move || {
+        let pb = pb.clone();
+        status.set("Loading…".to_string());
+        spawn_async(async move {
+            match audio::load(audio::AudioSource::url(SONG)).await {
+                Ok(sound) => {
+                    *pb.borrow_mut() = Some(sound.play());
+                    status.set("Playing.".to_string());
+                }
+                Err(e) => status.set(format!("Failed: {e}")),
+            }
+        });
+    }) as Rc<dyn Fn()>;
+    let pb = playback.clone();
+    let pause = Rc::new(move || {
+        if let Some(p) = pb.borrow().as_ref() {
+            if p.is_playing() {
+                p.pause();
+                status.set("Paused.".to_string());
+            } else {
+                p.resume();
+                status.set("Playing.".to_string());
+            }
+        }
+    }) as Rc<dyn Fn()>;
+    let pb = playback.clone();
+    let stop = Rc::new(move || {
+        pb.borrow_mut().take();
+        status.set("Stopped.".to_string());
+    }) as Rc<dyn Fn()>;
+    ui! {
+        Panel(title = "audio".to_string()) {
+            view(style = styles::Row()) {
+                Button(label = "Load + play".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = play)
+                Button(label = "Pause / resume".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = pause)
+                Button(label = "Stop".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = stop)
             }
             Status(line = rx!(status.get()))
         }

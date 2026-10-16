@@ -738,6 +738,7 @@ checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
 name = "audio"
 version = "1.8.0"
 dependencies = [
+ "async-channel",
  "gio",
  "glib",
  "gstreamer",
@@ -745,11 +746,14 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -11156,6 +11160,7 @@ dependencies = [
 name = "sdk-gallery"
 version = "1.5.2"
 dependencies = [
+ "audio",
  "clipboard",
  "connectivity",
  "idea-ui",

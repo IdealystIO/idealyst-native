@@ -1,4 +1,5 @@
-//! Desktop (Windows / Linux / other native) fallback.
+//! Fallback for native targets without a player (not web, Apple, Android,
+//! Linux or Windows).
 //!
 //! No pure-Rust audio player is pulled in here on purpose — the SDK stays
 //! dependency-light, and a half-working desktop path would be worse than an

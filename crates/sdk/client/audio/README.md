@@ -60,7 +60,8 @@ mechanism, not in the API you call.
 | iOS / macOS / tvOS | `AVAudioPlayer` (objc2) | compile-checked only ⚠️ |
 | Android | `MediaPlayer` (JNI) | compile-checked only ⚠️ |
 | Linux / desktop ALSA·PipeWire | **GStreamer** (`decodebin` pipeline) — streams remote URLs | verified on Linux |
-| Windows / other native | none — `load` returns `NotSupported` | honest fallback |
+| Windows | Media Foundation's **Media Engine**, audio-only — wav/mp3/aac/flac/wma, streams remote URLs; `load` waits for the engine to open the source | verified on a Windows 11 VM |
+| other native | none — `load` returns `NotSupported` | honest fallback |
 
 ⚠️ *Compile-checked only*: the Apple and Android backends are typed against
 their native player APIs and compile for those targets, but the playback
@@ -76,8 +77,9 @@ parity with Android/Apple/web, which all stream remote URLs. In-memory
 file). Verified on Linux: headless preroll/decode + looping tests, plus real
 remote-URL streaming against a public MP3.
 
-The remaining **Windows / other-native fallback** is deliberate: no player is
-pulled in there, to keep the crate dependency-light. A half-working path
+**Windows** uses the OS's own Media Foundation engine (no extra dependency).
+The remaining **other-native fallback** is deliberate: no player is pulled in
+there, to keep the crate dependency-light. A half-working path
 would be worse than an honest `NotSupported`; adding a real one later is a
 drop-in behind the same API.
 
@@ -142,4 +144,4 @@ verification note above). Tick each item as you exercise it.
 - [ ] **macOS** — same `AVAudioPlayer` flow (incl. `load(Url)` fetch path).
 - [ ] **Android** — `load()` + `play()` produces sound via `MediaPlayer`; a second `play()` *restarts* (one player per `Sound`, no layering); controls + drop-stops behave.
 - [x] **Linux** — `load(bytes/path/url)` + `play()` produces sound via GStreamer; a **remote `http(s)` URL streams progressively** (`souphttpsrc`); a second `play()` layers an independent voice; controls + drop-stops behave. (Headless preroll/looping tests pass; remote-URL streaming verified against a public MP3.)
-- [ ] **Windows** — `load()` returns `NotSupported` (honest fallback, no player pulled in).
+- [x] **Windows** — `regression_windows_loads_and_plays_audio` (a WAV from memory loads and plays; garbage → `Decode`; a missing file → `Backend`) on a Windows 11 VM; a streamed MP3 by hand in `examples/sdk-gallery`.
