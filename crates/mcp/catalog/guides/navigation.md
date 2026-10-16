@@ -207,11 +207,7 @@ The compile-checked **`swap_three_screens_tab_bar` recipe** (visible in `list_re
 
 3. **`StackHeader` roots in a growing `Surface` (`grow = 1.0`)** — dropped directly into a column shell it flex-grows and splits the viewport with the outlet. Keep it in a non-growing slot: the `header_slot` wrapper above should set `flex_grow: 0` / `flex_shrink: 0` (i.e. `flex: 0 0 auto`) so only the outlet grows. This wrapper does double duty with trap 2.
 
-Derive the header's data from the active screen's slots — the same data the native bar renders on mobile: `let state = rx!(header_state(&nav.screen_chrome));` feeds `idea_ui_nav::StackHeader`, and `nav.can_go_back` gates the back affordance (`nav.pop` is a no-op at the root).
-
-## Layout vs sidebar reactive scopes
-
-If you wire layout or sidebar contents reactively, keep a keepalive `Effect` alive past the `build_*_navigator` return (see [[navigator_scope_keepalive]]). Without it the reactive scope is dropped and updates stop firing.
+Derive the header's data from the active screen's slots (the native bar stays hidden; `StackHeader` renders on every backend): `let state = rx!(header_state(&nav.screen_chrome));` feeds `idea_ui_nav::StackHeader`, and `nav.can_go_back` gates the back affordance (`nav.pop` is a no-op at the root).
 
 ## Drawer responsiveness
 

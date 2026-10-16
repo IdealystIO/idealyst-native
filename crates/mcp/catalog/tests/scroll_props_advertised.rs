@@ -34,9 +34,18 @@ fn scroll_view_advertises_its_behavioural_props() {
     }
 }
 
+/// The entry is found by the tag an author writes. It was catalogued
+/// under the internal name `virtualizer`, so `describe_primitive
+/// flat_list` answered "not found".
 #[test]
-fn virtualizer_advertises_paging_and_layout_props() {
-    let names = prop_names("virtualizer");
+fn regression_flat_list_is_found_by_its_tag() {
+    assert!(lookup_primitive("flat_list").is_some());
+    assert!(lookup_primitive("FlatList").is_some());
+}
+
+#[test]
+fn flat_list_advertises_paging_and_layout_props() {
+    let names = prop_names("flat_list");
     for want in [
         "data",
         "render",
@@ -45,13 +54,15 @@ fn virtualizer_advertises_paging_and_layout_props() {
         "axis",
         "lanes",
         "gap",
+        "main_spacing",
+        "cross_spacing",
         "overscan",
         "safe_area",
         "on_scroll",
         "on_end_reached",
         "end_reached_threshold",
     ] {
-        assert!(names.contains(&want), "virtualizer is missing `{want}`; has {names:?}");
+        assert!(names.contains(&want), "flat_list is missing `{want}`; has {names:?}");
     }
 }
 
@@ -60,7 +71,7 @@ fn virtualizer_advertises_paging_and_layout_props() {
 /// stops growing on a backend that ignores it.
 #[test]
 fn on_end_reached_names_the_backends_that_answer() {
-    for prim in ["scroll_view", "virtualizer"] {
+    for prim in ["scroll_view", "flat_list"] {
         let p = lookup_primitive(prim).unwrap();
         let f = p.props.iter().find(|f| f.name == "on_end_reached").unwrap();
         for b in ["ios", "web", "macos"] {

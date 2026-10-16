@@ -30,7 +30,7 @@
 //! set up — so when none is reachable each test **skips** (prints a note and
 //! returns) rather than failing. `idealyst test` is what prepares the
 //! environment: it launches the app on the chosen platform (`--web`, `--macos`,
-//! `--ios`, `--android`), stands up the relay, points the tests at it via
+//! `--ios`, `--android`, `--linux`, `--windows`), stands up the relay, points the tests at it via
 //! `IDEALYST_ROBOT_BRIDGE`, and runs the very same `cargo test`. One suite,
 //! every platform — the relay makes them all reachable as the same bridge.
 

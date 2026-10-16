@@ -6,7 +6,7 @@ tags = ["components", "core"]
 
 # Authoring Components
 
-`#[component]` turns a free function into a reusable composable. The macro handles three things at once: it rewrites the body for reactivity, generates the dispatch glue `ui!`/`jsx!` use (a `Name` tag alias plus a `BuildElement` impl on its props — no per-component `macro_rules!`), and registers a [[ComponentEntry]] in the MCP catalog so AI/tooling can discover it.
+`#[component]` turns a free function into a reusable composable. The macro handles three things at once: it rewrites the body for reactivity, generates the dispatch glue `ui!`/`jsx!` use (a `Name` tag alias plus a `BuildElement` impl on its props — no per-component `macro_rules!`), and registers a `ComponentEntry` in the MCP catalog so AI/tooling can discover it.
 
 > **Before hand-rolling composite UI, check for an SDK.** Tables/grids,
 > code panels, rendered markdown, maps, SVG, and web views all ship as
@@ -276,11 +276,11 @@ ui! { Counter(bind_to = h) }
 h.get().map(|c| c.bump_by(3));   // .get(), not .with() — methods write signals
 ```
 
-The macro generates a sibling `CounterHandle` type with the methods as accessors, auto-injects a `bind_to: Option<Ref<CounterHandle>>` prop, and emits one [[MethodEntry]] per method into the MCP catalog. No `pub`, no `&self` (state comes from the closure over the component body). Methods return `()` only — they are **commands**; expose reads as signals.
+The macro generates a sibling `CounterHandle` type with the methods as accessors, auto-injects a `bind_to: Option<Ref<CounterHandle>>` prop, and emits one `MethodEntry` per method into the MCP catalog. No `pub`, no `&self` (state comes from the closure over the component body). Methods return `()` only — they are **commands**; expose reads as signals.
 
 ## Animations
 
-`animated!(...)` declares an [[AnimatedValue]] in the component body. The MCP walker captures these so the catalog reflects every animation the component owns:
+`animated!(...)` declares an `AnimatedValue` in the component body. The MCP walker captures these so the catalog reflects every animation the component owns:
 
 ```rust
 #[component]
@@ -298,7 +298,7 @@ For every `#[component]`:
 - Parameter list (names + pretty-printed types).
 - The `composes` graph — every `Foo` / `<Foo>` you reference inside `ui!`/`jsx!`.
 - Per-prop docs/types/constraints, when the props struct derives `IdealystSchema` — inlined into `params[].schema`.
-- Every [[MethodEntry]] from a `#[method]` fn.
-- Every [[AnimationEntry]] from `animated!(...)` calls.
+- Every `MethodEntry` from a `#[method]` fn.
+- Every `AnimationEntry` from `animated!(...)` calls.
 
 This metadata is what makes the catalog actionable for AI authoring. The more thoroughly you doc-comment your components, the better the catalog gets — without you having to maintain a separate docs site.

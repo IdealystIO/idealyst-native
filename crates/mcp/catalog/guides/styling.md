@@ -209,7 +209,7 @@ Every `stylesheet!` rule body sets fields of `runtime_core::StyleRules`. All fie
 
 `overscroll_behavior` (`OverscrollBehavior::{Auto, Contain, None}`) governs what a scroll gesture does when it runs out of content, and only means anything on a scrolling surface. `Contain` stops the gesture chaining outward — the declarative fix for a horizontal scroller whose left-edge swipe becomes the browser's "back". `None` also suppresses the platform's edge effect (web: no chaining; iOS: `bounces = false`; macOS: no elasticity; Android: `OVER_SCROLL_NEVER`).
 
-**Interaction** (desktop/web; touch backends no-op): `cursor`, `user_select`, `pointer_events`.
+**Interaction**: `cursor` and `user_select` (desktop/web; touch backends no-op), and `pointer_events` (every backend: `None` passes taps through to what is underneath).
 
 Key enums (defaults marked):
 

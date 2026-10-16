@@ -4,10 +4,12 @@
 //! The tests are ordinary `#[robot_test]` functions (in `tests/robot.rs` by
 //! default) that drive the app over the Robot relay. `cargo test` can run them
 //! directly, but only `idealyst test` sets up what they need: it launches the
-//! app on the chosen platform (`--web`/`--macos`/`--ios`/`--android`), stands up
-//! the relay, waits for the app to come up, then runs `cargo test` with
-//! `IDEALYST_ROBOT_BRIDGE` pointed at it. Without that prep the tests skip;
-//! with it they run for real. Exit code is `cargo test`'s.
+//! app on the chosen platform (`--web`/`--macos`/`--ios`/`--android`/`--linux`/
+//! `--windows`) from a fresh build (`IDEALYST_DEV_NO_RESUME`) and marked as
+//! test-driven (`IDEALYST_TEST_DRIVER`, so an in-app self-test stands down),
+//! stands up the relay, waits for the app to come up, then runs `cargo test`
+//! with `IDEALYST_ROBOT_BRIDGE` pointed at it. Without that prep the tests
+//! skip; with it they run for real. Exit code is `cargo test`'s.
 
 use anyhow::{Context, Result};
 use clap::Parser;

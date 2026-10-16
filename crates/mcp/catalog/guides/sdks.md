@@ -300,14 +300,14 @@ app supplies the reason string.
 
 | Crate | What it gives you |
 |---|---|
-| **`permissions`** | Cross-platform **runtime permission** requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. Other SDKs depend on this instead of re-implementing a grant flow. |
+| **`permissions`** | Cross-platform **runtime permission** requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` → a uniform `PermissionStatus`. Other SDKs depend on this instead of re-implementing a grant flow. Robot tests fake the answer: `register_robot_controls()` → `permissions.set` / `.clear` / `.requests` ([[testing]]). |
 | **`biometrics`** | Cross-platform biometric authentication ("prove the device owner is present"). |
-| **`notifications`** | Local + scheduled notifications and the raw device push token. Authorization goes through `permissions`; server-side push delivery is the app's job. |
-| **`location`** | Device geolocation — one-shot `current()` + continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`. |
+| **`notifications`** | Local + scheduled notifications and the raw device push token. Authorization goes through `permissions`; server-side push delivery is the app's job. Robot tests: `register_robot_controls()` → `notifications.log` / `.clear_log` ([[testing]]). |
+| **`location`** | Device geolocation — one-shot `current()` + continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`. Robot tests fake the fix: `register_robot_controls()` → `location.set` / `.clear` ([[testing]]). |
 | **`clipboard`** | System copy/paste of plain text — `clipboard::set_text` / `text`. |
 | **`share`** | The system share sheet (outbound) — hand text/url/files to another app. The inverse of `file-picker`. |
 | **`deep-link`** | Inbound links (custom scheme / universal / App Link). The framework routes them on its own once declared under `[package.metadata.idealyst.app.links]` (see docs/deep-links.md); the SDK lets app code `on_link()` observe, `intercept()` + `route_link()` hold and replay, and read `initial_link()`. Plus the live address on web: `current_url()`, `replace_url(url)` (rewrite without navigating), `origin()`; `None` / no-op on native. |
-| **`connectivity`** | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). |
+| **`connectivity`** | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). Robot tests: `register_robot_controls()` → `connectivity.set` / `.clear` ([[testing]]). |
 | **`haptics`** | Tactile feedback — `impact` / `notify` / `selection`. Fire-and-forget, best-effort. |
 | **`datetime`** | The current date and time — `now_utc()`, `local_offset_at(t)` (DST-correct), `local_offset()`, `local_timezone()` (IANA name). Feature `chrono`: `now_chrono_utc()` / `now_chrono_local()` replace chrono's `Utc::now()` / `Local::now()`, which need chrono's `wasmbind` on web (wasm-bindgen in the app) and panic without it. Works without a mounted backend; `with_clock(FixedClock::new(t), ..)` fakes time in tests. |
 | **`audio`** | Sound playback — `load(AudioSource)` → a `Sound` you `play()`, with a controllable `Playback`. The playback peer of the capture SDKs. |

@@ -386,16 +386,18 @@ pub enum MacroKind {
     /// [`UtilityEntry`]s, not macros.)
     Reactive,
     /// Element-tree construction: `ui!`, `jsx!`, `lazy!` (deprecated),
-    /// `node_ref!`, `children!`.
+    /// `node_ref!`.
     Markup,
-    /// Motion: `animated!`, `animate_at!`, `timeline!`.
+    /// Motion: `animated!`, `timeline!`.
     Animation,
-    /// Typed styles: `stylesheet!`.
+    /// Typed styles and fonts: `stylesheet!`, `typeface!` / `face!`.
     Styling,
-    /// Component declaration: `#[component]`.
+    /// Component declaration: `#[component]`, `#[lazy_component]`,
+    /// `#[host_fn]`.
     Component,
-    /// Documentation + introspection tooling: `recipe!`, `doc_scope!`,
-    /// `#[derive(IdealystSchema)]`, `#[idealyst_tool]`, `#[robot_fn]`.
+    /// Documentation, introspection and test tooling: `recipe!`,
+    /// `doc_scope!`, `#[derive(IdealystSchema)]`, `#[idealyst_tool]`,
+    /// `#[robot_fn]`, `robot_only!` / `robot_select!`, the `log_*!` macros.
     Catalog,
 }
 

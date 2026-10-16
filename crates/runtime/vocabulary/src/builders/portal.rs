@@ -171,11 +171,11 @@ impl OverlayBuilder {
         self
     }
 
-    /// Make the overlay's own layer transparent to pointer events so
-    /// clicks in the empty area pass through to the page beneath (the
-    /// ToastHost strip case).
-    /// Orthogonal to `backdrop(None)`: that controls whether a scrim
-    /// CHILD renders; this controls whether the portal ROOT hit-tests.
+    /// Let taps in the content's empty areas through to the page beneath
+    /// (the ToastHost strip case): the content wrapper inherits the root's
+    /// `pointer-events: none` instead of taking taps, and descendants opt
+    /// back in with `pointer_events: Auto`. Orthogonal to `backdrop`,
+    /// which decides whether a viewport-covering backdrop portal mounts.
     pub fn click_through(mut self, t: bool) -> Self {
         self.click_through = t;
         self

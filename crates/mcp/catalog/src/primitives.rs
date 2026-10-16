@@ -23,7 +23,6 @@
 use crate::{PrimitiveCategory, PrimitiveEntry, PropFieldSpec};
 
 const ALL_BACKENDS: &[&str] = &["ios", "android", "web", "macos"];
-const NATIVE_ONLY: &[&str] = &["ios", "android", "macos"];
 
 const COMMON_STYLE_FIELD: PropFieldSpec = PropFieldSpec {
     name: "style",
@@ -53,7 +52,7 @@ inventory::submit! {
             PropFieldSpec {
                 name: "children",
                 type_str: "Vec<Element>",
-                doc: "Child primitives. Pass via the `children![...]` macro or inline `{ ... }` block inside `ui!`.",
+                doc: "Child primitives, written inline in the `{ ... }` block inside `ui!` (`for` / `if` / `match` included).",
                 constraint: "",
             },
             COMMON_STYLE_FIELD,
@@ -326,6 +325,12 @@ inventory::submit! {
                 doc: "Mount stroke-draw animation `(duration_ms, easing)`; `animate = StrokeAnimation { … }` is the full form.",
                 constraint: "`draw_in` OR `animate`, not both (compile error)",
             },
+            PropFieldSpec {
+                name: "animate",
+                type_str: "StrokeAnimation",
+                doc: "Mount stroke-draw animation, full form (duration, easing, delay…). Drawn natively on web, iOS and Android; other backends show the icon fully drawn.",
+                constraint: "`draw_in` OR `animate`, not both (compile error)",
+            },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
             COMMON_ACCESSIBILITY_FIELD,
@@ -422,7 +427,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "text_area",
         pascal_name: "TextArea",
-        docs: "Multi-line text input. Same model as `TextInput` (value signal + on_change) but with native multi-line widgets (`UITextView`, `EditText` with `inputType=textMultiLine`, `<textarea>`, `NSTextView`). No key/blur/focus hooks — those are `text_input`-only today.",
+        docs: "Multi-line text input. Same model as `TextInput` (value signal + on_change) but with native multi-line widgets (`UITextView`, `EditText` with `inputType=textMultiLine`, `<textarea>`, `NSTextView`). No key/blur/focus hooks — those are `text_input`-only today. **Not a `ui!` tag**: call the builder `text_area(value, on_change)` (positional) — inside `ui!` that is a plain expression — and chain its setters (`.min_rows(n)`, `.max_rows(n)`, `.code_mode()`).",
         props: &[
             PropFieldSpec {
                 name: "value",
@@ -514,7 +519,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "scroll_view",
         pascal_name: "ScrollView",
-        docs: "Scrollable container. Backed by `UIScrollView` (iOS), `ScrollView` (Android), CSS `overflow: auto` (web), `NSScrollView` (macOS). Preserves scroll position across layout passes (see [[ios_scrollview_bounds_origin]]). Sized as a viewport: it fills the available main-axis space of its parent rather than growing to its content — bound it with `max_height`/`max_width` (a bare `height` is shadowed by the flex seed, as in CSS).",
+        docs: "Scrollable container. Backed by `UIScrollView` (iOS), `ScrollView` (Android), CSS `overflow: auto` (web), `NSScrollView` (macOS). Preserves scroll position across layout passes. Sized as a viewport: it fills the available main-axis space of its parent rather than growing to its content — bound it with `max_height`/`max_width` (a bare `height` is shadowed by the flex seed, as in CSS).",
         props: &[
             PropFieldSpec {
                 name: "children",
@@ -632,6 +637,24 @@ inventory::submit! {
         pascal_name: "ActivityIndicator",
         docs: "Platform-native spinner. `UIActivityIndicatorView`, `ProgressBar`, CSS spinner, `NSProgressIndicator`.",
         props: &[
+            PropFieldSpec {
+                name: "size",
+                type_str: "ActivityIndicatorSize",
+                doc: "`Small` or `Large`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "size_reactive",
+                type_str: "impl Fn() -> ActivityIndicatorSize",
+                doc: "`size` from a closure, re-read when the signals it reads change.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "color",
+                type_str: "Color",
+                doc: "Spinner tint.",
+                constraint: "",
+            },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
             COMMON_ACCESSIBILITY_FIELD,
@@ -644,9 +667,9 @@ inventory::submit! {
 
 inventory::submit! {
     PrimitiveEntry {
-        name: "virtualizer",
-        pascal_name: "Virtualizer",
-        docs: "Recycled-row list primitive. Renders only the items currently in the viewport; intended for long lists where `scroll_view` over `for` would blow up the view tree. The author-facing spelling is `flat_list(data = …, render = …)` in `ui!`, or `flat_list(..)` from `runtime_core::primitives::flat_list`. Sized as a viewport: it fills its parent's main axis — bound it with `max_height`, not a bare `height`.",
+        name: "flat_list",
+        pascal_name: "FlatList",
+        docs: "Virtualized (recycled-row) list primitive — the virtualizer. Renders only the items currently in the viewport; intended for long lists where `scroll_view` over `for` would blow up the view tree. Written `flat_list(data = …, render = …)` in `ui!`, or `flat_list(..)` from `runtime_core::primitives::flat_list`; the primitive-set name (`primitives = [...]`) is `virtualizer`. Sized as a viewport: it fills its parent's main axis — bound it with `max_height`, not a bare `height`.",
         props: &[
             PropFieldSpec {
                 name: "data",
@@ -687,7 +710,19 @@ inventory::submit! {
             PropFieldSpec {
                 name: "gap",
                 type_str: "f32",
-                doc: "Spacing between rows and between lanes, in logical px. `main_spacing` / `cross_spacing` set the two independently.",
+                doc: "Spacing between rows and between lanes, in logical px — shorthand for `main_spacing` + `cross_spacing`.",
+                constraint: "conflicts with `main_spacing` / `cross_spacing`",
+            },
+            PropFieldSpec {
+                name: "main_spacing",
+                type_str: "f32",
+                doc: "Spacing between rows along the scroll axis, in logical px.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "cross_spacing",
+                type_str: "f32",
+                doc: "Spacing between lanes across the scroll axis, in logical px.",
                 constraint: "",
             },
             PropFieldSpec {
@@ -734,14 +769,38 @@ inventory::submit! {
     PrimitiveEntry {
         name: "graphics",
         pascal_name: "Graphics",
-        docs: "GPU-rendered drawing surface. Local-render only — emits a placeholder under runtime-server (see [[aas_graphics_unsupported]]).",
+        docs: "GPU-rendered drawing surface. Local-render only — emits a placeholder under runtime-server.",
         props: &[
+            PropFieldSpec {
+                name: "on_ready",
+                type_str: "impl FnMut(OnReadyEvent)",
+                doc: "REQUIRED. Fires once the GPU surface exists, with what you need to start drawing.",
+                constraint: "required",
+            },
+            PropFieldSpec {
+                name: "on_resize",
+                type_str: "impl FnMut(OnResizeEvent)",
+                doc: "Fires when the surface's size changes.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_lost",
+                type_str: "impl FnMut()",
+                doc: "Fires when the surface is lost (the GPU context went away); recreate resources on the next `on_ready`.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_handle",
+                type_str: "FnOnce(GraphicsHandle)",
+                doc: "Receives the surface's handle once it mounts.",
+                constraint: "builder-only — chain `.on_handle(…)` after the call",
+            },
             COMMON_STYLE_FIELD,
             COMMON_REF_FILL_FIELD,
             COMMON_ACCESSIBILITY_FIELD,
         ],
         category: PrimitiveCategory::Advanced,
-        backends: NATIVE_ONLY,
+        backends: ALL_BACKENDS,
         _seal: (),
     }
 }
@@ -981,20 +1040,26 @@ inventory::submit! {
             PropFieldSpec {
                 name: "children",
                 type_str: "Vec<Element>",
-                doc: "The overlay content, rendered above the backdrop. Wrapped in a styleable content view (see `with_style`).",
+                doc: "The overlay content, rendered above the backdrop. Wrapped in a styleable content view (see `style`).",
                 constraint: "",
             },
             PropFieldSpec {
-                name: "with_style",
-                type_str: "IntoStyleSource",
-                doc: "Style for the content wrapper view. Builder-only: chain `.with_style(..)` after the `ui!` call — not an inline `ui!` prop.",
-                constraint: "builder method `.with_style(..)` — not lowered as an inline prop",
+                name: "style",
+                type_str: "impl IntoStyleProp",
+                doc: "Style for the content wrapper view — the view that holds your children and takes taps (`pointer-events: auto`). The portal root itself never takes a tap.",
+                constraint: "",
             },
             PropFieldSpec {
                 name: "click_through",
                 type_str: "bool",
-                doc: "Make the portal root `pointer-events: none` so empty areas pass clicks to the page beneath (e.g. a full-width toast strip); interactive descendants opt back in with `pointer_events: Auto`. Web-only effect; no-op on native. Builder-only.",
-                constraint: "builder method `.click_through(..)` — web-only; pair with `backdrop = None`",
+                doc: "The content wrapper inherits `pointer-events: none` instead of taking taps, so its empty areas pass them to the page beneath (a full-width toast strip); descendants opt back in with `pointer_events: Auto` (ToastHost's cards). Same on every backend.",
+                constraint: "pair with `backdrop = None` — a `Dismiss`/`Opaque` backdrop covers the window regardless",
+            },
+            PropFieldSpec {
+                name: "on_handle",
+                type_str: "FnOnce(PortalHandle)",
+                doc: "Receives the portal's handle once it mounts.",
+                constraint: "builder-only — chain `.on_handle(…)` after the call",
             },
             COMMON_REF_FILL_FIELD,
         ],
@@ -1063,6 +1128,18 @@ inventory::submit! {
                 type_str: "Vec<Element>",
                 doc: "Popover / menu content, positioned against `target`.",
                 constraint: "",
+            },
+            PropFieldSpec {
+                name: "style",
+                type_str: "impl IntoStyleProp",
+                doc: "Style for the content wrapper view that holds the children and takes taps. There is no `click_through`: a popover's content is all interactive.",
+                constraint: "",
+            },
+            PropFieldSpec {
+                name: "on_handle",
+                type_str: "FnOnce(PortalHandle)",
+                doc: "Receives the portal's handle once it mounts.",
+                constraint: "builder-only — chain `.on_handle(…)` after the call",
             },
             COMMON_REF_FILL_FIELD,
         ],

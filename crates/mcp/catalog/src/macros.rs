@@ -99,7 +99,7 @@ inventory::submit! {
         invocation: "lazy! { <ui-block> }",
         kind: MacroKind::Markup,
         module_path: "runtime_macros",
-        docs: "**DEPRECATED** — use a lazy component instead: `#[component(lazy)]` / `#[lazy_component]` marks a component fn as the code-splitting boundary, with typed props crossing the split, readable chunk filenames, and the standard `loading`/`error` props (see the `lazy-loading` guide). The block form still works while deprecated: it takes a BRACE BLOCK of `ui!`-style markup — `lazy! { text { \"loaded on demand\" } }` — hoisted into a `#[wasm_split]` async fn; code reachable ONLY from it moves into a chunk loaded on first mount. **No captures** — the wasm-split fn is a plain `fn`, not an `Fn`, which is exactly why the component form (props cross the boundary as args) replaced it. Heavy extension SDK? Registration, not rendering, is the main-bundle anchor, and there is no way to defer it — every scene-registry handler is installed at the boot seam, so keep the handler thin and split the component BODY. See the [[lazy-loading]] guide.",
+        docs: "**DEPRECATED** — use a lazy component instead: `#[component(lazy)]` / `#[lazy_component]` marks a component fn as the code-splitting boundary, with typed props crossing the split, readable chunk filenames, and the standard `loading`/`error` props (see the `lazy-loading` guide). The block form still works while deprecated: it takes a BRACE BLOCK of `ui!`-style markup — `lazy! { text { \"loaded on demand\" } }` — hoisted into a `#[wasm_split]` async fn; code reachable ONLY from it moves into a chunk loaded on first mount. **No captures** — the wasm-split fn is a plain `fn`, not an `Fn`, which is exactly why the component form (props cross the boundary as args) replaced it. Heavy extension SDK? Its registration is the main-bundle anchor: declare the kind at boot with `registry.defer::<P>()` and install the handler from inside the chunk with `register_deferred` / `runtime_scene::defer_registration` (see the [[sdk-components]] guide). See the [[lazy-loading]] guide.",
         expansion: "",
         snippet: "",
         _seal: (),
@@ -119,19 +119,6 @@ inventory::submit! {
     }
 }
 
-inventory::submit! {
-    MacroEntry {
-        name: "children",
-        invocation: "children![a, opt, vec]",
-        kind: MacroKind::Markup,
-        module_path: "runtime_core",
-        docs: "Build a `Vec<Element>` from a mixed-shape list, flattening `Option<Element>` (skips `None`) and `Vec<Element>` (extends inline) so call sites write conditionals naturally. For *flattening received children* in a container component — not for authoring new children in a push loop (write those inside `ui!`). See [[component-hygiene]].",
-        expansion: "a Vec<Element> built via ChildList::append_to",
-        snippet: "children![$1]",
-        _seal: (),
-    }
-}
-
 // ---------------------------------------------------------------------
 // Animation (runtime_core macro_rules!)
 // ---------------------------------------------------------------------
@@ -145,19 +132,6 @@ inventory::submit! {
         docs: "Construct an `AnimatedValue<T>` — the per-frame motion handle passed to `.animate(...)` and bound to a prop via `.bind(node_ref, AnimProp::…)`. `T` is inferred from the initial value (`f32` for scalar motion, a 4-tuple for color). AnimatedValue is for **continuous motion of a prop on an already-mounted node**. For **appearing/disappearing** (toast, panel, modal, disclosure — anything gated by an open/closed `Signal<bool>`), do NOT drive it imperatively with `animated!`/`.animate()` — that fades the node but never unmounts it. Use the **`presence` primitive** instead: it owns mount/unmount timing and plays declarative `enter`/`exit` animations. See [[reactivity]] § Animations and `describe_recipe(\"animated_toast\")`.",
         expansion: "AnimatedValue::new(initial)",
         snippet: "let ${1:av} = animated!(${2:initial});",
-        _seal: (),
-    }
-}
-
-inventory::submit! {
-    MacroEntry {
-        name: "animate_at",
-        invocation: "animate_at!(at_ms, av, animator)",
-        kind: MacroKind::Animation,
-        module_path: "runtime_core",
-        docs: "Schedule one `av.animate(animator)` call `at_ms` from now. Clones the `AnimatedValue` handle into the closure so the original binding stays usable for further calls. Returns a `ScheduledTask` that cancels the pending dispatch on drop — hold it (e.g. via `on_cleanup`) to keep the timer alive.",
-        expansion: "after_ms(at_ms, move || av.animate(animator)) -> ScheduledTask",
-        snippet: "animate_at!(${1:at_ms}, ${2:av}, ${3:animator});",
         _seal: (),
     }
 }
@@ -288,9 +262,87 @@ inventory::submit! {
         invocation: "#[robot_fn] / #[robot_fn(name = \"…\")]",
         kind: MacroKind::Catalog,
         module_path: "runtime_macros",
-        docs: "Attribute that makes a free function callable by name over the robot bridge, for E2E tests and agents: seed data, fake a location, read app state an element doesn't show. Keeps the function and adds `<name>::robot()`; register it at boot with `runtime_vocabulary::robot_fn::register(f::robot())` (inert outside robot builds, so no cfg). A test calls it with `app.call_function(name, json!({…}))` / the `call_function` MCP tool — arguments by parameter name (serde), the return value as JSON, a `Result`'s `Err` as the failure; an `async fn` is polled to completion. The name defaults to the fn's; SDKs namespace theirs (`location.set`). Free functions only — no generics, `self` or borrowed parameters. See docs/robot.md (Functions).",
-        expansion: "the fn, plus `mod <name> { pub fn robot() -> RobotFunction }`",
+        docs: "Attribute that makes a free function callable by name over the robot bridge, for E2E tests and agents: seed data, fake a location, read app state an element doesn't show. Keeps the function and adds `<fn_ident>::robot()` (named after the Rust fn, not `name = \"…\"`); register it at boot with `runtime_vocabulary::robot_fn::register(f::robot())` (inert outside robot builds, so no cfg). A test calls it with `app.call_function(name, json!({…}))` / the `call_function` MCP tool — arguments by parameter name (serde), the return value as JSON, a `Result`'s `Err` as the failure; an `async fn` is polled to completion. The name defaults to the fn's; SDKs namespace theirs (`location.set`). Free functions only — no generics, `self` or borrowed parameters. See the [[testing]] guide.",
+        expansion: "the fn, plus `mod <fn_ident> { pub fn robot() -> RobotFunction }`",
         snippet: "/// ${1:What it does}.\n#[robot_fn(name = \"${2:app.action}\")]\nfn ${3:action}($4) {\n\t$0\n}",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    MacroEntry {
+        name: "robot_only",
+        invocation: "robot_only! { … }",
+        kind: MacroKind::Catalog,
+        module_path: "runtime_vocabulary",
+        docs: "Compile items only into robot builds — an SDK's test controls and the fake state behind them, so a release build carries none of it. Expands to its tokens with runtime-vocabulary's `robot` feature, to nothing without. The SDK depends on runtime-vocabulary and declares no cfg of its own (the feature is the vocabulary's, which `idealyst dev` turns on). Registration (`robot_fn::register`) needs no gate. See the [[testing]] guide.",
+        expansion: "the tokens, or nothing",
+        snippet: "runtime_vocabulary::robot_only! {\n\t$0\n}",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    MacroEntry {
+        name: "robot_select",
+        invocation: "robot_select! { on: { … } off: { … } }",
+        kind: MacroKind::Catalog,
+        module_path: "runtime_vocabulary",
+        docs: "Pick items by build: the `on` tokens with runtime-vocabulary's `robot` feature, the `off` tokens without — e.g. a fakeable platform seam (`on: { mod controls; use controls::Source; } off: { type Source = Platform; }`). The robot_only! of two branches. See the [[testing]] guide.",
+        expansion: "the `on` tokens or the `off` tokens",
+        snippet: "runtime_vocabulary::robot_select! {\n\ton: { $1 }\n\toff: { $2 }\n}",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    MacroEntry {
+        name: "log_info",
+        invocation: "log_debug!(…) / log_info!(…) / log_warn!(…) / log_error!(…)",
+        kind: MacroKind::Catalog,
+        module_path: "runtime_core",
+        docs: "Log at a level with `format!`-style arguments, through the installed `Logger` (the platform console: browser console, os_log, logcat, stderr). Reaches the robot's `get_logs` / the `get_logs` MCP tool, so it is how an app reports to a test or an agent. Use these instead of `println!`, which goes nowhere on web and mobile.",
+        expansion: "logging::log(LogLevel::Info, &format!(…))",
+        snippet: "log_info!(\"${1:msg}\"$0);",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    MacroEntry {
+        name: "lazy_component",
+        invocation: "#[lazy_component] / #[lazy_component(retryable)]",
+        kind: MacroKind::Component,
+        module_path: "runtime_macros",
+        docs: "Shorthand for `#[component(lazy)]`: the component's body ships in a separate wasm chunk loaded on first mount, its props crossing the split as arguments, with the standard `loading` / `error` props. Accepts the same arguments as `#[component(...)]`, `lazy` implied. See the [[lazy-loading]] guide.",
+        expansion: "#[component(lazy, …)]",
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    MacroEntry {
+        name: "host_fn",
+        invocation: "#[host_fn]",
+        kind: MacroKind::Component,
+        module_path: "runtime_macros",
+        docs: "An app function remote code can call: in the app it is the function; in a remote bundle it is a stub asking the app to run it. Arguments and result cross as `RemoteValue`s. May be generic over `Key`, `Opaque` and `Numeric` parameters (`#[derive(Key)]` for a key type), so a bundle can call it with types the app never compiled.",
+        expansion: "",
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    MacroEntry {
+        name: "typeface",
+        invocation: "typeface! { name, faces: [face!(…), …], fallback }",
+        kind: MacroKind::Styling,
+        module_path: "runtime_core",
+        docs: "Declare a font family as a `static Typeface`: a name, its faces (each a `face!(weight: …, style: …, src: \"fonts/…\")`, path relative to the calling file) and a `SystemFallback`. Whether the bytes are embedded depends on runtime-core's `embed-font-bytes` feature: native backends load bytes, web links the bundled path.",
+        expansion: "a `Typeface` with `AssetSource`-backed faces",
+        snippet: "static ${1:INTER}: runtime_core::assets::Typeface = typeface! {\n\tname: \"${2:Inter}\",\n\tfaces: [\n\t\tface!(weight: FontWeight::Normal, style: FontStyle::Normal, src: \"${3:fonts/Inter-Regular.ttf}\"),\n\t],\n\tfallback: SystemFallback::SansSerif,\n};",
         _seal: (),
     }
 }

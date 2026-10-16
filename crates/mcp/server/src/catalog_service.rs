@@ -1357,7 +1357,7 @@ impl CatalogService {
         self.robot_call("find_all_elements", app.as_deref(), body).await
     }
 
-    #[tool(description = "Tap an element in the running app, as a finger at its center would. Works on Buttons/Pressables/Links and on anything with a touch handler (e.g. a clickable Table row); clicking a Text inside such a row bubbles up to the row, like a real tap. `element_id` comes from a prior find_element call.")]
+    #[tool(description = "Press an element inside the framework: a Button/Pressable/Link's press handler runs, or a synthetic tap (began → ended at its center) goes to the nearest `on_touch` handler, bubbling to ancestors — clicking a Text inside a clickable Table row presses the row. It skips the OS event path, hit testing and overlays; use `tap_native` to check that a real tap would land. A disabled control refuses. `element_id` comes from a prior find_element call.")]
     async fn click(
         &self,
         Parameters(args): Parameters<RobotElementId>,
@@ -1528,7 +1528,7 @@ impl CatalogService {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    #[tool(description = "Tap an element with REAL platform input at its center, through the toolkit's own event path — hit testing, overlays, gesture recognizers and the native disabled state take part, which `click` (the element's handler, called directly) skips. Refuses like a finger would fail: the element is not visible, its center is outside the window (scroll it into view), or another element covers it (the error names it). Returns { mechanism }: \"native\" (platform events: web DOM events, macOS NSEvents, Android MotionEvents, Windows window messages, Linux XTest) or \"hit_test\" (iOS, where an app can't create touches: UIKit's hit test confirms the point, then the element's press runs). Errors with \"unsupported\" on a backend with neither — use `click`. On Android, `tap` injects at the OS level instead (adb).")]
+    #[tool(description = "Tap an element with REAL platform input at its center, through the toolkit's own event path — hit testing, overlays, gesture recognizers and the native disabled state take part, which `click` (the element's handler, called directly) skips. Refuses like a finger would fail: the element is not visible, its center is outside the window (scroll it into view), or another element covers it (the error names it). Returns { mechanism }: \"native\" (platform events: web DOM events, macOS NSEvents, Android MotionEvents, Windows window messages) or \"hit_test\" (iOS, where an app can't create touches: UIKit's hit test confirms the point, then the element's press runs). Android has no hit test, so there the injected event is the only check. Errors with \"unsupported\" on Linux — use `click`. On Android, `tap` injects at the OS level instead (adb).")]
     async fn tap_native(
         &self,
         Parameters(args): Parameters<RobotElementId>,
@@ -1538,7 +1538,7 @@ impl CatalogService {
         self.robot_call("tap_native", app.as_deref(), body).await
     }
 
-    #[tool(description = "Drag with REAL platform input along `points` ([x, y] relative to the element's top-left, logical px): down at the first, moves, up at the last, through the toolkit's event path. The first point is checked like `tap_native`'s. Errors with \"unsupported\" where the backend can't synthesize input (iOS) — use `drag`.")]
+    #[tool(description = "Drag with REAL platform input along `points` ([x, y] relative to the element's top-left, logical px): down at the first, moves, up at the last, through the toolkit's event path. The first point is checked like `tap_native`'s. Errors with \"unsupported\" where the backend can't synthesize input (iOS, Linux) — use `drag`.")]
     async fn drag_native(
         &self,
         Parameters(args): Parameters<RobotDragNative>,
@@ -4218,12 +4218,9 @@ impl ServerHandler for CatalogService {
             // holds the PINNED bridge of `--robot-port`, and is None in
             // the default Discovery mode — where the robot tools are
             // fully live, routing per call through `~/.idealyst/apps/`.
-            // Reading it here told every discovery-mode session its
-            // robot tools were disabled when they were not, which is a
-            // sentence long enough to stop someone from trying them.
             let robot_status = match &self.robot_mode {
-                RobotMode::Discovery => " Robot tools enabled (find_element, click, type_text, get_snapshot, get_logs, etc.) — they proxy to a running app's bridge, discovered via ~/.idealyst/apps (`list_apps` shows what is up).",
-                RobotMode::Explicit { .. } => " Robot tools enabled (find_element, click, type_text, get_snapshot, get_logs, etc.) — they proxy to the bridge pinned by --robot-port.",
+                RobotMode::Discovery => " Robot tools enabled — they drive a running app's bridge, discovered via ~/.idealyst/apps (`list_apps` shows what is up): find_element / get_state to locate and read, click (in-framework press) or tap_native (real platform input, hit-tested), type_text / set_toggle / set_slider, list_functions / call_function for app and SDK test controls (seed data, fake a location, permission or network state), open_link for deep links, get_snapshot / get_logs / screenshot. `read_guide testing` explains writing a cross-platform E2E suite.",
+                RobotMode::Explicit { .. } => " Robot tools enabled — they drive the bridge pinned by --robot-port: find_element / get_state, click or tap_native (real platform input), type_text, list_functions / call_function (app and SDK test controls), open_link, get_snapshot / get_logs. `read_guide testing` explains writing a cross-platform E2E suite.",
                 RobotMode::Disabled => " Robot tools present but disabled (--no-robot) — restart the server without it to enable them.",
             };
             format!(
@@ -4730,7 +4727,7 @@ mod tests {
             .filter_map(|h| h["name"].as_str())
             .collect();
         assert!(prims.contains(&"scroll_view"), "scroll_view takes it; got {prims:?}");
-        assert!(prims.contains(&"virtualizer"), "the virtualizer takes it; got {prims:?}");
+        assert!(prims.contains(&"flat_list"), "flat_list takes it; got {prims:?}");
 
         // And by what the prop is FOR, not only its identifier.
         let r = svc
@@ -6165,6 +6162,33 @@ mod tests {
             "discovery mode is enabled: {instructions}",
         );
         assert!(!instructions.contains("disabled"), "{instructions}");
+    }
+
+    /// The robot paragraph is how an agent learns the robot surface
+    /// exists, so every tool it names must be one the server serves and
+    /// the guide it points at must ship — it once named only the element
+    /// verbs, so functions, native taps and SDK test controls went unseen.
+    #[test]
+    fn robot_instructions_name_real_tools_and_the_testing_guide() {
+        let tools: std::collections::HashSet<String> =
+            CatalogService::tool_router().list_all().into_iter().map(|t| t.name.to_string()).collect();
+        for pinned in [None, Some("127.0.0.1:1".to_string())] {
+            let svc = CatalogService::with_robot_mode(true, pinned);
+            let instructions = svc.get_info().instructions.unwrap();
+            let robot = &instructions[instructions.find("Robot tools").expect("a robot paragraph")..];
+            let named: Vec<&str> = robot
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|w| w.contains('_'))
+                .collect();
+            for tool in ["tap_native", "call_function", "list_functions", "open_link"] {
+                assert!(named.contains(&tool), "the robot paragraph names {tool}: {robot}");
+            }
+            for name in &named {
+                assert!(tools.contains(*name), "the robot paragraph names `{name}`, which is not a tool");
+            }
+            assert!(robot.contains("read_guide testing"), "{robot}");
+        }
+        assert!(mcp_catalog::guides().any(|g| g.slug == "testing"), "the testing guide ships");
     }
 
     #[test]

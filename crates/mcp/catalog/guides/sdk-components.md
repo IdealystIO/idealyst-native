@@ -295,6 +295,17 @@ failed load is indistinguishable from a slow one.
 That last one deserves a line in your README. If your component holds content
 that matters for a server-rendered page, lazy is the wrong default for it.
 
+### Thread-locals on Android
+
+Declare thread-locals with `runtime_tls::thread_local!` (depend on
+`runtime-tls`), not std's. Rust's Android targets have no native
+thread-locals, so std gives every `thread_local!` static its own pthread
+key, and bionic aborts the process past 128 — under whichever static
+happens to be touched first past the limit, usually far from the cause.
+`runtime_tls`'s macro is std's off Android and shares one per-thread table
+behind two keys on it, so `use runtime_tls::thread_local;` is the whole
+change.
+
 ## Before you publish
 
 - [ ] Seam is named `register`, not a synonym.

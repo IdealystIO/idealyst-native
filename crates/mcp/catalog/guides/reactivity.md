@@ -94,7 +94,7 @@ Pair either form with `on_cleanup(…)` for teardown — the callback fires befo
    imperative `.animate()` fades the node but never unmounts it, so the panel
    stays in the tree and never actually hides.
 2. **"This prop moves on a node that's already mounted"** (a live progress
-   bar, a drag follower, a color pulse) → **`animated!` + [[AnimatedValue]]**,
+   bar, a drag follower, a color pulse) → **`animated!` + `AnimatedValue`**,
    the per-frame motion handle.
 
 ### Appearing / disappearing → `presence`
@@ -133,14 +133,14 @@ pattern.
 
 ### Continuous motion on a mounted node → `animated!`
 
-[[AnimatedValue]] is the per-frame motion handle. Construct one with `animated!`:
+`AnimatedValue` is the per-frame motion handle. Construct one with `animated!`:
 
 ```rust
 let opacity = animated!(0.0_f32);
 opacity.animate(TweenTo::new(1.0, Duration::from_millis(400)).ease_out());
 ```
 
-Use `animate_at!` to schedule animations at a specific offset, or `timeline!` for choreographed sequences.
+Use `timeline!` to fire animations at set offsets — its timers belong to the enclosing scope and cancel when it drops — or `after_ms(ms, move || av.animate(…))` for a single delayed one.
 
 ## Three pitfalls
 
@@ -166,7 +166,7 @@ Use `animate_at!` to schedule animations at a specific offset, or `timeline!` fo
 ## See also
 
 - [[concepts|Primitives, Components, Style]] — the structural layer signals operate on.
-- [[primitives|Primitives reference]] — every primitive's reactive props.
+- `list_primitives` / `describe_primitive` — every primitive's reactive props.
 - The [[Signal]] type entry for the full method surface.
 - **Recipes** — compile-checked, copy-pasteable examples via `list_recipes` /
   `describe_recipe`; the canonical reactive list is `keyed_list_add_remove`.

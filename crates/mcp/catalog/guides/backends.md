@@ -44,7 +44,7 @@ The framework absorbs many of these so authors don't see them; they show up in t
 
 - **iOS** — `UIScrollView` bounds.origin preservation ([[ios_scrollview_bounds_origin]]); image tinting needs explicit `imageWithRenderingMode` ([[ios_uiimageview_tinting]]); `cornerRadius` clamping ([[ios_cornerradius_unclamped]]); intrinsic-size measurer for UIKit controls ([[ios_intrinsic_size_measurer]]).
 - **Android** — translation values are in device px not dp ([[android_setTranslation_device_px]]); scheduler handles must be `mem::forget`ted ([[android_scheduler_handle_leak]]); gradient radius computed post-layout ([[android_gradient_radius_post_layout]]).
-- **Web** — must call `install_scheduler()` + `install_time_source()` at startup ([[web_bootstrap_scheduler]]); animations need `install_global_self` ([[web_install_global_self_for_animation]]).
+- **Web** — must call `install_scheduler()` + `install_time_source()` at startup (without the time source every `now_micros()` reads `0`); animations need `install_global_self`, which gives the animation driver its handle to the backend.
 - **macOS / wgpu** — aspect-locked windows via NSWindowDelegate ([[wgpu_aspect_lock]]); AppKit/UIKit naming and feature-gate differences ([[macos_appkit_uikit_diffs]]).
 
 These all live in the relevant backend crate; authors writing component code don't see them.

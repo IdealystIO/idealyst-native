@@ -20,7 +20,7 @@ idealyst dev
 
 ## The minimum app
 
-Every Idealyst app exposes an `app()` function that returns a [[View]] (or any [[Element]]). The framework's host calls this once at startup, and reactive signals inside it drive incremental updates.
+Every Idealyst app exposes an `app()` function that returns a [[View]] (or any `Element`). The framework's host calls this once at startup, and reactive signals inside it drive incremental updates.
 
 ```rust
 use runtime_core::*;
@@ -38,7 +38,7 @@ That's it. No `main` function in your crate — the per-platform host (web/iOS/A
 
 ## Three concepts to learn next
 
-1. **[[primitives|Primitives]]** — the leaf nodes of `ui!`: [[View]], [[Text]], [[Button]], [[ScrollView]], etc. These map to native widgets on every backend.
+1. **Primitives** (`list_primitives`) — the leaf nodes of `ui!`: [[View]], [[Text]], [[Button]], [[ScrollView]], etc. These map to native widgets on every backend.
 2. **[[components|Components]]** — your own reusable units, declared with `#[component]`. Compose them inside `ui!` just like primitives.
 3. **[[reactivity|Reactivity]]** — `Signal<T>` values, f-string text slots, and the closure-form reactive bindings inside `ui!`.
 

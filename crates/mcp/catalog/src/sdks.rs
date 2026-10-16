@@ -466,13 +466,13 @@ sdk!(
     "permissions",
     SdkCategory::Device,
     SdkKind::Api,
-    "Cross-platform runtime permission requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` returning a uniform `PermissionStatus`. Capability SDKs that prompt the user depend on this instead of re-implementing an OS grant flow."
+    "Cross-platform runtime permission requests — the shared grant substrate. `permissions::request(Permission)` / `status(Permission)` returning a uniform `PermissionStatus`. Capability SDKs that prompt the user depend on this instead of re-implementing an OS grant flow. Robot tests: `permissions::register_robot_controls()` adds `permissions.set {permission, status}` / `permissions.clear` / `permissions.requests`, so a test assumes an answer instead of meeting a dialog (see the `testing` guide)."
 );
 sdk!(
     "notifications",
     SdkCategory::Device,
     SdkKind::Api,
-    "Local + scheduled notifications and the raw device push token. `notify`/`schedule`/`cancel`; authorization goes through `permissions`. Server-side push delivery is the app's job."
+    "Local + scheduled notifications and the raw device push token. `notify`/`schedule`/`cancel`; authorization goes through `permissions`. Server-side push delivery is the app's job. Robot tests: `notifications::register_robot_controls()` adds `notifications.log` (what the app posted) / `notifications.clear_log` (see the `testing` guide)."
 );
 sdk!(
     "clipboard",
@@ -490,7 +490,7 @@ sdk!(
     "location",
     SdkCategory::Device,
     SdkKind::Api,
-    "Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`."
+    "Device geolocation — one-shot `current()` and continuous `watch()` yielding a `Position`. Permission grant goes through `permissions`. Robot tests: `location::register_robot_controls()` adds `location.set {latitude, longitude, …}` / `location.clear` — `current()` and every `watch()` get the fake fix (see the `testing` guide)."
 );
 sdk!(
     "share",
@@ -508,7 +508,7 @@ sdk!(
     "connectivity",
     SdkCategory::Device,
     SdkKind::Api,
-    "Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). NWPathMonitor / ConnectivityManager / `navigator.onLine`."
+    "Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). NWPathMonitor / ConnectivityManager / `navigator.onLine`. Robot tests: `connectivity::register_robot_controls()` adds `connectivity.set {online, transport?}` / `connectivity.clear` (see the `testing` guide)."
 );
 sdk!(
     "haptics",

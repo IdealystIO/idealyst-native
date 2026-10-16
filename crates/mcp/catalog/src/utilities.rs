@@ -107,7 +107,7 @@ inventory::submit! {
     UtilityEntry {
         name: "platform",
         module_path: "runtime_core",
-        docs: "Returns the current runtime platform (`Ios`, `Android`, `Web`, `MacOs`). Use to branch on backend for legitimate platform variance (different keyboard shortcuts, different copy). Per [[backend_owns_rendering]], do NOT use this to paper over rendering differences — those belong in the backend.",
+        docs: "Returns the current runtime platform (`Ios`, `Android`, `Web`, `MacOs`). Use to branch on backend for legitimate platform variance (different keyboard shortcuts, different copy). Do NOT use this to paper over rendering differences — a primitive that looks different on one backend is a bug in that backend.",
         params: &[],
         return_type: "Platform",
         return_type_short: "Platform",
@@ -121,7 +121,7 @@ inventory::submit! {
     UtilityEntry {
         name: "open_url",
         module_path: "runtime_core",
-        docs: "Open an external URL in the host's default handler — a new browser tab on web, Safari/Mail via `UIApplication.open` on iOS, an `ACTION_VIEW` intent on Android, the default browser via `NSWorkspace` on macOS. For *leaving* the app (external pages, `mailto:`, `tel:`); in-app navigation must use the `Link` primitive so web stays single-page. Fire-and-forget — a logged no-op on backends with no opener (terminal, CPU, runtime-server).",
+        docs: "Open an external URL in the host's default handler — a new browser tab on web, Safari/Mail via `UIApplication.open` on iOS, an `ACTION_VIEW` intent on Android, the default browser via `NSWorkspace` on macOS. For *leaving* the app (external pages, `mailto:`, `tel:`); in-app navigation must use the `link` primitive so web stays single-page. Fire-and-forget — a logged no-op on backends with no opener (terminal, CPU, runtime-server).",
         params: &[
             ParamSpec {
                 name: "url",
@@ -506,6 +506,90 @@ inventory::submit! {
         return_type_short: "()",
         category: UtilityCategory::Reactive,
         snippet: "raf_loop_scoped(move || {\n\t$0\n});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "watch_signal",
+        module_path: "runtime_vocabulary::robot",
+        docs: "Expose a signal (or `ReadSignal` / `Memo`, value `Debug`) to the robot bridge by name, so a test reads it (`app.signal(name).assert_eq(…)`, the `read_signal` MCP tool). Call where effect creation is legal — a component body or the root build; the entry lives as long as that scope. No `cfg`: inert outside robot builds. See the [[testing]] guide.",
+        params: &[
+            ParamSpec {
+                name: "name",
+                type_str: "impl Into<String>",
+                type_short_name: "String",
+            },
+            ParamSpec {
+                name: "signal",
+                type_str: "S: WatchTarget<T>",
+                type_short_name: "S",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Platform,
+        snippet: "runtime_vocabulary::robot::watch_signal(\"${1:name}\", ${2:signal});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "watch_signal_writable",
+        module_path: "runtime_vocabulary::robot",
+        docs: "`watch_signal` for a `Signal<T>` the bridge may also set (`write_signal`; the value arrives as JSON, so `T: Deserialize`). No `cfg`: inert outside robot builds. See the [[testing]] guide.",
+        params: &[
+            ParamSpec {
+                name: "name",
+                type_str: "impl Into<String>",
+                type_short_name: "String",
+            },
+            ParamSpec {
+                name: "signal",
+                type_str: "Signal<T>",
+                type_short_name: "Signal",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Platform,
+        snippet: "runtime_vocabulary::robot::watch_signal_writable(\"${1:name}\", ${2:signal});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "is_test_driven",
+        module_path: "runtime_vocabulary::robot",
+        docs: "Whether an external test driver (`idealyst test`) owns this app — an in-app self-test or demo autoplay should stand down when it does. `false` outside robot builds. No `cfg` needed. See the [[testing]] guide.",
+        params: &[],
+        return_type: "bool",
+        return_type_short: "bool",
+        category: UtilityCategory::Platform,
+        snippet: "if !runtime_vocabulary::robot::is_test_driven() {\n\t$0\n}",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "register",
+        module_path: "runtime_vocabulary::robot_fn",
+        docs: "Register a `#[robot_fn]` so a test can call it by name (`app.call_function(name, json!({…}))`, the `call_function` MCP tool): `robot_fn::register(seed_inbox::robot())`, at boot on the UI thread. No `cfg`: drops what it is given outside robot builds. See the [[testing]] guide.",
+        params: &[
+            ParamSpec {
+                name: "function",
+                type_str: "RobotFunction",
+                type_short_name: "RobotFunction",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Platform,
+        snippet: "runtime_vocabulary::robot_fn::register(${1:function}::robot());",
         _seal: (),
     }
 }
