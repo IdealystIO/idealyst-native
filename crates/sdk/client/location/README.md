@@ -59,7 +59,9 @@ not in the functions you call.
 | web (wasm32) | `navigator.geolocation` `getCurrentPosition` / `watchPosition` / `clearWatch` |
 | iOS / macOS / tvOS | `CLLocationManager` + a `CLLocationManagerDelegate` (objc2): `requestLocation` for `current`, `startUpdatingLocation` for `watch`, `stopUpdatingLocation` on drop |
 | Android | framework `LocationManager` via JNI: `getLastKnownLocation` for `current`; `requestLocationUpdates` for `watch` needs a Java `LocationListener` host shim (see below) |
-| Windows / Linux / other native | unsupported — `current` returns `NotSupported`; `watch` installs nothing |
+| Linux | GeoClue2 over the D-Bus system bus |
+| Windows | WinRT `Geolocator`: `GetGeopositionAsync` (30 s bound) for `current`, `PositionChanged` for `watch` (thread-pool thread); authorization through `permissions` (Windows' location prompt) |
+| other native | unsupported — `current` returns `NotSupported`; `watch` installs nothing |
 
 **Verification status.** The **web** path is genuinely runnable and is treated
 as exercised. The **iOS / macOS / Android** native paths are **compile-checked

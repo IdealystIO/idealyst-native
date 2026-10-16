@@ -7452,11 +7452,13 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
  "zbus",
 ]
 
@@ -11165,6 +11167,7 @@ dependencies = [
  "connectivity",
  "idea-ui",
  "idealyst",
+ "location",
  "notifications",
  "runtime-core",
  "runtime-scene",

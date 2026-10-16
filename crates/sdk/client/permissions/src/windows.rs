@@ -11,11 +11,20 @@
 //!   notification settings on its first toast) makes `Setting` fail with
 //!   `ERROR_NOT_FOUND`; such an app's notifications are on — the default —
 //!   so that reads as `Granted`.
-//! - **Location / camera / microphone** — `Unsupported` (usable): the
-//!   desktop privacy switches for these are read by the capturing SDKs when
-//!   they open the device, which reports a denial as its own error.
+//! - **Location** (when-in-use and always alike — Windows does not
+//!   distinguish background use for desktop apps) — the privacy setting, read
+//!   without prompting through `AppCapability::CheckAccess("location")`:
+//!   allowed → `Granted`, off by the user → `Denied`, off by the system or
+//!   policy → `Restricted`, not decided yet → `Undetermined`. [`request`]
+//!   asks through `Geolocator::RequestAccessAsync`, which shows Windows'
+//!   "Let Windows and apps access your location?" prompt when undecided.
+//! - **Camera / microphone** — `Unsupported` (usable): the capturing SDKs
+//!   read the privacy switch when they open the device and report a denial
+//!   as their own error.
 
 use windows::core::{HRESULT, HSTRING};
+use windows::Devices::Geolocation::{GeolocationAccessStatus, Geolocator};
+use windows::Security::Authorization::AppCapabilityAccess::{AppCapability, AppCapabilityAccessStatus};
 use windows::UI::Notifications::{NotificationSetting, ToastNotificationManager};
 
 use super::{Permission, PermissionStatus};
@@ -23,12 +32,48 @@ use super::{Permission, PermissionStatus};
 pub(super) async fn status(permission: Permission) -> PermissionStatus {
     match permission {
         Permission::Notifications => notifications(),
+        Permission::LocationWhenInUse | Permission::LocationAlways => capability("location"),
         _ => PermissionStatus::Unsupported,
     }
 }
 
 pub(super) async fn request(permission: Permission) -> PermissionStatus {
-    status(permission).await
+    match permission {
+        Permission::LocationWhenInUse | Permission::LocationAlways => {
+            if status(permission).await != PermissionStatus::Undetermined {
+                return status(permission).await;
+            }
+            match Geolocator::RequestAccessAsync() {
+                Ok(op) => match op.await {
+                    Ok(GeolocationAccessStatus::Allowed) => PermissionStatus::Granted,
+                    Ok(GeolocationAccessStatus::Denied) => PermissionStatus::Denied,
+                    _ => capability("location"),
+                },
+                Err(_) => capability("location"),
+            }
+        }
+        _ => status(permission).await,
+    }
+}
+
+/// A privacy-settings capability's state, without prompting.
+fn capability(name: &str) -> PermissionStatus {
+    match AppCapability::Create(&HSTRING::from(name)).and_then(|c| c.CheckAccess()) {
+        Ok(access) => from_access(access),
+        Err(_) => PermissionStatus::Unsupported,
+    }
+}
+
+fn from_access(access: AppCapabilityAccessStatus) -> PermissionStatus {
+    match access {
+        AppCapabilityAccessStatus::Allowed => PermissionStatus::Granted,
+        AppCapabilityAccessStatus::DeniedByUser => PermissionStatus::Denied,
+        AppCapabilityAccessStatus::DeniedBySystem => PermissionStatus::Restricted,
+        AppCapabilityAccessStatus::UserPromptRequired => PermissionStatus::Undetermined,
+        // Packaged apps that did not declare it; an unpackaged app never
+        // sees this. Leave the decision to the capturing API.
+        _ => PermissionStatus::Unsupported,
+    }
 }
 
 fn notifications() -> PermissionStatus {
@@ -81,5 +126,24 @@ mod tests {
         assert_eq!(s, PermissionStatus::Granted);
         assert_eq!(pollster::block_on(request(Permission::Notifications)), s);
         assert_eq!(pollster::block_on(status(Permission::Camera)), PermissionStatus::Unsupported);
+    }
+
+    #[test]
+    fn capability_access_maps_to_statuses() {
+        assert_eq!(from_access(AppCapabilityAccessStatus::Allowed), PermissionStatus::Granted);
+        assert_eq!(from_access(AppCapabilityAccessStatus::DeniedByUser), PermissionStatus::Denied);
+        assert_eq!(from_access(AppCapabilityAccessStatus::DeniedBySystem), PermissionStatus::Restricted);
+        assert_eq!(from_access(AppCapabilityAccessStatus::UserPromptRequired), PermissionStatus::Undetermined);
+    }
+
+    /// Location read `Unsupported` on Windows, though Windows 11 has a real
+    /// location privacy setting and prompt. The status is now the setting's
+    /// (read without prompting) — on the test VM, whatever it is, never
+    /// `Unsupported`.
+    #[test]
+    fn regression_windows_location_status_is_the_privacy_setting() {
+        let s = pollster::block_on(status(Permission::LocationWhenInUse));
+        assert_ne!(s, PermissionStatus::Unsupported);
+        assert_eq!(pollster::block_on(status(Permission::LocationAlways)), s);
     }
 }

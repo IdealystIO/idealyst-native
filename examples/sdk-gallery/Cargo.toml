@@ -27,6 +27,7 @@ notifications = { workspace = true }
 webview = { workspace = true }
 video = { workspace = true }
 audio = { workspace = true }
+location = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "SDK Gallery"

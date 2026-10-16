@@ -190,13 +190,18 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
-// Fallback for every remaining target with no geolocation backend (desktop
-// Windows, the host running `cargo test` on a non-Linux host).
+// Windows: WinRT `Windows.Devices.Geolocation`.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[path = "windows.rs"]
+mod imp;
+
+// Fallback for every remaining target with no geolocation backend (the host
+// running `cargo test` on another desktop).
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 mod imp {
     use super::{BoxedCallback, LocationError, Position};

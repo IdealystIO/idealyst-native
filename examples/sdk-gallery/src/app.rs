@@ -27,6 +27,7 @@ pub fn app() -> Element {
                 WebViewPanel()
                 VideoPanel()
                 AudioPanel()
+                LocationPanel()
             }
         }
     }
@@ -233,6 +234,36 @@ pub fn WebViewPanel() -> Element {
                 .with_style(styles::WebFill())
                 .bind(handle.clone())
                 .into_element() }
+            }
+            Status(line = rx!(status.get()))
+        }
+    }
+}
+
+/// `location` — one fix, and a live watch.
+#[component]
+pub fn LocationPanel() -> Element {
+    let status = signal("No fix requested.".to_string());
+    // Numbered so a repeat request that lands on the same position still
+    // reads as a new answer.
+    let fixes = Rc::new(std::cell::Cell::new(0u32));
+    let locate = Rc::new(move || {
+        status.set("Locating…".to_string());
+        let fixes = fixes.clone();
+        spawn_async(async move {
+            status.set(match location::current().await {
+                Ok(p) => {
+                    fixes.set(fixes.get() + 1);
+                    format!("Fix #{}: {:.5}, {:.5} (±{:.0} m)", fixes.get(), p.latitude, p.longitude, p.accuracy_m)
+                }
+                Err(e) => format!("No fix: {e}"),
+            });
+        });
+    }) as Rc<dyn Fn()>;
+    ui! {
+        Panel(title = "location".to_string()) {
+            view(style = styles::Row()) {
+                Button(label = "Get location".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = locate)
             }
             Status(line = rx!(status.get()))
         }

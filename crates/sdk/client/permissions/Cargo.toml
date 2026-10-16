@@ -54,7 +54,7 @@ ndk-context = "0.1"
 # AppUserModelID (`backend_windows::app_identity`).
 [target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
 backend-windows = { workspace = true }
-windows = { version = "0.62", features = ["UI_Notifications"] }
+windows = { version = "0.62", features = ["UI_Notifications", "Devices_Geolocation", "Security_Authorization_AppCapabilityAccess", "Foundation"] }
 
 [target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
 pollster = "0.4"
