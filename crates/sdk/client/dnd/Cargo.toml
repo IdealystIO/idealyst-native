@@ -32,7 +32,7 @@ license.workspace = true
 #
 # *Cross-application* drag (drag a file out to Finder, accept a drop from
 # another app) and the browser's native HTML5 drag/`DataTransfer` are a
-# separate, additive capability: they require new `Backend` trait methods on
+# separate, additive capability: they require new capability-trait methods on
 # every backend and render through native OS chrome that differs per platform
 # by design. The author-facing API here is deliberately strategy-agnostic so
 # a native driver can slot in behind it later without changing call sites —

@@ -2,14 +2,14 @@
 //! navigator — the implementation behind
 //! `runtime_vocabulary::handlers::nav_native_push`.
 //!
-//! # What this restores
+//! # Why a presenter
 //!
-//! The outlet-model rewrite left every stack reveal as one
-//! direction-blind `clear_children` + `insert` on the outlet. That is
-//! correct but inert: no push/pop animation, and — the part that is not
-//! cosmetic — no interactive swipe-back and no system Back integration.
-//! This seats a real `UINavigationController` inside the outlet and
-//! routes the five direction-tagged reveals at it.
+//! Without one, every stack reveal is one direction-blind
+//! `clear_children` + `insert` on the outlet: correct but inert — no
+//! push/pop animation and, beyond cosmetics, no interactive swipe-back
+//! and no system Back integration. This seats a real
+//! `UINavigationController` inside the outlet and routes the five
+//! direction-tagged reveals at it.
 //!
 //! # Division of labour with the handler
 //!
@@ -335,8 +335,8 @@ pub fn install() {
 mod tests {
     use super::replace_move;
 
-    /// CrewForge kiosk, 2026-10-14: `replace` from a pushed step cut to
-    /// the next step with no slide, while push and pop animated.
+    /// Regression: `replace` from a pushed step cut to the next step with
+    /// no slide, while push and pop animated.
     #[test]
     fn regression_replace_to_a_different_screen_animates() {
         let mut believed = vec!["pin_pad", "picker"];

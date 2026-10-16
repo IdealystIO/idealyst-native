@@ -13,8 +13,8 @@
 //! [`Transport::Other`] when it (or a usable field) is missing. We never key
 //! online-ness off it — only the transport hint.
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3); the listeners are `web_glue::dom::Listener`s.
+//! Every browser call is a web-glue binding declared here;
+//! the listeners are `web_glue::dom::Listener`s.
 
 use std::rc::Rc;
 

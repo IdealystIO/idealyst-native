@@ -51,8 +51,7 @@ const WIDE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="120px" heig
 
 /// The mounted wrapper carries the markup and the external-kind marker,
 /// and the bound handle's `intrinsic_size` reads the `<svg>` behind the
-/// host node. The host node is a `web_glue::dom::Node` (own-web-bindings
-/// phase 2b); an op that downcast it to any other type would get `None`
+/// host node. The host node is a `web_glue::dom::Node`; an op that downcast it to any other type would get `None`
 /// and silently report no size.
 #[wasm_bindgen_test]
 async fn mounts_markup_and_reads_intrinsic_size_through_the_host_node() {

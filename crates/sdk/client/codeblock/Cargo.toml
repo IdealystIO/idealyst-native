@@ -52,11 +52,6 @@ host-mock = { path = "../../../dev/host-mock" }
 # constructing the `RustCodeBlock` view and feeding it a
 # SpannableString, plus its `Host` impl so `Registry<AndroidBackend>`
 # resolves. Target-gated so non-Android targets don't link it.
-#
-# COORDINATION (runtime-v2 deletion wave): `` is
-# still required because the backends' `Host` + caps impls are behind
-# that feature. Drop the forward once the backend crates make them
-# unconditional.
 [target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
 backend-android-mobile = { workspace = true }
 jni = "0.21"

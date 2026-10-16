@@ -41,8 +41,6 @@ pub(crate) struct NavigatorEntry {
 
 thread_local! {
     /// Per-instance registry keyed by the container's JObject* pointer.
-    /// Mirrors what used to live on `AndroidBackend.navigator_instances`;
-    /// moved here so the SDK owns it.
     pub(crate) static NAVIGATOR_INSTANCES: RefCell<HashMap<usize, NavigatorEntry>> =
         RefCell::new(HashMap::new());
 }
@@ -211,7 +209,7 @@ pub(crate) fn create(
 
     // NOTE: we DO NOT call `mount_screen` here. The framework holds
     // `backend.borrow_mut()` for the entire create call, and
-    // `mount_screen` re-enters the build walker which also
+    // `mount_screen` re-enters the build, which also
     // borrow_muts — double borrow → panic. `attach_initial` is the
     // hook the framework calls *after* create returns, with the
     // already-built initial screen node.

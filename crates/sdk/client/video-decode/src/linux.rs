@@ -900,9 +900,8 @@ mod tests {
     /// pull one sample through the SAME action-signal + `push_sample` path the
     /// live decoder uses, and return the frame it wrote into a `MediaStream`.
     /// No file, no device — the headless proof that the appsink pull + RGBA map
-    /// works, and the core regression guard (against the old stub this whole
-    /// module — and therefore this test — did not exist, so the backend returned
-    /// `Unsupported` for everything).
+    /// works, and the core regression guard against a backend that returns
+    /// `Unsupported` for everything.
     fn pull_one_videotestsrc_frame(
         w: u32,
         h: u32,
@@ -1008,9 +1007,8 @@ mod tests {
 
     /// End-to-end via the PUBLIC API: opening garbage bytes must fail with a
     /// typed error and, crucially, must NOT return `Unsupported` — proving the
-    /// Linux backend (not the stub) is the one the cfg cascade selected. This is
-    /// the test that FAILS against the old `stub.rs` (which returned
-    /// `Unsupported` for every input).
+    /// Linux backend (not the stub, which returns `Unsupported` for every
+    /// input) is the one the cfg cascade selected.
     #[tokio::test]
     async fn public_open_reaches_linux_backend_not_stub() {
         let dec = crate::VideoDecoder::new();

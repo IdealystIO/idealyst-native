@@ -3,9 +3,8 @@
 //! Covers BOTH source kinds, mirroring iOS:
 //!
 //! - **`MediaContent::Url`** (a recorded file / remote URL): an `AVPlayer`
-//!   driving an `AVPlayerLayer` sublayer of the host view's root layer. This is
-//!   what makes the whiteboard's recording preview play — before it, a URL
-//!   source no-op'd and the preview showed only its dark stage box.
+//!   driving an `AVPlayerLayer` sublayer of the host view's root layer (what a
+//!   recording preview plays through).
 //! - **`MediaContent::Stream`** (a live `camera` / `screen-recorder` feed): the
 //!   universal CPU CGImage path (and IOSurface zero-copy fast-path) pushing
 //!   frames into the root CALayer's `contents`.
@@ -15,8 +14,7 @@
 //!
 //! Mechanism notes:
 //! - AppKit's `NSView` is **not** layer-backed by default — we `setWantsLayer:
-//!   true` before touching `.layer`, or it's nil (see
-//!   `project_macos_appkit_uikit_diffs`, gotcha #3).
+//!   true` before touching `.layer`, or it's nil.
 //! - `AVPlayerLayer` doesn't auto-track its host view's bounds; we size it from
 //!   the view's `bounds` every frame in a `raf_loop_scoped` (an `Effect`
 //!   reading `bounds` imperatively tracks no signal, so it would fire once at
@@ -106,8 +104,8 @@ struct VideoEntry {
 
 thread_local! {
     /// view-pointer → AVPlayer side-table. Populated by `build_video` at mount;
-    /// entries are never removed (matches the iOS module's v1 leak model — SDK
-    /// v2 swaps to an associated object that releases on dealloc).
+    /// entries are never removed (the iOS module's leak model; an Obj-C
+    /// associated object that releases on dealloc would fix it).
     static PLAYER_TABLE: RefCell<HashMap<usize, VideoEntry>> =
         RefCell::new(HashMap::new());
 }

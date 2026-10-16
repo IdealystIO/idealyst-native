@@ -12,8 +12,8 @@
 //! the dispatch / delegate thread, and it works on the single-threaded wasm
 //! run loop too (the value is simply set inline there).
 //!
-//! Allowed to be unused on backends that don't need it (the desktop stub) —
-//! cfg gating compiles the module on every target but only web/apple use it.
+//! Allowed to be unused on backends that don't need it — the module compiles
+//! on every target but only the web and apple backends use it.
 
 #![allow(dead_code)]
 

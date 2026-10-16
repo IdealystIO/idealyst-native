@@ -4,7 +4,7 @@
 //! start callback did `scanner_sig.set(Some(scanner))` and then started the
 //! loop by reading `scanner_sig.get()` in the SAME turn. `set` only stages a
 //! write until the driver flushes, so that read returned the old `None` and
-//! the loop ended before its first `next()`. `start_scan` now takes the first
+//! the loop ended before its first `next()`. `start_scan` takes the first
 //! `next()` from the local scanner.
 //!
 //! Driven here exactly as the start callback drives it — `start_scan` inside

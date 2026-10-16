@@ -23,8 +23,8 @@ pub enum CameraError {
     #[error("requested camera configuration is unsupported: {0}")]
     UnsupportedConfig(String),
 
-    /// Capture isn't implemented for this build target at all (e.g. a
-    /// desktop Linux/Windows build, which has no camera backend yet).
+    /// Capture isn't implemented for this build target at all (any target
+    /// other than web, iOS, macOS, Android, Linux and Windows).
     #[error("camera capture is not supported on this platform")]
     Unsupported,
 

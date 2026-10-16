@@ -211,8 +211,8 @@ mod tests {
         assert!((later - now - 600_000_000).abs() < 10_000_000, "{now} {later}");
     }
 
-    /// Windows used the no-op stub: `notify` "succeeded" and showed nothing,
-    /// `schedule` scheduled nothing. Now a scheduled toast is really in the
+    /// The bug: Windows fell to the no-op stub — `notify` "succeeded" and
+    /// showed nothing, `schedule` scheduled nothing. A scheduled toast is really in the
     /// OS schedule under its id until cancelled. (A shown toast cannot be
     /// read back reliably from a test process — the history only lists
     /// toasts still in Action Center — so the schedule is what is checked.)

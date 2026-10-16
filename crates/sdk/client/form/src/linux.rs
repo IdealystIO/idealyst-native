@@ -5,8 +5,8 @@
 //! GTK container equivalent — GTK apps wire the return key and submission
 //! per-field / per-button, not on a wrapping widget. So the Linux `Form`
 //! is a plain passthrough container: the framework parents the author's
-//! children into it and the external layout engine lays them out,
-//! exactly like the iOS (`UIView`) and Android (`FrameLayout`) leaves.
+//! children into it and the external layout engine lays them out, the
+//! same posture as the placeholder path on other native hosts.
 //! The `on_submit` closure is NOT auto-triggered here — submission is
 //! fired by the author's submit `Button` calling `on_submit` directly.
 //!
@@ -19,8 +19,7 @@
 //! node but never the GTK widget, so the form's children would compute a
 //! layout yet never appear. `IdealystView` is the same widget
 //! `create_view` returns for every framework `view`, so the form node
-//! behaves like an ordinary passthrough view — matching iOS's plain
-//! `UIView` and Android's `FrameLayout`.
+//! behaves like an ordinary passthrough view.
 
 use crate::{FormOps, FormProps};
 use backend_linux::{IdealystView, LinuxBackend, LinuxNode};
@@ -28,9 +27,7 @@ use gtk4::prelude::*;
 
 pub(crate) static OPS: &dyn FormOps = &LinuxFormOps;
 
-/// Register the Form handler against a `LinuxBackend`. One-line call from
-/// app bootstrap so `Form` elements lower to the native passthrough
-/// container.
+/// Build the Linux `Form` node: the native passthrough container.
 pub(crate) fn build_form(b: &mut LinuxBackend) -> LinuxNode {
     // Plain container view. `IdealystView` is the framework's own
     // container widget, so `register_external_view` gives it a Taffy

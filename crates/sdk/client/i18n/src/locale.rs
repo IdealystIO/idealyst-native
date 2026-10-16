@@ -6,8 +6,8 @@
 //! the owning **world**'s context (`provide`/`inject`), not in a
 //! thread-lifetime global.
 //!
-//! Why per-world and not a thread-local `OnceCell<Signal<_>>` (what this
-//! module used to be): signal handles route to the world that created them,
+//! Why per-world and not a thread-local `OnceCell<Signal<_>>`: signal
+//! handles route to the world that created them,
 //! worlds are transient (one per SSR request), and a read against a dropped
 //! world panics. A thread-cached signal would therefore leak one request's
 //! locale into the next on a reused thread, and blow up once the first
@@ -173,8 +173,8 @@ mod tests {
         });
     }
 
-    /// Regression: the locale signal used to be a thread-lifetime
-    /// `OnceCell<Signal<_>>`, so a second world (an SSR request on a reused
+    /// Regression: with the locale signal in a thread-lifetime
+    /// `OnceCell<Signal<_>>`, a second world (an SSR request on a reused
     /// thread) inherited the FIRST world's slot — and reading a dropped
     /// world's slot panics. Each world must mint its own, seeded from the
     /// thread's current code so the SSG loop's per-locale choice carries over.

@@ -1,10 +1,5 @@
-//! UINavigationBar / navigationItem chrome configuration.
-//!
-//! Moved verbatim from `backend-ios-mobile::imp::mod` after the
-//! navigator-substrate refactor. The shape changed in one place: the
-//! `options` argument is now the helper crate's
-//! `IosScreenOptions` instead of the deleted old-core `ScreenOptions`
-//! struct — every field is identical, only the type's home moved.
+//! UINavigationBar / navigationItem chrome configuration for the legacy
+//! stack engine, driven by the crate's [`IosScreenOptions`].
 
 use crate::{BarButton, IosScreenOptions};
 use backend_ios::CallbackTarget;

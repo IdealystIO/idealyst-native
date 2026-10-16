@@ -6,8 +6,8 @@
 //! Plaintext, and `localStorage` is readable by any script on the origin —
 //! never put secrets here (see the crate docs).
 //!
-//! The browser calls are web-glue bindings declared here (own-web-bindings
-//! phase 3). Every one that touches `localStorage` is `#[catch]`: reading
+//! The browser calls are web-glue bindings declared here.
+//! Every one that touches `localStorage` is `#[catch]`: reading
 //! the property throws a `SecurityError` where storage is blocked (a
 //! sandboxed iframe, some privacy modes) and `setItem` throws a
 //! `QuotaExceededError` when the origin's quota is full. Both must come

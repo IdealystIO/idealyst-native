@@ -189,10 +189,9 @@ impl AudioChannel {
             };
             // Every lock in this crate recovers from poisoning. A subscriber
             // callback is author code: if it panics while this guard is held
-            // the mutex is poisoned, and the old `.unwrap()` then panicked
-            // again in `AudioSubscription::drop` DURING that unwind — an
-            // abort that left the process hung on exit (hit by the
-            // audio-engine tests). The guarded data stays consistent through
+            // the mutex is poisoned, and an `.unwrap()` would panic again in
+            // `AudioSubscription::drop` DURING that unwind — an abort that
+            // leaves the process hung on exit. The guarded data stays consistent through
             // a callback panic (the list isn't mid-edit while callbacks run),
             // so taking it back is safe.
             let mut subs = self.subscribers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -484,8 +483,8 @@ mod tests {
     use super::*;
 
     /// Regression: a subscriber that panics poisons the subscriber mutex;
-    /// dropping its subscription during that unwind used to panic again
-    /// (`.lock().unwrap()`), aborting the process. Now the drop and later
+    /// dropping its subscription during that unwind must not panic again
+    /// (`.lock().unwrap()`) and abort the process. The drop and later
     /// writes both proceed.
     #[test]
     fn regression_panicking_subscriber_does_not_abort_on_unsubscribe() {

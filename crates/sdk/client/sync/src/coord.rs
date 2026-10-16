@@ -492,8 +492,7 @@ fn handle_msg<T: Clone + PartialEq + Serialize + DeserializeOwned + Merge + 'sta
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    //! The browser calls are web-glue bindings declared here
-    //! (own-web-bindings phase 3).
+    //! The browser calls are web-glue bindings declared here.
 
     use web_glue::{string, Closure, JsValue};
 

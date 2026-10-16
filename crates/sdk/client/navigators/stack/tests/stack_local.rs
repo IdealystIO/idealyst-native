@@ -117,8 +117,7 @@ fn mount_counted(h: &Harness, c: Counters, retention: StackRetention) -> App {
     }
 }
 
-/// `(active_route, active_path, depth, can_go_back)` — the snapshot the
-/// old-core `NavControl::nav_state_snapshot` served, read here off the
+/// `(active_route, active_path, depth, can_go_back)`, read off the
 /// signals the author chrome reads.
 fn nav_state(h: &Harness, app: &App) -> (&'static str, String, usize, bool) {
     let ctx = app.ctx.borrow();
@@ -190,7 +189,7 @@ fn retain_keeps_covered_screen_alive_across_push_pop() {
 
 /// Cold-start deep link: the launch path resolves to its own screen, and
 /// the configured initial is reconstructed BENEATH it so Back can return
-/// to the index. The old handler seated the attached screen as
+/// to the index. The bug: the handler seated the attached screen as
 /// `route: initial_route / path: initial_path` at depth 1 — the entry was
 /// mislabeled, `can_go_back` stayed false, and Back could never return.
 #[test]

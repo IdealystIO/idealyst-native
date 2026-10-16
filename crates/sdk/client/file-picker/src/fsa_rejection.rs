@@ -6,8 +6,8 @@
 //!
 //! # The bug this prevents
 //!
-//! `pick()` used to fall back to the hidden `<input type=file>` on ANY
-//! rejection other than `AbortError`. A rejection that arrives AFTER the
+//! Falling back to the hidden `<input type=file>` on ANY rejection other
+//! than `AbortError` is wrong: a rejection that arrives AFTER the
 //! `showOpenFilePicker()` dialog was shown — the user already chose a file —
 //! then opened a second dialog: the first choice was thrown away, and
 //! cancelling the second resolved the whole call as dismissed. Seen in VS

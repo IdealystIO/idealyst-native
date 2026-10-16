@@ -18,8 +18,8 @@
 //!
 //! # Provenance
 //!
-//! These are line-for-line ports of the tick selection charts-core used to
-//! take from `plotters` 0.3.7 (`coord::ranged1d::types::numeric`,
+//! These are line-for-line ports of the tick selection in `plotters` 0.3.7
+//! (`coord::ranged1d::types::numeric`,
 //! `combinators::logarithmic`, `types::datetime`, and `data::float` for the
 //! label printer). The port exists because plotters links `wasm-bindgen`
 //! and `web-sys` on wasm32 unconditionally, and its `datetime` feature
@@ -452,11 +452,11 @@ const NS_PER_HOUR: u64 = 3_600 * NS_PER_SEC;
 const NS_PER_DAY: u64 = 24 * NS_PER_HOUR;
 const MS_PER_DAY: i64 = 86_400_000;
 /// Spans longer than this (three 365-day years) step in calendar months or
-/// years. It is the threshold at which labels always switched to `%Y`.
+/// years. It is plotters' threshold for switching labels to `%Y`.
 const CALENDAR_SPAN_MS: i64 = 3 * 365 * MS_PER_DAY;
 /// On spans longer than this, sub-daily ticks that fall on midnight are
-/// labelled with the date (the threshold where labels used to switch to
-/// `%b %d` wholesale).
+/// labelled with the date (plotters' threshold for switching to `%b %d`
+/// wholesale).
 const DATED_MIDNIGHT_SPAN_MS: i64 = 2 * MS_PER_DAY;
 
 /// The month steps tried, finest first, before stepping in whole years.

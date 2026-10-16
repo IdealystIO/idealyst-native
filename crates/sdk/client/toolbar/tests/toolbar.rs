@@ -23,8 +23,8 @@ use toolbar::prelude::*;
 
 fn harness() -> Harness {
     // The SDK's boot registration seam — the same fn an app passes to
-    // `host_appkit::newcore::run_with` (macOS) or any other new-core
-    // boot entry's register argument.
+    // `host_appkit::newcore::run_with` (macOS) or any other boot entry's
+    // register argument.
     Harness::with_registry(|r| toolbar::register(r))
 }
 

@@ -682,13 +682,13 @@ where
 /// registry — the real `<video>` renderer.
 ///
 /// Registry-GENERIC with an internal downcast, matching the native arm
-/// above and `canvas_native::register` on every target. It used to take
-/// a concrete `Registry<WebBackend>`, which forced any app registering
-/// video to carry a `#[cfg(target_arch = "wasm32")]` twin of its own
-/// registration seam with a different *signature* — and that shape
-/// cannot cross `idealyst::SceneExtensions::register<H: SceneHost>`,
-/// the one seam `entry!` boots every platform through. Uniform
-/// signature, per-backend mechanism (CLAUDE.md §7).
+/// above and `canvas_native::register` on every target. Not a concrete
+/// `Registry<WebBackend>`: that would force any app registering video to
+/// carry a `#[cfg(target_arch = "wasm32")]` twin of its own registration
+/// seam with a different *signature*, and that shape cannot cross
+/// `idealyst::SceneExtensions::register<H: SceneHost>`, the one seam
+/// `entry!` boots every platform through. Uniform signature, per-backend
+/// mechanism (CLAUDE.md §7).
 #[cfg(target_arch = "wasm32")]
 pub fn register<H>(registry: &mut Registry<H>)
 where

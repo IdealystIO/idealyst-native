@@ -89,7 +89,7 @@ pub struct SceneDevice {
     active_mask: Option<ActiveMask>,
     /// Monotonic id for transient transparency-group layers.
     next_layer_id: u32,
-    /// Per-font raw bytes + id, keyed by `font_cache_key`, so a run reuses one
+    /// Per-font raw bytes + id, keyed by the run's `font_key`, so a run reuses one
     /// `FontResource` (an `Arc` clone) instead of re-extracting bytes per glyph.
     fonts: HashMap<u128, FontResource>,
     /// Compositing params for each open transparency group, parallel to the part

@@ -40,7 +40,7 @@
 
 // Lets code inside this crate refer to itself by its external name, so the
 // captured `recipes` source shows the `i18n::i18n! { … }` invocation an app
-// author writes verbatim (mirrors `extern crate self as runtime_core` in core).
+// author writes verbatim.
 // The generated message code also references the crate as `::i18n`, so this is
 // what lets an in-crate `i18n! { … }` (the recipe) resolve at all.
 extern crate self as i18n;

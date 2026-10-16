@@ -2,7 +2,7 @@
 //!
 //! Builds a real embedded browser via `webkit6::WebView` (the GTK4 port
 //! of WebKitGTK, linking `webkitgtk-6.0`). This is the direct analogue
-//! of the iOS leaf's `WKWebView` and the web leaf's `<iframe>` — a full
+//! of the web leaf's `<iframe>` and the Windows WebView2 leaf — a full
 //! rendering engine, not the framework's `External` placeholder.
 //!
 //! # Source resolution + reactivity
@@ -13,10 +13,10 @@
 //! reactive URL. A string that looks like inline HTML markup (starts with
 //! `<`) is rendered via `load_html`; anything else is treated as a URI and
 //! passed to `load_uri`. This keeps the canonical case (a URL, matching
-//! the web/iOS leaves) identical while still honoring an inline-HTML
+//! the web leaf) identical while still honoring an inline-HTML
 //! source on this backend.
 //!
-//! # Callbacks (parity with the web / iOS leaves)
+//! # Callbacks (parity with the web / Windows leaves)
 //!
 //! * `on_load` — fires from `load-changed` when the load reaches
 //!   `LoadEvent::Finished` (the iframe `load` / `didFinishNavigation:`
@@ -28,13 +28,12 @@
 //!   (which listens for `window.message` events), a `UserScript` injected
 //!   at document-start wraps `window.postMessage` so it ALSO fires
 //!   `window.webkit.messageHandlers.idealyst.postMessage(payload)` — the
-//!   channel this handler listens on. Byte-for-byte the same shim the iOS
-//!   leaf installs.
+//!   channel this handler listens on.
 //!
 //! # Imperative ops
 //!
 //! `reload` and `post_message` (native → page, via a synthetic
-//! `MessageEvent` dispatched with `evaluate_javascript`). Like the iOS
+//! `MessageEvent` dispatched with `evaluate_javascript`). Like the Windows
 //! leaf, `execute_js` stays the trait-default error: WebKitGTK's
 //! `evaluate_javascript` is callback-only (async), and honoring the
 //! synchronous `execute_js` signature would mean blocking the GTK main
@@ -74,8 +73,8 @@ const HANDLER_NAME: &str = "idealyst";
 
 /// Injected at document-start: rebroadcasts the page's `window.postMessage`
 /// to the `idealyst` script-message channel so `on_message` fires. The
-/// original `postMessage` behavior is preserved. Identical to the iOS
-/// leaf's shim — same page-side contract on every backend.
+/// original `postMessage` behavior is preserved — the same page-side
+/// contract as every other leaf.
 const POST_MESSAGE_SHIM_JS: &str = r#"
 (function () {
   if (window.__idealyst_pm_shim_installed) return;
@@ -111,8 +110,7 @@ pub(crate) fn build_web_view(props: &Rc<WebViewProps>, b: &mut LinuxBackend) -> 
 
     // Inject the postMessage shim at document-start into the top frame
     // only — injecting into sub-frames would loop their own postMessage
-    // calls back to native (same reasoning as the iOS leaf's
-    // `forMainFrameOnly: YES`).
+    // calls back to native.
     let shim = webkit6::UserScript::new(
         POST_MESSAGE_SHIM_JS,
         webkit6::UserContentInjectedFrames::TopFrame,
@@ -125,7 +123,7 @@ pub(crate) fn build_web_view(props: &Rc<WebViewProps>, b: &mut LinuxBackend) -> 
     // page → native. The handler name is `idealyst`, matching the shim's
     // channel. The payload arrives as a JSC `Value`; we serialize it to
     // JSON (falling back to its string form) so the callback receives the
-    // same opaque-string contract as the web/iOS leaves.
+    // same opaque-string contract as the other leaves.
     if let Some(cb) = props.on_message.clone() {
         ucm.connect_script_message_received(Some(HANDLER_NAME), move |_ucm, value| {
             let payload = value
@@ -166,7 +164,7 @@ pub(crate) fn build_web_view(props: &Rc<WebViewProps>, b: &mut LinuxBackend) -> 
     let id = node.id();
     WEBVIEWS.with(|m| m.borrow_mut().insert(id, web_view.clone()));
 
-    // Reactive URL. Owned by the walker's active scope (the framework runs
+    // Reactive URL. Owned by the mount's active scope (the framework runs
     // this handler inside it), so it survives past handler return and
     // re-fires when a signal the URL closure reads changes.
     let web_view_for_effect = web_view.clone();
@@ -235,8 +233,7 @@ impl WebViewOps for LinuxWebViewOps {
 
     // `execute_js` stays the trait-default Err — WebKitGTK's
     // `evaluate_javascript` is callback-only and can't be made synchronous
-    // without blocking the GTK main loop, which we refuse. Same posture as
-    // the iOS leaf's WKWebView.
+    // without blocking the GTK main loop, which we refuse.
 }
 
 /// Look up the `webkit6::WebView` for `node` and run `f` against it. No-op
@@ -257,8 +254,7 @@ fn with_web_view(node: &dyn Any, f: impl FnOnce(&webkit6::WebView)) {
 /// Escape a Rust string for embedding inside a JS double-quoted string
 /// literal — the four characters that would otherwise break the literal.
 /// Callers needing arbitrary structured payloads should `JSON.stringify`
-/// on the page side rather than rely on this for safety. Identical to the
-/// iOS leaf's helper so the outbound-message escaping is uniform.
+/// on the page side rather than rely on this for safety.
 fn escape_for_js_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {

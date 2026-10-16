@@ -95,7 +95,7 @@ pub fn lerp_f64(a: f64, b: f64, t: f32) -> f64 {
     a + (b - a) * t.clamp(0.0, 1.0) as f64
 }
 
-/// Cubic ease-in-out, exposed for a host that wants the old default curve
+/// Cubic ease-in-out, exposed for a host that wants a standard curve
 /// without pulling in the framework's `Easing`.
 ///
 /// NOT applied anywhere in this crate — see the module docs on pre-eased `t`.

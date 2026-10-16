@@ -43,9 +43,8 @@ pulldown-cmark = { version = "0.12", default-features = false }
 # runtime-server wire (recorder serializes it; the device deserializes).
 serde = { workspace = true }
 
-# Web handler self-registers a `WebExternalRegistrar` (the generic
-# `register` monomorphized to `WebBackend`), so the web backend must be a
-# named dependency on wasm32.
+# Only this crate's docs name `backend_web` (the generic `register` is
+# monomorphized to `WebBackend` by the app); no code here uses it.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 

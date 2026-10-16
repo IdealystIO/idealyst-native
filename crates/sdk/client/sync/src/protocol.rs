@@ -11,9 +11,9 @@
 //!   an idempotency key (safe retries) and a base revision (concurrency
 //!   detection).
 //!
-//! The app authors the server bodies for these (typically via the
-//! `sync_entity!` macro, which emits ordinary `#[server]` fns) and wires
-//! them to the engine through the [`Transport`] trait. Because the
+//! The app authors the server bodies for these as ordinary `#[server]` fns
+//! and wires them to the engine through the [`Transport`] trait (typically
+//! via the [`sync_transport!`](crate::sync_transport) macro). Because the
 //! messages are generic over `T`, the framework's existing `x-srv-schema`
 //! drift check (HTTP 426) catches incompatible-`T` deploys for free.
 
@@ -234,7 +234,8 @@ pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, SyncErro
 ///
 /// The engine is generic over this trait and never knows how the messages
 /// reach the server — the app implements `pull`/`push` by calling its own
-/// `#[server]` fns (the `sync_entity!` macro generates this impl). This is
+/// `#[server]` fns ([`sync_transport!`](crate::sync_transport) generates
+/// this impl). This is
 /// why the `sync` crate has no dependency on `server`: the protocol
 /// *types* are the only shared contract.
 pub trait Transport<T> {

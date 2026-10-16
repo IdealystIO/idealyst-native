@@ -1,10 +1,10 @@
 //! First-party **Swap** navigator SDK — a flat set of co-equal screens
 //! the user switches between (`Select`), with **author-supplied chrome**.
 //!
-//! This replaces the separate `tab` and `drawer` navigators. There is no
-//! push/pop depth: selecting a screen swaps the one visible screen. What
-//! used to be a "tab bar" or a "drawer panel" is now just ordinary author
-//! layout wrapped around the navigator's single **outlet** — the analog
+//! It covers both tabs and drawers. There is no push/pop depth: selecting
+//! a screen swaps the one visible screen. A "tab bar" or a "drawer panel"
+//! is ordinary author layout wrapped around the navigator's single
+//! **outlet** — the analog
 //! of react-router's `<Outlet/>`:
 //!
 //! ```ignore
@@ -31,10 +31,8 @@
 //! [`swap_navigator`](runtime_vocabulary::builders::swap_navigator)
 //! builder, and the runtime side is the vocabulary's own swap handler —
 //! installed on EVERY host by `register_builtins`. There are no
-//! per-backend twins to drift apart (the bug that made the old tab
-//! navigator panic on web), and no registration call for an app to
-//! forget: [`register`] exists only so historical bootstrap code keeps
-//! compiling.
+//! per-backend twins to drift apart, and no registration call for an app
+//! to forget.
 //!
 //! Construction lowers to the vocabulary builder, the layout closure
 //! adapts through the [`SwapNav`] world context the navigator mount
@@ -225,8 +223,8 @@ impl SwapBuilder for SwapNavigator {
         F: Fn(SwapContext) -> Element + 'static,
     {
         // The vocabulary layout closure takes no argument; the mount
-        // provides `SwapNav` for the build window — adapt it back into
-        // the old context-parameter shape.
+        // provides `SwapNav` for the build window — adapt it into the
+        // `SwapContext` parameter this SDK's `layout` takes.
         self.b = self.b.layout(move || {
             let nav = inject::<SwapNav>()
                 .expect("swap-navigator: SwapNav provided by the navigator mount");
@@ -268,12 +266,10 @@ impl ChildList for SwapNavigator {
 // NOTE: this SDK intentionally exposes NO registration seam. The swap
 // handler is a vocabulary built-in installed by `register_builtins` on
 // every host — including generic-registry (SSR / test) hosts — so there
-// is nothing for an app to register. The 1.0-era no-op `register` /
-// `register_generic` shims were removed in 1.1.0: an unconstrained
-// `fn register<B>(_: &mut B) {}` accepts a `&mut Registry<H>` happily,
-// so a caller who assumed the usual seam convention got a call that
-// compiled, did nothing, and sent them debugging a registration they
-// had already "fixed".
+// is nothing for an app to register. Don't add a no-op `register`: an
+// unconstrained `fn register<B>(_: &mut B) {}` accepts a
+// `&mut Registry<H>` happily, so a caller who assumed the usual seam
+// convention gets a call that compiles and does nothing.
 
 /// Convenience re-exports — glob-import to bring the builder, handle,
 /// screen options, and value types into scope, including the shared data

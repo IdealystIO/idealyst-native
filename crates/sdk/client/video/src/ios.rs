@@ -27,10 +27,8 @@
 //! Per-mount state lifetime: the AVPlayer, AVPlayerLayer, and the
 //! optional notification observer are retained in a thread-local
 //! side-table keyed by the host view's pointer. Entries are never
-//! removed — the same leak pattern the framework's prior built-in
-//! Video impl used. SDK v2 can swap this for an Obj-C associated
-//! object attached to the view (releases on dealloc); v1 keeps the
-//! simpler model so the surface ships now.
+//! removed — a known leak. An Obj-C associated object attached to the
+//! view (released on dealloc) would fix it.
 
 use crate::{MediaContent, VideoOps, VideoProps};
 // `backend-ios-mobile`'s `[lib].name` is `backend_ios` — historical
@@ -146,8 +144,8 @@ struct VideoEntry {
 
 
 /// Resolve a source to a URL for the AVPlayer path. A live `Stream` source
-/// has no native iOS player binding yet (that's the GPU/compositing phase);
-/// it resolves to no URL, leaving the player idle.
+/// resolves to no URL, leaving the player idle — streams display through the
+/// frame layer below instead.
 fn resolved_url(props: &VideoProps) -> Option<String> {
     match props.source.resolve() {
         MediaContent::Url(u) => Some(u),

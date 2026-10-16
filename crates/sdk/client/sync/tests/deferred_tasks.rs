@@ -194,7 +194,7 @@ fn regression_shared_partition_opened_in_a_build_becomes_owner_outside_the_world
     );
 
     // Becoming owner builds the owner partition, loads it, and syncs, all
-    // from a task. Before the fix this panicked creating signals.
+    // from a task (the regression: this panicked creating signals).
     run_tasks();
     world.flush();
     assert!(shared.leader_signal().get(), "native is always the owner");

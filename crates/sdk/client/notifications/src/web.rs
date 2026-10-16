@@ -30,8 +30,7 @@
 //! would slot in; the seam is structured (we probe for the SW registration)
 //! but delivery + the VAPID key stay app-owned.
 //!
-//! The browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3).
+//! The browser call is a web-glue binding declared here.
 
 use web_glue::string;
 

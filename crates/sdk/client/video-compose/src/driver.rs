@@ -11,8 +11,7 @@
 //! [`HeadlessCompositor`] live on the OWNER thread inside the [`raf_loop`]
 //! callback, which reads that atomic for the output size and reads the reactive
 //! params directly (we poll every frame, so no reactive subscription is needed —
-//! and we only ever READ signals, so there's no arena-borrow hazard). See
-//! `[[project_reactive_window_one_per_logical_update]]`.
+//! and we only ever READ signals, so there's no arena-borrow hazard).
 //!
 //! `raf_loop` needs a scheduler installed on the owner thread (a mounted app);
 //! with none (a bare unit test) it's inert, so tests drive [`Driver::tick`]

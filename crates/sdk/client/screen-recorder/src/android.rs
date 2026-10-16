@@ -289,8 +289,7 @@ pub extern "system" fn Java_io_idealyst_screenrecorder_RustScreenCaptureHelper_n
 /// of `width * height * 4` bytes (the shim strips the ImageReader plane's
 /// `rowStride` padding) in off-heap memory; we read it ZERO-COPY via
 /// `GetDirectBufferAddress` — no `byte[]` marshal and no Rust `Vec` alloc
-/// per frame (the old `convert_byte_array` path did both). Delivered on the
-/// shim's capture handler thread.
+/// per frame. Delivered on the shim's capture handler thread.
 ///
 /// # Safety
 /// Called by the JVM with a valid `env`/`class`; `buffer` is a direct

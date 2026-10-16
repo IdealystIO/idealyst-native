@@ -273,8 +273,8 @@ pub extern "system" fn Java_io_idealyst_camera_RustCamera2Helper_nativeError(
 /// `RGBA8` of `width * height * 4` bytes in off-heap memory the Kotlin
 /// side reuses across frames; we read it ZERO-COPY via
 /// `GetDirectBufferAddress` — no `byte[]` marshal across JNI and no
-/// per-frame Rust `Vec` allocation (the old `convert_byte_array` path
-/// did both, ~8 MB/frame each at 1080p). Delivered on the shim's
+/// per-frame Rust `Vec` allocation (each would cost ~8 MB/frame at
+/// 1080p). Delivered on the shim's
 /// ImageReader handler thread.
 ///
 /// # Safety

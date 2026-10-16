@@ -22,15 +22,11 @@ license.workspace = true
 # - Other targets: the External placeholder; use `canvas-vello`.
 
 [features]
-# VACUOUS — retained only so existing `features = ["self-register"]` dep
-# specs keep resolving. It used to gate an `inventory` ctor that
-# self-registered the handler at backend construction; the scene registry
-# is built explicitly at boot, so there is no ctor and nothing to gate.
-# (The old motivation was bundle size: the ctor was a link-time anchor
-# that pinned the rasterizer + glyph stack in a lazy web bundle's
-# `main.wasm`. With no ctor, delegate-only consumers like `canvas-vello`
-# reach `make_2d_rasterizer` without anchoring anything.) Safe to delete
-# once no dep spec names it.
+# VACUOUS — gates nothing; retained only so dep specs naming
+# `features = ["self-register"]` (including the workspace spec) keep
+# resolving. The handler is installed on the scene registry explicitly at
+# boot, so delegate-only consumers like `canvas-vello` reach
+# `make_2d_rasterizer` without anchoring the rasterizer in `main.wasm`.
 self-register = []
 # HYBRID-BRIDGE: wgpu. The public `make_2d_rasterizer` /
 # `publish_capture_stream` take a `web_sys::HtmlCanvasElement`, because
@@ -127,8 +123,8 @@ windows-numerics = "0.3"
 # substrate.
 host-mock = { path = "../../../../dev/host-mock" }
 
-# Unconditional in tests so the self-register gate tests can iterate the
-# registry even when the feature (and the optional runtime dep) is off.
+# No test in this crate references `inventory`; the self-register gate
+# tests it served are gone.
 inventory = "0.3"
 
 # Linux/GTK renderer — Cairo (GTK's own 2D engine, already linked by the

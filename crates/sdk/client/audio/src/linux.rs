@@ -477,10 +477,9 @@ impl PlaybackHandle {
 /// output device).
 ///
 /// Remote `http(s)` URLs are **progressively streamed** by `souphttpsrc`
-/// (parity with Android `MediaPlayer`, Apple `AVPlayer`, and the browser) —
-/// they are no longer read as a local file and no longer return a `Backend`
-/// error for being remote. A genuinely unreachable URL still fails honestly
-/// as `Backend`.
+/// (parity with Android `MediaPlayer`, Apple `AVPlayer`, and the browser),
+/// not read as a local file. A genuinely unreachable URL fails honestly as
+/// `Backend`.
 pub(crate) async fn prepare(source: AudioSource) -> Result<PreparedSound, AudioError> {
     ensure_gst()?;
 

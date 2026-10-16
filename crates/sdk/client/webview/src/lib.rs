@@ -611,10 +611,8 @@ mod web_leg {
         // Author-callback listeners (see `web_util`), each callback
         // wrapped to schedule_flush after it returns. They live exactly
         // as long as the mounted iframe: teardown detaches them and frees
-        // their closures. (They used to be parked behind an `Rc::into_raw`
-        // number on the element that nothing ever reclaimed — every
-        // mounted webview leaked its listeners, including a `message`
-        // listener on `window` that outlived the iframe.)
+        // their closures — including the `message` listener on `window`,
+        // which must not outlive the iframe.
         let listeners = crate::web_util::wire_listeners(
             &iframe,
             prim.props.on_message.clone().map(flush_after_msg),

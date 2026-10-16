@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn natural_orientation_is_sensor_only_for_both_cameras() {
-        // The pre-fix behavior is still right while held naturally.
+        // Held naturally, the rotation is the sensor's alone.
         for sensor in [0, 90, 180, 270] {
             assert_eq!(frame_rotation(sensor, R0, false), sensor);
             assert_eq!(frame_rotation(sensor, R0, true), sensor);

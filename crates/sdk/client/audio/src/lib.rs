@@ -79,8 +79,8 @@ use std::path::PathBuf;
 
 // Backend selector. Exactly one `imp` compiles per target; each supplies a
 // `PreparedSound` (held by `Sound`) and a `PlaybackHandle` (held by
-// `Playback`) whose `Drop` stops the sound. The desktop catch-all uses the
-// `unsupported` stub, which makes `load` return `NotSupported`.
+// `Playback`) whose `Drop` stops the sound. Any target without a backend uses
+// the `unsupported` stub, which makes `load` return `NotSupported`.
 #[cfg(target_arch = "wasm32")]
 #[path = "web.rs"]
 mod imp;

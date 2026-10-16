@@ -270,12 +270,12 @@ fn cell_helpers_reach_both_lowerings() {
 
 /// A cell styled REACTIVELY must still take a row overlay's axes.
 ///
-/// The read-then-replace pair this replaced (`cell_base_application` +
-/// [`set_cell_style`], the reader removed in 1.4.0) only ever saw a
-/// static `StyleProp::Sheet`, so it skipped such a cell in SILENCE — which
-/// is how a width-pinned column (its width moves under a resize drag, so
-/// its style has to be a closure) became the one column in a clickable
-/// row that never lit up on hover, with nothing logged. `map_cell_style`
+/// The bug: a read-then-replace pair (read the style, write it back with
+/// [`set_cell_style`]) only ever sees a static `StyleProp::Sheet`, so it
+/// skipped such a cell in SILENCE — a width-pinned column (its width moves
+/// under a resize drag, so its style has to be a closure) was the one
+/// column in a clickable row that never lit up on hover, with nothing
+/// logged. `map_cell_style`
 /// composes over the closure instead of replacing it, so the cell keeps
 /// its own reactive width AND takes the row's highlight.
 #[test]

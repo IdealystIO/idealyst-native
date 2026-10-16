@@ -601,8 +601,8 @@ impl Drop for StreamHandle {
 // ---------------------------------------------------------------------------
 // Permission. Delegated to the shared `permissions` SDK — the AVCaptureDevice
 // `authorizationStatusForMediaType:` / `requestAccessForMediaType:` grant code
-// that used to live here now lives in `permissions::imp` (apple.rs) under
-// `Permission::Camera`. This crate keeps only the CAPTURE code below.
+// lives in `permissions::imp` (apple.rs) under `Permission::Camera`. This
+// crate keeps only the CAPTURE code below.
 // ---------------------------------------------------------------------------
 
 pub(crate) async fn request_permission() -> Result<(), CameraError> {
@@ -740,7 +740,7 @@ pub(crate) async fn open(
         // Hand back the native handle source for the zero-copy display path
         // (IOSurface on macOS → `CALayer.contents`; CMSampleBuffer on iOS →
         // `AVSampleBufferDisplayLayer`). The CPU RGBA channel still serves
-        // `subscribe`rs; it's just no longer the display path.
+        // `subscribe`rs; it is not the display path.
         Ok((
             StreamHandle {
                 session,

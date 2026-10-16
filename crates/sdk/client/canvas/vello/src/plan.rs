@@ -98,7 +98,7 @@ pub(crate) fn plan_scene(ops: &[DrawOp]) -> ScenePlan<'_> {
     if i == ops.len() {
         // Every op (possibly none) was a Normal shape batch: the instanced pass
         // owns the whole frame, vello isn't run. An empty list is `Shapes(vec![])`
-        // — a transparent clear, the same cheap path the old fast path took.
+        // — a transparent clear, the cheapest path.
         ScenePlan::Shapes(prefix)
     } else if prefix.is_empty() {
         ScenePlan::Vello

@@ -559,9 +559,8 @@ pub(crate) async fn start(
 /// overlay subtree cannot be hidden from the recording; [`start`] logs that a
 /// mounted layer is captured inline.
 ///
-/// v2: the `Backend` mega-trait is gone and payload handlers install on a
-/// `runtime_scene::Registry`. The Linux recorder needs no scene handler —
-/// it captures through the portal, not through a mounted node — so this
+/// The Linux recorder needs no scene handler — it captures through the
+/// portal, not through a mounted node — so this
 /// stays a no-op and is generic over the host so app boot code can call
 /// `screen_recorder::register(&mut registry)` unconditionally.
 pub fn register<H>(_registry: &mut runtime_scene::Registry<H>)
@@ -584,8 +583,8 @@ mod tests {
     /// (`videoconvert ! videoscale ! videorate ! appsink(RGBA) ! new-sample !
     /// deliver_sample ! write_rgba8`) is byte-for-byte the production path. If
     /// this delivers a `64x48` `Rgba8` frame whose `data.len() ==
-    /// width*height*4`, the capture backend genuinely works; it fails against
-    /// the old `Unsupported` skeleton (which never wired a pipeline at all).
+    /// width*height*4`, the capture backend genuinely works; an `Unsupported`
+    /// stub that never wires a pipeline fails it.
     #[test]
     fn videotestsrc_delivers_mapped_rgba_frame() {
         ensure_gst().expect("gst init");

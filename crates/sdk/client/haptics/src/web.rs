@@ -1,5 +1,5 @@
 //! Web haptics — `navigator.vibrate(...)`, through a web-glue binding
-//! declared here (own-web-bindings phase 3).
+//! declared here.
 //!
 //! The Vibration API is the only web haptics primitive, and it's
 //! duration-only: there is **no** impact-style or notification-type concept,

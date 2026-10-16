@@ -7,9 +7,9 @@
 
 #![cfg(feature = "redis")]
 
-/// Regression: `IDEALYST_PUBSUB_BACKEND=redis` with no URL used to be a hard
-/// "URL is required" error. It now falls back to the app-installed
-/// `redis::Client`; when neither is present the error must name both fixes
+/// Regression: `IDEALYST_PUBSUB_BACKEND=redis` with no URL must not be a hard
+/// "URL is required" error; it falls back to the app-installed
+/// `redis::Client`. When neither is present the error must name both fixes
 /// so a misconfigured boot is diagnosable.
 #[tokio::test]
 async fn regression_env_redis_without_url_names_installed_client_fallback() {

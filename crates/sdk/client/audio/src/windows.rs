@@ -195,8 +195,8 @@ mod tests {
         v
     }
 
-    /// Windows used the NotSupported stub: `load` always failed. A WAV in
-    /// memory now loads and plays; garbage fails to load as `Decode`, a
+    /// The bug: Windows fell to the NotSupported stub, so `load` always
+    /// failed. A WAV in memory loads and plays; garbage fails to load as `Decode`, a
     /// missing file as `Backend`.
     #[test]
     fn regression_windows_loads_and_plays_audio() {

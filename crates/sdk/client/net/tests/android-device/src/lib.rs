@@ -1,15 +1,15 @@
 //! On-device regression probe for net's Android transport: a request
 //! `timeout` must be a deadline on the whole exchange and resolve
-//! `Error::Timeout` (it used to be ignored — a server that never answered
-//! hung the request forever). Each case prints `PASS` or `FAIL`; `run.sh`
+//! `Error::Timeout` (the bug: it was ignored, and a server that never
+//! answered hung the request forever). Each case prints `PASS` or `FAIL`; `run.sh`
 //! fails unless every case passes.
 //!
 //! The cases mirror `tests/timeout.rs`, which covers the same contract for
 //! the reqwest and NSURLSession arms (host and iOS simulator), plus the
 //! cancel path the timeout change refactored, plus dropping the request
-//! future with no cancel token: that must disconnect the exchange too (it
-//! used to leave the worker blocked on the connection until the server
-//! answered — forever, against a server that never does).
+//! future with no cancel token: that must disconnect the exchange too
+//! rather than leave the worker blocked on the connection until the server
+//! answers — forever, against a server that never does.
 
 use std::future::Future;
 use std::io::{Read, Write};

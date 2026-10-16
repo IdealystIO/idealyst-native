@@ -1,8 +1,8 @@
 //! Windows implementation of the WebView SDK — Microsoft Edge WebView2.
 //!
 //! A real embedded browser (the Edge/Chromium engine Windows 10/11 ship as the
-//! WebView2 runtime), the analogue of the iOS `WKWebView`, the Linux
-//! WebKitGTK view and the web `<iframe>`.
+//! WebView2 runtime), the analogue of the Linux WebKitGTK view and the
+//! web `<iframe>`.
 //!
 //! # Hosting
 //!
@@ -37,12 +37,12 @@
 //! * `on_message` — page → native. WebView2's channel is
 //!   `window.chrome.webview.postMessage`; a script injected at document
 //!   creation routes the page's `window.postMessage` through it, the same
-//!   page-side contract as the iOS / Linux shims.
+//!   page-side contract as the Linux shim.
 //! * `post_message` (native → page) arrives as a `message` event on
 //!   `window`, as on the web leaf.
 //! * `execute_js` stays the trait-default error: `ExecuteScript` is
 //!   asynchronous, and the synchronous signature would mean blocking the UI
-//!   thread (the iOS and Linux leaves make the same call).
+//!   thread (the Linux leaf makes the same call).
 //!
 //! Author callbacks run from WebView2's events — outside the framework's
 //! dispatch sites — so each is followed by `newcore::schedule_flush()` to

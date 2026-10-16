@@ -25,8 +25,7 @@ fn iframe_attributes(props: &MapViewProps) -> [(&'static str, String); 5] {
         ("referrerpolicy", "no-referrer".to_string()),
         // Only `border: 0` inline: an inline `width`/`height` beats the
         // author's style classes, so `MapView(..).with_style(..)` could
-        // never size the map on web (it used to pin `width: 100%;
-        // height: 100%; min-height: 300px` here). Size is the author's, as
+        // never size the map on web. Size is the author's, as
         // with the webview SDK's iframe and the native map views.
         ("style", "border: 0".to_string()),
         ("data-external-kind", "maps_core::MapViewProps".to_string()),
@@ -85,8 +84,7 @@ pub fn build_map_element(props: &std::rc::Rc<MapViewProps>) -> web_glue::dom::El
 ///
 /// Kept so this published crate's API does not change; the umbrella no
 /// longer calls it. It is the only reason this crate still depends on
-/// web-sys (the framework's web layer runs on web-glue since
-/// own-web-bindings phase 3).
+/// web-sys (the framework's web layer runs on web-glue).
 #[deprecated(note = "use `build_map_element`, which returns the web backend's own node type")]
 pub fn build_map_iframe(props: &std::rc::Rc<MapViewProps>) -> web_sys::Element {
     let document = web_sys::window()

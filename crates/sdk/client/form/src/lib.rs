@@ -13,11 +13,13 @@
 //! - **Web (wasm32)** — [`register`] installs a `WebBackend`-concrete
 //!   handler: one real `<form>` element, the native `submit` event wired
 //!   to `preventDefault()` + the author `on_submit` (plus the mandatory
-//!   post-callback `schedule_flush` — see the handler), the
-//!   `__form_state` reflect-slot keeping the listener closure alive,
+//!   post-callback `schedule_flush` — see the handler), the listener
+//!   detached and freed at teardown,
 //!   children realized as real DOM descendants of the `<form>` (that's
 //!   what makes browser autofill + submit-on-enter work), author style,
 //!   ref fill with the web ops (`requestSubmit`, in [`web_util`]).
+//! - **Linux (GTK4)** — a plain passthrough container (`IdealystView`);
+//!   see `linux.rs`.
 //! - **Everywhere else** — [`register`] installs the
 //!   External-placeholder path ([`ExternalOps::create_external`]) with
 //!   the children realized INTO the returned node (create → children →
@@ -525,10 +527,7 @@ mod web_leg {
                 },
             );
             // The listener lives exactly as long as the mounted form:
-            // teardown detaches it and frees its closure. (It used to be
-            // parked behind an `Rc::into_raw` number on the element that
-            // nothing ever reclaimed — every mounted form leaked its
-            // listener state.)
+            // teardown detaches it and frees its closure.
             on_teardown(move || drop(listener));
         }
 

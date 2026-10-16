@@ -484,8 +484,6 @@ impl Recognizer for DragRecognizer {
                 // synchronous dispatch). A LongPress commit later fires from the
                 // timer, off-stream, where it's no longer available — so we hold
                 // our own clone. `None` on backends without the claim protocol.
-                // `active_touch_claim` is a substrate touch-model entry glue
-                // does not re-export yet (a one-line gap, reported).
                 *self.claim.borrow_mut() = runtime_shared::active_touch_claim();
                 if let Some(threshold_ms) = activation.long_press_ms() {
                     self.arm_timer(ev.id, threshold_ms);
@@ -739,8 +737,7 @@ impl DragRecognizer {
     /// commit fires on its scheduler tick exactly like the arbiter path.
     pub fn into_handler(self) -> TouchHandler {
         let rec = Rc::new(RefCell::new(self));
-        // Weak so the notifier → recognizer → notifier cycle can't leak
-        // (see [[feedback_no_forget_in_library_code]]).
+        // Weak so the notifier → recognizer → notifier cycle can't leak.
         let weak = Rc::downgrade(&rec);
         rec.borrow_mut().set_async_notifier(Rc::new(move || {
             if let Some(r) = weak.upgrade() {

@@ -16,7 +16,7 @@
 //! it's independent of the app's on-screen canvas device. IOSurfaces are
 //! cross-device, so a camera surface produced on the app's device imports fine
 //! here, and the output ring this device produces is consumed by the recorder's
-//! encoder (see [[project_canvas_self_capture]]).
+//! encoder.
 
 use crate::encode::encode_scene;
 use crate::plan::split_segments;

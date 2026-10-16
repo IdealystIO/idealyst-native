@@ -102,9 +102,12 @@
 //! remaining width and wraps — the same layout a browser gives the web
 //! `<table>`.
 //!
-//! Why a grid and not nested row/cell views: Taffy has no subgrid and no
-//! `display: contents`, so a grid can only align the columns of its
-//! *direct* children. Keeping `TableRow` as a layout box would make each
+//! Why a grid and not nested row/cell views: Taffy has no subgrid, and
+//! `runtime_layout`'s `display: contents` emulation
+//! (`LayoutTree::new_contents_node`) is a backend-internal tool for
+//! reactive anchors, not something an author style can ask for — so a
+//! grid can only align the columns of its *direct* children. Keeping
+//! `TableRow` as a layout box would make each
 //! row a single grid item and break alignment. On native a row therefore
 //! lowers to an [`Element::Fragment`] (no box); the row look is carried
 //! by per-cell styling (head/body surface + per-cell `border-bottom`
@@ -137,12 +140,10 @@
 //! [`map_cell_style`] is the one to reach for when layering axes over
 //! a cell: it COMPOSES over whatever style the cell already has, so a
 //! cell styled reactively (a column width that moves under a resize
-//! drag) keeps its own reactivity and takes the overlay too. Before
-//! 1.4.0 this was a read-then-replace pair — `cell_base_application`
-//! handed back a cell's application and `set_cell_style` wrote a
-//! replacement — which only ever worked for cells styled with a STATIC
-//! sheet and skipped every other cell in silence. The reader is gone;
-//! see the 1.3 → 1.4 migration guide.
+//! drag) keeps its own reactivity and takes the overlay too. Reading a
+//! cell's style and writing back a replacement ([`set_cell_style`]) only
+//! works for cells styled with a STATIC sheet and silently skips every
+//! other cell.
 #![deny(missing_docs)]
 
 use std::rc::Rc;
@@ -325,9 +326,8 @@ pub struct TablePrim {
 /// clickable-row feature already works.
 pub struct TableRowPrim {
     /// Author style for the row node — the `<tr>` on web, the backdrop
-    /// view on native (a native row previously dropped its style
-    /// silently; with the proxy it lands on the backdrop, so row-level
-    /// visuals behave uniformly).
+    /// view on native (via the proxy, so row-level visuals behave
+    /// uniformly).
     pub style: Option<StyleProp>,
     /// Filled with the row surface's handle at mount ([`bind_row`]).
     pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
@@ -1134,8 +1134,8 @@ mod native_styles {
     /// `min-width: 100%; width: max-content` strategy. `flex_shrink: 0`
     /// is load-bearing: without it the scroller's flex line squeezes
     /// the surface back to the viewport width and nothing ever
-    /// overflows (the horizontal twin of
-    /// [[project_min_height_pct_scroll_shrink]]). Pinned by
+    /// overflows (the horizontal twin of the vertical min-height-percent
+    /// shrink trap). Pinned by
     /// `regression_scroll_x_table_floors_at_scroller_width_and_overflows_past_it`
     /// in `runtime-layout`.
     pub(super) fn scroll_floor_rules() -> StyleRules {
@@ -1194,12 +1194,11 @@ mod native_styles {
 /// whatever shape that style has. Returns whether a cell style was
 /// actually wrapped.
 ///
-/// This is what a row overlay reaches for. It replaces a
-/// read-then-replace pair (`cell_base_application` + [`set_cell_style`],
-/// the reader removed in 1.4.0) that could only see a STATIC
-/// [`StyleProp::Sheet`], so a cell whose
+/// This is what a row overlay reaches for. A read-then-replace pair
+/// (read the style, write it back with [`set_cell_style`]) can only see
+/// a STATIC [`StyleProp::Sheet`], so a cell whose
 /// style is already reactive — a column pinned to a width that moves
-/// under a resize drag, say — silently kept its style and lost the
+/// under a resize drag, say — would silently keep its style and lose the
 /// overlay entirely, with nothing logged. The failure is invisible in
 /// the common case (most cells in the row are static, so the row looks
 /// hovered) and reads as one column refusing to take the row's
@@ -1213,8 +1212,7 @@ mod native_styles {
 /// A style the sheet engine cannot see through — a preminted class, a
 /// resolved-rules closure, or no style at all — is left exactly as it
 /// was and `false` comes back: composition needs an application, and
-/// there is none to compose with. That is the same outcome those cells
-/// have always had.
+/// there is none to compose with.
 ///
 /// Sound for the same reason [`set_cell_style`] is: the payload is not
 /// yet mounted, and realization takes it exactly once after this

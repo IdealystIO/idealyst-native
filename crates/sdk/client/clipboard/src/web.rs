@@ -1,5 +1,5 @@
 //! Web clipboard backend — `navigator.clipboard` through web-glue bindings
-//! declared here (own-web-bindings phase 3); the Promises are awaited with
+//! declared here; the Promises are awaited with
 //! `web_glue::JsFuture`.
 //!
 //! Browser security note: `readText` (our [`text`]) requires a user

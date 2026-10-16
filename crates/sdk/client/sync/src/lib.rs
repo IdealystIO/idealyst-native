@@ -19,7 +19,7 @@
 //! server bodies of those two endpoints, and the `Merge` policy; the SDK
 //! owns persistence, the outbox, the sync engine, and the protocol. The
 //! app connects the two by implementing [`Transport`] (typically generated
-//! by the `sync_entity!` macro) — which is why this crate has **no
+//! by the [`sync_transport!`] macro) — which is why this crate has **no
 //! dependency on `server`**: the protocol *types* are the only contract.
 //!
 //! ## Correctness model (v1)

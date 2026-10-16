@@ -641,9 +641,9 @@ impl IdealystCanvas {
 // register + build
 // ============================================================================
 
-// v2: no inventory self-registration, and no backend-side `register`. The
-// External table those fed is gone; `lib.rs`'s `mount_canvas_linux` installs
-// this builder on the scene `Registry` at the app's boot seam instead.
+// No self-registration and no backend-side `register`: `lib.rs`'s
+// `mount_canvas_linux` installs this builder on the scene `Registry` at the
+// app's boot seam.
 
 pub(crate) fn build_canvas(
     prim: &Rc<CanvasPrim>,
@@ -790,8 +790,8 @@ mod tests {
         assert_eq!(pixel(&px, stride, 56, 32), BLUE);
     }
 
-    /// `src_crop` selects the source sub-rect before the fit (CPU renderers
-    /// used to ignore it). A 16×1 source, red left half | green right half,
+    /// `src_crop` selects the source sub-rect before the fit (the bug: CPU
+    /// renderers ignored it). A 16×1 source, red left half | green right half,
     /// cropped to its right half must draw green across the rect.
     ///
     /// The first few columns are not asserted: bilinear filtering samples

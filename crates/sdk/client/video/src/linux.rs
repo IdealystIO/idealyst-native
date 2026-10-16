@@ -131,9 +131,8 @@ thread_local! {
     static VIDEOS: RefCell<HashMap<u64, gtk4::Video>> = RefCell::new(HashMap::new());
 }
 
-// v2: no inventory self-registration. The External table these registrars
-// fed is gone; an app installs this handler on the scene `Registry` at its
-// boot seam instead, and an unregistered payload panics at realize rather
+// No self-registration: an app installs this handler on the scene `Registry`
+// at its boot seam, and an unregistered payload panics at realize rather
 // than silently falling through to a placeholder.
 
 // =========================================================================
@@ -192,7 +191,7 @@ pub(crate) fn build_video(props: &Rc<VideoProps>, b: &mut LinuxBackend) -> Linux
     // or the node unmounts, so a hidden/gone Picture stops polling.
     let tick: Rc<RefCell<Option<gtk4::TickCallbackId>>> = Rc::new(RefCell::new(None));
 
-    // One reactive populate effect. Owned by the walker's active scope, so it
+    // One reactive populate effect. Owned by the mount's active scope, so it
     // re-fires when a signal the source reads changes.
     let video_for_effect = video.clone();
     let picture_for_effect = picture.clone();

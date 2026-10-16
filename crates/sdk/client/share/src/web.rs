@@ -14,7 +14,7 @@
 //! in the crate `## Scope`).
 //!
 //! `navigator.share` is two web-glue bindings declared here
-//! (own-web-bindings phase 3): a feature probe and the call, which builds
+//! — a feature probe and the call, which builds
 //! the `ShareData` object in JS and hands back the Promise, awaited as a
 //! `web_glue::JsFuture`.
 

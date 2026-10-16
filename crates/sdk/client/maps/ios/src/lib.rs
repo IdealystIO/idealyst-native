@@ -12,7 +12,8 @@
 //!
 //! Reaches MKMapView at the Obj-C runtime layer via `AnyClass::get` +
 //! raw `msg_send` rather than going through `objc2-map-kit` — same
-//! rationale as webview-ios (see crates/sdk/webview/Cargo.toml): the
+//! rationale as the webview SDK's iOS arm (see
+//! crates/sdk/client/webview/Cargo.toml): the
 //! sub-crate's MainThreadMarker plumbing pins it to a different objc2
 //! major and the backend can't co-host both. Calling MKMapView
 //! selectors directly works fine; the host project still needs to

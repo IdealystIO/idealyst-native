@@ -4,7 +4,7 @@
 
 #[test]
 fn opt_in_locale_loads_from_disk_on_native() {
-    // The app body creates signals, and on runtime v2 `signal()` resolves
+    // The app body creates signals, and `signal()` resolves
     // the AMBIENT world — calling `app()` at top level aborts with
     // "signal()/effect() called outside World::enter". Everything that
     // touches the reactive graph (the build, the locale switch, and the

@@ -257,8 +257,8 @@ mod tests {
         assert_eq!(out, [30, 20, 10, 255, 60, 50, 40, 255, 3, 2, 1, 255, 6, 5, 4, 255]);
     }
 
-    /// Windows used the stub (`Unsupported`). Now `open` reaches Media
-    /// Foundation: on the test VM, which has no camera, that is `NoCamera`;
+    /// Guards against Windows falling through to the `Unsupported` stub:
+    /// `open` must reach Media Foundation. On the test VM, which has no camera, that is `NoCamera`;
     /// on a machine with one, a stream that delivers a frame.
     #[test]
     fn regression_windows_open_reaches_media_foundation() {

@@ -15,8 +15,7 @@
 //! source's blob URL into a *new* `HTMLAudioElement`, so overlapping voices
 //! from one `Sound` work — fine for layering short SFX.
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3).
+//! Every browser call is a web-glue binding declared here.
 
 use web_glue::{string, JsValue};
 

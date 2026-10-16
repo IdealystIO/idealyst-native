@@ -234,8 +234,8 @@ async fn texture_layers_and_self_capture() {
 /// a fill drawn after it lands ON TOP of the texture (the QR-outline-over-
 /// camera case), the scene's transform carries past it without moving the
 /// texture itself, a layer the scene never places still composites over the
-/// whole scene, and `src_crop` frames the source (CPU renderers used to
-/// ignore it).
+/// whole scene, and `src_crop` frames the source (the bug: CPU renderers
+/// ignored it).
 #[wasm_bindgen_test]
 async fn texture_ops_order_vector_content_around_layers() {
     let host = fresh_host();

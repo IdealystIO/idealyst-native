@@ -502,7 +502,7 @@ where
     let state_cell: Rc<RefCell<Option<S>>> = Rc::new(RefCell::new(None));
 
     // Reactive repaint. On the first run the surface isn't ready yet; on_ready
-    // does the first draw. Created here, in the mount walker, so the component
+    // does the first draw. Created here, during mount, so the component
     // scope owns it.
     {
         let frame_cell = frame_cell.clone();
@@ -629,8 +629,8 @@ fn retry_first_frame<S: SurfaceState>(
 // GL present path (Linux/GTK4)
 // ============================================================================
 //
-// Every piece below is the proven `host-linux-desktop::linux` / `backend-linux`
-// adoption, moved here from canvas-vello. The present itself is `PresentBlit`
+// The same GL-framebuffer adoption `host-linux-desktop` / `backend-linux`
+// use. The present itself is `PresentBlit`
 // with `flip_y` (GTK composites the GLArea framebuffer bottom-up).
 
 #[cfg(target_os = "linux")]

@@ -355,13 +355,13 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     /// Regression: the canvas-capture fallback must lock the canvas to the real
-    /// frame size BEFORE `captureStream()`. Pre-fix, `canvas_capture` captured
+    /// frame size BEFORE `captureStream()`. The bug: `canvas_capture` captured
     /// the stream while the canvas was still the bare-`<canvas>` 300×150 default
     /// and let the first frame resize it afterward — a mid-stream resolution
     /// change that H.264/avc1 can't encode (Chrome: "codec description is not
     /// supposed to change", corrupt output). Here a 640×480 frame is buffered
     /// before capture starts (the stage-canvas case); `add_subscriber` does not
-    /// replay it, so only the `latest()` pull added by the fix sizes the canvas.
+    /// replay it, so only the `latest()` pull sizes the canvas.
     #[wasm_bindgen_test]
     async fn canvas_capture_locks_real_size_before_capturestream() {
         const W: u32 = 640;

@@ -1284,8 +1284,7 @@ mod tests {
     /// EOS-to-finish handshake, then assert the file exists, is non-empty, is a
     /// real Matroska/WebM container (EBML magic), AND re-opens + decodes end to
     /// end. This is what a silently-degrading encoder (empty/corrupt file) would
-    /// fail. Also the regression guard vs. the old stub, which returned
-    /// `Unsupported` and wrote nothing.
+    /// fail, as would an `Unsupported` stub that writes nothing.
     #[test]
     fn writes_and_reopens_a_valid_webm() {
         ensure_gst().expect("gst init");

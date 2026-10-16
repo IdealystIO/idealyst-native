@@ -58,17 +58,11 @@ const SUPERSAMPLE: f32 = 2.0;
 /// pixmap. 4096 covers 2× retina for any realistic on-screen size.
 const MAX_DIM: f32 = 4096.0;
 
-/// Register the Linux `Svg` external handler on `backend`. Call once
-/// at app boot (inside the host's `register_extensions`) so `Svg`
-/// elements lower to a real `gtk::Picture` instead of the framework's
-/// "External not registered" placeholder.
 /// Shared font database for every `Svg` mounted on this backend.
 ///
 /// `load_system_fonts` walks fontconfig and is far too costly to run per
-/// markup change, so it is built once and shared (Arc) into every parse.
-/// Was a `register`-time local under the old External table; v2 mounts
-/// per node, so the cache moves to a `OnceLock` rather than being rebuilt
-/// on each mount.
+/// markup change, so it is built once into a process-wide `OnceLock` and
+/// shared (Arc) into every parse rather than rebuilt per mount.
 fn fontdb() -> Arc<usvg::fontdb::Database> {
     static FONTDB: std::sync::OnceLock<Arc<usvg::fontdb::Database>> = std::sync::OnceLock::new();
     FONTDB
@@ -81,8 +75,7 @@ fn fontdb() -> Arc<usvg::fontdb::Database> {
 }
 
 /// Scene-registry entry point: build the GTK leaf for one `Svg` payload.
-/// The `register_external`/`RegisterExternal` pair this used to go through
-/// is gone in v2 — `lib.rs`'s `mount_svg_linux` calls this instead.
+/// Called by `lib.rs`'s `mount_svg_linux`.
 pub(crate) fn build(props: &Rc<SvgProps>, b: &mut LinuxBackend) -> LinuxNode {
     build_svg(props, b, fontdb())
 }

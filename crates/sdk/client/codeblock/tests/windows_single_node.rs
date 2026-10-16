@@ -2,8 +2,7 @@
 //!
 //! ## The bug this pins
 //!
-//! `register` had no Windows arm (the old `windows.rs` still targeted the
-//! deleted External table and was not even compiled), so Windows fell
+//! `register` had no Windows arm, so Windows fell
 //! through to the portable `<pre>`/span handler: one text node per token
 //! inside a view — and native views are flex columns, so every token of a
 //! docs code panel stacked on its own line.

@@ -380,8 +380,7 @@ mod fallback {
     // The `B` type parameter is deliberately UNBOUNDED. Each real leg takes
     // its own concrete backend (`MacosBackend`, `WindowsBackend`, …), so the
     // no-op leg only has to accept whatever the caller already holds — and
-    // there is no cross-backend trait to bound it by (the old `Backend`
-    // mega-trait was deleted with the pre-v2 walker; capability traits are
+    // there is no cross-backend trait to bound it by (capability traits are
     // per-capability and none of them describes "has a menu bar").
 
     /// No-op `install` for targets with no menu-bar concept. User

@@ -7,8 +7,8 @@
 //! links: the navigators' own URL sync handles them, and feeding them
 //! through [`crate::feed_link`] would route them a second time.
 //!
-//! The browser calls are web-glue bindings declared here (own-web-bindings
-//! phase 3), each one JS expression.
+//! The browser calls are web-glue bindings declared here, each
+//! one JS expression.
 
 use web_glue::string;
 

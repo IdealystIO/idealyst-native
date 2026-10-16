@@ -1,7 +1,7 @@
 //! Android transport, built on `java.net.HttpURLConnection` via JNI.
 //!
 //! Picked HttpURLConnection over OkHttp so the SDK has zero
-//! Gradle/JAR footprint — see `crates/sdk/net/Cargo.toml` header
+//! Gradle/JAR footprint — see `crates/sdk/client/net/Cargo.toml` header
 //! for the rationale.
 //!
 //! Threading: HttpURLConnection's `getResponseCode` and stream reads

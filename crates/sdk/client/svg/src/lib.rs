@@ -55,13 +55,11 @@
 //!   code (fetch bytes via the standard `image` pipeline, pass the
 //!   markup string here).
 //!
-//! Known gaps: filters (`feGaussianBlur`, color matrices, …), masks +
-//! clipPaths (paths still draw, unclipped), group opacity != 1 (applied
-//! to children's fills/strokes rather than via offscreen compositing),
-//! embedded raster `<image>` elements. The walker can be extended for
-//! any of these without touching the per-backend painter surface — see
-//! `src/tree_walker.rs` for the `SvgPainter` trait that bridges to
-//! native primitives.
+//! On iOS / Android the walker also covers group opacity, clipPaths,
+//! masks and embedded raster / nested-SVG `<image>`s (see
+//! `src/tree_walker.rs` for the `SvgPainter` trait that bridges to native
+//! primitives). Known gap: filters (`feGaussianBlur`, color matrices, …)
+//! — the filtered group's children render unfiltered.
 //!
 //! # Usage
 //!

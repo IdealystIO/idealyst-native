@@ -1,14 +1,7 @@
-//! Stack navigator iOS engine.
-//!
-//! Moved verbatim from `backend-ios-mobile::imp::navigator` after the
-//! navigator-substrate refactor. The shape changed in two places:
-//!   1. The per-instance state is now stored in this crate's thread-local
-//!      `STACK_INSTANCES` registry instead of an `IosBackend` field.
-//!   2. The `IosNavCallbacks` (defined in this crate's `lib.rs`)
-//!      replaces the deleted old-core `NavigatorCallbacks<N>`.
-//!   3. `attach_initial`'s opaque options come through as the helper's
-//!      `IosScreenOptions` reference instead of the deleted
-//!      old-core `ScreenOptions`.
+//! Stack navigator iOS engine (the legacy `NavCommand` engine — see the
+//! crate docs). Per-instance state lives in the crate's thread-local
+//! `STACK_INSTANCES` registry; callbacks arrive as [`IosNavCallbacks`] and
+//! per-screen options as [`IosScreenOptions`].
 
 use crate::chrome::apply_header_options;
 use crate::{IosNavCallbacks, IosScreenOptions, IOS_NAV_OPS, STACK_INSTANCES};
@@ -391,7 +384,7 @@ pub(crate) fn create(
                 schedule_layout_pass();
             }
             NavCommand::Select { .. } | NavCommand::Custom(_) => {
-                // Pre-fix this panicked, which would unwind into UIKit's
+                // Not a panic: that would unwind into UIKit's
                 // event loop (UB on the FFI boundary). A mismatched
                 // dispatch is a programmer error, not a fatal app
                 // condition — log and drop.
@@ -421,14 +414,14 @@ pub(crate) fn attach_initial(
     let entry = entry.borrow();
 
     // Seat the framework-resolved screen as the navigation root. On a
-    // cold-start deep link the walker resolves the launch URL and mounts the
+    // cold-start deep link the framework resolves the launch URL and mounts the
     // RESOLVED (detail) screen here, so the correct screen is on-screen
     // immediately. Back-stack reconstruction (seating the configured `initial`
     // BELOW the detail so the system back-chevron returns to the index) is
     // deferred — `mount_screen` cannot run synchronously here because the
     // framework still holds `backend.borrow_mut()` across `attach_initial`, and
-    // mounting re-enters the build walker (double borrow). See
-    // [`reconstruct_back_stack_if_deep_link`].
+    // mounting re-enters the build (double borrow). See
+    // [`reconstruct_back_stack`].
     let root_vc = mount_screen_in_vc(mtm, screen.as_view());
     unsafe {
         entry.controller.setViewControllers_animated(
@@ -448,7 +441,7 @@ pub(crate) fn attach_initial(
     fire_top_changed(&entry.top_changed, &entry.stack.borrow());
 
     // If this was a deep link (resolved route != configured initial), insert
-    // the index UNDER the detail once the walker's borrow releases.
+    // the index UNDER the detail once the framework's borrow releases.
     let is_deep_link = entry.nav_state.active_route.get() != entry.initial_route;
     if is_deep_link {
         let navigator_key = key;
@@ -467,8 +460,8 @@ pub(crate) fn attach_initial(
 }
 
 /// Deferred half of [`attach_initial`]'s deep-link back-stack reconstruction.
-/// Runs AFTER the walker's `backend.borrow_mut()` releases (queued via
-/// `after_ms(0)`), so `mount_screen` can safely re-enter the build walker.
+/// Runs AFTER the framework's `backend.borrow_mut()` releases (queued via
+/// `after_ms(0)`), so `mount_screen` can safely re-enter the build.
 /// Mounts the configured `initial` index and re-seats the controller's stack
 /// as [index, detail] — preserving the already-mounted detail on top so Back
 /// returns to the index.

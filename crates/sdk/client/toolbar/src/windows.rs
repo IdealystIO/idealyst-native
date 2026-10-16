@@ -40,8 +40,8 @@
 //!
 //! # Icon support
 //!
-//! V1 is label-only. Icons via `TB_SETIMAGELIST` + a paired
-//! `HIMAGELIST` are a follow-up — needs a way to map our
+//! Label-only. Icons via `TB_SETIMAGELIST` + a paired
+//! `HIMAGELIST` are not implemented — they need a way to map our
 //! string-keyed `icon` (currently expects SF Symbol names on macOS)
 //! to a Win32 icon source. The author-facing `.icon(...)` builder
 //! method still works on Windows; the icon name is just ignored at
@@ -149,7 +149,7 @@ fn build_toolbar(props: &Rc<crate::ToolbarProps>, b: &mut WindowsBackend) -> Win
 
     // Toolbar styles: TBSTYLE_FLAT for the modern non-bezeled look,
     // TBSTYLE_LIST so button labels render to the right of icons
-    // (when icons land in v2; for v1 it just keeps labels visible).
+    // (with no icons it just keeps labels visible).
     // CCS_TOP + CCS_NODIVIDER so the framework controls vertical
     // placement via the layout pass — comctl32's default would dock
     // the toolbar to the top of the parent client area unconditionally.
@@ -203,19 +203,10 @@ fn build_toolbar(props: &Rc<crate::ToolbarProps>, b: &mut WindowsBackend) -> Win
     // applies the new list via clear-then-add.
     let props_for_effect = props.clone();
     let hwnd_for_effect = hwnd;
-    // Capture a weak Rc to the backend so we can call
-    // `register_command_handler` from the effect closure. Trying to
-    // capture `&mut b` directly doesn't work — the effect outlives
-    // the borrow. Instead, we stash needed handler-allocation
-    // closures via the LAST_TOOLBAR_STATE side channel.
-    //
-    // Pragmatic v1: per-button command ids are pre-allocated on the
-    // first run only; subsequent re-fires keep using the same ids
-    // and just rebuild the button glyphs/labels. This avoids leaking
-    // ids on every reactive update at the cost of not being able to
-    // ADD new commands reactively (only labels can change). Stable-
-    // item authors get correct behavior; the corner case where the
-    // item list changes ITS LENGTH is a follow-up.
+    // The effect can't capture `&mut b` (it outlives the borrow), so
+    // click handlers travel through the LAST_TOOLBAR_STATE side channel
+    // instead: each run allocates fresh command ids for the rebuilt
+    // buttons and replaces the pending batch (see `apply_items`).
     runtime_world::effect(move || {
         let items = (props_for_effect.items)();
         apply_items(hwnd_for_effect, &items);
@@ -247,8 +238,8 @@ fn apply_items(toolbar_hwnd: HWND, items: &[ToolbarItem]) {
 
     // Per-button command ids must come from the WindowsBackend's
     // alloc_control_id pool so WM_COMMAND routing reaches the right
-    // closure. The effect closure doesn't hold &mut backend; for
-    // v1 we use the pending-handlers thread-local to coordinate.
+    // closure. The effect closure doesn't hold &mut backend, so the
+    // pending-handlers thread-local coordinates.
     // See LAST_TOOLBAR_STATE below.
     LAST_TOOLBAR_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -331,14 +322,9 @@ fn apply_items(toolbar_hwnd: HWND, items: &[ToolbarItem]) {
 // would outlive every realistic call site). Instead we stash
 // (control_id, callback) pairs in a thread-local, and the SDK
 // requires the host to drain them into the backend's
-// `register_command_handler` map. For the v1 shape, we expose a
-// `toolbar::flush_pending(&mut backend)` helper the host calls once
-// per frame from its WndProc's WM_PAINT arm.
-//
-// This is awkward and probably worth replacing with an Rc<RefCell<>>
-// global backend pattern (mirroring `backend_macos::install_global_self`).
-// Tracked as a follow-up; v1 has the shape but with the obvious
-// caveats.
+// `register_command_handler` map: `toolbar::flush_pending(&mut backend)`,
+// called once per frame from the host WndProc's WM_PAINT arm. (No host in
+// this repo calls it yet, so clicks are not routed until one does.)
 // =========================================================================
 
 struct PendingState {

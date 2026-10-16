@@ -55,18 +55,20 @@
 //! ```
 //!
 //! - `TouchStrategy` (this crate's current behavior) is the cross-platform
-//!   default and the only one that needs no `Backend` changes.
+//!   default and the only one that needs no backend changes.
 //! - `NativeStrategy` (per backend) would be selected explicitly —
 //!   `Draggable::new(&ctx, ..).strategy(native())` — when the app wants OS
 //!   drag chrome or cross-app transfer, and would require the payload `T` to
 //!   be serializable to a platform pasteboard type (`NSItemProvider`,
 //!   `DataTransfer`, `ClipData`).
 //!
-//! ## Where the `Backend` work lands when this phase happens
+//! ## Where the backend work lands when this phase happens
 //!
-//! - `Backend::begin_native_drag(node, payload_types, drag_image)`
-//! - `Backend::register_native_drop_target(node, accepted_types, handler)`
-//! - `Backend::pasteboard_read` / `Backend::pasteboard_write`
+//! A new capability trait (alongside `runtime_vocabulary::caps`) with:
+//!
+//! - `begin_native_drag(node, payload_types, drag_image)`
+//! - `register_native_drop_target(node, accepted_types, handler)`
+//! - `pasteboard_read` / `pasteboard_write`
 //!
 //! with implementations:
 //!   web → `dragstart`/`dragover`/`drop` + `DataTransfer`;

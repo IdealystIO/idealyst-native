@@ -18,8 +18,8 @@
 //! triggers the prompt directly. (Documented, not faked: the web permission
 //! model genuinely has no pre-prompt.)
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3); the success/error callbacks are `web_glue::Closure`s.
+//! Every browser call is a web-glue binding declared here;
+//! the success/error callbacks are `web_glue::Closure`s.
 //!
 //! [`current`]: crate::current
 //! [`watch`]: crate::watch

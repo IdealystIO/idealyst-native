@@ -70,8 +70,7 @@ pub(crate) fn mount_canvas(
 
     // Reactive repaint. Realize runs world-entered, so this effect is
     // collected into the mounting subtree — it (and the guard +
-    // rasterizer it owns) live until unmount, exactly like the old
-    // walker-scope-owned `effect!`.
+    // rasterizer it owns) live until unmount.
     let paint_prim = prim.clone();
     runtime_world::effect(move || {
         // Capture the observer guard into the subtree-owned effect so it

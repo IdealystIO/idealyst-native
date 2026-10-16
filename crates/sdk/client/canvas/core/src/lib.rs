@@ -27,7 +27,7 @@
 //! // On a screen — the "type in tag" SDK convention, small namespace:
 //! use canvas::prelude::*;
 //! ui! {
-//!     View {
+//!     view {
 //!         { canvas::Canvas(CanvasProps {
 //!             draw: canvas::draw(move |s: &mut Scene| {
 //!                 s.path()
@@ -194,7 +194,7 @@ impl Fit {
 /// (a logo/watermark). Both flow through the SAME per-backend compositor path —
 /// identical fit/rounded/opacity/border handling — so an image overlay
 /// composites (and records) exactly like a camera layer, just without a
-/// per-frame source (`[[project_canvas_self_capture]]`).
+/// per-frame source.
 #[derive(Clone)]
 pub enum LayerSource {
     /// A live `MediaStream` (camera, screen share, a composited output), resolved

@@ -465,8 +465,8 @@ mod tests {
     /// (`videoconvert ! appsink(RGBA) ! new-sample ! deliver_sample !
     /// write_rgba8`) is byte-for-byte the production path. If this delivers a
     /// `64x48` `Rgba8` frame whose `data.len() == width*height*4`, the capture
-    /// backend genuinely works; it fails against the old `Unsupported` stub
-    /// (which never wired a pipeline at all).
+    /// backend genuinely works; a backend that never wires a pipeline (the
+    /// `Unsupported` stub) fails it.
     #[test]
     fn videotestsrc_delivers_mapped_rgba_frame() {
         ensure_gst().expect("gst init");

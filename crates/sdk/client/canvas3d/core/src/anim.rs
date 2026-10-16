@@ -173,7 +173,7 @@ impl Animation {
     /// Panics on a malformed channel (no keyframes, times out of order, or a
     /// value count that doesn't match the keyframes) — sampling it would read
     /// out of range. Loaded clips are checked by the loader instead and
-    /// reported as [`ModelError::BadAnimation`](crate::ModelError::BadAnimation).
+    /// reported as [`ModelError::Invalid`](crate::ModelError::Invalid).
     pub fn new(name: Option<String>, channels: Vec<Channel>) -> Animation {
         if let Some(problem) = Animation::problem(&channels) {
             panic!("{problem}");

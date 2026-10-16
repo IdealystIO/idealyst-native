@@ -29,8 +29,8 @@
 //! [`StreamHandle`] so nothing is dropped early; its `Drop` pauses the video,
 //! disconnects the nodes, removes the element, and stops the pump.
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3). The element and canvas are created by this SDK, never mounted by
+//! Every browser call is a web-glue binding declared here.
+//! The element and canvas are created by this SDK, never mounted by
 //! the backend. Pixel and PCM readback write straight into buffers Rust
 //! allocated first (sized from values Rust already knows), so each is one
 //! crossing and no JS view of wasm memory outlives a call into wasm.

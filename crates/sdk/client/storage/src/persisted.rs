@@ -1,13 +1,10 @@
 //! `persisted_signal` — the blessed storage↔signal rail.
 //!
-//! Why this exists (arena findings, 2026-07-21): every agent hand-rolls
-//! load/persist wiring, and the natural shape is racy — an unconditional
-//! `sig.set(loaded)` after an async load CLOBBERS anything the user did
-//! before the load resolved, and a "loaded" gate on the persist side
-//! silently drops those same writes. Two independent implementations
-//! (todo-app runs 2 and 3) both shipped variants of that race; the
-//! adversary review flagged it as a determinism defect. This helper makes
-//! the correct behavior the only behavior:
+//! Why this exists: hand-rolled load/persist wiring is naturally racy — an
+//! unconditional `sig.set(loaded)` after an async load CLOBBERS anything the
+//! user did before the load resolved, and a "loaded" gate on the persist
+//! side silently drops those same writes. This helper makes the correct
+//! behavior the only behavior:
 //!
 //! * **User writes win.** Hydration applies ONLY if the signal hasn't been
 //!   written since creation. A pre-hydration write both sticks visually and

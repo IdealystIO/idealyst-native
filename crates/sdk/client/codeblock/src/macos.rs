@@ -66,9 +66,8 @@ pub(crate) fn build(spans: &[(String, Color)], backend: &mut MacosBackend) -> Ma
     // backend diverts it to the label's offset inside this container (see
     // `MacosBackend::sync_external_scroller_padding`), so the padding
     // scrolls WITH the content and mid-scroll text reaches the block's own
-    // edge — the web `<pre> { padding }` model. A previous revision baked a
-    // 20pt inset here; combined with author padding on a wrapping panel
-    // that doubled the visible padding.
+    // edge — the web `<pre> { padding }` model. A handler-side inset would
+    // stack on author padding and double it.
     let label_frame: CGRect = unsafe { msg_send![&label, frame] };
     let container_rect = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },

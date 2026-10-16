@@ -44,9 +44,9 @@ use std::thread::JoinHandle;
 /// (`write_rgba8` on every raf frame) outruns the H.264 encoder, so an
 /// unbounded channel backs up GBs of full-res RGBA — and `stop()` then spends
 /// SECONDS draining that backlog before it can finalize (measured ~1.9s for a
-/// 5s 2048×1536 recording: the whiteboard "stop is super delayed" bug). Real-
-/// time recording policy: drop at the source when the encoder is behind so the
-/// queue stays tiny and finalize is prompt. Small (a few frames) bounds memory
+/// 5s 2048×1536 recording). Real-time recording policy: drop at the source
+/// when the encoder is behind so the queue stays tiny and finalize is prompt.
+/// Small (a few frames) bounds memory
 /// AND latency; the encoder's own `isReadyForMoreMediaData` does the final drop.
 const MAX_INFLIGHT_VIDEO_FRAMES: usize = 3;
 
@@ -1341,9 +1341,8 @@ mod native_av_tests {
     // `AVAssetWriter` on the first video frame when audio is ALSO expected —
     // `build_writer` unwraps `first_audio`, which is still `None` until the first
     // audio chunk arrives, panicking with "called `Option::unwrap()` on a `None`
-    // value". This surfaced in the whiteboard the moment audio recording was
-    // added (the recording failed at STOP); video-only never hit it because
-    // `has_audio` was false. The fix drops the native frame until the audio
+    // value" (the recording failed at STOP; video-only never hits it because
+    // `has_audio` is false). The encoder drops the native frame until the audio
     // format is known, then starts the writer and flushes the buffered audio.
     #[test]
     fn native_video_with_audio_waits_for_audio_format() {
@@ -1362,7 +1361,7 @@ mod native_av_tests {
         let surf = make_test_surface(64, 48);
 
         // First native frame, audio not yet seen: must NOT panic and must NOT
-        // start the writer (this is the exact panic site before the fix).
+        // start the writer (the regression's panic site).
         enc.on_native(surf, 1_000);
         assert!(!enc.started, "writer must wait for the audio format");
         assert!(enc.failed.is_none(), "no failure while waiting: {:?}", enc.failed);

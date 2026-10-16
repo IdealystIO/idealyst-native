@@ -48,8 +48,9 @@
 //!   lone URL goes through `OpenURI`'s "Open With" app chooser; content with
 //!   body text, a title, or files goes through the `Email` portal
 //!   (`ComposeEmail`), the only portal that carries all three together.
-//! - **Windows** — [`ShareError::NotSupported`] (a real Data Transfer Manager
-//!   backend is a later layer).
+//! - **Windows** — the Windows share sheet (`DataTransferManager`, through
+//!   `IDataTransferManagerInterop` for the active window). See
+//!   `src/windows.rs`.
 
 #![deny(missing_docs)]
 

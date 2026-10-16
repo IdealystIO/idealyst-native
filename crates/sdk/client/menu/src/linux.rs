@@ -47,7 +47,7 @@ pub fn install(backend: &mut LinuxBackend, spec: MenuBarSpec) {
 
     // Build the action group + GMenu model in tandem so the actions
     // each menu item references are present by the time the menubar
-    // widget renders. `action_index` ticks once per command so each
+    // widget renders. `idx` ticks once per command so each
     // gets a unique name (`win.cmd0`, `win.cmd1`, …).
     let action_group = gio::SimpleActionGroup::new();
     let menu_model = gio::Menu::new();
@@ -67,8 +67,8 @@ pub fn install(backend: &mut LinuxBackend, spec: MenuBarSpec) {
     let menubar = gtk4::PopoverMenuBar::from_model(Some(&menu_model));
 
     // Pack into a vbox above the existing content. LinuxBackend
-    // sets `host_window.child = root_fixed` at construction; we
-    // swap that for `[menubar, root_fixed]` packed into a vbox so
+    // makes the framework root the window's child (in `finish`); we
+    // swap that for `[menubar, root]` packed into a vbox so
     // both the menu bar AND the framework's render tree are
     // visible. The vbox is itself stored in a thread-local anchor
     // so the NEXT install can find + reuse it (or rebuild it).
@@ -91,8 +91,8 @@ pub fn install(backend: &mut LinuxBackend, spec: MenuBarSpec) {
         }
 
         // First install: extract the window's current child (should
-        // be the backend's `root_fixed`), build a vbox with
-        // [menubar, root_fixed], install vbox as the new child.
+        // be the framework root), build a vbox with
+        // [menubar, root], install vbox as the new child.
         let Some(existing_child) = window.child() else {
             // No existing child — unusual, but defensive. Just
             // install menubar alone; the framework will get its

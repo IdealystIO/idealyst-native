@@ -6,12 +6,12 @@
 #![cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 
 //! Shared Android-side machinery for the three first-party navigator
-//! SDKs (stack / tab / drawer).
+//! SDKs.
 //!
 //! **Internal — not author-facing.** This crate is per-platform glue,
 //! not a public API. Apps never depend on it directly; they use
-//! `stack-navigator`, `tab-navigator`, or `drawer-navigator`, which pull
-//! this crate in only on `target_os = "android"` and call into it. The
+//! `stack-navigator`, which pulls this crate in only on
+//! `target_os = "android"` and calls into it. The
 //! whole crate is `#![cfg(all(target_os = "android", not(target_arch =
 //! "wasm32")))]`, so on other hosts it compiles to an empty rlib
 //! (keeping `cargo check --workspace` free of JNI /
@@ -28,39 +28,14 @@
 //!
 //! # Legacy model
 //!
-//! Two flavors of native chrome:
+//! `io.idealyst.runtime.RustNavigator` wraps a `FrameLayout` and the
+//! Activity's `FragmentManager`. Push / pop / replace / reset map to
+//! fragment transactions; `RustHostFragment.onDestroyView` trampolines
+//! back through JNI to release per-screen scopes. See [`create_stack`].
 //!
-//! - **Stack navigator** — `io.idealyst.runtime.RustNavigator` wraps a
-//!   `FrameLayout` and the Activity's `FragmentManager`. Push / pop /
-//!   replace / reset map to fragment transactions;
-//!   `RustHostFragment.onDestroyView` trampolines back through JNI to
-//!   release per-screen scopes. See [`create_stack`].
-//!
-//! - **Tab / Drawer navigators** — plain view-swap, no FragmentManager.
-//!   - Tabs: navigator node is a `FrameLayout`; the active tab's screen
-//!     view is the single child. Author chrome (tab bar) lives in a
-//!     `.layout(...)` slot.
-//!   - Drawers: navigator node is a `RustExactFrameLayout` wrapping a
-//!     `RustDrawerLayout` (androidx DrawerLayout subclass), with a
-//!     body `LinearLayout` for the active screen + Toolbar, and the
-//!     drawer view attached separately via [`drawer_attach_sidebar`].
-//!     See [`create_drawer`].
-//!
-//! Per-instance state lives in thread-local registries (one for stack,
-//! one for tab/drawer), mirroring how web-navigator-helpers stores its
-//! `NavigatorInstance` per `data-navigator-id`. The SDK handler retains
-//! the container `GlobalRef` and looks up the instance via the
-//! JObject* pointer-derived key.
-//!
-//! # Substrate boundary
-//!
-//! `runtime-core` owns the kind-agnostic command vocabulary, per-screen
-//! scope mechanics, and reactive `NavState`. Everything kind-specific —
-//! chrome construction, typed handles, the dispatcher mapping from
-//! `NavCommand` to native action — lives in the SDK crates. This
-//! helper crate is the Android-side shared engine the three first-party
-//! Android SDKs (stack-navigator, tab-navigator, drawer-navigator) call
-//! into for JNI glue.
+//! Per-instance state lives in a thread-local registry; the caller
+//! retains the container `GlobalRef` and the instance is looked up via
+//! the JObject* pointer-derived key.
 
 use jni::objects::GlobalRef;
 use runtime_shared::primitives::navigator::{MountResult, NavState, NavigatorControl, NavigatorHandle};
@@ -74,17 +49,10 @@ mod stack;
 pub use presenter::{install as install_stack_presenter, AndroidStackPresenter};
 
 // =============================================================================
-// Local callback bundle types — paralleling web-navigator-helpers.
+// Callback bundle for the legacy engine.
 // =============================================================================
-//
-// Mirrors the shape of the OLD `NavigatorCallbacks<N>` /
-// `TabNavigatorCallbacks<N>` / `DrawerNavigatorCallbacks<N>` that lived
-// in runtime-core before the substrate refactor. Each SDK fills one of
-// these in and passes it to `create_stack` / `create_tab` /
-// `create_drawer`.
 
-/// Kind-agnostic Android navigator callbacks. Every Android SDK passes
-/// one of these; the tab and drawer variants embed it.
+/// Android navigator callbacks, passed to [`create_stack`].
 pub struct AndroidNavCallbacks {
     pub initial_route: &'static str,
     pub initial_path: &'static str,
@@ -98,8 +66,7 @@ pub struct AndroidNavCallbacks {
 }
 
 // =============================================================================
-// Local kind-specific enums + structs — moved out of runtime-core into the
-// helpers crate (SDK-side concepts after the substrate refactor).
+// Kind-specific enums + structs.
 // =============================================================================
 
 /// When to materialize a screen's subtree relative to navigation.
@@ -111,9 +78,9 @@ pub enum MountPolicy {
 }
 
 // =============================================================================
-// Per-screen options — translated by the SDK handler before calling
-// [`attach_initial`]. Tabs and drawers consume these; stack screens
-// currently don't render Android-side header chrome (see stack module).
+// Per-screen options — translated by the caller before calling
+// [`attach_initial`]. Stack screens don't render Android-side header
+// chrome (see stack module).
 // =============================================================================
 
 /// Icon-based header bar button. The closure is leaked via
@@ -125,12 +92,10 @@ pub struct BarButton {
     pub on_press: Rc<dyn Fn()>,
 }
 
-/// Per-screen options the SDK handler hands to [`attach_initial`].
-/// Mirrors the legacy old-core `ScreenOptions` shape — title,
-/// header_left/right buttons, color closures — but lives in the
-/// helpers crate so each SDK can translate from its own typed options
-/// (`StackScreenOptions`, `DrawerScreenOptions`, …) into a shared
-/// representation the JNI-side Toolbar builder consumes.
+/// Per-screen options handed to [`attach_initial`] — title,
+/// header_left/right buttons, color closures — a shared representation
+/// the JNI-side Toolbar builder consumes, translated from a navigator's
+/// own typed options.
 #[derive(Default, Clone)]
 pub struct AndroidScreenOptions {
     pub title: Option<String>,
@@ -140,12 +105,9 @@ pub struct AndroidScreenOptions {
     pub header_background: Option<Rc<dyn Fn() -> runtime_shared::Color>>,
     pub header_tint: Option<Rc<dyn Fn() -> runtime_shared::Color>>,
     pub title_color: Option<Rc<dyn Fn() -> runtime_shared::Color>>,
-    /// Per-screen override of the navigator's global mount policy
-    /// (`AndroidDrawerCallbacks::mount_policy` / `AndroidTabCallbacks`).
+    /// Per-screen override of the navigator's global mount policy.
     /// `None` defers to the navigator-global default. Mirrors
-    /// `IosScreenOptions::mount_policy` so a single
-    /// `DrawerScreenExt::mount_policy(...)` declaration works on
-    /// both mobile backends.
+    /// `IosScreenOptions::mount_policy`.
     pub mount_policy: Option<MountPolicy>,
     /// Whether the system back affordance may pop this screen
     /// (`StackScreenOptions::back_enabled`, defaulting to `true`).
@@ -183,13 +145,8 @@ pub fn create_stack(
 }
 
 /// Mount the framework-built initial screen into a freshly-created
-/// navigator. The SDK handler calls this from
-/// `NavigatorHandler::attach_initial` after translating its typed
-/// options to [`AndroidScreenOptions`].
-///
-/// Stack-only since the tab/drawer engines were removed with the
-/// legacy SDKs (the outlet model renders their chrome as author
-/// layout).
+/// navigator, after the caller has translated its typed options to
+/// [`AndroidScreenOptions`].
 pub fn attach_initial(
     navigator: &GlobalRef,
     screen: GlobalRef,
@@ -210,8 +167,8 @@ pub fn release(node: &GlobalRef) {
 }
 
 /// Build a `NavigatorHandle` for the navigator identified by `node`.
-/// SDK crates wrap this in their own typed handle (`StackHandle`,
-/// `TabsHandle`, `DrawerHandle`). Returns an inert (no-control) handle
+/// A navigator SDK wraps this in its own typed handle. Returns an inert
+/// (no-control) handle
 /// when `node` isn't a registered navigator.
 pub fn make_handle(node: &GlobalRef) -> NavigatorHandle {
     if let Some(handle) = stack::make_handle(node) {
@@ -221,7 +178,7 @@ pub fn make_handle(node: &GlobalRef) -> NavigatorHandle {
 }
 
 // =============================================================================
-// Internal helpers shared across stack + tab_drawer modules.
+// Internal helpers.
 // =============================================================================
 
 struct NoopOps;

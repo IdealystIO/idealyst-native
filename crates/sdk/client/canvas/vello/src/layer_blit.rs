@@ -211,8 +211,7 @@ mod tests {
         assert_eq!((u[10], u[11]), (100.0, 100.0), "drawn-rect centre");
     }
 
-    /// `src_crop` applies before the fit on the GPU too (it used to be folded in
-    /// only on macOS and ignored on web).
+    /// `src_crop` applies before the fit on the GPU too, on every target.
     #[test]
     fn src_crop_selects_the_source_region_before_the_fit() {
         let l = layer((0.0, 0.0, 50.0, 50.0)).fit(Fit::Fill).src_crop((0.5, 0.0, 0.5, 1.0));

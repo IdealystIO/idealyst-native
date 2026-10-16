@@ -302,7 +302,7 @@ impl RenderState {
         // by `frac` on every side, so a pan up to `frac`·viewport composites the
         // retained texture under a transform (O(1)) with no black edge — re-baking
         // only when the pan runs past the margin (the app's `far` recenter). `0.0`
-        // (the default) is exactly the old viewport-sized behavior. Device size is
+        // (the default) bakes viewport-sized textures. Device size is
         // `(1 + 2·frac)·viewport`; content is rendered offset by `frac·viewport`
         // (logical) so the texture's top-left maps to screen `-frac·viewport`.
         let frac = overscan_frac();

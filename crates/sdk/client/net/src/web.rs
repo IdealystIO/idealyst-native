@@ -1,5 +1,5 @@
 //! Web (wasm32) transport: the browser's `fetch`, through web-glue bindings
-//! (own-web-bindings phase 4 — this arm ran on gloo-net before).
+//! declared in this module.
 //!
 //! One JS module (`net/fetch`, below) owns the whole exchange: it builds the
 //! `Headers`, issues `fetch(url, { method, headers, body, signal })`, buffers

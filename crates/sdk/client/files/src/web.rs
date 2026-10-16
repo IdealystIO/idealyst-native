@@ -12,8 +12,7 @@
 //! the connection — no connection outlives the operation. `local_path`
 //! returns `None` — there's no filesystem path to hand out on web.
 //!
-//! Every browser call is a web-glue binding (docs/proposals/own-web-bindings.md;
-//! this arm ran on the `idb` crate before phase 4).
+//! Every browser call is a web-glue binding.
 //!
 //! # Opening and upgrading
 //!

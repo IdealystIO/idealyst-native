@@ -17,7 +17,7 @@ license.workspace = true
 #   - iOS / macOS:      AVCaptureSession + AVCaptureVideoDataOutput
 #   - Android:          Camera2 + ImageReader via JNI on a worker thread
 #   - desktop Linux:    GStreamer V4L2 (v4l2src ! videoconvert ! appsink)
-#   - desktop Windows:  not yet implemented (returns Unsupported)
+#   - desktop Windows:  Media Foundation IMFSourceReader on a capture thread
 #
 # The platform-agnostic shell (Camera / CameraStream / VideoFrame,
 # CameraConfig / CameraFacing, CameraError, the FrameCallback bound) lives

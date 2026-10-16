@@ -28,7 +28,7 @@ fn js_file(body: &str, name: &str, mime: &str) -> File {
         .unwrap()
 }
 
-/// Regression guard for the crossing that used to be a `web_sys::File`: the
+/// Regression guard for the drop → picker crossing: the
 /// dropped file's source is a `web_glue::dom::File`, and file-picker must
 /// take it (a type mismatch here silently drops every file).
 #[wasm_bindgen_test]

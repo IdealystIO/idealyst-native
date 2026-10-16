@@ -20,7 +20,7 @@
 //! This is the deliberately **trivial** approach: one JNI call per path
 //! op, re-rasterizing the whole bitmap on every scene change. That makes
 //! the per-op JNI cost easy to measure later (the native-vs-vello
-//! benchmark) without pre-optimizing — exactly the brief. Two obvious v2
+//! benchmark) without pre-optimizing. Two obvious
 //! refinements if the numbers justify them: a batched flat-buffer replay
 //! (one JNI crossing per frame), and reusing the bitmap across frames
 //! instead of allocating a fresh one each render.

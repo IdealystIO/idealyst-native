@@ -44,9 +44,10 @@
 //! - **Linux (desktop)** — GeoClue2 over D-Bus (`org.freedesktop.GeoClue2`)
 //!   via `zbus`: `Manager.GetClient` → set `DesktopId` → `Start` → the
 //!   client's `LocationUpdated` signal.
+//! - **Windows** — WinRT `Windows.Devices.Geolocation` (`Geolocator`).
 //!
-//! Every other target (the host running `cargo test` on non-Linux, desktop
-//! Windows) gets a stub that reports [`LocationError::NotSupported`].
+//! Every other target gets a stub that reports
+//! [`LocationError::NotSupported`].
 //!
 //! # Permissions
 //!
@@ -166,8 +167,7 @@ pub(crate) type BoxedCallback = Box<dyn Fn(Position) + 'static>;
 // ---------------------------------------------------------------------------
 // Backend selector. Exactly one `imp` compiles per target; each supplies
 // `current_fix()`, `start_watch()`, and a `WatchHandle` whose `Drop` stops
-// updates. The fallback stub (non-Linux desktop / test host) reports
-// `NotSupported`.
+// updates. The fallback stub (any other target) reports `NotSupported`.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -305,12 +305,12 @@ mod tests {
     // path. We test the deterministic, host-owned surface below.
 
     /// `watch` installs without panicking on every target and hands back a
-    /// guard; on the host the stub simply never fires the callback. The guard
+    /// guard; on the test host the callback never fires. The guard
     /// drops cleanly (no `mem::forget`, no leak).
     #[test]
     fn host_watch_installs_and_drops() {
         let guard = watch(|_pos| {
-            // never fires on the host stub backend
+            // never fires on the test host
         });
         drop(guard);
     }

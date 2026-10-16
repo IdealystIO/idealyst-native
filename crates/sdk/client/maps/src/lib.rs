@@ -2,7 +2,7 @@
 //!
 //! Demonstrates the third-party extension pattern: a shared types
 //! crate (`maps-core`), this umbrella facade, and per-backend leaf
-//! crates (`maps-web`, `maps-ios`, future `maps-android`) wired
+//! crates (`maps-web`, `maps-ios`) wired
 //! together via target-specific Cargo dependencies. User code stays
 //! target-agnostic; the umbrella selects the right leaf at compile
 //! time.
@@ -14,7 +14,7 @@
 //!
 //! - **Web (wasm32)** — [`register`] installs a `WebBackend`-concrete
 //!   handler that delegates to the `maps-web` leaf: the OpenStreetMap
-//!   embed iframe built by `maps_web::build_map_iframe`, followed by
+//!   embed iframe built by `maps_web::build_map_element`, followed by
 //!   author style via `attach_style` and the scope-tied
 //!   `release_external` teardown.
 //! - **iOS** — [`register`] installs an `IosBackend`-concrete handler

@@ -48,11 +48,6 @@ host-mock = { path = "../../../dev/host-mock" }
 # The wasm32 handler is `WebBackend`-concrete (`<video>` DOM has no
 # caps-trait expression), so `Registry<WebBackend>` needs the backend's
 # `Host` impl.
-#
-# COORDINATION (runtime-v2 deletion wave): `` is
-# still required because the backends' `Host` + caps impls are behind
-# that feature. Drop the forward once the backend crates make them
-# unconditional.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
 # The `<video>` element and its playback ops go through web-glue, the

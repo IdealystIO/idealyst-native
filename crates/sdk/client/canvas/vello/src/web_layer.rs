@@ -9,8 +9,8 @@
 //! copy from the `HTMLVideoElement` — no CPU readback), then samples it with the
 //! SAME fit / rounded-rect / opacity / border shader the native compositor uses.
 //!
-//! With this in place, a canvas WITH texture layers no longer has to fall back to
-//! Canvas2D on web: it can stay on the WebGPU/vello path (so the dots backdrop is
+//! So a canvas WITH texture layers does not have to fall back to Canvas2D on
+//! web: it can stay on the WebGPU/vello path (so the dots backdrop is
 //! GPU-instanced) and still composite the camera into the same canvas — which is
 //! what the web self-capture (`captureStream`) records.
 //!

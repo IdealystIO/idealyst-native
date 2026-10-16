@@ -100,9 +100,9 @@ fn downsample(env: &[f32], n: usize) -> Vec<f32> {
 
 /// The **preloaded** denoise pipeline, built once at startup and kept warm for
 /// the app's lifetime. The model build (the expensive step) happens here, off
-/// the record path — so pressing Record no longer waits on it, and the denoised
+/// the record path — so pressing Record doesn't wait on it, and the denoised
 /// stream starts within its inherent ~30 ms latency rather than after a
-/// per-record model build (which was offsetting the two recordings).
+/// per-record model build (which would offset the two recordings).
 ///
 /// `_relay` is the stable input the pipeline processes; while recording, the mic
 /// is forwarded into it (`relay_writer`). `clean` is the denoised output stream
@@ -312,9 +312,7 @@ pub fn app() -> Element {
         let raf = runtime_core::raf_loop(move || {
             // No reentrancy guard needed: writes STAGE and the driver
             // commits them at the flush, so a frame landing mid-turn can
-            // never re-borrow a live arena (the old core's
-            // `is_reactive_busy()` skip existed only to dodge that
-            // "RefCell already borrowed" abort).
+            // never re-borrow a live arena.
             let r = RAW_PEAK_BITS.load(Ordering::Relaxed);
             if r != last_raw.get() {
                 last_raw.set(r);

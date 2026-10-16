@@ -65,7 +65,7 @@ async fn unsupported_host_reports_not_supported() {
 #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 #[tokio::test]
 async fn linux_backend_is_wired_up() {
-    // The old `unsupported` stub answered `Err(NotSupported)` here. The
+    // The `unsupported` stub answers `Err(NotSupported)` here. The
     // `arboard` backend never does: on a desktop session it succeeds, and
     // headless it fails to open a display and returns `Backend(_)`. Either
     // way, `NotSupported` must NOT appear — that's the regression the cfg

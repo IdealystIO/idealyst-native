@@ -1,8 +1,8 @@
 //! The web-glue bindings the WebSocket and EventSource arms share
-//! (own-web-bindings phase 3): constructing the JS object, assigning and
+//! — constructing the JS object, assigning and
 //! clearing its `on<event>` handler slots, and reading an event's payload.
 //!
-//! The HTTP arm (`web.rs`) declares its own fetch module (phase 4).
+//! The HTTP arm (`web.rs`) declares its own fetch module.
 
 use web_glue::{string, Closure, JsError, JsValue};
 

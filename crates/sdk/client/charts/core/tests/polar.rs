@@ -435,10 +435,9 @@ fn a_radial_tween_interpolates_the_range_too() {
 
 /// Slice colors ride the COLOR clock, independently of the value clock.
 ///
-/// This used to assert the opposite — that a recolor snapped to the
-/// destination on frame one. It was changed deliberately: a slice sliding to
-/// a new share while its color jumped read as a glitch, and the two channels
-/// now have their own `Transition` exactly so a host can pick the balance.
+/// Deliberate: a slice sliding to a new share while its color jumped reads
+/// as a glitch, and the two channels have their own `Transition` exactly so
+/// a host can pick the balance.
 #[test]
 fn slice_colors_ride_the_color_clock() {
     let from = PieSpec::new(vec![Slice::new("a", 1.0, BLUE)]);

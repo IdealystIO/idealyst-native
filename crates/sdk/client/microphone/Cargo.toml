@@ -67,8 +67,8 @@ cpal = "0.15"
 # crate, to ACTIVATE an AVAudioSession in a record category (a capture
 # requirement so the input AudioUnit produces sound). The microphone *grant*
 # (the record-permission prompt + status read) is delegated to the
-# `permissions` SDK, so the old block2/futures-channel completion-block bridge
-# and the macOS-only AVCaptureDevice status query are gone from here.
+# `permissions` SDK, so this crate needs no completion-block bridge or
+# AVCaptureDevice status query of its own.
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString"] }

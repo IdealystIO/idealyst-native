@@ -50,8 +50,9 @@
 //!   appsink`), pushing CPU `RGBA8` frames. The PipeWire/xdg-desktop-portal
 //!   path (`pipewiresrc`) is a documented follow-on (needs
 //!   `gst-plugin-pipewire`).
-//! - **other desktop (Windows)** — not yet implemented; returns
-//!   [`CameraError::Unsupported`].
+//! - **Windows** — Media Foundation (`IMFSourceReader` asked for `RGB32`),
+//!   pushing CPU frames from a capture thread. See `src/windows.rs`.
+//! - **any other target** — returns [`CameraError::Unsupported`].
 //!
 //! # Permissions
 //!

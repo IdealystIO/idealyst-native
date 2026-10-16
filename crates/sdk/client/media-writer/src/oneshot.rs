@@ -1,19 +1,14 @@
 //! A tiny single-shot, single-threaded async signal — the web `stop()` future
 //! awaits it for the `MediaRecorder` `onstop` DOM event.
 //!
-//! It MUST be waker-based, not a self-rescheduling poll. An earlier version was
-//! backed by `std::sync::mpsc` and, when empty, did
-//! `cx.waker().wake_by_ref(); Poll::Pending` — re-waking the task on every poll.
-//! On the single-threaded wasm executor that's an infinite microtask spin: the
-//! task reschedules itself before the browser ever yields to the event loop, so
-//! the `onstop` DOM event (which calls [`OneshotTx::send`]) is never dispatched,
-//! the receiver never completes, and the TAB FREEZES on stop (the whiteboard
-//! "stop screen recording freezes on web" bug).
-//!
-//! The fix below PARKS the task: `poll` stashes the waker and returns `Pending`
-//! without re-waking; `send` (and `Drop`, as a safety net) flips `done` and
-//! wakes the stored waker exactly once. `Rc<RefCell<…>>` is intentional — the
-//! only consumer is the wasm32 web backend, which is single-threaded.
+//! It MUST be waker-based, not a self-rescheduling poll: on the
+//! single-threaded wasm executor a `wake_by_ref(); Poll::Pending` loop spins
+//! microtasks forever, the browser never dispatches the `onstop` event that
+//! calls [`OneshotTx::send`], and the tab freezes on stop. So `poll` stashes
+//! the waker and returns `Pending` without re-waking; `send` (and `Drop`, as a
+//! safety net) flips `done` and wakes the stored waker exactly once.
+//! `Rc<RefCell<…>>` is intentional — the only consumer is the wasm32 web
+//! backend, which is single-threaded.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -189,8 +184,8 @@ mod tests {
     }
 
     /// THE REGRESSION: a poll on an unsent receiver must PARK (Pending) WITHOUT
-    /// waking itself. The old mpsc version called `wake_by_ref()` here, which
-    /// spun the executor and starved the event loop → tab freeze on stop.
+    /// waking itself — a self-wake spins the executor and starves the event
+    /// loop → tab freeze on stop.
     #[test]
     fn pending_poll_does_not_self_wake() {
         let (_tx, rx) = futures_oneshot();

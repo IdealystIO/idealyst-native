@@ -1,4 +1,4 @@
-//! iOS handler for the `code_block` external. Produces a single
+//! iOS handler for the `code_block` payload. Produces a single
 //! `UIScrollView` (horizontal) wrapping one inset-honoring label
 //! (`IosBackend::new_text_inset_label`) whose `attributedText` is an
 //! `NSAttributedString` with per-range `NSForegroundColorAttributeName`
@@ -17,9 +17,8 @@
 //! `IosBackend::install_external_content_measure`), so the padding
 //! scrolls WITH the content — text sits inset at rest and reaches the
 //! block's own edge mid-scroll, exactly like web's `<pre> { padding }`.
-//! A previous revision hard-coded a 20pt `contentInset` here; combined
-//! with author padding on a wrapping panel that doubled the visible
-//! padding and clipped scrolled content 20pt before the panel edge.
+//! A handler-side `contentInset` would stack on author padding and clip
+//! scrolled content before the panel edge.
 
 use backend_ios::{IosBackend, IosNode};
 use backend_ios_core::style::color_to_uicolor;

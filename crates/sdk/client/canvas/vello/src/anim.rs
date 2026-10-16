@@ -18,8 +18,8 @@ use vello::Renderer;
 use crate::encode::take_anim_uploads;
 
 /// Per-render-loop registry of animated-image override textures, keyed by the
-/// stable handle's blob id. Owned by each interactive renderer (native
-/// `VelloCanvasRenderer`, web `WebRenderer`).
+/// stable handle's blob id. Owned by each renderer (native `RenderState`,
+/// `SceneRenderer`, web `GpuState`).
 pub(crate) struct AnimTextures {
     map: HashMap<u64, (ImageData, wgpu::Texture)>,
 }

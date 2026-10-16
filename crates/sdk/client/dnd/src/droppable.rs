@@ -104,7 +104,7 @@ impl<T: Clone + 'static> Droppable<T> {
         // world kernel, and `bind` is called from a component body — so the
         // cleanup is RETURNED from a dependency-free effect instead. The
         // enclosing `component_scope` owns that effect, so the cleanup fires at
-        // exactly the unmount moment the old scope cleanup did.
+        // exactly the unmount moment.
         let ctx = self.ctx.clone();
         let id = self.id;
         let _ = effect(move || {

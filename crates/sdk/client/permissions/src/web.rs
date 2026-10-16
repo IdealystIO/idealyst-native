@@ -18,8 +18,8 @@
 //! `Camera`/`Microphone` likewise have only a Permissions-API status read on
 //! web (the prompt fires on `getUserMedia`), mirroring the geolocation shape.
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3); Promises are awaited as `web_glue::JsFuture`.
+//! Every browser call is a web-glue binding declared here;
+//! Promises are awaited as `web_glue::JsFuture`.
 
 use web_glue::{cast, string, JsFuture, JsValue};
 

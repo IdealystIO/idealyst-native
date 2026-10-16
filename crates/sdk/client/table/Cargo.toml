@@ -42,10 +42,6 @@ runtime-shared = { workspace = true }
 # The scene handlers are generic over the caps traits, so the SSR
 # backend — a real caps-complete host — drives them on the host target
 # (the navigator-SDK test pattern).
-#
-# COORDINATION: `` is still needed because
-# backend-ssr's newcore render path is feature-gated. When that feature
-# is made unconditional (backend flattening wave), drop the forward.
 backend-ssr = { path = "../../../backend/ssr" }
 runtime-world = { path = "../../../runtime/world" }
 runtime-scene = { path = "../../../runtime/scene" }
@@ -54,5 +50,4 @@ runtime-vocabulary = { path = "../../../runtime/vocabulary", features = ["robot"
 
 # No wasm32-specific dependency: the web `<table>` handlers are generic
 # over the vocabulary caps traits, so nothing here touches `web-sys` or
-# the web backend directly. (They used to, when the web lowering went
-# through a `WebBackend`-concrete external handler.)
+# the web backend directly.

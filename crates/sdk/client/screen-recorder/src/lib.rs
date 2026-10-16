@@ -3,15 +3,15 @@
 //! Two independent pieces:
 //!
 //! 1. **The capture capability** — [`ScreenRecorder`]. A backend-agnostic
-//!    object (no `Element`, no `Backend` method) that establishes a live
+//!    object (no `Element`, no backend capability) that establishes a live
 //!    frame stream and fires a raw [`VideoFrame`] callback per frame.
 //!    Same shape as the `microphone` SDK. **It never writes a file** —
 //!    encoding/persistence is a separate higher-level crate.
 //!
 //! 2. **The private layer** — [`PrivateLayer`] + [`register`]. An
 //!    overlay subtree that recordings don't capture, via the scene
-//!    registry's third-party-extension mechanism. Zero runtime changes.
-//!    See [`private_layer`] for the design.
+//!    registry's third-party-extension mechanism. See [`private_layer`]
+//!    for the design.
 //!
 //! ```ignore
 //! // bootstrap (only needed for the private layer) — the boot entry's
@@ -53,8 +53,9 @@ pub use media_stream::{FrameCallback, MediaStream, PixelFormat, Subscription, Vi
 pub(crate) type NativeSource = std::rc::Rc<dyn std::any::Any>;
 
 // One capture backend is compiled per target. Each `imp` module supplies
-// `request_permission`, `start`, and the `Recording` handle type. The
-// skeleton's modules all return `RecorderError::Unsupported`.
+// `request_permission`, `start`, and the `Recording` handle type. Targets
+// with no backend get `unsupported.rs`, which returns
+// `RecorderError::Unsupported`.
 #[cfg_attr(target_arch = "wasm32", path = "web.rs")]
 #[cfg_attr(all(not(target_arch = "wasm32"), target_os = "ios"), path = "ios.rs")]
 #[cfg_attr(all(not(target_arch = "wasm32"), target_os = "macos"), path = "macos.rs")]

@@ -314,9 +314,8 @@ mod tests {
 
     /// Every non-GLOBAL NM state — including the "connected but unverified"
     /// SITE(60)/LOCAL(50) rungs and the disconnected/transitional ones — maps
-    /// to the canonical offline snapshot, regardless of primary type. This is
-    /// the behaviour that makes the Linux path *differ* from the old inert
-    /// fallback (which always reported ASSUME_ONLINE).
+    /// to the canonical offline snapshot, regardless of primary type — unlike
+    /// the inert fallback, which always reports ASSUME_ONLINE.
     #[test]
     fn maps_non_global_states_offline() {
         for state in [

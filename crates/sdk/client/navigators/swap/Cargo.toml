@@ -36,8 +36,5 @@ runtime-vocabulary = { workspace = true }
 runtime-scene = { path = "../../../../runtime/scene" }
 runtime-world = { path = "../../../../runtime/world" }
 runtime-shared = { path = "../../../../runtime/shared" }
-# COORDINATION (runtime-v2 deletion wave): `` is
-# still required because backend-ssr's `newcore` render path is
-# feature-gated. Drop the forward once it is unconditional.
 backend-ssr = { path = "../../../../backend/ssr" }
 host-mock = { path = "../../../../dev/host-mock" }

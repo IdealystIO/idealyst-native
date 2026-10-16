@@ -5,13 +5,11 @@
 //! bright, per-frame-distinct content at the whiteboard's capture resolution and
 //! asserts two things the canvas-capture work depends on:
 //!
-//! 1. the encoder emits a real, non-black, multi-frame mp4 (verified once by
-//!    extracting a frame — see git history); and
+//! 1. the encoder emits a real, non-black, multi-frame mp4; and
 //! 2. `stop()` stays prompt even when the producer FLOODS frames far faster than
-//!    the H.264 encoder drains. With the old unbounded channel that backlog made
-//!    `stop()` spend ~2s draining (the whiteboard "stop is super delayed" bug);
-//!    `MAX_INFLIGHT_VIDEO_FRAMES` caps the queue so finalize doesn't scale with
-//!    how hard the producer floods.
+//!    the H.264 encoder drains. An unbounded queue makes `stop()` spend ~2s
+//!    draining that backlog; `MAX_INFLIGHT_VIDEO_FRAMES` caps the queue so
+//!    finalize doesn't scale with how hard the producer floods.
 
 #![cfg(target_os = "macos")]
 

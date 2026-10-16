@@ -145,10 +145,8 @@ fn numeric_ticks(min: f64, max: f64, want: usize) -> Vec<Tick> {
 /// 12 decades is already far past any real chart (a picoamp-to-amp axis is
 /// 12). Without a cap, an all-non-positive data set or an absurd hand-set
 /// `Domain::Fixed` produces a ~308-decade domain, for which `end / start`
-/// overflows f64 — the log tick walk used to hang outright on it (plotters
-/// 0.3.7 saturated `inf as usize` into a ~3.7e18-iteration loop; the
-/// in-house [`ticks::log`] returns no ticks instead). Clamping keeps the
-/// domain meaningful AND the ticks present.
+/// overflows f64, and [`ticks::log`] returns no ticks for it. Clamping keeps
+/// the domain meaningful AND the ticks present.
 const MAX_LOG_DECADES: f64 = 12.0;
 
 /// Constrain a log range to at most [`MAX_LOG_DECADES`], keeping the top

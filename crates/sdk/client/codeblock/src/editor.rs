@@ -561,8 +561,8 @@ impl IntoElement for CodeEditorBuilder {
 /// `position: absolute` resolves against, stretched across the author's
 /// box.
 ///
-/// `align_self: Stretch` stretches the CROSS axis (width) only, so the
-/// stack used to stay the text's height inside a taller author box —
+/// `align_self: Stretch` stretches the CROSS axis (width) only, so on its
+/// own the stack stays the text's height inside a taller author box —
 /// and with it the `inset: 0` editing layer, leaving a tall bordered
 /// rectangle whose lower half no click could focus. `flex_grow` closes
 /// that where the author's box is a flex container (any flex property
@@ -579,8 +579,8 @@ impl IntoElement for CodeEditorBuilder {
 ///
 /// `overflow: Hidden` keeps the two layers clipping IDENTICALLY. The
 /// decorated `<pre>` is in flow and overflows the box on a long line;
-/// the editing layer is `inset: 0` against that same box and no longer
-/// scrolls itself (see `editor_layer_style`). Without this the visible
+/// the editing layer is `inset: 0` against that same box and does not
+/// scroll itself (see `editor_layer_style`). Without this the visible
 /// glyphs would spill past the author's border while the caret stopped
 /// at it. In the ancestor the contract asks for (a horizontal
 /// `scroll_view` → flex row) the box takes the longest line, so nothing

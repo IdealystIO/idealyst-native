@@ -176,9 +176,7 @@ impl UrlSyncService for ProbeService {
 /// The SDK-built navigator registers with the host's URL-sync service
 /// (kind + committed initial), hooks every dispatch and commit, and
 /// deregisters at teardown — the seam the web backend's
-/// `newcore_url_sync` rides. Regression for the SDK path specifically:
-/// the old SDK opted in via `control.enable_url_sync()`; on the new
-/// core registration must happen with NO SDK call.
+/// `newcore_url_sync` rides. Registration must happen with NO SDK call.
 #[test]
 fn url_sync_registration_through_the_sdk_path() {
     let h = harness();
@@ -212,8 +210,8 @@ fn url_sync_registration_through_the_sdk_path() {
 
 /// A `link(route = …)` (the glue constructor `ui!` lowers to) inside a
 /// swap screen resolves the ambient `LinkActivator` at mount and
-/// Selects — "links switch, never push", the old swap activator
-/// contract — through the staged dispatch (commit on flush).
+/// Selects — "links switch, never push" — through the staged dispatch
+/// (commit on flush).
 #[test]
 fn link_route_selects_in_a_swap_screen() {
     let h = harness();

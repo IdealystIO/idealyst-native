@@ -453,8 +453,9 @@ mod tests {
     }
 
     /// A layer the scene never places still composites over all scene content
-    /// (the pre-`Texture`-op behavior). On macOS this is also the parity fix:
-    /// the CPU macOS renderer used to drop texture layers entirely.
+    /// (the behavior from before `Texture` ops existed). On macOS this also
+    /// pins parity: the bug was the CPU macOS renderer dropping texture
+    /// layers entirely.
     #[test]
     fn regression_unplaced_layer_composites_over_the_scene() {
         let props = CanvasProps {

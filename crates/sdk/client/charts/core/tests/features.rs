@@ -394,8 +394,8 @@ fn regression_a_bar_is_hit_over_its_whole_body() {
     assert_eq!(hit.index, 0);
     assert_eq!(hit.distance, 0.0, "inside the mark means zero distance");
 
-    // And this is why the old index failed: the point it stored — the bar's
-    // top — is most of the plot away from a pointer sitting on the bar's
+    // And this is why a top-centre index fails: the bar's
+    // top is most of the plot away from a pointer sitting on the bar's
     // base, so no proximity radius small enough to be useful could match it.
     let to_anchor = (hit.position.y - near_base.y).abs();
     assert!(

@@ -71,8 +71,7 @@ const GENERATED_SIZE: f32 = 180.0;
 /// The FIRST `next_frame()` comes from the local scanner, not from
 /// `scanner_sig`. `set` only stages a write until the driver flushes, so
 /// reading `scanner_sig` in the same turn that set it returns the old `None` —
-/// the loop would end before it began. That was this demo's first bug: the
-/// camera opened, the preview ran, and no code was ever read
+/// the loop would end before it began, and no code would ever be read
 /// (`tests/scan_loop.rs` pins it).
 pub fn start_scan(
     stream: MediaStream,

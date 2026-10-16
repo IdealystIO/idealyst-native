@@ -26,7 +26,7 @@ fn main() {
 
     let app = move || -> Element {
         // `install_tokens` is required before render even when no
-        // styles read tokens — see [[project_install_theme_required]].
+        // styles read tokens.
         install_tokens(&[]);
 
         // Body is intentionally a bare empty view — not a `text(...)`

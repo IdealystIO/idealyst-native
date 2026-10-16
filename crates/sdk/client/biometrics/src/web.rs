@@ -13,8 +13,8 @@
 //!   [`Authentication::assertion`] for the caller to POST to its server.
 //!   This crate cannot verify the signature locally and does not pretend to.
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3). The options dictionary is built inside the one binding that
+//! Every browser call is a web-glue binding declared here.
+//! The options dictionary is built inside the one binding that
 //! calls `navigator.credentials.get` — its shape maps 1:1 to the WebAuthn
 //! `PublicKeyCredentialRequestOptions` spec — and the assertion's
 //! `ArrayBuffer`s are copied out into `Vec<u8>`s (length, then one copy

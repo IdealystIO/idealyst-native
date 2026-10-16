@@ -172,14 +172,10 @@ async fn share_once(content: &ShareContent) -> Result<ShareOutcome, ShareError> 
 mod tests {
     use super::*;
 
-    /// Windows used the stub: `share` was always `NotSupported`. It now goes
-    /// to the share sheet — which needs the app's window, so a test thread
-    /// (no window of its own) gets that backend error rather than the stub's
-    /// answer. The sheet itself is checked by hand in `examples/sdk-gallery`.
-    /// A double press opened a second share while the first sheet was up;
-    /// Windows refused it with "the share flow is not available". The second
-    /// now gets a clear "already open", and the slot frees when the first
-    /// finishes.
+    /// The bug: a double press opened a second share while the first sheet
+    /// was up, and Windows refused it with "the share flow is not
+    /// available". The second gets a clear "already open", and the slot
+    /// frees when the first finishes.
     #[test]
     fn regression_a_second_share_while_one_is_open_says_so() {
         let first = OpenGuard::claim().expect("nothing open yet");
@@ -189,6 +185,11 @@ mod tests {
         assert!(OpenGuard::claim().is_some(), "free again once the first is done");
     }
 
+    /// The bug: Windows fell to the stub, so `share` was always
+    /// `NotSupported`. It goes to the share sheet — which needs the app's
+    /// window, so a test thread (no window of its own) gets that backend
+    /// error rather than the stub's answer. The sheet itself is checked by
+    /// hand in `examples/sdk-gallery`.
     #[test]
     fn regression_windows_share_reaches_the_share_sheet_path() {
         let r = pollster::block_on(share(&ShareContent::text("hello")));

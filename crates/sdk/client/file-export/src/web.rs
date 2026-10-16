@@ -2,8 +2,8 @@
 //! (Chromium), falling back to a synthetic `<a download>` click everywhere
 //! else (Safari/Firefox).
 //!
-//! Every browser call is a web-glue binding declared here (own-web-bindings
-//! phase 3). The picker's `FileSystemFileHandle` / writable stream are driven
+//! Every browser call is a web-glue binding declared here.
+//! The picker's `FileSystemFileHandle` / writable stream are driven
 //! through web-glue's reflect surface (`JsValue::get` / `call_method`) and
 //! their Promises awaited as `web_glue::JsFuture`; the Blob and the fallback
 //! anchor are one binding each.

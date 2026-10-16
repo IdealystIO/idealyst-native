@@ -62,7 +62,7 @@ pub(crate) fn satisfies(requested: CameraFacing, observed: ObservedFacing) -> bo
 mod tests {
     use super::*;
 
-    /// REGRESSION (CrewForge report 2026-10-13): on a laptop with one
+    /// REGRESSION: on a laptop with one
     /// camera, `open(CameraConfig::default().back())` on web silently opened
     /// the user-facing webcam, so a front/back switch did nothing and the app
     /// couldn't tell. A webcam that reports no facing must not satisfy `Back`.

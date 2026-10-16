@@ -7,9 +7,8 @@
 //! [`register`] installs the External-placeholder handler and the
 //! in-tree primitive renders zero-size.
 //!
-//! That posture follows the project's mobile-first philosophy
-//! ([[feedback_mobile_first_philosophy]]): toolbar / menu chrome
-//! belongs in third-party SDKs, not the host capability set.
+//! That posture follows the project's mobile-first philosophy: toolbar /
+//! menu chrome belongs in third-party SDKs, not the host capability set.
 //!
 //! # Usage
 //!

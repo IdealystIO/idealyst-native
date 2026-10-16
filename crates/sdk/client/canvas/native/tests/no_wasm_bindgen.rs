@@ -1,12 +1,12 @@
 //! canvas-native's default web graph carries no wasm-bindgen.
 //!
 //! A module that links wasm-bindgen builds in hybrid mode — the wasm-bindgen
-//! CLI runs over it (docs/proposals/own-web-bindings.md). This crate used to
-//! depend on wasm-bindgen + web-sys unconditionally for two web-sys-typed
-//! entry points only canvas-vello calls, and that alone made every canvas app
-//! (examples/whiteboard-demo, charts-demo) a hybrid build. Those entry points
-//! are behind `web-sys-canvas` now; this pins that the default graph stays
-//! free of them.
+//! CLI runs over it (docs/proposals/own-web-bindings.md). The two
+//! web-sys-typed entry points only canvas-vello calls sit behind
+//! `web-sys-canvas`, so an unconditional wasm-bindgen + web-sys dependency
+//! would make every canvas app (examples/whiteboard-demo, charts-demo) a
+//! hybrid build for nothing. This pins that the default graph stays free of
+//! them.
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::process::Command;

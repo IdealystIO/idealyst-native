@@ -260,8 +260,8 @@ declare_class!(
                 // (retain + pointer swap, microseconds) so the `video` SDK can
                 // set it straight as `CALayer.contents` — no CPU swizzle, no
                 // CGImage, no per-frame upload. This is what keeps the live
-                // preview low-latency: the heavy CPU path below previously
-                // backed up SCK's bounded frame queue (≈ queueDepth × per-frame
+                // preview low-latency: the heavy CPU path below alone would
+                // back up SCK's bounded frame queue (≈ queueDepth × per-frame
                 // swizzle time of latency); the surface publish never stalls.
                 let surface = CVPixelBufferGetIOSurface(pixel_buffer);
                 if !surface.is_null() {

@@ -36,8 +36,7 @@
 //! [`stack_navigator`](runtime_vocabulary::builders::stack_navigator)
 //! builder; the runtime side is the vocabulary's own stack handler,
 //! installed on every host by `register_builtins`. There is no
-//! per-backend handler to register — [`register`] survives only as a
-//! documented no-op for historical bootstrap code — and URL sync needs
+//! per-backend handler to register, and URL sync needs
 //! no opt-in (every navigator registers with the host-installed
 //! `handlers::nav_url_sync::UrlSyncService`).
 //!
@@ -68,8 +67,8 @@
 //! **Direction is the whole point.** A stack push and a stack pop make
 //! the same content change — the top screen is swapped — and differ only
 //! in which way the user went. A `UINavigationController` needs that to
-//! animate; the gesture needs it to exist at all. The handler's previous
-//! single direction-blind reveal could not express it.
+//! animate; the gesture needs it to exist at all. A single
+//! direction-blind reveal could not express it.
 //!
 //! A presenter that declines (`attach` returns `None`) leaves the outlet
 //! swap byte-identical, which is what
@@ -526,12 +525,10 @@ impl ChildList for StackNavigator {
 
 // NOTE: this SDK intentionally exposes NO registration seam. The stack
 // handler is a vocabulary built-in installed by `register_builtins` on
-// every host, so there is nothing for an app to register. The 1.0-era
-// no-op `register` / `register_generic` shims were removed in 1.1.0:
-// an unconstrained `fn register<B>(_: &mut B) {}` accepts a
-// `&mut Registry<H>` happily, so a caller who assumed the usual seam
-// convention got a call that compiled, did nothing, and sent them
-// debugging a registration they had already "fixed".
+// every host, so there is nothing for an app to register. Don't add a
+// no-op `register`: an unconstrained `fn register<B>(_: &mut B) {}`
+// accepts a `&mut Registry<H>` happily, so a caller who assumed the usual
+// seam convention gets a call that compiles and does nothing.
 
 /// Convenience re-exports, including the shared data surface (`Route`,
 /// `Screen`, `StackContext`), so an app imports everything from here.

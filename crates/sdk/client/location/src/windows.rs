@@ -117,9 +117,9 @@ mod tests {
         assert_eq!(ticks_to_unix_ms(UNIX_EPOCH_TICKS + 10_000 * 1500), 1500.0);
     }
 
-    /// Windows used the NotSupported stub. Now the request reaches WinRT:
-    /// a fix, or the machine's honest answer (location off → NotAuthorized,
-    /// no source → Unavailable) — never NotSupported. The test VM has no
+    /// Guards against Windows falling to the NotSupported stub: the request
+    /// reaches WinRT — a fix, or the machine's honest answer (location off →
+    /// NotAuthorized, no source → Unavailable) — never NotSupported. The test VM has no
     /// location source, so which of the three arrives depends on its
     /// settings.
     #[test]

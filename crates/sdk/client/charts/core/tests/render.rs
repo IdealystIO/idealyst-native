@@ -1150,10 +1150,9 @@ fn transition_snaps_when_the_shape_changes() {
 /// Values and colors interpolate on their OWN clocks; everything else takes
 /// effect at once.
 ///
-/// The color half used to assert the opposite — that a recolor switched
-/// immediately. That was changed deliberately when colors got their own
-/// `Transition`: a bar gliding to a new height while its fill jumped read as
-/// a glitch. What must still be instant is HIGHLIGHT: a point becoming
+/// Colors ease deliberately, on their own `Transition`: a bar gliding to a
+/// new height while its fill jumped reads as a glitch. What must still be
+/// instant is HIGHLIGHT: a point becoming
 /// selected is a state change the user just caused, and easing into it makes
 /// the UI feel unresponsive rather than smooth.
 #[test]

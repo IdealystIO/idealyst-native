@@ -7,19 +7,13 @@
 //!
 //! ## Why this is a third-party primitive, not a framework one
 //!
-//! It used to be `Element::CodeBlock` in the framework core. A
-//! measurement showed the perf justification was real: the equivalent
+//! The single-node renderer earns its place on perf: the equivalent
 //! composition (`view` + per-token styled `text`) generates 100–300×
-//! more backend ops per re-render even with batched fast paths. The
-//! structural gap (composition rebuilds every span on each render; the
-//! single-node primitive replaces one node) can't be closed by
-//! framework optimization alone.
-//!
-//! But the primitive doesn't fit the core's intent — it isn't a
-//! platform-native widget and is expressible from existing primitives
-//! if perf weren't a concern. CLAUDE.md rule 3 says exactly this case
-//! belongs in a third-party extension. So we kept the fast single-node
-//! renderer but moved the type out of core.
+//! more backend ops per re-render even with batched fast paths, because
+//! the composition rebuilds every span while this primitive replaces one
+//! node. But it isn't a platform-native widget and is expressible from
+//! existing primitives, so per CLAUDE.md rule 3 it lives in a
+//! third-party extension rather than the builtin vocabulary.
 //!
 //! ## Per-platform rendering
 //!
@@ -64,10 +58,9 @@
 //! `setPadding` + `clipToPadding=false` on Android), so the padding
 //! scrolls WITH the content — text sits inset at rest and reaches the
 //! block's own edge mid-scroll, the `<pre> { padding }` observable model.
-//! Handlers previously hard-coded a 20pt/dp inset; combined with author
-//! padding on a wrapping panel that doubled the visible padding and
-//! clipped scrolled content before the block's edge (and made overlay
-//! use-cases like the fiddle editor impossible to align).
+//! A handler-side inset would stack on author padding (doubling it and
+//! clipping scrolled content before the block's edge) and make overlay
+//! uses like the fiddle editor impossible to align.
 //!
 //! ## Usage
 //!

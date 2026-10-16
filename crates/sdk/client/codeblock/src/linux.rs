@@ -1,4 +1,4 @@
-//! Linux (GTK4) handler for the `code_block` external.
+//! Linux (GTK4) handler for the `code_block` payload.
 //!
 //! Renders the whole span list as ONE `gtk::Label` whose text is the
 //! concatenation of every run and whose per-token foreground colors are
@@ -59,10 +59,8 @@ use runtime_shared::Color;
 /// handlers' 13pt.
 const MONO_SIZE_PT: f64 = 13.0;
 
-/// Register the Linux `code_block` external handler on `backend`.
-/// `Element::External` handler for the Linux codeblock kind: one
-/// `gtk::Label` carrying the concatenated spans + a per-run color
-/// `AttrList`.
+/// Build the Linux `code_block` node: one `gtk::Label` carrying the
+/// concatenated spans + a per-run color `AttrList`.
 pub(crate) fn build(spans: &[(String, Color)], b: &mut LinuxBackend) -> LinuxNode {
     let label = gtk4::Label::new(None);
     // Match the framework `text` leaf defaults + code-panel expectations.
@@ -155,7 +153,7 @@ mod tests {
 
     /// A code panel must not be a keyboard focus stop.
     ///
-    /// The bug: `build` used to call `label.set_selectable(true)`, and
+    /// The bug: `build` called `label.set_selectable(true)`, and
     /// `gtk_label_set_selectable()` turns the widget's `focusable`
     /// property on. GTK gives keyboard focus to the first focusable
     /// widget in a freshly mapped subtree, so every navigation to a docs

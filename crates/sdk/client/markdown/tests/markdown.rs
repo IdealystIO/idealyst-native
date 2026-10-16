@@ -46,8 +46,8 @@ fn harness() -> Harness {
     h
 }
 
-/// The byte-parity fence: exact op-log for a small doc, derived from
-/// the old web handler's call sequence (create root div + root style →
+/// The op-log fence: exact op-log for a small doc, in the handler's call
+/// sequence (create root div + root style →
 /// per block: create element, style it, per run create_text + style +
 /// insert, then insert the block into the root). Light theme:
 /// text=#1f2328, heading=#0b0c0e, base 16px, h1 = 16 × 2.0 = 32px;
@@ -84,7 +84,7 @@ fn mounts_the_old_web_handler_dom_shape() {
 }
 
 /// Author style attaches to the OUTER node, AFTER the DOM builds (the
-/// old walker's external style-attach order).
+/// standard payload mount tail's style-attach order).
 #[test]
 fn author_style_lands_on_the_outer_div_last() {
     let h = harness();
@@ -126,8 +126,8 @@ fn bind_fills_the_ref_at_mount() {
 
 /// The `Markdown` tag (struct-literal `BuildElement` dispatch through
 /// the `pub type Markdown = MarkdownProps` alias) mounts through the
-/// `switch` path and REBUILDS when the reactive source changes —
-/// the old `#[component]` body's contract, reproduced manually.
+/// `switch` path and REBUILDS when the reactive source changes — the
+/// contract a `#[component]` body would give, reproduced manually.
 #[test]
 fn markdown_tag_switch_rebuilds_on_source_change() {
     let h = harness();

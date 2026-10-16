@@ -8,8 +8,7 @@
 //! resource.
 //!
 //! Like every reactive hook, these must run **inside a `#[component]`
-//! body** (an owning scope) for re-render to work — see
-//! `project_flatlist_needs_component_scope`.
+//! body** (an owning scope) for re-render to work.
 //!
 //! ## Derive requirements
 //!

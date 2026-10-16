@@ -8,14 +8,8 @@
 //! while the underlying JS object was still live and still about to
 //! emit — `close` for the socket, an auto-retry `error` for the stream.
 //! The browser then invoked the dead function, which throws into the
-//! event loop — wasm-bindgen's
-//!
-//! ```text
-//! closure invoked recursively or after being dropped
-//! ```
-//!
-//! and, since the port to web-glue, `callback #N called after its Rust
-//! owner dropped it`. It does not trap the module, so nothing
+//! event loop (web-glue's `callback #N called after its Rust owner dropped
+//! it`). It does not trap the module, so nothing
 //! user-visible breaks; it buries the console in exceptions on exactly
 //! the connections someone is debugging. Both arms detach their handler
 //! slots from the JS object in the closures' own `Drop`.
@@ -89,8 +83,8 @@ async fn settle(ms: i32) {
     let _ = JsFuture::new(&p).await;
 }
 
-/// A refused handshake is followed by a `close` event. Before the fix
-/// that event invoked the just-dropped `onclose` shim.
+/// A refused handshake is followed by a `close` event. The bug: that event
+/// invoked the just-dropped `onclose` shim.
 #[wasm_bindgen_test]
 async fn regression_failed_ws_connect_leaves_no_dead_handlers() {
     let spy = ErrorSpy::install();

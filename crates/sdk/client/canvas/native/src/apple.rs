@@ -320,8 +320,8 @@ impl ApplePainter {
                 }
                 // Gradient strokes are approximated by their first stop color
                 // (CoreGraphics has no direct gradient-stroke; clipping to a
-                // stroked outline needs CGPathCreateCopyByStrokingPath — a v2
-                // refinement). Solid strokes are exact.
+                // stroked outline needs CGPathCreateCopyByStrokingPath, not
+                // done). Solid strokes are exact.
                 set_blend(ctx, paint.blend);
                 let col = (self.make_color)(stroke_color(paint));
                 let _: () = unsafe { msg_send![&col, setStroke] };

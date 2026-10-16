@@ -13,8 +13,8 @@
 //! or a non-Normal batch blend) fall back to the encoder's expand-to-fills path
 //! ([`encode`](crate::encode)), which encodes the per-shape fill an author would
 //! write by hand (CLAUDE.md §7) — so the instanced pass is a pure optimization,
-//! never a behavioral fork. The fast-path predicate lives in `render.rs`
-//! (`pure_shape_batches`); this module only knows how to draw a flat list of
+//! never a behavioral fork. The fast-path classifier lives in `plan.rs`
+//! (`plan_scene`); this module only knows how to draw a flat list of
 //! instances into a target.
 //!
 //! # Coordinate space & color

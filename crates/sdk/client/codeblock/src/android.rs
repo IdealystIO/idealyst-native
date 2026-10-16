@@ -1,4 +1,4 @@
-//! Android handler for the `code_block` external. Produces a single
+//! Android handler for the `code_block` payload. Produces a single
 //! `RustCodeBlock` (HorizontalScrollView + TextView) and feeds it a
 //! `SpannableString` whose colored ranges mirror the Rust-side
 //! `Vec<(String, Color)>` spans.

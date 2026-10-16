@@ -23,8 +23,8 @@
 //! runtime layer via `class!()` + `msg_send` rather than typed
 //! objc2-app-kit bindings — `objc2-app-kit` 0.2 doesn't ship an
 //! `NSToolbar` feature, and bumping to 0.3 would conflict with
-//! `backend-macos`'s objc2 0.5 major. Same posture `maps-ios` takes
-//! for MKMapView.
+//! `backend-macos`'s objc2 0.5 major. Same posture the maps SDK's iOS
+//! leaf takes for MKMapView.
 //!
 //! # Lifetime model
 //!
@@ -34,11 +34,9 @@
 //! - The Rust-side `ToolbarDelegate` holds the click callbacks and
 //!   item metadata. NSToolbar holds its delegate weakly, so the
 //!   scene handler must keep the returned [`NativeToolbar`] (which
-//!   owns a `Retained<ToolbarDelegate>`) alive — both legs do this by
-//!   capturing it in their reactive items closure, which the framework
-//!   scope owns for as long as the primitive is mounted. Same trick
-//!   `webview-ios` uses to keep its delegate alive past
-//!   `build_web_view`.
+//!   owns a `Retained<ToolbarDelegate>`) alive — `macos.rs` does this by
+//!   capturing it in its reactive items closure, which the framework
+//!   scope owns for as long as the primitive is mounted.
 //! - If the primitive ever unmounts (user toggles
 //!   `if condition { Toolbar(...) }` off), the scope drops, the
 //!   reactive closure drops, the delegate's last Retained drops, and
@@ -178,9 +176,8 @@ declare_class!(
             // Body in a helper to keep early-return + question-mark
             // shapes out of declare_class!'s macro expansion — the
             // macro's IdReturnValue conversion chokes on early
-            // `return None;` inside `Option<Retained<_>>` bodies (see
-            // [[project_macos_appkit_uikit_diffs]] / the same workaround
-            // the backend uses for `item_for_index_path`).
+            // `return None;` inside `Option<Retained<_>>` bodies (the
+            // same workaround the backend uses for `item_for_index_path`).
             self.item_for_identifier_impl(identifier)
         }
 

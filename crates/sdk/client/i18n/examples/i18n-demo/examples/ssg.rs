@@ -13,11 +13,10 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-// `render_path` is the surviving entry after the old-core renderer was
-// deleted: `backend_ssr::newcore::render_path` builds a fresh `World` per
-// request, realizes, flushes once, serializes, and drops it — so the
-// per-locale thread isolation this file relies on still holds.
-// `render_document` (pure HTML-document assembly) never moved.
+// `backend_ssr::newcore::render_path` builds a fresh `World` per request,
+// realizes, flushes once, serializes, and drops it — the per-locale thread
+// isolation this file relies on. `render_document` is pure HTML-document
+// assembly.
 use backend_ssr::newcore::render_path;
 use backend_ssr::render_document;
 use i18n_demo::t::Locale;
