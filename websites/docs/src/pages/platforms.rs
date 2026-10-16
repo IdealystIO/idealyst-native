@@ -26,7 +26,8 @@ pub fn page() -> Element {
             Card {
                 Typography(content = "Web (WASM)".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "`backend-web` compiles to WebAssembly via `wasm-bindgen`. \
+                    content = "`backend-web` compiles to WebAssembly and reaches the browser through \
+                               the framework's own `web-glue` bindings. \
                                Primitives map to DOM nodes; stylesheets compile to CSS \
                                classes; navigators integrate with the History API so browser \
                                back/forward and deep links work. The dev server serves the \

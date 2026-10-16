@@ -30,16 +30,18 @@ runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 icons-lucide = { workspace = true }
 inspector-protocol = { workspace = true }
-# The server socket: `web_sys::WebSocket` in a browser, sync tungstenite
+# The server socket: the browser's WebSocket in a browser, sync tungstenite
 # on an I/O thread on desktop.
 net = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 
 # The browser build finds its server on the page's own host, and the app
-# to open in `?app=` (see `bridge::endpoint`).
+# to open in `?app=` (see `bridge::endpoint`): `deep_link::origin()` /
+# `deep_link::current_url()` read window.location through the framework's
+# own web bindings.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+deep-link = { workspace = true }
 
 # No backend deps: this crate is a platform-agnostic app library (the
 # CLI-generated wrappers bring the backend), so it compiles on any host

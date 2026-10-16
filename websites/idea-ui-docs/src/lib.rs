@@ -117,9 +117,9 @@ pub fn route_ids() -> Vec<&'static str> {
         .collect()
 }
 
-/// Root entry — the symbol every boot path mounts (the CLI-generated
-/// per-platform wrappers, the sidecar, and `standalone.html`'s
-/// `web_entry` below).
+/// Root entry — the symbol every boot path mounts (`idealyst::entry!` in
+/// `src/main.rs`, the CLI-generated per-platform wrappers, and the
+/// sidecar).
 pub fn app() -> Element {
     install_idea_theme(light_theme());
 
@@ -198,27 +198,4 @@ pub fn app() -> Element {
             }
         })
         .build()
-}
-
-// Standalone web boot: `wasm-pack build --target web` produces a module
-// whose own start fn mounts into `#app` (see `standalone.html` for the
-// build command). NON-default — the CLI web wrapper generates its own
-// `#[wasm_bindgen(start)]`, and two starts in one module is a
-// wasm-bindgen error.
-#[cfg(all(target_arch = "wasm32", feature = "standalone-web"))]
-mod web_entry {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen(start)]
-    pub fn boot() {
-        console_error_panic_hook::set_once();
-        // Console logger so framework log lines reach devtools (the CLI
-        // wrapper normally installs this).
-        backend_web::install_logger();
-        backend_web::newcore::start_in(
-            "#app",
-            crate::register_scene_extensions,
-            crate::app,
-        );
-    }
 }

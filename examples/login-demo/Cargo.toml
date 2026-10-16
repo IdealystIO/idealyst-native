@@ -43,9 +43,11 @@ idea-ui = { workspace = true }
 # error-only stub and goes unused — the cookie is the web mechanism.
 credentials = { workspace = true }
 
-# wasm client needs the page origin for same-origin server-fn calls.
+# wasm client needs the page origin for same-origin server-fn calls:
+# `deep_link::origin()` reads window.location.origin through the framework's
+# own web bindings.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+deep-link = { workspace = true }
 
 # Server-only deps. Gated by `server` so the wasm build skips axum/tokio.
 [dependencies.axum]

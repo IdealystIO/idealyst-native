@@ -41,7 +41,8 @@ That is what makes the surface progressive. There is no mega-trait with thirty `
 
 The associated type `Node: Clone` is whatever your platform uses to represent a thing on screen. Pick the shape that's most useful for your backend's internal state:
 
-- Web uses `web_sys::Node` (with an `Rc` inside for cheap cloning).
+- Web uses `web_glue::dom::Node` — a cheap-to-clone handle to the DOM
+  node, from the framework's own JS bindings.
 - iOS uses a strong reference to a `UIView` subclass through `objc2`.
 - Android uses a JNI global ref to a `View`.
 - Roku uses a `NodeId` — a u64 the device-side runtime maps back to a SceneGraph node.

@@ -240,7 +240,7 @@ The same goes for any value derived from a token: a button color, a border radiu
 
 ## What you don't write
 
-You don't write the wasm-bindgen entry point for web.
+You don't write the browser entry point for web.
 
 You don't write the JNI bridge for Android.
 

@@ -510,7 +510,7 @@ docs! {
     },
 
     section(heading = "What you don't write") {
-        p("You don't write the wasm-bindgen entry point for web."),
+        p("You don't write the browser entry point for web."),
         p("You don't write the JNI bridge for Android."),
         p("You don't write the ", code("UIApplicationDelegate"), " for iOS."),
         p("You don't write the Roku component manifest."),

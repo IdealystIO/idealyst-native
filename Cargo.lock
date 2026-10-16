@@ -2861,6 +2861,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-sesv2",
+ "deep-link",
  "idea-ui",
  "idealyst",
  "net",
@@ -2872,7 +2873,6 @@ dependencies = [
  "server-aws",
  "tokio",
  "uuid",
- "web-sys",
 ]
 
 [[package]]
@@ -3759,7 +3759,6 @@ dependencies = [
  "backend-macos",
  "backend-terminal",
  "backend-web",
- "console_error_panic_hook",
  "dev-server",
  "docs-macro",
  "host-web",
@@ -3774,8 +3773,6 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "swap-navigator",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -5101,6 +5098,7 @@ version = "1.5.2"
 dependencies = [
  "async-graphql",
  "axum",
+ "deep-link",
  "dev-server",
  "graphql",
  "graphql_client",
@@ -5113,7 +5111,6 @@ dependencies = [
  "server",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]
@@ -6424,7 +6421,6 @@ dependencies = [
  "backend-terminal",
  "backend-web",
  "codeblock",
- "console_error_panic_hook",
  "dev-server",
  "dnd",
  "icons-lucide",
@@ -6440,8 +6436,6 @@ dependencies = [
  "runtime-world",
  "serde_json",
  "table",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -6721,6 +6715,7 @@ dependencies = [
 name = "inspector"
 version = "1.5.2"
 dependencies = [
+ "deep-link",
  "host-mock",
  "icons-lucide",
  "idea-ui",
@@ -6733,7 +6728,6 @@ dependencies = [
  "runtime-vocabulary",
  "serde",
  "serde_json",
- "web-sys",
 ]
 
 [[package]]
@@ -6966,6 +6960,7 @@ name = "jobs-demo"
 version = "1.5.2"
 dependencies = [
  "axum",
+ "deep-link",
  "idea-ui",
  "idealyst",
  "idealyst-config",
@@ -6977,7 +6972,6 @@ dependencies = [
  "server",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]
@@ -7487,6 +7481,7 @@ dependencies = [
  "axum",
  "cache",
  "credentials",
+ "deep-link",
  "dev-server",
  "idea-ui",
  "idealyst",
@@ -7499,7 +7494,6 @@ dependencies = [
  "server-kit",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]
@@ -8979,6 +8973,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "deep-link",
  "idea-ui",
  "idealyst",
  "ota-index",
@@ -8991,7 +8986,6 @@ dependencies = [
  "server",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]
@@ -9808,6 +9802,7 @@ name = "pubsub-demo"
 version = "1.5.2"
 dependencies = [
  "axum",
+ "deep-link",
  "futures-util",
  "idea-ui",
  "idealyst",
@@ -9822,7 +9817,6 @@ dependencies = [
  "server",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]
@@ -11441,6 +11435,7 @@ name = "server-fn-demo"
 version = "1.5.2"
 dependencies = [
  "axum",
+ "deep-link",
  "dev-server",
  "futures-util",
  "idea-ui",
@@ -11454,7 +11449,6 @@ dependencies = [
  "server",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]
@@ -12970,10 +12964,10 @@ version = "1.5.2"
 dependencies = [
  "axum",
  "datetime",
+ "deep-link",
  "dev-server",
  "idea-ui",
  "idealyst",
- "js-sys",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
@@ -12983,7 +12977,6 @@ dependencies = [
  "sync",
  "tokio",
  "tower-http",
- "web-sys",
 ]
 
 [[package]]

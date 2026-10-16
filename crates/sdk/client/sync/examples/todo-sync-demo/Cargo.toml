@@ -54,11 +54,11 @@ axum = { version = "0.7", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 
-# Web client: window.location.origin for `server::configure`, localStorage
-# for the per-browser device id; js-sys for the device id's RNG.
+# Web client: `deep_link::origin()` (window.location.origin, via the
+# framework's own web bindings) is the same-origin API base handed to
+# `server::configure`. The per-browser device id lives in `storage` above.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
-js-sys = "0.3"
+deep-link = { workspace = true }
 
 [[bin]]
 name = "server"

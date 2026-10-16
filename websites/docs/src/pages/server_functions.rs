@@ -266,8 +266,7 @@ docs! {
         code(rust, r##"
             #[cfg(target_arch = "wasm32")]
             {
-                let origin = web_sys::window()
-                    .and_then(|w| w.location().origin().ok())
+                let origin = deep_link::origin()
                     .unwrap_or_else(|| "http://localhost:3000".to_string());
                 server::configure(ClientConfig { base_url: origin });
             }

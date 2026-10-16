@@ -95,8 +95,8 @@ docs! {
 
             use maps_core::MapViewProps;
 
-            pub fn build_map_iframe(props: &MapViewProps) -> web_sys::Element {
-                let doc = web_sys::window().unwrap().document().unwrap();
+            pub fn build_map_element(props: &MapViewProps) -> web_glue::dom::Element {
+                let doc = web_glue::dom::window().unwrap().document().unwrap();
                 let iframe = doc.create_element("iframe").unwrap();
                 let src = format!(
                     "https://www.openstreetmap.org/export/embed.html?marker={},{}",
@@ -191,9 +191,9 @@ docs! {
                 cx: &mut MountCx<'_, backend_web::WebBackend>,
                 prim: &Rc<MapsPrim>,
                 _children: Vec<Element>,
-            ) -> web_sys::Node {
+            ) -> web_glue::dom::Node {
                 let backend = cx.backend().clone();
-                let node: web_sys::Node = maps_web::build_map_iframe(&prim.props).into();
+                let node: web_glue::dom::Node = maps_web::build_map_element(&prim.props).into();
                 finish_mount(&backend, &node, prim);
                 node
             }
@@ -217,6 +217,7 @@ docs! {
             [target.'cfg(target_arch = "wasm32")'.dependencies]
             maps-web = { workspace = true }
             backend-web = { workspace = true }
+            web-glue = { workspace = true }
 
             [target.'cfg(target_os = "ios")'.dependencies]
             maps-ios = { workspace = true }
@@ -240,7 +241,8 @@ docs! {
         "##),
         p("Reach for a host-CONCRETE handler (", code("Registry<WebBackend>"),
           ") only when the implementation genuinely needs the platform: \
-           building a ", code("web_sys::Element"), " directly, or an ",
+           building a DOM element directly (", code("web_glue::dom::Element"),
+          "), or an ",
           code("MKMapView"),
           ". A concrete handler is a deliberate narrowing, not the default."),
     },

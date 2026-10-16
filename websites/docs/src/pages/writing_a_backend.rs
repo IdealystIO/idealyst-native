@@ -84,8 +84,9 @@ docs! {
           " is whatever your platform uses to represent a thing on screen. \
            Pick the shape that's most useful for your backend's internal state:"),
         list(
-            ["Web uses ", code("web_sys::Node"), " (with an ", code("Rc"),
-             " inside for cheap cloning)."],
+            ["Web uses ", code("web_glue::dom::Node"),
+             " — a cheap-to-clone handle to the DOM node, from the \
+              framework's own JS bindings."],
             ["iOS uses a strong reference to a ", code("UIView"),
              " subclass through ", code("objc2"), "."],
             ["Android uses a JNI global ref to a ", code("View"), "."],

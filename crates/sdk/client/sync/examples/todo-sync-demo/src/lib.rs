@@ -72,12 +72,13 @@ impl Merge for Todo {
 /// server time or a logical clock.)
 fn now_millis() -> u64 {
     // `datetime` reads `Date.now()` on web and `SystemTime` natively, so
-    // there is no per-target branch here (and no js-sys for the clock).
+    // there is no per-target branch here.
     datetime::now_utc().unix_millis().max(0) as u64
 }
 
-/// A stable **per-browser** client id (persisted in `localStorage`). This
-/// is safe to share across tabs now because leader election ensures only
+/// A stable **per-browser** client id (persisted in `localStorage` through
+/// the `storage` SDK). This is safe to share across tabs now because leader
+/// election ensures only
 /// ONE tab (the leader) ever runs the engine + touches storage — so there's
 /// one logical client per browser. It must be stable so a promoted follower
 /// resumes the same client identity (the id is half of every idempotency
@@ -85,17 +86,25 @@ fn now_millis() -> u64 {
 fn device_id() -> String {
     #[cfg(target_arch = "wasm32")]
     {
-        const KEY: &str = "todo-sync-device-id";
-        if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-            if let Ok(Some(existing)) = ls.get_item(KEY) {
-                return existing;
-            }
-            let fresh = format!(
-                "device-{}-{}",
-                now_millis(),
-                (js_sys::Math::random() * 1.0e9) as u64
-            );
-            let _ = ls.set_item(KEY, &fresh);
+        // The `storage` SDK's platform store is `localStorage` on web. Its
+        // own namespace keeps the id out of the `todo-sync` namespace the
+        // sync engine owns. `get_now`/`set_now` answer synchronously (the
+        // web store is synchronous underneath), so the id is ready before
+        // the engine is built.
+        const KEY: &str = "device-id";
+        let store = storage::platform_storage("todo-sync-device");
+        if let Ok(Some(existing)) = store.get_now(KEY) {
+            return existing;
+        }
+        // Wall-clock millis plus the monotonic clock's microsecond reading
+        // (`performance.now()` on web) — enough to tell two browsers apart
+        // without a dedicated RNG.
+        let fresh = format!(
+            "device-{}-{}",
+            now_millis(),
+            runtime_core::time::now_micros()
+        );
+        if store.set_now(KEY, &fresh).is_ok() {
             return fresh;
         }
         "device-fallback".to_string()
@@ -198,8 +207,7 @@ sync_transport!(TodoTransport, Todo, pull = pull_todos, push = push_todos);
 fn configure_server() {
     #[cfg(target_arch = "wasm32")]
     {
-        let origin = web_sys::window()
-            .and_then(|w| w.location().origin().ok())
+        let origin = deep_link::origin()
             .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
         server::configure(server::ClientConfig::new(origin));
     }

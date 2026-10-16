@@ -46,15 +46,6 @@ debug-stats = [
     "backend-android-mobile/debug-stats",
 ]
 default = ["debug-stats"]
-# Standalone web boot (`web_entry` in lib.rs + standalone.html): the
-# plain-wasm-pack vehicle that carries its OWN
-# `#[wasm_bindgen(start)]`. NON-default and NOT enabled by the CLI web
-# wrapper (`idealyst build --web`), whose generated wrapper has its own
-# start fn — two starts in one module is a wasm-bindgen error.
-#
-#   wasm-pack build --target web --dev websites/idea-ui-docs \
-#       --out-dir pkg-standalone -- --features standalone-web
-standalone-web = []
 
 # Cross-platform render-parity test (`idealyst test --parity web,macos`).
 # `robot-test` drives the running app over the Robot bridge — see
@@ -110,13 +101,10 @@ dnd = { workspace = true }
 icons-lucide = { workspace = true }
 
 # Web-only deps. The cross-platform `app()` tree never references
-# these; the wasm-bindgen entry in the CLI-generated wrapper is gated
-# to wasm32.
+# these; `register_extensions` names `backend_web::WebBackend` on wasm32.
+# The web boot itself is `idealyst::entry!` in `src/main.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = { workspace = true }
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["console"] }
-console_error_panic_hook = "0.1"
 lol_alloc = "0.4"
 
 # Native backend deps for the CLI-generated wrappers. Each wrapper's

@@ -207,8 +207,9 @@ once the `docs!` macro lands.)*
 ### Variations
 
 **Persist the choice.** Wrap the signal write in an Effect that
-syncs to local storage on web (via `web_sys::Storage`) or to
-`UserDefaults`/`SharedPreferences` on native. Read the persisted
+syncs through the `storage` SDK (`localStorage` on web,
+`UserDefaults`/`SharedPreferences` on native) — or use its
+`persisted_signal`, which does both halves. Read the persisted
 value at app start and pass it to `signal(…)`.
 
 **Follow the OS.** Read `Backend::color_scheme()` at startup to

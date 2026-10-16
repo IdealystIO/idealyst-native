@@ -74,13 +74,11 @@ tower-http = { version = "0.6", features = ["fs"], optional = true }
 # Server-only: builds the timed `Stream` the `#[sse] ticks` endpoint yields.
 futures-util = { version = "0.3", optional = true }
 
-# Web-only client extra. `register_scene_extensions` is generic over the
-# scene `Host` (no SDKs), so no backend dep is needed — the CLI wrappers
-# bring their own.
-# `web-sys` is still required to read `window.location.origin` for
+# Web client: `deep_link::origin()` (window.location.origin, via the
+# framework's own web bindings) is the same-origin API base handed to
 # `server::configure`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+deep-link = { workspace = true }
 
 [[bin]]
 name = "server"

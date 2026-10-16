@@ -46,9 +46,11 @@ runtime-scene = { workspace = true }
 idea-ui = { workspace = true }
 serde = { workspace = true }
 
-# Web client: window.location.origin for `server::configure`.
+# Web client: `deep_link::origin()` (window.location.origin, via the
+# framework's own web bindings) is the same-origin API base handed to
+# `server::configure`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+deep-link = { workspace = true }
 
 # Server-only host deps — gated by `server` so the wasm client never compiles
 # them.

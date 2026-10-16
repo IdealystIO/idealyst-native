@@ -42,7 +42,7 @@ docs! {
         code(text, r##"
             target/
               idealyst/
-                web/              # wasm-bindgen entry + pkg/ + index.html
+                web/              # wasm bundle + index.html
                 ios/              # Xcode project + static lib
                 android/          # Gradle project + cdylib
                 roku/             # Channel package layout

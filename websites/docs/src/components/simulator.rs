@@ -190,9 +190,7 @@ pub fn Simulator(props: SimulatorProps) -> Element {
                 {
                     Ok(handle) => shared::fill(&slot, handle),
                     Err(err) => {
-                        web_sys::console::warn_1(
-                            &format!("[simulator] host-web mount failed: {err}").into(),
-                        );
+                        runtime_core::log_warn!("[simulator] host-web mount failed: {err}");
                     }
                 }
             });

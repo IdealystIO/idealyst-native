@@ -255,8 +255,7 @@ fn err_msg(e: ServerError) -> String {
 fn configure_server() {
     #[cfg(target_arch = "wasm32")]
     {
-        let origin = web_sys::window()
-            .and_then(|w| w.location().origin().ok())
+        let origin = deep_link::origin()
             .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
         server::configure(server::ClientConfig::new(origin));
     }

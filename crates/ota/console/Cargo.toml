@@ -37,8 +37,10 @@ ota-index = { workspace = true, optional = true }
 remote-bundle = { workspace = true, optional = true }
 anyhow = { version = "1", optional = true }
 
+# Web client: the page origin is the API base (`deep_link::origin()`, read
+# through the framework's own web bindings).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Location"] }
+deep-link = { workspace = true }
 
 [dependencies.axum]
 version = "0.7"

@@ -17,7 +17,11 @@ pub const APP_ENV: &str = "IDEALYST_INSPECT_APP";
 /// The Inspector socket URL.
 #[cfg(target_arch = "wasm32")]
 pub fn server_url() -> String {
-    let host = web_sys::window().and_then(|w| w.location().host().ok()).unwrap_or_default();
+    // `window.location.host` (`host[:port]`): the page origin minus its
+    // scheme.
+    let host = deep_link::origin()
+        .and_then(|o| o.split_once("://").map(|(_, host)| host.to_string()))
+        .unwrap_or_default();
     if host.is_empty() {
         format!("ws://127.0.0.1:{DEFAULT_PORT}{WS_PATH}")
     } else {
@@ -33,7 +37,7 @@ pub fn server_url() -> String {
 /// The app id to attach to on launch, if the launcher named one.
 #[cfg(target_arch = "wasm32")]
 pub fn initial_app() -> Option<String> {
-    let search = web_sys::window().and_then(|w| w.location().search().ok())?;
+    let search = deep_link::current_url()?.query?;
     app_from_query(&search)
 }
 

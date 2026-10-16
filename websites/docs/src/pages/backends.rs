@@ -49,8 +49,8 @@ docs! {
     },
 
     section(heading = "Web") {
-        p(code("backend-web"), " drives the DOM via ", code("web-sys"), " and ",
-          code("wasm-bindgen"), ". Your app compiles to WebAssembly, the \
+        p(code("backend-web"), " drives the DOM through ", code("web-glue"),
+          ", the framework's own JS bindings. Your app compiles to WebAssembly, the \
            backend creates DOM elements as the walker visits primitives, and \
            the browser handles layout, input, and rendering."),
         p("A few things worth knowing:"),

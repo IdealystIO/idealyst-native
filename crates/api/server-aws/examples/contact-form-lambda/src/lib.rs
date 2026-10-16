@@ -198,9 +198,7 @@ fn configure_server() {
     {
         let base = option_env!("CONTACT_API_BASE")
             .map(|s| s.to_string())
-            .or_else(|| {
-                web_sys::window().and_then(|w| w.location().origin().ok())
-            })
+            .or_else(deep_link::origin)
             .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
         server::configure(server::ClientConfig::new(base));
     }

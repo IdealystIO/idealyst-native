@@ -541,7 +541,7 @@ pub fn app() -> Element {
 fn configure_server() {
     #[cfg(target_arch = "wasm32")]
     {
-        let origin = web_sys::window().and_then(|w| w.location().origin().ok()).unwrap_or_else(|| "http://127.0.0.1:3100".into());
+        let origin = deep_link::origin().unwrap_or_else(|| "http://127.0.0.1:3100".into());
         server::configure(server::ClientConfig::new(origin));
     }
     #[cfg(not(target_arch = "wasm32"))]
