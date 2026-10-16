@@ -112,12 +112,12 @@ docs! {
             .trap_focus(true)
         "##),
         p("Defaults: ", code("Center"), " placement, ",
-          code("Dismiss"), " backdrop, focus-trap on. The composition \
-           builds a ", code("Portal"),
-          " with two children — a fullscreen ", code("Pressable"),
-          " wired to the dismiss handler (the backdrop) and a ",
-          code("View"), " wrapping the caller's children (the content). \
-           Backdrop tap → ", code("on_click"), " → ",
+          code("Dismiss"), " backdrop, focus-trap on. A ", code("Dismiss"),
+          " or ", code("Opaque"), " backdrop is its own full-screen portal, \
+           holding a pressable that fills the window, mounted before the \
+           content's portal — so it covers the whole window on every \
+           backend, whatever the placement. The content portal's root never \
+           takes a tap; the view wrapping your children does. Backdrop tap → ",
           code("on_dismiss"), " → host's open-state signal flips → \
            portal scope drops → backend releases."),
         p(code("anchored_overlay()"), " is the same shape with ",
@@ -127,13 +127,10 @@ docs! {
           " align, ", code("BackdropMode::None"),
           " (page behind stays interactive), focus-trap off — the \
            popover defaults."),
-        p("Public API is identical to what it was when Overlay and \
-           AnchoredOverlay were separate primitives — same builder \
-           methods, same defaults, same call sites. The change is \
-           entirely under the hood: one closed-enum primitive instead \
-           of two, one ", code("Backend::create_portal"),
-          " trait method instead of six. Backends ship less code; \
-           defaults move to the composition layer where they're a UX \
+        p("Both compositions lower to the one ", code("portal"),
+          " primitive and one ", code("PortalOps"), " capability (",
+          code("create_portal"), " plus release / hide / handle). The \
+           defaults live in the composition layer, where they're a UX \
            choice, not a framework obligation."),
     },
 
@@ -141,10 +138,11 @@ docs! {
         p(code("BackdropMode"), " lives on the composition (not on the \
            portal primitive itself). Three variants:"),
         list(
-            [code("Dismiss"), " — semi-transparent scrim; tap fires ",
-             code("on_dismiss"), ". The default for ", code("overlay()"), "."],
-            [code("Opaque"), " — semi-transparent scrim; taps don't \
-              dismiss. The host must drive close itself (close button, \
+            [code("Dismiss"), " — a window-covering backdrop; any press on it fires ",
+             code("on_dismiss"), ". Transparent unless ", code("backdrop_style"),
+             " paints a scrim. The default for ", code("overlay()"), "."],
+            [code("Opaque"), " — the same window-covering backdrop; taps \
+              don't dismiss. The host must drive close itself (close button, \
               keyboard escape, signal flip from elsewhere)."],
             [code("None"), " — no scrim. The viewport behind stays \
               interactive. The default for ", code("anchored_overlay()"),

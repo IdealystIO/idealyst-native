@@ -270,7 +270,7 @@ directory. Under a Wine without Direct2D, the Direct2D renderer's tests print
 
 Set `IDEALYST_WINDOWS_REMOTE` to an SSH destination and every Windows launch
 path (`idealyst run windows`, `idealyst dev --windows`, and therefore
-`idealyst test --parity …,windows`) runs the app on that machine instead of
+`idealyst test --windows` and `idealyst test --parity …,windows`) runs the app on that machine instead of
 under Wine. The build, the parity runner and the MCP tools stay on the Mac.
 
 ```bash

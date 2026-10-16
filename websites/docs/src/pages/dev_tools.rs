@@ -152,7 +152,7 @@ docs! {
            rebuild + remount when it detects one. The common cases:"),
         list(
             ["Top-level signature changes — adding a parameter to ", code("app()"), ", for example. The dispatcher can't reconcile the call site."],
-            ["Adding a ", code("methods!"), " block to a component that didn't have one. The return type changes from ", code("Element"), " to ", code("Bindable<Handle>"), "."],
+            ["Adding the first ", code("#[method]"), " to a component. It generates a ", code("<Name>Handle"), " and a ", code("bind_to"), " prop, so the component's props change shape."],
             ["Renaming or removing a component. No identity to map."],
         ),
         p("For everyday editing — tweaking strings, layout, styles, signal \
@@ -247,11 +247,11 @@ docs! {
     },
 
     section(heading = "The MCP server — Claude Desktop and Robot") {
-        p("When Robot is enabled (", code("--features robot"), "), your app \
-           listens on TCP port ", code("9718"), " for clients that speak the \
-           Robot bridge protocol. Anything that can connect and issue \
-           JSON-RPC over a TCP socket can drive the app: list components, \
-           click buttons, type into inputs, invoke ", code("methods!"),
+        p("Every dev build carries Robot: your app listens on TCP port ",
+          code("9718"), " for clients that speak the Robot bridge protocol. \
+           Anything that can connect and issue JSON over a TCP socket can \
+           drive the app: find elements, tap buttons, type into inputs, call \
+           the functions the app exposes for tests, invoke ", code("#[method]"),
           " methods, read frames."),
         p(code("idealyst mcp"), " is the server that bridges this bridge to \
            MCP. MCP — the Model Context Protocol — is the protocol Claude Code, \
@@ -270,7 +270,7 @@ docs! {
                                                                 ▼
                                                      ┌───────────────────┐
                                                      │  Your running app │
-                                                     │  (--features robot)│
+                                                     │  (a dev build)    │
                                                      └───────────────────┘
         "##),
         p("To wire it up, point the MCP client at the ", code("idealyst"),
@@ -288,12 +288,32 @@ docs! {
             }
         "##),
         p("Now the model gets every Robot tool — ", code("find_element"),
-          ", ", code("click"), ", ", code("type_text"), ", ",
-          code("get_snapshot"), ", ", code("invoke_method"), ", and the \
-           rest — as callable functions. You can ask it to interact with your \
+          ", ", code("click"), ", ", code("tap_native"), ", ", code("type_text"),
+          ", ", code("call_function"), ", ", code("get_snapshot"), ", ",
+          code("invoke_method"), ", and the rest — as callable functions. You can ask it to interact with your \
            running app in natural language; it issues the tool calls; the \
            proxy translates them; the app responds."),
         p("The full list of tools and what they do lives on the Robot page."),
+    },
+
+    section(heading = "Running a test suite on every platform") {
+        p(code("idealyst test"), " runs a project's ", code("#[robot_test]"),
+          " suite (", code("tests/robot.rs"), ", with ", code("robot-test"),
+          " as a dev-dependency) against the app on one platform:"),
+        code(bash, r##"
+            idealyst test --web      # or --macos, --ios, --android, --linux, --windows
+        "##),
+        p("It builds the app fresh and launches it, waits for that project's \
+           app to register, and runs ", code("cargo test --test robot"),
+          " against it. The same suite runs unchanged on every platform. The \
+           app is marked as test-driven, so an in-app self-test that checks ",
+          code("robot::is_test_driven()"), " stands down. ", code("--filter"),
+          " narrows the run and ", code("--attach"), " drives an app you \
+           already started with ", code("idealyst dev"), "."),
+        p("A suite's ", code("click()"), " taps with real platform input where \
+           the backend can synthesize it, so a test also catches an overlay or \
+           a disabled native widget swallowing taps. The Robot page covers the \
+           API."),
     },
 
     section(heading = "What this is good for") {

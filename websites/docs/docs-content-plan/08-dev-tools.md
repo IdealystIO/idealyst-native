@@ -168,9 +168,9 @@ full rebuild + remount when it detects one. The common cases:
 
 - **Top-level signature changes** — adding a parameter to `app()`,
   for example. The dispatcher can't reconcile the call site.
-- **Adding a `methods!` block** to a component that didn't have
-  one. The return type changes from `Element` to
-  `Bindable<Handle>`.
+- **Adding the first `#[method]`** to a component. It generates a
+  `<Name>Handle` and a `bind_to` prop, so the component's props
+  change shape.
 - **Renaming or removing a component.** No identity to map.
 
 For everyday editing — tweaking strings, layout, styles, signal
@@ -297,11 +297,11 @@ the protocol, `dev-client` for the app-side replayer,
 
 ## The MCP server — Claude Desktop and Robot
 
-When Robot is enabled (`--features robot`), your app listens on
-TCP port `9718` for clients that speak the Robot bridge protocol.
-Anything that can connect and issue JSON-RPC over a TCP socket
-can drive the app: list components, click buttons, type into
-inputs, invoke `methods!` methods, read frames.
+Every dev build carries Robot: your app listens on TCP port `9718`
+for clients that speak the Robot bridge protocol. Anything that can
+connect and issue JSON over a TCP socket can drive the app: find
+elements, tap buttons, type into inputs, call the functions the app
+exposes for tests, invoke `#[method]` methods, read frames.
 
 `idealyst mcp` is the server that **bridges this bridge to MCP**.
 MCP — the Model Context Protocol — is the protocol Claude Code,
@@ -322,7 +322,7 @@ The flow:
                                                     ▼
                                          ┌───────────────────┐
                                          │  Your running app │
-                                         │  (--features robot)│
+                                         │  (a dev build)    │
                                          └───────────────────┘
 ```
 
@@ -342,13 +342,35 @@ Claude Desktop, that's a few lines in its config:
 ```
 
 Now the model gets every Robot tool — `find_element`, `click`,
-`type_text`, `get_snapshot`, `invoke_method`, and the rest — as
+`tap_native`, `type_text`, `call_function`, `get_snapshot`,
+`invoke_method`, and the rest — as
 callable functions. You can ask it to interact with your
 running app in natural language; it issues the tool calls; the
 proxy translates them; the app responds.
 
-The full list of tools and what they do lives on the [Robot](#)
+The full list of tools and what they do lives on the [Robot](robot)
 page.
+
+### Running a test suite on every platform
+
+`idealyst test` runs a project's `#[robot_test]` suite
+(`tests/robot.rs`, with `robot-test` as a dev-dependency) against the
+app on one platform:
+
+```bash
+idealyst test --web      # or --macos, --ios, --android, --linux, --windows
+```
+
+It builds the app fresh and launches it, waits for that project's app
+to register, and runs `cargo test --test robot` against it. The same
+suite runs unchanged on every platform. The app is marked as
+test-driven, so an in-app self-test that checks
+`robot::is_test_driven()` stands down. `--filter` narrows the run and
+`--attach` drives an app you already started with `idealyst dev`.
+
+A suite's `click()` taps with real platform input where the backend
+can synthesize it, so a test also catches an overlay or a disabled
+native widget swallowing taps. The [Robot](robot) page covers the API.
 
 ### What this is good for
 

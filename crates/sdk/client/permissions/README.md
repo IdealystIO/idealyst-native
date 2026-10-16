@@ -58,14 +58,11 @@ plist usage strings (Apple) or a host that forwards
 `biometrics` / `camera` / `storage` SDKs; the block / delegate / JNI lifetime
 invariants are documented inline.
 
-The **camera / microphone** grants were *relocated* here from those SDKs (a
-faithful move of the proven AVCaptureDevice / `checkSelfPermission` /
-`navigator.permissions` code — same constants, same `RcBlock`/oneshot bridge),
-so `camera` / `microphone` now call `permissions::request(Permission::Camera |
-Microphone)` instead of carrying their own. The Apple camera path was
-previously macOS-hardware-verified on its own copy; after the relocation it is
-compile-checked through this crate and should be re-confirmed on a host/device
-run. The capture paths are unchanged.
+The **camera / microphone** grants live here (AVCaptureDevice /
+`checkSelfPermission` / `navigator.permissions`), so `camera` / `microphone`
+call `permissions::request(Permission::Camera | Microphone)` instead of
+carrying their own. The Apple camera path is compile-checked through this
+crate; confirm it on a device run.
 
 ## Permissions
 
@@ -91,7 +88,8 @@ higher-level SDKs and to the host:
   `Java_..._nativeOnPermissionsResult` JNI export) for the host to forward the
   result. Until that one line of host glue is wired, an Android `request`
   resolves to the re-read status rather than observing the grant — it never
-  hangs, and it never fakes a grant. This is the honest integration seam.
+  hangs, and it never reports a grant it didn't observe (only a robot build's
+  `permissions.set` fakes one). This is the honest integration seam.
 
 ## Robot test controls
 

@@ -16,50 +16,40 @@ docs! {
 
     section(heading = "Overview") {
         p("Robot is an introspection layer that lets another process drive a \
-           running Idealyst app — list the components on screen, find a button \
-           by its label, click it, read a TextInput's frame, invoke an \
-           imperative method on a mounted component. It's the framework's \
-           answer to \"how do I test the app, or automate it, or let an AI \
-           poke at it\" without writing a per-platform test harness."),
-        p("When Robot is on, every backend exposes the same query surface, and \
-           the same script can drive the web build, the iOS app on a simulator, \
-           or the Android app on a device. You write the test once; it runs \
-           against whichever backend you happen to be looking at."),
+           running Idealyst app — find a button by its test id, tap it, type \
+           into a field, read a toggle's state, call a function the app \
+           exposes for tests, invoke a method on a mounted component. It's the \
+           framework's answer to \"how do I test the app, or automate it, or \
+           let an AI poke at it\" without writing a per-platform test harness."),
+        p("Every backend answers the same verbs, so one Playwright-style suite \
+           runs unchanged on web, macOS, iOS, Android, Linux and Windows. A \
+           test that passes on one platform and fails on another has found a \
+           real difference between the backends."),
     },
 
     section(heading = "Enabling Robot") {
-        p("Robot is feature-gated on ", code("runtime-core"),
-          ". Enable it from your app's ", code("Cargo.toml"),
-          " by forwarding the feature flag:"),
+        p("Every dev build carries it: ", code("idealyst dev"), " and ",
+          code("idealyst test"), " turn on the framework's ", code("robot"),
+          " features themselves. Release builds carry none of it, and an app \
+           declares no feature of its own."),
 
-        code(toml, r##"
-            [features]
-            default = ["robot"]
-            robot = ["runtime-core/robot"]
-        "##),
+        p("Everything an app writes to be testable — a ", code("test_id"),
+          ", ", code("robot::watch_signal"), ", a ", code("#[robot_fn]"),
+          " registration, ", code("robot::is_test_driven()"),
+          " — compiles in every build and does nothing outside a robot build, \
+           so it needs no ", code("cfg"), ". (An app-side ",
+          code("#[cfg(feature = \"robot\")]"), " would be off in dev builds \
+           too: the CLI turns on the framework's feature, not the app's.)"),
 
-        p("Once the feature is on, the usual CLI commands pick it up — ",
-          code("idealyst dev"), ", ", code("idealyst build --release"),
-          ", and so on. No CLI flag is needed; the feature flows through Cargo \
-           the way any other workspace feature does."),
-
-        p("The app then exposes a TCP bridge on port ", code("9718"), " by default. \
-           Any process that speaks the bridge protocol can connect and start \
-           issuing commands. The typical consumer is the ", code("idealyst mcp"),
-          " server bundled with the framework — see the Dev tools page for \
-           how to wire it into Claude Code, Claude Desktop, or another MCP client."),
-
-        p("You don't have to use the MCP proxy. The bridge protocol is small \
-           enough that you can write your own client in a few hundred lines of \
-           any language with a TCP and JSON parser."),
-
-        p("When the ", code("robot"), " feature is off, every cost — the bridge \
-           thread, the introspection metadata, the ", code("test_id"), " slots \
-           on each primitive — compiles to nothing. There's no production overhead."),
+        p("A robot build exposes a TCP bridge (port ", code("9718"),
+          " by default) and registers itself under ", code("~/.idealyst/apps/"),
+          ". The typical consumers are ", code("idealyst test"), " and the ",
+          code("idealyst mcp"), " server — see the Dev tools page for wiring \
+           it into an MCP client."),
     },
 
     section(heading = "Test IDs") {
-        p("Every primitive accepts an optional ", code("test_id"), " when Robot is on:"),
+        p("Every element can carry a ", code("test_id"), ":"),
 
         code(rust, r##"
             ui! {
@@ -76,14 +66,18 @@ docs! {
            more durable than matching by visible text."),
 
         p("You can also find elements by label, by label substring, or by \
-           primitive kind (", code("Button"), ", ", code("Text"), ", ",
+           element kind (", code("Button"), ", ", code("Text"), ", ",
           code("TextInput"), ", …), so test IDs aren't strictly required. They \
-           just give you the most reliable hook."),
+           just give you the most reliable hook. Every element reports ",
+          code("visible"), ", ", code("in_viewport"), " and its own ",
+          code("state"), " — a field's text, a toggle's checked state, ",
+          code("disabled"), ", ", code("focused"), ", a scroller's offset — so \
+           most assertions need nothing from the app."),
     },
 
     section(heading = "The control surface") {
-        p("Robot exposes four kinds of operations: query, interact, geometry, \
-           and introspect components."),
+        p("Robot exposes six kinds of operations: query, interact, functions, \
+           geometry, logs, and component methods."),
     },
 
     section(heading = "Query the tree") {
@@ -105,16 +99,54 @@ docs! {
 
     section(heading = "Interact") {
         list(
-            [code("click"), " — tap an element the way a finger would: a button, pressable or link fires its press, and a view's ", code("on_touch"), " gets a tap. A tap on a Text inside a clickable row reaches the row."],
-            [code("drag"), " — move one pointer along ", code("points"), " (", code("[x, y]"), " in px from the element's top-left): ", code("Began"), ", ", code("Moved"), "…, ", code("Ended"), " into the element's ", code("on_touch"), " or the nearest ancestor's. Draws on a signature pad, drives a pan or drag-to-reorder. On a Slider each point's x along the track sets the value. Pass ", code("hold_ms"), " to press and hold at the first point before moving: drag-and-drop on phones and tablets picks up after a 200 ms hold."],
+            [code("click"), " — press an element inside the framework: a button, pressable or link runs its press, and a view's ", code("on_touch"), " gets a synthetic tap. A tap on a Text inside a clickable row reaches the row. It skips the OS event path, so overlays and hit testing don't take part."],
+            [code("tap_native"), " — tap the element's center with real platform input, through the toolkit's own event path: hit testing, overlays, gesture recognizers and the native disabled state all take part. It refuses the way a finger would fail — the element isn't visible, its center is outside the window, or something covers it (the error names what's on top)."],
+            [code("drag"), " — move one pointer along ", code("points"), " (", code("[x, y]"), " in px from the element's top-left): ", code("Began"), ", ", code("Moved"), "…, ", code("Ended"), " into the element's ", code("on_touch"), " or the nearest ancestor's. Draws on a signature pad, drives a pan or drag-to-reorder. On a Slider each point's x along the track sets the value. Pass ", code("hold_ms"), " to press and hold at the first point before moving: drag-and-drop on phones and tablets picks up after a 200 ms hold. ", code("drag_native"), " does the same with real input."],
             [code("type_text"), " — replace a TextInput's value with new text."],
             [code("set_toggle"), " — set a Toggle's ", code("Signal<bool>"), "."],
             [code("set_slider"), " — set a Slider's ", code("Signal<f32>"), "."],
             [code("focus"), " / ", code("blur"), " — move keyboard focus in/out of an element."],
+            [code("open_link"), " — deliver a deep link the way the OS would: observers, interceptors, then the navigators."],
         ),
 
-        p("Each interact tool takes an ", code("element_id"), " from a prior \
-           query. The flow is always: find → act → query → assert."),
+        p("Each element action takes an ", code("element_id"), " from a prior \
+           query, and a disabled control refuses it. The flow is always: find → \
+           act → query → assert."),
+
+        p("How ", code("tap_native"), " reaches the toolkit: DOM pointer and \
+           mouse events on web, posted ", code("NSEvent"), "s on macOS, ",
+          code("MotionEvent"), "s on Android, window messages on Windows. iOS \
+           apps can't create touches, so there UIKit's hit test checks the \
+           point and then the press runs. Linux answers ", code("unsupported"),
+          " for now; use ", code("click"), "."),
+    },
+
+    section(heading = "Functions and test controls") {
+        p("Some things a test needs have no element to act on: seed data, \
+           fake a location, take the device offline, read what notifications \
+           the app posted. The app registers them as functions, and a test \
+           calls them by name:"),
+
+        code(rust, r##"
+            /// Fill the inbox with `count` sample messages.
+            #[robot_fn(name = "demo.seed")]
+            fn seed_inbox(count: u32) -> Result<Vec<String>, String> { /* … */ }
+
+            // At boot, on the UI thread (no cfg):
+            runtime_vocabulary::robot_fn::register(seed_inbox::robot());
+        "##),
+
+        list(
+            [code("list_functions"), " — what is registered, with each function's doc comment and signature."],
+            [code("call_function"), " — call one with a JSON object keyed by parameter name; the return value comes back as JSON. An ", code("async fn"), " answers at once and is polled with ", code("poll_function"), " until done."],
+        ),
+
+        p("The device SDKs ship fakes a test turns on the same way, so a test \
+           assumes an answer instead of meeting a dialog it can't drive: ",
+          code("location.set"), ", ", code("connectivity.set"), ", ",
+          code("permissions.set"), ", ", code("notifications.log"),
+          " — each registered with that SDK's ", code("register_robot_controls()"),
+          ". The fakes compile only into robot builds."),
     },
 
     section(heading = "Read geometry") {
@@ -189,29 +221,32 @@ docs! {
            test's view too."),
     },
 
-    section(heading = "What a session looks like") {
-        p("A test that bumps a counter and checks the result:"),
+    section(heading = "Writing a suite") {
+        p("Host-side tests live in ", code("tests/robot.rs"), " with ",
+          code("robot-test"), " as a dev-dependency, and read like Playwright. \
+           Every action waits for its element to exist and accept it, and every \
+           assertion retries until it holds, so a test never sleeps:"),
 
-        code(jsonc, r##"
-            // 1. Find the counter's display by test_id.
-            { "tool": "find_element", "args": { "test_id": "count-display" } }
-            // → { "element_id": 7, "kind": "Text", "label": "Count: 0" }
+        code(rust, r##"
+            use robot_test::{json, robot_test, App};
 
-            // 2. Find the increment button.
-            { "tool": "find_element", "args": { "test_id": "increment-btn" } }
-            // → { "element_id": 9, "kind": "Button" }
-
-            // 3. Click it twice.
-            { "tool": "click", "args": { "element_id": 9 } }
-            { "tool": "click", "args": { "element_id": 9 } }
-
-            // 4. Re-read the display.
-            { "tool": "find_element", "args": { "element_id": 7 } }
-            // → { "element_id": 7, "kind": "Text", "label": "Count: 2" }
+            #[robot_test]
+            fn increment_updates_count(app: &mut App) {
+                app.call_function("demo.set_count", json!({ "value": 0 }));
+                app.test_id("count-display").assert_text("Count: 0");
+                app.test_id("increment-btn").click();
+                app.test_id("increment-btn").click();
+                app.test_id("count-display").assert_text("Count: 2");
+            }
         "##),
 
-        p("That's the entire shape of a Robot-driven test, modulo the JSON-RPC \
-           envelope the bridge protocol wraps around it."),
+        p(code("click()"), " here is native-first: it taps with real input \
+           and falls back to the in-framework press only where the backend has \
+           no native tier. Run the suite on any platform with ",
+          code("idealyst test --web"), " (or ", code("--macos"), ", ",
+          code("--ios"), ", ", code("--android"), ", ", code("--linux"), ", ",
+          code("--windows"), "): it builds and launches the app, waits for it, \
+           and runs ", code("cargo test --test robot"), " against it."),
     },
 
     section(heading = "Use cases") {
@@ -219,7 +254,7 @@ docs! {
 
         list(
             ["Automated UI tests. Write a test once that exercises the same \
-              screen on web, iOS, and Android. The script doesn't change per platform."],
+              screen on every platform. The script doesn't change per platform."],
             ["Driving demos. Script a deterministic walkthrough that always \
               lands on the right screen with the right data."],
             ["Accessibility tooling. External processes can read the component \
@@ -257,28 +292,33 @@ docs! {
         p("…and the model gets every tool on this page as a callable function, \
            plus the static component catalog."),
 
-        p("The full set of Robot MCP tools mirrors the bridge surface above: ",
-          code("find_element"), ", ", code("click"), ", ",
-          code("type_text"), ", ", code("get_snapshot"), ", ",
-          code("invoke_method"), ", and so on."),
+        p("The Robot MCP tools mirror the bridge surface above: ",
+          code("find_element"), ", ", code("get_state"), ", ", code("click"),
+          ", ", code("tap_native"), ", ", code("type_text"), ", ",
+          code("list_functions"), " / ", code("call_function"), ", ",
+          code("open_link"), ", ", code("get_snapshot"), ", ",
+          code("list_component_instances"), " / ", code("invoke_method"),
+          " (the MCP's ", code("list_components"), " is the static catalog), \
+           and ", code("call_verb"), " for anything without its own tool. The \
+           server's ", code("testing"), " guide walks an agent through writing \
+           a suite."),
     },
 
     section(heading = "Constraints and notes") {
         list(
-            ["Single thread, single arena. Robot reads from the same thread the \
-              app runs on. Queries are synchronous and serialized with the \
-              realize pass."],
+            ["Single thread. Robot reads from the thread the app's UI runs on; \
+              each request is answered between frames, and staged reactive work \
+              settles after every action."],
             ["The bridge is dev-mode. There's no auth on port ", code("9718"),
-             ". Don't ship a Robot-enabled binary to end users. Leaving the \
-             feature off (the default) is the production posture."],
-            ["Generator backends are partial. Roku's Robot support is a subset \
-              of what runtime backends provide — geometry queries in particular \
-              depend on what the device-side runtime exposes. Web, iOS, and \
-              Android have the full surface."],
-            ["Custom primitives are visible. Anything that flows through the \
-              standard ", code("Backend"), " create/insert/update calls shows \
-              up in Robot's queries automatically. There's no separate \
-              registration step for new primitives."],
+             ". Release builds compile none of it."],
+            ["Native input varies by backend. ", code("tap_native"),
+             " is real input on web, macOS, Android and Windows, a hit-test \
+              check on iOS, and unsupported on Linux. Roku's Robot support is a \
+              subset of the runtime backends' — geometry queries depend on what \
+              the device-side runtime exposes."],
+            ["Builtin primitives register themselves. A third-party primitive's \
+              nodes show up once its mount handler calls ",
+             code("robot_ext::register_extension_node"), "."],
         ),
     },
 
@@ -286,9 +326,11 @@ docs! {
         list(
             ["Dev tools — the MCP proxy in context, the bridge protocol on the \
               wire, how Robot fits with ", code("idealyst dev"), "."],
-            ["Components — ", code("methods!"), " blocks, the source of ",
+            ["Components — ", code("#[method]"), " fns, the source of ",
              code("list_components"), " / ", code("invoke_method"), " targets."],
             ["Primitives — the ", code("test_id"), " slot every primitive carries."],
+            [code("docs/robot.md"), " in the repository — every verb, the native \
+              input mechanism per backend, and the SDK test controls in full."],
         ),
     },
 }
