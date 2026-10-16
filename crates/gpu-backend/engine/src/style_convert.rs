@@ -499,3 +499,48 @@ pub use runtime_shared::color::srgb_channel_to_linear;
 pub fn srgb_rgba_to_linear(c: [f32; 4]) -> [f32; 4] {
     c
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runtime_shared::{GradientStop, Shadow};
+
+    fn glow() -> StyleRules {
+        StyleRules {
+            shadow: Some(Shadow { x: 0.0, y: 2.0, blur: 12.0, color: Color::from("#ff00ff").into() }),
+            background_gradient: Some(Gradient {
+                kind: GradientKind::Linear { angle_deg: 90.0 },
+                stops: vec![
+                    GradientStop { offset: 0.0, color: Color::from("#000000").into() },
+                    GradientStop { offset: 1.0, color: Color::from("#ffffff").into() },
+                ],
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// `apply` receives the node's full merged rules every time, so a
+    /// shadow or gradient missing from them means the style dropped it —
+    /// a hover glow leaving. The merge used to keep the previous value
+    /// for these two fields like the keep-previous ones, so the GPU
+    /// backends went on painting a shadow / gradient the style removed.
+    #[test]
+    fn regression_dropping_shadow_or_gradient_clears_it() {
+        let mut style = RenderStyle::default();
+        style.apply(&glow());
+        assert!(style.shadow.is_some() && style.gradient.is_some());
+
+        style.apply(&StyleRules::default());
+        assert!(style.shadow.is_none(), "a dropped shadow must stop painting");
+        assert!(style.gradient.is_none(), "a dropped gradient must stop painting");
+    }
+
+    #[test]
+    fn a_shadow_resolves_its_literal_color() {
+        let mut style = RenderStyle::default();
+        style.apply(&glow());
+        let sh = style.shadow.expect("shadow");
+        assert_eq!(sh.color, parse_color(&Color::from("#ff00ff")));
+        assert_eq!((sh.offset, sh.blur), ([0.0, 2.0], 12.0));
+    }
+}
