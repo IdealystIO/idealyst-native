@@ -60,7 +60,40 @@ fn app_window() -> HWND {
     found
 }
 
+thread_local! {
+    /// Whether a share sheet from this (UI) thread is open.
+    static OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks a share as open for its lifetime.
+struct OpenGuard;
+
+impl OpenGuard {
+    fn claim() -> Option<OpenGuard> {
+        OPEN.with(|o| (!o.replace(true)).then_some(OpenGuard))
+    }
+}
+
+impl Drop for OpenGuard {
+    fn drop(&mut self) {
+        OPEN.with(|o| o.set(false));
+    }
+}
+
+/// Windows shows one share sheet per window: a second `share` while one is
+/// open (a double press) made `ShowShareUIForWindow` fail with "the share
+/// flow is not available". It now reports that a sheet is already open,
+/// without touching the open one.
+pub(crate) const ALREADY_OPEN: &str = "a share sheet is already open";
+
 pub(crate) async fn share(content: &ShareContent) -> Result<ShareOutcome, ShareError> {
+    let Some(_open) = OpenGuard::claim() else {
+        return Err(ShareError::Backend(ALREADY_OPEN.into()));
+    };
+    share_once(content).await
+}
+
+async fn share_once(content: &ShareContent) -> Result<ShareOutcome, ShareError> {
     let hwnd = app_window();
     if hwnd.is_invalid() {
         return Err(ShareError::Backend("no active window to share from".into()));
@@ -143,6 +176,19 @@ mod tests {
     /// to the share sheet — which needs the app's window, so a test thread
     /// (no window of its own) gets that backend error rather than the stub's
     /// answer. The sheet itself is checked by hand in `examples/sdk-gallery`.
+    /// A double press opened a second share while the first sheet was up;
+    /// Windows refused it with "the share flow is not available". The second
+    /// now gets a clear "already open", and the slot frees when the first
+    /// finishes.
+    #[test]
+    fn regression_a_second_share_while_one_is_open_says_so() {
+        let first = OpenGuard::claim().expect("nothing open yet");
+        let r = pollster::block_on(share(&ShareContent::text("again")));
+        assert_eq!(r, Err(ShareError::Backend(ALREADY_OPEN.into())));
+        drop(first);
+        assert!(OpenGuard::claim().is_some(), "free again once the first is done");
+    }
+
     #[test]
     fn regression_windows_share_reaches_the_share_sheet_path() {
         let r = pollster::block_on(share(&ShareContent::text("hello")));
