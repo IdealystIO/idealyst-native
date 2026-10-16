@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "1.15.0"
+version = "1.16.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "1.20.0"
+version = "1.21.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "1.13.0"
+version = "1.14.0"
 dependencies = [
  "backend-image-source",
  "gtk4",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "1.16.0"
+version = "1.17.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.10.0"
+version = "2.11.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "1.11.0"
+version = "2.0.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "biometrics"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -1999,7 +1999,7 @@ dependencies = [
 
 [[package]]
 name = "build-runtime-server"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "build-windows"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-native"
-version = "1.7.1"
+version = "2.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "canvas-vello"
-version = "2.2.1"
+version = "3.0.0"
 dependencies = [
  "backend-linux",
  "canvas-core",
@@ -2401,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "canvas3d-wgpu"
-version = "0.2.1"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "canvas-core",
@@ -2608,7 +2608,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clipboard"
-version = "1.5.5"
+version = "1.6.0"
 dependencies = [
  "arboard",
  "jni 0.21.1",
@@ -2657,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "1.6.1"
+version = "2.0.0"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -2775,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "connectivity"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -3308,7 +3308,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "datetime"
-version = "1.5.3"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "iana-time-zone",
@@ -3504,7 +3504,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "1.9.1"
+version = "1.10.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "dev-http"
-version = "1.5.2"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "dev-reload"
-version = "1.5.3"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -3586,7 +3586,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3616,7 +3616,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "1.5.6"
+version = "2.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -3715,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "1.5.6"
+version = "1.5.7"
 dependencies = [
  "host-mock",
  "runtime-core",
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "file-export"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -4272,7 +4272,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "1.7.2"
+version = "1.8.0"
 dependencies = [
  "ashpd",
  "block2 0.5.1",
@@ -5031,7 +5031,7 @@ dependencies = [
 
 [[package]]
 name = "gpu-surface"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "js-sys",
  "log",
@@ -5838,7 +5838,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "1.12.0"
+version = "1.13.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -5905,7 +5905,7 @@ dependencies = [
 
 [[package]]
 name = "host-win32"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "backend-windows",
  "runtime-core",
@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "host-windows-desktop"
-version = "1.5.4"
+version = "1.5.5"
 dependencies = [
  "log",
  "raw-window-handle",
@@ -6378,7 +6378,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6389,7 +6389,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "5.2.0"
+version = "6.0.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6407,7 +6407,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6447,7 +6447,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.12"
+version = "1.5.13"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6457,7 +6457,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.11"
+version = "1.5.12"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6477,7 +6477,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6503,7 +6503,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6738,7 +6738,7 @@ dependencies = [
 
 [[package]]
 name = "inspector-server"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "inspector-protocol",
  "serde",
@@ -7643,7 +7643,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.21.0"
+version = "1.22.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7668,7 +7668,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -7807,7 +7807,7 @@ dependencies = [
 
 [[package]]
 name = "menu"
-version = "1.5.3"
+version = "2.0.0"
 dependencies = [
  "backend-ios-mobile",
  "backend-linux",
@@ -8021,7 +8021,7 @@ dependencies = [
 
 [[package]]
 name = "native-parity"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -10538,7 +10538,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -10648,7 +10648,7 @@ dependencies = [
 
 [[package]]
 name = "run-windows"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10682,7 +10682,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10725,7 +10725,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "1.25.0"
+version = "1.26.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10754,7 +10754,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "2.4.0"
+version = "2.5.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -12254,7 +12254,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "1.6.2"
+version = "2.0.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -12668,7 +12668,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
@@ -13126,7 +13126,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "toolbar"
-version = "1.5.3"
+version = "2.0.0"
 dependencies = [
  "backend-linux",
  "backend-macos",
@@ -13973,7 +13973,7 @@ dependencies = [
 
 [[package]]
 name = "video-compose"
-version = "1.6.2"
+version = "2.0.0"
 dependencies = [
  "canvas-core",
  "canvas-vello",
@@ -15413,7 +15413,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "1.10.0"
+version = "1.11.0"
 dependencies = [
  "dev-client",
  "dev-server",
@@ -15841,7 +15841,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zone-offset"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
