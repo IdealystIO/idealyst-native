@@ -553,6 +553,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Slider `thumb_icon`, Popover `min_width`, SegmentedControl `block`**
+  (`idea-ui`, `idea-theme`). `Slider(thumb_icon = Some(ICON))` draws the
+  icon centred in the thumb, tinted with the variant foreground; an icon
+  thumb is 20 / 24 / 28 px (Sm / Md / Lg, `SLIDER_ICON_THUMB_DIMS`).
+  `SliderSheets` gains `thumb_icon_sheet` — code that builds `SliderSheets`
+  by struct literal must add it. `Popover(min_width = …)` replaces the
+  hard-coded 180px floor (default still 180; `0.0` sizes to content).
+  `SegmentedControl(block = true)` fills its container and splits it evenly
+  between the segments, like Button's `block`.
+
 - **Robot functions: tests call app and SDK code by name**
   (`runtime-vocabulary`, `runtime-macros`, `runtime-macros-expand`,
   `runtime-core`, `robot-test`, `mcp-server`, `location`, `connectivity`,
@@ -1458,6 +1468,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A Card sheet built from some variants no longer drops the built-ins**
+  (`idea-ui`). `build_card_sheet(variants, tones)` registered only the
+  variants passed, so an app that passed just its restyled `regular` lost
+  `Flat` / `Outline` / `Elevated`, which then drew as the bare base style (a
+  transparent box with a 1px border) with no warning. The four built-ins
+  are always registered now; a passed variant with a built-in's key
+  replaces that one. Debug builds warn once per key when a Card resolves a
+  variant its sheet has no arm for.
 
 - **`denoise` no longer forces the hybrid web build** (`denoise`, `random`).
   tract reaches getrandom 0.2, which has no default wasm backend; denoise

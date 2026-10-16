@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "build-android"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -2783,7 +2783,7 @@ dependencies = [
 
 [[package]]
 name = "connectivity"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -6376,7 +6376,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6396,7 +6396,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "7.0.0"
+version = "7.1.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6414,7 +6414,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6493,7 +6493,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6508,7 +6508,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7442,7 +7442,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "location"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "async-io",
  "futures-channel",
@@ -7650,7 +7650,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.23.0"
+version = "1.24.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7675,7 +7675,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -8311,7 +8311,7 @@ dependencies = [
 
 [[package]]
 name = "notifications"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-windows",
  "jni 0.21.1",
@@ -10578,7 +10578,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "native-parity",
@@ -10626,7 +10626,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "build-android",
@@ -10638,7 +10638,7 @@ dependencies = [
 
 [[package]]
 name = "run-ios"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10688,7 +10688,7 @@ dependencies = [
 
 [[package]]
 name = "run-windows"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -10698,7 +10698,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -10715,14 +10715,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.18.0"
+version = "1.19.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10794,7 +10794,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-vocabulary"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "dev-hot",
  "host-mock",
