@@ -79,6 +79,31 @@ whole folder. The webview SDK loads the DLL at runtime rather than importing
 it, so an app missing it still starts. Source:
 `tools/build/windows/src/runtime_files.rs`.
 
+## Client SDKs on Windows
+
+Each SDK's Windows backend uses the OS's own stack; the SDK's README has
+the details and what was verified.
+
+| SDK | Windows mechanism |
+| --- | --- |
+| svg | the backend's SVG image path (resvg), via an `image()` node |
+| clipboard | Win32 clipboard (`arboard`, shared with Linux) |
+| connectivity | WinRT `NetworkInformation`; changes delivered on the UI thread |
+| notifications | WinRT toasts for the app's AppUserModelID; OS-scheduled delivery |
+| permissions | notification setting; location / camera / microphone privacy settings (`AppCapability`) |
+| webview | WebView2 in a child window; `WebView2Loader.dll` ships beside the `.exe` |
+| video | Media Foundation Media Engine → composition swapchain; painted controls |
+| video-decode | Media Engine frame server; frames copied to the CPU (no PCM tap) |
+| audio | Media Engine, audio-only |
+| microphone | WASAPI via `cpal` |
+| camera | Media Foundation capture (source reader → RGB32) |
+| location | WinRT `Geolocator` |
+| share | the share sheet (`DataTransferManager`) |
+| screen-recorder | `Windows.Graphics.Capture` (video only; no private-layer exclusion yet) |
+| media-writer | Media Foundation Sink Writer, H.264 + AAC in MP4 |
+
+`examples/sdk-gallery` has a panel for each, to check them by hand.
+
 ## The two renderers
 
 | | GDI+ (default) | Direct2D |
