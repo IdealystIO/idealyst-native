@@ -16,7 +16,7 @@
 //!                       --dev` before launching the server; the
 //!                       server serves the resulting `pkg/` directly.
 //! - `template/`       — wrapping crate for the user's snippet. Its
-//!                       `src/snippet.rs` is overwritten per compile;
+//!                       `src/snippet/` is overwritten per compile;
 //!                       `src/lib.rs` hosts the rendered snippet
 //!                       inside a `host-web` simulator (so the iframe
 //!                       paints the iOS-skinned chrome the docs site

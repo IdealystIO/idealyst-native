@@ -586,10 +586,6 @@ stylesheet! {
     }
 }
 
-// (Props-table styling now lives in idea-ui's themed `Table` /
-// `TableCell` components — this file no longer needs PropsTable /
-// PropCell* sheets.)
-
 // ---- Callout (tips / notes / cross-links) ---------------------------------
 
 stylesheet! {
@@ -800,8 +796,8 @@ stylesheet! {
     }
 }
 
-// Search TRIGGER — a button styled like the old search field that opens the
-// search dialog. The actual text input now lives inside the modal.
+// Search TRIGGER — a button styled like a search field that opens the
+// search dialog. The actual text input lives inside the modal.
 stylesheet! {
     pub SearchTrigger<IdeaThemeRef> {
         base(t) {
@@ -1096,8 +1092,8 @@ stylesheet! {
 // ===========================================================================
 // Overview / landing page — the design's `D.home` screen: hero card, stat
 // cards, principle features, the dark token-resolution strip, and the
-// catalog grid. Rendered full-bleed (no page frame) via
-// `shell::landing_frame`, so these sheets own all the page's chrome.
+// catalog grid. Rendered full-bleed (no page frame), so these sheets own
+// all the page's chrome.
 // ===========================================================================
 
 const MONO: &str = "ui-monospace, SFMono-Regular, Menlo, monospace";

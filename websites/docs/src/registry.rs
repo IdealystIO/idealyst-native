@@ -13,10 +13,10 @@ use crate::meta::{DocConcept, PageCategory, PageMeta};
 
 /// Every page in the docs, in display order.
 ///
-/// **Cookbook recipes belong here too** — the MCP server filters
-/// them out of `list_doc_pages` by checking `PageCategory::Cookbook`,
-/// so the same registry powers both the regular page index and the
-/// cookbook surface.
+/// **Cookbook recipes belong here too** — [`non_cookbook`] /
+/// [`cookbook`] split them by `PageCategory::Cookbook`, so the same
+/// registry powers both the regular page index and the cookbook
+/// surface.
 pub static PAGES: &[&'static PageMeta] = &[
     &crate::pages::introduction::PAGE_META,
     &crate::pages::overview::PAGE_META,
@@ -50,16 +50,13 @@ pub fn find(slug: &str) -> Option<&'static PageMeta> {
     PAGES.iter().copied().find(|p| p.slug == slug)
 }
 
-/// Pages in a given category, in registration order. The MCP server's
-/// `list_doc_pages` uses this with every category except Cookbook;
-/// `list_cookbook_recipes` uses it with `Cookbook`.
+/// Pages in a given category, in registration order.
 pub fn by_category(cat: PageCategory) -> impl Iterator<Item = &'static PageMeta> {
     PAGES.iter().copied().filter(move |p| p.category == cat)
 }
 
-/// Pages outside the Cookbook category. The default surface area
-/// the MCP server exposes to a model browsing "what documentation
-/// exists."
+/// Pages outside the Cookbook category — the default "what
+/// documentation exists" surface.
 pub fn non_cookbook() -> impl Iterator<Item = &'static PageMeta> {
     PAGES
         .iter()
@@ -76,8 +73,7 @@ pub fn cookbook() -> impl Iterator<Item = &'static PageMeta> {
 }
 
 /// Pages where the given concept appears in `concepts` — the
-/// authoritative explainer(s) for that concept. Drives MCP
-/// `pages_about(concept)` reverse-index queries.
+/// authoritative explainer(s) for that concept (the reverse index).
 pub fn pages_about(concept: DocConcept) -> impl Iterator<Item = &'static PageMeta> {
     PAGES
         .iter()

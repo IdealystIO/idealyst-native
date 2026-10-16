@@ -3,7 +3,7 @@
 //!
 //! - `GET /`             → `webapp/index.html` (the editor UI shell)
 //! - `GET /pkg/*`        → the webapp's wasm-pack output
-//! - `POST /compile`     → JSON in `{ "source": "..." }`, JSON out
+//! - `POST /compile`     → JSON in `{ "files": {..}, "mode": ".." }`, JSON out
 //!                          `{ "hash": "..." }` or `{ "error": "..." }`
 //! - `GET /compiled/*`   → per-compile bundle from
 //!                          `examples/fiddle/compiled/<hash>/...`

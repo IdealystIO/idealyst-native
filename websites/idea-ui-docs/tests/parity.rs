@@ -82,9 +82,8 @@ const MAX_LINES_PER_ROUTE: usize = 12;
 /// does not.
 ///
 /// Reported separately from the prop/geometry mismatches because they come from
-/// the alignment, not the diff, and they were previously counted in the progress
-/// line but omitted from the failure detail — so the single largest finding
-/// category (166 items on the Table page) named no elements at all and was
+/// the alignment, not the diff. Without this detail the single largest finding
+/// category (166 items on the Table page) would name no elements at all and be
 /// impossible to act on.
 fn summarize_structural(unmatched: &[parity::Unmatched], a: &str, b: &str) -> String {
     let shown = unmatched.len().min(MAX_LINES_PER_ROUTE);
@@ -373,9 +372,9 @@ fn every_idea_ui_screen_has_layout_parity() {
         // Drive both platforms to the same route before either is read.
         for (label, client) in [(&name_a, &mut a), (&name_b, &mut b)] {
             if let Err(e) = navigate(client, route) {
-                // Printed, not just recorded: a sweep whose every route fails
-                // this way used to run for half an hour in COMPLETE silence,
-                // because only the compare path logged. Progress output has to
+                // Printed, not just recorded: if only the compare path logged,
+                // a sweep whose every route fails this way would run for half
+                // an hour in COMPLETE silence. Progress output has to
                 // cover the failure paths or a stuck run is indistinguishable
                 // from a slow one.
                 eprintln!("  {route:<18} NAVIGATION FAILED on {label}: {e}");

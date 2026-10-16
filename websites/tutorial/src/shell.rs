@@ -22,7 +22,7 @@ use crate::styles::{
 };
 
 /// Wrap a step page in its own scroll surface (background, text color).
-/// The drawer navigator no longer owns scroll — the screen owns it, so
+/// The navigator outlet does not scroll — the screen owns scroll, so
 /// each page provides its own `scroll_view`.
 pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();

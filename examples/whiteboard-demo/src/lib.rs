@@ -1,10 +1,11 @@
 //! `whiteboard-demo` — a slick cross-platform whiteboard.
 //!
 //! The app is a **stack navigator** (`stack_navigator`) with three routes: the
-//! `BOARD` (root, full-bleed canvas), `SETTINGS`, and `PREVIEW`. The board sets
-//! `unmount_on_blur(false)`, so pushing Settings/Preview leaves it mounted
-//! underneath — the camera keeps running and strokes persist — with native
-//! push/pop on iOS/Android/web (a child-swap on macOS). The board also sets
+//! `BOARD` (root, full-bleed canvas), `SETTINGS`, and `PREVIEW`. On native the
+//! stack's default retention keeps the board mounted underneath a pushed
+//! Settings/Preview (the camera keeps running); on web the push disposes it and
+//! pop re-mounts it. Strokes persist either way — they live in root-scoped
+//! state (`BoardState`). The board also sets
 //! `back_enabled(false)` so an edge-swipe-back mid-stroke can't pop it (or, on
 //! the Android root, background the app); Settings/Preview keep normal back. The
 //! Settings/Preview screens carry their own in-content header (`header_shown` is
@@ -13,11 +14,10 @@
 //!
 //! ## Renderer coverage
 //!
-//! The canvas is drawn by `canvas-native`'s scene handler, which is REAL on
-//! web (Canvas2D) and an External placeholder on macOS / iOS / Android: the
-//! GPU (`canvas-vello`) and native painters have no scene-registry handler, so
-//! this demo's drawing surface — and the self-capture recording that reads
-//! frames back out of it — only run on web. `video` (camera + recording
+//! The canvas is drawn by `canvas-native`'s scene handler, which carries a real
+//! painter on every target this demo ships to (web Canvas2D, iOS/macOS
+//! CoreGraphics, Android `android.graphics`); on Linux `canvas-vello` overrides
+//! it with the GPU renderer (see `Cargo.toml`). `video` (camera + recording
 //! preview) is real on every platform.
 //!
 //! Pieces of the board screen, and how they fit:
@@ -33,7 +33,7 @@
 //! 2. **Floating chrome** (tool rail, palette, record dock, REC pill, settings
 //!    FAB), as in-tree sibling overlays of the canvas (no separate window — the
 //!    recording captures the canvas/GPU stream directly, so the chrome is never
-//!    in it). Each dock's content is `!use_can_go_back()`-gated so it mounts only
+//!    in it). Each dock's content is gated on `!nav.can_go_back` so it mounts only
 //!    while the board is the active route and doesn't linger over a pushed screen.
 //!
 //! 3. **Camera widget** (NORMAL recordable content): `Camera::open` →
@@ -61,7 +61,7 @@
 //!   REC pill, settings FAB (`build_chrome` assembles them).
 //! - [`screens`] — the navigator-pushed `SettingsScreen` / `PreviewScreen` and
 //!   the shared `ScreenScaffold` / `Label`.
-//! - [`style`] — shared `StyleRules` helpers (`radius`, `border_all`,
+//! - [`style`] — shared `StyleRules` helpers (`radius`, `border_all_color`,
 //!   `reactive_style`, `focus_gate`, …).
 //! - `tests` — unit tests for [`document`] + the camera-clamp helpers below.
 
@@ -107,7 +107,7 @@ pub(crate) use settings::{CameraShape, CameraSize, CanvasBg};
 // are pushed onto the stack (native push/pop + back gesture on iOS/Android/web;
 // a child-swap on macOS). The board screen sets `unmount_on_blur(false)` (the
 // default) so it stays alive under a pushed screen — the camera keeps running and
-// strokes persist — but its floating chrome is hidden via `!use_can_go_back()` so
+// strokes persist — but its floating chrome is hidden via `!nav.can_go_back` so
 // the toolbar doesn't linger over Settings.
 pub(crate) const BOARD: Route<()> = Route::<()>::new("board", "/");
 pub(crate) const SETTINGS: Route<()> = Route::<()>::new("settings", "/settings");

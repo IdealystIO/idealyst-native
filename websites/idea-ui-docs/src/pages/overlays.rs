@@ -230,8 +230,6 @@ pub fn tooltip() -> Element {
 pub fn popover() -> Element {
     let open = signal(false);
     let trigger: Ref<PressableHandle> = Ref::new();
-    // get+set toggle (not `update`): valid on BOTH cores — the glue
-    // Signal's `update` takes `FnOnce(&T) -> T`, the old core's `&mut T`.
     let on_toggle: Rc<dyn Fn()> = Rc::new(move || open.set(!open.get()));
     let on_dismiss: Rc<dyn Fn()> = Rc::new(move || open.set(false));
 

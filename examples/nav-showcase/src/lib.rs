@@ -17,9 +17,8 @@
 
 use idea_ui::{install_idea_theme, light_theme, Typography};
 use idea_ui_nav::{Drawer, StackHeader, TabBar, TabItem};
-// `SwapContext`/`HeaderButton` come from the SDK preludes — the
-// same-source import home on both cores (the new-core SDKs define their
-// own `SwapContext`; glue deliberately doesn't mirror it).
+// `SwapContext`/`HeaderButton` come from the SDK preludes (the navigator
+// SDKs define their own `SwapContext`; glue deliberately doesn't mirror it).
 use runtime_core::{
     component, pressable, rx, signal, text, ui, AlignItems, Element, FlexDirection, Length, Ref,
     Route, Screen, Signal, StyleApplication, StyleRules, StyleSheet,

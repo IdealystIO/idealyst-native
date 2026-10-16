@@ -59,8 +59,7 @@ pub fn register_extensions(_backend: &mut backend_web::WebBackend) {
 /// `<pre>`/span handler, and `table::register` so PropsTable /
 /// the Table pages render the SDK's real `<table>`/`<tr>`/`<td>`.
 /// Without a registration those items have no registry entry and
-/// realization panics (the scene contract fails loud — the old core
-/// rendered a placeholder box instead).
+/// realization panics (the scene contract fails loud).
 ///
 /// Registry-generic: the same fn serves the web boot, the native hosts'
 /// `newcore::run_with`, and the GPU desktop host
@@ -70,7 +69,7 @@ where
     H: runtime_vocabulary::style_attach::StyleServices
         + runtime_vocabulary::caps::TextOps
         + runtime_vocabulary::caps::InputOps
-        // table 2.2: web cells register with the robot.
+        // Web table cells register with the robot.
         + runtime_vocabulary::caps::IntrospectionOps
         + 'static,
 {

@@ -2,7 +2,7 @@
 //! concepts, built with the framework itself.
 //!
 //! Three core tracks (Reactivity, Stylesheets, Media queries) teach the
-//! runtime-v2 author surface *directly* — signals, the flush boundary,
+//! framework's author surface *directly* — signals, the flush boundary,
 //! effects, `stylesheet!`, breakpoint overlays — without leaning on the
 //! `idea-ui` component kit for the concepts themselves. (The tutorial's
 //! own chrome does use idea-ui; that's the shell, not the lesson.) An

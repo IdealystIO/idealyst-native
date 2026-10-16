@@ -87,8 +87,8 @@ pub enum PageCategory {
     /// internal contracts, extension points, the public API of a
     /// specific backend, etc.
     Advanced,
-    /// Cookbook recipes. Default-hidden from `list_doc_pages`; the
-    /// MCP server exposes a separate `list_cookbook_recipes` tool.
+    /// Cookbook recipes. Kept out of the default page listing
+    /// (`registry::non_cookbook`); listed by `registry::cookbook`.
     Cookbook,
 }
 
@@ -339,11 +339,10 @@ pub enum DocConcept {
     /// `StaticCond`/`ReactiveCond` dispatch behind `if`).
     TextSlotDispatch,
     /// `WebBackend::register_signal_for_js(sid, stringifier)` —
-    /// the one-call-per-signal setup that wires a signal's writes
-    /// to the JS-side reactive layer via the framework's
-    /// `signal_js_notifier` slot. Once registered, `Signal::set`
-    /// ships value changes across the wasm→JS boundary for the
-    /// backend's binding registry to fan out internally.
+    /// the one-call-per-signal setup that ships a signal's value
+    /// changes across the wasm→JS boundary
+    /// (`__idealystOnSignalChanged`) for the backend's binding
+    /// registry to fan out internally.
     RegisterSignalForJs,
 
     // ---- Components ----
@@ -499,14 +498,15 @@ pub enum DocConcept {
     /// The "you write one crate; backends render it" split.
     AppBackendSplit,
     /// The upper half of the framework — primitives, the reactive
-    /// graph, the Walker, macros. Platform-agnostic, sits above
+    /// graph, the realize pass, macros. Platform-agnostic, sits above
     /// the Backend Interface. Authoritative explainer:
     /// `introduction` page.
     Runtime,
     /// The traversal pass that turns a primitive tree into Backend
-    /// Interface calls and wraps reactive expressions in Effects.
-    /// Lives in `runtime_core::walker`. Authoritative explainer:
-    /// `introduction` page.
+    /// Interface calls and wraps reactive expressions in Effects —
+    /// today `runtime_scene`'s realize pass
+    /// (`crates/runtime/scene/src/realize.rs`). Authoritative
+    /// explainer: `introduction` page.
     Walker,
     /// GPUBackend's platform integration layer — owns window,
     /// drawing surface, and event source; translates platform
@@ -861,9 +861,7 @@ pub fn find_page<'a>(
     registry.iter().find(|p| p.slug == slug)
 }
 
-/// Iterate over pages in a category. Cookbook recipes default-hidden
-/// from MCP `list_doc_pages` would be excluded by filtering the
-/// result here.
+/// Iterate over pages in a category.
 pub fn pages_in_category<'a>(
     registry: &'a [&'static PageMeta],
     cat: PageCategory,
@@ -872,8 +870,8 @@ pub fn pages_in_category<'a>(
 }
 
 /// Pages where the given concept appears in `concepts` — i.e. pages
-/// that are the authoritative source for the concept. Drives the MCP
-/// `pages_about` reverse-index tool.
+/// that are the authoritative source for the concept (the reverse
+/// index).
 pub fn pages_about<'a>(
     registry: &'a [&'static PageMeta],
     concept: DocConcept,

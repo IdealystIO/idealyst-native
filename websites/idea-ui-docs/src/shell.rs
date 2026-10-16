@@ -179,7 +179,7 @@ pub fn sidebar(
         }
     };
 
-    // The search now lives in a dialog. This open-state drives the modal; the
+    // The search lives in a dialog. This open-state drives the modal; the
     // sidebar shows a button that opens it.
     let open: Signal<bool> = signal(false);
 
@@ -957,9 +957,8 @@ pub struct PropsTableProps {
     pub rows: Vec<Prop>,
 }
 
-// Same-source on both cores: the table SDK is dual-core (real
-// `<table>` on web via the External registry / the scene Registry, a
-// shared-track CSS-grid on native).
+// The table SDK renders a real `<table>` on web (via its scene-Registry
+// handler) and a shared-track CSS-grid on native.
 #[component]
 pub fn PropsTable(props: PropsTableProps) -> Element {
     ui! {

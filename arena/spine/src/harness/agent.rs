@@ -1,15 +1,12 @@
-//! Distill a subagent's transcript into what the spine scores over.
+//! Distill an implementer transcript into what the spine scores over.
 //!
-//! The implementation agent is no longer a `claude --print` subprocess this
-//! crate spawns — it's a **subagent** the orchestrating Claude Code session
-//! runs (see `.claude/agents/arena-implementer.md` + `.claude/skills/arena-bench`).
-//! Driving it that way keeps the run on the subscription instead of pay-as-you-go
-//! API billing, and lets the agent be hard-isolated to the idealyst MCP via the
-//! subagent's `mcpServers:` frontmatter (the equivalent of
-//! `claude -p --strict-mcp-config`).
-//!
-//! Claude Code writes every subagent's event log to
+//! This crate never spawns the implementation agent — the orchestrating
+//! session runs it (see `.claude/skills/arena-bench`): a headless `claude -p
+//! --output-format stream-json` session inside the arena container, whose
+//! stdout is the run's `impl-transcript.jsonl`, or — the legacy fallback — an
+//! `arena-implementer` subagent, whose event log Claude Code writes to
 //! `~/.claude/projects/<proj>/<session-id>/subagents/agent-<agentId>.jsonl`.
+//! Both are JSONL event streams with the same `assistant`/`user` event shape.
 //! This module parses one of those files into:
 //!   * a [`crate::metrics::Transcript`] (tool calls) for the pathology pass, and
 //!   * token totals, including an estimate of MCP **payload** tokens — the

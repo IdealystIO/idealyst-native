@@ -52,9 +52,9 @@ pub fn page() -> Element {
 }
 
 // =============================================================================
-// TargetRow — one entry on a target section's list. Promoted from the
-// snake_case `target_row` helper because it has props and is called
-// many times across the page (CLAUDE.md §9.5).
+// TargetRow — one entry on a target section's list. A `#[component]`
+// (not a snake_case helper) because it has props and is called many
+// times across the page (CLAUDE.md §9.5).
 // =============================================================================
 
 #[derive(Default)]

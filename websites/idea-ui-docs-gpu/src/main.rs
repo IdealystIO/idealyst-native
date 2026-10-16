@@ -13,10 +13,7 @@
 //!     registry — an unregistered payload panics at realize.
 //!   - Navigators need no registration: the swap navigator is a
 //!     vocabulary built-in installed by `register_builtins`, so ONE
-//!     handler serves the GPU backend like every other host. (This used
-//!     to be the crate's whole point — `swap_navigator::register_generic`
-//!     on a `RegisterNavigator` impl for `WgpuBackend`; that per-backend
-//!     navigator registry no longer exists.)
+//!     handler serves the GPU backend like every other host.
 //!
 //! The chrome (idea-ui-nav `AppShell` + header) is plain author layout
 //! built from real `StyleRules`, so the GPU backend (no CSS) renders the

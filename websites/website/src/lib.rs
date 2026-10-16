@@ -24,8 +24,8 @@ use idea_ui::{install_idea_theme, light_theme};
 /// covers both `SECTIONS` entries and the off-sidebar tangents like
 /// `/targets` and `/comparisons/*`). Drives both
 /// `UINavigationItem.title` on iOS and Android's `Toolbar` title;
-/// without this the bar renders empty since iOS no longer falls
-/// back to `route.name()`.
+/// without this the bar renders empty (iOS does not fall back to
+/// `route.name()`).
 fn titled(route: &'static Route<()>, el: Element) -> Screen {
     // The label is drawn by the shell's own header (`shell::mobile_header`
     // derives it reactively from `active_route`), so the Screen carries no
@@ -277,16 +277,13 @@ pub fn register_extensions(_backend: &mut backend_macos::MacosBackend) {}
 // Native Linux (GTK4). Same `not(feature = "terminal")` guard as macOS:
 // the terminal target builds for the Linux host triple, so without it
 // this arm and the terminal arm would both compile on a Linux host and
-// collide. Registers the swap navigator's backend-neutral handler on
-// the GTK backend (the same generic `RegisterNavigator` path the wgpu
-// preview uses) so the site's navigator renders natively instead of a
-// placeholder — the GTK backend now implements `RegisterNavigator`.
+// collide.
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32"), not(feature = "terminal")))]
 pub fn register_extensions(
     registry: &mut runtime_scene::Registry<backend_linux::LinuxBackend>,
 ) {
-    // `swap_navigator::register_generic` is gone: navigators are builtin
-    // vocabulary in v2, so there is nothing to install for them.
+    // Navigators are builtin vocabulary, so there is nothing to install
+    // for them.
     //
     // Docs pages render fenced code through the `codeblock` SDK; its GTK
     // leaf lowers to a Pango-styled label (see codeblock's linux arm).

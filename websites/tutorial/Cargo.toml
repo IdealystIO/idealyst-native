@@ -12,17 +12,6 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# RUNTIME V2 ONLY, and no core feature to declare. The tutorial was the
-# last surface deliberately held on the pre-v2 walker during the defaults
-# flip, because its LESSON CONTENT taught the old reactive semantics
-# (`batch(..)`, "the write is visible immediately"). Those lessons now
-# teach the staged-commit kernel, so this crate compiles against runtime
-# v2 and only runtime v2 — no `new-core`/`old-core` markers, no
-# `#[cfg(feature = ..)]` core fork anywhere in the source, and the
-# generated wrappers build it with its plain defaults
-# (`crates/tools/cli/src/core_mode.rs`: `--old-core` is a hard error now,
-# `--new-core` a silent no-op).
-#
 # `sidecar`: enabled ONLY by the CLI-generated native sidecar wrapper
 # (build-runtime-server). Pulls `dev-server` so
 # `register_scene_extensions_recorder` can name
@@ -34,7 +23,7 @@ sidecar = ["dep:dev-server"]
 # The platform surface, used by `src/main.rs` only — it carries whatever
 # the target needs so this manifest names no backend directly.
 idealyst = { workspace = true }
-# The runtime-v2 author surface. `runtime-core` is the alias target for
+# The author surface. `runtime-core` is the alias target for
 # `extern crate runtime_core as runtime_core;` (its root re-exports
 # `runtime_vocabulary::glue`).
 runtime-core = { workspace = true }
@@ -45,9 +34,8 @@ runtime-vocabulary = { workspace = true }
 idea-ui = { workspace = true }
 idea-ui-nav = { workspace = true }
 swap-navigator = { workspace = true }
-# Theme-aware syntax-highlighted code panels. On runtime v2 this is a
-# scene-registry handler rather than a separate "external primitive", so
-# `codeblock::register` is re-exported from lib.rs as the boot
+# Theme-aware syntax-highlighted code panels: a scene-registry handler,
+# so `codeblock::register` is re-exported from lib.rs as the boot
 # registration seam every generated wrapper calls. An UNREGISTERED
 # payload panics at realize, so the seam is load-bearing rather than a
 # nicety.
@@ -58,12 +46,8 @@ codeblock = { workspace = true }
 # never compiled for device/web targets.
 dev-server = { workspace = true, optional = true }
 
-# NO backend dependencies and no `terminal` feature. The old
-# `register_extensions` hook took a concrete `&mut impl Backend`, which
-# forced one `#[cfg(target_os = …)]` arm (and one backend dep) per
-# target, plus a `terminal` feature to break the host-triple tie with
-# macOS. Runtime v2's registration seam is generic over the scene
-# `Registry`'s host, so ONE fn serves every platform and the
+# NO backend dependencies: the registration seam is generic over the
+# scene `Registry`'s host, so ONE fn serves every platform and the
 # CLI-generated wrappers bring their own concrete backend.
 
 [package.metadata.wasm-pack.profile.release]

@@ -1,6 +1,6 @@
 //! Helpers for the Playwright (platform-truth) tier.
 //!
-//! The locator is no longer a `claude` subprocess this crate spawns — it's an
+//! This crate never spawns the locator — it's an
 //! `arena-locator` **subagent** the orchestrating session runs against the
 //! served web build (see `.claude/skills/arena-bench`). That keeps it on the
 //! subscription and lets it be hard-isolated to the Playwright MCP via the

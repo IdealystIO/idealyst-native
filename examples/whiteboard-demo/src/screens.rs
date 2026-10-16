@@ -839,7 +839,7 @@ impl Default for ActionButtonProps {
 
 /// A labeled action button. `primary` → filled accent; else a neutral surface
 /// chip with a border. Theme-aware (reactive tokens) so the neutral variant stays
-/// visible in dark mode — the old hardcoded dark-on-dark colors vanished there.
+/// visible in dark mode (hardcoded colors would go dark-on-dark there).
 #[component]
 pub fn ActionButton(props: &ActionButtonProps) -> Element {
     let label = props.label;

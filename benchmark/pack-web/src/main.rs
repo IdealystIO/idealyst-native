@@ -1,6 +1,6 @@
 //! `bench-pack-web` — build one of the benchmark's wasm crates (a
 //! `cdylib`) into `<crate>/pkg/`, the layout `wasm-pack build --target
-//! web --release` used to produce.
+//! web --release` produces.
 //!
 //! ```text
 //! cargo run -q --release -p bench-pack-web -- benchmark/idealyst-native/wasm

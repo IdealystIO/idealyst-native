@@ -1,16 +1,15 @@
-//! Persistent sidebar — mounted once via `DrawerNavigator::sidebar_with`.
+//! Site chrome — the persistent sidebar, mobile header, footer, and the
+//! per-page scroll layouts.
 //!
-//! On web, drawer-navigator renders as a permanent flex-row layout
-//! (sidebar + body). The sidebar mounts ONCE at navigator init and
-//! survives every screen change — the navigator only swaps the
-//! body. On iOS/Android the same drawer SDK becomes a slide-in
-//! side panel.
+//! `app()` wraps the swap navigator in an `idea_ui_nav::AppShell`: the
+//! sidebar builds ONCE and survives every screen change — the navigator
+//! only swaps the outlet. Below the pin breakpoint the AppShell turns
+//! it into an off-canvas drawer.
 //!
-//! Active-link highlight: `DrawerSlotProps::active_route` is a
-//! reactive `Signal<&'static str>` that the navigator updates on
-//! every screen change. Each nav link reads it inside its style
-//! closure, so the highlight updates without rebuilding the
-//! sidebar tree.
+//! Active-link highlight: the navigator's `active_route` is a reactive
+//! `Signal<&'static str>` updated on every screen change. Each nav link
+//! reads it inside its style closure, so the highlight updates without
+//! rebuilding the sidebar tree.
 
 use std::rc::Rc;
 
@@ -44,7 +43,7 @@ use crate::styles::{
 /// One entry in a page's table-of-contents. `handle` is a
 /// `Ref<ViewHandle>` for the section's outer `View` (allocated by
 /// the page via `Ref::<ViewHandle>::new()` and shared with the
-/// matching `page_section(handle, ...)` call). The TOC reads each
+/// matching `PageSection(handle = ...)` call). The TOC reads each
 /// handle's `absolute_frame()` to drive the active highlight and
 /// compute the click-to-scroll target \u{2014} all portable across
 /// every Backend impl, no `cfg(target_arch)` reaching into platform
@@ -57,16 +56,15 @@ pub struct TocEntry {
 
 /// Wrap a screen's content in the website's OWN `scroll_view`.
 ///
-/// The drawer navigator no longer owns scroll — its body is a
-/// non-scrolling flex child and `ambient_scroll_context()` always
-/// returns `None`. So each page provides its own scroll surface: a
+/// The navigator outlet does not scroll — it is a non-scrolling flex
+/// child. So each page provides its own scroll surface: a
 /// `scroll_view` that fills the navigator body and scrolls the page
 /// content together with the site footer as a single column. The
 /// footer is the LAST child INSIDE the `scroll_view`, so it scrolls
 /// into view at the end of the page rather than being a pinned slot.
 ///
-/// The mobile header still lives in the navigator's `top` slot — see
-/// `lib.rs`'s `.top_with(...)`. There is no `bottom` slot anymore.
+/// The mobile header sits above the outlet in `app()`'s shell column
+/// (`shell::mobile_header`), outside this scroll surface.
 pub fn layout(content: Element) -> Element {
     let style = ScreenScroll();
     ui! {
@@ -107,7 +105,7 @@ const BAND_COMPARE_TOLERANCE: f32 = 8.0;
 /// Variant of [`layout`] that adds a Material-UI-style table-of-
 /// contents column to the right of the page. Each `TocEntry::handle`
 /// must match the `Ref<ViewHandle>` passed to the corresponding
-/// `page_section(handle, ...)` call inside `content`.
+/// `PageSection(handle = ...)` call inside `content`.
 ///
 /// The TOC's active link is driven by `ScrollView::on_scroll` \u{2014}
 /// a framework primitive that fires uniformly across every backend
@@ -181,8 +179,7 @@ pub fn layout_with_toc(content: Element, entries: Vec<TocEntry>) -> Element {
         }.bind(content_ref)
     };
     // The scroll surface with a bound [`ScrollViewHandle`] +
-    // `on_scroll`. Same-source both cores: `GlueScrollView` mirrors
-    // `Bound::<ScrollViewHandle>::bind`.
+    // `on_scroll`.
     let body: Element = ui! {
         scroll_view(style = body_style) {
             column
@@ -262,9 +259,8 @@ pub fn FooterLinkInternal(props: FooterLinkInternalProps) -> Element {
 
 /// Build the site-wide footer. Rendered as the LAST child inside the
 /// page's own `scroll_view` by [`layout`] / [`layout_with_toc`], so
-/// it scrolls in at the end of the page content (it is no longer a
-/// pinned navigator `bottom` slot — the drawer no longer owns
-/// scroll). Mounted unconditionally; CSS variant switching handles
+/// it scrolls in at the end of the page content. Mounted
+/// unconditionally; CSS variant switching handles
 /// narrow-viewport stacking via the `size` variant on the footer
 /// stylesheets.
 pub fn footer() -> Element {

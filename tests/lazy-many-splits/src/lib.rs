@@ -6,15 +6,14 @@
 //! LLVM under `opt-level=z` emits distinct functions that share one
 //! mangled name (small alloc/core/hashbrown monomorphizations — the
 //! idea-ui-docs release module carried 42 such names, including
-//! `alloc::fmt::format`). `wasm-split-cli` used to correlate the
-//! relocation-bearing pre-bindgen module with the bindgened module via
-//! name-keyed `HashMap<String, FunctionId>` maps, so same-named copies
-//! silently collided: call-graph edges landed on an arbitrary copy, the
-//! other copy was classified chunk-only, and `emit` gutted it from the
-//! main bundle even though a main-resident fmt vtable (a function
-//! pointer in a DATA segment) still pointed at its table slot. First
-//! main-side `format!` at boot then trapped with `RuntimeError:
-//! function signature mismatch` — before any chunk was even requested.
+//! `alloc::fmt::format`). A splitter that pairs the relocation-bearing
+//! pre-bindgen module with the bindgened module 1:1 by name lets
+//! same-named copies silently collide: call-graph edges land on an
+//! arbitrary copy, the other copy is classified chunk-only and gutted
+//! from the main bundle even though a main-resident fmt vtable (a
+//! function pointer in a DATA segment) still points at its table slot.
+//! First main-side `format!` at boot then traps with `RuntimeError:
+//! function signature mismatch` — before any chunk is even requested.
 //!
 //! One or two split points never triggered it (`tests/lazy-chunk-handoff`,
 //! `tests/lazy-payload-split` stayed green); the idea-ui-docs site with
@@ -40,16 +39,14 @@
 //! WHICH copy wins a name collision is HashMap-iteration-order luck, so
 //! whether the loser is a main-critical function is probabilistic — this
 //! fixture carries the same duplicate names (30+ in its release module)
-//! but happened to survive the pre-fix splitter, while idea-ui-docs
-//! failed reliably. A synthetic unit test isn't practical either: the
-//! splitter consumes LLVM's linking + reloc custom sections, which
-//! neither `wat` nor walrus can author, and duplicate-name emission
-//! can't be forced from source. The deterministic guard is instead IN
-//! the splitter: `emit_main_module` refuses to gut a function that a
-//! main-reachable data symbol still points at, so any classification
-//! regression fails the build loudly instead of shipping a main.wasm
-//! that traps at boot. This fixture keeps the many-split fn-pointer
-//! shape exercised end-to-end on top of that.
+//! but survived the 1:1-pairing splitter, while idea-ui-docs failed
+//! reliably. A synthetic unit test isn't practical either: the splitter
+//! consumes LLVM's linking + reloc custom sections, which neither `wat`
+//! nor walrus can author, and duplicate-name emission can't be forced
+//! from source. The deterministic guard is instead IN the splitter:
+//! `wasm-carve` gives every same-named copy every copy's edges (see
+//! `crates/tools/wasm-split/wasm-carve/src/graph.rs`). This fixture keeps
+//! the many-split fn-pointer shape exercised end-to-end on top of that.
 
 use std::collections::HashMap;
 use std::rc::Rc;

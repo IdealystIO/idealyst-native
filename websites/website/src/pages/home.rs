@@ -98,9 +98,10 @@ fn hero() -> Element {
 // =============================================================================
 
 // Lazy component — lowers to the vocabulary `lazy` prim
-// (`glue::primitives::lazy` + `handlers/lazy.rs`). On web, wasm-split-cli
-// post-build hoists the body (and its transitive wgpu / welcome /
-// ios_sim deps) into a separate chunk wasm loaded on demand. On native
+// (`glue::primitives::lazy` + `handlers/lazy.rs`). On web, the
+// `idealyst build --web` split pass (`wasm-carve`) hoists the body (and
+// its transitive wgpu / welcome / ios_sim deps) into a separate chunk
+// wasm loaded on demand. On native
 // targets the attribute is transparent: the body compiles inline and
 // runs synchronously.
 //
@@ -238,9 +239,9 @@ fn pillars_section() -> Element {
     }
 }
 
-/// One card on the home page's pillar grid. Promoted from the
-/// snake_case `pillar_card` helper because it has props and is called
-/// from a `for` loop (CLAUDE.md §9.5). Named `PillarTile`, not
+/// One card on the home page's pillar grid. A `#[component]` (not a
+/// snake_case helper) because it has props and is called from a `for`
+/// loop (CLAUDE.md §9.5). Named `PillarTile`, not
 /// `PillarCard`, because `PillarCard` is a stylesheet in `styles.rs`
 /// — `#[component]` emits `pub type PillarTile = PillarTileProps`
 /// which would collide with the stylesheet's type alias.

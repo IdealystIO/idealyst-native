@@ -181,7 +181,7 @@ fn run() -> anyhow::Result<()> {
             );
             Ok(())
         }
-        // ── Outcome-tier support (Phase 2) ────────────────────────────────
+        // ── Outcome-tier support ──────────────────────────────────────────
         "live" => {
             // Serve a robot-enabled web build + relay + headless client, and
             // stay up so `arena score` (robot tier) and the locator (playwright
@@ -262,7 +262,7 @@ fn run() -> anyhow::Result<()> {
             println!("{} passed={}", path.display(), verdict.passed);
             Ok(())
         }
-        // ── Model-assessment support (Phase 3) ────────────────────────────
+        // ── Model-assessment support ──────────────────────────────────────
         "feedback-prompt" => {
             // Rebuild the two-pass feedback prompt from persisted artifacts.
             let scenario_dir = PathBuf::from(pos(&args, 0, "scenario_dir")?);
@@ -296,7 +296,7 @@ fn run() -> anyhow::Result<()> {
             print!("{prompt}");
             Ok(())
         }
-        // ── Qualitative layer (Phase 4) ───────────────────────────────────
+        // ── Qualitative layer ─────────────────────────────────────────────
         "quality" => {
             let project_dir = PathBuf::from(pos(&args, 0, "project_dir")?);
             let run_dir = PathBuf::from(
@@ -466,7 +466,7 @@ fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        // ── Aggregation (Phase 5) ─────────────────────────────────────────
+        // ── Aggregation ───────────────────────────────────────────────────
         "aggregate" => {
             let scenario_id = pos(&args, 0, "scenario_id")?.clone();
             let files = positionals(&args);

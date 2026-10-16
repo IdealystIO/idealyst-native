@@ -12,10 +12,9 @@
 //!
 //! Nothing here is novel — it's a slimmed-down version of the
 //! framework's own perf-screen body that exists only to fit the
-//! arena's static-file contract. The screen body is identical in
-//! spirit to `examples/hello-world`'s PerfRow / PerfList stylesheets so
-//! the comparison is apples-to-apples with the other arena
-//! variants (which mirror those same dimensions).
+//! arena's static-file contract. The row/list dimensions follow
+//! `spec.md`, so the comparison is apples-to-apples with the other
+//! arena variants (which mirror those same dimensions).
 
 use runtime_core::{
     stylesheet, ui, AlignItems, Color, FlexDirection, JustifyContent, Length, Overflow,
@@ -77,16 +76,11 @@ fn theme_swap(theme: Theme) {
     commit();
 }
 
-// Default dlmalloc allocator (was: lol_alloc::FreeListAllocator).
-// Swapped out because the bench's repeated alloc/dealloc cycles
-// (10k allocations per row toggle × N iterations) fragmented the
-// freelist and made each subsequent iteration measurably slower —
-// 1k apply went from 9ms in iteration 1 to 67ms in iteration 7,
-// and the slowdown was entirely in pure-Rust per-row work
-// (`batched_repeat_enqueue_loop`), which only does HashMap lookups
-// + Vec pushes + String/Box allocations. dlmalloc is larger code
-// but has stable performance under churn. Keep this measurement
-// branch swapped while we evaluate.
+// Default dlmalloc allocator, not lol_alloc::FreeListAllocator: the
+// bench's repeated alloc/dealloc cycles (10k allocations per row
+// toggle × N iterations) fragment lol_alloc's freelist — 1k apply
+// went from 9ms in iteration 1 to 67ms in iteration 7, all in pure-Rust
+// per-row work. dlmalloc is larger code but stable under churn.
 // #[cfg(target_arch = "wasm32")]
 // #[global_allocator]
 // static ALLOCATOR: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
@@ -259,8 +253,8 @@ stylesheet! {
 // `background` is overridable via `.background(color_or_signal)`,
 // which is what makes the per-row Effect reactive: passing a
 // closure (or signal) here routes through `StyleSource::Reactive`
-// in the walker and gives the row its own per-node Effect that
-// re-fires on any signal the closure reads.
+// and gives the row its own per-node Effect that re-fires on any
+// signal the closure reads.
 stylesheet! {
     pub RStyleRow<Theme> {
         base(_t) {
@@ -329,8 +323,7 @@ thread_local! {
     /// Reactive row count. The framework reads this inside a
     /// `match` in the screen body — flipping it from `set_rows()`
     /// causes the framework to drop the previous row scope and
-    /// build a fresh tree at the new size, exactly the same path
-    /// the perf screen in `examples/hello-world` uses.
+    /// build a fresh tree at the new size.
     ///
     /// Initialized in `start()` once we know what value the JS side
     /// wants (from the URL's `?rows=` param). Default is 1000.
@@ -382,7 +375,7 @@ thread_local! {
     /// the row's actual bg is determined by which of (shared OR
     /// point) was most recently bumped. Simpler implementation:
     /// the row reads BOTH signals and picks point if set, else
-    /// shared. (See `build_reactive_style_row` for the resolution
+    /// shared. (See the mode = 3 arm in `app()` for the resolution
     /// rule.)
     static POINT_COLORS: RefCell<Vec<Signal<u32>>> = const { RefCell::new(Vec::new()) };
     static RSTYLE_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
@@ -393,19 +386,15 @@ thread_local! {
     static SCLASS_COUNT: RefCell<Option<Signal<usize>>> = const { RefCell::new(None) };
 
     /// Rebuild generation: part of the top-level match's SCRUTINEE
-    /// tuple, bumped by every `set_rows` / `setup_*` export. This is
-    /// the cross-core rebuild trigger. The pre-migration bench used
-    /// `MODE.touch()` (notify-without-write) — a retrigger idiom the
-    /// old Switch honored but the new core's `switch` deliberately
-    /// dedupes (it keys the mounted arm on the scrutinee VALUE via
-    /// `PartialEq`, so an equal re-fire keeps the arm — the walker's
-    /// `last_active` guard generalized). A value that actually
-    /// changes rebuilds identically on both cores.
+    /// tuple, bumped by every `set_rows` / `setup_*` export. A
+    /// notify-without-write (`touch()`) would not rebuild: the reactive
+    /// `match` keys the mounted arm on the scrutinee VALUE via
+    /// `PartialEq`, so an equal re-fire keeps the arm.
     static REBUILD_GEN: RefCell<Option<Signal<u64>>> = const { RefCell::new(None) };
 }
 
-/// Bump the rebuild generation (inside the caller's `batched` window
-/// so it coalesces with the suite's own writes).
+/// Bump the rebuild generation (before the caller's `commit()`, so it
+/// coalesces with the suite's own staged writes).
 fn bump_gen() {
     REBUILD_GEN.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
@@ -560,7 +549,7 @@ fn app(initial_rows: usize) -> Element {
     theme_install(&light());
 
     // Reactive row count + mode + hierarchy state. Stored in
-    // thread_locals so the wasm-bindgen exports below can mutate
+    // thread_locals so the `#[wasm_bindgen]` exports below can mutate
     // them from JS.
     let count = signal(initial_rows);
     ROW_COUNT.with(|c| *c.borrow_mut() = Some(count));
@@ -587,15 +576,11 @@ fn app(initial_rows: usize) -> Element {
     let sclass_count = signal(0usize);
     SCLASS_COUNT.with(|c| *c.borrow_mut() = Some(sclass_count));
 
-    // NOTE: no JS-side signal-write notifier is wired here. The old
-    // walker registered `global_counter` / `branch_counter` /
-    // `shared_color` with the web backend's JS reactive layer
-    // (`register_signal_for_js`), so a write fanned out per BINDING in
-    // JS instead of firing one Rust effect per leaf. World signals have
-    // no JS write-notifier channel (see `runtime_vocabulary::
-    // style_attach`'s `signal_class` note), so the same author shapes
-    // fall back to per-binding world effects — which is exactly what
-    // the hierarchy + signal-class suites measure.
+    // No explicit JS registration is needed for these signals: f-string
+    // text slots and `signal_class` bindings each install one
+    // per-signal notifier effect that ships the commit to the web
+    // backend's JS binding registry, which fans out per binding in JS
+    // (see `runtime_vocabulary::style_attach::signal_class`).
 
     ui! {
         view(style = page_style()) {
@@ -855,24 +840,13 @@ pub fn set_theme_by_name(name: &str) {
 /// so the resulting mount cost is measurable. Clamps to a sane
 /// max (100k) so a stray huge value doesn't lock the browser.
 ///
-/// IMPORTANT: writes `mode` unconditionally on every call. The
-/// surrounding tree is structured as `match mode.get() { ... }`
-/// (a reactive switch), with the `mode=0` arm body reading
-/// `count.get()`. The framework's reactive-`match` lowering wraps
-/// arm-body construction in `untrack(..)`, so reads inside the arm
-/// body do NOT subscribe the Switch's Effect — only the
-/// discriminant's reads do. That means a bare `count.set(n)` alone
-/// is invisible to the Switch and the row list never rebuilds.
-///
-/// The fix is to also touch `mode` so the Switch's Effect re-fires.
-/// `Signal::touch` notifies subscribers without writing (the guarded
-/// `set` skips same-value writes, so `mode.set(0)` when mode is
-/// already 0 would be a no-op) — at which point the arm body reads
-/// the latest `count.get()` and produces the new row list.
-///
-/// We could fix this at the framework level (e.g. by including
-/// `count` in the discriminant), but it's much cheaper to just
-/// keep the unconditional write here.
+/// IMPORTANT: bumps the rebuild generation unconditionally. The
+/// surrounding tree is a reactive `match` on `(mode, generation)`, with
+/// the `mode=0` arm body reading `count.get()`. The reactive-`match`
+/// lowering wraps arm-body construction in `untrack(..)`, so reads
+/// inside the arm body do NOT subscribe the switch's Effect — only the
+/// scrutinee's reads do. A bare `count.set(n)` alone is invisible to
+/// the switch and the row list never rebuilds.
 #[wasm_bindgen]
 pub fn set_rows(n: usize) {
     let clamped = n.clamp(1, ROW_MAX);
@@ -884,9 +858,9 @@ pub fn set_rows(n: usize) {
     // Unconditional — this is what actually triggers the rebuild
     // (the row-count read inside the match arm is untracked, so the
     // count write alone is invisible to the Switch). A VALUE bump in
-    // the scrutinee tuple, not `touch()`: the new core's switch
-    // dedupes equal scrutinee values, so notify-without-write would
-    // silently skip the rebuild there (see REBUILD_GEN).
+    // the scrutinee tuple, not `touch()`: the switch dedupes equal
+    // scrutinee values, so notify-without-write would silently skip
+    // the rebuild (see REBUILD_GEN).
     bump_gen();
     commit();
 }
@@ -921,9 +895,6 @@ pub fn setup_hierarchy(seed: u32, nodes: u32, max_depth: u32) {
     });
     TREE_VERSION.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
-            // get+set instead of `update`: the two cores' `update`
-            // closures differ in shape (`&mut T` vs `&T -> T`);
-            // this spelling is core-agnostic.
             let v = sig.get();
             sig.set(v + 1);
         }
@@ -974,8 +945,6 @@ pub fn setup_counters(n: u32) {
     // Fresh signals each setup — old ones drop with the previous
     // scope when the Switch arm rebuilds.
     let sigs: Vec<Signal<u32>> = (0..n).map(|_| make_signal(0u32)).collect();
-    // NOTE: no JS-side notifier per counter signal — see `app()`'s note.
-    // Each row's binding is a world effect.
     COUNTERS.with(|c| *c.borrow_mut() = sigs);
     MODE.with(|c| {
         if let Some(sig) = c.borrow().as_ref() {
@@ -1008,9 +977,9 @@ pub fn bump_counter(i: u32, v: u32) {
     commit();
 }
 
-/// Bump every counter in `[start, end)` to `v` inside a single
-/// reactive `batch` so subscriber fan-out coalesces (each subscriber
-/// runs at most once even if multiple writes touch its deps).
+/// Bump every counter in `[start, end)` to `v`. The writes stage until
+/// the single `commit()`, so subscriber fan-out coalesces (each
+/// subscriber runs at most once even if multiple writes touch its deps).
 #[wasm_bindgen]
 pub fn bump_range(start: u32, end: u32, v: u32) {
     let s = start as usize;
@@ -1134,14 +1103,10 @@ pub fn row_count() -> usize {
 }
 
 /// Diagnostic JSON for the variant's index.html. Phase counters report
-/// when `debug-stats` is on — that is the profiling surface CLAUDE.md §6
-/// describes and the ±5 % gate work used.
-///
-/// The historical arena/backend slot census (`signals_in_use`,
-/// `effects_total`, the backend's per-node HashMap counts) is gone with
-/// the old walker: world slots replaced the reactive arena and the
-/// backend handle is owned by `newcore::start`, so there is no
-/// process-global census to read.
+/// when `debug-stats` is on (the profiling surface CLAUDE.md §6
+/// describes). There is no signal/effect slot census: the backend
+/// handle is owned by `newcore::start`, so there is no process-global
+/// count to read.
 #[wasm_bindgen]
 pub fn bench_stats_json() -> String {
     format!("{{\"phases\":{}}}", phase_counters_json())

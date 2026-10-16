@@ -133,8 +133,8 @@ export const FIXED_DT_SEC = 1 / 60;
 // State layout: [x, y, vx, vy, m] × N — five floats per body. Mass
 // varies per body for visual interest (heavier bodies dominate the
 // pair force). All operations f64-intermediate, f32-stored (same
-// pattern as bounceStep — keeps cross-language determinism in
-// [[project_cross_language_f64_constants]] territory).
+// pattern as bounceStep — keeps the JS and Rust variants bit-identical
+// across languages).
 //
 // Why this shape and not pure bounce: bounce is O(N) per frame, so
 // per-write FFI cost dominates. N-body is O(N²) compute + O(N)

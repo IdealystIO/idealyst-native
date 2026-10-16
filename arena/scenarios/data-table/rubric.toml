@@ -8,7 +8,7 @@ scenario_id = "data-table"
 
 # Capability policy (mirrors todo-app / data-fetch): items test the
 # CAPABILITY, not one specific symbol. The `table` SDK — three
-# `Element::External` primitives (`Table` / `TableRow` / `TableCell`) that
+# scene-registry primitives (`Table` / `TableRow` / `TableCell`) that
 # lower to a real HTML `<table>`/`<tr>`/`<th>`/`<td>` on web — is the
 # capability the scenario is designed around, so it is what `uses-table`
 # rewards. idea-ui re-exports the same `Table`/`TableRow`/`TableCell` tags

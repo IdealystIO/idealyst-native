@@ -4,11 +4,11 @@
 # closure that, on every change, rebuilds a fresh `Vec<Element>` by pushing
 # each row (`children.push(ui! { … })`) in a loop and splatting it as
 # children. That builds the child list OUTSIDE the `ui!` macro, so the
-# reconciliation keys never reach the walker and the list is reconciled
+# reconciliation keys never reach the keyed reconciler and the list is reconciled
 # positionally — every add/remove tears down and recreates all N rows
 # (CLAUDE.md §9.3 forbids exactly this shape). The correct fix is an
 # in-macro keyed reactive loop, `for item in items, key = item.id { … }`,
-# which lowers to `Element::Each` and reconciles by key, touching only the
+# which lowers to `Element::Keyed` and reconciles by key, touching only the
 # row that changed. Items below verify the fix went in WITHOUT changing
 # behavior and WITHOUT a from-scratch rewrite — strictly what the prompt
 # asked for ("improve list rendering, don't change behavior, don't rewrite").

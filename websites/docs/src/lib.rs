@@ -2,7 +2,7 @@
 //!
 //! Single, platform-agnostic crate: [`app`] returns a `Element`
 //! tree that runs unchanged on every backend the framework supports.
-//! The per-platform glue (wasm-bindgen entry for web, etc.) is the
+//! The per-platform glue (the web entry, etc.) is the
 //! responsibility of the `idealyst` CLI, which materializes those
 //! wrappers into `target/idealyst/<platform>/` at build time.
 //!

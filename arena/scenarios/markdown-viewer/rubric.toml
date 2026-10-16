@@ -6,7 +6,7 @@
 #
 # --- Capability policy -------------------------------------------------------
 # The scenario tests the "render a Markdown document" capability. The `markdown`
-# SDK (CommonMark/GFM document primitive, `Element::External`) is the direct fit
+# SDK (CommonMark/GFM document primitive on the scene registry) is the direct fit
 # and renders headings/lists/bold/fenced-code from source in one primitive.
 #
 # The `codeblock` SDK (colored code panel) is OPTIONAL here: `markdown` renders

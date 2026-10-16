@@ -106,12 +106,11 @@ stylesheet! {
             flex_direction: FlexDirection::Column,
             // Fill the rest of the row beside the sidebar; the
             // explicit `height: 100%` ensures the surrounding
-            // scroll_view (in `web_layout`) has a constrained
-            // height for its overflow-y: auto to engage. The old
-            // `max_width: 920` made Content only 920px wide and
-            // left the rest of the viewport blank; if you want
-            // readable line lengths, put a `max_width` on an
-            // inner container (page-level), not the scroll surface.
+            // scroll_view has a constrained height for its
+            // overflow-y: auto to engage. No `max_width` here — on
+            // the scroll surface it leaves the rest of the viewport
+            // blank; put readable line lengths on an inner
+            // (page-level) container.
             flex_grow: 1.0,
             height: Length::pct(100.0),
         }

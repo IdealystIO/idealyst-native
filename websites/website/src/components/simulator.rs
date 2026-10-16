@@ -5,13 +5,10 @@
 //! browser-event translation.
 //!
 //! Skin + device-profile are passed in by the caller (no reactive
-//! observers here \u{2014} the home page swaps the simulator subtree
-//! via a `switch` keyed on `is_android`, so a skin change forces
-//! the underlying `Graphics` surface to unmount + remount, the new
-//! skin gets baked into the fresh on_ready closure, and the wgpu
-//! host rebuilds against the new painter). This keeps the
-//! component itself stateless and the toggle implementation
-//! framework-idiomatic.
+//! observers here \u{2014} a skin change means remounting the component:
+//! the `graphics` surface unmounts + remounts, the new skin gets baked
+//! into the fresh on_ready closure, and the wgpu host rebuilds against
+//! the new painter). This keeps the component itself stateless.
 
 use std::rc::Rc;
 
@@ -26,18 +23,17 @@ use runtime_core::{
 // symbol per concept and the right backend is picked at link time.
 //
 // Why this isn't behind a `cfg(target_arch)` here: per §7 of
-// CLAUDE.md and `[[feedback_cfg_hack_signals_missing_backend_method]]`,
-// platform variance belongs in the backend layer (the host crates),
-// not in author code. `host-wgpu` is that backend abstraction —
+// CLAUDE.md, platform variance belongs in the backend layer (the host
+// crates), not in author code — a cfg hack here would signal a missing
+// backend method. `host-wgpu` is that backend abstraction —
 // `mount` returns `Err(MountError::Unsupported)` on targets without
 // a wgpu host wired (terminal, headless, …) so the consumer can
 // fall back without target gates.
 //
 // Code-reachability cost on web: `host_wgpu` transitively pulls the
-// same `host-web` → `render-wgpu` → `glyphon` / `cosmic-text` / `wgpu`
-// / `naga` graph the previous direct `host_web` import did. wasm-split
-// keeps that behind the same lazy chunk as before because the
-// `mount`/`DeviceProfile` reachability surface is unchanged.
+// `host-web` → `render-wgpu` → `glyphon` / `cosmic-text` / `wgpu` /
+// `naga` graph. wasm-split keeps that behind the simulator's lazy
+// chunk (only `mount`/`DeviceProfile` are reachable from it).
 //
 // The embedded `welcome` app mounts through
 // `host_wgpu::mount_newcore`, i.e. `render_wgpu::newcore::start_in_world`
@@ -50,7 +46,7 @@ use runtime_core::driver::spawn_async;
 /// Simulator should run. Call sites use this instead of constructing
 /// a `host_web::Painter` directly so they don't need their own
 /// `#[cfg(target_arch = "wasm32")]` branch — the painter wiring lives
-/// inside `simulator()`, which is the one place that legitimately
+/// inside `painter_for`, which is the one place that legitimately
 /// cares about the underlying wgpu skin crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimulatorSkin {
@@ -186,8 +182,8 @@ fn chassis_sheet() -> Rc<StyleSheet> {
 /// screen) so the device chrome and the screen contents share one
 /// rounded boundary.
 ///
-/// Promoted from the snake_case `wrap_in_chassis` helper because it
-/// takes children and is called from multiple sites (CLAUDE.md §9.5).
+/// A `#[component]` (not a snake_case helper) because it takes
+/// children and is called from multiple sites (CLAUDE.md §9.5).
 /// Container shape: `children` flows into the inner `view`, the
 /// chassis stylesheet decorates the wrapper.
 #[derive(Default)]
@@ -292,36 +288,18 @@ pub fn Simulator(props: SimulatorProps) -> Element {
     let slot_resize = slot.clone();
     let slot_lost = slot;
 
-    // KNOWN ISSUE — auto-pause via `use_focus()` → `host.pause()`
-    // disabled until the wgpu Host's renderer state-reset bug is
-    // understood. Symptom: after `Host::unmount()` + `mount()`,
-    // Taffy layout compute succeeds (root=390×844, children=6,
-    // child0=390×844 all confirmed via diagnostic), but the
-    // `Renderer::walk` produces no visible draws — the surface
-    // stays at the white clear color forever. Tried: clearing
-    // `presence_tweens`, `animator`, `sticky_registry`,
-    // `graphics_cache`, `image_cache`, text-shaper `buffers`,
-    // `session::REGISTRY`, calling `surface.configure()` on resume.
-    // None of those individually fix it.
+    // The wgpu Host is not paused when its screen loses focus: it stays
+    // mounted across navigation with its renderer state, so the canvas
+    // content is intact on return. Idle cost is handled cooperatively:
     //
-    // The cooperative approach already in place delivers the
-    // observable pause/resume behavior the auto-pause was meant
-    // to deliver, without the renderer bug:
+    //   - `host-ios-mobile`'s `draw_frame` skips Metal encode + present
+    //     while the MetalView is hidden (`setHidden:true` on a
+    //     navigator-persistent screen).
     //
-    //   - `host-ios-mobile::draw_frame` skips Metal encode +
-    //     present via `is_view_visible()` while the MetalView is
-    //     hidden (`setHidden:true` on a navigator-persistent
-    //     screen). GPU work pauses.
-    //
-    //   - The welcome app's `raf_loop_scoped` body reads
-    //     `runtime_core::is_frame_active()` and skips advancement
-    //     when painting is paused — and tracks paused duration so
-    //     positions resume exactly where they left off.
-    //
-    // The wgpu Host stays mounted across navigation; its renderer
-    // state is preserved; the canvas content is intact on return.
-    // `IosHostHandle::pause` / `resume` stays exposed for opt-in
-    // once the renderer-no-op bug is understood.
+    //   - The welcome app's `raf_loop_scoped` body checks
+    //     `runtime_core::is_frame_active()` and skips advancement while
+    //     painting is paused, tracking paused time so positions resume
+    //     where they left off.
 
     let graphics = runtime_core::primitives::graphics::graphics(move |event: OnReadyEvent| {
         let slot = slot_ready.clone();
@@ -340,7 +318,7 @@ pub fn Simulator(props: SimulatorProps) -> Element {
             return;
         };
         // `spawn_async` is the runtime-installed executor. On wasm it
-        // rides wasm-bindgen-futures; on iOS the `async-driver`
+        // rides web-glue's `spawn_local`; on iOS the `async-driver`
         // feature on `backend-ios-mobile` plugs into libdispatch.
         // Either way the `request_adapter` / `request_device`
         // futures resolve on the main thread without blocking.

@@ -26,15 +26,12 @@ use crate::{BoardScreen, CanvasDoc, CanvasStore, PreviewScreen, SettingsScreen, 
 /// ONE registry-generic seam for every target. Both SDKs type-dispatch
 /// internally — `video::register` downcasts to the web / macOS / iOS / Android
 /// registry and installs the real `<video>`/AVPlayer/`VideoView`, and
-/// `canvas_native::register` downcasts to the web registry for the real
-/// `<canvas>` and installs the External placeholder elsewhere (the GPU/vello
-/// renderer has no scene handler, so drawing on native shows the placeholder
-/// until one exists).
+/// `canvas_native::register` downcasts to the platform's concrete registry
+/// for its native painter (a placeholder for any other host).
 ///
-/// This used to be a `cfg`-split pair whose web half took a concrete
-/// `Registry<WebBackend>`. That signature cannot cross
-/// `idealyst::SceneExtensions::register<H: SceneHost>` — the seam `entry!`
-/// boots every platform through — so the app was unbuildable on web.
+/// Keep it registry-generic: a web-concrete `Registry<WebBackend>` signature
+/// cannot cross `idealyst::SceneExtensions::register<H: SceneHost>` — the seam
+/// `entry!` boots every platform through.
 pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps
@@ -77,7 +74,7 @@ pub(crate) type MicHandle = Rc<RefCell<Option<media_stream::AudioStream>>>;
 /// Self-capture is wired on macOS (vello, zero-copy IOSurface), web
 /// (`canvas.captureStream()`), AND Android (canvas-native reads the composited
 /// bitmap back into `writer` while recording → MediaCodec). iOS canvas-native
-/// does not yet read back (a follow-up). We do NOT branch per-platform here; an
+/// does not read back. We do NOT branch per-platform here; an
 /// unsupported backend simply records an empty stream.
 ///
 /// `MediaStream` is `!Send`/`!Copy` but `Clone`; `FrameWriter` is `Clone`. Like
@@ -105,9 +102,8 @@ impl Default for CanvasCapture {
 
 /// All app-level state, created once in [`app`] and threaded into the board
 /// screen builder. Because these live in the root scope (not a per-screen one),
-/// they survive navigation — the board's `unmount_on_blur(false)` keeps the
-/// screen mounted, and even on the macOS/web child-swap the signals outlive the
-/// detach. `Copy` (every field is a `Signal`/`Ref`), so the board builder can
+/// they survive navigation — including web, where a push disposes the covered
+/// board screen and pop re-mounts it. `Copy` (every field is a `Signal`/`Ref`), so the board builder can
 /// re-capture them on each mount.
 #[derive(Clone, Copy)]
 pub(crate) struct BoardState {

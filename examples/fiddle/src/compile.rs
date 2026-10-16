@@ -7,7 +7,7 @@
 //! you'd swap this for a per-user worker pool with isolated target
 //! dirs.
 //!
-//! Project model (v2): the request carries a `files` map of
+//! Project model: the request carries a `files` map of
 //! `<path-under-src/>` → contents. Each path is written into
 //! `template/src/snippet/<path>` — the snippet sub-module the
 //! template wraps. The user's entry file is conventionally

@@ -18,14 +18,12 @@
 //! Notes:
 //!
 //! - Sizes the `<canvas>` to the device profile's aspect via a
-//!   wrapper `View`; the web `Graphics` primitive forces
-//!   `width: 100%; height: 100%` inline on the canvas itself, so
-//!   the wrapper carries the fixed dimensions and the canvas fills
-//!   it at the right ratio (otherwise a wide content column would
-//!   stretch every glyph horizontally — see
-//!   `crates/backend/web/src/primitives/graphics.rs:153` for the
-//!   inline `set_attribute("style", …)` that wins over class
-//!   styles).
+//!   wrapper `view`; the web `graphics` primitive fills its parent
+//!   by default (`css::GRAPHICS_FILL_RESET` in
+//!   `crates/backend/web/src/primitives/graphics.rs`), so the wrapper
+//!   carries the fixed dimensions and the canvas fills it at the
+//!   right ratio (otherwise a wide content column would stretch
+//!   every glyph horizontally).
 //! - Default skin is `IosSim`; pass a custom one via `skin`.
 //! - Default device profile matches `variant_phone` (iPhone-14
 //!   portrait, 390 × 844 logical).
@@ -225,14 +223,11 @@ pub fn Simulator(props: SimulatorProps) -> Element {
     });
 
     // Pin the canvas to the device's aspect ratio by wrapping the
-    // Graphics primitive in a sized `View`. The web Graphics
-    // primitive forces `style="width: 100%; height: 100%"` *inline*
-    // on the `<canvas>` (see `backend/web/src/primitives/graphics.rs`,
-    // `set_attribute("style", …)`), which beats any class style we'd
-    // apply to the canvas directly. The wrapper View carries the
-    // fixed dimensions; the canvas's `100%` then fills the wrapper
-    // at the right aspect, so the renderer's logical→surface mapping
-    // stays uniform and glyphs don't stretch.
+    // graphics primitive in a sized `view`. The web canvas fills its
+    // parent by default (`css::GRAPHICS_FILL_RESET`), so the wrapper
+    // carries the fixed dimensions and the canvas fills it at the
+    // right aspect — the renderer's logical→surface mapping stays
+    // uniform and glyphs don't stretch.
     let preview_height_px = PREVIEW_WIDTH_PX * logical.1 / logical.0;
     let wrapper_sheet = Rc::new(StyleSheet::r#static(StyleRules {
         width: Some(Length::Px(PREVIEW_WIDTH_PX).into()),

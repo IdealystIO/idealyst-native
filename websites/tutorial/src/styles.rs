@@ -56,7 +56,7 @@ stylesheet! {
             flex_direction: FlexDirection::Column,
             width: Length::pct(100.0),
             // Fill the navigator body so the page scrolls inside its own
-            // region — the drawer no longer owns scroll, the screen does.
+            // region — the navigator outlet doesn't scroll, the screen does.
             flex_grow: 1.0,
             flex_shrink: 1.0,
             flex_basis: 0.0,

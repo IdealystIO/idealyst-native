@@ -11,9 +11,7 @@
 //!     write.
 //!   - A single `raf_loop` advances the bounce sim and pushes new
 //!     (x, y) values into the AVs. No per-AV animator is installed —
-//!     we drive imperatively, matching the welcome-coordinator pattern
-//!     (see [[project_third_party_extension]] for the broader
-//!     pattern of framework-as-write-surface).
+//!     we drive imperatively, using the framework as a write surface.
 //!
 //! See [benchmark/anim/spec.md](../../anim/spec.md) for the per-hook
 //! contract this crate honors.
@@ -152,7 +150,7 @@ fn bounce_step(state: &mut [f32], dt: f64) {
 
 // =============================================================================
 // Minimal Theme — required by install_theme (the framework panics on
-// render without one; see [[project_install_theme_required]]).
+// render without one).
 // =============================================================================
 
 #[derive(Clone)]
@@ -234,8 +232,8 @@ const SPRING_TARGET_MIN: f64 = 50.0;
 const SPRING_TARGET_MAX: f64 = (VIEWPORT_H as f64) - 50.0;
 
 // N-body constants — match harness.js. Same f64-intermediate pattern
-// as bounce (see [[project_cross_language_f64_constants]]) so the
-// cross-language determinism check passes.
+// as bounce (see `FIXED_DT`: an f32 constant promoted to f64 has different
+// low bits than JS's f64) so the cross-language determinism check passes.
 const NBODY_BALL_RADIUS: f32 = 6.0;
 const NBODY_G: f64 = 800.0;
 const NBODY_SOFTENING_SQ: f64 = 16.0;
@@ -439,12 +437,11 @@ fn app(count_sig: Signal<u64>) -> Element {
 pub fn start() {
     console_error_panic_hook::set_once();
     // `newcore::start` performs the boot installs itself — the scheduler
-    // (rAF + microtask dispatch), the time source (non-zero
-    // `now_micros`, per [[project_web_bootstrap_scheduler]]) and the
-    // global weak self-handle that `ViewHandle::set_animated_f32` routes
-    // through (without it every `AnimatedValue::bind` write silently
-    // no-ops — [[project_web_install_global_self_for_animation]]). Only
-    // the drop-deferral install is boot-path-independent.
+    // (rAF + microtask dispatch), the time source (without it
+    // `now_micros` returns 0 on wasm32) and the global weak self-handle
+    // that `ViewHandle::set_animated_f32` routes through (without it
+    // every `AnimatedValue::bind` write silently no-ops). Only the
+    // drop-deferral install is boot-path-independent.
     backend_web::install_drop_deferral();
 
     // The rebuild counter is minted INSIDE the build closure: signal
@@ -516,10 +513,8 @@ pub fn setup_anim(test: &str, n: u32, seed: u32) {
         }
     };
 
-    // Fresh refs + AVs. Old AVs / subscriptions from previous setups
-    // leak (`mem::forget` inside `.bind()`); see
-    // crates/framework/core/src/animation/binding.rs. Tolerable for
-    // benchmark setup churn.
+    // Fresh refs + AVs per setup. The binding's subscription lifetime
+    // is `AnimatedValue::bind`'s (`runtime_vocabulary::glue`).
     let refs: Vec<Ref<ViewHandle>> = (0..n).map(|_| node_ref!(ViewHandle)).collect();
     let xs: Vec<AnimatedValue<f32>> =
         (0..n).map(|i| AnimatedValue::new(initial_xs[i])).collect();
@@ -545,7 +540,7 @@ pub fn setup_anim(test: &str, n: u32, seed: u32) {
         store.rekick_state = seed;
         store.count_sig.expect("start() must run before setup_anim()")
     });
-    // Writes STAGE on runtime v2 — `setup_anim` is a JS entry point,
+    // Writes STAGE — `setup_anim` is a JS entry point,
     // outside the framework's wrapped dispatch sites, so nothing would
     // commit it before the harness calls `step_to`. Flush explicitly so
     // the reactive `match` in `app()` rebuilds the ball set NOW.

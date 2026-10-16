@@ -57,8 +57,7 @@ host-web = { workspace = true }
 # Target-agnostic wgpu host umbrella. Internally cfg-routes to
 # `host-web` on wasm, `host-ios-mobile` on iOS, etc. The Simulator
 # component calls `host_wgpu::mount_newcore(...)` cross-target without
-# any per-platform `cfg` in author code — see §7 of CLAUDE.md +
-# `[[feedback_cfg_hack_signals_missing_backend_method]]`.
+# any per-platform `cfg` in author code — see §7 of CLAUDE.md.
 host-wgpu = { workspace = true }
 render-api = { workspace = true }
 # The two simulator skins are pure `Painter` impls with no macro
@@ -148,8 +147,8 @@ web-sys = { version = "0.3", features = [
     # Needed by `responsive.rs`: imperative backdrop / hamburger
     # buttons + the reactive class-mirror effect.
     "DomTokenList", "EventTarget", "Event", "HtmlButtonElement", "Node",
-    # `Document::head()` — used to arrive through backend-web's own web-sys
-    # feature list (removed in own-web-bindings phase 2b).
+    # `Document::head()` — backend-web uses web-glue, so nothing else in
+    # the graph enables this web-sys feature.
     "HtmlHeadElement",
 ] }
 
@@ -200,9 +199,8 @@ optional = true
 
 # The SSR demo examples need the optional `backend-ssr` dep (`ssr`
 # feature). With `required-features`, a plain `cargo test -p website`
-# SKIPS them instead of failing on the unresolved optional dep — they
-# broke silently for months because an older comment wrongly claimed
-# examples compile "with all regular features active". Build them with:
+# SKIPS them instead of failing on the unresolved optional dep (examples
+# do NOT compile with the optional features active). Build them with:
 #   cargo run -p website --features ssr --example serve
 #   cargo run -p website --features ssr --example ssr
 [[example]]

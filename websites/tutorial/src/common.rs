@@ -67,7 +67,7 @@ const DARK_PALETTE: Palette = Palette {
 /// Reads via [`idea_ui::active_theme`] (a tracked signal read) rather than
 /// `Tokenized::resolve()`: the Tokenized registry read neither updates on
 /// `set_idea_theme` nor subscribes the `switch` scrutinee below (Tokenized
-/// freshness is a documented runtime-v2 deferral), which would leave dark
+/// registry reads are not world-tracked), which would leave dark
 /// code panels wearing the light palette's ink.
 fn theme_is_dark() -> bool {
     if idea_ui::theme_installed() {

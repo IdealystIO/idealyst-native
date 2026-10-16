@@ -79,7 +79,7 @@ stylesheet! {
             // `overflow: hidden` zeroes the automatic minimum, but on
             // native `StyleRules.overflow` is backend clipping only —
             // it is NOT forwarded into Taffy's layout style (see the
-            // `clip_rect_for` docs in `runtime-layout`).
+            // `scroll_content_extent` docs in `runtime-layout`).
             // `padding_vertical: 0` matters for the same reason on a
             // live narrow→wide resize: `narrow` sets it, and a variant
             // switch only overrides fields the new resolution specifies.
@@ -352,9 +352,9 @@ stylesheet! {
     pub ScreenScroll<IdeaThemeRef> {
         base(t) {
             // The website's OWN scroll surface (and the wrapper that
-            // fills the navigator body around it). The drawer
-            // navigator no longer owns scroll — its body is a plain
-            // non-scrolling flex child — so this `scroll_view` must
+            // fills the navigator body around it). The navigator
+            // outlet is a plain non-scrolling flex child, so this
+            // `scroll_view` must
             // grow to claim the leftover height under the (conditional)
             // mobile header and scroll its content internally.
             // `flex_grow/shrink/basis` fill the body; `width: 100%`
@@ -1155,9 +1155,9 @@ stylesheet! {
 }
 
 /// Vertical stack that hosts the iOS/Android tab strip and the
-/// embedded Simulator preview. Stays narrow so its parent
-/// `SimulatorRow` can sit it alongside an explanatory copy column
-/// instead of stacking the preview above/below the text. Width is
+/// embedded Simulator preview. Stays narrow so it can sit alongside
+/// an explanatory copy column instead of stacking the preview
+/// above/below the text. Width is
 /// `auto` (the canvas wrapper's own fixed 300 px provides the
 /// inner dimension).
 stylesheet! {

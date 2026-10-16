@@ -414,23 +414,6 @@ fn nav_link(
 }
 
 // =============================================================================
-// Web layout — places the drawer's pre-built sidebar beside the
-// outlet. Native backends draw their own drawer chrome and ignore
-// this slot.
-//
-// Compiled unconditionally so the runtime-server recording backend (which runs
-// natively on the dev host) can invoke it too: its `create_drawer_
-// navigator` executes the closure, captures every node it builds as
-// wire commands, and ships the layout to the browser via
-// `Command::AttachNavigatorLayout`.
-// =============================================================================
-
-// web_layout removed — `.layout(...)` is no longer part of the
-// drawer-navigator API. On web, the drawer SDK's chrome arranges
-// the sidebar + screen outlet itself; the author just passes the
-// sidebar Element via `.sidebar_with(builder)`.
-
-// =============================================================================
 // Per-page surface helpers — exposed as `#[component]`s so pages
 // invoke them through the `ui!` macro (`PageHeader(...)` etc.)
 // rather than as plain function calls.

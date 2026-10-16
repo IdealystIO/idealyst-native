@@ -1220,15 +1220,10 @@ fn start_variant(st: &RunnerState, id: &'static str) {
     set_status(st, id, VariantStatus::Running);
     // Trigger navigation by writing the iframe url signal —
     // the WebView's reactive `url` source closure reads this
-    // signal so the framework re-fires `update_web_view_url`.
+    // signal, so the webview SDK's url effect re-fires.
     st.iframe_url.set(url);
-    // No explicit timeout here. The HTML runner had one
-    // (scaling with iterations × rowsB). For the framework
-    // runner, a wedged variant just blocks the queue — visible
-    // in the UI as "running · X" not advancing. Adding a
-    // scheduler-based timeout is a small follow-up; the
-    // primitive plumbing (scheduling::scheduler().after_ms) is
-    // already in place.
+    // No explicit timeout: a wedged variant just blocks the queue —
+    // visible in the UI as "running · X" not advancing.
 }
 
 fn finalize_run(st: &RunnerState) {

@@ -3,11 +3,10 @@
 //!
 //! Two things this pins, both of which have been broken before:
 //!
-//! 1. **A navigator app can be hosted on the GPU backend at all.** There
-//!    used to be no wgpu navigator handler, so `create_navigator` hit the
-//!    "External/Navigator not registered" panic; and the only headless
-//!    skin reported an empty platform identity (mobile branch, no desktop
-//!    chrome). The navigator is a vocabulary built-in now
+//! 1. **A navigator app can be hosted on the GPU backend at all** — the
+//!    bug was a missing wgpu navigator handler (a "not registered" panic)
+//!    plus a headless skin with an empty platform identity (mobile
+//!    branch, no desktop chrome). The navigator is a vocabulary built-in
 //!    (`register_builtins`), and `NativeSkin(MacOs)` +
 //!    `Screenshotter::with_color_scheme_and_skin` supply the desktop
 //!    identity.
@@ -18,8 +17,7 @@
 //! It drives the same offscreen path `crates/dev/newcore-gpu-smoke`'s
 //! `NEWCORE_SMOKE_HEADLESS` mode uses: `render_wgpu::newcore::start` on
 //! the headless `Screenshotter`'s backend (real Metal/Vulkan device, same
-//! shaders as the window, PNG/RGBA readback). `Screenshotter::mount` is
-//! the old walker's entry and is gone.
+//! shaders as the window, PNG/RGBA readback).
 //!
 //! Captures to the OS temp dir under `IDEALYST_DUMP_PNG=1`.
 

@@ -1,6 +1,6 @@
 //! Runner for the `tests/` apps. Shells out to the installed `idealyst`
 //! CLI to build each test app at `--web --release --data-prune` (data
-//! pruning is off by default now — it corrupts main.wasm on apps with
+//! pruning is off by default — it corrupts main.wasm on apps with
 //! indirect main→data reachability — so this suite opts in explicitly to
 //! exercise it on pure-data fixtures), asserts the expected dist artifacts
 //! exist, and optionally (`--browser`) drives a headless Chrome to
@@ -69,13 +69,6 @@
 //! module, wasm-split places the chunk-only symbol outside `main.wasm`,
 //! and `--data-prune` evicts the now-unreachable static from main's data
 //! segments. A regression in any one of them collapses the delta.
-//!
-//! This is the axis the fixtures measured before runtime v2 as well (on
-//! the old `Element::External` + `defer_external_registration` seam,
-//! which recorded 1294 KiB → 781 KiB). Runtime v2 deleted that seam and
-//! the pair briefly degraded to measuring plain call-site reachability;
-//! `runtime_scene::Registry::defer` / `register_deferred` restored the
-//! capability, and this gate measures it again.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -332,11 +325,11 @@ fn verify_artifacts(app_dir: &Path, wasm_stem: &str) -> Result<(), String> {
 /// Panic `Location`s (`file!()` behind every `unwrap`/`expect`/bounds check)
 /// live in the wasm's `.rodata` — they are NOT debug info, so `wasm-opt
 /// --strip-debug` leaves them intact. The generated wrapper spells framework
-/// deps as absolute paths, which used to promote every framework `file!()` to
-/// an absolute build-machine path; a deployed bundle then shipped the
-/// builder's home directory, username, toolchain version, and dependency
-/// inventory to every client. `cargo_build_wasm` now passes
-/// `--remap-path-prefix` on release builds (`build_ios::remap_path_flags`).
+/// deps as absolute paths, so without `--remap-path-prefix` (which
+/// `cargo_build_wasm` passes on release builds, `build_ios::remap_path_flags`)
+/// every framework `file!()` is an absolute build-machine path and a deployed
+/// bundle ships the builder's home directory, username, toolchain version,
+/// and dependency inventory to every client.
 ///
 /// Checked on the wasm only: the wasm-bindgen JS shim, the `__wasm_split`
 /// loader, and `index.html` were all verified clean — the disclosure is

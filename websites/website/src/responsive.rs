@@ -1,19 +1,9 @@
-//! Responsive chrome — drawer-sidebar overlay, click-to-close
-//! backdrop, hamburger button.
-//!
-//! All three live OUTSIDE the framework's render tree:
-//!
-//! - The CSS `<style>` block injects rules keyed on the navigator
-//!   helpers' stable classes (`.ui-nav-drawer-sidebar`,
-//!   `.ui-nav-drawer-root`, `.ui-nav-drawer-body`) plus our own
-//!   `.web-site-backdrop` / `.web-site-hamburger` classes.
-//! - The backdrop and hamburger are plain `<div>` / `<button>`
-//!   elements appended to `<body>` once on init. The framework owns
-//!   `#app` and below; these float above it.
-//! - A reactive effect mirrors the SDK's `is_open` signal onto the
-//!   `.drawer-open` class on `.ui-nav-drawer-root` (drives the CSS
-//!   transform) and `.is-on` on the backdrop (dims + catches
-//!   clicks).
+//! Responsive chrome helpers — the sidebar-collapse breakpoint
+//! ([`SIDEBAR_COLLAPSE_PX`]), the `size` variant pickers the site's
+//! stylesheets key on, and a small injected `<style>` block (wasm only)
+//! for the narrow-screen rules stylesheets can't express. The sidebar
+//! pin/overlay collapse itself is the AppShell's static breakpoint
+//! overlay.
 //!
 //! Author-side responsive work — TOC visibility, content padding,
 //! Hero column layout — uses [`idea_ui::current_breakpoint`]
@@ -21,7 +11,7 @@
 //! sidebar/overlay chrome; the rest is reactive style in
 //! [`crate::shell`] / [`crate::styles`].
 //!
-//! Everything except `set_open_drawer` is a no-op outside `wasm32`.
+//! [`install_responsive_css`] is a no-op outside `wasm32`.
 
 use std::rc::Rc;
 
@@ -138,22 +128,12 @@ pub fn collapse_responsive_style(
     }
 }
 
-// Open-drawer dispatcher + active-route mirror used to live here as
-// thread-locals while the website built its chrome inside per-screen
-// `layout()` calls and had no direct access to the navigator's slot
-// signals. After the slot refactor, the navigator hands `SlotProps`
-// (with `open_drawer` / `active_route` / `is_open` directly) to the
-// `top_with` / `leading_with` / etc. closures, so the thread-locals
-// became dead intermediaries and were removed.
-
 // ---------------------------------------------------------------------------
-// CSS injection — keyed on stable nav-helper classes + our own DOM
+// CSS injection
 // ---------------------------------------------------------------------------
 
 /// Inject the responsive `<style>` block once. Subsequent calls
-/// no-op. Targets `.ui-nav-drawer-sidebar` / `.ui-nav-drawer-root` /
-/// `.ui-nav-drawer-body` (owned by `web-navigator-helpers`) plus
-/// the two classes we attach ourselves below.
+/// no-op.
 pub fn install_responsive_css() {
     #[cfg(target_arch = "wasm32")]
     {
@@ -190,14 +170,13 @@ fn build_css() -> String {
 
 /// Rules that live *inside* the sidebar-collapse media query.
 ///
-/// The sidebar pin/modal collapse itself now lives in the navigator's
+/// The sidebar pin/modal collapse itself lives in the navigator's
 /// AppShell's static breakpoint overlays (pinned via the `Lg`
-/// breakpoint, which `app()` aligns
-/// to [`SIDEBAR_COLLAPSE_PX`]). That sheet is emitted by BOTH the live web
-/// backend and SSR, so the collapse is correct on the static first paint —
-/// the whole point of the migration. We no longer duplicate those rules
-/// here (a duplicate, wasm-only `!important` block would diverge from the
-/// SSR sheet and flash on hydration).
+/// breakpoint, which `app()` aligns to [`SIDEBAR_COLLAPSE_PX`]). That
+/// sheet is emitted by BOTH the live web backend and SSR, so the collapse
+/// is correct on the static first paint. Don't duplicate those rules here:
+/// a wasm-only `!important` block would diverge from the SSR sheet and
+/// flash on hydration.
 ///
 /// What remains is purely a content concern: wrap long code lines on
 /// narrow screens. Without this, `<pre>`'s default `white-space: pre`
@@ -209,11 +188,6 @@ fn build_css() -> String {
 const COLLAPSE_RULES: &str = "\
   pre{white-space:pre-wrap!important;word-break:break-word;}";
 
-// ---------------------------------------------------------------------------
-// DOM elements (backdrop) and reactive class mirror
-// ---------------------------------------------------------------------------
-
-
 
 #[cfg(test)]
 mod tests {
@@ -221,7 +195,7 @@ mod tests {
 
     /// Regression: the 768–899 dp "navigation dead zone".
     ///
-    /// The mobile header (hamburger) used to key its visible/hidden
+    /// The bug: the mobile header (hamburger) keyed its visible/hidden
     /// `size` variant on the shared Sm/Md content breakpoint (768 dp),
     /// while the sidebar collapses into the drawer overlay at
     /// `SIDEBAR_COLLAPSE_PX` (900). Across 768–899 dp the sidebar was
@@ -242,7 +216,7 @@ mod tests {
             );
         }
 
-        // Explicit anchor inside the old dead zone: the sidebar is
+        // Explicit anchor inside the 768–899 dp band: the sidebar is
         // overlaid here, so the hamburger MUST be present.
         let dead_zone_width = 800.0;
         assert!(sidebar_collapsed_at(dead_zone_width));

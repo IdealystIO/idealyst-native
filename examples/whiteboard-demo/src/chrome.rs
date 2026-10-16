@@ -1289,7 +1289,7 @@ pub fn RecordButton(props: &RecordButtonProps) -> Element {
 
     // Inner glyph: a red FILLED lucide circle (record) ↔ rounded square (stop),
     // swapped reactively. `filled: true` makes the outline glyph a solid shape so
-    // it reads as bold as the old hand-drawn core. The box scales (bigger circle
+    // it reads as a bold solid mark. The box scales (bigger circle
     // when idle, smaller square when recording); the icon fills the box.
     let rec_glyph = IconData { filled: true, ..CIRCLE };
     let stop_glyph = IconData { filled: true, ..SQUARE };
