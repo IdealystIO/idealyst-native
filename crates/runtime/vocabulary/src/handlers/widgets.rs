@@ -26,33 +26,67 @@ where
 {
     let backend = cx.backend().clone();
     let initial = initial_of(&prim.value);
-    #[cfg(feature = "robot")]
-    let robot_set_toggle = prim.on_change.clone();
     let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
+    // What the switch shows, for the robot's `checked`: every change the
+    // native widget reports, and every controlled write-back below.
+    #[cfg(feature = "robot")]
+    let robot_checked = Rc::new(Cell::new(initial));
+    #[cfg(feature = "robot")]
+    let on_change = observe(&robot_checked, on_change);
     // Scope-guard every author callback before the backend stores it —
     // see `callback_guard` for the abort this prevents.
     let alive = crate::callback_guard::ScopeAlive::current();
+    let native_on_change = alive.wrap1(on_change);
+    #[cfg(feature = "robot")]
+    let robot_native_on_change = native_on_change.clone();
     let node = backend
         .borrow_mut()
-        .create_toggle(initial, alive.wrap1(on_change), &prim.a11y);
+        .create_toggle(initial, native_on_change, &prim.a11y);
+    // Robot `set_toggle`: a flip as a user makes it — the native switch
+    // moves, then its own change callback (disabled gate, scope guard)
+    // reports it. The robot refuses a disabled toggle before this runs.
     #[cfg(feature = "robot")]
-    let _robot = crate::robot::register_mount(
-        &backend,
-        &node,
-        crate::robot::ElementKind::Toggle,
-        prim.test_id,
-        None,
-        None,
-        crate::robot::MountActions {
-            set_toggle: Some(robot_set_toggle),
-            ..Default::default()
-        },
-    );
+    let _robot = {
+        let set_toggle: Rc<dyn Fn(bool)> = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move |v| {
+                b.borrow_mut().update_toggle_value(&n, v);
+                robot_native_on_change(v);
+            })
+        };
+        let state = {
+            let checked = robot_checked.clone();
+            let gate = disabled_gate.clone();
+            Rc::new(move || crate::robot::ElementState {
+                checked: Some(checked.get()),
+                disabled: Some(gate_is_up(&gate)),
+                ..Default::default()
+            }) as Rc<dyn Fn() -> crate::robot::ElementState>
+        };
+        crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::Toggle,
+            prim.test_id,
+            None,
+            None,
+            crate::robot::MountActions {
+                set_toggle: Some(set_toggle),
+                state: Some(state),
+                ..Default::default()
+            },
+        )
+    };
     let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     {
         let b = backend.clone();
         let n = node.clone();
+        #[cfg(feature = "robot")]
+        let checked = robot_checked.clone();
         bind_value(prim.value, move |&v| {
+            #[cfg(feature = "robot")]
+            checked.set(v);
             b.borrow_mut().update_toggle_value(&n, v);
         });
     }
@@ -75,22 +109,29 @@ where
 {
     let backend = cx.backend().clone();
     let initial = initial_of(&prim.value);
-    // Robot `set_slider` gets the RAW author callback (pre snap-wrap),
-    // mirroring the old `robot_extract_meta`, which read the element's
-    // `on_change` before the walker wrapped it.
-    #[cfg(feature = "robot")]
-    let robot_set_slider = prim.on_change.clone();
-    let on_change_snapped: Rc<dyn Fn(f32)> = if let Some(step) = prim.step {
+    let on_change_snapped: Rc<dyn Fn(f32)> = if prim.step.is_some() {
         let user = prim.on_change.clone();
-        let min = prim.min;
-        Rc::new(move |v| {
-            let snapped = min + ((v - min) / step).round() * step;
-            user(snapped);
-        })
+        let (min, step) = (prim.min, prim.step);
+        Rc::new(move |v| user(snap(v, min, step)))
     } else {
         prim.on_change.clone()
     };
     let (on_change_snapped, disabled_gate) = gate_change(&prim.disabled, on_change_snapped);
+    // The value the slider holds, for the robot's `value`: each change the
+    // widget reports, snapped to `step` as the author receives it, and
+    // every controlled write-back below.
+    #[cfg(feature = "robot")]
+    let robot_value = Rc::new(Cell::new(initial));
+    #[cfg(feature = "robot")]
+    let on_change_snapped = {
+        let value = robot_value.clone();
+        let (min, step) = (prim.min, prim.step);
+        let inner = on_change_snapped;
+        Rc::new(move |v: f32| {
+            value.set(snap(v, min, step));
+            inner(v);
+        }) as Rc<dyn Fn(f32)>
+    };
     let alive = crate::callback_guard::ScopeAlive::current();
     let native_on_change = alive.wrap1(on_change_snapped);
     #[cfg(feature = "robot")]
@@ -103,53 +144,74 @@ where
         native_on_change,
         &prim.a11y,
     );
-    // Robot `drag`: a pointer along the track, as a finger dragging the
-    // thumb. It goes through the EXACT callback the native widget was
-    // given (step snap + disabled gate + scope guard), so a dragged
-    // slider produces the values a real drag would; `set_slider` stays
-    // the raw-callback verb. The native thumb moves too
-    // (`update_slider_value`), as it does under a finger, even for an
-    // uncontrolled slider. A disabled slider refuses (`false`) — the
-    // native control is inert, so neither the thumb nor `on_change` moves.
+    // Robot `set_slider` and `drag` move the thumb as a finger would: the
+    // value is clamped to the track and snapped to `step`, the native
+    // thumb moves (`update_slider_value`, even for an uncontrolled
+    // slider), then the EXACT callback the native widget was given (step
+    // snap, disabled gate, scope guard) reports it — so a robot-set
+    // slider produces the values a real drag would. A disabled slider
+    // refuses (`false`): the native control is inert, so neither the thumb
+    // nor `on_change` moves.
     #[cfg(feature = "robot")]
-    let robot_drag: Rc<dyn Fn(f32) -> bool> = {
-        let b = backend.clone();
-        let n = node.clone();
-        let gate = disabled_gate.clone();
-        let (min, max, step) = (prim.min, prim.max, prim.step);
-        Rc::new(move |fraction: f32| {
-            if gate.as_ref().is_some_and(|g| g.get()) {
-                return false;
-            }
-            let raw = min + fraction.clamp(0.0, 1.0) * (max - min);
-            let value = match step {
-                Some(step) => min + ((raw - min) / step).round() * step,
-                None => raw,
-            };
-            b.borrow_mut().update_slider_value(&n, value);
-            robot_native_on_change(value);
-            true
-        })
+    let _robot = {
+        let apply: Rc<dyn Fn(f32) -> bool> = {
+            let b = backend.clone();
+            let n = node.clone();
+            let gate = disabled_gate.clone();
+            let (min, max, step) = (prim.min, prim.max, prim.step);
+            Rc::new(move |raw: f32| {
+                if gate_is_up(&gate) {
+                    return false;
+                }
+                let value = snap(raw.clamp(min.min(max), max.max(min)), min, step);
+                b.borrow_mut().update_slider_value(&n, value);
+                robot_native_on_change(value);
+                true
+            })
+        };
+        let set_slider: Rc<dyn Fn(f32)> = {
+            let apply = apply.clone();
+            Rc::new(move |v| {
+                apply(v);
+            })
+        };
+        let drag: Rc<dyn Fn(f32) -> bool> = {
+            let (min, max) = (prim.min, prim.max);
+            Rc::new(move |fraction: f32| apply(min + fraction.clamp(0.0, 1.0) * (max - min)))
+        };
+        let state = {
+            let value = robot_value.clone();
+            let gate = disabled_gate.clone();
+            Rc::new(move || crate::robot::ElementState {
+                value: Some(crate::robot::StateValue::Number(value.get() as f64)),
+                disabled: Some(gate_is_up(&gate)),
+                ..Default::default()
+            }) as Rc<dyn Fn() -> crate::robot::ElementState>
+        };
+        crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::Slider,
+            prim.test_id,
+            None,
+            None,
+            crate::robot::MountActions {
+                set_slider: Some(set_slider),
+                slider_drag: Some(drag),
+                state: Some(state),
+                ..Default::default()
+            },
+        )
     };
-    #[cfg(feature = "robot")]
-    let _robot = crate::robot::register_mount(
-        &backend,
-        &node,
-        crate::robot::ElementKind::Slider,
-        prim.test_id,
-        None,
-        None,
-        crate::robot::MountActions {
-            set_slider: Some(robot_set_slider),
-            slider_drag: Some(robot_drag),
-            ..Default::default()
-        },
-    );
     let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     {
         let b = backend.clone();
         let n = node.clone();
+        #[cfg(feature = "robot")]
+        let value = robot_value.clone();
         bind_value(prim.value, move |&v| {
+            #[cfg(feature = "robot")]
+            value.set(v);
             b.borrow_mut().update_slider_value(&n, v);
         });
     }
@@ -211,6 +273,42 @@ where
         fill(handle);
     }
     node
+}
+
+/// `v` snapped to the `step` grid anchored at `min` (unchanged without a
+/// step) — the one snap the change callback, robot sets and drags share.
+fn snap(v: f32, min: f32, step: Option<f32>) -> f32 {
+    match step {
+        Some(step) if step > 0.0 => min + ((v - min) / step).round() * step,
+        _ => v,
+    }
+}
+
+/// Whether a control's disabled gate is up (`None`: it has no `disabled`).
+#[cfg(feature = "robot")]
+fn gate_is_up(gate: &Option<Rc<Cell<bool>>>) -> bool {
+    gate.as_ref().is_some_and(|g| g.get())
+}
+
+/// `on_change`, first recording each reported value in `cell` — the
+/// robot's view of what the control shows.
+#[cfg(feature = "robot")]
+fn observe<T: Copy + 'static>(cell: &Rc<Cell<T>>, on_change: Rc<dyn Fn(T)>) -> Rc<dyn Fn(T)> {
+    let cell = cell.clone();
+    Rc::new(move |v: T| {
+        cell.set(v);
+        on_change(v);
+    })
+}
+
+/// [`observe`] for a text control's `String` value.
+#[cfg(feature = "robot")]
+fn observe_text(cell: &Rc<std::cell::RefCell<String>>, on_change: Rc<dyn Fn(String)>) -> Rc<dyn Fn(String)> {
+    let cell = cell.clone();
+    Rc::new(move |v: String| {
+        *cell.borrow_mut() = v.clone();
+        on_change(v);
+    })
 }
 
 /// The `disabled` wiring a form control (`text_input`, `text_area`,
@@ -300,8 +398,6 @@ where
     let initial_secure = initial_of(&prim.secure);
     let initial_placeholder = initial_of(&prim.placeholder);
     #[cfg(feature = "robot")]
-    let robot_set_text = prim.on_change.clone();
-    #[cfg(feature = "robot")]
     let (robot_label, robot_label_fn) = match prim.a11y.label.clone() {
         Some(label) => (Some(label), None),
         // A live placeholder is shared with its binding below so the
@@ -322,11 +418,20 @@ where
         },
     };
     let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
+    // The text the field shows, for the robot's `value`: every edit the
+    // field reports, and every controlled write-back below.
+    #[cfg(feature = "robot")]
+    let robot_text = Rc::new(std::cell::RefCell::new(initial_value.clone()));
+    #[cfg(feature = "robot")]
+    let on_change = observe_text(&robot_text, on_change);
     let alive = crate::callback_guard::ScopeAlive::current();
+    let native_on_change = alive.wrap1(on_change);
+    #[cfg(feature = "robot")]
+    let robot_native_on_change = native_on_change.clone();
     let node = backend.borrow_mut().create_text_input(
         &initial_value,
         initial_placeholder.as_deref(),
-        alive.wrap1(on_change),
+        native_on_change,
         prim.on_key_down.map(|f| alive.wrap_key(f)),
         prim.on_blur.map(|f| alive.wrap_blur(f)),
         initial_secure,
@@ -350,7 +455,12 @@ where
     }
     // Editable inputs also get `focus`/`blur` so the robot can drive
     // real keyboard focus. Handles are made ON DEMAND from the backend
-    // node at call time (the old walker's exact shape).
+    // node at call time.
+    // Robot `type_text` replaces the text as a paste would: the field
+    // shows it, then its own change callback (disabled gate, scope guard)
+    // reports it.
+    #[cfg(feature = "robot")]
+    let robot_focused = Rc::new(Cell::new(false));
     #[cfg(feature = "robot")]
     let _robot = {
         let focus = {
@@ -363,6 +473,25 @@ where
             let n = node.clone();
             Rc::new(move || b.borrow().make_text_input_handle(&n).blur()) as Rc<dyn Fn()>
         };
+        let set_text: Rc<dyn Fn(String)> = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move |text: String| {
+                b.borrow_mut().update_text_input_value(&n, &text);
+                robot_native_on_change(text);
+            })
+        };
+        let state = {
+            let text = robot_text.clone();
+            let focused = robot_focused.clone();
+            let gate = disabled_gate.clone();
+            Rc::new(move || crate::robot::ElementState {
+                value: Some(crate::robot::StateValue::Text(text.borrow().clone())),
+                disabled: Some(gate_is_up(&gate)),
+                focused: Some(focused.get()),
+                ..Default::default()
+            }) as Rc<dyn Fn() -> crate::robot::ElementState>
+        };
         crate::robot::register_mount(
             &backend,
             &node,
@@ -371,15 +500,31 @@ where
             robot_label,
             robot_label_fn,
             crate::robot::MountActions {
-                set_text: Some(robot_set_text),
+                set_text: Some(set_text),
                 focus: Some(focus),
                 blur: Some(blur),
+                state: Some(state),
                 ..Default::default()
             },
         )
     };
     let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
-    if let Some(on_focus) = prim.on_focus {
+    // Robot builds always watch focus (for `focused`), passing each change
+    // on to the author's `on_focus` when there is one.
+    #[cfg(feature = "robot")]
+    let on_focus = {
+        let focused = robot_focused.clone();
+        let author = prim.on_focus;
+        Some(Rc::new(move |f: bool| {
+            focused.set(f);
+            if let Some(author) = author.as_ref() {
+                author(f);
+            }
+        }) as Rc<dyn Fn(bool)>)
+    };
+    #[cfg(not(feature = "robot"))]
+    let on_focus = prim.on_focus;
+    if let Some(on_focus) = on_focus {
         backend
             .borrow_mut()
             .set_text_input_focus_handler(&node, on_focus);
@@ -387,7 +532,13 @@ where
     {
         let b = backend.clone();
         let n = node.clone();
+        #[cfg(feature = "robot")]
+        let text = robot_text.clone();
         bind_value(prim.value, move |v| {
+            #[cfg(feature = "robot")]
+            {
+                *text.borrow_mut() = v.clone();
+            }
             b.borrow_mut().update_text_input_value(&n, v);
         });
     }
@@ -446,43 +597,87 @@ where
 {
     let backend = cx.backend().clone();
     let initial_value = initial_of(&prim.value);
-    #[cfg(feature = "robot")]
-    let robot_set_text = prim.on_change.clone();
     let (on_change, disabled_gate) = gate_change(&prim.disabled, prim.on_change);
+    #[cfg(feature = "robot")]
+    let robot_text = Rc::new(std::cell::RefCell::new(initial_value.clone()));
+    #[cfg(feature = "robot")]
+    let on_change = observe_text(&robot_text, on_change);
     let alive = crate::callback_guard::ScopeAlive::current();
+    let native_on_change = alive.wrap1(on_change);
+    #[cfg(feature = "robot")]
+    let robot_native_on_change = native_on_change.clone();
     let node = backend.borrow_mut().create_text_area(
         &initial_value,
         prim.placeholder.as_deref(),
         prim.wrap,
         prim.min_rows,
         prim.max_rows,
-        alive.wrap1(on_change),
+        native_on_change,
         prim.on_key_down.map(|f| alive.wrap_key(f)),
         &prim.a11y,
     );
-    // `ElementKind::TextInput`, like the old core: the robot surface
-    // doesn't distinguish single- vs multi-line — `set_text` covers
-    // both, and (also mirroring the old walker) text_area gets NO
-    // focus/blur actions (only `Element::TextInput` was wired there).
+    // `ElementKind::TextInput`: the robot surface doesn't distinguish
+    // single- vs multi-line. `type_text` replaces the text as for
+    // `text_input`; `focus` / `blur` go through the area's handle. A text
+    // area has no focus
+    // notifier, so its state carries no `focused`.
     #[cfg(feature = "robot")]
-    let _robot = crate::robot::register_mount(
-        &backend,
-        &node,
-        crate::robot::ElementKind::TextInput,
-        prim.test_id,
-        // Accessible name, as for `text_input`.
-        prim.a11y.label.clone().or_else(|| prim.placeholder.clone()),
-        None,
-        crate::robot::MountActions {
-            set_text: Some(robot_set_text),
-            ..Default::default()
-        },
-    );
+    let _robot = {
+        let focus = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move || b.borrow().make_text_area_handle(&n).focus()) as Rc<dyn Fn()>
+        };
+        let blur = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move || b.borrow().make_text_area_handle(&n).blur()) as Rc<dyn Fn()>
+        };
+        let set_text: Rc<dyn Fn(String)> = {
+            let b = backend.clone();
+            let n = node.clone();
+            Rc::new(move |text: String| {
+                b.borrow_mut().update_text_area_value(&n, &text);
+                robot_native_on_change(text);
+            })
+        };
+        let state = {
+            let text = robot_text.clone();
+            let gate = disabled_gate.clone();
+            Rc::new(move || crate::robot::ElementState {
+                value: Some(crate::robot::StateValue::Text(text.borrow().clone())),
+                disabled: Some(gate_is_up(&gate)),
+                ..Default::default()
+            }) as Rc<dyn Fn() -> crate::robot::ElementState>
+        };
+        crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::TextInput,
+            prim.test_id,
+            // Accessible name, as for `text_input`.
+            prim.a11y.label.clone().or_else(|| prim.placeholder.clone()),
+            None,
+            crate::robot::MountActions {
+                set_text: Some(set_text),
+                focus: Some(focus),
+                blur: Some(blur),
+                state: Some(state),
+                ..Default::default()
+            },
+        )
+    };
     let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
     {
         let b = backend.clone();
         let n = node.clone();
+        #[cfg(feature = "robot")]
+        let text = robot_text.clone();
         bind_value(prim.value, move |v| {
+            #[cfg(feature = "robot")]
+            {
+                *text.borrow_mut() = v.clone();
+            }
             b.borrow_mut().update_text_area_value(&n, v);
         });
     }

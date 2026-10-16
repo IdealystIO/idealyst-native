@@ -267,7 +267,11 @@ where
         &prim.a11y,
     );
     // Robot: `click` is the action's fire (the same `Rc<dyn Fn()>`
-    // runtime backends invoke on tap — old `robot_extract_meta`).
+    // runtime backends invoke on tap). A
+    // button is inert natively when disabled, so the robot refuses it from
+    // the state below rather than through a press-block.
+    #[cfg(feature = "robot")]
+    let robot_disabled = std::rc::Rc::new(std::cell::Cell::new(false));
     #[cfg(feature = "robot")]
     let _robot = {
         let robot_label_fn = dyn_label.clone().map(|f| {
@@ -283,6 +287,13 @@ where
             robot_label_fn,
             crate::robot::MountActions {
                 click: Some(prim.on_press.fire.clone()),
+                state: Some({
+                    let disabled = robot_disabled.clone();
+                    std::rc::Rc::new(move || crate::robot::ElementState {
+                        disabled: Some(disabled.get()),
+                        ..Default::default()
+                    })
+                }),
                 ..Default::default()
             },
         )
@@ -301,7 +312,11 @@ where
         // `state disabled { … }` overlay applies (old `attach_disabled`).
         let b = backend.clone();
         let n = node.clone();
+        #[cfg(feature = "robot")]
+        let robot_disabled = robot_disabled.clone();
         bind_value(disabled, move |&d| {
+            #[cfg(feature = "robot")]
+            robot_disabled.set(d);
             b.borrow_mut().set_disabled(&n, d);
             if let Some(setter) = state_setter.as_ref() {
                 setter(runtime_shared::StateBits::DISABLED, d);

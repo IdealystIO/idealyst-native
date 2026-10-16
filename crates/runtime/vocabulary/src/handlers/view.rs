@@ -128,11 +128,6 @@ pub fn mount_pressable<H>(
 where
     H: PressableOps + InputOps + StyleServices + IntrospectionOps,
 {
-    // Robot `click` gets the RAW author callback (pre press-block wrap),
-    // mirroring the old walker's `robot_extract_meta`, which read the
-    // element's `on_click` before the build wrapped it.
-    #[cfg(feature = "robot")]
-    let robot_click = prim.on_press.clone();
     let (on_press, press_block): (Rc<dyn Fn()>, Option<Rc<Cell<bool>>>) = if prim.disabled.is_some()
     {
         let flag = Rc::new(Cell::new(false));
@@ -156,20 +151,32 @@ where
     // a non-unwinding C trampoline, which ABORTS. See `callback_guard`.
     let alive = crate::callback_guard::ScopeAlive::current();
     let on_press = alive.wrap0(on_press);
+    // Robot `click` runs the press the native view runs (press-block,
+    // scope guard); the robot refuses a disabled pressable before that,
+    // as the view refuses a user.
+    #[cfg(feature = "robot")]
+    let robot_click = on_press.clone();
     let mut node = backend.borrow_mut().create_pressable(on_press, &prim.a11y);
     #[cfg(feature = "robot")]
-    let _robot = crate::robot::register_mount(
-        &backend,
-        &node,
-        crate::robot::ElementKind::Pressable,
-        prim.test_id,
-        None,
-        None,
-        crate::robot::MountActions {
-            click: Some(robot_click),
-            ..Default::default()
-        },
-    );
+    let _robot = {
+        let blocked = press_block.clone();
+        crate::robot::register_mount(
+            &backend,
+            &node,
+            crate::robot::ElementKind::Pressable,
+            prim.test_id,
+            None,
+            None,
+            crate::robot::MountActions {
+                click: Some(robot_click),
+                state: Some(Rc::new(move || crate::robot::ElementState {
+                    disabled: Some(blocked.as_ref().is_some_and(|b| b.get())),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        )
+    };
     cx.realize_children_into(&mut node, children);
     let state_setter = prim
         .style

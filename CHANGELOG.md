@@ -11,6 +11,18 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Robot actions behave like a user** (`runtime-vocabulary`, dev builds
+  only). `click`, `type_text`, `set_toggle`, `set_slider` and `focus` on a
+  disabled control now fail (`action '…' refused: the element is
+  disabled`) instead of calling the author's callback. `set_toggle`,
+  `set_slider` and `type_text` move the native widget, then report through
+  its own change callback: `set_slider` clamps to the track and snaps to
+  `step` (it handed the raw value through). Elements also carry their
+  `state` (`value`, `checked`, `disabled`, `focused`), with a new
+  `get_state` verb, and `text_area` takes `focus` / `blur`. See
+  `docs/robot.md`. *Migration:* a test that drove a disabled control, or
+  expected an unsnapped slider value, asserts the refusal / snapped value.
+
 - **`text_input` `secure` masks on Android; remote and dev-wire versions
   bumped** (`backend-android-mobile`, `runtime-vocabulary`, `wire`).
   Android ignored `secure` (a password field showed its text); it now sets

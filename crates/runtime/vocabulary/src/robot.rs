@@ -144,6 +144,72 @@ pub enum ElementKind {
 pub struct ElementId(pub u32);
 
 // =============================================================================
+// Element state
+// =============================================================================
+
+/// What a primitive reports about itself: the state a user could see on
+/// screen, read back so an E2E test can assert it with no help from the
+/// app (no `watch_signal`, no component props).
+///
+/// Each mount handler that has state registers a closure producing this
+/// (`MountActions::state`). It is the PRIMITIVE's view, not the author's:
+/// a toggle's `checked` is what the native switch shows — the author's
+/// controlled value after each write-back, or what the user (or robot)
+/// last flipped it to when uncontrolled. The closures read only plain
+/// cells the handler keeps current, never signals, so reading state
+/// subscribes nothing and needs no reactive context.
+///
+/// Fields a primitive doesn't have are `None` and left out of the JSON.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ElementState {
+    /// A text field's text, or a slider's value.
+    pub value: Option<StateValue>,
+    /// A toggle's on/off.
+    pub checked: Option<bool>,
+    /// Whether the control refuses input (`disabled = …`). Robot actions
+    /// on a disabled element fail with [`RobotError::Disabled`], as the
+    /// control refuses a user.
+    pub disabled: Option<bool>,
+    /// Whether a text field holds keyboard focus.
+    pub focused: Option<bool>,
+}
+
+/// A primitive's value: a text field's text or a slider's number.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StateValue {
+    Text(String),
+    Number(f64),
+}
+
+impl ElementState {
+    /// `{"value":…,"checked":…,"disabled":…,"focused":…}`, absent fields
+    /// omitted.
+    pub fn to_json(&self) -> String {
+        use runtime_shared::__serde_json as serde_json;
+        let mut map = serde_json::Map::new();
+        match &self.value {
+            Some(StateValue::Text(t)) => {
+                map.insert("value".into(), serde_json::Value::String(t.clone()));
+            }
+            Some(StateValue::Number(n)) => {
+                map.insert("value".into(), serde_json::json!(n));
+            }
+            None => {}
+        }
+        for (key, v) in [("checked", self.checked), ("disabled", self.disabled), ("focused", self.focused)] {
+            if let Some(v) = v {
+                map.insert(key.into(), serde_json::Value::Bool(v));
+            }
+        }
+        serde_json::Value::Object(map).to_string()
+    }
+
+    fn is_disabled(&self) -> bool {
+        self.disabled == Some(true)
+    }
+}
+
+// =============================================================================
 // Control handles
 // =============================================================================
 
@@ -171,6 +237,8 @@ pub(crate) struct ElementActions {
     /// through the native widget's own change path. `false` when the
     /// slider is disabled. See [`Robot::drag`].
     pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
+    /// The element's own state ([`ElementState`]).
+    pub state: Option<Rc<dyn Fn() -> ElementState>>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -187,6 +255,7 @@ pub(crate) struct MountActions {
     pub blur: Option<Rc<dyn Fn()>>,
     pub set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
+    pub state: Option<Rc<dyn Fn() -> ElementState>>,
 }
 
 // =============================================================================
@@ -557,6 +626,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         blur,
         set_scroll,
         slider_drag,
+        state,
     } = actions;
     // Geometry / introspection closures: borrow the backend at QUERY
     // time (never held across the query's own callback), mirroring the
@@ -614,6 +684,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 introspect: Some(introspect),
                 touch: None,
                 slider_drag,
+                state,
             },
             parent,
             children: Vec::new(),
@@ -970,6 +1041,9 @@ pub enum RobotError {
     ActionNotAvailable(&'static str),
     /// No element matched the query.
     NotFound,
+    /// The element is disabled, so it refuses the action — as the control
+    /// refuses a user.
+    Disabled(&'static str),
 }
 
 impl std::fmt::Display for RobotError {
@@ -980,11 +1054,26 @@ impl std::fmt::Display for RobotError {
                 write!(f, "action '{action}' not available on this element")
             }
             Self::NotFound => write!(f, "no element matched the query"),
+            Self::Disabled(action) => write!(f, "action '{action}' refused: the element is disabled"),
         }
     }
 }
 
 impl std::error::Error for RobotError {}
+
+/// Refuse `action` on a disabled element (its state says so).
+fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<(), RobotError> {
+    match &actions.state {
+        Some(state) if state().is_disabled() => Err(RobotError::Disabled(action)),
+        _ => Ok(()),
+    }
+}
+
+/// The registered state of element `id`, if it has any.
+fn state_of(id: ElementId) -> Option<ElementState> {
+    let f = REGISTRY.with(|r| r.borrow().get(id).and_then(|e| e.actions.state.clone()))?;
+    Some(f())
+}
 
 /// A recursive snapshot of the mounted tree.
 #[derive(Clone, Debug)]
@@ -1089,7 +1178,8 @@ impl Robot {
     /// and `click` used to report "not available" for everything in it.
     pub fn click(&self, element: &Element) -> Result<(), RobotError> {
         for (id, actions) in self.press_chain(element.id)? {
-            if let Some(f) = actions.click {
+            if let Some(f) = actions.click.clone() {
+                refuse_if_disabled(&actions, "click")?;
                 f();
                 settle();
                 return Ok(());
@@ -1251,6 +1341,7 @@ impl Robot {
                 .set_text
                 .clone()
                 .ok_or(RobotError::ActionNotAvailable("type_text"))?;
+            refuse_if_disabled(a, "type_text")?;
             f(text.to_string());
             Ok(())
         })
@@ -1263,6 +1354,7 @@ impl Robot {
                 .set_toggle
                 .clone()
                 .ok_or(RobotError::ActionNotAvailable("set_toggle"))?;
+            refuse_if_disabled(a, "set_toggle")?;
             f(value);
             Ok(())
         })
@@ -1275,6 +1367,7 @@ impl Robot {
                 .set_slider
                 .clone()
                 .ok_or(RobotError::ActionNotAvailable("set_slider"))?;
+            refuse_if_disabled(a, "set_slider")?;
             f(value);
             Ok(())
         })
@@ -1284,6 +1377,7 @@ impl Robot {
     pub fn focus(&self, element: &Element) -> Result<(), RobotError> {
         self.with_actions(element.id, |a| {
             let f = a.focus.clone().ok_or(RobotError::ActionNotAvailable("focus"))?;
+            refuse_if_disabled(a, "focus")?;
             f();
             Ok(())
         })
@@ -1460,6 +1554,18 @@ impl Robot {
     /// [`settle`] commits the staged work synchronously so a query on
     /// the next line observes the post-action tree — the driver-env
     /// contract (see `DriverEnv`).
+    /// The element's own state ([`ElementState`]); `None` for a primitive
+    /// with nothing to report (a view, a text, an image).
+    pub fn state(&self, element: &Element) -> Result<Option<ElementState>, RobotError> {
+        let f = REGISTRY.with(|r| {
+            r.borrow()
+                .get(element.id)
+                .map(|e| e.actions.state.clone())
+                .ok_or(RobotError::ElementGone)
+        })?;
+        Ok(f.map(|f| f()))
+    }
+
     fn with_actions(
         &self,
         id: ElementId,
@@ -1733,6 +1839,13 @@ pub mod bridge {
                 let el = resolve_element(args)?;
                 robot.focus(&el).map_err(|e| e.to_string())?;
                 Ok("\"ok\"".into())
+            }
+            "get_state" => {
+                let el = resolve_element(args)?;
+                Ok(match robot.state(&el).map_err(|e| e.to_string())? {
+                    Some(state) => state.to_json(),
+                    None => "{}".into(),
+                })
             }
             "blur" => {
                 let el = resolve_element(args)?;
@@ -2116,9 +2229,18 @@ pub mod bridge {
         })
     }
 
+    /// `,"state":{…}` for an element with state, else nothing — so a
+    /// stateless element's JSON is unchanged.
+    fn state_field(id: ElementId) -> String {
+        match state_of(id) {
+            Some(state) => format!(",\"state\":{}", state.to_json()),
+            None => String::new(),
+        }
+    }
+
     fn element_json(el: &Element) -> String {
         format!(
-            "{{\"id\":{},\"kind\":\"{:?}\",\"test_id\":{},\"label\":{}}}",
+            "{{\"id\":{},\"kind\":\"{:?}\",\"test_id\":{},\"label\":{}{}}}",
             el.id.0,
             el.kind,
             el.test_id
@@ -2128,6 +2250,7 @@ pub mod bridge {
                 .as_deref()
                 .map(|l| serde_json::to_string(l).unwrap_or_else(|_| "null".into()))
                 .unwrap_or_else(|| "null".into()),
+            state_field(el.id),
         )
     }
 
@@ -2158,7 +2281,7 @@ pub mod bridge {
             _ => String::new(),
         };
         format!(
-            "{{\"id\":{},\"kind\":\"{:?}\",\"test_id\":{},\"label\":{}{},\"children\":[{}]}}",
+            "{{\"id\":{},\"kind\":\"{:?}\",\"test_id\":{},\"label\":{}{}{},\"children\":[{}]}}",
             node.id.0,
             node.kind,
             node.test_id
@@ -2168,6 +2291,7 @@ pub mod bridge {
                 .as_deref()
                 .map(|l| serde_json::to_string(l).unwrap_or_else(|_| "null".into()))
                 .unwrap_or_else(|| "null".into()),
+            state_field(node.id),
             components,
             children.join(","),
         )
