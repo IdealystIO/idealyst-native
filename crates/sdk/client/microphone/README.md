@@ -158,6 +158,7 @@ verification note above). Tick each item as you exercise it.
 - [ ] **Web** — `getUserMedia` prompt appears (secure context only); capturing yields non-silent PCM at the configured sample rate/channels; dropping the stream releases the device.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: permission prompt fires; `AVAudioSession` activates; non-silent interleaved-`f32` PCM at the configured rate/channels; stop releases the device.
 - [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: permission prompt fires (delegated to `permissions`; host must forward `onRequestPermissionsResult`); `AudioRecord` worker yields non-silent PCM; stop releases the device.
+- [x] **Windows** — `host_capture` on a Windows 11 VM (WASAPI, the "Line In" device): 47 chunks / 21 056 frames in 500 ms. Windows asks for microphone access the first time (the VM rebooted to apply it).
 - [ ] **macOS** — host-verified via `host_capture`: capturing yields non-silent PCM at the configured rate/channels; confirm the prompt still appears now that the grant routes through the `permissions` SDK.
 
 **Permissions**
