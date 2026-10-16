@@ -498,6 +498,32 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   the future waited on another thread). The Win32 host now runs a
   cooperative executor on its scheduler, like the Apple and web ones; the
   Windows `connectivity` watch delivers on the UI thread through it.
+- **The rest of the client SDKs on Windows**: `notifications` (toasts, with
+  an AppUserModelID the host registers from the app's bundle id),
+  `permissions` (notifications, location, camera, microphone), `webview`
+  (WebView2; `WebView2Loader.dll` ships beside the exe through the new
+  `build-windows` runtime-files metadata), `video` and `audio` (Media
+  Foundation's Media Engine), `location` (`Geolocator`), `share`
+  (`DataTransferManager`), `camera` (an MF source reader), `video-decode`
+  (Media Engine frames), `screen-recorder` (`Windows.Graphics.Capture`) and
+  `media-writer` (the MF Sink Writer). `examples/sdk-gallery` has a panel
+  for each. Mechanisms per SDK: `docs/windows.md`.
+- **`screen_recorder::PrivateLayer` on Windows** (`backend-windows`,
+  `host-win32`, `screen-recorder`). It mounted inline, so every recording
+  showed it. Its content now paints into a layered popup over the app's
+  window, which a capture of the app never contains; while a recording runs
+  the popups also carry `WDA_EXCLUDEFROMCAPTURE`, so full-screen and picked
+  captures leave them out — and so does every other capture, screenshots
+  included, for that time. Native controls inside the layer are still child
+  windows of the app's and are recorded. The private layer is marked for
+  re-review: its only user is the screenshare demo.
+- **`video-decode` delivers a clip's audio on Windows and Linux**. `audio()`
+  was `None` on both, so a recording of a clip had no sound. Windows taps it
+  with a second (source-reader) decoder that follows the Media Engine's
+  clock; Linux tees the GStreamer audio branch into a clock-synced appsink.
+  Either way the PCM arrives as played, nothing while paused, the new
+  position after a seek, unaffected by the player's mute; at rates other
+  than 1× the samples are unstretched.
   `runtime_shared::driver::async_executor_installed()` reports whether a
   backend installed one.
 - **Run Windows apps off Windows** (`run-windows`, `build-windows`,
@@ -1304,6 +1330,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Linux `video-decode` opens audio-only clips, and plays with no audio
+  output.** The video appsink was always in the pipeline and waited forever
+  for a first frame an audio-only clip never has; and on a box with no
+  audio device (a container, CI) the `autoaudiosink` that couldn't open one
+  stalled the clip, video included. The video chain is now built only for a
+  clip with video, and the sound goes to a synced `fakesink` when no output
+  opens.
+- **`share` on Windows: a second share while the sheet is open says so**
+  (`ShareError::Backend("a share sheet is already open")`) instead of
+  Windows' "the share flow is not available"; the open sheet is untouched.
+- **`media-writer` on Windows names a sharing violation** ("the output file
+  is open in another program (a player?)") instead of the raw Windows text.
+- **`screen-recorder` `ThisApp` on Windows records the app's window**, not
+  a window the app owns above it (a private-layer popup, a tooltip).
 - **A hot patch redirects only the functions that changed** (`build-web`,
   `dev-reload`). Every function of every re-emitted crate whose address the
   patch took got a jump-table entry — 32,195 for a one-line edit in a
