@@ -1144,6 +1144,10 @@ impl std::fmt::Display for RobotError {
 
 impl std::error::Error for RobotError {}
 
+// `Eq` by hand: the `f32` point a native action refused at is always a
+// finite window coordinate (never NaN), so equality is reflexive.
+impl Eq for RobotError {}
+
 /// Refuse `action` on a disabled element (its state says so).
 fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<(), RobotError> {
     match &actions.state {
