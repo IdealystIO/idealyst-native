@@ -13,8 +13,8 @@
 //! with full attribution, `apply_style` just re-realizes afterwards
 //! (see the Label arm in `apply_style`).
 //!
-//! Theme swaps re-realize through the walker's cohort entry
-//! (`Backend::update_styled_text`); run token colors resolve at
+//! Theme swaps re-realize through the theme-cohort re-apply
+//! (`TextOps::update_styled_text`); run token colors resolve at
 //! realize time. Chip colors SNAP on a theme swap while plain text
 //! may fade through the transition system — accepted
 //! divergence-in-time (final state identical), matching macOS.

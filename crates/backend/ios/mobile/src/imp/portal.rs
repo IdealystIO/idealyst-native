@@ -3,7 +3,7 @@
 //! context. Used by modals, popovers, dropdowns, tooltips, sheets,
 //! and any author-built floating UX.
 //!
-//! Backdrops are no longer a backend concern — the framework's
+//! Backdrops are not a backend concern — the framework's
 //! composition layer renders a backdrop primitive as a child of the
 //! portal. The container is always passthrough-hit-tested: taps
 //! outside actual child views fall through to the page beneath.
@@ -53,8 +53,8 @@ pub(crate) struct PortalEntry {
     /// the host's `UIWindow`). Dropping/removing it tears down the
     /// entire portal subtree.
     pub(crate) container: Retained<UIView>,
-    /// `Some(...)` for anchored portals — the descriptor used to
-    /// compute the child's initial Taffy style on `insert` and to
+    /// `Some(...)` for anchored portals — the descriptor that computes
+    /// the child's initial Taffy style on `insert` and to
     /// re-pin the child each vsync. `None` for viewport portals.
     pub(crate) anchor: Option<AnchorSpec>,
     /// Live `CADisplayLink` for anchored portals. `None` for viewport
@@ -66,8 +66,8 @@ pub(crate) struct PortalEntry {
     /// `apply_style` lays the portal prim's `style` OVER these rather
     /// than replacing them: `LayoutTree::set_style` resets an unset
     /// `justify_content` to `FlexStart`, so a click-through overlay's
-    /// pointer-events-only style used to wipe a `Bottom` placement and
-    /// pull the content to the top of the window.
+    /// pointer-events-only style would otherwise wipe a `Bottom` placement
+    /// and pull the content to the top of the window.
     pub(crate) container_rules: StyleRules,
 }
 
@@ -297,9 +297,9 @@ pub(crate) fn start_anchor_tracker(
         // `portal_policy` — it delegates to the SAME `runtime_shared`
         // resolver web calls (side-flip + measured position + viewport
         // clamp), so one author intent places identically on both
-        // (CLAUDE.md §7). This used to call `anchor_top_left`, the
-        // align/side math WITHOUT either, which is why a menu near an
-        // edge rendered off-screen on iOS and on-screen on web.
+        // (CLAUDE.md §7). Not `anchor_top_left`: that is the align/side
+        // math WITHOUT either, so a menu near an edge would render
+        // off-screen on iOS and on-screen on web.
         let (top, left) = crate::portal_policy::anchor_tracker_placement(
             &mut placer.borrow_mut(),
             trigger,

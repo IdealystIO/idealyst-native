@@ -10,13 +10,12 @@
 //! A queued layout pass has two racing drain points — the pre-commit
 //! runloop observer (early, same turn) and the main-queue backstop
 //! (late, guaranteed). Each has to decide the same four-way question
-//! from the same three facts, and the interesting case is the one that
-//! used to be wrong: when the backend is already mutably borrowed, the
-//! drain must **keep the pass queued and re-post**, not swallow it.
-//! Dropping it stranded the tree at whatever positions the last
-//! completed pass left, with nothing scheduled to fix it — the layout
-//! stayed wrong until some unrelated event happened to schedule
-//! another pass.
+//! from the same three facts, and the interesting case is this: when the
+//! backend is already mutably borrowed, the drain must **keep the pass
+//! queued and re-post**, not swallow it. Dropping it strands the tree at
+//! whatever positions the last completed pass left, with nothing
+//! scheduled to fix it — the layout stays wrong until some unrelated
+//! event happens to schedule another pass.
 
 #![cfg_attr(not(target_os = "ios"), allow(dead_code))]
 
@@ -78,8 +77,8 @@ mod tests {
     }
 
     /// The regression this module exists for. A pass that arrives while
-    /// the backend is borrowed must survive to be retried; the old code
-    /// cleared the flag first and returned, losing it outright.
+    /// the backend is borrowed must survive to be retried, not be lost by
+    /// clearing the flag first and returning.
     #[test]
     fn borrowed_backend_retries_instead_of_dropping_the_pass() {
         assert_eq!(decide(true, true, false), Drain::Retry);

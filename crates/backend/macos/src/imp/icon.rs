@@ -1,4 +1,4 @@
-//! `Element::Icon` — vector icon rendering on macOS via
+//! The `icon` primitive — vector icon rendering on macOS via
 //! `CAShapeLayer` driven by a `CGPath` built from the framework's
 //! `IconData.paths`.
 //!
@@ -51,8 +51,8 @@ struct CGPathRef(c_void);
 
 // `-[CAShapeLayer setPath:]` wants a typed `CGPathRef` (`^{CGPath=}`). Without
 // this, passing the pointer as `*const c_void` (`^v`) trips objc2's encoding
-// verifier and SIGABRTs (same family as the CGContext/CGColor traps —
-// [[project_macos_appkit_uikit_diffs]] gotchas #2/#9). `RefEncode` makes
+// verifier and SIGABRTs (same family as the CGContext/CGColor encoding
+// traps). `RefEncode` makes
 // `*mut CGPathRef` carry the right `^{CGPath=}` encoding through `msg_send!`.
 unsafe impl RefEncode for CGPathRef {
     const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGPath", &[]));

@@ -439,9 +439,9 @@ pub fn run() {
 /// macOS while web rendered one. Everything above asserts that the sibling
 /// layer is wired up correctly; this asserts that the wiring produces a
 /// visible shadow — and, in the same shape, that putting the shadow on the
-/// masked layer (what both backends used to do) produces none. That second
-/// half is what makes this a regression test rather than a description: it
-/// fails against the old code path, on purpose, every run.
+/// masked layer produces none. That second half is what makes this a
+/// regression test rather than a description: it reproduces the bug's
+/// placement, on purpose, every run.
 ///
 /// Both scenes are identical apart from which layer carries the shadow:
 /// a 400×300 root, a 200×100 white card at (100,100), `masksToBounds` on,

@@ -549,8 +549,7 @@ pub fn sync_icon_sublayer(view: &UIView) {
             // (`icon::create_icon` is not even passed a size), so without a
             // layer transform `Icon(size = N)` painted a 24 px glyph inside
             // an N-px box — too small in a 32 px button, overflowing a 16 px
-            // one. macOS calls the pre-fix state "the chevrons are huge bug"
-            // and fixes it exactly this way.
+            // one. macOS scales its icons exactly this way.
             let scale = icon_scale(w, h);
 
             // Skip when the scale already matches. Position and bounds
@@ -665,8 +664,8 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // ALL handled by Taffy now. They flow through
     // `LayoutTree::set_style` → Taffy's flex engine → frame
     // assignment via `apply_frames`. We deliberately do NOT forward
-    // them to any UIView property: legacy backends used UIStackView
-    // here, but UIStackView's own constraints conflict with Taffy's
+    // them to any UIView property: UIStackView's own constraints
+    // would conflict with Taffy's
     // frame writes (UISV-canvas-connection forces sizes Taffy didn't
     // choose). The framework's flex semantics live entirely in
     // runtime-layout.
@@ -710,7 +709,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
         // We ALWAYS stash the requested value (every branch), so a
         // later resize — which DOES change the frame and therefore runs
         // `sync_corner_radius` — re-clamps against the new bounds.
-        // Invariant project_ios_cornerradius_unclamped: an unclamped
+        // UIKit invariant: an unclamped
         // `cornerRadius > min(w, h)/2` makes the layer render nothing.
         let px_cap = crate::style_diff::px_cap_from_style(style);
         let bounds: CGRect = unsafe { msg_send![view, bounds] };
@@ -769,7 +768,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     //     the parent's `clipsToBounds` rounded-corner mask slices the
     //     ends off every bar, leaving notches/gaps at each corner —
     //     a straight bar can't trace a curve. See the regression test
-    //     `regression_ios_uniform_rounded_border_uses_calayer`.
+    //     `backend_apple_core::border::regression_uniform_rounded_border_uses_calayer`.
     //
     // So: when the border is *uniform* (all four sides the same width
     // and the same effective color) route it through CALayer, which is
@@ -915,7 +914,7 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     // content area inside the view's frame). We don't forward to
     // setLayoutMargins because UIView's layoutMargins are only
     // consulted by UIStackView's `layoutMarginsRelativeArrangement`,
-    // which we no longer use.
+    // which this backend doesn't use.
     //
     // UILabel is the exception: it has no children to inset, so
     // Taffy padding would grow the label's outer frame without
@@ -936,10 +935,10 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
     }
 
     // Width / height: owned entirely by Taffy. Authors' explicit
-    // `width` / `height` flow through `translate_style` into Taffy's
+    // `width` / `height` flow through `LayoutTree::set_style` into Taffy's
     // `size`, then Taffy writes `view.frame` via `apply_frames`. We
-    // do NOT install Auto Layout constraints here — the goal of the
-    // Taffy migration is to make UIView's Auto Layout system
+    // do NOT install Auto Layout constraints here — the point of
+    // Taffy layout is to make UIView's Auto Layout system
     // redundant for framework-managed views.
 }
 
@@ -1195,7 +1194,7 @@ fn border_id_for(idx: usize) -> &'static str {
 // Detect whether `view` is an `IdealystLabel` (the UILabel subclass
 // declared in `backend-ios-mobile::imp::text_inset`) via the
 // obj-c-runtime class lookup, and if so, write the style's padding
-// values into its `text_insets` ivar by sending `setTextInsets:`.
+// values into its `textInsets` ivar by sending `setTextInsets:`.
 // We avoid a Rust-level dep on the mobile crate by reaching through
 // the runtime — the class name + the setter selector are the only
 // surface we need.

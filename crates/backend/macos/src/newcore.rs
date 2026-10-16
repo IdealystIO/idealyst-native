@@ -1,63 +1,32 @@
-//! New-core adoption for the macOS backend (idea-lite migration, P4a).
+//! The macOS backend's scene front: boot path, flush driver, and the
+//! [`runtime_scene::Host`] + capability-trait (`runtime_vocabulary::caps`)
+//! impls on [`MacosBackend`].
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`MacosBackend`] — the
-//! production shape of the migration: no `LegacyBridge` wrapper in the
-//! render path. Every trait method delegates via UFCS
-//! (`<MacosBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the AppKit mechanism code (NSView creation, Taffy
-//! layout, style translation, transitions, virtualizer cells) is REUSED
-//! verbatim — this module adds a second *front* onto the same machinery,
-//! exactly like `backend-web/src/newcore.rs` does for the DOM (this file
-//! mirrors that module mechanically; keep the two in sync).
+//! Every trait method delegates to an inherent `*_impl` method in `imp/`,
+//! where the AppKit mechanism lives (NSView creation, Taffy layout, style
+//! translation, transitions, virtualizer cells). This module adds only the
+//! dispatch-site flush glue on top. `backend-web/src/newcore.rs` and
+//! `backend-ios-mobile/src/newcore.rs` are the same shape; keep them in sync.
 //!
-//! # Delegation status — every capability accounted for
+//! # Delegation notes
 //!
-//! | Trait | Status |
+//! Every capability delegates directly. The ones with extra glue:
+//!
+//! | Trait | Note |
 //! |---|---|
-//! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct (app-level key handler wrapped — dispatch-site glue) |
-//! | `LifecycleOps` | direct (`is_hydrating` is always `false` on this backend — no hydration on native) |
-//! | `ViewOps` | direct |
-//! | `InputOps` | direct (touch / wheel / hover / file-drop handlers wrapped) |
-//! | `PressableOps` | direct (on_click wrapped) |
-//! | `TextOps` | direct (the js-binding methods resolve to the trait-default no-ops, same as the old walker: `supports_js_text_bindings` is `false` here) |
-//! | `ButtonOps` | direct (`Action::fire` wrapped) |
-//! | `ImageOps` | direct (load / error handlers wrapped) |
-//! | `IconOps` | direct |
-//! | `LinkOps` | direct (on_activate wrapped) |
-//! | `TextInputOps` | direct (on_change / on_key_down / on_blur / focus wrapped) |
-//! | `ToggleOps` | direct (on_change wrapped) |
-//! | `SliderOps` | direct (on_change wrapped) |
-//! | `ActivityIndicatorOps` | direct |
-//! | `ScrollOps` | direct (on_scroll wrapped) |
-//! | `SafeAreaOps` | direct |
-//! | `VirtualizerOps` | direct (mount / release / measured-size wrapped) |
-//! | `GraphicsOps` | direct (ready / resize / lost wrapped) |
-//! | `PortalOps` | direct (on_dismiss wrapped) |
-//! | `PresenceOps` | direct |
-//! | `NavigatorOps` | direct (host callbacks deliberately NOT wrapped — see impl) |
-//! | `ExternalOps` | direct |
-//! | `DocumentOps` | direct (web-flavored methods — `create_element`, `attach_html_*`, `register_raw_css` — resolve to the same trait-default no-ops the old walker hit on this backend) |
-//! | `StyleOps` | direct (class-minting methods return the trait-default `None` on native; the vocabulary's `attach_style` then takes the `apply_styled_variants` path — identical routing to the old walker. `attach_states` setter wrapped. See *Styling* below.) |
-//! | `AssetOps` | direct |
-//! | `A11yOps` | direct |
-//! | `AnimationOps` | direct |
-//! | `IntrospectionOps` | direct |
-//! | `BatchOps` | direct |
-//! | `WireBindingOps` | direct (wire-recorder no-ops on this backend, same as today) |
+//! | `runtime_scene::Host` | `create_anchor` → `create_anchor_impl`, `supports_splice` → `supports_child_splice_impl` |
+//! | `AppEnvOps` | keyboard / pointer sinks wrapped (dispatch-site glue) |
+//! | `LifecycleOps` | `is_hydrating` is always `false` — native never hydrates |
+//! | `InputOps` | touch / wheel / hover / file-drop handlers wrapped |
+//! | `PressableOps`, `ButtonOps`, `LinkOps`, `ToggleOps`, `SliderOps`, `ScrollOps`, `PortalOps`, `GraphicsOps`, `ImageOps`, `TextInputOps` | author callbacks wrapped |
+//! | `TextOps` | js-binding methods take the trait-default no-ops (`supports_js_text_bindings` is `false`) |
+//! | `VirtualizerOps` | mount / release / measured-size wrapped; mount/release also enter the world |
+//! | `NavigatorOps` | host callbacks deliberately NOT wrapped — see impl |
+//! | `DocumentOps` | web-flavored methods (`create_element`, `attach_html_*`, `register_raw_css`) take the trait-default no-ops |
+//! | `StyleOps` | class minting returns the trait-default `None`, so the vocabulary's `attach_style` takes the `apply_styled_variants` path; `attach_states` setter wrapped. See *Styling* below. |
+//! | `WireBindingOps` | wire-recorder no-ops on this backend |
 //!
-//! **30/30 direct, 0 adapted, 0 stubbed.** Nothing panics, nothing
-//! silently no-ops beyond what the wrapped `Backend` impl already does.
-//! Where the macOS backend does not override a `Backend` method (the
-//! DOM-only and wire-only families), the UFCS call resolves to the same
-//! trait-default fallback the old walker would hit — behavior is
-//! identical by construction. The impl bodies below are generated
-//! mechanically from `backend-web/src/newcore.rs` (itself generated from
-//! `runtime_vocabulary::bridge`, the compile-time proof of the signature
-//! freeze), with `WebBackend` → `MacosBackend`.
-//!
-//! # Styling note for the parallel P3c style-engine work
+//! # Styling note
 //!
 //! On this backend `mint_style_class` / `mint_class_for_app` /
 //! `supports_js_class_bindings` all take the trait-default path (`None` /
@@ -65,8 +34,8 @@
 //! `apply_style`/`apply_styled_variants` and re-fired through the
 //! theme-cohort driver on token updates
 //! (`token_updates_propagate_via_cascade` is `false`, so cohort fan-out —
-//! not CSS cascade — is the token-update mechanism). Any new-core style
-//! engine must keep driving the cohort re-apply path on native.
+//! not CSS cascade — is the token-update mechanism). Any style engine
+//! must keep driving the cohort re-apply path on native.
 //!
 //! # Boot path — [`start`]
 //!
@@ -76,11 +45,10 @@
 //! splits host duties: `host-appkit` owns NSApplication/NSWindow and the
 //! content-view handoff (`create_host_root` → `setContentView` →
 //! `set_host_root`), and THIS function owns everything from "backend is
-//! wired to a window" onward. `host_appkit::newcore::run` is the
-//! all-in-one entry apps call; it constructs the backend exactly like the
-//! old-core `host_appkit::run_with` and then calls [`start`].
+//! wired to a window" onward. `host_appkit::run` is the all-in-one entry
+//! apps call; it constructs the backend and then calls [`start`].
 //!
-//! Sequence (mirrors `runtime_shared::mount`'s ordering where they overlap):
+//! Sequence:
 //!
 //! 1. Install the default monotonic time source (the macOS analogue of
 //!    web `start_in`'s `install_time_source` — without it the animation
@@ -95,15 +63,13 @@
 //!    opened a mount-buffering window (`begin_mount_buffering`) before
 //!    calling in, so microtasks scheduled during the build (deferred
 //!    chrome, follow-up layout passes) run HERE, synchronously, before
-//!    `finish` — landing in the first layout/paint exactly like the old
-//!    boot (`runtime_shared::mount` drains at the same point; see
-//!    `backend_apple_core::scheduler::MOUNT_BUFFER` and the macOS
-//!    chrome-first-paint-buffering note). A [`schedule_flush`] issued
-//!    during the window also buffers and therefore commits inside this
-//!    drain — staged writes cannot leak past the first paint.
-//! 4. `Backend::finish(root)` — parents the single root NSView into the
-//!    host root (`addSubview`) and runs the first Taffy layout pass: the
-//!    exact root-attachment mechanism of the old mount. `finish` is
+//!    `finish` — landing in the first layout/paint instead of a run-loop
+//!    turn after it (see `backend_apple_core::scheduler::MOUNT_BUFFER`).
+//!    A [`schedule_flush`] issued during the window also buffers and
+//!    therefore commits inside this drain — staged writes cannot leak
+//!    past the first paint.
+//! 4. `finish(root)` — parents the single root NSView into the host root
+//!    (`addSubview`) and runs the first Taffy layout pass. `finish` is
 //!    called with the backend `RefCell` borrowed and defers its
 //!    viewport-signal mirror to a microtask for that reason — do not
 //!    drain microtasks while the borrow is held.
@@ -114,21 +80,19 @@
 //!    returned [`NewCoreApp`]. The host closes the buffering window
 //!    (`end_mount_buffering`) after this returns — leftover microtasks
 //!    (e.g. `finish`'s viewport mirror) dispatch normally onto the main
-//!    queue, same as the old boot.
+//!    queue.
 //!
 //! **Hydration is NOT in scope** (native never hydrates).
 //!
-//! # Flush driver (design §3) — dispatch-site glue, NO safety net
+//! # Flush driver — dispatch-site glue, no polling
 //!
-//! The new kernel stages writes; nothing is observable until the host
-//! driver calls [`World::flush`]. This backend uses the SETTLED driver
-//! design (the web module's, adopted by iOS/Android and now here —
-//! replacing the original P4a NSEvent-local-monitor + 60 Hz NSTimer
-//! pair): **precise dispatch-site glue**, no polling.
+//! The kernel stages writes; nothing is observable until the host
+//! driver calls [`World::flush`]. Two entry points cover every place
+//! author code runs:
 //!
 //! 1. **Author-callback wrapping (this module).** Every callback-taking
 //!    capability impl below wraps the author callback before delegating
-//!    to the `Backend` machinery: press/click, input/change, toggle,
+//!    to the backend machinery: press/click, input/change, toggle,
 //!    slider, scroll, hover, wheel, touch, key, blur/focus, file-drop,
 //!    image load/error, link activation, portal dismiss, graphics
 //!    lifecycle, virtualizer row mount/release/measure, state setters,
@@ -140,58 +104,49 @@
 //!    iteration — strictly AFTER the current event's synchronous
 //!    dispatch (responder chain, target-action, author `on_press`
 //!    closures) completes. Net effect: stage during dispatch, commit at
-//!    the run-loop turn boundary right after — the idea-lite contract.
-//!    Because the wrapping happens in these new-core-only impls, the
-//!    shared old-core event closures are reused verbatim and the old
-//!    core never pays for it.
+//!    the run-loop turn boundary right after.
 //! 2. **Post-dispatch hook (`backend_apple_core::dispatch_hook`).**
 //!    Author code also runs from non-event surfaces: `after_ms` timers,
 //!    `after_animation_frame` one-shots, `raf_loop` iterations (the
 //!    animation clock's common-modes NSTimer on macOS), and
 //!    async-executor future polls. The apple-core scheduler and executor
 //!    fire a thread-local hook after each such callback; [`start`]
-//!    installs [`schedule_flush`] into that slot (no-op default, so the
-//!    old core is untouched).
+//!    installs [`schedule_flush`] into that slot.
 //!
-//! **Why the P4a monitor+timer are gone — the tracking-loop question.**
-//! The original monitor+timer pair existed because AppKit control
-//! **tracking loops** (NSButton/NSSlider press-drags, scroller-knob
-//! drags, menu tracking — nested run-loop turns in
-//! `NSEventTrackingRunLoopMode` that pull events via
+//! **Why no NSEvent monitor / frame-tick timer — the tracking-loop
+//! question.** AppKit control **tracking loops** (NSButton/NSSlider
+//! press-drags, scroller-knob drags, menu tracking — nested run-loop
+//! turns in `NSEventTrackingRunLoopMode` that pull events via
 //! `nextEventMatchingMask:`) bypass `sendEvent:` and therefore local
-//! NSEvent monitors; the common-modes timer was the net that caught
-//! writes staged inside them. With dispatch-site wrapping the monitor's
-//! job is done at the source: an author callback invoked DURING a
-//! tracking loop still comes through the wrapped caps closure, so the
-//! flush is scheduled regardless of which run-loop turn is active. The
-//! remaining question is whether the scheduled flush *fires* while the
-//! nested tracking loop is still running (a default-mode source would
-//! stall until tracking ends — the classic frozen-slider-label bug).
-//! It does: `schedule_microtask` is `dispatch_async(main_queue)`, and
-//! the main GCD queue is a **common-modes** run-loop source — CF drains
-//! it whenever the main run loop runs in any common mode, and
-//! `NSEventTrackingRunLoopMode` is a common mode. Verified LIVE, not
-//! assumed: the `newcore-macos-smoke` self-test stages a write via
+//! NSEvent monitors. Dispatch-site wrapping does not need them: an
+//! author callback invoked DURING a tracking loop still comes through
+//! the wrapped caps closure, so the flush is scheduled regardless of
+//! which run-loop turn is active. The scheduled flush also *fires* while
+//! the nested tracking loop is still running (a default-mode source
+//! would stall until tracking ends — the classic frozen-slider-label
+//! bug): `schedule_microtask` is `dispatch_async(main_queue)`, and the
+//! main GCD queue is a **common-modes** run-loop source — CF drains it
+//! whenever the main run loop runs in any common mode, and
+//! `NSEventTrackingRunLoopMode` is a common mode. The
+//! `newcore-macos-smoke` self-test pins this live: it stages a write via
 //! `schedule_flush`, then spins a nested
 //! `CFRunLoopRunInMode(NSEventTrackingRunLoopMode)` turn (the exact
 //! run-loop state a control tracking loop creates) and observes the
 //! commit effect fire *inside* that nested turn, with
 //! `CFRunLoopCopyCurrentMode` reporting the tracking mode at commit
 //! time — including for a write staged by a scroll-view `on_scroll`
-//! author callback (see the smoke crate's scroll/tracking self-test).
-//! If libdispatch ever stopped draining the main queue in tracking
-//! mode, that self-test is the regression tripwire; the fix would be
-//! scheduling the flush like apple-core schedules common-modes timers,
-//! NOT resurrecting the monitor.
+//! author callback. If libdispatch ever stopped draining the main queue
+//! in tracking mode, that self-test is the regression tripwire; the fix
+//! would be scheduling the flush like apple-core schedules common-modes
+//! timers, NOT adding an event monitor.
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
 //! skips re-entrant flushes (`world.is_flushing()`) — belt and braces;
 //! a main-queue microtask can't actually preempt a synchronous flush.
 //!
-//! Residual surfaces NOT covered (documented, not silent): callbacks
-//! installed by `Element::External` third-party macOS glue (the
-//! External registry predates the new core; its port must call
-//! [`schedule_flush`] after author callbacks).
+//! Residual surface NOT covered: callbacks installed by third-party
+//! scene-`Registry` mount handlers — those must call [`schedule_flush`]
+//! after author callbacks themselves.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -220,9 +175,7 @@ use runtime_world::World;
 use crate::imp::{MacosBackend, MacosNode};
 
 // Re-exported so the host shell (`host-appkit`) and app wrappers can
-// name the boot-path types without a direct runtime-scene dependency —
-// mirrors how consumers reach the old core's `Element` through
-// `runtime_shared`.
+// name the boot-path types without a direct runtime-scene dependency.
 pub use runtime_scene::Element as SceneElement;
 pub use runtime_scene::Registry as SceneRegistry;
 
@@ -242,8 +195,7 @@ thread_local! {
 /// Everything the boot path must keep alive. Field order is drop order:
 /// the realized tree unmounts before the world (its slots' owner) dies.
 /// The host typically `std::mem::forget`s this before entering the run
-/// loop (same retention as the old boot's `forget(owner)` — the process
-/// exits with the run loop).
+/// loop (the process exits with the run loop).
 pub struct NewCoreApp {
     realized: Realized<MacosNode>,
     _backend: Rc<RefCell<MacosBackend>>,
@@ -280,13 +232,13 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-window-wired backend.
+/// Mount an element tree into an already-window-wired backend.
 ///
 /// The host must have: constructed the backend, parented its host root
 /// into an NSWindow (`create_host_root` → `setContentView` →
 /// `set_host_root`), installed the scheduler + global self-handle, and
 /// opened a mount-buffering window. See the module docs for the exact
-/// sequence and `host_appkit::newcore::run` for the canonical caller.
+/// sequence and `host_appkit::run` for the canonical caller.
 ///
 /// `register` runs after [`runtime_vocabulary::register_builtins`], so
 /// apps/SDKs can register their own payload handlers on the same
@@ -378,7 +330,7 @@ pub fn start_with<S, R, B>(
     // with NO backend borrow held (drained tasks re-borrow the backend).
     runtime_shared::scheduling::drain_buffered_microtasks();
 
-    // Single-root contract, matching the old-core mount: `finish`
+    // Single-root contract: `finish`
     // parents the root view into the host root and runs the first
     // layout pass.
     let mut roots = realized.collect_nodes();
@@ -538,7 +490,7 @@ fn flush_now() {
 ///
 /// Host-integration seam: an embedded renderer mounted INSIDE this
 /// app's tree — the wgpu simulator preview
-/// (`host_macos_desktop::mount_newcore`) — realizes its scene into this
+/// (`host_macos_desktop::mount`) — realizes its scene into this
 /// SAME world, so the app's existing flush driver (dispatch-site
 /// wrappers + the apple-core scheduler/executor post-dispatch hook)
 /// commits the embedded app's staged writes with no second driver:
@@ -551,8 +503,7 @@ pub fn mounted_world() -> Option<World> {
 /// Run a platform-invoked vocabulary callback with the mounted world
 /// ambient (`World::enter`).
 ///
-/// WHY (bug: flat_list rendered ZERO rows on new-core web — every
-/// backend shared the gap): virtualizer `mount_item` REALIZES a row
+/// WHY (bug: flat_list rendered ZERO rows): virtualizer `mount_item` REALIZES a row
 /// from the backend's own scroll/window machinery, and realization is
 /// creation-side (`signal()`/`effect()`/`inject` for `ThemeCtx`), which
 /// panics outside `World::enter`. Ordinary author callbacks only stage
@@ -571,17 +522,16 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 }
 
 // ===========================================================================
-// Viewport source (the new-core macOS resize seam)
+// Viewport source (the macOS resize seam)
 // ===========================================================================
 //
 // The vocabulary's per-world viewport/breakpoint ctx
 // (`runtime_vocabulary::viewport`) is SEED-ONLY unless the platform
 // pushes live sizes (its module docs). This backend's resize seams are
 // the `LayoutObserverView` `setFrameSize:` override (imp/callbacks.rs)
-// and `finish`'s deferred first mirror (imp/mod.rs); both keep writing
-// the shared old-core TLS value (`runtime_shared::set_viewport_size`) —
-// the old core subscribes to it, and the world ctx SEEDS from it — and
-// additionally call [`forward_viewport`] so breakpoint-dependent author
+// and `finish`'s deferred first mirror (imp/mod.rs); both write the
+// shared TLS value (`runtime_shared::set_viewport_size`) — the world ctx
+// SEEDS from it — and additionally call [`forward_viewport`] so breakpoint-dependent author
 // reactivity (`when(!sidebar_pinned(Lg))` — the idea-ui-docs hamburger
 // class of bug) re-fires on window resize instead of freezing at its
 // seed.
@@ -596,8 +546,8 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 
 thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
-    /// outside a new-core boot, so the shared old-core seams cost one
-    /// TLS read and nothing else when the old core is driving.
+    /// before boot / after teardown, so the seams then cost one TLS
+    /// read and nothing else.
     static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
@@ -627,11 +577,8 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
 // Each helper wraps an author callback so that, AFTER the author code
 // returns, one deduped flush microtask is queued. These are used by the
 // callback-taking caps impls below — the precise dispatch-site glue the
-// flush driver is built on (module docs, "Flush driver"). Wrapping here
-// (instead of inside the shared `Backend` event closures) keeps the
-// old-core render path byte-identical: the old core applies writes
-// synchronously and must not pay a flush per event. Mirrors
-// `backend_ios::newcore` mechanically.
+// flush driver is built on (module docs, "Flush driver"). Mirrors
+// `backend_ios::newcore`.
 
 /// Wrap a zero-arg author callback (`on_press`, `on_dismiss`,
 /// `on_activate`, image error, …).
@@ -706,13 +653,12 @@ fn flushing_pointer_sink(
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// runtime_vocabulary::bridge — keep mechanically in sync; the scene-parity
-// goldens + the AllCaps bound on register_builtins are the compile gates)
+// Host + capability-trait delegation (the scene-parity goldens + the
+// AllCaps bound on register_builtins are the compile gates)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for MacosBackend {
@@ -991,7 +937,7 @@ impl caps::LinkOps for MacosBackend {
         a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core).
+        // (stages nav-queue tick signals).
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
         MacosBackend::create_link_impl(self, config, a11y)
@@ -1280,7 +1226,7 @@ impl caps::VirtualizerOps for MacosBackend {
         // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`) that
         // aborts outside `World::enter` (the flat_list-renders-zero-rows
         // bug); `release_item` drops the row scope, whose cleanups get
-        // the same ambient guarantee the old walker's teardown had.
+        // the same ambient world.
         let VirtualizerCallbacks {
             item_count,
             item_key,
@@ -1429,17 +1375,11 @@ impl caps::PresenceOps for MacosBackend {
 }
 
 impl caps::NavigatorOps for MacosBackend {
-    // Every method of this capability is now the caps trait's default.
-    // The old-core `create_navigator` (which registered the per-instance
-    // `NavigatorHandler` these four methods dispatched to) was DELETED
-    // with the old core — it does not fall back to a default
-    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
-    // registered and the vocabulary's navigator handler never calls
-    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
-    // folds screen chrome itself. Native push / header chrome on this
-    // backend is the documented native-nav seam, tracked in the module
-    // docs; it must be re-entered through the scene registry, not
-    // through a resurrected mega-trait cap.
+    // Every method of this capability is the caps trait's default: the
+    // vocabulary's navigator handler mounts navigators over
+    // `ViewOps`/`LifecycleOps` and folds screen chrome itself, so it never
+    // calls them. Native push / header chrome on this backend must come
+    // in through the scene registry, not through this cap.
 }
 
 // ---------------------------------------------------------------------------
@@ -1714,9 +1654,8 @@ mod tests {
     }
 
     /// The apple-core post-dispatch hook wired to `schedule_flush` is
-    /// THE driver for timer/frame/future-poll surfaces on macOS now
-    /// that the P4a NSEvent monitor + 60 Hz NSTimer pair is gone
-    /// (module docs). Regression: installing the hook and firing it
+    /// THE driver for timer/frame/future-poll surfaces on macOS — there
+    /// is no NSEvent monitor or frame-tick timer (module docs). Regression: installing the hook and firing it
     /// after a staged write must commit the write on the next
     /// microtask drain, and clearing the hook must sever the path (a
     /// torn-down app's timers can't flush a dead world).
@@ -1832,7 +1771,7 @@ mod tests {
         backend_apple_core::scheduler::end_mount_buffering();
     }
 
-    /// Regression (native new-core breakpoints frozen at their seed —
+    /// Regression (native breakpoints frozen at their seed —
     /// resize/rotation never re-fired breakpoint-dependent `when`s):
     /// the macOS resize seam ([`forward_viewport`], called by
     /// `LayoutObserverView::setFrameSize:` and `finish`'s deferred
@@ -1921,8 +1860,7 @@ mod tests {
         backend_apple_core::scheduler::end_mount_buffering();
     }
 
-    /// Regression (flat_list rendered ZERO rows on new-core — every
-    /// backend shared the gap): `enter_mounted_world`, the virtualizer
+    /// Regression (flat_list rendered ZERO rows): `enter_mounted_world`, the virtualizer
     /// mount/release dispatch-site wrapper, runs its callback with the
     /// boot-stored world ambient so creation-side row work
     /// (`signal()`/`effect()`/`inject`) is legal; without a stored
@@ -1949,7 +1887,7 @@ mod tests {
     }
 
     /// `mounted_world` hands an embedded mount
-    /// (`host_macos_desktop::mount_newcore`) the SAME world the boot
+    /// (`host_macos_desktop::mount`) the SAME world the boot
     /// stored — creations made through the clone land in the boot
     /// world — and reports `None` once the slot clears, so a
     /// mis-sequenced embed fails fast (`MountError::NoHostWorld`)

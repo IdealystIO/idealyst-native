@@ -7,7 +7,7 @@
 //!
 //! ## Decision 1 — which inserted child the anchor tracker pins
 //!
-//! An overlay composition lowers to an `Element::Portal` whose direct
+//! An overlay composition lowers to a `portal` primitive whose direct
 //! children are `[backdrop, content]` when a backdrop is requested
 //! (`overlay()`'s default `BackdropMode::Dismiss`), or just `[content]`
 //! when it isn't (the Modal's `BackdropMode::None`). The framework
@@ -16,14 +16,12 @@
 //!
 //! For an ANCHORED portal (popover / tooltip / menu) the content child
 //! is positioned absolutely against the trigger's viewport rect and a
-//! `CADisplayLink` re-pins it each vsync. The earlier code wired that
-//! tracker to the FIRST inserted child and then refused to re-wire
-//! ("apply tracker treatment only when the entry doesn't already have
-//! one"). With a backdrop present that pinned the BACKDROP and left the
-//! actual content laid out top-left by the container's neutral flex —
-//! the popover rendered in the wrong place (read as "missing"). The
-//! fix: re-route the LATEST inserted child through the anchor path on
-//! every insert, replacing any prior tracker. Because content is always
+//! `CADisplayLink` re-pins it each vsync. Wiring that tracker to the
+//! FIRST inserted child (and never re-wiring) pins the BACKDROP when one
+//! is present and leaves the actual content laid out top-left by the
+//! container's neutral flex — the popover renders in the wrong place
+//! (reads as "missing"). So the LATEST inserted child is re-routed
+//! through the anchor path on every insert, replacing any prior tracker. Because content is always
 //! inserted last, the final tracker pins the content — and a
 //! single-child anchored portal still works (its one child is both
 //! first and last). See [`anchored_insert_action`].
@@ -33,25 +31,24 @@
 //! Releasing a portal must drop the container's Taffy node AND every
 //! descendant view's Taffy node from the backend's `view_to_layout` /
 //! `applied_frames` / layout tree — not just `removeFromSuperview` the
-//! container. The earlier `release_portal` removed only the
-//! `portal_instances` entry and the container's superview link, leaving
-//! the container as an orphan Taffy ROOT plus a detached descendant
-//! subtree still registered in `view_to_layout`. Every subsequent
-//! layout pass then re-computed the dead root and wrote frames into the
-//! torn-down subtree forever (a growing leak + stale-layout source).
+//! container. Removing only the `portal_instances` entry and the
+//! container's superview link leaves the container as an orphan Taffy
+//! ROOT plus a detached descendant subtree still registered in
+//! `view_to_layout`; every subsequent layout pass then re-computes the
+//! dead root and writes frames into the torn-down subtree forever (a
+//! growing leak + stale-layout source).
 //! [`teardown_plan`] produces the exact, de-duplicated key set to drop;
 //! the test asserts it covers the whole subtree exactly once and never
 //! lists a key that wasn't registered.
 //!
 //! ## Decision 3 — where the anchor tracker pins the popover
 //!
-//! The `CADisplayLink` callback used to call `anchor_top_left` — the
-//! align/side geometry WITHOUT collision handling — while web called
-//! `resolve_anchored_placement`, which composes that same math with a
-//! side-flip and a viewport clamp. Identical author code therefore
-//! placed differently per platform: a menu, tooltip or popover near a
-//! screen edge rendered off-screen on iOS and stayed on-screen on web,
-//! which is exactly the divergence CLAUDE.md §7 forbids.
+//! Web places anchored content with `resolve_anchored_placement`, which
+//! composes the align/side geometry of `anchor_top_left` with a side-flip
+//! and a viewport clamp. A tracker calling bare `anchor_top_left` would
+//! place identical author code differently per platform — a menu,
+//! tooltip or popover near a screen edge off-screen on iOS and on-screen
+//! on web, exactly the divergence CLAUDE.md §7 forbids.
 //!
 //! [`anchor_tracker_placement`] is the tracker's placement decision,
 //! host-testable because the geometry it delegates to is pure. The
@@ -223,19 +220,13 @@ mod tests {
         );
     }
 
-    /// Regression: a multi-child anchored portal `[backdrop, content]`.
-    /// The backdrop is inserted first and starts a tracker; the content
-    /// is inserted second and MUST re-track to itself (the latest
-    /// child), not be ignored. The pre-fix code returned "skip" for the
-    /// second child, leaving the popover pinned to the backdrop and the
-    /// content laid out top-left (the "empty / missing content" bug).
-    /// Regression: the tracker called `anchor_top_left` — align/side
-    /// math with NO side-flip and NO viewport clamp — while web called
-    /// `resolve_anchored_placement`, which has both. A menu whose
-    /// trigger sits near the right edge therefore rendered off-screen
-    /// on iOS and on-screen on web from identical author code.
+    /// Regression: a tracker calling `anchor_top_left` — align/side
+    /// math with NO side-flip and NO viewport clamp — while web calls
+    /// `resolve_anchored_placement`, which has both, renders a menu whose
+    /// trigger sits near the right edge off-screen on iOS and on-screen
+    /// on web from identical author code.
     ///
-    /// The assertion is written so it FAILS against the old call:
+    /// The assertion is written so it FAILS against bare `anchor_top_left`:
     /// `align = Start` without a clamp returns `left == trigger.x`
     /// exactly, so a left origin anywhere else is only reachable
     /// through the clamp. Mirrors the on-device check (an iPhone 17 Pro
@@ -323,6 +314,12 @@ mod tests {
         assert_eq!(ANCHOR_EDGE_GAP, 8.0);
     }
 
+    /// Regression: a multi-child anchored portal `[backdrop, content]`.
+    /// The backdrop is inserted first and starts a tracker; the content
+    /// is inserted second and MUST re-track to itself (the latest
+    /// child), not be ignored. Returning "skip" for the second child leaves
+    /// the popover pinned to the backdrop and the content laid out top-left
+    /// (the "empty / missing content" bug).
     #[test]
     fn regression_anchored_multichild_retracks_to_content() {
         // First child (backdrop): no tracker yet → start one.

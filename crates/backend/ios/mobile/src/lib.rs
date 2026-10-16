@@ -71,11 +71,10 @@ mod grid_cell_root_policy;
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 mod user_activity_policy;
 
-// idea-lite core migration (iOS mirror of P4a): `runtime_scene::Host` +
-// all 30 `runtime_vocabulary::caps` traits directly on `IosBackend`,
-// the new-core mount path (`newcore::run_in_view`), and its
-// dispatch-site flush driver. Feature-gated only (NOT target-gated as
-// a whole, unlike backend-macos): the flush-driver glue is pure
+// `runtime_scene::Host` + the `runtime_vocabulary::caps` traits on
+// `IosBackend`, the mount path (`newcore::run_in_view`), and its
+// dispatch-site flush driver. NOT target-gated as a whole (unlike
+// backend-macos): the flush-driver glue is pure
 // scheduler/world code kept host-compilable so its regression tests
 // run from any host — the UIKit-dependent Host/caps impls and boot
 // path are `cfg(target_os = "ios")` inside the module.

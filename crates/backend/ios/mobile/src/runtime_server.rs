@@ -70,17 +70,12 @@ pub unsafe extern "C" fn ios_main(
     unsafe { ios_main_with_register(root_view, endpoint_utf8, |_backend| {}) }
 }
 
-/// Like [`ios_main`] but lets the caller register SDK extension
-/// handlers on the freshly-built [`IosBackend`] before the shell
-/// spawns. This is the seam the RS-shell crate uses to bundle the
-/// first-party SDKs into the (otherwise app-agnostic) runtime-server
-/// client: the web RS client registers SDKs via the generated
-/// per-app wrapper's `register_extensions`, but the iOS RS client is
-/// a fixed staticlib that links no user code — so the SDK set is
-/// compiled in here, fixed at build time (like React Native native
-/// modules). `register` runs after `IosBackend::new` and before
-/// `RuntimeServerShell::spawn_with_options`, matching the local-mount
-/// ordering where `register_extensions` runs before the first mount.
+/// Like [`ios_main`] but runs `register` on the freshly-built
+/// [`IosBackend`] before the shell spawns (after `IosBackend::new`,
+/// before `RuntimeServerShell::spawn_with_options`). The RS-shell crate
+/// passes a no-op: in runtime-server mode SDK scene handlers run on the
+/// host's recorder registry, so the client has nothing to register (see
+/// `backend-ios-rs-shell`'s module docs).
 ///
 /// `backend-ios-mobile` itself stays SDK-free (the SDKs depend on it,
 /// so it can't depend back without a cycle); the `register` closure
@@ -148,15 +143,12 @@ pub unsafe fn ios_main_with_register(
         // BEFORE anything that can defer work. Without it,
         // `runtime_shared::schedule_microtask` / `after_ms` fall back to
         // running their closure SYNCHRONOUSLY (scheduling.rs: no
-        // installed scheduler → `f()` inline). The SDK drawer handler
-        // defers its sidebar build via `schedule_microtask` precisely
-        // so the `backend.borrow_mut()` window held across
-        // `create_navigator` is released before the walker re-enters
-        // via `build_node` → `build_detached` → `walker/view::build` →
-        // `backend.borrow_mut()`. Synchronous fallback re-enters that
-        // borrow mid-`create_navigator` → `RefCell already borrowed`
-        // panic → `catch_unwind` aborts the batch mid-apply →
-        // incomplete tree → blank white. With the AppleScheduler
+        // installed scheduler → `f()` inline). Handlers defer work via
+        // `schedule_microtask` precisely so a held `backend.borrow_mut()`
+        // window is released before they re-borrow the backend; the
+        // synchronous fallback re-enters that borrow → `RefCell already
+        // borrowed` panic → the batch aborts mid-apply → incomplete tree
+        // → blank white. With the AppleScheduler
         // installed, `schedule_microtask` routes through
         // `dispatch_async(main_q)`; since `apply_batch` runs on the
         // main queue's serial FIFO, the deferred build runs in a LATER
@@ -172,10 +164,9 @@ pub unsafe fn ios_main_with_register(
         // `RuntimeServerShell::tick` relays to the sidecar's author code.
         crate::imp::activity::install(mtm);
 
-        // Register the compiled-in SDK handlers (no-op for the
-        // back-compat `ios_main`). Must run before the shell spawns so
-        // the first wire `create_navigator` / `create_external` finds
-        // the handler + the wire presentation factory.
+        // Caller hook (a no-op for every current caller — see the fn
+        // docs). Runs before the shell spawns, so anything it installs
+        // is in place for the first wire batch.
         register(&mut backend);
 
         let shell = Rc::new(RuntimeServerShell::spawn_with_options(
@@ -191,18 +182,13 @@ pub unsafe fn ios_main_with_register(
         // Install the backend self-handle so SDK code reached outside
         // the framework's normal call paths can drive a layout pass.
         // The runtime-server `IosBackend` is owned by the client (an
-        // `Rc<RefCell<IosBackend>>`), NOT moved by value as the
-        // surrounding comments imply — so a usable weak ref DOES exist.
-        // Without this, `with_backend(...)` (e.g. the drawer handler's
-        // deferred `drawer_attach_sidebar` → `b.run_layout()` at
-        // ios-navigator-helpers/tab_drawer.rs) returns `None` and the
-        // sidebar's standalone (parentless) Taffy node is never
-        // computed → its UIView frame stays 0×0 → the drawer scrim
-        // darkens on open but the sidebar panel is invisible. The
-        // sidebar is attached in a `schedule_microtask`-deferred build
-        // that runs in a LATER main-queue turn, AFTER the per-batch
-        // `run_layout` the shell tick performs — so only an explicit
-        // post-attach layout pass (via this handle) sizes it.
+        // `Rc<RefCell<IosBackend>>`), so a usable weak ref exists.
+        // Without this, `with_backend(...)` returns `None`, and a node
+        // attached by a `schedule_microtask`-deferred build — which runs
+        // in a LATER main-queue turn, AFTER the per-batch `run_layout`
+        // the shell tick performs — is never laid out (e.g. a drawer
+        // sidebar's parentless Taffy node stays 0×0: the scrim darkens
+        // but the panel is invisible).
         let backend_rc = shell.client.borrow().backend().clone();
         crate::install_global_self(Rc::downgrade(&backend_rc));
         drop(backend_rc);

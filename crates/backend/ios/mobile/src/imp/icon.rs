@@ -1,4 +1,4 @@
-//! `Element::Icon` — vector icon rendering on iOS.
+//! The `icon` primitive — vector icon rendering on iOS.
 //!
 //! Two rendering strategies depending on context:
 //!

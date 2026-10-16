@@ -6,14 +6,13 @@
 //!
 //! ## The bug these guard
 //!
-//! `Backend::finish` runs exactly once, at mount (the walker calls it after the
+//! `LifecycleOps::finish` runs exactly once, at mount (after the
 //! build). Reactive Effects that fire later — e.g. a `when`/reactive-style
 //! toggle that grows a collapsed `0×0` box to its real size — call
 //! `apply_style` directly and push the new size into Taffy, but nothing
-//! re-invokes the layout pass, so the NSView keeps its stale frame. The
-//! whiteboard-demo recording preview (a box sized only after the Record button
-//! is pressed) stayed invisible for exactly this reason. `apply_style` now
-//! schedules a coalesced pass when the change can affect layout AND the view is
+//! re-invokes the layout pass, so the NSView keeps its stale frame (e.g. a
+//! recording preview sized only after the Record button is pressed stays
+//! invisible). So `apply_style` schedules a coalesced pass when the change can affect layout AND the view is
 //! already in a window (so we don't fire N redundant passes during the initial
 //! build, when views aren't attached yet).
 
@@ -59,7 +58,7 @@ pub(crate) fn coalesced_swap_suppresses_pass(coalesce_depth: u32) -> bool {
     coalesce_depth > 0
 }
 
-/// Whether a `Backend::insert` should schedule a layout pass. Same gate as a
+/// Whether a `Host::insert` should schedule a layout pass. Same gate as a
 /// reactive style change: during the initial build the parent isn't in a window
 /// yet and `finish` lays the whole tree out, so scheduling is waste; but a
 /// POST-mount insert into a window-attached parent (a `presence`/`when` mount —
@@ -117,7 +116,7 @@ pub(crate) const RESIZE_EPSILON: f32 = 0.5;
 /// What the macOS host resize observer should do for a `setFrameSize:`, given
 /// the size it last reacted to (`last`) and the incoming size (`next`).
 ///
-/// `Backend::finish` lays out once at mount; a raw window resize produces no
+/// `LifecycleOps::finish` lays out once at mount; a raw window resize produces no
 /// reactive render, so the observer is the only thing that re-runs layout.
 /// This is the pure decision behind that observer's objc2 method — the AppKit
 /// `NSView`/`setFrameSize:` plumbing needs the main thread and a live window,

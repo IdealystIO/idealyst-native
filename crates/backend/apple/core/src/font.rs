@@ -114,7 +114,7 @@ pub type SystemFallbackRole = SystemFallback;
 
 /// Per-backend font state. The leaf crates (`backend-ios-core`,
 /// `backend-macos`) own one of these and forward
-/// `Backend::register_asset` / `register_typeface` calls into it;
+/// `AssetOps::register_asset` / `register_typeface` calls into it;
 /// resolution at style-apply time goes through
 /// [`FontRegistry::resolve_typeface`].
 #[derive(Default)]
@@ -132,7 +132,7 @@ impl FontRegistry {
         Self::default()
     }
 
-    /// `Backend::register_asset` entry point for the font branch.
+    /// `AssetOps::register_asset` entry point for the font branch.
     /// Returns `true` if `kind == AssetTag::Font` and the call was
     /// handled (success or failure); the caller can use that as a
     /// signal to skip the image-cache branch.
@@ -186,7 +186,7 @@ impl FontRegistry {
         true
     }
 
-    /// `Backend::register_typeface` entry point. Stores the family by
+    /// `AssetOps::register_typeface` entry point. Stores the family by
     /// id; each face's PostScript name comes from `asset_psnames`
     /// (populated by `register_asset` immediately prior — the
     /// framework guarantees that ordering).

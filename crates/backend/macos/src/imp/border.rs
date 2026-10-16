@@ -1,6 +1,6 @@
 //! CSS-style borders for the macOS backend.
 //!
-//! Same model as the iOS backend (`backend-ios-core/src/style.rs`), and
+//! Same model as the iOS backend (`backend_ios_core::style`), and
 //! the routing decision is the SHARED one (`backend_apple_core::border::
 //! uniform_border`) so the two converge byte for byte (Rule #7):
 //!
@@ -31,7 +31,8 @@
 //! which also relies on Auto Layout for this), and no flipped-coordinate
 //! math to get wrong. The bars are leaf decorations (never an ancestor of
 //! a `CAMetalLayer`), so layer-backing them doesn't trip the canvas-detach
-//! hazard (`project_macos_appkit_uikit_diffs` #21).
+//! hazard (forcing `setWantsLayer:` on the host root re-hosts its subtree
+//! and blanks a nested Metal canvas).
 //!
 //! A bar is a plain `NSView`, so it's never the `FlippedView` the click
 //! path treats as interactive; a click landing on the thin strip forwards

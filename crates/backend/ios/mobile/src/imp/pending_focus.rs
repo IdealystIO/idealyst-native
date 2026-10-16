@@ -4,8 +4,8 @@
 //! `-[UIResponder becomeFirstResponder]` returns NO for a view with no
 //! window, and a view realize just built has none: the subtree is inserted
 //! after its leaves mount, and a portal's container joins the window on a
-//! later run-loop turn (`portal.rs`). `focus()` right after mount used to be
-//! a silent no-op.
+//! later run-loop turn (`portal.rs`), so a bare `focus()` right after mount
+//! would be a silent no-op.
 //!
 //! A focus on a windowless field is recorded in the shared [`PendingFocus`]
 //! slot. The editable views are framework subclasses (`IdealystTextField`,

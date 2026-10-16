@@ -216,8 +216,8 @@ pub(crate) fn start_anchor_tracker(
             // Trigger not measurable yet. Safety net: if it never resolves
             // (an anchor handle type with no rect impl), reveal anyway after a
             // short grace so the content can't stay invisible forever — it
-            // shows at the `child_style_for_anchor` position, the pre-fix
-            // behavior, rather than vanishing.
+            // shows at the unadjusted `child_style_for_anchor` position
+            // rather than vanishing.
             if !revealed && frames > ANCHOR_REVEAL_GRACE_FRAMES {
                 revealed = true;
                 reveal(&popover);

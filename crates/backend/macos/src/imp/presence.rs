@@ -11,7 +11,7 @@
 //! raf-clock tween, exactly like the color [`transitions`](crate::imp::transitions)
 //! engine: this module is deliberately the same shape.
 //!
-//! [`apply_presence`] is called by the walker's presence arm at three points
+//! [`apply_presence`] is called by the vocabulary's presence handler at three points
 //! (enter snap, animate-to-rest, exit). It diffs against the LAST applied state
 //! (tracked here, no native read-back); with a transition set and a changed
 //! value it registers a tween and drives it off `raf_loop`, else it snaps. The

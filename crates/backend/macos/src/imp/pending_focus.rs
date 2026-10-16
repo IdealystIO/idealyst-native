@@ -3,9 +3,8 @@
 //!
 //! `-[NSWindow makeFirstResponder:]` needs a window, and a view realize just
 //! built has none: the subtree is inserted after its leaves mount, and a
-//! modal's content lands in a portal later still. `focus()` on a windowless
-//! field used to be a silent no-op (CrewForge's palette worked around it with a
-//! 100 ms timer).
+//! modal's content lands in a portal later still, so a bare `focus()` on a
+//! windowless field would be a silent no-op.
 //!
 //! A focus on a windowless field is recorded in the shared
 //! [`PendingFocus`] slot. The editable views are framework subclasses

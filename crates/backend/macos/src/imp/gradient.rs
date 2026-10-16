@@ -1,6 +1,6 @@
 //! Gradient backgrounds for the macOS backend.
 //!
-//! Same shape as `backend-ios-core/src/style.rs::install_gradient`
+//! Same shape as `backend_ios_core::style::install_gradient`
 //! — install a `CAGradientLayer` as the view's lowest sublayer
 //! and let Core Animation render it on every paint. Layer-level
 //! code is identical across UIKit and AppKit; only the
@@ -8,8 +8,7 @@
 //!
 //! Layout-pass sync (`sync_gradient_sublayer`) is required because
 //! CALayer's `autoresizingMask` doesn't drive automatic sublayer
-//! resizing on iOS in practice (per [[project_gradient_native]]),
-//! and the same constraint applies on macOS — we drive the
+//! resizing on iOS in practice, and the same constraint applies on macOS — we drive the
 //! resize explicitly during the frame-apply walk.
 
 use runtime_shared::Gradient;
@@ -95,7 +94,7 @@ pub(crate) fn install_gradient(view: &NSView, gradient: &Gradient) -> Option<Gra
     let _: () = unsafe { msg_send![&gradient_layer, setLocations: &*locations] };
 
     // Linear vs. radial setup. Same math the iOS backend uses; see
-    // `backend-ios-core/src/style.rs::build_gradient_layer` for the
+    // `backend_ios_core::style::build_gradient_layer` for the
     // derivation of the start/end-point formulas (CSS angle →
     // unit-square coords; `radius * 0.5` for ClosestSide,
     // `radius * 1/√2` for FarthestCorner).

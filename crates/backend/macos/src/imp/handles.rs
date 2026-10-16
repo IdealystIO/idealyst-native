@@ -32,7 +32,7 @@ pub(crate) fn view_key(view: &NSView) -> usize {
 /// per view per layout pass from `compute_and_apply_layout` (the AppKit
 /// analog of the web `ResizeObserver`). The registry is the shared
 /// `backend_apple_core::layout_subs` one, which also schedules the
-/// new-core flush after the callbacks run (FRAMEWORK-NOTES #103).
+/// flush after the callbacks run.
 pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
     backend_apple_core::layout_subs::fire(view_key, w, h);
 }
@@ -350,7 +350,7 @@ impl runtime_shared::TextOps for MacosTextOps {
 pub(crate) static MACOS_TEXT_OPS: MacosTextOps = MacosTextOps;
 
 // =========================================================================
-// Constructors used by `Backend::make_*_handle`.
+// Constructors used by the caps `make_*_handle` methods.
 // =========================================================================
 
 pub(crate) fn make_view_handle(node: &MacosNode) -> ViewHandle {
@@ -522,9 +522,9 @@ pub(crate) fn make_text_area_handle(node: &MacosNode) -> TextAreaHandle {
 //
 // `ViewOps::rect` is the anchor rect the portal placement math reads (see
 // `runtime_shared::primitives::portal`). Its contract is VIEWPORT/WINDOW-relative
-// coordinates. macOS used to return the PARENT-relative `view.frame` here, so a
-// trigger nested below the window root reported coordinates in its parent's
-// space; placement treated those as window coordinates and pinned every
+// coordinates. Returning the PARENT-relative `view.frame` here makes a
+// trigger nested below the window root report coordinates in its parent's
+// space; placement treats those as window coordinates and pins every
 // overlay to (0, 0) — the window's top-left.
 //
 // This guards that `rect()` returns the accumulated window-relative origin
@@ -630,15 +630,14 @@ mod tests {
         let abs = ops.absolute_frame(&node).expect("absolute_frame in a window");
         assert_eq!((rect.x, rect.y), (abs.x, abs.y));
 
-        // Distinguishing assertion: pre-fix `rect() == frame()` (both parent-
-        // relative). Post-fix they diverge for a nested trigger.
+        // Distinguishing assertion: for a nested trigger the window-relative
+        // `rect()` must differ from the parent-relative `frame()`.
         assert_ne!((rect.x, rect.y), (frame.x, frame.y));
 
         // The robot's `get_absolute_frame` and the Inspector's element
-        // highlight read the new-core `IntrospectionOps::absolute_frame`,
-        // which macOS left at the trait's `None` default: every element was
-        // frame-less and the highlight had nothing to draw around. It must
-        // report the same window-space rect.
+        // highlight read `IntrospectionOps::absolute_frame`, whose trait
+        // default is `None` (every element frame-less, nothing to highlight).
+        // It must report the same window-space rect.
         let backend = crate::imp::MacosBackend::new(mtm);
         let via_caps = runtime_vocabulary::caps::IntrospectionOps::absolute_frame(&backend, &node)
             .expect("IntrospectionOps::absolute_frame in a window");

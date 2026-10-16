@@ -90,8 +90,8 @@ fn poll_task(id: u64) {
     }
     // Post-dispatch flush hook: each poll runs author code up to its
     // next `.await` (resource / server-call continuations that set
-    // signals) — fire so a new-core flush driver commits the staged
-    // writes. No-op unless a new-core boot installed the hook; mirrors
+    // signals) — fire so the flush driver commits the staged
+    // writes. No-op unless a boot installed the hook; mirrors
     // the web executor's per-poll fire (see `dispatch_hook`).
     crate::dispatch_hook::fire_dispatch_hook();
 }

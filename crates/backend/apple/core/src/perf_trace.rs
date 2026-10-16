@@ -47,9 +47,9 @@ use crate::log::apple_log;
 
 /// A frame is counted as dropped when its interval exceeds the detected vsync
 /// period times this factor. 1.5× a 120 Hz period (8.3 ms) ≈ 12.5 ms; 1.5× a
-/// 60 Hz period (16.7 ms) ≈ 25 ms. Hardcoding 20 ms (the old value) was wrong on
-/// ProMotion — it silently undercounts, since a 10 ms frame there is already a
-/// full dropped frame. Deriving the budget from the link's own cadence makes the
+/// 60 Hz period (16.7 ms) ≈ 25 ms. A hardcoded 20 ms is wrong on ProMotion — it
+/// silently undercounts, since a 10 ms frame there is already a full dropped
+/// frame. Deriving the budget from the link's own cadence makes the
 /// count correct on 60/120/ProMotion-variable displays alike.
 const DROP_FACTOR: f64 = 1.5;
 /// Fallback vsync period (ms) when the screen's nominal refresh is unknown
@@ -140,10 +140,9 @@ fn on_display_tick() {
             // Self-silence: only report windows with activity.
             if r.raf_ticks > 0 || r.long_frames > 0 {
                 let fps = r.frames as f64 / elapsed;
-                // Now that the animation clock is CADisplayLink-driven, it ticks
-                // every frame WHILE animating and 0 when idle — so a low `anim`
-                // count means "nothing was animating this window", NOT starvation
-                // (that was the old NSTimer failure mode). The signal that
+                // The animation clock is CADisplayLink-driven: it ticks every
+                // frame WHILE animating and 0 when idle — so a low `anim`
+                // count means "nothing was animating this window", NOT starvation. The signal that
                 // actually matters for stutter is DROPPED FRAMES: display-link
                 // intervals over the budget, i.e. the main thread stalled.
                 let hint = if r.long_frames > 0 {

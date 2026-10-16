@@ -20,8 +20,7 @@
 //! SVG `A` / `a` arcs are approximated as cubic bezier segments
 //! (≤90° each). The conversion matches the canonical
 //! center-parameterization derivation from the SVG implementation
-//! note; it's identical to what the iOS path used to do inline and
-//! is preserved here.
+//! note.
 
 /// Sink for the SVG path parser. Each method corresponds to a
 /// CoreGraphics-style path command. Implementations forward to
@@ -305,8 +304,7 @@ fn emit_quad(
 }
 
 /// Approximate an SVG arc with cubic bezier segments (≤90° each).
-/// Same derivation the iOS path used to inline; pulled into the
-/// shared module so macOS uses the same approximation.
+/// Shared so iOS and macOS use the same approximation.
 fn arc_to_bezier(
     emitter: &mut dyn PathEmitter,
     x1: f64, y1: f64,

@@ -118,7 +118,7 @@ pub(crate) fn sync_shadow_path(view: &NSView) {
 ///
 /// **Required on every removal path.** The sibling lives in the *parent's*
 /// layer, so `removeFromSuperview` alone leaves the shadow painting where the
-/// card used to be. Removing an *ancestor* needs no call: the sibling sits
+/// card was. Removing an *ancestor* needs no call: the sibling sits
 /// inside that ancestor's subtree and goes with it. The handle survives, so a
 /// reparent (remove + insert) re-attaches the same layer on the next layout.
 pub(crate) fn detach_shadow_sibling(view: &NSView) {

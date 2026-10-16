@@ -1,4 +1,4 @@
-//! iOS backend implementation of `Backend::set_animated_*`.
+//! iOS backend implementation of `AnimationOps::set_animated_*`.
 //!
 //! Per-frame writes from the framework's animation clock land
 //! here keyed by `(IosNode, AnimProp)`. We:
@@ -60,7 +60,7 @@ pub(crate) struct AnimatedTransformState {
     pub rotate_z: Option<f32>,
     pub background_color: Option<[f32; 4]>,
     pub foreground_color: Option<[f32; 4]>,
-    /// `CAGradientLayer` reference stashed by `apply_gradient`, plus
+    /// `CAGradientLayer` reference stashed by `apply_style` (via `install_gradient`), plus
     /// the current sRGB stop colors. Per-frame `GradientStopColor`
     /// writes mutate `stops[idx]` and re-call `setColors:` on the
     /// stored layer — no need to walk the parent layer's sublayers
@@ -297,13 +297,12 @@ impl IosBackend {
         // We can't blanket-clear translate_x/y/scale_x/y/rotate_z
         // because those slots are shared with the animation system —
         // a `AnimatedValue<f32>` bound to `AnimProp::TranslateX`
-        // writes the same field. Pre-fix bug: idea-ui's Switch
+        // writes the same field. E.g. idea-ui's Switch
         // animates its thumb's TranslateX via that path; a theme
         // toggle re-fires `apply_style` from the cohort for the
         // thumb's static stylesheet, which has NO transform: op,
-        // so the old code cleared `translate_x` and never restored
-        // it \u{2014} thumb snapped from "on" position back to 0
-        // while the track color update still ran. Same trap applies
+        // so a blanket clear would zero `translate_x` and never
+        // restore it \u{2014} the thumb would snap from "on" back to 0. Same trap applies
         // to scale_x/y / rotate_z any time author code animates
         // those props.
         let mut style_writes_tx = false;
@@ -511,7 +510,7 @@ impl IosBackend {
                 // affecting properties on UIKit needs either per-frame
                 // Taffy re-layout (jank risk) or a `UIView.animate`
                 // block driven by the framework's animator. The right
-                // shape is a new `Backend::animate_property` method
+                // shape is a new `AnimationOps` method
                 // that lets each backend use its native animator;
                 // until that lands, iOS's `Smooth` collapsible
                 // degrades to snap.
@@ -618,7 +617,7 @@ impl IosBackend {
         self.animated_states.remove(&key);
     }
 
-    /// `Backend::apply_presence` for iOS.
+    /// `PresenceOps::apply_presence` for iOS.
     ///
     /// Maps a [`PresenceState`] (opacity + 2D translate + uniform
     /// scale) onto the node's UIView. Missing fields resolve to the
@@ -631,7 +630,7 @@ impl IosBackend {
     /// `AnimatedValue` path writes (`opacity`, `translate_x/y`,
     /// `scale_x/y`) and the same [`AnimatedTransformState::compose`]
     /// matrix, so presence and `AnimatedValue` agree on the final
-    /// `setTransform:`/`setAlpha:` output. The presence walker drives
+    /// `setTransform:`/`setAlpha:` output. The presence handler drives
     /// enter/exit as discrete state writes (apply-before-paint, then
     /// snap-to-rest one frame later for enter; apply exit-state then
     /// drop for exit), so we only ever animate from the *current*

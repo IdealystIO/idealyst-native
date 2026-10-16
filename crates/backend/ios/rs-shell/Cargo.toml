@@ -3,14 +3,11 @@
 # This is the fixed, app-agnostic staticlib the Swift glue links when
 # you run `idealyst dev --ios` (default = runtime-server).
 #
-# It used to sit above `backend-ios-mobile` so it could bundle the
-# first-party SDK crates and register their handlers on the RS client
-# backend. Runtime v2 removed that need: SDK scene handlers install on
-# the HOST's `Registry<WireRecordingBackend>` (the dev-server sidecar's
-# `register_scene_extensions_recorder` seam) and what crosses the wire is
-# already ordinary primitive commands. The SDK dependencies are gone; see
-# src/lib.rs module docs for the full rationale and the one behavior
-# delta it implies.
+# It depends on no SDK crates: SDK scene handlers install on the HOST's
+# `Registry<WireRecordingBackend>` (the dev-server sidecar's
+# `register_scene_extensions_recorder` seam), so what crosses the wire is
+# ordinary primitive commands. See src/lib.rs module docs for the one
+# behavior difference this implies.
 #
 # It re-exports the same `#[no_mangle] ios_main` / `ios_teardown` C
 # symbols the Swift host references, so `run-ios` just repoints

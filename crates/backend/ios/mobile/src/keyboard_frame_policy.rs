@@ -15,17 +15,16 @@
 //! (`keyboard_overlap`) and shrinks the layout viewport by it. That state is
 //! only correct if every frame change reaches it — open AND close.
 //!
-//! The observer used to reach the backend through `with_backend`, which
-//! takes the backend with `try_borrow_mut` and silently returns `None` when
-//! it is already borrowed. The keyboard OPENS from a tap, outside any
-//! borrow, so the open frame landed. It usually CLOSES because the backend
-//! itself unmounts the focused text input during a flush: UIKit resigns
-//! first responder and posts the will-change-frame notification
-//! synchronously, inside that borrow. The close frame was dropped,
-//! `keyboard_overlap` kept its "open" value, and every later layout ran in
-//! a viewport short by the keyboard's height (CrewForge on iPad, landscape:
-//! a ~481 pt blank band until restart). Closing with the keyboard's own
-//! hide key worked, because that path has no backend borrow on the stack.
+//! Reaching the backend through `with_backend` is not enough: it takes the
+//! backend with `try_borrow_mut` and silently returns `None` when it is
+//! already borrowed. The keyboard OPENS from a tap, outside any borrow, so
+//! the open frame lands. It usually CLOSES because the backend itself
+//! unmounts the focused text input during a flush: UIKit resigns first
+//! responder and posts the will-change-frame notification synchronously,
+//! inside that borrow. A dropped close frame leaves `keyboard_overlap` at
+//! its "open" value, and every later layout runs in a viewport short by the
+//! keyboard's height (on iPad landscape, a ~481 pt blank band until
+//! restart).
 //!
 //! # The fix
 //!

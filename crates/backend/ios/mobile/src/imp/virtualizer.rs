@@ -1,4 +1,4 @@
-//! `Element::Virtualizer` — `UICollectionView` with a flow layout
+//! The virtualizer primitive — `UICollectionView` with a flow layout
 //! that drives real cell recycling. Supports vertical and horizontal
 //! single-section lists.
 //!
@@ -7,7 +7,7 @@
 //! - The collection view is plain `UICollectionView` (UIKit), built
 //!   with a `UICollectionViewFlowLayout` instance. Scroll direction
 //!   is set from the `horizontal` flag handed to
-//!   `Backend::create_virtualizer`.
+//!   `VirtualizerOps::create_virtualizer`.
 //! - A custom `NSObject` subclass [`VirtualizerDataSource`] implements
 //!   `UICollectionViewDataSource` + `UICollectionViewDelegateFlowLayout`
 //!   and trampolines every lifecycle event back to the
@@ -241,12 +241,12 @@ declare_class!(
             // previous mount before installing the new one) and at
             // teardown (`shutdown`). Not here.
             //
-            // This used to release the mount, and it is what produced
-            // the "gaps appear when scrolling up and down" bug. UIKit
+            // Releasing here produces the "gaps appear when scrolling up
+            // and down" bug. UIKit
             // delivers this callback for a cell it has ALREADY handed
             // back out through `cellForItemAt` for the SAME index path
             // — reproducibly, when a fast scroll reverses and the
-            // window refills from the other end. Releasing there tore
+            // window refills from the other end. Releasing there tears
             // the freshly mounted child out of an on-screen cell:
             //
             //     MOUNT        idx=3 cell=…5b00 scope=294
@@ -381,7 +381,7 @@ declare_class!(
             let layout = self.ivars().layout;
             // Cross-axis extent available to lanes (perpendicular to
             // scroll), then split into `lanes` columns minus gaps. With
-            // one lane this is the old list behavior (cell fills the
+            // one lane this is plain list behavior (cell fills the
             // cross axis); with N it's a uniform grid. The flow layout
             // wraps N cells per line because each is `lane_cross` wide.
             let (usable_cross, lane_cross) = {
@@ -717,7 +717,7 @@ pub(crate) fn create(
 
     // 5) Stash the instance side-state. The pointer used as the key
     //    is stable across the collection view's lifetime — same
-    //    convention used by `navigator_instances` / `portal_instances`.
+    //    convention used by `portal_instances`.
     let cv_key = &*cv as *const UIView as usize;
     instances.insert(
         cv_key,
@@ -786,12 +786,10 @@ type _ForceImportNSObject = NSObjectFoundation;
 
 #[cfg(test)]
 mod tests {
-    //! Regression coverage for `create_virtualizer`. Per CLAUDE.md §8,
-    //! every bug fix lands with a regression test that fails before
-    //! the fix and passes after. The fix here is: `create_virtualizer`
-    //! used to delegate to the framework's default `unimplemented!()`,
-    //! so the smoke test is simply "does calling it with a minimal
-    //! callbacks struct return a node without panicking?"
+    //! Regression coverage for `create_virtualizer`: the caps default
+    //! only returns a placeholder, so the smoke test is simply
+    //! "does calling it with a minimal callbacks struct return a node
+    //! without panicking?"
     //!
     //! ## Why this isn't a tighter test
     //!
@@ -806,7 +804,7 @@ mod tests {
     //!      NSIndexPath, which exercises the trampoline but not the
     //!      actual UICollectionView layout flow we depend on.
     //!
-    //! The runtime-core walker tests cover `VirtualizerCallbacks`
+    //! The vocabulary's tests cover `VirtualizerCallbacks`
     //! plumbing on a stub backend; this test covers the iOS-specific
     //! "method exists + returns something" property. Cell recycling
     //! behavior is gated to manual on-device QA against the

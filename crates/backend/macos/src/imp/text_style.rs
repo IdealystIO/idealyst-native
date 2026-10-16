@@ -70,11 +70,10 @@ pub(crate) fn apply_text_style(
         // No explicit `font_family` still means the author-set weight/size/style
         // must land — web applies `font-weight`/`font-size` to any text
         // regardless of family, and iOS falls back to the system font here
-        // (`style.rs`'s `!applied` branch). macOS previously dropped the whole
-        // font when `resolve_nsfont` returned `None` (no family), so a
-        // `font_weight: SemiBold` with no family left the label at AppKit's
-        // default regular 13px — the idea-ui Button "not bold" bug. Fall back to
-        // the weighted system font so weight/size apply on every backend (Rule
+        // (`style.rs`'s `!applied` branch). Dropping the whole font when
+        // `resolve_nsfont` returns `None` (no family) would leave a
+        // `font_weight: SemiBold` label at AppKit's default regular 13px. Fall
+        // back to the weighted system font so weight/size apply on every backend (Rule
         // #7: converge output).
         let font = resolve_nsfont(font_registry, style.font_family.as_ref(), weight, fstyle, size)
             .unwrap_or_else(|| system_font(weight, size));

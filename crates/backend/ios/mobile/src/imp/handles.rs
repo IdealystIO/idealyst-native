@@ -24,7 +24,7 @@ use crate::imp::IosNode;
 /// `apply_frames` when a view's frame changes (the UIKit analog of the
 /// web `ResizeObserver`). The registry is the shared
 /// `backend_apple_core::layout_subs` one, which also schedules the
-/// new-core flush after the callbacks run (FRAMEWORK-NOTES #103).
+/// flush after the callbacks run.
 pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
     backend_apple_core::layout_subs::fire(view_key, w, h);
 }

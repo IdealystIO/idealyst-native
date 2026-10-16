@@ -1,6 +1,6 @@
 //! Pure geometry for the screen_recorder `PrivateLayer` passthrough hit-test on
 //! macOS, kept un-gated (no `target_os`) so its regression coverage runs from
-//! any host. The objc traversal in `imp::callbacks::private_layer_blocks_mouse`
+//! any host. The objc traversal in `imp::callbacks::private_layer_blocks_click`
 //! builds a [`HitNode`] tree from the live `NSView` subtree and delegates here.
 //! The AppKit reads (frame / installed-handler / backgroundColor) are not
 //! host-testable, but the recursion + per-level coordinate conversion — where

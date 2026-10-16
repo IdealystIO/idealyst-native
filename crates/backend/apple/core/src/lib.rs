@@ -12,10 +12,9 @@
 //!   CGFloat, CGFloat)` parsing wrapper. UIColor/NSColor adapters
 //!   stay in the leaf crates.
 //!
-//! Modules are gated on `cfg(any(target_os = "ios", target_os =
-//! "tvos", target_os = "macos"))`; on the host target the crate
-//! compiles as an empty rlib so workspace-wide `cargo check` keeps
-//! working.
+//! Toolkit-touching modules are gated on `cfg(any(target_os = "ios",
+//! target_os = "tvos", target_os = "macos"))`; the pure-logic modules
+//! marked "NOT OS-gated" build and unit-test on any host.
 
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod color;
@@ -64,13 +63,13 @@ pub mod async_executor;
 pub mod icon_path;
 
 // Convenience re-export — `apple_log!` macro callers don't need to
-// path through the module. Mirrors the prior `backend_ios_core::ios_log`
-// shape so the iOS-core re-export stays a one-line `pub use`.
+// path through the module. The iOS-core re-export
+// (`backend_ios_core::ios_log`) stays a one-line `pub use`.
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub use log::apple_log;
 
 /// Shared attributed-string assembly for styled text runs — the
-/// toolkit-agnostic half of `Backend::create_styled_text` on Apple
+/// toolkit-agnostic half of `TextOps::create_styled_text` on Apple
 /// (fragment appending + attribute dictionaries from finished
 /// platform objects). OS-gated: it constructs Foundation objects.
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
@@ -82,9 +81,6 @@ pub mod styled_text;
 /// source of truth for "what background/color does an editable control get".
 pub mod text_control_style;
 
-/// The uniform-vs-per-side border routing decision shared by the iOS and
-/// macOS backends. NOT OS-gated — pure `runtime_shared` logic, host-testable,
-/// so both backends collapse the four CSS sides identically (Rule #7).
 /// Typed CoreGraphics pointer newtypes (`CGColorRef`, `CGPathRef`) whose
 /// Objective-C type encodings are pinned by host-run tests. A bare
 /// `*const c_void` encodes as `^v` and makes objc2 abort the process at calls
@@ -107,6 +103,9 @@ pub mod image_source;
 /// unit-tested on the host.
 pub mod image_load_policy;
 
+/// The uniform-vs-per-side border routing decision shared by the iOS and
+/// macOS backends. NOT OS-gated — pure `runtime_shared` logic, host-testable,
+/// so both backends collapse the four CSS sides identically (Rule #7).
 pub mod border;
 
 /// Child-clipping decision (`clipsToBounds` / `masksToBounds`) shared by the
@@ -124,18 +123,21 @@ pub mod clip;
 /// (Rule #7).
 pub mod shadow;
 
-/// The CALayer half of [`shadow`] — writing/clearing shadow properties, tracing
-/// the `shadowPath`, and the whole lifecycle of the synthesized sibling layer.
-/// CALayer is the same class under UIKit and AppKit, so both backends share
-/// this file verbatim and contribute only the view→layer lookup.
+/// Suppresses CoreAnimation's implicit actions on layers the backend creates
+/// itself (no view delegate), so sublayers track their box instead of easing
+/// toward it.
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod implicit_animations;
 
+/// The CALayer half of [`shadow`] — writing/clearing shadow properties, tracing
+/// the `shadowPath`, and the whole lifecycle of the synthesized sibling layer.
+/// CALayer is the same class under UIKit and AppKit, so both backends share
+/// this file and contribute only the view→layer lookup.
 pub mod shadow_layer;
 
 /// The CALayer half of dashed / dotted borders: a `CAShapeLayer` host that
 /// strokes the [`border`] module's dash plans (`CALayer.borderWidth` cannot
-/// dash), its paint-order slot, and the per-layout re-trace. Shared verbatim by
+/// dash), its paint-order slot, and the per-layout re-trace. Shared by
 /// iOS and macOS, like [`shadow_layer`].
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod border_dash_layer;
@@ -146,12 +148,12 @@ pub mod border_dash_layer;
 /// (Rule #7).
 pub mod pointer_events_policy;
 
-/// Post-dispatch hook for the new-core flush drivers (idea-lite
-/// migration): a thread-local `fn()` slot the scheduler/executor fire
-/// after timer / frame / future-poll callbacks that may run author
-/// code. No-op default — the old core never installs it. NOT OS-gated:
-/// pure `std` state, host-testable, and the new-core glue in the leaf
-/// backends compiles it on the host for its own unit tests.
+/// Post-dispatch hook for the backends' flush drivers: a thread-local
+/// `fn()` slot the scheduler/executor fire after timer / frame /
+/// future-poll callbacks that may run author code. No-op until a boot
+/// installs it. NOT OS-gated: pure `std` state, host-testable, and the
+/// flush glue in the leaf backends compiles it on the host for its own
+/// unit tests.
 pub mod dispatch_hook;
 
 /// Per-view `on_layout` subscriber registry shared by the UIKit and

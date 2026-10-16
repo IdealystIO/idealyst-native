@@ -14,7 +14,7 @@
 //!
 //! Re-realization happens on every `apply_style` that hits a
 //! styled-text label (paragraph style changed) and on theme swaps via
-//! the walker's cohort entry (`Backend::update_styled_text`) — run
+//! the theme-cohort re-apply (`TextOps::update_styled_text`) — run
 //! token colors resolve at realize time, so both paths re-resolve
 //! against the current theme. Chip colors therefore SNAP on a theme
 //! swap while plain text may fade through the transition system;

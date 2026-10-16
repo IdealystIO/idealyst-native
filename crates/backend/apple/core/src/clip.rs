@@ -65,7 +65,7 @@ mod tests {
     use runtime_shared::{Length, Tokenized};
 
     /// A card-shaped style: all four corners rounded, nothing said about
-    /// `overflow` — the exact shape that used to get force-clipped.
+    /// `overflow` — the shape that must NOT get force-clipped.
     fn rounded() -> StyleRules {
         let r = || Some(Tokenized::Literal(Length::Px(12.0)));
         StyleRules {

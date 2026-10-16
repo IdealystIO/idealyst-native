@@ -22,7 +22,7 @@ use super::{CGColorRef, MacosBackend, MacosNode};
 
 impl MacosBackend {
     /// Read the native render tree for `node`. Entry point for
-    /// `Backend::introspect_native`.
+    /// `IntrospectionOps::introspect_native`.
     pub(crate) fn introspect_native_impl(&self, node: &MacosNode) -> Option<NativeNode> {
         let _t = phase_timer();
         // The root view must be in a window to report meaningful geometry;

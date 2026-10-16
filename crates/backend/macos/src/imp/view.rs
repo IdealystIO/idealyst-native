@@ -20,7 +20,7 @@
 //!
 //! `mouseDown:`/`mouseDragged:`/`mouseUp:` map to `TouchPhase::Began`/
 //! `Moved`/`Ended` for the single mouse pointer. A handler is installed by
-//! `Backend::install_touch_handler`; views without one let the event bubble up
+//! `InputOps::install_touch_handler`; views without one let the event bubble up
 //! the responder chain (so a click on a child without a handler still reaches a
 //! parent that has one — exactly like iOS's `touchesBegan` super-call). macOS
 //! points equal dp (no density scaling, unlike Android), and `isFlipped`
@@ -86,11 +86,11 @@ enum WheelSrc {
 }
 
 pub struct FlippedViewIvars {
-    /// Installed by `Backend::install_touch_handler`; `None` for the many
+    /// Installed by `InputOps::install_touch_handler`; `None` for the many
     /// views (containers, layout wrappers, native-control hosts) that carry
     /// no `on_touch`. `RefCell<Option<_>>` so it can be set after creation.
     handler: RefCell<Option<TouchHandler>>,
-    /// Installed by `Backend::install_wheel_handler`; `None` for views with no
+    /// Installed by `InputOps::install_wheel_handler`; `None` for views with no
     /// `on_wheel`. Drives the desktop zoom/scroll channel: `magnify:` →
     /// `WheelKind::Zoom`, `scrollWheel:` → `WheelKind::Scroll`.
     wheel_handler: RefCell<Option<WheelHandler>>,
@@ -103,14 +103,14 @@ pub struct FlippedViewIvars {
     /// cursor rect over the view's bounds in `resetCursorRects`; AppKit
     /// rebuilds those rects when we invalidate or the geometry changes.
     cursor: RefCell<Option<Retained<NSCursor>>>,
-    /// Interaction-state setter installed by `Backend::attach_states` for
+    /// Interaction-state setter installed by `StyleOps::attach_states` for
     /// nodes whose stylesheet declares `hovered`/`pressed` overlays. `None`
     /// for the many non-interactive views. We call it with
     /// `(StateBits::HOVERED, on)` from the tracking area's enter/exit and
     /// `(StateBits::PRESSED, on)` from mouseDown/Up; the framework
     /// re-resolves + re-applies the node's style.
     state_setter: RefCell<Option<Rc<dyn Fn(StateBits, bool)>>>,
-    /// Installed by `Backend::install_hover_handler` for views with an
+    /// Installed by `InputOps::install_hover_handler` for views with an
     /// `on_hover`. Fired `true` on `mouseEntered:`, `false` on
     /// `mouseExited:` — the macOS counterpart of web's
     /// `pointerenter`/`pointerleave`. `None` for views with no `on_hover`.
@@ -120,7 +120,7 @@ pub struct FlippedViewIvars {
     /// `state_setter` OR `hover_handler` is attached (only views that need
     /// hover — for styling or for `on_hover` — track it).
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
-    /// Installed by `Backend::install_file_drop_handler` for views with an
+    /// Installed by `InputOps::install_file_drop_handler` for views with an
     /// `on_file_drop`. Fired across an OS file drag's lifecycle
     /// (`draggingEntered:` → `Entered`, `draggingExited:` → `Exited`,
     /// `performDragOperation:` → `Dropped`) — the macOS counterpart of web's
@@ -150,7 +150,7 @@ pub struct FlippedViewIvars {
     /// equivalent (`NSView` has no `userInteractionEnabled`), so the
     /// `hitTest:` override consults this directly.
     pointer_events: Cell<Option<runtime_shared::PointerEvents>>,
-    /// `Backend::mark_preserves_focus` flag. When set on this view (or any
+    /// `InputOps::mark_preserves_focus` flag. When set on this view (or any
     /// ancestor — `mouse_down` walks the superview chain via
     /// [`subtree_preserves_focus`]), a press inside the subtree skips the
     /// blur-on-outside-click first-responder resign, so e.g. clicking an
@@ -334,7 +334,7 @@ declare_class!(
                         // editor alone — resigning here would close-on-blur
                         // the surface before its own click lands. The macOS
                         // half of web's canceled-`pointerdown` focus
-                        // preservation (`Backend::mark_preserves_focus`).
+                        // preservation (`InputOps::mark_preserves_focus`).
                         && !subtree_preserves_focus(self)
                     {
                         // `fr` is the shared field editor; its delegate is the
@@ -361,11 +361,11 @@ declare_class!(
             }
         }
 
-        // Right button → a Secondary `Began` (FRAMEWORK-NOTES #61). AppKit
-        // never routes the right button through `mouseDown:`, so before this
-        // override an `on_touch` handler on macOS could not see a secondary
-        // press at all — a right-click on an overlay's Dismiss backdrop did
-        // nothing, where web dismissed. Began-only per the `PointerButton`
+        // Right button → a Secondary `Began`. AppKit never routes the right
+        // button through `mouseDown:`, so without this override an `on_touch`
+        // handler on macOS could not see a secondary press at all — a
+        // right-click on an overlay's Dismiss backdrop would do nothing, where
+        // web dismisses. Began-only per the `PointerButton`
         // contract; super (context menu / next responder) when unconsumed.
         #[method(rightMouseDown:)]
         fn right_mouse_down(&self, event: &NSEvent) {
@@ -725,7 +725,7 @@ impl FlippedView {
     }
 
     /// Flag this view as a focus-preserving press region. Called by
-    /// `Backend::mark_preserves_focus`; consulted (self + ancestors) by
+    /// `InputOps::mark_preserves_focus`; consulted (self + ancestors) by
     /// `mouse_down`'s blur-on-outside-click resign via
     /// [`subtree_preserves_focus`].
     pub(crate) fn set_preserves_focus(&self) {
@@ -758,7 +758,7 @@ impl FlippedView {
         // transitions below, so focus is shown by a styled `state focused`
         // border (the cross-platform focus indicator web renders via `:focus`).
         // Mirrors the text-field path, which None's its ring for the same
-        // reason (see `configure_framework_field`).
+        // reason (see `apply_framework_field_chrome`).
         let _: () = unsafe { msg_send![self, setFocusRingType: 1usize] };
     }
 
@@ -790,19 +790,19 @@ impl FlippedView {
     }
 
     /// Install (or replace) the `on_touch` handler. Called by
-    /// `Backend::install_touch_handler`.
+    /// `InputOps::install_touch_handler`.
     pub(crate) fn set_handler(&self, handler: TouchHandler) {
         *self.ivars().handler.borrow_mut() = Some(handler);
     }
 
     /// Install (or replace) the `on_wheel` handler. Called by
-    /// `Backend::install_wheel_handler`.
+    /// `InputOps::install_wheel_handler`.
     pub(crate) fn set_wheel_handler(&self, handler: WheelHandler) {
         *self.ivars().wheel_handler.borrow_mut() = Some(handler);
     }
 
     /// Install (or replace) the `on_hover` handler and build the hover
-    /// tracking area. Called by `Backend::install_hover_handler`. Idempotent
+    /// tracking area. Called by `InputOps::install_hover_handler`. Idempotent
     /// — re-runs `updateTrackingAreas`, which swaps the area cleanly (and is
     /// what makes a non-styled view start tracking once it has a hover
     /// handler).
@@ -813,7 +813,7 @@ impl FlippedView {
 
     /// Install (or replace) the `on_file_drop` handler and register this view as
     /// an OS drag destination for file URLs. Called by
-    /// `Backend::install_file_drop_handler`. Registering is idempotent —
+    /// `InputOps::install_file_drop_handler`. Registering is idempotent —
     /// AppKit keeps one registration per view.
     pub(crate) fn set_file_drop_handler(&self, handler: FileDropHandler) {
         *self.ivars().file_drop_handler.borrow_mut() = Some(handler);
@@ -864,7 +864,7 @@ impl FlippedView {
         self.ivars().handler.borrow().is_some()
     }
 
-    /// Install the interaction-state setter (from `Backend::attach_states`)
+    /// Install the interaction-state setter (from `StyleOps::attach_states`)
     /// and build the hover tracking area. Idempotent — replacing the setter
     /// re-runs `updateTrackingAreas`, which swaps the area cleanly.
     pub(crate) fn set_state_setter(&self, setter: Rc<dyn Fn(StateBits, bool)>) {
@@ -1011,8 +1011,7 @@ impl FlippedView {
         // Batching is automatic: the `on_touch` handler is wrapped in a
         // reactive cycle at attach time (see `runtime_shared::cycle`), so a
         // burst of camera signal writes coalesces into one consistent render
-        // per input event — no backend-side `batch()` needed. (Previously a
-        // local `batch(..)` here; centralized so every backend gets it.)
+        // per input event — no backend-side `batch()` needed.
         // Which button produced this event, read out-of-band by the handler
         // (`runtime_shared::pointer_button`) — same seam as the modifiers.
         set_pointer_button(button);
@@ -1504,8 +1503,8 @@ impl IdealystTextView {
     }
 
     /// Install / update / clear the placeholder text, then repaint. `mtm` is
-    /// accepted for signature parity with the field path (no longer needed —
-    /// the placeholder is drawn, not a subview).
+    /// accepted for signature parity with the field path (unused — the
+    /// placeholder is drawn, not a subview).
     pub(crate) fn set_placeholder(&self, _mtm: MainThreadMarker, text: Option<&str>) {
         *self.ivars().placeholder.borrow_mut() = match text {
             Some(t) if !t.is_empty() => Some(NSString::from_str(t)),
@@ -1614,7 +1613,7 @@ pub(crate) struct LabelInsets {
 
 pub(crate) struct CellIvars {
     insets: StdCell<LabelInsets>,
-    /// Focus-state setter installed by `Backend::attach_states` (via
+    /// Focus-state setter installed by `StyleOps::attach_states` (via
     /// [`set_text_field_focus_setter`]) for an editable field's cell. The cell
     /// fires `(true)` when its field editor engages (`editWithFrame:` /
     /// `selectWithFrame:`) and `(false)` on `endEditing:`, driving
@@ -1630,7 +1629,7 @@ pub(crate) struct CellIvars {
     /// outside-click handler consults it before resigning this field — `Keep`
     /// keeps focus. Also unused by `IdealystLabelCell`.
     blur_handler: RefCell<Option<BlurHandler>>,
-    /// Author-facing focus notifier (`Backend::set_text_input_focus_handler`).
+    /// Author-facing focus notifier (`TextInputOps::set_text_input_focus_handler`).
     /// Fired `(true)` / `(false)` from the SAME cell edit/endEditing events that
     /// drive `focus_setter` — but this is the AUTHOR's `on_focus`, used by the
     /// idea-ui `Field` to light its bordered shell's ring for an adorned
@@ -2050,7 +2049,7 @@ pub(crate) fn set_text_field_blur_handler(field: &NSView, handler: BlurHandler) 
 /// Install the author-facing `on_focus` notifier on a text input's framework
 /// cell (plain OR secure). Fired `(true)`/`(false)` from the cell's
 /// edit/endEditing events alongside the framework `focus_setter`. No-op for any
-/// non-framework cell. Backs `Backend::set_text_input_focus_handler`.
+/// non-framework cell. Backs `TextInputOps::set_text_input_focus_handler`.
 pub(crate) fn set_text_field_author_focus(field: &NSView, handler: Rc<dyn Fn(bool)>) {
     if let Some(iv) = framework_cell_ivars(field) {
         *iv.author_focus.borrow_mut() = Some(handler);
@@ -2068,7 +2067,7 @@ pub(crate) fn text_field_blur_allows(field: &NSView) -> bool {
 }
 
 /// True when `view` or any superview is a [`FlippedView`] flagged by
-/// `Backend::mark_preserves_focus` — i.e. a press that landed here belongs
+/// `InputOps::mark_preserves_focus` — i.e. a press that landed here belongs
 /// to a focus-preserving region (a combobox's anchored menu, an input
 /// adornment) and must not resign the active field editor. Walked from the
 /// pressed view because AppKit delivers `mouseDown:` to the deepest
@@ -2216,14 +2215,14 @@ unsafe fn apply_framework_field_chrome<C: objc2::Message>(field: &NSTextField, c
 }
 
 /// Toggle an editable `NSTextField`'s secure-entry (password masking) mode
-/// IN PLACE, preserving the `NSView` node identity the render walker holds.
+/// IN PLACE, preserving the `NSView` node identity the realized tree holds.
 ///
 /// INVARIANT: secure entry on AppKit is a property of the *cell class*, not
 /// a settable flag — `NSSecureTextField` is just an `NSTextField` whose cell
 /// is an `NSSecureTextFieldCell`. Toggling at runtime therefore means a cell
-/// swap, NOT a new view: the field's `NSView` is unchanged, so the walker's
+/// swap, NOT a new view: the field's `NSView` is unchanged, so the realized
 /// `MacosNode::View` handle stays valid and the controlled `value` carries
-/// across the toggle. (Recreating the field would strand the walker's node.)
+/// across the toggle. (Recreating the field would strand that node.)
 ///
 /// The cell swap blanks the new cell, so the string value, placeholder,
 /// themed colors, and font are read off the field first and written back

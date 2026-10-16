@@ -7,7 +7,7 @@
 //!
 //! The framework's View primitive creates instances of this class
 //! (via `create_view`) instead of plain `UIView`, so a later
-//! [`Backend::install_touch_handler`](runtime_shared::Backend::install_touch_handler)
+//! [`InputOps::install_touch_handler`](runtime_vocabulary::caps::InputOps::install_touch_handler)
 //! drops the handler into the view's ivars without recreating the
 //! node. Views with no installed handler dispatch touches straight
 //! to `super` — overhead is one method call per touch event.
@@ -26,7 +26,7 @@ use objc2_foundation::{CGFloat, CGPoint, MainThreadMarker, NSArray, NSSet};
 use objc2_ui_kit::{UIEvent, UITouch, UIView};
 
 pub(crate) struct TouchViewIvars {
-    /// Installed by `Backend::install_touch_handler`. Wrapped in
+    /// Installed by `InputOps::install_touch_handler`. Wrapped in
     /// `RefCell<Option<_>>` so the framework can swap or remove the
     /// handler later (currently install-only).
     handler: RefCell<Option<TouchHandler>>,
@@ -224,7 +224,7 @@ impl IdealystTouchView {
     }
 
     /// Replace any previously-installed handler. Called by the
-    /// `Backend::install_touch_handler` impl on `IosBackend`.
+    /// `InputOps::install_touch_handler` impl on `IosBackend`.
     pub(crate) fn set_handler(&self, handler: TouchHandler) {
         *self.ivars().handler.borrow_mut() = Some(handler);
     }
@@ -389,7 +389,7 @@ fn touch_id_for(touch: &UITouch) -> u64 {
     touch as *const UITouch as usize as u64
 }
 
-/// Implementation of `Backend::claim_touch` for iOS.
+/// Implementation of `InputOps::claim_touch` for iOS.
 ///
 /// Walks up the responder chain from `view` looking for any
 /// `UIScrollView` (or subclass — `UICollectionView`, `UITableView`,

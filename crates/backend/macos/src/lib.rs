@@ -53,15 +53,12 @@ pub use imp::{
 #[cfg(not(target_os = "macos"))]
 pub use stub::MacosBackend;
 
-// idea-lite core migration (P4a): `runtime_scene::Host` + all 30
-// `runtime_vocabulary::caps` traits implemented directly on
-// `MacosBackend` (UFCS delegation to the existing Backend impl), plus
-// the new-core mount (`newcore::start`) and its flush driver
+// `runtime_scene::Host` + the `runtime_vocabulary::caps` traits on
+// `MacosBackend`, plus the mount (`newcore::start`) and its flush driver
 // (dispatch-site author-callback wrapping + the shared
-// `backend_apple_core::dispatch_hook`). Off by default; with the
-// feature off the build is unchanged (module + deps not compiled).
-// macOS-gated like `imp` — the stub backend has no real Backend impl to
-// front. `host-appkit`'s `newcore::run` is the windowed entry point.
+// `backend_apple_core::dispatch_hook`). macOS-gated like `imp` — the
+// stub backend has nothing to front. `host_appkit::run` is the windowed
+// entry point.
 #[cfg(target_os = "macos")]
 pub mod newcore;
 
@@ -97,7 +94,7 @@ pub fn install_scheduler() {}
 // (per-frame ticks for embedded wgpu hosts like `host-macos-desktop`).
 // `host-appkit` installs it at boot; without a driver, `render_loop`
 // silently returns a no-op handle and embedded previews never paint.
-// Gated on `async-driver` (which forwards `runtime-core/async-driver`,
+// Gated on `async-driver` (which forwards `runtime-shared/async-driver`,
 // the feature that compiles `runtime_shared::driver`) — host-appkit
 // enables it, so real apps always have the driver.
 #[cfg(all(target_os = "macos", feature = "async-driver"))]

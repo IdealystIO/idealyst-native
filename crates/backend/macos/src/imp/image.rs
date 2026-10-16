@@ -1,4 +1,4 @@
-//! `Element::Image` — a layer-backed `NSView` subclass whose backing
+//! The `image` primitive — a layer-backed `NSView` subclass whose backing
 //! `CALayer.contents` holds the decoded bitmap, scaled by
 //! `contentsGravity`.
 //!
@@ -35,7 +35,7 @@
 //! The `src` contract is `docs/image-src.md`; the decisions are
 //! `backend_apple_core::image_load_policy`, shared with iOS.
 //!
-//! - **Asset source** (`image_asset(LOGO)`): the walker calls
+//! - **Asset source** (`image_asset(LOGO)`): the vocabulary calls
 //!   `register_asset` first, which decodes `embed_asset!` bytes, reads an
 //!   `asset!` file from `<App>.app/Contents/Resources/assets/<path>`, or
 //!   records an `AssetSource::Remote` URL. `create_image` then shows it.
@@ -120,7 +120,7 @@ pub struct ImageViewIvars {
     /// The decoded bitmap's natural size, in points. `{-1, -1}`
     /// (matching `NSViewNoIntrinsicMetric`) until an image is assigned,
     /// so an image awaiting an async URL fetch measures as 0×0 rather
-    /// than a bogus size — same as the old empty `NSImageView`.
+    /// than a bogus size — same as an empty `NSImageView`.
     natural_size: Cell<CGSize>,
     /// Framework `on_load` observer, fired from `set_layer_image` once a
     /// bitmap is assigned (with its natural size). `None` = no observer.
@@ -130,7 +130,7 @@ pub struct ImageViewIvars {
     on_error: RefCell<Option<ImageErrorHandler>>,
     /// The `src` currently displayed (or in-flight). Guards
     /// `update_image_src` against re-applying an unchanged URL — the
-    /// walker's reactive-`src` Effect runs once at mount with the same
+    /// image handler's reactive-`src` Effect runs once at mount with the same
     /// URL `create_image` already loaded, which would otherwise kick off a
     /// duplicate `NSURLSession` fetch (and a duplicate `on_load`).
     current_src: RefCell<String>,
@@ -383,7 +383,7 @@ fn set_layer_contents(view: &NSView, cg: *mut AnyObject, size: CGSize) {
 
 /// Install the framework `on_load` observer on an image view, replaying it
 /// once if the current load has **already** succeeded (an embedded asset is
-/// assigned synchronously in `create_image`, before the walker installs
+/// assigned synchronously in `create_image`, before the vocabulary installs
 /// the handler — this closes that race, mirroring web's `<img>.complete`
 /// check). No-op on a non-image view.
 pub(crate) fn install_load_handler(node: &MacosNode, handler: ImageLoadHandler) {
@@ -427,7 +427,7 @@ pub(crate) fn create_image(
     _alt: Option<&str>,
 ) -> MacosNode {
     let view = ImageView::new(mtm);
-    // Record the mount src so the walker's reactive-`src` Effect (which
+    // Record the mount src so the image handler's reactive-`src` Effect (which
     // fires once with this same URL) is a no-op instead of a duplicate load.
     *view.ivars().current_src.borrow_mut() = src.to_string();
     let ns_view: Retained<NSView> = Retained::into_super(view);
@@ -443,7 +443,7 @@ pub(crate) fn update_image_src(node: &MacosNode, cache: &ImageCache, src: &str) 
         return;
     };
     // Skip a redundant re-apply of the URL already displayed / in-flight.
-    // The walker installs a reactive-`src` Effect that runs once at mount
+    // The image handler installs a reactive-`src` Effect that runs once at mount
     // with the same URL `create_image` just loaded; without this guard that
     // triggers a second `NSURLSession` fetch and a second `on_load`.
     if is_image_view(view) {
@@ -697,7 +697,7 @@ mod tests {
     // with the image's natural dimensions — both when the handler is
     // installed *before* the bitmap arrives (async-URL order) and when it
     // is installed *after* an already-decoded bitmap is set (embedded-asset
-    // order, which is exactly the `create_image` → walker-install sequence).
+    // order, which is exactly the `create_image` → handler-install sequence).
     #[test]
     fn on_load_fires_with_natural_size_both_orders() {
         use std::cell::RefCell;
@@ -746,10 +746,9 @@ mod tests {
         );
     }
 
-    /// Regression (CrewForge `BrandLockup`, 2026-10-07): an
-    /// `image("data:image/svg+xml,…")` drew an empty slot on Apple — the
-    /// views only resolved `asset://` + `http(s)://`, and `UIImage`/`NSImage
-    /// (data:)` can't decode SVG. Now the SVG is rasterized into
+    /// Regression: an `image("data:image/svg+xml,…")` drew an empty slot on
+    /// Apple — `UIImage`/`NSImage(data:)` can't decode SVG. The SVG is
+    /// rasterized into
     /// `layer.contents`, measures at its intrinsic size, fires `on_load`, and
     /// re-rasterizes denser when the view grows. Runs the real objc2 calls,
     /// so it also pins the `CGImage` / `NSData` type encodings.
@@ -799,10 +798,10 @@ mod tests {
         assert!(fired.get(), "a broken data URI fires on_error");
     }
 
-    /// Regression (rule 7 parity with Android, 2026-10-08): an `asset://`
-    /// id nothing registered, or a `src` no loader handles, left the view
-    /// silently blank on Apple while Android fired `on_error`. Every native
-    /// backend now routes through `runtime_shared::image_src::classify` and
+    /// Regression (rule 7 parity with Android): an `asset://` id nothing
+    /// registered, or a `src` no loader handles, left the view silently blank
+    /// on Apple while Android fired `on_error`. Every native backend routes
+    /// through `runtime_shared::image_src::classify` and
     /// reports both as a load error.
     #[test]
     fn regression_unloadable_image_src_was_silently_blank_on_apple() {

@@ -2,16 +2,15 @@
 //! animateWithDuration:delay:options:animations:completion:]` the iOS
 //! backends run: stylesheet transitions (`style::animate`), presence
 //! fades/slides, and transform transitions. One mapping, so the three
-//! cannot drift apart again.
+//! cannot drift apart.
 //!
 //! **`AllowUserInteraction` is always set.** Without it UIKit makes every
 //! view inside the animation block untouchable for the whole duration.
 //! Button carries a 200 ms opacity transition, so a Button REBUILT by a
 //! press (a pin pad's backspace the moment its live `disabled` flips)
-//! ignored every tap for 200 ms after it appeared, and anything mid-fade
-//! or mid-colour-change did the same. CSS transitions never block hit
-//! testing, and neither may these (Rule 7). The transform-transition path
-//! already set the bit; the style and presence paths did not.
+//! would ignore every tap for 200 ms after it appeared, and anything
+//! mid-fade or mid-colour-change would do the same. CSS transitions never block hit
+//! testing, and neither may these (Rule 7).
 //!
 //! Cross-target (no UIKit calls) so the mapping is host-tested.
 
@@ -50,7 +49,7 @@ mod tests {
         Easing::CubicBezier(0.1, 0.2, 0.3, 0.4),
     ];
 
-    /// REGRESSION (CrewForge kiosk pin pad, 2026-10-13): stylesheet and
+    /// REGRESSION (kiosk pin pad): stylesheet and
     /// presence transitions animated without `AllowUserInteraction`, so a
     /// view mid-transition — a Button just rebuilt by a press, running its
     /// 200 ms opacity transition — ignored taps. Reproduced in the iOS

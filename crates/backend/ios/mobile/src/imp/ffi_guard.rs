@@ -9,7 +9,7 @@
 //! (touch handlers, control action targets, key handling, collection-view
 //! data source, view-lifecycle observers, display-link ticks) wraps its
 //! body in [`guard_ffi`]: catch the unwind, log it, and `abort`. Project
-//! policy is crash-loud (see `feedback_crash_loud_on_panic`) — we never
+//! policy is crash-loud — we never
 //! let a panic silently cross into ObjC, and we never substitute a
 //! made-up return value.
 //!

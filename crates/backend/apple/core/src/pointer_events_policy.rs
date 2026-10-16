@@ -3,15 +3,13 @@
 //! any host (the `private_layer_hittest` precedent).
 //!
 //! Background: `StyleRules.pointer_events` is emitted as real CSS on
-//! web/SSR, but the native backends historically dropped it. That broke
-//! the overlay click-through composition (`overlay().click_through(true)`
+//! web/SSR, and the native backends must honor it too. Without it the
+//! overlay click-through composition (`overlay().click_through(true)`
 //! → root `pointer-events: none`, interactive children opt back in with
-//! `Auto`) and, worse, any always-mounted full-window scrim held inert by
-//! `PointerEvents::None` — idea-ui-nav's `AppShell` drawer scrim is
-//! exactly that, so on macOS EVERY real mouse click in an AppShell app
-//! landed on the invisible scrim and content links never fired (robot
-//! clicks, which bypass hit-testing, kept working — which is how the bug
-//! hid).
+//! `Auto`) breaks, and, worse, any always-mounted full-window scrim held
+//! inert by `PointerEvents::None` — idea-ui-nav's `AppShell` drawer scrim
+//! is exactly that — swallows EVERY real mouse click (robot clicks bypass
+//! hit-testing, which hides the bug).
 //!
 //! Mechanism per platform, converging on this verdict (CLAUDE.md §7):
 //! - **AppKit**: `FlippedView.hitTest:` runs the default (frame-based)

@@ -23,8 +23,8 @@
 //! but does not conjure something to cast it. A contentless layer with a
 //! `shadowPath` and `shadowOpacity = 1` renders **nothing**. Measured by
 //! rasterizing the same scene three ways: no fill → alpha 0 outside the box,
-//! a fill at alpha 0.01 → 1, an opaque fill → 98. The first version of this
-//! module left the sibling empty and was silently invisible.
+//! a fill at alpha 0.01 → 1, an opaque fill → 98. An empty sibling is
+//! silently invisible.
 //!
 //! So [`sync_sibling`] mirrors the card's own background onto the sibling. The
 //! sibling has the card's frame and corner radius and sits directly behind it,
@@ -250,7 +250,7 @@ pub fn ensure_sibling(layer: &NSObject) -> Retained<NSObject> {
 ///
 /// Backends MUST call this when a view leaves its parent: the sibling lives in
 /// the *parent's* layer, so removing the view alone would leave a shadow
-/// floating where the card used to be.
+/// floating where the card was.
 pub fn detach_sibling(layer: &NSObject) {
     if let Some(sib) = sibling(layer) {
         let _: () = unsafe { msg_send![&*sib, removeFromSuperlayer] };

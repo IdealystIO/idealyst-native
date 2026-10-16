@@ -274,7 +274,7 @@ impl IdealystTextField {
         }
     }
 
-    /// Install the focus-state setter (from `Backend::attach_states`).
+    /// Install the focus-state setter (from `StyleOps::attach_states`).
     pub(crate) fn set_focus_setter(&self, setter: Rc<dyn Fn(bool)>) {
         *self.ivars().focus_setter.borrow_mut() = Some(setter);
     }

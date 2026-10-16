@@ -26,8 +26,8 @@ pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
 /// Box shadow (`StyleRules.shadow`). Mirrors the iOS shadow path so an
-/// `Elevated` Card casts the same shadow on both Apple backends (Rule #7);
-/// macOS previously dropped the field entirely. Owns the flipped-vs-not Y-sign
+/// `Elevated` Card casts the same shadow on both Apple backends (Rule #7).
+/// Owns the flipped-vs-not Y-sign
 /// convention and the explicit `shadowPath` that keeps shadows off
 /// CoreAnimation's offscreen-derivation path.
 pub(crate) mod shadow;
@@ -164,7 +164,7 @@ pub struct MacosBackend {
     /// them. Mirrors iOS `sticky_registry`.
     pub(crate) sticky_registry: sticky::StickyRegistry,
     /// Sticky views whose `apply_style` ran before `insert` gave them a
-    /// scroll ancestor (walker ordering). `insert` retries these;
+    /// scroll ancestor (realize styles a node before inserting it). `insert` retries these;
     /// value = the per-axis pin thresholds. Mirrors iOS
     /// `pending_sticky`.
     pub(crate) pending_sticky: HashMap<usize, runtime_shared::sticky::StickyInsets>,
@@ -175,7 +175,7 @@ pub struct MacosBackend {
     /// current sRGB stop colors so `AnimProp::GradientStopColor(idx)`
     /// can rewrite a single stop without rebuilding the sublayer.
     pub(crate) gradient_states: HashMap<usize, gradient::GradientState>,
-    /// Styled-text labels (`Backend::create_styled_text`), keyed by view
+    /// Styled-text labels (`create_styled_text_impl`), keyed by view
     /// pointer. Holds the run list + last paragraph style so `apply_style`
     /// and `update_styled_text` can re-realize the attributed string with
     /// base + deltas merged. Evicted on pointer reuse in `layout_for_view`
@@ -213,7 +213,7 @@ pub struct MacosBackend {
     ///   1. Keeps the `NSWindow` retained for the overlay's lifetime (a
     ///      child window is otherwise only weakly held by its parent).
     ///   2. `insert` / `clear_children` consult it to SKIP the native
-    ///      reparent: the External walker would otherwise yank the
+    ///      reparent: realize's `insert` would otherwise yank the
     ///      content view out of its own (capture-excludable) window and
     ///      into the main recorded tree.
     /// The content view is also registered as a Taffy root sized to the
@@ -222,7 +222,7 @@ pub struct MacosBackend {
         HashMap<usize, Retained<objc2_app_kit::NSWindow>>,
     /// View-pointer keys of `create_portal` content views. A portal mounts
     /// itself into the host window's content view and is its OWN Taffy root, so
-    /// (mirroring iOS's `portal_instances`) `insert` must SKIP the walker's
+    /// (mirroring iOS's `portal_instances`) `insert` must SKIP realize's
     /// attempt to reparent it into the surrounding tree — otherwise the overlay
     /// renders inline at the declaration site (e.g. a Modal landing at the bottom
     /// of a Settings list with no backdrop). The layout pass computes each against
@@ -233,8 +233,8 @@ pub struct MacosBackend {
     /// `apply_style` lays the portal prim's own `style` OVER them rather
     /// than replacing them: `LayoutTree::set_style` resets an unset
     /// `justify_content` to `FlexStart`, so a click-through overlay's
-    /// pointer-events-only style used to wipe a `Bottom` placement and pull
-    /// the content to the top of the window.
+    /// pointer-events-only style would otherwise wipe a `Bottom` placement and
+    /// pull the content to the top of the window.
     pub(crate) portal_roots: HashMap<usize, StyleRules>,
     /// Per-ANCHORED-portal state, keyed by the container view pointer (the
     /// same key as in `portal_roots`). Only anchored portals (tooltip /
@@ -247,7 +247,7 @@ pub struct MacosBackend {
     /// Layout node of the top-of-tree root, stashed by `finish` so a
     /// post-mount `schedule_layout_pass()` can recompute from it without
     /// the `root: Node` argument `finish` receives. `finish` runs exactly
-    /// once at mount (the walker calls it after the build); reactive
+    /// once at mount (after the build); reactive
     /// Effects that resize a node afterwards have no `root` to hand us, so
     /// we remember it here. `None` until the first `finish`.
     pub(crate) root_layout: Option<runtime_layout::LayoutNode>,
@@ -368,7 +368,7 @@ pub fn install_global_self(weak: std::rc::Weak<RefCell<MacosBackend>>) {
 /// Push a scalar animation property update to `node` on the
 /// installed global backend. The cross-platform animation system's
 /// per-frame subscribers reach the macOS backend through this —
-/// same shape as the iOS routing in `backend_ios_mobile`.
+/// same shape as the iOS backend's routing.
 ///
 /// Quietly no-ops if no backend is installed yet (pre-render) or
 /// the install has been dropped (post-teardown), or if the backend
@@ -432,7 +432,7 @@ pub fn with_global_backend<F: FnOnce(&mut MacosBackend)>(f: F) {
 
 /// Queue a coalesced, deferred layout pass on the globally-installed backend.
 ///
-/// `Backend::finish` lays the tree out once, at mount. Reactive Effects that
+/// `finish` lays the tree out once, at mount. Reactive Effects that
 /// resize a node afterwards (a `when`/reactive-style toggle growing a collapsed
 /// `0×0` box to its real size — e.g. the whiteboard-demo recording preview)
 /// push the new size into Taffy via `apply_style` but have no way to drive a
@@ -500,10 +500,8 @@ pub fn flush_pending_layout_pass() {
 /// and then, after `active_changed`, fans `active_route` out to every sidebar
 /// item. The macOS reactive-idle hook ([`install_global_self`]) flushes a
 /// *full-tree* layout pass at each boundary whose `LAYOUT_PASS_QUEUED` flag is
-/// armed, so a single navigation fired 4–9+ redundant full passes (~15–20ms
-/// each — one even nested *inside* an effect's first run, showing up as a 19ms
-/// `attach_style_effect_alloc`). Worse, with the persistent-screen cache each
-/// pass was O(all cached views) until [[project_macos_apply_frames_reachable_scope]].
+/// armed, so without this guard a single navigation fires 4–9+ redundant full
+/// passes (~15–20ms each, one even nested *inside* an effect's first run).
 ///
 /// Holding this guard across the swap suppresses those mid-swap flushes (the
 /// flag stays armed; see [`run_pending_layout_pass`]). When the outermost guard
@@ -886,7 +884,7 @@ impl MacosBackend {
         // frame, or the apply-frames pass could wrongly skip framing it.
         self.last_applied_frame.remove(&key);
         // Same recycling hazard for the external-scroller registry: a
-        // recycled pointer that used to be a content-measured scroller must
+        // recycled pointer that was a content-measured scroller must
         // not divert the new view's padding to a dead label.
         self.external_content_measures.remove(&key);
         // ...and for styled-text runs: a recycled pointer must not make the
@@ -947,8 +945,7 @@ impl MacosBackend {
     /// Re-installable — `update_image_src` calls this again after
     /// swapping the image so a new bitmap's size is picked up.
     ///
-    /// Mirrors `IosBackend::install_image_measure` per the
-    /// `project_ios_intrinsic_size_measurer` memory.
+    /// Mirrors `IosBackend::install_image_measure`.
     pub(crate) fn install_image_measure(&mut self, view: &Retained<NSView>) {
         let layout = self.layout_for_view(view);
         let view_for_measure = view.clone();
@@ -1279,9 +1276,8 @@ fn make_tap_handler(on_click: Rc<dyn Fn()>) -> runtime_shared::TouchHandler {
         // the platform "click" of every backend is primary-only (DOM `click`,
         // UIKit tap). Swallow it without arming — the macOS twin of web's
         // `swallow_ancestor_touch`, which likewise keeps a right-click on a
-        // Button from reaching an ancestor `on_touch` row. Needed since
-        // `FlippedView` began delivering Secondary `Began`s
-        // (`rightMouseDown:`, FRAMEWORK-NOTES #61).
+        // Button from reaching an ancestor `on_touch` row. Needed because
+        // `FlippedView` delivers Secondary `Began`s (`rightMouseDown:`).
         TouchPhase::Began if !runtime_shared::pointer_button().is_primary() => {
             TouchResponse::CONSUMED
         }
@@ -1620,12 +1616,10 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // the view (`AnimProp::Opacity` → `setAlphaValue:`) would make
     // any author who set both static AND animated opacity get
     // (static * animated) — visibly broken whenever the static
-    // value is < 1. Welcome's planets hit this case exactly: the
-    // sheet declares `opacity: 0.0` as the resting state and the
-    // raf body animates `setAlphaValue:` up to `fade_in`. Pre-fix
-    // the planets stayed invisible because the layer opacity
-    // stayed at 0 regardless of `setAlphaValue:`. Both backends
-    // now route static + animated through the same field.
+    // value is < 1 (a sheet resting at `opacity: 0.0` that a raf
+    // body fades in via `setAlphaValue:` would stay invisible).
+    // Both Apple backends route static + animated through the
+    // same field.
     if let Some(opacity) = style.opacity.as_ref().map(|t| t.resolve()) {
         let _: () = unsafe { msg_send![view, setAlphaValue: opacity as f64] };
     }
@@ -1669,8 +1663,9 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
                 // until Taffy assigns a frame, so stash the requested value as
                 // an associated `NSNumber`; the layout pass (`sync_corner_radius`)
                 // reads it back and clamps against the real bounds (and re-clamps
-                // on resize). Same pattern iOS uses; see
-                // [[project_ios_cornerradius_unclamped]].
+                // on resize). Same pattern iOS uses: Core Animation does not clamp
+                // `cornerRadius` the way CSS does, and a radius over half the short
+                // side renders the layer empty.
                 let key = NSString::from_str("idealyst_requested_corner_radius");
                 let number: Retained<NSObject> = unsafe {
                     msg_send_id![objc2::class!(NSNumber), numberWithDouble: radius]
@@ -1707,27 +1702,21 @@ fn apply_style_to_view(view: &NSView, style: &StyleRules) {
     // asymmetric→per-side NSView bars (e.g. a `border-bottom`-only
     // underline) / none→clear — the SAME shape as iOS, via the shared
     // `backend_apple_core::border::uniform_border` decision so the two
-    // backends converge (Rule #7). The macOS backend previously applied NO
-    // border at all, so every bordered component (Card outlines, the
-    // SegmentedControl/Tabs active underline, Field borders, the whiteboard
-    // swatch ring) rendered borderless on macOS while iOS/web showed it.
+    // backends converge (Rule #7).
     border::apply_border(view, &layer, style);
 
     // Box shadow (`StyleRules.shadow`) — the drop shadow behind an `Elevated`
     // card. Runs AFTER the border so `cornerRadius` is settled and the traced
-    // `shadowPath` follows the same curve the border strokes. macOS used to
-    // drop this field entirely while iOS and web rendered it (Rule #7); see
+    // `shadowPath` follows the same curve the border strokes. See
     // `shadow` for the flipped-view Y-sign convention and why the explicit
     // path matters for frame rate.
     shadow::apply_box_shadow(view, style);
 
     // Overflow → CALayer `masksToBounds` (AppKit's equivalent of UIView's
     // `clipsToBounds`). Mirrors iOS `style.rs` so the backends converge (Rule
-    // #7): a plain `overflow: Hidden` view clips its children on macOS too. The
-    // macOS backend previously honored overflow ONLY on scroll views, so a
-    // styled non-scroll view silently never clipped (iOS/Android/web did). When
+    // #7): a plain `overflow: Hidden` view clips its children on macOS too. When
     // overflow is unset we leave `masksToBounds` at the layer default (false) —
-    // the cornerRadius branch above no longer forces it on, so a rounded view
+    // the cornerRadius branch above does not force it on, so a rounded view
     // that never asked to clip doesn't pay for an offscreen mask pass.
     // Clipping is a layer mask — it does NOT detach a child's hosted
     // `CAMetalLayer`; the view is already layer-backed (`setWantsLayer` above) and
@@ -1981,11 +1970,11 @@ mod overflow_tests {
 /// whole viewport's worth of `NSView`s.
 ///
 /// macOS `NSView` is layer-OPTIONAL and the host root is deliberately layer-LESS
-/// (so it can never re-host and detach a nested `CAMetalLayer`; see
-/// [[project_macos_appkit_uikit_diffs]] #21 (b)), so the scroll documentView's
+/// (forcing `setWantsLayer:` on the host ROOT re-hosts its subtree and
+/// detaches a nested `CAMetalLayer`, blanking the GPU canvas), so the scroll documentView's
 /// subtree is NOT implicitly layer-backed from above — only individually styled
 /// views opt in. We therefore layer-back the documentView explicitly. Mid-tree
-/// layer-backing is metal-safe (#21: `apply_style_to_view` already does it on
+/// layer-backing is metal-safe (`apply_style_to_view` already does it on
 /// every styled view and the vello canvas renders fine), and AppKit propagates
 /// it down to the whole subtree, so one flag GPU-composites all scrolled
 /// content. iOS (every `UIView` is layer-backed) and web (the browser
@@ -2725,7 +2714,7 @@ impl MacosBackend {
 
         // Lay out every detached private-layer root. These live in their own
         // borderless overlay windows and never enter the host tree, so the
-        // host-root compute above doesn't reach them — but the External walker
+        // host-root compute above doesn't reach them — but realize
         // has by now inserted their children (toolbar, preview). Compute each
         // against its overlay window's (now host-synced) content size so the
         // toolbar fills + positions correctly inside its window.
@@ -2856,11 +2845,10 @@ impl MacosBackend {
     }
 }
 
-// The backend mechanism, as inherent methods (runtime v2: the `Backend`
-// mega-trait is gone). Bodies are verbatim what the trait impl carried;
-// `newcore.rs` adapts them onto `runtime_scene::Host` + the
-// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
-// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+// The backend mechanism, as inherent methods. `newcore.rs` adapts them
+// onto `runtime_scene::Host` + the `runtime_vocabulary::caps::*Ops`
+// capability traits, one delegation per method. The `_impl` suffix keeps
+// the adapter's call sites unambiguous.
 impl MacosBackend {
 
     /// Navigator abstraction calls this after every command (see the trait doc).
@@ -2898,7 +2886,6 @@ impl MacosBackend {
         // from the render server, blanking the canvas. The window's content
         // background sits behind the (layer-optional, bg-less) root view and
         // shows through exactly the same, without touching any view's layer.
-        // See [[project_macos_appkit_uikit_diffs]] #21.
         //
         // `host_root.window` is non-nil after `setContentView:` (the same
         // guarantee `create_private_layer_window` + the toolbar SDK rely on);
@@ -3138,10 +3125,9 @@ impl MacosBackend {
     /// and Taffy resolves an absolute child's insets against its DIRECT
     /// layout parent — a `position: absolute; bottom: md` alert was placed
     /// against a full-width, zero-height box and landed above its
-    /// positioned ancestor (the iOS "presence alert never appears" bug;
-    /// the PresenceOps default had it). macOS used to patch the absolute
-    /// case by upgrading the placeholder to `absolute; inset: 0` in
-    /// `insert`, which still left a box in the way (padding, `flex_grow`).
+    /// positioned ancestor (the iOS "presence alert never appears" bug).
+    /// Upgrading the placeholder to `absolute; inset: 0` in `insert` is not
+    /// enough — it still leaves a box in the way (padding, `flex_grow`).
     /// A contents node also keeps the toast stack stacking with its gap —
     /// the cards are the column's own flex items. The view itself is
     /// framed to the real ancestor's box (`frame_of` on a contents node),
@@ -3169,7 +3155,7 @@ impl MacosBackend {
         // Every `create_view` mints a `FlippedView`, which translates
         // `mouseDown/Dragged/Up` into the handler (see `view.rs`). Other node
         // kinds (NSTextField labels, native controls) don't carry an `on_touch`
-        // slot, so the walker never calls us with them.
+        // slot, so the vocabulary never calls us with them.
         let MacosNode::View(view) = node else {
             return;
         };
@@ -3760,7 +3746,7 @@ impl MacosBackend {
 
     pub(crate) fn update_text_input_secure_impl(&mut self, node: &MacosNode, secure: bool) {
         // In-place cell swap (VCenterSecureTextFieldCell ↔ VCenterTextFieldCell)
-        // — keeps the node's NSView so the walker handle + controlled value
+        // — keeps the node's NSView so the input handle + controlled value
         // survive the toggle. See `set_text_field_secure` for the invariant.
         crate::imp::view::set_text_field_secure(self.mtm, node.as_view(), secure);
     }
@@ -4420,19 +4406,19 @@ impl MacosBackend {
         let child_view = child.as_view();
 
         // Detached window root (screen_recorder private layer): the content
-        // view already lives in its OWN borderless overlay window. The
-        // External walker calls `insert(parent, external_node)` to splice the
+        // view already lives in its OWN borderless overlay window. Realize
+        // calls `insert(parent, node)` to splice the
         // handler's returned node into the surrounding tree — but `addSubview`
         // here would reparent the content view OUT of its overlay window and
         // INTO the main (recorded/capturable) tree. Skip the native reparent;
         // the root stays in its window. Its Taffy node remains registered
         // (sized to the window by the detached-root pass in `finish`) and the
-        // walker's child-insert already populated it. Mirror of iOS.
+        // realize already populated it. Mirror of iOS.
         let child_key = child_view as *const NSView as usize;
 
         // Portal container: it already mounted ITSELF into the host window's
         // content view in `create_portal` and is its own viewport-sized Taffy
-        // root (laid out in `compute_and_apply_layout`). The walker still calls
+        // root (laid out in `compute_and_apply_layout`). Realize still calls
         // `insert(declaration_parent, portal_node)` for it — doing the reparent
         // here would yank the overlay out of the host overlay and INTO the
         // surrounding tree, so it'd render inline at the declaration site (a
@@ -4663,7 +4649,7 @@ impl MacosBackend {
         self.last_applied_frame.remove(&child_key);
         // A clipped view's drop shadow lives on a sibling layer in the PARENT's
         // layer (see `shadow`), so `removeFromSuperview` alone would leave it
-        // painting where the card used to be.
+        // painting where the card was.
         shadow::detach_shadow_sibling(child_view);
         let _: () = unsafe { msg_send![child_view, removeFromSuperview] };
 
@@ -4691,7 +4677,7 @@ impl MacosBackend {
         let child_key = child.view_key();
 
         // Portal / detached-window roots mount themselves into the host window;
-        // skip the parent-tree splice the walker tries for them. (Mirror of
+        // skip the parent-tree splice realize tries for them. (Mirror of
         // `insert`.)
         if self.portal_roots.contains_key(&child_key)
             || self.detached_window_roots.contains_key(&child_key)
@@ -4819,8 +4805,7 @@ impl MacosBackend {
             {
                 continue;
             }
-            // Mirror iOS's clear_children Taffy sync (see
-            // [[project_ios_clear_children_taffy_sync]]): detach the
+            // Mirror iOS's clear_children Taffy sync: detach the
             // Taffy edge BEFORE removeFromSuperview so a stale
             // child-set + cached parent size doesn't drive a ghost
             // layout on the next pass.
@@ -4835,7 +4820,7 @@ impl MacosBackend {
             // recycled NSView can't inherit a stale `from` color.
             transitions::forget_view(sub_ref);
             // Drop any in-flight presence tween (opacity/transform) — this is
-            // the path the presence walker uses to tear a card down after its
+            // the path the presence handler uses to tear a card down after its
             // exit animation, so the just-finished tween's state must clear.
             presence::forget_view(sub_ref);
             // Drop the cached text-measure signature (mirror `remove_child`).
@@ -4901,7 +4886,7 @@ impl MacosBackend {
         // NSScrollView so the clip-view bounds-change observer pins
         // this view once scrolled past its `top` threshold. Any other
         // Position (or unset) deregisters so a Sticky → Relative
-        // transition clears the carried translate. The walker fires
+        // transition clears the carried translate. Realize fires
         // `apply_style` BEFORE `insert`, so a first-mount register may
         // find no scroll ancestor yet — record in `pending_sticky` and
         // let `insert` retry (mirrors iOS).
@@ -5510,8 +5495,8 @@ impl MacosBackend {
     /// views are layer-backed + flipped (top-left origin, matching Taffy),
     /// so `-[NSView frame]` reads in the same top-left space the layout
     /// pass writes. Enables the robot bridge's `get_frame` verb on macOS
-    /// (used by the inspector + e2e drivers); previously the default
-    /// `None` stub left every element frame-less here.
+    /// (used by the inspector + e2e drivers); the caps default returns
+    /// `None`, which would leave every element frame-less.
     pub(crate) fn frame_impl(&self, node: &MacosNode) -> Option<runtime_shared::primitives::portal::ViewportRect> {
         let view = node.as_view();
         let frame: CGRect = unsafe { msg_send![view, frame] };
@@ -5523,7 +5508,7 @@ impl MacosBackend {
         })
     }
 
-    // Programmatic scroll read/write for `Element::ScrollView` nodes — the
+    // Programmatic scroll read/write for `scroll_view` nodes — the
     // robot `set_scroll` action's backend half (the pan analogue e2e drives
     // use where no scriptable input exists; converges with iOS's
     // `contentOffset` pair per CLAUDE.md §7). AppKit's unit of scroll state
@@ -5792,7 +5777,7 @@ impl MacosBackend {
 
         // Register the container as its own Taffy root, sized via the placement
         // flex style. It's an orphan (no Taffy parent — `insert` skips the
-        // walker's reparent via `portal_roots`), so `compute_and_apply_layout`
+        // realize's reparent via `portal_roots`), so `compute_and_apply_layout`
         // computes it against the viewport (Auto axes fill to the window) and the
         // placement's justify/align positions the content child inside it.
         let layout_node = self.layout_for_view(&content);
@@ -5850,12 +5835,12 @@ impl MacosBackend {
         _payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> MacosNode {
-        // Runtime v2: there is no backend-side External registry any more.
-        // Third-party primitives register a payload handler on the scene
+        // There is no backend-side External registry: third-party
+        // primitives register a payload handler on the scene
         // `Registry` (`runtime_scene::Registry::register`), which dispatches
         // BEFORE reaching a backend cap — so this method is only ever the
         // last-resort placeholder an SDK's own degradation handler asks for
-        // on a host it has no leg for. Placeholder body unchanged.
+        // on a host it has no leg for.
         let node = external_placeholder_node(self, type_name);
         // Third-party externals declare their own role via
         // `props.role` if needed — we don't infer one here.
@@ -5895,8 +5880,8 @@ impl MacosBackend {
             }
         };
 
-        // Parent the root view to the host's content view. The
-        // framework's walker calls `insert(parent, child)` only for
+        // Parent the root view to the host's content view. Realize
+        // calls `insert(parent, child)` only for
         // child-of-child relationships within the user's primitive
         // tree — the *top* node has no framework parent, so it never
         // becomes a subview of the host without this explicit
@@ -5958,8 +5943,8 @@ impl MacosBackend {
                         width: next.0,
                         height: next.1,
                     });
-                    // New-core mirror (see newcore.rs, "Viewport
-                    // source"): on a new-core boot this microtask is
+                    // World mirror (see newcore.rs, "Viewport
+                    // source"): after boot this microtask is
                     // the FIRST live push — it lands the real window
                     // size in the world's viewport ctx right after
                     // mount (the ctx seeded from the pre-`finish` TLS
@@ -5995,7 +5980,7 @@ impl MacosBackend {
 
     // ---------------------------------------------------------------
     // Asset / typeface registry hooks. Same forwarding as iOS, just
-    // routed through the cross-Apple `FontRegistry` lifted in Phase 0.
+    // routed through the cross-Apple `FontRegistry` (`backend_apple_core::font`).
     // ---------------------------------------------------------------
 
     pub(crate) fn register_asset_impl(
@@ -6068,7 +6053,7 @@ fn external_placeholder_node(b: &mut MacosBackend, type_name: &'static str) -> M
 
 
 
-// Regression coverage for the macOS half of FRAMEWORK-NOTES #61 (a
+// Regression coverage for secondary-button delivery on macOS (a
 // right-click on an overlay's Dismiss backdrop must dismiss, uniformly
 // with web). The AppKit selector overrides themselves (`rightMouseDown:` /
 // `otherMouseDown:` / Ctrl-`mouseDown:` in `view.rs`) are not reachable

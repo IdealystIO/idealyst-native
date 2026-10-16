@@ -11,8 +11,7 @@
 use objc2_foundation::CGFloat;
 
 /// Parse a CSS-style color string into `(r, g, b, a)` in `0.0..=1.0`,
-/// coerced to `CGFloat`. Unknown shapes fall back to opaque black
-/// (matches the legacy iOS behavior before centralization).
+/// coerced to `CGFloat`. Unknown shapes fall back to opaque black.
 ///
 /// The parsing logic lives in
 /// [`runtime_shared::color::parse_or`]; this wrapper exists so the

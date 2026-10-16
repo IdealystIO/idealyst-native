@@ -9,12 +9,12 @@
 //!   1. [`resolve_corner_radius`] — what `apply_style` should do with a
 //!      requested corner radius given the px clamp it can (or can't)
 //!      compute and the view's *current* laid-out bounds. The bug this
-//!      guards: a reactive re-style on an already-laid-out percent-sized
-//!      view used to blindly reset `cornerRadius` to 0 and defer the
-//!      real value to the next layout pass — but a paint-only re-style
+//!      guards: if a reactive re-style on an already-laid-out percent-sized
+//!      view resets `cornerRadius` to 0 and defers the real value to the
+//!      next layout pass, nothing restores it — a paint-only re-style
 //!      produces no frame change, so `apply_frames`' frame-key cache
 //!      skips the view and `sync_corner_radius` never re-fires. The
-//!      rounded corner went square after any press. See
+//!      rounded corner goes square after any press. See
 //!      `regression_ios_corner_radius_survives_restyle`.
 //!
 //!   2. [`is_layout_affecting`] — whether a style change touches any
@@ -28,10 +28,10 @@
 use runtime_shared::{Color, Length, StyleRules, Tokenized};
 
 // The unstyled-`text()` color decision is shared by every native backend
-// and now lives once in `runtime_shared::text_defaults` (CLAUDE.md §7 — the
+// and lives once in `runtime_shared::text_defaults` (CLAUDE.md §7 — the
 // resolved bytes must be byte-identical across iOS/Android/macOS/web).
-// Re-exported here under the historical names so this crate's call sites
-// (and `backend-ios-mobile`'s `apply_style`) are unchanged.
+// Re-exported here for this crate's call sites (and `backend-ios-mobile`'s
+// `apply_style`).
 pub use runtime_shared::text_defaults::{
     effective_text_color, THEME_TEXT_COLOR_FALLBACK, THEME_TEXT_COLOR_TOKEN,
 };
@@ -91,7 +91,7 @@ pub enum CornerRadiusDecision {
 /// waiting for a layout pass that the frame-key cache may skip. Only
 /// when neither a px cap nor real bounds exist do we `Defer`.
 ///
-/// UIKit invariant (project_ios_cornerradius_unclamped): a
+/// UIKit invariant: a
 /// `cornerRadius > min(w, h) / 2` makes the layer render *nothing* —
 /// the clamp is mandatory, not cosmetic.
 pub fn resolve_corner_radius(
@@ -399,10 +399,9 @@ mod tests {
     }
 
     // The regression: a reactive re-style of an already-laid-out
-    // percent-sized view. BEFORE the fix this path zeroed cornerRadius
-    // and deferred to a layout pass that the frame-key cache skips
-    // (no frame change on a paint-only re-style), so the corner went
-    // square. AFTER the fix, real bounds are present so we clamp NOW
+    // percent-sized view. Zeroing cornerRadius and deferring to a
+    // layout pass loses the corner (the frame-key cache skips a
+    // paint-only re-style). Real bounds are present, so we clamp NOW
     // and the corner survives.
     #[test]
     fn regression_ios_corner_radius_survives_restyle() {
@@ -494,7 +493,7 @@ mod tests {
     }
 
     // The regression: a paint-only re-style (background/opacity/color)
-    // used to schedule a layout pass on every press. The layout key
+    // must not schedule a layout pass on every press. The layout key
     // must be IDENTICAL before/after such a change, so the apply path
     // can skip both `set_style` and the layout pass.
     #[test]
@@ -524,10 +523,10 @@ mod tests {
     /// Regression: `layout_affecting_key` must key a `Typeface` by its
     /// stable ID, never by Debug-formatting the family. A `face!`
     /// typeface reaches its faces' `AssetSource` embedded font BYTES —
-    /// the old `enom!("ff", …)` `{:?}` rendered every byte as decimal
-    /// text, so ANY node styled with `font_family: &INTER` paid
+    /// Debug-formatting renders every byte as decimal
+    /// text, so ANY node styled with `font_family: &INTER` would pay
     /// ~184ms of string formatting per `apply_style` (every website
-    /// navigation and every theme toggle stalled by ~an eighth of a
+    /// navigation and every theme toggle stalling by ~an eighth of a
     /// second per styled container on iOS).
     #[test]
     fn regression_typeface_key_is_id_based_not_debug_of_bytes() {
@@ -628,10 +627,10 @@ mod tests {
     // A full UIKit test isn't reachable on the host (UILabel.textColor is
     // an objc property on a class that only links on-device), so we test
     // the pure decision that feeds the `setTextColor:` call. The bug:
-    // when `style.color` is absent, `apply_text_style` used to leave the
-    // label at UIKit's `labelColor` — white in dark mode → invisible over
-    // a light surface. The fix routes the absent case to the theme's
-    // `color-text` token instead.
+    // when `style.color` is absent, leaving the label at UIKit's
+    // `labelColor` makes it white in dark mode → invisible over a light
+    // surface. The absent case routes to the theme's `color-text` token
+    // instead.
 
     // Explicit author color passes straight through — author always wins.
     #[test]

@@ -1,4 +1,4 @@
-//! `Element::Graphics` — wgpu Surface backed by a CAMetalLayer
+//! The `graphics` primitive — wgpu Surface backed by a CAMetalLayer
 //! attached to a layer-backed NSView. Mirrors the iOS UIView+
 //! CAMetalLayer pattern at
 //! `crates/backend/ios/mobile/src/imp/graphics.rs`.
@@ -52,7 +52,7 @@ use super::MacosNode;
 // =========================================================================
 
 pub(crate) struct MetalViewIvars {
-    /// Reactive resize callback (from `Backend::create_graphics`). Fired on every
+    /// Reactive resize callback (from `GraphicsOps::create_graphics`). Fired on every
     /// frame-size change AFTER the one-time `on_ready` seeds the surface — so a
     /// canvas whose view is resized by the layout pass (e.g. the whiteboard's
     /// aspect-ratio stage switching 9:16↔16:9) reconfigures its wgpu surface to

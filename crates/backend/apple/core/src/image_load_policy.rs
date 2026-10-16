@@ -12,8 +12,8 @@
 //!   app bundle's resources.
 //! - [`fetch_verdict`](crate::image_load_policy::fetch_verdict): what a finished `NSURLSession` data task means.
 //!   A transport error, a missing response or a non-2xx status is a load
-//!   error even when the body holds bytes. Before this check an HTTP error
-//!   page that happened to decode was drawn as the image.
+//!   error even when the body holds bytes. Without this check an HTTP error
+//!   page that happens to decode is drawn as the image.
 //! - [`ImageLoadState`](crate::image_load_policy::ImageLoadState) /
 //!   [`LoadGeneration`](crate::image_load_policy::LoadGeneration): every `src` change starts a new generation, and
 //!   a fetch that completes for an older one is dropped (no image, no

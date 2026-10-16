@@ -1,5 +1,5 @@
 //! Pure index-clamping policy for the iOS backend's anchorless
-//! reactive-region splice (`Backend::insert_at`), kept un-gated so the
+//! reactive-region splice (`Host::insert_at`), kept un-gated so the
 //! regression coverage runs from any host (`cargo test -p
 //! backend-ios-mobile`).
 //!

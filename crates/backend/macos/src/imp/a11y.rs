@@ -6,17 +6,17 @@
 //! function takes a node + resolved props and writes (or clears) every
 //! relevant NSAccessibility property. All `create_*` paths call it
 //! after constructing the view; the dynamic
-//! [`update_accessibility`](runtime_shared::Backend::update_accessibility)
+//! [`update_accessibility`](runtime_vocabulary::caps::A11yOps::update_accessibility)
 //! path reuses it identically. Clearing on `None` is intentional —
 //! reactive a11y prop changes must not leak stale labels onto a view.
 //!
 //! AppKit walks each `NSView`'s NSAccessibility properties directly
 //! (`accessibilityLabel`, `accessibilityRole`, …), so we don't maintain
 //! a parallel semantics tree and
-//! [`dump_accessibility_tree`](runtime_shared::Backend::dump_accessibility_tree)
+//! [`dump_accessibility_tree`](runtime_vocabulary::caps::A11yOps::dump_accessibility_tree)
 //! stays `None` for this backend.
 //!
-//! ### AppKit vs UIKit subtleties (see [[project_macos_appkit_uikit_diffs]])
+//! ### AppKit vs UIKit subtleties
 //!
 //! - **Role + subrole, not traits.** UIKit packs a bitfield of "traits"
 //!   onto every view; AppKit instead exposes a single string `role`
@@ -417,12 +417,11 @@ fn set_string_or_clear(view: &NSView, sel: objc2::runtime::Sel, value: Option<&s
     // ('@') on NSObject regardless of the underlying target's
     // return type, so the Rust receiver type has to be a pointer
     // — even though the actual selectors we send (the
-    // `setAccessibility*:` family) are void-returning. Pre-fix
-    // this used `let _: () = ...`, which made objc2's debug-mode
-    // signature verifier panic ("expected return to have type
-    // code '@', but found 'v'") the first time the runtime-server-mode walk
-    // hit an a11y label. The returned pointer is meaningless for
-    // these setters; we ignore it.
+    // `setAccessibility*:` family) are void-returning. Typing the
+    // receiver `()` makes objc2's debug-mode signature verifier
+    // panic ("expected return to have type code '@', but found
+    // 'v'") on the first a11y label. The returned pointer is
+    // meaningless for these setters; we ignore it.
     type Id = *mut objc2_foundation::NSObject;
     match value {
         Some(v) => {

@@ -77,10 +77,8 @@ fn set_label_text(
     }
 }
 
-/// No-op `NavigatorOps` returned by `make_navigator_handle` when no
-/// SDK handler is stored for the requested node (e.g. the node id
-/// doesn't appear in `nav_handler_instances`). Keeps the fallback
-/// handle inert without panicking.
+/// Inert `NavigatorOps`. Currently unreferenced — `make_navigator_handle`
+/// takes the caps-trait default, which carries its own no-op.
 struct NoopNavOps;
 impl NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
@@ -172,14 +170,14 @@ pub struct IosBackend {
     /// uses CAShapeLayer (vector, no raster needed).
     icon_image_cache: HashMap<(usize, u16), Retained<NSObject>>,
     /// Cache of decoded `UIImage`s for asset-backed `Image` primitives.
-    /// Filled by [`Backend::register_asset`] when an
+    /// Filled by `register_asset_impl` when an
     /// `Asset<kinds::Image>` is observed; queried by
-    /// [`Backend::create_image`] when the `src` is the
+    /// `create_image_impl` when the `src` is the
     /// `asset://{id}` sentinel.
     pub(crate) image_cache: image::ImageCache,
     /// Process-registered custom fonts + per-`Typeface` lookup table.
-    /// Filled by [`Backend::register_asset`] for `AssetTag::Font`
-    /// (CGFont → CTFontManager) and [`Backend::register_typeface`]
+    /// Filled by `register_asset_impl` for `AssetTag::Font`
+    /// (CGFont → CTFontManager) and `register_typeface_impl`
     /// (records PostScript name per (weight, style) face). Read by
     /// `apply_text_style` to build `UIFont(name:size:)`.
     pub(crate) font_registry: backend_ios_core::font::FontRegistry,
@@ -202,7 +200,7 @@ pub struct IosBackend {
     /// `UINavigationController`'s top VC view, which only gets added
     /// on UIKit's first layout pass, after our `finish()` returns).
     pub(crate) view_to_layout: HashMap<usize, (Retained<UIView>, runtime_layout::LayoutNode)>,
-    /// Styled-text labels (`Backend::create_styled_text`), keyed by view
+    /// Styled-text labels (`create_styled_text_impl`), keyed by view
     /// pointer. Holds the run list + last paragraph style so `apply_style`
     /// and `update_styled_text` re-realize the attributed string with base
     /// + deltas merged. Evicted on pointer reuse alongside
@@ -315,10 +313,9 @@ pub struct IosBackend {
     pub(crate) sticky_registry: sticky::StickyRegistry,
     /// Sticky views whose `apply_style` ran BEFORE their first
     /// `insert`, so the superview walk couldn't yet find an
-    /// enclosing `UIScrollView`. The walker calls `apply_style`
-    /// (via `attach_style`) inside the per-primitive `build`, then
-    /// the parent's `insert_children` does `backend.insert_impl(...)`
-    /// afterwards — so at apply-style time the child is still a
+    /// enclosing `UIScrollView`. The vocabulary handler calls `apply_style`
+    /// (via `attach_style`) while building the node, and the parent's
+    /// `insert` happens afterwards — so at apply-style time the child is still a
     /// detached floating view. We stash `(view_ptr, threshold)`
     /// here and complete the registration in `insert` once the
     /// view is actually in a parent chain. The map empties as
@@ -331,9 +328,9 @@ pub struct IosBackend {
     /// live in their OWN `UIWindow` (the `screen_recorder` private
     /// layer's ReplayKit-excluded overlay) rather than in the host's
     /// view tree. `insert` consults this to SKIP the native
-    /// `addSubview` reparent when the External walker tries to splice
-    /// such a root into its surrounding parent: the walker's
-    /// `insert(parent, external_node)` would otherwise yank the
+    /// `addSubview` reparent when realize tries to splice
+    /// such a root into its surrounding parent: that
+    /// `insert(parent, node)` would otherwise yank the
     /// window-root out of its private `UIWindow` and into the main
     /// (recorded) tree, defeating capture exclusion. Everything else
     /// proceeds normally — the root is still a Taffy root in
@@ -489,8 +486,8 @@ pub(crate) type KeyboardFrameChange =
 thread_local! {
     /// Coalescing flag: set when a layout pass is queued but not yet
     /// fired. Subsequent `schedule_layout_pass()` calls are dropped
-    /// until the queued pass clears it on entry. Without this, the
-    /// build walker's many `Backend::insert` calls each post their
+    /// until the queued pass clears it on entry. Without this, a tree
+    /// build's many `insert` calls each post their
     /// own pass to libdispatch, producing N passes for one tree
     /// build (one per insertion) instead of one. The wasted passes
     /// fire back-to-back after the build returns, blocking the main
@@ -649,7 +646,7 @@ pub(crate) fn drain_queued_layout_pass() {
 ///
 /// We **always defer** rather than running synchronously: many
 /// callers are reached while the framework holds `backend.borrow_mut()`
-/// (e.g. inside `Backend::insert` from the build walker). Running
+/// (e.g. inside `insert` during realize). Running
 /// `run_layout_pass_global` immediately in that state hits
 /// `RefCell::try_borrow_mut` → `Err` and drops the pass. Deferring
 /// ensures the framework's borrow is released first.
@@ -693,8 +690,8 @@ pub fn schedule_layout_pass() {
     // UIKit runs its LAYOUT phase before every commit it makes, whatever
     // triggered it. Marking the observer as needing layout enlists that
     // phase as a drain point, so a queued pass is guaranteed to run before
-    // the next paint — and, unlike the synchronous pass `insert` used to
-    // run, it runs AFTER the whole mutation batch rather than partway
+    // the next paint — and, unlike a synchronous pass from `insert`,
+    // it runs AFTER the whole mutation batch rather than partway
     // through one, so it can never lay out a half-built tree.
     invalidate_layout_observer();
     post_layout_drain();
@@ -709,8 +706,8 @@ pub fn schedule_layout_pass() {
 /// drop them after the walk (avoids borrowing `pending_sticky`
 /// mutably across the recursion).
 ///
-/// Subtree walk (not just the root view): a `Element::View`
-/// containing a `View { position: Sticky }` child will see the
+/// Subtree walk (not just the root view): a `view`
+/// containing a `view { position: Sticky }` child will see the
 /// outer View as `child_view` in `insert`, with the sticky child
 /// nested inside. Both flagged in `pending_sticky` until this walk
 /// promotes them.
@@ -797,7 +794,7 @@ impl IosBackend {
     /// after constructing their native view so the layout pass picks
     /// it up. Without it, the view is laid out as 0×0.
     ///
-    /// The view's `frame` is written by `Backend::finish` /
+    /// The view's `frame` is written by `finish` /
     /// `apply_style`'s layout pass — leaf widgets that don't need a
     /// custom measure function are fully serviced by this call alone.
     pub fn register_external_view(&mut self, view: &objc2_ui_kit::UIView) {
@@ -869,7 +866,7 @@ impl IosBackend {
         // instead of matching the dead view's key and skipping layout.
         self.layout_style_keys.remove(&key);
         // Same recycling hazard for the external-scroller registry: a
-        // recycled pointer that used to be a content-measured scroller
+        // recycled pointer that was a content-measured scroller
         // must not divert the new view's padding to a dead label.
         self.external_content_measures.remove(&key);
         // ...and for styled-text runs: a recycled pointer must not make
@@ -922,7 +919,7 @@ impl IosBackend {
     /// Create a capture-excluded overlay surface for the
     /// `screen_recorder` private layer and return its content view as
     /// an [`IosNode`]. The `screen_recorder` SDK calls this from its
-    /// `PrivateLayer` external handler; the walker then parents the
+    /// `PrivateLayer` registry handler; realize then parents the
     /// layer's children into the returned content view and tries to
     /// `insert` the content view into the surrounding tree — which
     /// `insert` skips because we register the content view as a
@@ -1215,9 +1212,8 @@ impl IosBackend {
     /// view has no intrinsic size (e.g. a `UIScrollView`) but whose
     /// `content` subview does (e.g. the codeblock's `UILabel`). Without a
     /// measure the wrapper collapses to 0×0 in a flex column and the
-    /// primitive renders blank — the bug that made the over-wire codeblock
-    /// "missing outright" once its real handler ran (the old not-available
-    /// placeholder was a self-sizing text node).
+    /// primitive renders blank (the over-wire codeblock went "missing
+    /// outright" this way).
     ///
     /// We probe the content's `sizeThatFits:` at its natural (unbounded)
     /// size — single-axis scrollers don't wrap, so this yields the true
@@ -1435,8 +1431,8 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
     // opts in via `.safe_area(...)` (outer padding); a `ScrollView`
     // opts in via the same method (UIKit-native contentInset, so
     // content slides under the nav bar when scrolled). Double-inset
-    // is no longer possible because the framework only applies the
-    // safe area at one place: wherever the author opted in.
+    // can't happen because the framework only applies the safe area at
+    // one place: wherever the author opted in.
     //
     // Pin all four edges (not just top/leading) so screens with a
     // zero-intrinsic child — UIScrollView, Graphics surface — get a
@@ -1460,20 +1456,16 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
 }
 
 // `apply_header_options` / `apply_header_options_with_nav` and the
-// per-kind navigator inherent helpers (`create_stack_navigator`, etc.)
-// moved to the `ios-navigator-helpers` crate as part of the navigator-
-// substrate refactor. The framework reaches the helpers through the
-// per-instance SDK handlers stashed on `nav_handler_instances`.
+// per-kind navigator helpers live in the `ios-navigator-helpers` crate.
 
 // =========================================================================
-// Backend trait implementation
+// Backend mechanism
 // =========================================================================
 
-// The backend mechanism, as inherent methods (runtime v2: the `Backend`
-// mega-trait is gone). Bodies are verbatim what the trait impl carried;
-// `newcore.rs` adapts them onto `runtime_scene::Host` + the
-// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
-// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+// The backend mechanism, as inherent methods. `newcore.rs` adapts them
+// onto `runtime_scene::Host` + the `runtime_vocabulary::caps::*Ops`
+// capability traits, one delegation per method. The `_impl` suffix keeps
+// the adapter's call sites unambiguous.
 impl IosBackend {
 
     /// Navigator abstraction calls this after every command (see the trait doc).
@@ -1510,11 +1502,9 @@ impl IosBackend {
     pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
         // ALWAYS `Ios`, simulator included. The simulator IS iOS — same UIKit,
         // same touch model — so `platform()` must report `Ios` there too, or
-        // `is_mobile()`-gated behavior silently flips on the sim. It did exactly
-        // that: the sim used to self-report `Custom("Sim")`, which is not
-        // `is_mobile()`, so `dnd::Activation::platform_default()` resolved to
-        // Immediate (drag-starts-on-move) instead of LongPress (press-and-hold)
-        // on the simulator only. Per CLAUDE.md §7, a sim/device predicate has no
+        // `is_mobile()`-gated behavior silently flips on the sim (e.g.
+        // `dnd::Activation::platform_default()` would resolve to Immediate
+        // instead of LongPress on the simulator only). Per CLAUDE.md §7, a sim/device predicate has no
         // place in the public `Platform` API; genuine sim-only code uses the
         // compile-time `cfg(target_abi = "sim")` marker (see the camera /
         // canvas-native / vello gates), which is precise and doesn't leak into
@@ -1665,7 +1655,7 @@ impl IosBackend {
         // hot. See `imp/touch.rs` and `docs/native-touch-backends-plan.md`.
         //
         // Children are positioned via Taffy-computed frames in
-        // `finish`. We no longer use UIStackView — its arranged-
+        // `finish`. Not UIStackView — its arranged-
         // subview model fights with flex semantics (no flex-grow/
         // shrink, no wrap, zero-intrinsic-collapsing children,
         // opaque constraint conflicts).
@@ -2080,7 +2070,7 @@ impl IosBackend {
         // matching the framework primitive shape requires a manual
         // overlay-label hack; for v1 we accept the `placeholder` arg
         // but ignore it (callers shouldn't depend on placeholder
-        // text rendering on iOS yet — flagged on Element::TextArea).
+        // text rendering on iOS yet).
         // `IdealystTextView`: a UITextView subclass for its `didMoveToWindow`,
         // the attach hook of the attach-safe `focus()` (`pending_focus`).
         let view: Retained<UITextView> = text_inset::IdealystTextView::new(self.mtm);
@@ -2525,8 +2515,8 @@ impl IosBackend {
         let node = image::create_image(self.mtm, &self.image_cache, src, alt);
         // Register with the layout tree so Taffy gives it a frame.
         // Image views need an intrinsic-size measurer so they don't
-        // collapse to 0×0 — see project_ios_intrinsic_size_measurer
-        // memory for why.
+        // collapse to 0×0 in a flex container (Taffy has no other way to
+        // learn the image's natural size).
         if let IosNode::View(view) = &node {
             let view_clone = view.clone();
             self.install_image_measure(&view_clone);
@@ -2729,8 +2719,8 @@ impl IosBackend {
     }
 
     pub(crate) fn release_virtualizer_impl(&mut self, node: &IosNode) {
-        // Tear down — runs from the cleanup Effect installed by the
-        // walker when the surrounding Scope drops. We do this BEFORE
+        // Tear down — runs from the cleanup the vocabulary's virtualizer
+        // handler installs, when the surrounding Scope drops. We do this BEFORE
         // the UICollectionView itself goes out of scope so any UIKit
         // event already queued for the next runloop turn drains as a
         // no-op against `alive == false`. Without this hook, the
@@ -2839,11 +2829,9 @@ impl IosBackend {
 
     pub(crate) fn create_pressable_impl(&mut self, on_click: Rc<dyn Fn()>, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
         // Mirror `create_link`'s tap-gesture wiring so `Pressable`
-        // children actually fire their click handlers. The default
-        // `Backend::create_pressable` (see
-        // `crates/framework/core/src/backend.rs:117`) explicitly
-        // ignores `on_click` and falls through to `create_view()` —
-        // the doc comment acknowledges "clicks won't fire". This
+        // children actually fire their click handlers. The caps default
+        // `PressableOps::create_pressable` ignores `on_click` and falls
+        // through to `create_view()`. This
         // override is what makes `idea_ui::Tabs`, `CardTabs`, and
         // any other Pressable-backed control respond to taps on iOS.
         let view = unsafe { UIView::new(self.mtm) };
@@ -2901,7 +2889,7 @@ impl IosBackend {
         // `create_view` mints `IdealystTouchView` instances; every
         // framework View should pass this `isKindOfClass:` check.
         // Other primitives (Button, Pressable, etc.) don't carry
-        // an `on_touch` slot so the walker never calls us with
+        // an `on_touch` slot so the vocabulary never calls us with
         // their nodes — we don't need a fallback path.
         let view = node.as_view();
         let touch_cls = objc2::class!(IdealystTouchView);
@@ -2951,21 +2939,21 @@ impl IosBackend {
         let child_key = child_view as *const UIView as usize;
 
         // Portal containers mount themselves into the host window —
-        // skip the parent-tree insert the walker tries for them.
+        // skip the parent-tree insert realize tries for them.
         if self.portal_instances.contains_key(&child_key) {
             return;
         }
 
         // Detached window root (screen_recorder private layer): the
-        // content view already lives in its OWN `UIWindow`. The
-        // External walker calls `insert(parent, external_node)` to
+        // content view already lives in its OWN `UIWindow`. Realize
+        // calls `insert(parent, node)` to
         // splice the handler's returned node into the surrounding
         // view tree — but doing the `addSubview` here would reparent
         // the content view OUT of its private window and INTO the
         // main (recorded) tree, so ReplayKit would capture it. Skip
         // the native reparent; the root stays in its window. Its
         // Taffy node remains registered (sized to the window in the
-        // layout pass) and the walker's `insert_children` already
+        // layout pass) and realize already
         // populated it, so the private subtree renders correctly —
         // just on the excluded window.
         if self.detached_window_roots.contains_key(&child_key) {
@@ -3081,26 +3069,19 @@ impl IosBackend {
         self.layout.mark_dirty(p_layout);
         // ALWAYS defer. Never lay out from inside an insert.
         //
-        // This used to sync on the first insert into a window-attached
-        // parent, so a `switch` / `when` toggle painted its new branch
-        // in the same frame as its UIKit insert rather than a tick
-        // late. The goal was right and the mechanism was wrong: a
+        // A tempting alternative is to sync on the first insert into a
+        // window-attached parent, so a `switch` / `when` toggle paints its
+        // new branch in the same frame as its UIKit insert rather than a
+        // tick late. That mechanism is wrong: a
         // reactive rebuild is a TEARDOWN followed by N inserts, and
         // `run_layout_pass_global` is global — so firing it on insert
-        // #1 laid out and applied frames for a tree in which every
-        // OTHER region torn down in the same flush was still empty.
+        // #1 lays out and applies frames for a tree in which every
+        // OTHER region torn down in the same flush is still empty (a
+        // header with three reactive regions measures 16pt instead of
+        // 150 for one frame, and the whole screen lurches on every tab
+        // change).
         //
-        // What that looked like: switching a project tab tore down the
-        // header's three reactive regions (crumbs, title, context bar),
-        // and the first insert of the rebuild ran a full pass while
-        // they were empty. The header measured 16pt instead of 150,
-        // the page under it jumped up 67pt, and the next pass — 16ms
-        // later, a display frame — put it back. One frame of the whole
-        // screen lurching upward and dropping back, on every tab
-        // change.
-        //
-        // `schedule_layout_pass` is now strictly better at the very
-        // job the sync path existed for: its pre-commit runloop
+        // `schedule_layout_pass` covers the same goal: its pre-commit runloop
         // observer drains at the END of this turn but BEFORE
         // CoreAnimation commits, so the new branch still paints in the
         // frame that first shows it — laid out from the FINISHED tree
@@ -3109,7 +3090,7 @@ impl IosBackend {
         schedule_layout_pass();
 
         // Retry pending sticky registrations now that this subtree
-        // is wired into the parent chain. The walker fires
+        // is wired into the parent chain. Realize fires
         // `apply_style` before `insert`, so any `Position::Sticky`
         // child created in this build cycle deferred its
         // registration to `pending_sticky`. We walk the
@@ -3150,7 +3131,7 @@ impl IosBackend {
         true
     }
 
-    /// Remove a SPECIFIC `child` from `parent` (Backend::remove_child) —
+    /// Remove a SPECIFIC `child` from `parent` (`Host::remove_child`) —
     /// the removal half of an anchorless region's per-toggle rebuild.
     /// Mirrors the teardown `clear_children` does for one child: detach the
     /// native view (`removeFromSuperview`) AND the parallel Taffy child
@@ -3181,7 +3162,7 @@ impl IosBackend {
         // `remove_child(parent, portal)`, and Taffy's `remove_child`
         // `position(..).unwrap()` panicked on the non-child portal (the
         // panic crosses the objc method boundary → `panic_cannot_unwind` →
-        // SIGABRT). `LayoutTree::remove_child` is now also tolerant, but a
+        // SIGABRT). `LayoutTree::remove_child` is also tolerant, but a
         // portal still must not be `removeFromSuperview`'d as if it were a
         // child here.
         if self.portal_instances.contains_key(&child_key)
@@ -3197,7 +3178,7 @@ impl IosBackend {
         self.layout.mark_dirty(parent_layout);
         // A clipped view's drop shadow lives on a sibling layer in the PARENT's
         // layer (see `backend_apple_core::shadow`), so `removeFromSuperview`
-        // alone would leave it painting where the card used to be.
+        // alone would leave it painting where the card was.
         backend_ios_core::style::detach_shadow_sibling(child_view);
         // Evict the cached applied frame so the next layout pass re-runs
         // `sync_view_after_frame` for this view unconditionally. The pass skips
@@ -3216,12 +3197,12 @@ impl IosBackend {
         // *shrink* to fit the now-shorter child set in the same turn (the
         // "Layers popover doesn't shrink on iOS" bug). The pre-commit drain
         // is what makes "the same turn" true; see the note in `insert` for
-        // why this is no longer a synchronous pass.
+        // why this is not a synchronous pass.
         schedule_layout_pass();
     }
 
     /// Insert `child` into `parent` at `index` among its current subviews
-    /// (Backend::insert_at). Companion to `remove_child`: an anchorless
+    /// (`Host::insert_at`). Companion to `remove_child`: an anchorless
     /// reactive region splices its single branch node at the region's
     /// stable `base_index` so a region with trailing static siblings
     /// rebuilds in the right place instead of always appending.
@@ -3232,7 +3213,7 @@ impl IosBackend {
     /// preserves every special case `insert` has:
     ///
     /// - The `portal_instances` skip (a portal mounts itself into the host
-    ///   window; the walker's parent-tree insert is a no-op for it).
+    ///   window; realize's parent-tree insert is a no-op for it).
     /// - The `detached_window_roots` skip (a private-layer window's content
     ///   view must NOT be reparented out of its excluded `UIWindow`).
     /// - The window-attached layout-pass discriminator (`parent.window !=
@@ -3244,7 +3225,7 @@ impl IosBackend {
     ///
     /// There is no portal-PARENT branch here: the spliced path only ever
     /// targets the real container the `when`/`each` lives in (see
-    /// `walker::view::insert_children` → `build_when_spliced`), never a
+    /// `runtime_scene::realize`'s anchorless-region splice), never a
     /// portal content holder — portals take the anchored `insert` path.
     pub(crate) fn insert_at_impl(&mut self, parent: &mut IosNode, child: IosNode, index: usize) {
         let parent_view = parent.as_view();
@@ -3252,7 +3233,7 @@ impl IosBackend {
         let child_key = child_view as *const UIView as usize;
 
         // Portal containers mount themselves into the host window — skip
-        // the parent-tree splice the walker tries for them. (Mirror of
+        // the parent-tree splice realize tries for them. (Mirror of
         // `insert`.)
         if self.portal_instances.contains_key(&child_key) {
             return;
@@ -3294,7 +3275,7 @@ impl IosBackend {
         schedule_layout_pass();
 
         // Retry pending sticky registrations for the just-spliced subtree,
-        // exactly as `insert` does (the walker fires `apply_style` before
+        // exactly as `insert` does (realize fires `apply_style` before
         // the parent insert, so any `Position::Sticky` child deferred its
         // registration to `pending_sticky`).
         let mut to_remove = Vec::new();
@@ -3362,23 +3343,20 @@ impl IosBackend {
     /// tables.
     ///
     /// This is the same teardown [`Self::release_portal_impl`] does, and
-    /// it exists for the same reason. `clear_children` used to
-    /// `layout.remove_child` each child and `removeFromSuperview` it,
-    /// and stop there. Both halves leaked:
+    /// it exists for the same reason. Only calling `layout.remove_child`
+    /// and `removeFromSuperview` on each child leaks both halves:
     ///
     /// - `remove_child` unparents the child's Taffy node, which makes it
     ///   a ROOT. `run_layout_pass_global` computes every root, so each
-    ///   discarded subtree was recomputed against the viewport on every
+    ///   discarded subtree is recomputed against the viewport on every
     ///   later pass, forever.
     /// - the registration outlives the view's use, and because it holds
     ///   a `Retained`, the UIView can never deallocate. Every pass then
     ///   walks it in the apply-frames loop.
     ///
-    /// Measured on the running app before this fix: a project screen sat
-    /// at 10,425 registered views across 478 Taffy roots, climbing by
-    /// several hundred with every tab switch and never falling. One
-    /// layout pass took 13-19 ms, and a single tab switch ran six of
-    /// them.
+    /// Measured without this teardown: a project screen reached 10,425
+    /// registered views across 478 Taffy roots, growing with every tab
+    /// switch; one layout pass took 13-19 ms.
     ///
     /// Call this while the subtree is still attached — it walks
     /// `subviews()` to find the descendants.
@@ -3430,10 +3408,10 @@ impl IosBackend {
     ///
     /// `scroll_views` is the entry that crashed: the post-layout
     /// `contentSize` sync walks it and messages each member as a
-    /// `UIScrollView`. A released scroll view's key used to stay in the
-    /// set; once its `view_to_layout` registration (the last strong ref)
-    /// dropped, UIKit freed it and a new `IdealystTextField` landed at the
-    /// same address, registered under the same key, and the sync sent it
+    /// `UIScrollView`. If a released scroll view's key stays in the
+    /// set, then once its `view_to_layout` registration (the last strong ref)
+    /// drops, UIKit frees it, a new `IdealystTextField` can land at the
+    /// same address under the same key, and the sync sends it
     /// `contentSize` — `invalid message send … method not found`, fatal
     /// inside `layoutSubviews` (a kiosk swapping a scrolling picker for a
     /// screen of text fields).
@@ -3636,10 +3614,9 @@ impl IosBackend {
         // Sticky → Relative transition cleans up its registry
         // entry + clears the carried transform. See `sticky.rs`.
         //
-        // The walker fires `apply_style` (via `attach_style`)
-        // BEFORE the parent's `insert(parent, child)` call (see
-        // `walker/view.rs:124-126` — `build()` returns first, then
-        // `insert` runs). At that moment the child is still a
+        // Realize fires `apply_style` (via `attach_style`)
+        // BEFORE the parent's `insert(parent, child)` call (the
+        // node is built first, then inserted). At that moment the child is still a
         // floating UIView with no superview, so
         // `sticky::register`'s superview walk can't find the
         // scroll ancestor yet. We try anyway (it succeeds for
@@ -4008,9 +3985,9 @@ impl IosBackend {
         // corner radius) leaves every box where it was, so a layout
         // pass would recompute an identical result for the whole tree —
         // that's the "layout on every press" the user reported. The
-        // corner-radius paint change in particular is now applied
+        // corner-radius paint change in particular is applied
         // eagerly in `apply_style_to_view` against the view's live
-        // bounds, so it no longer depends on a layout pass to survive
+        // bounds, so it doesn't depend on a layout pass to survive
         // (see `style_diff::resolve_corner_radius`).
         if layout_changed {
             schedule_layout_pass();
@@ -4261,7 +4238,7 @@ impl IosBackend {
         // not just the container's superview link. The portal container
         // is an orphan Taffy ROOT and its descendants stay registered in
         // `view_to_layout`; if we only `removeFromSuperview` the
-        // container (the old behaviour), every later `run_layout_pass_global`
+        // container, every later `run_layout_pass_global`
         // still finds the dead root, re-computes it against the viewport,
         // and writes frames into the detached subtree — an unbounded leak
         // plus a stale-layout source that surfaced as flaky teardown.
@@ -4322,12 +4299,12 @@ impl IosBackend {
         _payload: &std::rc::Rc<dyn std::any::Any>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> IosNode {
-        // Runtime v2: there is no backend-side External registry any more.
-        // Third-party primitives register a payload handler on the scene
+        // There is no backend-side External registry: third-party
+        // primitives register a payload handler on the scene
         // `Registry` (`runtime_scene::Registry::register`), which dispatches
         // BEFORE reaching a backend cap — so this method is only ever the
         // last-resort placeholder an SDK's own degradation handler asks for
-        // on a host it has no leg for. Placeholder body unchanged.
+        // on a host it has no leg for.
         let node = external_placeholder_node(self, type_name);
         // Third-party externals declare their own role via
         // `props.role` if needed — we don't infer one here.
@@ -4624,7 +4601,7 @@ impl IosBackend {
                 &handles::IOS_TEXT_INPUT_OPS,
             )
         } else {
-            // Shouldn't happen — walker only calls this for TextInput
+            // Shouldn't happen — the vocabulary only calls this for TextInput
             // nodes. Fall back to a no-op handle wrapping an empty box.
             runtime_shared::primitives::text_input::TextInputHandle::new(
                 Rc::new(()),
@@ -4768,7 +4745,7 @@ impl IosBackend {
 
         // Find every Taffy root. The framework root is one; each screen
         // mounted via `mount_screen_in_vc` (which bypasses
-        // `Backend::insert`) is another.
+        // `insert`) is another.
         // Carries the view key as well as the node: a root that is a
         // mounted `virtual_grid` cell is computed against its own box
         // rather than the viewport (see `virtual_grid::CELL_BOXES`).
@@ -4845,7 +4822,7 @@ impl IosBackend {
         let _t = phase_timer::PhaseTimer::start("apply_frames_loop");
         // Track which views we actually touched this pass so the
         // applied-frames cache can drop entries for views that have
-        // been removed (Backend::clear_children, screen unmounts,
+        // been removed (`clear_children`, screen unmounts,
         // etc.). Without this the cache would grow with every nav
         // that disposes a screen.
         let mut still_present: std::collections::HashSet<usize> =
@@ -5116,8 +5093,8 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
             // an over-wide child (a non-wrapping button row, a wide table)
             // must NOT inflate `contentSize.width` into a phantom horizontal
             // scroll. Nested scroll views clip their own content out of the
-            // extent too. This previously took the bounding box on BOTH axes,
-            // which is exactly the phantom-horizontal-scroll bug.
+            // extent too. Taking the bounding box on BOTH axes is exactly the
+            // phantom-horizontal-scroll bug.
             let (max_x, max_y) = self.layout.scroll_content_extent(scroll_layout);
             let scroll_view: Retained<UIScrollView> = unsafe {
                 let ptr = view_ptr as *mut UIScrollView;
@@ -5210,7 +5187,7 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
             }
         }
 
-        // Refresh `natural_y` for every Position::Sticky child now
+        // Refresh `natural` for every Position::Sticky child now
         // that Taffy has re-laid out the tree. Without this, a
         // tree rebuild (route switch, branch swap) leaves stale
         // natural-y values and the sticky child pins to the wrong
@@ -5511,13 +5488,8 @@ fn external_placeholder_node(b: &mut IosBackend, type_name: &'static str) -> Ios
     IosNode::Label(label)
 }
 
-// All legacy per-kind navigator inherent helpers (`create_stack_navigator`,
-// `tab_navigator_attach_initial`, `apply_drawer_sidebar_style`, etc.)
-// moved to the `ios-navigator-helpers` crate as part of the
-// navigator-substrate refactor. SDK iOS handlers
-// (`stack_navigator::ios::IosStackHandler`, etc.) now call into that
-// crate directly, and the framework reaches the handlers through the
-// per-instance map stashed on `nav_handler_instances`.
+// Per-kind navigator helpers live in the `ios-navigator-helpers` crate;
+// the SDK iOS navigator handlers call into it directly.
 
 #[cfg(test)]
 mod backend_self_handle_tests {
@@ -5544,13 +5516,12 @@ mod backend_self_handle_tests {
     //! thread — neither fits `cargo test`. So this asserts the precise
     //! mechanism that broke: `with_backend` is a no-op until a self
     //! handle is installed, and resolves once one is. The end-to-end
-    //! behavior (panel visible on open over the wire) is covered by an
-    //! on-simulator `idealyst dev --ios` screenshot, logged in
-    //! [[project_navigator_over_wire_wip]].
+    //! behavior (panel visible on open over the wire) is only checkable
+    //! on a simulator (`idealyst dev --ios`).
 
     /// With no self installed, `with_backend` must short-circuit to
     /// `None` (never panic, never run the closure) — this IS the
-    /// broken pre-fix runtime-server state, reproduced deterministically.
+    /// broken runtime-server state, reproduced deterministically.
     #[test]
     fn regression_rs_drawer_sidebar_with_backend_noops_until_self_installed() {
         // Fresh thread → guaranteed-empty `IOS_BACKEND_SELF`

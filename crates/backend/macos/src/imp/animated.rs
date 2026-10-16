@@ -553,8 +553,7 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     let tx = (state.translate_x + state.anim_translate_x) as f64;
     let ty = (state.translate_y + state.anim_translate_y) as f64;
 
-    // 2x2 linear part: rotate then scale. Mirrors the matrix
-    // `build_transform_matrix` produced — keeping the derivation
+    // 2x2 linear part: rotate then scale. The derivation is kept
     // explicit here so the center-pivot compensation right below
     // can refer to the entries by name.
     let rz_rad = ((state.rotate_z + state.anim_rotate_z) as f64).to_radians();

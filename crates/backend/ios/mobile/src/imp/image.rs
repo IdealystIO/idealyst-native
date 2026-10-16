@@ -1,4 +1,4 @@
-//! `Element::Image` — `UIImageView` backed by `UIImage(data:)`.
+//! The `image` primitive — `UIImageView` backed by `UIImage(data:)`.
 //!
 //! The `src` contract is `docs/image-src.md`; the decisions (routing,
 //! bundled-asset paths, what a fetch result means, dropping superseded
@@ -9,7 +9,7 @@
 //!   (`apple_image::fetch_image`) and assigned on the main thread when it
 //!   arrives. A network error, a non-2xx status, an empty body or an
 //!   unparseable URL fires `on_error`. `http` needs an ATS exception.
-//! - **Asset source** (`image_asset(LOGO)`): the walker first calls
+//! - **Asset source** (`image_asset(LOGO)`): the vocabulary first calls
 //!   `register_asset(id, AssetTag::Image, source)`, which decodes
 //!   `embed_asset!` bytes, reads an `asset!` file from
 //!   `<App>.app/assets/<path>`, or records an `AssetSource::Remote` URL.
@@ -87,7 +87,7 @@ pub struct ImageViewIvars {
     on_load: RefCell<Option<ImageLoadHandler>>,
     on_error: RefCell<Option<ImageErrorHandler>>,
     /// The `src` currently displayed / in-flight. Guards `update_image_src`
-    /// against re-loading an unchanged URL — the walker's reactive-`src`
+    /// against re-loading an unchanged URL — the image handler's reactive-`src`
     /// Effect fires once at mount with the URL `create_image` already
     /// loaded, which would otherwise start a duplicate `NSURLSession` fetch
     /// (and a duplicate `on_load`).
@@ -166,7 +166,7 @@ impl ImageView {
             load: ImageLoadState::new(),
         });
         // `initWithFrame:CGRectZero` — Taffy assigns the real frame in the
-        // layout pass (matches the old raw-`UIImageView` create path).
+        // layout pass.
         unsafe {
             msg_send_id![
                 super(this),
@@ -210,7 +210,7 @@ fn set_image_and_notify(view: &UIView, image: &NSObject) {
 
 /// Install the framework `on_load` observer, replaying once if the
 /// CURRENT load already succeeded (the embedded-asset order, where
-/// `create_image` assigns before the walker installs the handler). Replay
+/// `create_image` assigns before the vocabulary installs the handler). Replay
 /// reads the load outcome, not "the view holds an image": while a new `src`
 /// loads the previous bitmap is still up, and replaying it would deliver a
 /// second `on_load` when the new load lands.
@@ -329,7 +329,7 @@ pub(crate) fn create_image(
 ) -> IosNode {
     // Our `UIImageView` subclass carries the `on_load` / `on_error` ivars.
     let view_typed = ImageView::new(mtm);
-    // Record the mount src so the walker's reactive-`src` Effect (which
+    // Record the mount src so the image handler's reactive-`src` Effect (which
     // fires once with this same URL) is a no-op instead of a duplicate load.
     *view_typed.ivars().current_src.borrow_mut() = src.to_string();
     // `into_super` steps one class up (ImageView → UIImageView → UIView),

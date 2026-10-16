@@ -23,7 +23,7 @@
 //!   AppKit's draw management, hit-testing, and cursor rects all
 //!   natively correct with no compensation anywhere.
 //! - **Natural position**: same Taffy-parent walk as iOS for the
-//!   content-space `natural_y` the pin compute needs; the write targets
+//!   content-space `natural` origin the pin compute needs; the write targets
 //!   the child's parent-relative Taffy frame, the same coordinate the
 //!   layout pass itself applies. The frame-apply pass diffs against
 //!   TAFFY values (not the live frame), so a pinned origin persists
@@ -312,7 +312,7 @@ pub(crate) fn tick_all(backend: &mut crate::imp::MacosBackend) {
     }
 }
 
-/// Refresh the cached `natural_y` for every sticky child after a
+/// Refresh the cached `natural` origin for every sticky child after a
 /// layout pass — the same Taffy-parent frame-summing walk as iOS
 /// (frames come from the layout tree, never from the possibly-pinned
 /// live NSView).
@@ -410,9 +410,8 @@ mod tests {
     }
 
     /// A frozen column on macOS: `left` must move `origin.x` while the
-    /// child keeps scrolling vertically. Before horizontal support the
-    /// registry carried a single `threshold_top`, so this produced no
-    /// horizontal movement at all.
+    /// child keeps scrolling vertically. A registry carrying only a top
+    /// threshold produces no horizontal movement at all.
     #[test]
     fn regression_macos_sticky_left_never_pins_horizontally() {
         let insets = StickyInsets {

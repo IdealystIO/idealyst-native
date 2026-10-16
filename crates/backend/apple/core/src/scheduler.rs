@@ -242,12 +242,12 @@ impl Scheduler for AppleScheduler {
         // `draw_frame` (Metal encode + present) runs on a SEPARATE loop — the iOS
         // `RenderLoopDriver` in `backend-ios-core::render_loop`, kept in DEFAULT
         // mode so it still yields to scroll. Different loops, so this cheap tick
-        // no longer pays that cost.
+        // doesn't pay that cost.
         //
         // Post-dispatch flush hook: rAF-loop iterations run author code
-        // (animation ticks that stage new-core writes) — fire the hook
-        // after each iteration so a new-core flush driver commits them.
-        // No-op unless a new-core boot installed the hook (see
+        // (animation ticks that stage writes) — fire the hook
+        // after each iteration so the flush driver commits them.
+        // No-op unless a boot installed the hook (see
         // `dispatch_hook`); wrapping HERE covers both the CADisplayLink
         // (iOS/tvOS) and NSTimer (macOS) branches below identically.
         let mut inner = f.take_inner();
@@ -364,7 +364,7 @@ impl TakeInner for Box<dyn FnMut() + 'static> {
 fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandle {
     // Post-dispatch flush hook: `after_ms` bodies are a primary
     // author-code surface (debounces / delayed writes that set
-    // signals) — fire the hook after the body so a new-core flush
+    // signals) — fire the hook after the body so the flush
     // driver commits the staged writes (see `dispatch_hook`). Wrapped
     // ONCE here so both delivery paths (the 0-delay libdispatch branch
     // and the NSTimer branch below) are covered; `after_animation_frame`
@@ -380,18 +380,16 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     let cell: Rc<RefCell<Option<Box<dyn FnOnce() + 'static>>>> =
         Rc::new(RefCell::new(Some(f)));
     // Zero-delay path: route through libdispatch instead of an
-    // NSTimer at interval 0. Per
-    // [[project_apple_microtask_libdispatch]], `scheduledTimerWith…`
+    // NSTimer at interval 0. `scheduledTimerWith…`
     // at interval 0 is unreliable — the runloop must enter the
-    // timer's mode for it to fire, and "next iteration" is a tiny
-    // window that high-frequency layout activity (a fresh
-    // `Host::mount` triggering Taffy reflow + Metal encode) can
-    // squeeze out. The welcome's `session::after_ms(glare_start,
-    // body)` collapses to delay_ms=0 on resume (session has long
-    // since passed `glare_start`); when that 0-delay body silently
-    // never fires, the inner `raf_loop_scoped` never gets
-    // registered, animations stay frozen, and `av_writes` is stuck
-    // on the diagnostic counter.
+    // timer's mode for it to fire (timers pause in UIKit tracking
+    // modes), and "next iteration" is a tiny window that
+    // high-frequency layout activity (a fresh mount triggering
+    // Taffy reflow + Metal encode) can squeeze out. A
+    // `session::after_ms` whose deadline already passed collapses
+    // to delay_ms=0; if that body silently never fires, the
+    // `raf_loop_scoped` it would register never starts and the
+    // animation stays frozen.
     //
     // `dispatch_async(main_q, block)` is mode-independent and
     // guaranteed to drain on the next main-thread iteration.
@@ -555,9 +553,7 @@ fn dispatch_main_async(f: Box<dyn FnOnce() + 'static>) {
         // process via `panic_cannot_unwind` with no readable message.
         // The firewall names the site *before* we abort — the abort
         // is mandatory so we never keep running on the partially-invariant
-        // state that produced the panic. Crash-loud is the project policy;
-        // see [[project-refmut-lifetime-reentrancy]] for the bug that
-        // motivated tightening this.
+        // state that produced the panic. Crash-loud is the project policy.
         crate::crash::abort_on_panic("libdispatch main-queue block", || {
             // Bind the take() out so the `RefMut` temporary dies before
             // `g()` runs — same reentrancy fix as the after_ms_inner
@@ -658,14 +654,14 @@ mod tests {
     //!
     //! The bug this prevents: the wgpu Host's `pause()` →
     //! `Host::unmount()` chain runs scope cleanups, dropping every
-    //! `ScheduledTask` registered via `after_ms_scoped`. Pre-fix, the
-    //! 0-delay dispatch path's drop was a no-op (no NSTimer to
-    //! invalidate, cell left full), so the dispatched body fired
-    //! AFTER the scope was gone — installing a `raf_loop_scoped`
-    //! whose `on_cleanup` attached to a dead scope and was never
-    //! invoked. The NSTimer it scheduled then ticked forever, hitting
-    //! AVs whose listeners had already been unsubscribed and showing
-    //! up as frozen animations after the next remount.
+    //! `ScheduledTask` registered via `after_ms_scoped`. If the
+    //! 0-delay dispatch path's drop is a no-op (no NSTimer to
+    //! invalidate, cell left full), the dispatched body fires
+    //! AFTER the scope is gone — installing a `raf_loop_scoped`
+    //! whose `on_cleanup` attaches to a dead scope and is never
+    //! invoked. The NSTimer it schedules then ticks forever, hitting
+    //! AVs whose listeners are already unsubscribed — frozen
+    //! animations after the next remount.
     //!
     //! Gated to `target_os = "macos"`: this exercises the apple
     //! scheduler against the host's libdispatch; iOS cargo-test

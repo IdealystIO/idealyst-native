@@ -42,12 +42,10 @@ struct MountedCell {
     scope_id: u64,
     /// The content key this cell was mounted for. `cell_key` is
     /// content-addressed precisely so a pooled cell cannot survive a
-    /// data change with stale contents — and this engine used to key
-    /// `mounted` by `(col, row)` alone and skip any filled slot, so a
-    /// cell whose CONTENT changed kept its old view until it scrolled
-    /// out of the window. The iOS twin surfaced it on CrewForge's
-    /// schedule: a shift applied, refetched, toasted, and the cell
-    /// still read an em dash.
+    /// data change with stale contents. Keying `mounted` by `(col, row)`
+    /// alone and skipping any filled slot would leave a cell whose
+    /// CONTENT changed showing its old view until it scrolled out of the
+    /// window.
     key: CellKey,
 }
 
@@ -293,19 +291,14 @@ thread_local! {
     /// runs inside `with_global_backend`, `virtual_grid_data_changed` is
     /// dispatched through `backend.borrow_mut()`, and the bounds
     /// observer goes through `with_backend`. Cloning the instance's
-    /// `Rc`s — which this module used to do, with a comment claiming it
-    /// ended the borrow — does not end it: the borrow is the CALLER's.
+    /// `Rc`s does not end it: the borrow is the CALLER's.
     ///
     /// So the borrow-free half is queued here and drained where the
     /// borrow is provably gone. Cells mount one pass later than the
     /// layout that discovered them and mark the tree dirty on mount, so
-    /// the following pass frames them — already true of the first fill,
-    /// which `create` defers for this same reason.
-    ///
-    /// Proven on iOS 2026-09-14, where wiring `GridOps` up for the first
-    /// time aborted the app with `RefCell already borrowed` inside
-    /// `virtual_grid::mount_cell` the moment a grid mounted. This
-    /// backend had the identical structure and the identical latent bug.
+    /// the following pass frames them — the first fill, which `create`
+    /// defers, works the same way. Mounting synchronously aborts with
+    /// `RefCell already borrowed` inside `virtual_grid::mount_cell`.
     static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -355,8 +348,7 @@ pub(crate) fn drain_pending() {
 }
 
 /// Drop a torn-down grid's cells, with no backend borrow held — the
-/// two-axis form of the virtualizer teardown bug (FRAMEWORK-NOTES
-/// Wave-19).
+/// two-axis form of the virtualizer teardown hazard.
 fn teardown_now(job: TeardownJob) {
     for cell in job.cells {
         let _: () = unsafe { msg_send![&cell.view, removeFromSuperview] };
@@ -394,7 +386,8 @@ fn sync_in(registry: &GridRegistry, key: usize) {
     );
 }
 
-/// The body of the old `sync`, with no backend borrow held.
+/// The borrow-free half of a sync: runs from the drain, with no backend
+/// borrow held.
 fn sync_now(h: &GridHandles) {
     let scroll = h.scroll.clone();
     let document = h.document.clone();
@@ -622,7 +615,7 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for MacosVirtualGr
                 if let Some(port) = scrollport_of(&scroll) {
                     callback(port);
                     // A notification is an author-code entry point; commit
-                    // what the callback staged (FRAMEWORK-NOTES #103).
+                    // what the callback staged.
                     backend_apple_core::dispatch_hook::fire_dispatch_hook();
                 }
             }),
@@ -753,9 +746,8 @@ mod pending_tests {
         PENDING.with(|p| p.borrow().len())
     }
 
-    /// Regression: `sync` used to mount cells inline, under the
-    /// caller's backend borrow, and the first grid to mount on iOS
-    /// aborted with `RefCell already borrowed`. A sync must mount
+    /// Regression: mounting cells inline in `sync`, under the caller's
+    /// backend borrow, aborts with `RefCell already borrowed`. A sync must mount
     /// NOTHING itself; the cells appear when the borrow-free drain runs.
     #[test]
     fn regression_sync_mounts_nothing_until_the_borrow_free_drain() {
@@ -769,8 +761,8 @@ mod pending_tests {
         assert_eq!(pending_len(), 0);
     }
 
-    /// Regression: `release` used to drop every cell scope inline, for
-    /// the same reason and with the same abort. The scopes go when the
+    /// Regression: dropping every cell scope inline in `release` aborts
+    /// the same way. The scopes go when the
     /// drain runs, and the cells leave the document with them.
     #[test]
     fn regression_release_defers_cell_scope_drops_until_the_drain() {

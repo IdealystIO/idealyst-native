@@ -142,7 +142,7 @@ mod imp {
         unsafe { msg_send![view, isDescendantOf: ancestor] }
     }
 
-    /// REGRESSION (CrewForge kiosk, 2026-10-15): a click-through portal's
+    /// REGRESSION (kiosk toast host): a click-through portal's
     /// style replaced the container's placement layout — `set_style` resets
     /// an unset `justify_content` to `FlexStart` — so a `Bottom` toast host
     /// drew its strip (and its dead band) at the TOP of the window.

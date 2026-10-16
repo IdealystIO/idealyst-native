@@ -938,7 +938,7 @@ impl PresencePlaceholderView {
 // =========================================================================
 // LayoutObserverView — re-runs the Taffy layout pass on window resize.
 //
-// `Backend::finish` lays the tree out ONCE, against the host content view's
+// `LifecycleOps::finish` lays the tree out ONCE, against the host content view's
 // bounds at mount. Reactive Effects schedule their own passes via
 // `apply_style` → `schedule_layout_pass`, but a raw window resize (drag the
 // frame, full-screen toggle, titlebar/toolbar show-hide) produces NO reactive
@@ -1003,11 +1003,10 @@ declare_class!(
                     width: next.0,
                     height: next.1,
                 });
-                // New-core mirror: forward the SAME size into the
-                // mounted world's viewport ctx so breakpoint-dependent
-                // author reactivity re-fires on resize (no-op TLS read
-                // when no new-core app is booted). See newcore.rs,
-                // "Viewport source".
+                // Forward the SAME size into the mounted world's
+                // viewport ctx so breakpoint-dependent author
+                // reactivity re-fires on resize (no-op TLS read before
+                // boot). See newcore.rs, "Viewport source".
                 crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                     width: next.0,
                     height: next.1,

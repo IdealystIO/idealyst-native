@@ -642,9 +642,8 @@ mod tests {
 
     /// A frozen COLUMN on iOS: `left` pins horizontally off
     /// `contentOffset.x` while the child keeps scrolling vertically.
-    /// Before horizontal support the registry held a single
-    /// `threshold_top`, so `left` produced no horizontal pin at all —
-    /// a frozen column was inexpressible on every backend.
+    /// A registry holding only a top threshold makes `left` produce no
+    /// horizontal pin at all — a frozen column becomes inexpressible.
     #[test]
     fn regression_sticky_left_never_pins_horizontally() {
         let horizontal = StickyInsets { left: Some(0.0), ..Default::default() };

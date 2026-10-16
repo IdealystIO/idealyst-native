@@ -10,25 +10,17 @@
 //! `cfg(target_os = "ios")`-gated) so the workspace still type-checks
 //! during cross-compile of other targets.
 //!
-//! # Why this shell no longer registers SDK handlers
+//! # Why this shell registers no SDK handlers
 //!
-//! It used to bundle the first-party SDKs (swap/stack navigators,
-//! codeblock, table) and call each one's `register(&mut IosBackend)` so
-//! their native chrome rendered over the wire on device. That was the
-//! old-core `Element::External` model: an unrecognised element crossed
-//! the wire as a `CreateExternal` payload and the CLIENT rebuilt it from
-//! its per-backend `ExternalRegistry`.
-//!
-//! Runtime v2 has no such registry. An SDK primitive is a scene payload
+//! An SDK primitive is a scene payload
 //! with a handler installed on a `runtime_scene::Registry<H>`, and in
 //! runtime-server mode the scene is realized on the **host**, against
 //! `Registry<WireRecordingBackend>` — the dev-server sidecar's
 //! `register_scene_extensions_recorder` seam (see
 //! `dev_server::sidecar::run_newcore`). The handler therefore runs
 //! server-side and what crosses the wire is already ordinary primitive
-//! commands. There is nothing left for the client to register, so the
-//! registration is deleted rather than ported, and the SDK dependencies
-//! are gone with it.
+//! commands. There is nothing for the client to register, so the
+//! shell carries no SDK dependencies.
 //!
 //! **Behavior delta worth knowing** (runtime-server / `idealyst dev`
 //! only, not device builds): an SDK whose `register` type-dispatches to a

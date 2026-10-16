@@ -6,10 +6,10 @@
 //! `view_to_layout` by); each backend's frame-apply pass calls
 //! [`fire`] with the view's resolved size.
 //!
-//! # Why [`fire`] fires the dispatch hook (FRAMEWORK-NOTES #103)
+//! # Why [`fire`] fires the dispatch hook
 //!
 //! The layout pass is an author-code entry point: `on_layout` bodies
-//! write signals (`natural_height.set(h)`), and the new core only
+//! write signals (`natural_height.set(h)`), and the kernel only
 //! STAGES writes until the flush driver commits them. The pass runs
 //! from surfaces nothing else hooks — the coalesced layout microtask
 //! (deliberately un-hooked, see [`crate::dispatch_hook`]), a window
@@ -90,12 +90,9 @@ mod tests {
         FLUSHES.with(|f| f.set(f.get() + 1));
     }
 
-    /// Regression (FRAMEWORK-NOTES #103): an `on_layout` callback fired
-    /// by the frame-apply pass must be followed by the post-dispatch
-    /// hook (the new-core flush driver), or the signal it wrote stays
-    /// staged until an unrelated event flushes. Fails on the old
-    /// per-backend `fire_layout_for_view`, which ran the callbacks and
-    /// returned.
+    /// Regression: an `on_layout` callback fired by the frame-apply pass
+    /// must be followed by the post-dispatch hook (the flush driver), or
+    /// the signal it wrote stays staged until an unrelated event flushes.
     #[test]
     fn regression_on_layout_fire_schedules_flush() {
         clear_dispatch_hook();

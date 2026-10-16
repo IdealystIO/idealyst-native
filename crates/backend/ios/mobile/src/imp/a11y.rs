@@ -6,13 +6,13 @@
 //! function takes a node + resolved props and writes (or clears) every
 //! relevant UIAccessibility property. All `create_*` paths call it
 //! after constructing the view; the dynamic
-//! [`update_accessibility`](runtime_shared::Backend::update_accessibility)
+//! [`update_accessibility`](runtime_vocabulary::caps::A11yOps::update_accessibility)
 //! path reuses it identically. Clearing on `None` is intentional —
 //! reactive a11y prop changes must not leak stale labels onto a view.
 //!
 //! UIKit walks each `UIView`'s accessibility properties directly, so
 //! we don't maintain a parallel semantics tree and
-//! [`dump_accessibility_tree`](runtime_shared::Backend::dump_accessibility_tree)
+//! [`dump_accessibility_tree`](runtime_vocabulary::caps::A11yOps::dump_accessibility_tree)
 //! stays `None` for this backend.
 //!
 //! ### Live regions
@@ -20,7 +20,7 @@
 //! UIKit has no per-view "aria-live"-equivalent setter — live updates
 //! are imperative via `UIAccessibilityPostNotification(.announcement,
 //! …)`. The `props.live_region` field is therefore observed at the
-//! framework layer (the walker re-announces when a live-region label
+//! framework layer (the vocabulary re-announces when a live-region label
 //! changes) and routed through [`announce`] here; [`apply`] itself
 //! leaves it untouched.
 //!
@@ -412,16 +412,12 @@ fn set_string_or_clear(view: &UIView, sel: objc2::runtime::Sel, value: Option<&s
     // ('@') on NSObject regardless of the underlying target's
     // return type, so the Rust receiver type has to be a pointer
     // — even though the actual selectors we send (the
-    // `setAccessibility*:` family) are void-returning. Pre-fix
-    // this used `let _: () = ...`, which made objc2's debug-mode
-    // signature verifier panic ("expected return to have type
-    // code '@', but found 'v'") the first time runtime-server-mode walk
-    // hit an a11y label — taking down the entire 74-command
-    // initial-snapshot apply on the first view it processed, so
-    // the iOS shell ended up with just the root view registered
-    // and every subsequent SetAnimated command referenced a
-    // never-created node. The returned pointer is meaningless for
-    // these setters; we ignore it.
+    // `setAccessibility*:` family) are void-returning. Typing the
+    // receiver `()` makes objc2's debug-mode signature verifier
+    // panic ("expected return to have type code '@', but found
+    // 'v'") on the first a11y label, aborting the whole batch
+    // apply. The returned pointer is meaningless for these
+    // setters; we ignore it.
     type Id = *mut objc2_foundation::NSObject;
     match value {
         Some(v) => {

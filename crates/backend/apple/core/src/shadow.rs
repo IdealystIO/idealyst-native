@@ -12,10 +12,9 @@
 //! does not help either — a mask layer "defines the part of the parent layer
 //! that is visible, and this also affects any shadow rendered by the layer".
 //!
-//! So an idea-ui `Card` with a rounded, clipped image header rendered a shadow
-//! on web and a flat box on both Apple backends, from one author tree — a live
-//! Rule #7 divergence, previously papered over by an "iOS caveat" in `Card`'s
-//! public docs telling authors to nest two views by hand.
+//! So an idea-ui `Card` with a rounded, clipped image header would render a
+//! shadow on web and a flat box on both Apple backends, from one author tree —
+//! a Rule #7 divergence.
 //!
 //! ## The fix: paint the shadow on a sibling layer
 //!

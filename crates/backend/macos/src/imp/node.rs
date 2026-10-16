@@ -1,4 +1,4 @@
-//! [`MacosNode`] — the backend's `Backend::Node` type. Wraps the
+//! [`MacosNode`] — the backend's `Host::Node` type. Wraps the
 //! concrete AppKit class for each primitive the backend creates,
 //! so call sites can dispatch on shape (Label vs ScrollView vs
 //! generic View) without re-casting.
@@ -14,7 +14,7 @@ pub enum MacosNode {
     /// or any other NSView subclass we own.
     View(Retained<NSView>),
     /// NSTextField in label mode. Single-cell static text with
-    /// wrap + measure_fn installed by [`Backend::create_text`].
+    /// wrap + measure_fn installed by `TextOps::create_text`.
     Label(Retained<NSTextField>),
 }
 

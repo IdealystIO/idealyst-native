@@ -8,9 +8,8 @@
 //!
 //! # Why this exists (the bug prevented)
 //!
-//! The new core (`backend_ios::newcore`, and eventually the other
-//! Apple new-core adoptions) stages signal writes; nothing is
-//! observable until the flush driver calls `World::flush`. UIKit/AppKit
+//! The reactive kernel stages signal writes; nothing is observable
+//! until the flush driver calls `World::flush`. UIKit/AppKit
 //! event callbacks get their flush from the dispatch-site glue in the
 //! backend's `newcore.rs` (every author callback the backend installs
 //! is wrapped to schedule a flush when it returns). But author code
@@ -27,13 +26,10 @@
 //! Without this hook, a write staged from any of those would sit
 //! uncommitted until some unrelated toolkit event happened to trigger
 //! a flush — i.e. "my `after_ms` callback ran but the UI never
-//! updated". The old-core reactive system applies writes synchronously
-//! and never needs this, so the slot defaults to `None` and every fire
-//! site is a single thread-local read — a no-op unless a new-core boot
-//! installed the flush driver. Both Apple new-core boots install it:
-//! `backend_ios::newcore::start` and `backend_macos::newcore::start`
-//! (the macOS P4a NSEvent-monitor + frame-tick pair has been replaced
-//! by this hook plus dispatch-site callback wrapping).
+//! updated". The slot defaults to `None` and every fire site is a
+//! single thread-local read — a no-op until a boot installs the flush
+//! driver. Both Apple boots install it: `backend_ios::newcore::start`
+//! and `backend_macos::newcore::start`.
 //!
 //! # What deliberately does NOT fire the hook
 //!
@@ -45,7 +41,7 @@
 //!   queue outside an already-hooked surface (toolkit events, timers,
 //!   frames, future polls), so nothing is lost.
 //! - **`render_loop`** (`backend-ios-core`'s NSTimer draw driver): it
-//!   drives the wgpu `draw_frame` for old-core hosts and runs no
+//!   drives the graphics surface's frame callback and runs no
 //!   author reactive code. Animation-clock ticks ride `raf_loop`,
 //!   which IS hooked.
 
@@ -56,13 +52,13 @@ thread_local! {
 }
 
 /// Install the post-dispatch hook (replaces any previous one).
-/// The Apple new-core boots (`backend_ios::newcore`,
+/// The Apple boots (`backend_ios::newcore`,
 /// `backend_macos::newcore`) install their `schedule_flush` here.
 pub fn install_dispatch_hook(f: fn()) {
     HOOK.with(|h| h.set(Some(f)));
 }
 
-/// Remove the hook (used by new-core `stop`/teardown paths). Fire
+/// Remove the hook (used by the `stop`/teardown paths). Fire
 /// sites revert to no-ops.
 pub fn clear_dispatch_hook() {
     HOOK.with(|h| h.set(None));
@@ -97,7 +93,7 @@ mod tests {
 
     /// The slot semantics the flush driver relies on: no-op before
     /// install, fires after, silent again after clear (a torn-down
-    /// new-core app must not leave a dangling flush hook behind).
+    /// app must not leave a dangling flush hook behind).
     #[test]
     fn hook_fires_only_between_install_and_clear() {
         clear_dispatch_hook(); // clean slate (thread-local)

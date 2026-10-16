@@ -188,19 +188,15 @@ thread_local! {
     /// the layout pass runs inside `drain_queued_layout_pass`'s `RefMut`,
     /// `virtual_grid_data_changed` is dispatched through
     /// `backend.borrow_mut()`, and the scroll delegate goes through
-    /// `with_backend`. Cloning the instance's `Rc`s — which this module
-    /// used to do, with a comment saying it ended the borrow — does not
-    /// end it: the borrow belongs to the CALLER.
+    /// `with_backend`. Cloning the instance's `Rc`s does not end it: the
+    /// borrow belongs to the CALLER.
     ///
     /// So the borrow-free half is queued here and drained at the two
     /// seams where the borrow is provably gone (see `drain_pending`).
     /// The cost is that cells mount one pass later than the layout that
     /// discovered them; they mark the tree dirty on mount, so the
-    /// following pass frames them. That was already true of the first
-    /// fill, which `create` deliberately deferred for this same reason.
-    ///
-    /// Found 2026-09-14: with `GridOps` wired up on iOS for the first
-    /// time, the first schedule grid to mount aborted the app with
+    /// following pass frames them. The first fill, which `create`
+    /// defers, works the same way. Mounting synchronously aborts with
     /// `RefCell already borrowed` inside `virtual_grid::mount_cell`.
     static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
 
@@ -495,9 +491,8 @@ fn sync_now(h: &GridHandles) {
 ///
 /// Separated from [`release`] for the same reason as [`sync_now`]:
 /// dropping a cell scope runs its cleanups, and a cleanup that touches
-/// the backend re-enters the borrow the caller is holding. That is the
-/// two-axis form of the virtualizer teardown bug (FRAMEWORK-NOTES
-/// Wave-19).
+/// the backend re-enters the borrow the caller is holding (the two-axis
+/// form of the virtualizer teardown hazard).
 fn teardown_now(job: TeardownJob) {
     for cell in job.cells {
         CELL_BOXES.with(|m| {
@@ -606,7 +601,7 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGrid
 
     /// With overlay indicators the scrollport changes only when the frame
     /// does, so this rides the layout pass's `on_layout` registry — which
-    /// also schedules the flush after the callback (FRAMEWORK-NOTES #103).
+    /// also schedules the flush after the callback.
     fn subscribe_scrollport(
         &self,
         node: &dyn std::any::Any,

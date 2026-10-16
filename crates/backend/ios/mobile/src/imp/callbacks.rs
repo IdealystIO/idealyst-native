@@ -563,10 +563,10 @@ declare_class!(
                     width: w,
                     height: h,
                 });
-                // New-core mirror: forward the SAME size into the
-                // mounted world's viewport ctx so breakpoint-dependent
-                // author reactivity re-fires on rotation/resize (no-op
-                // TLS read when no new-core app is booted). See
+                // Forward the SAME size into the mounted world's
+                // viewport ctx so breakpoint-dependent author
+                // reactivity re-fires on rotation/resize (no-op TLS
+                // read before boot). See
                 // newcore.rs, "Viewport source".
                 crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                     width: w,
@@ -719,8 +719,7 @@ pub(crate) unsafe fn keyboard_frame_change(
 // OverlayPassthroughView — UIView subclass that only consumes touches
 // in its subviews' frames.
 //
-// Used as the container for portals (formerly: overlays without a backdrop)
-// (popovers, selects). The default `UIView.pointInside:` returns YES
+// Used as the container for portals (popovers, selects). The default `UIView.pointInside:` returns YES
 // for any point in `bounds`, so a viewport-spanning container would
 // intercept every touch on the page beneath it — including scroll
 // gestures. Overriding `pointInside:` to return YES only where a
@@ -1271,7 +1270,7 @@ impl TextKeyDelegate {
 // native handoff instead of a dismiss+refocus flicker.
 
 /// Sentinel `UIView.tag` marking a focus-preserving press region
-/// (`Backend::mark_preserves_focus`): touches landing inside a view (or
+/// (`InputOps::mark_preserves_focus`): touches landing inside a view (or
 /// descendant of one) carrying this tag are skipped by the
 /// keyboard-dismiss tap recognizer, so pressing e.g. an option row in a
 /// combobox's anchored menu doesn't `endEditing:` the input the menu
@@ -1478,13 +1477,13 @@ impl ScrollDelegate {
 mod tests {
     use super::touch_may_tap;
 
-    // REGRESSION (CrewForge kiosk pin pad, 2026-10-13): a control rebuilt by
+    // REGRESSION (kiosk pin pad): a control rebuilt by
     // a press refused every tap for 0.35 s after its creation, so a fast
     // ⌫ right after a digit (the press that flips its live `disabled` and
     // rebuilds it) was silently dropped. Reproduced in the iOS simulator
     // with real HID taps: a Back tap 150 ms and 250 ms after a digit never
     // fired, 600 ms did. A touch that begins after the rebuild — however
-    // soon — must be allowed. (The old window rule rejected all three.)
+    // soon — must be allowed. (A fixed post-creation window rejects all three.)
     #[test]
     fn regression_tap_soon_after_a_rebuild_is_allowed() {
         let created = 100.0;
@@ -1503,8 +1502,7 @@ mod tests {
         assert!(!touch_may_tap(created, created), "same instant is not after");
     }
 
-    // The case the 2026-06 whiteboard fix covered still holds: the first
-    // real tap on a freshly pushed screen fires on the first try.
+    // The first real tap on a freshly pushed screen fires on the first try.
     #[test]
     fn first_tap_on_a_pushed_screen_is_allowed() {
         assert!(touch_may_tap(101.0, 100.0));

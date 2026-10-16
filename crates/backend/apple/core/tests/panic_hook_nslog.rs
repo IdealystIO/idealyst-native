@@ -1,7 +1,7 @@
 //! Regression: on a device, a Rust panic's message was lost. The std hook
 //! writes to stderr, which nothing captures on iOS; the crash report only
 //! showed the later `panic_cannot_unwind` abort in `after_ms_inner`'s NSTimer
-//! block (kiosk crash, 2026-10-07). `install_scheduler` now installs a hook
+//! block. `install_scheduler` installs a hook
 //! that routes the report through NSLog. This test drives the hook with a
 //! capturing sink (the NSLog sink is the same closure with `apple_log`
 //! plugged in) and asserts the report carries the message, the panic's

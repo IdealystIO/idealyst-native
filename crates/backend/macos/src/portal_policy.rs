@@ -8,7 +8,7 @@
 //!
 //! ## Which inserted child the anchor tracker pins
 //!
-//! An overlay composition lowers to an `Element::Portal` whose direct
+//! An overlay composition lowers to a `portal` primitive whose direct
 //! children are `[backdrop, content]` when a backdrop / click-away
 //! catcher is requested (popover), or just `[content]` when it isn't
 //! (tooltip). The framework inserts the backdrop FIRST (it must paint
