@@ -43,6 +43,8 @@
 //!   VP8/WebM ([`Container::WebM`]) is the default because a base GStreamer
 //!   always provides it; [`Container::Mp4`] (H.264) is honored only when an
 //!   H.264 encoder plugin is installed, else it errors honestly.
+//! - **Windows** — Media Foundation's Sink Writer: H.264 + AAC in MP4
+//!   ([`Container::WebM`] is written as MP4, extension changed to match).
 //! - **other** — returns [`MediaWriterError::Unsupported`].
 //!
 //! Recording requires no permission of its own: the `camera` / `microphone` /
@@ -83,12 +85,17 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+#[path = "windows.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
-    target_os = "linux"
+    target_os = "linux",
+    target_os = "windows"
 )))]
 #[path = "stub.rs"]
 mod imp;

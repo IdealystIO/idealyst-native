@@ -36,6 +36,7 @@ SDK only consumes the streams they hand out and writes to the app's own files.
 | Android       | `MediaCodec` + `MediaMuxer` via a Kotlin shim    | `.mp4` |
 | web (wasm32)  | `MediaRecorder` over the streams' `MediaStream`  | `.mp4`/`.webm` |
 | Linux / desktop | GStreamer `appsrc ! videoconvert ! vp8enc ! webmmux ! filesink` (+ `opusenc` audio branch) | `.webm` |
+| Windows       | Media Foundation Sink Writer: H.264 + AAC (16-bit PCM in, 44.1/48 kHz, mono/stereo); `WebM` requests are written as MP4 with the extension changed | `.mp4` |
 | other         | `MediaWriterError::Unsupported`                  | —      |
 
 The mechanism diverges per platform; the *output* converges on a playable file

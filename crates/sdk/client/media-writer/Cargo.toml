@@ -44,6 +44,17 @@ files = { workspace = true }
 # msg_send), the same posture `camera`'s AVCaptureSession backend takes. We
 # link AVFoundation/CoreMedia/CoreVideo/AudioToolbox and call the C surface
 # for CVPixelBuffer fills and CMSampleBuffer construction.
+# Windows: Media Foundation's Sink Writer (H.264 + AAC → MP4) on a writer
+# thread; `stop` awaits its finalize over a channel.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
+async-channel = "2"
+
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+pollster = "0.4"
+# `tests/host_record_windows.rs` decodes the recording back.
+video-decode = { workspace = true }
+
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 # `exception` feature: catch NSExceptions from AVFoundation calls on the
 # encoder thread and turn them into typed errors (an uncaught Obj-C exception
