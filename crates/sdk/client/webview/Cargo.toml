@@ -57,6 +57,11 @@ web-glue = { workspace = true }
 # Browser tests (`tests/web_webview.rs`) — run with
 # `cargo test -p webview --target wasm32-unknown-unknown` (the workspace
 # runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+# `tests/windows_webview.rs`: a real HWND, read back through the robot.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+backend-windows = { workspace = true, features = ["robot"] }
+runtime-vocabulary = { workspace = true }
+
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
@@ -79,6 +84,22 @@ backend-linux = { workspace = true, optional = true }
 gtk4 = { version = "0.9", features = ["v4_14"], optional = true }
 webkit6 = { version = "0.4", optional = true }
 javascriptcore6 = { version = "0.4", optional = true }
+
+# Windows: WebView2 (the Edge engine) in a child window. `webview2-com`
+# 0.39 is built on windows-rs 0.62 — the same version as the rest of the
+# Windows stack (one `windows` version in the graph).
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+backend-windows = { workspace = true }
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
+windows-core = "0.62"
+
+# The WebView2 loader ships beside the Windows `.exe` (its static form links
+# only with MSVC; Windows apps build with GNU). `idealyst build/run
+# --windows` copies every file declared here — see build-windows
+# `runtime_files.rs`.
+[package.metadata.idealyst.windows]
+runtime-files = [{ package = "webview2-com-sys", path = "{arch}/WebView2Loader.dll" }]
 
 [features]
 # Native WebKitGTK leaf for Linux/GTK4. OFF by default, unlike every other

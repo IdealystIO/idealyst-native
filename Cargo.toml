@@ -434,6 +434,7 @@ members = [
     "examples/user-activity",
     "examples/nav-showcase",
     "examples/whiteboard-demo",
+    "examples/sdk-gallery",
 
     # Benchmarks
     "benchmark",

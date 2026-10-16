@@ -1,0 +1,33 @@
+[package]
+name = "sdk-gallery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SDK gallery — one panel per client SDK (svg, clipboard, connectivity, notifications, webview), for checking each on a platform by hand."
+# Not published to the idealyst registry: a runnable example.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The platform surface, used by `src/main.rs` only.
+idealyst = { workspace = true }
+# The author surface; `async-driver` for `driver::spawn_async` (the
+# clipboard and notification calls are async).
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+# The SDKs on show.
+svg = { workspace = true }
+clipboard = { workspace = true }
+connectivity = { workspace = true }
+notifications = { workspace = true }
+webview = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "SDK Gallery"
+bundle_id = "ai.truday.idealyst.sdkgallery"
+version   = "0.0.1"
+targets   = ["web", "macos", "windows"]

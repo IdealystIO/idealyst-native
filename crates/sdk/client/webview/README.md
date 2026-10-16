@@ -59,7 +59,9 @@ The *mechanism* differs per platform:
 | Web (wasm32) | `<iframe>` (web-glue); callbacks are DOM `load` / `error` / `message` listeners, detached at unmount |
 | iOS | `WKWebView` via raw `msg_send`; callbacks via a `WKNavigationDelegate` + `WKScriptMessageHandler` shim |
 | Android | `android.webkit.WebView`; `loadUrl` navigation |
-| Other (wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder |
+| Linux (`linux-webkit` feature) | WebKitGTK 6 (`webkit6::WebView`) |
+| Windows | Microsoft Edge WebView2 in a child window the backend frames; `window.postMessage` routed to `chrome.webview` by an injected shim, `post_message` replayed as a `message` event; `execute_js` → error (async-only API). Needs the WebView2 runtime (in Windows 10/11) and `WebView2Loader.dll` beside the `.exe` — `idealyst build/run --windows` copies it (declared under `[package.metadata.idealyst.windows] runtime-files`); without it the app still starts and the webview reports `on_error` |
+| Other (macOS, wgpu desktop, terminal, …) | the framework's `External` "not supported" placeholder |
 
 ### Backend caveats
 
@@ -129,5 +131,6 @@ verification note above). Tick each item as you exercise it.
   URL via `loadUrl` and renders; reactive `url` re-navigates. Confirm the v1 caveat:
   `on_load`/`on_error`/`on_message` callbacks are a **no-op** (verify navigation
   still works and nothing crashes).
+- [x] **Windows** — `tests/windows_webview.rs` (a host window framed by layout; a missing loader reaches `on_error`) on a Windows 11 VM, and by hand in `examples/sdk-gallery`: example.com loads (`on_load`), the inline page's `postMessage` reaches `on_message`, `post_message` reaches the page, `reload` works.
 - [ ] **macOS / other** — no handler registered; verify the framework's `External`
   "not supported" placeholder renders cleanly (no layout artifact or crash).

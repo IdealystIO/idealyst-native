@@ -15,6 +15,10 @@
 //!   DOM access is web-glue), author style via `attach_style`, ref fill with the
 //!   web ops (`post_message`/`reload`/`execute_js` bodies also live in
 //!   `web_util`).
+//! - **Linux** (`linux-webkit` feature) — WebKitGTK 6.
+//! - **Windows** — Microsoft Edge WebView2 in a child window the backend
+//!   frames; `WebView2Loader.dll` ships beside the `.exe` (declared as a
+//!   Windows runtime file in this crate's manifest). See `windows.rs`.
 //! - **Everywhere else** — [`register`] installs the External-placeholder
 //!   degradation path ([`ExternalOps::create_external`]): the host's
 //!   "not supported" box (a bare `<div>` on SSR), with author style +
@@ -67,6 +71,9 @@ pub(crate) mod web_util;
 // depending on it — on any Linux host without that dev package.
 #[cfg(all(target_os = "linux", feature = "linux-webkit", not(target_arch = "wasm32")))]
 mod linux;
+// Windows: Microsoft Edge WebView2 in a child window (see `windows.rs`).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod windows;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -248,7 +255,9 @@ impl WebViewOps for UnsupportedOps {}
 
 #[cfg(target_arch = "wasm32")]
 static OPS: &dyn WebViewOps = web_leg::OPS;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+static OPS: &dyn WebViewOps = crate::windows::OPS;
+#[cfg(not(any(target_arch = "wasm32", target_os = "windows")))]
 static OPS: &dyn WebViewOps = &UnsupportedOps;
 
 // ============================================================================
@@ -408,6 +417,20 @@ where
     node
 }
 
+/// Windows mount handler — `Registry<WindowsBackend>`-concrete. A real
+/// embedded browser via WebView2, in a child window the backend frames.
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+fn mount_webview_windows(
+    cx: &mut MountCx<'_, backend_windows::WindowsBackend>,
+    prim: &Rc<WebViewPrim>,
+    _children: Vec<Element>,
+) -> backend_windows::WindowsNode {
+    let backend = cx.backend().clone();
+    let node = crate::windows::build(&prim.props, &backend);
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 /// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete. A real
 /// embedded browser via WebKitGTK 6 (`webkit6::WebView`).
 #[cfg(all(target_os = "linux", feature = "linux-webkit", not(target_arch = "wasm32")))]
@@ -436,6 +459,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
             reg.register::<WebViewPrim, _>(mount_webview_linux);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<WebViewPrim, _>(mount_webview_windows);
             return;
         }
     }

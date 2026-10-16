@@ -2079,6 +2079,7 @@ version = "1.8.0"
 dependencies = [
  "anyhow",
  "build-ios",
+ "serde_json",
  "tempfile",
  "toml 0.8.23",
 ]
@@ -11152,6 +11153,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdk-gallery"
+version = "1.5.2"
+dependencies = [
+ "clipboard",
+ "connectivity",
+ "idea-ui",
+ "idealyst",
+ "notifications",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+ "svg",
+ "webview",
+]
+
+[[package]]
 name = "sec1"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14626,6 +14643,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-linux",
  "backend-web",
+ "backend-windows",
  "gtk4",
  "host-mock",
  "javascriptcore6",
@@ -14640,6 +14658,43 @@ dependencies = [
  "wasm-bindgen-test",
  "web-glue",
  "webkit6",
+ "webview2-com",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "webview2-com"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6"
+dependencies = [
+ "webview2-com-macros",
+ "webview2-com-sys",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "webview2-com-macros"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "webview2-com-sys"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb"
+dependencies = [
+ "thiserror 2.0.18",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

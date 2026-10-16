@@ -62,6 +62,23 @@ shows toasts for an id it knows; an unpackaged `.exe` has none of its own),
 and the taskbar groups the app's windows under it. Source:
 `backend/windows/src/app_identity.rs`.
 
+Some SDKs need a file beside the `.exe` at runtime. The webview SDK needs
+Microsoft's `WebView2Loader.dll`: its static form links only with the MSVC
+toolchain, and Windows apps here are built with the GNU one. An SDK declares
+such a file in its manifest,
+
+```toml
+[package.metadata.idealyst.windows]
+runtime-files = [{ package = "webview2-com-sys", path = "{arch}/WebView2Loader.dll" }]
+```
+
+and `idealyst build --windows` copies every declared file (`{arch}` = `x64`
+/ `arm64` / `x86`) out of the named dependency package next to the `.exe`;
+`run --windows` on a remote machine copies them with it. Ship the `.exe`'s
+whole folder. The webview SDK loads the DLL at runtime rather than importing
+it, so an app missing it still starts. Source:
+`tools/build/windows/src/runtime_files.rs`.
+
 ## The two renderers
 
 | | GDI+ (default) | Direct2D |
