@@ -30,6 +30,12 @@ When you change behavior, find the documentation that describes it and update it
 - New features need documentation alongside the implementation, not as a follow-up.
 - `idea-ui` is an adjacent project with its own docs — do not update idea-ui docs from this repo, and don't assume changes here propagate there.
 
+### 2a. Comments describe the current code — history goes in the commit
+
+Code comments and docs explain what the code does now and why it's built that way: contracts, invariants, platform quirks, the bug a guard prevents (named in a sentence). They do not narrate how the code got here. Don't write "used to…", "previously…", "the old core did…", "moved here verbatim from…", phase/wave tags, struck-through `~~X~~ — LANDED` lists, migration tallies, or retold debugging sessions — that belongs in the commit message, CHANGELOG, or a migration guide. A one-line guard against a tempting wrong edit ("not X: Y breaks because Z") is fine.
+
+When you change or remove something, update every comment and doc that names it in the same change — a comment that cites a deleted trait, path, feature or function is a bug. Don't cite Claude memory entries (`[[project_…]]`) from code; a code reader can't resolve them. Inline the fact instead.
+
 ## 3. Core stays minimal — peripheral features go through the scene registry
 
 The runtime's builtin primitive set is for the lowest primitives only. Since the runtime-v2 deletion that set lives in `crates/runtime/vocabulary/` (the builtin handlers and the `glue` author surface); `crates/runtime/core/` is now just the thin author-facing root that re-exports it. Adding a primitive means touching the vocabulary — treat that as the bar it always was.
@@ -177,7 +183,7 @@ ui! {
 
 ### 9.4 Conditional and iterative rendering belongs inside the macro
 
-If a child only sometimes appears, express that with `if` / `if let` / `match` *inside* `ui!`, not by conditionally pushing into a `Vec<Element>` before the macro call. Same for iteration: `for item in items { ... }` inside `ui!` is the standard form. The website's `pages/type_safety.rs::section()`, `pages/targets.rs::target_row()`, and `shell.rs::layout_with_toc()` helpers all currently build children with `let mut children = Vec::new(); children.push(...)` and are exactly the shape Section 9.3 forbids — when you touch one of those files for another reason, convert it.
+If a child only sometimes appears, express that with `if` / `if let` / `match` *inside* `ui!`, not by conditionally pushing into a `Vec<Element>` before the macro call. Same for iteration: `for item in items { ... }` inside `ui!` is the standard form. `websites/website/src/pages/further_reading.rs` still builds its rows with `Vec::with_capacity` + `.push(ui!{...})` — exactly the shape Section 9.3 forbids; when you touch that file for another reason, convert it.
 
 ### 9.5 Local helpers vs. promoting to a component
 
@@ -207,10 +213,4 @@ When you're editing a component (or the file it lives in) for any other reason a
 
 The inverse also holds: don't drive-by rewrite components you aren't otherwise modifying. Other agents may have in-flight work in the same file (see [[feedback_multi_agent_coordination]]) and noise commits create rebase pain. The rule is "fix what you're already touching," not "sweep the repo."
 
-**Known cleanup hotspots** flagged by the initial audit (drop into these when you're already in the file):
-
-- `websites/website/src/shell.rs` — `layout_with_toc`-style helpers build TOC entries via `Vec::with_capacity` + `.push(ui!{...})`.
-- `websites/website/src/pages/type_safety.rs` — `section()` helper.
-- `websites/website/src/pages/targets.rs` — `target_row()` helper.
-- `websites/website/src/pages/further_reading.rs` — pre-sized vec extended in a loop.
-- `websites/website/src/pages/why_rust.rs` — inline `if let Some(src)` + conditional push instead of `ui!`-internal `if`.
+**Known cleanup hotspot** (drop into it when you're already in the file): `websites/website/src/pages/further_reading.rs` — pre-sized vec extended in a loop.
