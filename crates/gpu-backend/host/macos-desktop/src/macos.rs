@@ -204,7 +204,7 @@ struct WgpuInit {
     config: wgpu::SurfaceConfiguration,
 }
 
-/// Steps 1–2 of both mounts: AppKit-handle validation + the async wgpu
+/// Steps 1–2 of [`mount`]: AppKit-handle validation + the async wgpu
 /// init (instance → surface → adapter → device → configure). Metal
 /// backend, same shape as host-ios-mobile.
 async fn init_wgpu(
@@ -288,7 +288,7 @@ async fn init_wgpu(
     })
 }
 
-/// Shared tail of both mounts: the pending-font log, `HostInner`
+/// Tail of [`mount`]: the pending-font log, `HostInner`
 /// assembly, and the per-frame render loop.
 fn finish_mount(
     init: WgpuInit,
@@ -427,7 +427,7 @@ fn draw_frame(inner: &mut HostInner) {
     // Visibility gate — skip the GPU encode + present when the view
     // is hidden/off-window. Same policy as the iOS host: no
     // auto-unmount here (whether a hidden embedded app keeps running
-    // is the caller's policy via pause/resume).
+    // is the caller's policy; pause/resume are no-ops today).
     let visible = unsafe { is_view_visible(inner.ns_view) };
     // Publish to the per-thread frame-active flag so author-side
     // `raf_loop_scoped` tickers that read `runtime_shared::is_frame_active()`
@@ -436,7 +436,7 @@ fn draw_frame(inner: &mut HostInner) {
     if !visible {
         return;
     }
-    // wgpu 29: reconfigure on Outdated/Lost; skip on Timeout/
+    // Reconfigure on Outdated/Lost; skip on Timeout/
     // Occluded/Validation — same handling as the web and iOS hosts.
     let surface_tex = match inner.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t)

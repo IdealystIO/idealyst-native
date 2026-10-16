@@ -264,7 +264,7 @@ impl Default for AndroidSim {
 /// primary-color background, on-primary text, 14 sp medium-weight
 /// label, 10×24 padding for a 40 dp pill, full-pill 20 dp corners.
 /// Authors override individual fields via `.with_style(...)`; the
-/// merge in `Backend::apply_style` keeps any field they set.
+/// merge in `WgpuBackend`'s `StyleOps::apply_style` keeps any field they set.
 fn m3_button_defaults() -> runtime_shared::StyleRules {
     use runtime_shared::{Color, FontWeight, Length, StyleRules, Tokenized};
     StyleRules {

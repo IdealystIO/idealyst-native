@@ -5,13 +5,11 @@
 //! pixels back, and assert the content actually rasterized. Runs the
 //! SAME `Renderer` + shaders the windowed host uses.
 //!
-//! Runtime v2: the tree is a `runtime_scene::Element` built with the
-//! vocabulary builders and mounted with
+//! The tree is a `runtime_scene::Element` built with the vocabulary
+//! builders and mounted with
 //! `render_wgpu::newcore::start(shot.backend(), register, build)` — the
 //! same offscreen idiom `newcore-gpu-smoke`'s `NEWCORE_SMOKE_HEADLESS`
-//! mode and `idea-ui-docs-gpu`'s render test use — replacing the old
-//! `Element::View` literal + `Screenshotter::mount`. Same renderer, same
-//! shaders, same assertions.
+//! mode and `idea-ui-docs-gpu`'s render test use.
 //!
 //! Requires a usable wgpu adapter. On macOS Metal is always available;
 //! on a GPU-less Linux box it needs a software adapter (Mesa lavapipe).

@@ -14,12 +14,8 @@ mod scheduler;
 
 pub use app::{run, run_with, RunError};
 
-/// Compatibility path. The windowed boot used to live behind a
-/// `newcore` module while the framework carried two cores; callers and
-/// docs spell it `host_winit::newcore::run` / `::run_with`. There is
-/// one core now and the entries live at the crate root ([`crate::run`],
-/// [`crate::run_with`]) — this re-export keeps the historical paths
-/// resolving.
+/// Re-exports [`crate::run`] / [`crate::run_with`] under the
+/// `host_winit::newcore::` path that existing callers and docs still use.
 pub mod newcore {
     pub use crate::{run, run_with};
 }

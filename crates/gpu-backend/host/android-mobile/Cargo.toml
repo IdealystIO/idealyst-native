@@ -7,7 +7,7 @@ license.workspace = true
 # Android native shell for the wgpu render backend.
 #
 # Sibling of `host-ios-mobile` / `host-web`: takes the framework's
-# `Element::Graphics` SurfaceView surface (via the Android backend's
+# `graphics` primitive's SurfaceView surface (via the Android backend's
 # `AndroidNdkWindowHandle`-bearing `GraphicsSurface`), runs the wgpu
 # init against the Vulkan/GL backend, constructs the
 # `render_wgpu::Host` + `Renderer`, mounts the caller's UI, and drives

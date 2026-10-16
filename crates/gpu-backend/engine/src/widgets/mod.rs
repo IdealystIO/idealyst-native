@@ -7,7 +7,7 @@
 //!   `RectInstance` with the sRGB→linear conversion baked in,
 //!   so skin paint code never talks to `style_convert` directly.
 //! - Inter-widget layout constants used by both the
-//!   `Backend` impl's intrinsic-size setup and the skins.
+//!   backend's intrinsic-size setup and the skins.
 
 use crate::pipeline::Instance as RectInstance;
 use crate::style_convert::srgb_rgba_to_linear;

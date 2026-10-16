@@ -39,8 +39,7 @@
 //!
 //! Sticky pinning is a property of (child, enclosing-scroll) pair,
 //! not of the child alone. The enclosing scroll can change at
-//! mount time depending on where the framework's walker inserts
-//! the child. Tracking the relationship in a registry centralizes
+//! mount time depending on where realize inserts the child. Tracking the relationship in a registry centralizes
 //! the bookkeeping and lets the renderer's hot path do an O(1)
 //! HashMap lookup keyed by node pointer — no per-frame ancestor
 //! walks.
@@ -328,11 +327,11 @@ mod tests {
     //! Tests #1 (pure compute) and #2 (registry lifecycle) run
     //! host-side without a wgpu Device — they only touch the
     //! registry's `HashMap` keying and the pure
-    //! [`compute_translate`] function. Test #3 (fall-back to
-    //! relative when no scroll ancestor) likewise needs only the
-    //! registry, since the render walker's "no scroll ancestor →
-    //! no translate" branch is the same property exercised by
-    //! `compute_translate` returning 0 at scroll_y=0.
+    //! `runtime_shared::sticky::translate` function. Test #3
+    //! (fall-back to relative when no scroll ancestor) likewise
+    //! needs only the registry, since the render walker's "no
+    //! scroll ancestor → no translate" branch is the same property
+    //! exercised by `translate` returning 0 at scroll_y=0.
     //!
     //! Full end-to-end coverage (walk through walk(), produce
     //! rects with the pinning translate, verify against a golden)
@@ -374,9 +373,8 @@ mod tests {
 
     /// A frozen COLUMN on the GPU backend: `left` shifts `base_x`
     /// against the enclosing scroll's `offset_x` while the child
-    /// scrolls freely vertically. Before horizontal support the
-    /// registry held a single `threshold_top` and `EnclosingScroll`
-    /// only carried `offset_y`, so this was unreachable.
+    /// scrolls freely vertically (the registry must carry the
+    /// horizontal inset and `EnclosingScroll` the `offset_x`).
     #[test]
     fn regression_sticky_left_never_pins_horizontally() {
         let horizontal = StickyInsets { left: Some(0.0), ..Default::default() };

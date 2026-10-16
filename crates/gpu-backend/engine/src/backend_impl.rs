@@ -1,13 +1,15 @@
-//! The `Backend` trait impl for `WgpuBackend`.
+//! `WgpuBackend` — the backend mechanism behind the caps traits
+//! (`crate::newcore` adapts these inherent `*_impl` methods onto
+//! `runtime_scene::Host` + `runtime_vocabulary::caps`).
 //!
 //! Builds and mutates the node tree + Taffy layout tree. Text state
 //! (glyphon buffers + the shared `FontSystem`) lives in two shared
 //! `Rc<RefCell<>>`s so this module can mutate them inline from
-//! Backend methods while the renderer and Taffy measure closures
+//! backend methods while the renderer and Taffy measure closures
 //! reach the same data through their own clones.
 //!
-//! The renderer (see [`crate::app`]) walks the tree on each frame
-//! and submits draws — the Backend itself never talks to wgpu.
+//! The renderer ([`crate::Renderer`]) walks the tree on each frame
+//! and submits draws — the backend itself never talks to wgpu.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -43,10 +45,10 @@ fn mask_value(value: &str) -> String {
 
 pub struct WgpuBackend {
     pub(crate) layout: LayoutTree,
-    /// Root node of the rendered tree. The framework's
-    /// `render(...)` calls `finish(root)` once the build walker has
-    /// emitted every create/insert/apply_style for the tree; we
-    /// remember the root there so the renderer can find it.
+    /// Root node of the rendered tree. The mount path calls
+    /// `finish(root)` once realize has emitted every
+    /// create/insert/apply_style for the tree; we remember the root
+    /// there so the renderer can find it.
     pub(crate) roots: Vec<WgpuNode>,
     /// Shared text-buffer store. Cloned into Taffy measure closures
     /// and read by the renderer's frame walk.
@@ -63,7 +65,7 @@ pub struct WgpuBackend {
     /// via the constructor.
     pub(crate) color_scheme: ColorScheme,
     /// Count of live `ActivityIndicator` nodes in the tree.
-    /// Incremented in [`Backend::create_activity_indicator`],
+    /// Incremented in `create_activity_indicator_impl`,
     /// decremented in [`drop_subtree`]. The host's `tick` returns
     /// `true` while this is non-zero so spinners keep spinning.
     pub(crate) active_spinner_count: u32,
@@ -76,16 +78,13 @@ pub struct WgpuBackend {
     pub(crate) skin: Rc<dyn crate::painter::Painter>,
     /// Weak reference to *this* backend's outer `Rc<RefCell<Self>>`.
     /// Set once by `Host::new` immediately after the backend Rc
-    /// is constructed. Lets navigator + tab + drawer command
-    /// dispatchers (which run from user code outside the
-    /// framework's borrow window) re-acquire a mutable borrow
-    /// to insert / remove screens without re-entering the
-    /// framework's build walker.
+    /// is constructed. Nothing in this crate reads it; code that
+    /// must reach the backend from outside a borrow uses
+    /// [`global_self`] instead.
     pub(crate) self_weak: std::cell::OnceCell<std::rc::Weak<RefCell<WgpuBackend>>>,
     /// One-shot live-region announcements queued by
-    /// [`Backend::announce_for_accessibility`]. The host shell
-    /// (winit shell on desktop, future AppKit / UIKit / AT-SPI
-    /// wgpu hosts) drains the queue via
+    /// `announce_for_accessibility_impl`. The host shell drains the
+    /// queue via
     /// [`WgpuBackend::drain_pending_announcements`] on its next
     /// layout-commit pass and posts each entry to the platform's
     /// announcement API (NSAccessibility, UIAccessibility,
@@ -97,10 +96,9 @@ pub struct WgpuBackend {
     /// fire-and-forget messages. The two have different drain
     /// lifetimes, so they live on separate getters.
     ///
-    /// **Host shell consumer**: no winit-side AX bridge crate
-    /// exists yet — this is GPU-backend prep work. See
+    /// **Host shell consumer**: `host-wgpu-accesskit`. See
     /// `docs/accessibility-design.md` §5 for the projection
-    /// contract the future host shell must follow.
+    /// contract.
     pub(crate) pending_announcements: Vec<(String, LiveRegionPriority)>,
     /// Active per-node presence tweens. Keyed by node pointer
     /// (stable for the node's lifetime). Each tween interpolates
@@ -117,7 +115,7 @@ pub struct WgpuBackend {
     /// (or `None` if there's no scrolling ancestor), and the
     /// cached natural-y in the scroll view's content space.
     ///
-    /// Populated by [`Backend::apply_style`] when a node's
+    /// Populated by `apply_style_impl` when a node's
     /// `position` becomes `Sticky`; drained by [`drop_subtree`]
     /// when the node is removed; refreshed (natural-y values
     /// only) by [`crate::sticky::refresh_layout_positions`] after
@@ -172,8 +170,8 @@ pub struct WgpuBackend {
 /// the tween survives even if the rest of the framework drops its
 /// last handle mid-animation — the framework drives drop via
 /// `clear_children`, which only fires after the exit animation's
-/// scheduled task completes (see [`crate::primitives::presence`]'s
-/// walker). The tween's lifetime is therefore upper-bounded by the
+/// scheduled task completes (see `runtime_vocabulary`'s
+/// `handlers/presence.rs`). The tween's lifetime is therefore upper-bounded by the
 /// duration, after which `tick_presence_tweens` removes the entry
 /// and drops the strong ref.
 pub(crate) struct PresenceTween {
@@ -251,13 +249,13 @@ impl WgpuBackend {
     }
 
     /// Drain the live-region announcement queue accumulated by
-    /// [`Backend::announce_for_accessibility`]. Returns the
+    /// `announce_for_accessibility_impl`. Returns the
     /// announcements in insertion order and clears the internal
     /// buffer.
     ///
     /// The host shell calls this after every layout-commit pass
     /// (same point it calls
-    /// [`Backend::dump_accessibility_tree`]) and routes each entry
+    /// [`WgpuBackend::dump_accessibility_tree_impl`]) and routes each entry
     /// to the platform announcement API:
     ///
     /// - macOS host: `NSAccessibilityAnnouncementRequestedNotification`.
@@ -265,7 +263,7 @@ impl WgpuBackend {
     /// - Linux/AT-SPI host: `AtspiObject.Announcement` signal.
     ///
     /// Separate from
-    /// [`Backend::dump_accessibility_tree`] because announcements
+    /// [`WgpuBackend::dump_accessibility_tree_impl`] because announcements
     /// are transient one-shots (each fires once and is gone), whereas
     /// the semantics tree is a persistent snapshot the AX walker
     /// can re-query at any time.
@@ -288,10 +286,10 @@ impl WgpuBackend {
     }
 
     /// Drop transient per-tree state — presence tweens, animator,
-    /// sticky registry — so a subsequent `Host::mount(build_ui)`
-    /// doesn't carry stale references into the new tree. Called by
-    /// [`Host::unmount`]. GPU pipelines and shared device/queue
-    /// resources survive.
+    /// sticky registry — so a subsequent mount into the same backend
+    /// doesn't carry stale references into the new tree. For a host
+    /// that unmounts and remounts (no in-repo host calls it today).
+    /// GPU pipelines and shared device/queue resources survive.
     ///
     /// `presence_tweens` is the load-bearing one: it holds strong
     /// `WgpuNode` refs and is iterated by [`tick_presence_tweens`]
@@ -358,11 +356,10 @@ impl WgpuBackend {
     }
 }
 
-// The backend mechanism, as inherent methods (runtime v2: the `Backend`
-// mega-trait is gone). Bodies are verbatim what the trait impl carried;
-// `newcore.rs` adapts them onto `runtime_scene::Host` + the
-// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
-// method. `_impl` suffix keeps the adapter's call sites unambiguous.
+// The backend mechanism, as inherent methods. `newcore.rs` adapts them
+// onto `runtime_scene::Host` + the `runtime_vocabulary::caps::*Ops`
+// capability traits, one delegation per method. `_impl` suffix keeps
+// the adapter's call sites unambiguous.
 impl WgpuBackend {
     pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
         // The wgpu renderer itself is platform-agnostic; the active
@@ -886,7 +883,7 @@ impl WgpuBackend {
         let layout = self.layout.new_node();
         let node = new_node(NodeKind::ReactiveAnchor, layout);
         // ReactiveAnchor is a transparent control-flow container —
-        // it never carries author-supplied a11y props (the walker
+        // it never carries author-supplied a11y props (the scene
         // doesn't pass a primitive kind for it). Defaults on
         // `NodeData` are correct (empty props, no inferred role).
         self.roots.push(node.clone());
@@ -1109,8 +1106,8 @@ impl WgpuBackend {
         //
         // The fill is DEFERRED (`schedule_virtualizer_fill`), never run
         // here: the vocabulary contract forbids invoking `mount_item`
-        // synchronously inside `create_virtualizer` — on the new core
-        // this method runs under `backend.borrow_mut()` and `mount_item`
+        // synchronously inside `create_virtualizer` — this method
+        // runs under `backend.borrow_mut()` and `mount_item`
         // realizes rows through the same `Rc<RefCell<WgpuBackend>>`
         // (re-entrant borrow panic, caught by
         // `regression_virtualizer_rows_realize_world_entered`). This
@@ -1140,7 +1137,7 @@ impl WgpuBackend {
 
     pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &WgpuNode) {
         // Deferred for the same reason as the initial fill (see
-        // `create_virtualizer`): the new-core data effect calls this
+        // `create_virtualizer`): the vocabulary's data effect calls this
         // under `backend.borrow_mut()`, and the refill must invoke the
         // framework callbacks with the backend unborrowed.
         schedule_virtualizer_fill(node);
@@ -1355,7 +1352,7 @@ impl WgpuBackend {
     }
 
     pub(crate) fn finish_impl(&mut self, root: WgpuNode) {
-        // The framework hands us the root once the build walker has
+        // The mount path hands us the root once realize has
         // emitted every create/insert/apply_style for this tree.
         // Make sure it's the only entry in `roots` (every other
         // node has either been inserted as a child or is stale).
@@ -1429,9 +1426,8 @@ impl WgpuBackend {
     ) {
         // Two paths: Font assets go into cosmic-text's font db so
         // the text shaper can resolve them. Image assets go into
-        // our local byte cache so the renderer's `decode_and_upload`
-        // can resolve `asset://{id}` srcs against the same `image`
-        // crate decode path it uses for filesystem srcs. Other asset
+        // our local byte cache so an `image()` whose src is
+        // `asset://{id}` decodes them (`crate::image_load`). Other asset
         // kinds (Audio, Blob) flow through their own pipelines or
         // aren't supported yet — silently ignored.
         match kind {
@@ -1722,10 +1718,8 @@ impl WgpuBackend {
     // projects it into the platform AX layer (NSAccessibility on
     // macOS, UIAccessibilityElement[] on iOS, AT-SPI on Linux).
     //
-    // No host shell consumer exists yet — this is GPU-backend prep
-    // work. The future winit / AppKit / iOS-shell wgpu hosts are the
-    // intended consumers; see `docs/accessibility-design.md` §5 for
-    // the projection contract those hosts must follow.
+    // The consumer is `host-wgpu-accesskit`; see
+    // `docs/accessibility-design.md` §5 for the projection contract.
     // -----------------------------------------------------------------
 
     pub(crate) fn update_accessibility_impl(
@@ -1740,7 +1734,7 @@ impl WgpuBackend {
         // each call (wgpu re-renders every frame anyway), so the new
         // props are visible to the host on its next AX pull. We
         // refresh `inferred_role` too in case the primitive's kind
-        // changed via a When/Switch swap — the walker passes the
+        // changed via an `if`/`match` swap — the scene passes the
         // currently-mounted primitive's kind regardless of whether
         // it differs from the original `create_*` call.
         let mut data = node.borrow_mut();
@@ -1764,8 +1758,8 @@ impl WgpuBackend {
 
     // `pub` (not `pub(crate)`): the AccessKit host bridge
     // (`host-wgpu-accesskit`) projects this tree into the platform AX
-    // layer. With the `Backend` mega-trait gone it reaches the mechanism
-    // through this inherent method via its own local `TreeSource` trait
+    // layer. It reaches the mechanism through this inherent method via
+    // its own local `TreeSource` trait
     // (same orphan-rule-dodging pattern as `AnnouncementSource`).
     pub fn dump_accessibility_tree_impl(&self) -> Option<AccessibilityTree> {
         // Build the parallel semantics tree from the active root.
@@ -1784,8 +1778,8 @@ impl WgpuBackend {
         sides: runtime_shared::SafeAreaSides,
     ) {
         // Read the current insets and stamp them onto the
-        // node's Taffy style as padding. The framework's walker
-        // calls this from a reactive Effect that re-fires on
+        // node's Taffy style as padding. The vocabulary calls
+        // this from a reactive Effect that re-fires on
         // every change to the insets signal, so we just need to
         // produce the new padding rules from the current value.
         apply_safe_area_to_node(&mut self.layout, node, sides, /*as_padding*/ true);
@@ -1937,7 +1931,7 @@ impl WgpuBackend {
         //
         // We register here (post-`set_style`) rather than at
         // create-time so the lookup walks the freshly-applied
-        // style. The framework's walker fires `apply_style`
+        // style. Realize fires `apply_style`
         // BEFORE the parent's `insert(parent, child)` call, so on
         // a first mount the ancestor walk won't yet find a
         // scrolling parent — the registry entry's
@@ -1996,12 +1990,12 @@ impl WgpuBackend {
         _payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> WgpuNode {
-        // Runtime v2: there is no backend-side External registry any more.
-        // Third-party primitives register a payload handler on the scene
-        // `Registry` (`runtime_scene::Registry::register`), which dispatches
-        // BEFORE reaching a backend cap — so this method is only ever the
-        // last-resort placeholder an SDK's own degradation handler asks for
-        // on a host it has no leg for. Placeholder body unchanged.
+        // There is no backend-side External registry: third-party
+        // primitives register a payload handler on the scene `Registry`
+        // (`runtime_scene::Registry::register`), which dispatches BEFORE
+        // reaching a backend cap — so this method is only ever the
+        // last-resort placeholder an SDK's own degradation handler asks
+        // for on a host it has no leg for.
         // Visible "kind X not registered" text so author code that mounted
         // an external with no handler sees the missing wiring at runtime
         // instead of an empty rect.
@@ -2025,13 +2019,13 @@ impl WgpuBackend {
 
 /// Stash the framework's `AccessibilityProps` (and the primitive's
 /// inferred default role) on a freshly-created wgpu node. Called from
-/// every `Backend::create_*` immediately after the `new_node` ctor so
+/// every `create_*_impl` immediately after the `new_node` ctor so
 /// the node carries its a11y state from the moment it enters the
 /// tree.
 ///
 /// The wgpu backend has no platform widget to attach a11y to, so the
 /// data is kept verbatim on `NodeData` and surfaced via
-/// [`Backend::dump_accessibility_tree`] later. See
+/// [`WgpuBackend::dump_accessibility_tree_impl`] later. See
 /// `docs/accessibility-design.md` §5.
 pub(crate) fn init_node_a11y(node: &WgpuNode, a11y: &AccessibilityProps, kind: PrimitiveKind) {
     let mut data = node.borrow_mut();
@@ -2050,7 +2044,7 @@ pub(crate) fn init_node_a11y(node: &WgpuNode, a11y: &AccessibilityProps, kind: P
 /// returns the **parent-relative** rect; the host shell is
 /// responsible for accumulating origins (it owns the
 /// surface-to-platform coordinate transform). Returning local rects
-/// matches what `Backend::frame` already exposes.
+/// matches what `frame_impl` already exposes.
 ///
 /// Node id is the pointer address of the `Rc<RefCell<NodeData>>`. It
 /// is stable for the node's lifetime (the Rc is never reallocated
@@ -2091,8 +2085,8 @@ fn build_a11y_node(layout: &LayoutTree, node: &WgpuNode) -> AccessibilityNode {
 
 // =========================================================================
 // Global self-handle — lets the framework's animation subscribers
-// (welcome's `drive_av`, etc.) reach the backend from outside the
-// `Backend` borrow window. Same shape as iOS's `IOS_BACKEND_SELF`:
+// (`AnimatedValue` bindings) reach the backend from outside the
+// backend borrow window. Same shape as iOS's `IOS_BACKEND_SELF`:
 // thread-local Weak to the outer `Rc<RefCell<WgpuBackend>>` set once
 // at backend construction.
 // =========================================================================
@@ -2125,7 +2119,7 @@ pub(crate) fn global_self() -> Option<std::rc::Weak<RefCell<WgpuBackend>>> {
 /// fire both request one; a single refill serves both).
 ///
 /// WHY deferred: `create_virtualizer` / `virtualizer_data_changed` run
-/// under `backend.borrow_mut()` on the new core, and the framework's
+/// under `backend.borrow_mut()`, and the framework's
 /// `mount_item` / `release_item` callbacks realize/release rows through
 /// the same `Rc<RefCell<WgpuBackend>>` — invoking them synchronously is
 /// a re-entrant borrow panic ("RefCell already borrowed" from the
@@ -2133,9 +2127,7 @@ pub(crate) fn global_self() -> Option<std::rc::Weak<RefCell<WgpuBackend>>> {
 /// the fill with the backend unborrowed, matching the deferral
 /// web/iOS/Android already perform. On the winit/headless hosts the
 /// microtask drains on the next event-loop turn; under the no-scheduler
-/// synchronous fallback (bare unit tests, old-core walker context where
-/// `&mut Backend` is exclusive) it runs immediately — the old-core
-/// eager timing.
+/// synchronous fallback (bare unit tests) it runs immediately.
 fn schedule_virtualizer_fill(node: &WgpuNode) {
     {
         let data = node.borrow();
@@ -2169,7 +2161,7 @@ fn schedule_virtualizer_fill(node: &WgpuNode) {
 /// `mount_item` realizes the row through the backend RefCell) and
 /// re-taken for each Taffy/tree mutation.
 ///
-/// Release order per row matches the old eager body: detach from
+/// Release order per row: detach from
 /// Taffy, then `release` (frees the framework scope, which unregisters
 /// theme-cohort entries), then `drop_subtree` (removes the Taffy
 /// slot) — `drop_subtree` first would leave cohort entries pointing at
@@ -2294,7 +2286,7 @@ impl runtime_shared::primitives::graphics::GraphicsOps for WgpuGraphicsOps {}
 /// Calling this on a non-`Graphics` handle (or a `GraphicsHandle`
 /// produced by a different backend's `make_graphics_handle`) is a
 /// no-op — the downcast silently fails. Calling it twice
-/// replaces the previously-installed drawer (the old closure
+/// replaces the previously-installed drawer (the replaced closure
 /// drops at end-of-statement).
 pub fn register_graphics_drawer(
     handle: &runtime_shared::primitives::graphics::GraphicsHandle,
@@ -2309,12 +2301,9 @@ pub fn register_graphics_drawer(
     }
 }
 
-// `graphics_with_drawer` (the `Element::Graphics` + `RefFill::Graphics`
-// convenience builder) was DELETED with the old core: it constructed an
-// `Element` and stuffed a `RefFill` into it, neither of which exists on
-// runtime v2. It had no consumers. The supported path is the framework's
-// `graphics(..)` primitive bound to a `Ref<GraphicsHandle>`, plus a manual
-// [`register_graphics_drawer`] call once the handle arrives.
+// Mounting a drawer: the framework's `graphics(..)` primitive bound to
+// a `Ref<GraphicsHandle>`, plus a [`register_graphics_drawer`] call once
+// the handle arrives.
 
 /// Start a color tween for `property` on `node` if the supplied
 /// transition spec exists and the value actually changed. No-op
@@ -2459,9 +2448,8 @@ fn apply_safe_area_to_node(
     layout.mark_dirty(id);
 }
 
-/// Stub: navigator transitions are not supported on this backend
-/// yet (legacy nav substrate was removed; per-kind SDK paths will
-/// repopulate this when wired up). Returns `false` so the host's
+/// Stub: navigator transitions are not supported on this backend.
+/// Returns `false` so the host's
 /// tick loop doesn't keep redrawing.
 pub(crate) fn tick_nav_transitions(_backend: &Rc<RefCell<WgpuBackend>>, _now: Instant) -> bool {
     false
@@ -2827,7 +2815,7 @@ mod a11y_tests {
             .expect("tree present after mount");
 
         // Root: View carries the custom label / identifier and the
-        // walker's `default_role(View)` returns `None` → resolved
+        // `default_role(View)` returns `None` → resolved
         // role falls back to `Group` per `build_a11y_node`.
         assert_eq!(tree.root.props.label.as_deref(), Some("greeting card"));
         assert_eq!(tree.root.props.identifier.as_deref(), Some("greeting-card"));
@@ -2918,9 +2906,9 @@ mod a11y_tests {
             assert!(text_node.props.traits.is_empty());
         }
 
-        // Patch via the Backend trait method that the framework's
-        // reactive a11y Effect would call. The walker would pass
-        // `PrimitiveKind::Text`'s default role here; we replicate
+        // Patch via the method the framework's reactive a11y Effect
+        // calls. The vocabulary passes `PrimitiveKind::Text`'s
+        // default role here; we replicate
         // that for the test.
         let new_props = AccessibilityProps {
             label: Some("Greetings, world".into()),
@@ -2948,8 +2936,7 @@ mod a11y_tests {
         );
     }
 
-    /// Regression: before this landed, `apply_presence` was the
-    /// `Backend` trait default no-op, so presence's enter/exit
+    /// Regression: `apply_presence` was a no-op on this backend, so presence's enter/exit
     /// state writes (opacity / translate / scale) silently did
     /// nothing on the wgpu backend. The exit animation's snap to
     /// the exit state, the rest-target tween — all dropped.

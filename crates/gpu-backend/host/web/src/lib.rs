@@ -48,10 +48,8 @@ mod pointer_ids;
 #[cfg(target_arch = "wasm32")]
 pub use web::{mount, MountError, WebHostHandle};
 
-/// Compatibility alias. This entry was `mount_newcore` while the
-/// framework carried two cores; there is one mount now and it is
-/// [`mount`]. Kept so existing call sites (the website Simulator, the
-/// fiddle template) keep resolving.
+/// Alias of [`mount`] under its former name; kept so external call
+/// sites spelling `mount_newcore` keep resolving.
 #[cfg(target_arch = "wasm32")]
 pub use web::mount as mount_newcore;
 

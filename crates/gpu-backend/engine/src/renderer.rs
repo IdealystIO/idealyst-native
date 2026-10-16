@@ -159,7 +159,7 @@ pub struct Renderer {
     /// pixel size; re-allocated when that size changes by more
     /// than one pixel on either axis. Entries are not currently
     /// evicted — Graphics nodes are rare and long-lived; a future
-    /// eviction pass keyed on `Backend::drop_subtree` would close
+    /// eviction pass keyed on `drop_subtree` would close
     /// the leak when the framework supports release_graphics.
     graphics_cache: std::collections::HashMap<runtime_layout::LayoutNode, GraphicsTextureEntry>,
 }
@@ -265,9 +265,9 @@ impl Renderer {
     }
 
     /// Drop the per-tree caches that key off `LayoutNode` IDs from
-    /// the tree the renderer was previously rendering. Called by
-    /// `Host::unmount` so a subsequent `mount(build_ui)` doesn't
-    /// hit stale entries pointing at freed Taffy IDs (which
+    /// the tree the renderer was previously rendering, for a host
+    /// that remounts into the same renderer (no in-repo host calls
+    /// it today), so a subsequent mount doesn't hit stale entries pointing at freed Taffy IDs (which
     /// otherwise produces a permanently blank canvas — the cache
     /// hands back the wrong texture / no entry, the per-frame
     /// resolve skips the node).
@@ -312,7 +312,7 @@ impl Renderer {
                 dimension: wgpu::TextureDimension::D2,
                 // sRGB so the image pipeline's sampler decodes
                 // back to linear (matches the image-loading path
-                // at `decode_and_upload`). Authors write straight
+                // at `upload_image`). Authors write straight
                 // linear color from their fragment shader; the
                 // GPU encodes to sRGB at attachment-write time.
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -812,8 +812,8 @@ impl Renderer {
         // Submitted *before* the main pass so the main batch's
         // image-pipeline sample of the same texture reads a
         // fresh frame. One encoder + one submit total — each
-        // drawer encodes its own `begin_render_pass`/`end_pass`
-        // bracket on this shared encoder.
+        // drawer encodes its own render pass(es) on this shared
+        // encoder.
         if !graphics_requests.is_empty()
             || !nav_top_graphics_requests.is_empty()
             || !overlay_graphics_requests.is_empty()
@@ -1332,7 +1332,7 @@ fn walk<'a>(
     // ---- Animated overrides ------------------------------------------
     //
     // The framework's animation system writes per-frame values into
-    // `NodeData.animated` via `Backend::set_animated_*`. We read those
+    // `NodeData.animated` via `set_animated_*`. We read those
     // here and apply them on top of the static Taffy frame:
     //   1. Scale the layout-space rect by the accumulated ancestor
     //      scale (so a child of a scaled parent fits inside the
@@ -2036,20 +2036,14 @@ fn walk<'a>(
         }
     }
 
-    // Capture whether this node owns a navigator header to paint
-    // *after* the children walk. We previously painted the
-    // header here in the per-kind paint block, but that pre-loaded
-    // the header rects into the batch before the screen's own
-    // content rects — and because the renderer has no shader-side
-    // scissor (clip-culling is whole-rect, not per-fragment),
-    // scrolled-up content that geometrically overlaps the header
-    // strip ends up painting *over* the header icons. Deferring
-    // the header paint until after the children means header
-    // rects are appended last and win the draw-order race.
-    // Navigator-screen header paint deferral was wired to the legacy
-    // nav substrate; per-screen header chrome is now an SDK concern.
-    // Keep the variable threaded through the code below as a no-op
-    // until the new per-kind paint hooks land.
+    // Whether this node owns a navigator header to paint *after*
+    // the children walk. Must be after, not in the per-kind paint
+    // block: the renderer has no shader-side scissor (clip-culling
+    // is whole-rect, not per-fragment), so scrolled-up content that
+    // overlaps the header strip would paint *over* the header icons
+    // unless the header rects are appended last. No header chrome is
+    // painted on this backend today (see `paint_screen_header`), so
+    // the flag is always false.
     let paint_header_after_children = false;
 
     // Determine child origin + clip. A ScrollView shifts children
@@ -2108,7 +2102,7 @@ fn walk<'a>(
     // Each entry pairs a child with an x-translate (in px from
     // the natural child origin). The translate is non-zero only
     // for stack-navigator screens during a push/pop slide — see
-    // `nav_transition_offsets` below.
+    // `nav_transition_frame` below.
     let kind_ref = &data.kind;
     // Optional defer for the top screen of a stack navigator
     // mid-transition. Filled below in the Navigator branch and
@@ -2171,9 +2165,8 @@ fn walk<'a>(
                 )
             }
             // DrawerNavigator: paint only the active body screen
-            // in the normal walk. The sidebar (kept out of
-            // `children` by `drawer_navigator_attach_sidebar`'s
-            // separate slot, but appended into the children Vec
+            // in the normal walk. The sidebar (held in its own
+            // `sidebar` slot, but appended into the children Vec
             // too for Taffy parenting) gets hoisted to the
             // deferred drawer-overlay pass so it composites above
             // the body with the slide transform.
@@ -2461,12 +2454,12 @@ pub(crate) struct DeferredDrawer {
 }
 
 /// Paint a navigator-screen's header strip via the active
-/// skin. Resolves the per-screen `ScreenOptions` (sampled this
-/// frame so theme-bound color closures reflect the current
-/// theme) and the owning navigator's chrome styles into a
-/// [`crate::painter::NavigatorHeaderChrome`] bundle, calls the
-/// skin's paint method, and translates each emitted
-/// [`crate::painter::NavigatorHeaderHit`] into a
+/// skin. Currently a no-op: no navigator handler on this backend
+/// supplies per-screen header options. The intended contract:
+/// resolve the per-screen options and the owning navigator's
+/// chrome styles into a [`crate::painter::NavigatorHeaderChrome`]
+/// bundle, call the skin's paint method, and translate each
+/// emitted [`crate::painter::NavigatorHeaderHit`] into a
 /// [`crate::host::HeaderHit`] tagged with the owning nav so
 /// pointer dispatch routes back-button taps to the right stack.
 ///
@@ -2486,10 +2479,6 @@ fn paint_screen_header<'a, 'b>(
     text_store: &'a TextStore,
     header_hits: &mut Vec<crate::host::HeaderHit>,
 ) {
-    // Per-screen header chrome was driven by `ScreenOptions` on the
-    // legacy nav substrate. With the substrate trimmed (per-kind SDKs
-    // own header rendering now), this paint hook is a no-op for the
-    // wgpu backend until the SDK-side paint paths land.
 }
 
 /// Sample the drawer's `scrim_style.background` for its scrim
@@ -2789,7 +2778,7 @@ fn walk_overlay<'a>(
     let data = node.borrow();
     let frame = backend.layout.frame_of(data.layout);
 
-    // Backdrop is no longer a backend concern — the composition
+    // Backdrop is not a backend concern — the composition
     // layer emits a backdrop primitive as a child of the portal,
     // so it just paints through the regular child walk below.
     let viewport_clip = (0.0, 0.0, viewport.0, viewport.1);

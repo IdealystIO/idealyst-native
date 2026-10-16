@@ -12,9 +12,9 @@
 //! `rect_inst`). The preview variant crates instantiate a
 //! concrete skin and hand it to the host shell at `run` time.
 //!
-//! No `SimulatedPlatform` matching here — the trait IS the
-//! dispatch. Two-platform parity is enforced by the trait, not
-//! by an enum that future skins would have to extend.
+//! The trait IS the dispatch — there is no platform enum to match
+//! on, so parity is enforced by the trait and a new skin never has
+//! to extend an enum.
 
 use std::collections::HashMap;
 
@@ -66,7 +66,7 @@ pub trait Painter {
     // -----------------------------------------------------------
 
     /// The platform identity this skin presents to the framework.
-    /// `WgpuBackend::platform` delegates here so author code reading
+    /// `WgpuBackend::platform_impl` delegates here so author code reading
     /// `runtime_shared::platform()` sees the skin's emulated host
     /// (e.g. `Custom("Sim")` for the ios-sim / android-sim skins
     /// — the renderer is wgpu under the hood, but as far as the
@@ -218,7 +218,7 @@ pub trait Painter {
     /// `chrome` describes what to put in each slot — what title
     /// to draw, whether to show a back chevron, what icons go in
     /// the left and right slots, and which author-supplied
-    /// colors (from per-screen `ScreenOptions` + navigator-level
+    /// colors (from per-screen options + navigator-level
     /// `header_style` / `title_style` / `button_style`) override
     /// the skin's defaults.
     ///

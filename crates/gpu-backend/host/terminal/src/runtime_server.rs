@@ -5,15 +5,9 @@
 //! crossterm grid the local boot path paints.
 //!
 //! This path is core-agnostic by construction — no `Element`, no mount,
-//! no world; the shell is a wire replayer. The one coupling left is the
-//! shell's generic bound: `RuntimeServerShell<B>` in
-//! `crates/dev/runtime-server-shell/src/shell.rs` still reads
-//! `B: runtime_core::Backend`, inherited from `dev_client::WireBackend`.
-//! Until that pair re-bounds onto `runtime_vocabulary::caps` (the change
-//! `dev-client`'s own module docs describe as "contained entirely in
-//! this crate"), enabling this feature does not compile. Nothing in this
-//! file changes when it lands — `TerminalBackend` already adopts the
-//! caps.
+//! no world; the shell is a wire replayer, generic over any backend that
+//! implements the capability traits (`RuntimeServerShell<B: AllCaps>`),
+//! which `TerminalBackend` does.
 
 use std::cell::RefCell;
 use std::io::{self, Write};

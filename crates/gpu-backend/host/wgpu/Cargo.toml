@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 # Target-agnostic umbrella over the platform-specific wgpu host
-# crates (host-web for wasm32, host-ios-mobile for iOS — and future
-# host-android-mobile, host-macos-uikit, etc. as they land).
+# crates (host-web for wasm32, host-ios-mobile, host-android-mobile,
+# host-macos-desktop, host-linux-desktop, host-windows-desktop).
 #
 # Why this exists: the per-platform host crates can't share a build
 # graph — `host-web` pulls in `wasm-bindgen` / `web-sys`, `host-ios-
@@ -14,8 +14,7 @@ license.workspace = true
 # its `mount` under a target gate. Author code that calls
 # `host_web::mount` on iOS won't link, and dispatching with
 # `#[cfg(target_os = ...)]` at every call site violates §7
-# (backends own platform variance, not user code) — see
-# `[[feedback_cfg_hack_signals_missing_backend_method]]`.
+# (backends own platform variance, not user code).
 #
 # `host-wgpu` re-exports the right `mount` / `HostHandle` /
 # `MountError` / `DeviceProfile` / `Painter` symbols under uniform

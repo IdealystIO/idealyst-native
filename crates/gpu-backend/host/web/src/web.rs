@@ -106,12 +106,11 @@ impl WebHostHandle {
     /// app for the handle's entire lifetime — drop is the only teardown
     /// — so suspending it would need a visibility gate on
     /// `render_wgpu`'s `Host`/`Renderer` (stop ticking + stop drawing
-    /// without unrealizing the scene), which does not exist. The
-    /// unmount/remount shape this method used to have was itself
-    /// broken: after `Host::unmount()` + a fresh mount the renderer
-    /// produced no visible draws (see the KNOWN ISSUE block in
-    /// `websites/website/src/components/simulator.rs`), which is why
-    /// every caller has it disabled. Kept as a warn-and-continue so
+    /// without unrealizing the scene), which does not exist. Unmount +
+    /// remount is not a substitute: after `Host::unmount()` + a fresh
+    /// mount the renderer produces no visible draws (see the KNOWN ISSUE
+    /// block in `websites/website/src/components/simulator.rs`), which is
+    /// why every caller has it disabled. Kept as a warn-and-continue so
     /// `use_focus()`-driven author code stays uniform across hosts.
     pub fn pause(&self) {
         log::warn!("{}: pause() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
@@ -325,16 +324,12 @@ async fn init_wgpu(
 
     // 2. wgpu init.
     //
-    // wgpu 29: `InstanceDescriptor` no longer implements `Default`
-    // and gained `memory_budget_thresholds` / `backend_options` /
-    // `display`; pass explicit defaults. `request_adapter` now
-    // returns `Result`, and `request_device` takes one arg
-    // (descriptor) and gained `experimental_features` + `trace`.
+    // `InstanceDescriptor` has no `Default` impl, so every field is
+    // spelled out.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::GL,
         // Empty validation flags — Web's WebGPU validation paths
-        // aren't universally supported. Same conservative pick as
-        // the gradient demo.
+        // aren't universally supported.
         flags: wgpu::InstanceFlags::empty(),
         memory_budget_thresholds: Default::default(),
         backend_options: wgpu::BackendOptions::default(),
@@ -458,7 +453,7 @@ struct HostInner {
     /// LAST so on `HostInner` drop the scope is popped AFTER the
     /// renderer, host (welcome `Owner` + reactive cleanups), wgpu
     /// surface, etc. drop — same ordering rationale as the iOS
-    /// host (see [[project-session-scope-stack]]).
+    /// host.
     _session_scope: runtime_shared::session::ScopeGuard,
 }
 
@@ -519,10 +514,8 @@ fn extract_canvas(surface: &GraphicsSurface) -> Option<web_sys::HtmlCanvasElemen
 }
 
 fn draw_frame(inner: &mut HostInner) {
-    // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
-    // *enum* (the pre-29 `Result<SurfaceTexture, SurfaceError>` is
-    // gone). Reconfigure on Lost/Outdated; skip the frame on any
-    // other non-Success outcome.
+    // Reconfigure on Lost/Outdated; skip the frame on any other
+    // non-Success outcome.
     let surface_tex = match inner.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t)
         | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,

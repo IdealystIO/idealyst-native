@@ -34,8 +34,8 @@ runtime-server = ["backend-macos/runtime-server"]
 robot = ["backend-macos/robot"]
 
 [dependencies]
-# The scene-element vocabulary the boot entries take. (`runtime-core` is
-# NOT a dependency: this host has no `Element`/`Backend` surface left.)
+# The scene-element vocabulary the boot entries take. (Hosts never
+# depend on `runtime-core`, the author surface.)
 runtime-scene = { workspace = true }
 # `async-driver`: install the libdispatch-backed cooperative async executor at
 # boot (this host calls `backend_apple_core::scheduler::install_scheduler`,

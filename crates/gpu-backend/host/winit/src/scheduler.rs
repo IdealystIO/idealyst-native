@@ -337,7 +337,7 @@ pub(crate) fn drain_due() {
 /// `MAIN_QUEUE` (per-thread closures) + `CMD_TX` (worker channel).
 struct WinitScheduler;
 
-// SAFETY: see `IosScheduler`'s rationale. We hold no shared
+// SAFETY: same rationale as `backend_apple_core`'s `AppleScheduler`. We hold no shared
 // state on the struct itself — `CMD_TX` is a `Mutex`-guarded
 // global, and the closures live in `thread_local` storage. The
 // `Send + Sync` bound is satisfied by the empty struct alone.
@@ -406,7 +406,7 @@ impl Scheduler for WinitScheduler {
         delay_ms: i32,
         f: Box<dyn FnOnce() + 'static>,
     ) -> Box<dyn ScheduleHandle> {
-        // New-core flush driver: `after_ms` timers run author code (a
+        // Flush driver: `after_ms` timers run author code (a
         // debounce that sets a signal); fire the post-dispatch hook
         // after the callback so staged writes commit. A single
         // thread-local read when no hook is installed.
@@ -653,19 +653,18 @@ mod tests {
     /// after `MAIN_QUEUE`'s TLS destructor already ran — must not abort.
     /// This is exactly what `std::process::exit` triggers on macOS: the
     /// main thread's TLS destructors run, `runtime_shared::scheduling::
-    /// DETACHED_TASKS` drops its parked timer handles, and (before the
-    /// `try_with` fix in `TimerHandle::cancel`) the cancel's
-    /// `MAIN_QUEUE.with` panicked inside a destructor → non-unwinding
-    /// abort of the whole exit (hit live by newcore-gpu-smoke's
-    /// self-test exit).
+    /// DETACHED_TASKS` drops its parked timer handles, and a plain
+    /// `MAIN_QUEUE.with` in `TimerHandle::cancel` panics inside a
+    /// destructor → non-unwinding abort of the whole exit. The cancel
+    /// uses `try_with` for this reason.
     ///
     /// Reproduction relies on macOS/_tlv_atexit running TLS destructors
     /// in reverse registration order: HOLDER is touched FIRST (destroyed
     /// last), MAIN_QUEUE initializes second (destroyed first), so
     /// HOLDER's drop → `cancel` runs against a destroyed MAIN_QUEUE. On
     /// platforms with a different dtor order the test degrades to a
-    /// benign drop — never to a false failure. Before the fix this test
-    /// aborts the test process; after it, the thread exits cleanly.
+    /// benign drop — never to a false failure. Without `try_with` this
+    /// test aborts the test process.
     #[test]
     fn handle_drop_after_tls_teardown_does_not_abort() {
         thread::Builder::new()

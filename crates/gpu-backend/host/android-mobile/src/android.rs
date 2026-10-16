@@ -1,7 +1,7 @@
 //! Android-only implementation of [`crate::mount`]. Mirrors
 //! `host-ios-mobile::ios` end-to-end with three deltas:
 //!
-//! 1. wgpu uses the Vulkan backend (with GLES fallback), not Metal.
+//! 1. wgpu uses the Vulkan backend (no GLES — see `init_wgpu`), not Metal.
 //!    Limits clamp via `Limits::downlevel_defaults().using_resolution(adapter_limits)`
 //!    so the request never exceeds what the actual GPU advertises —
 //!    Android emulator/older devices have lower caps than current
@@ -120,10 +120,9 @@ impl AndroidHostHandle {
     /// — so suspending would need a visibility gate on `render_wgpu`'s
     /// `Host`/`Renderer` (stop ticking + drawing without unrealizing
     /// the scene), which does not exist. Same gap as `host-web`'s
-    /// `WebHostHandle::pause`. Note this host DOES skip GPU encodes for
-    /// a hidden view (the per-frame visibility check), so the "hidden
-    /// screen keeps burning GPU" case pause() targeted is already
-    /// covered.
+    /// `WebHostHandle::pause`. Unlike the iOS/macOS hosts this one has
+    /// no per-frame visibility check either (see the module doc), so a
+    /// hidden preview keeps encoding frames.
     pub fn pause(&self) {
         log::warn!("{}: pause() is a no-op (no host visibility gate)", env!("CARGO_PKG_NAME"));
     }
@@ -208,7 +207,7 @@ struct WgpuInit {
     config: wgpu::SurfaceConfiguration,
 }
 
-/// Step 1 of both mounts: the async wgpu init (instance → surface →
+/// Step 1 of [`mount`]: the async wgpu init (instance → surface →
 /// adapter → device → configure).
 async fn init_wgpu(
     surface_handle: GraphicsSurface,
@@ -286,7 +285,7 @@ async fn init_wgpu(
     })
 }
 
-/// Shared tail of both mounts: the pending-font log, `HostInner`
+/// Tail of [`mount`]: the pending-font log, `HostInner`
 /// assembly, and the per-frame render loop.
 fn finish_mount(
     init: WgpuInit,
@@ -368,8 +367,7 @@ struct HostInner {
 }
 
 fn draw_frame(inner: &mut HostInner) {
-    // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
-    // enum. Reconfigure on Outdated/Lost; skip on Timeout/Occluded/
+    // Reconfigure on Outdated/Lost; skip on Timeout/Occluded/
     // Validation — same handling as host-web / host-ios-mobile.
     let surface_tex = match inner.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t)

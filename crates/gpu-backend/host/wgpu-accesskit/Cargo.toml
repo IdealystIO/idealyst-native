@@ -20,8 +20,7 @@ license.workspace = true
 [dependencies]
 # The a11y vocabulary (`AccessibilityTree`, `Role`, `LiveRegionPriority`).
 # `runtime-core` is NOT a dependency: the bridge names the two backend
-# operations it needs through its own local traits, so it never sees the
-# `Backend` mega-trait.
+# operations it needs through its own local traits.
 runtime-shared = { workspace = true }
 render-wgpu = { workspace = true }
 

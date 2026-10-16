@@ -27,9 +27,8 @@ default = []
 runtime-server = ["dep:runtime-server-shell-native"]
 
 [dependencies]
-# Style/colour/scheduling substrate. `runtime-core` is NOT a
-# dependency: the host has no `Element`/`Backend` surface left — it
-# mounts scene elements through `backend_terminal::newcore::start`.
+# Style/colour/scheduling substrate. `runtime-core` (the
+# author surface) is NOT a dependency — the host mounts scene elements through `backend_terminal::newcore::start`.
 runtime-shared = { workspace = true }
 backend-terminal = { workspace = true }
 crossterm = "0.27"

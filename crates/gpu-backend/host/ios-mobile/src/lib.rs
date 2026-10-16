@@ -1,7 +1,7 @@
 //! iOS native shell for the wgpu render backend — embed a live
 //! idealyst preview inside another idealyst app.
 //!
-//! The framework's `Element::Graphics` primitive on iOS
+//! The framework's `graphics` primitive on iOS
 //! (`backend-ios-mobile`) creates a `UIView` whose backing layer is
 //! a `CAMetalLayer` and packs an `IosSurfaceProvider` (raw_window_handle
 //! `UiKitWindowHandle`) into the `GraphicsSurface` it hands to the
@@ -31,9 +31,8 @@ pub use ios::{IosHostHandle, MountError};
 #[cfg(target_os = "ios")]
 pub use ios::mount;
 
-/// Compatibility alias. This entry was `mount_newcore` while the
-/// framework carried two cores; there is one mount now and it is
-/// [`mount`]. Kept so existing call sites keep resolving.
+/// Alias of [`mount`] under its former name; kept so external call
+/// sites spelling `mount_newcore` keep resolving.
 #[cfg(target_os = "ios")]
 pub use ios::mount as mount_newcore;
 

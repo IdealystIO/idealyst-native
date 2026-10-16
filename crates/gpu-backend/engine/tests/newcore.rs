@@ -1,5 +1,5 @@
-//! New-core adoption tests for the wgpu backend (idea-lite migration,
-//! P5) — the GPU counterpart of the `backend-macos` newcore suite.
+//! Boot-path and caps-delegation tests for the wgpu backend — the GPU
+//! counterpart of the `backend-macos` newcore suite.
 //!
 //! Unlike AppKit (whose views only exist on the main thread, so the
 //! macOS caps delegation is gated behind a launched smoke app), the
@@ -678,13 +678,11 @@ fn dyn_hole_swaps_child_on_flush() {
     app.stop();
 }
 
-/// Keyed lists on this backend take the ANCHORED driver: wgpu keeps
-/// the trait-default `supports_child_splice() == false`, so every items
-/// change is a full rebuild into the anchor — the same contract the OLD
-/// walker's `each.rs` no-splice branch pinned for this backend
-/// (`each_append.anchored.golden`). Content order tracks every edit;
-/// node identity is NOT preserved (that requires splice support, which
-/// is a backend capability decision out of adoption scope).
+/// Keyed lists on this backend take the ANCHORED driver: wgpu's
+/// `supports_splice()` is `false`, so every items change is a full
+/// rebuild into the anchor (the `crates/dev/scene-parity`
+/// `each_append.anchored.golden` contract). Content order tracks every
+/// edit; node identity is NOT preserved (that requires splice support).
 #[test]
 fn keyed_list_anchored_rebuild_tracks_edits() {
     let slot: Rc<Cell<Option<runtime_world::Signal<Vec<u32>>>>> = Rc::new(Cell::new(None));
@@ -809,16 +807,14 @@ fn stop_tears_down_without_panic_and_unhooks() {
 }
 
 /// Regression (flat_list zero-rows class, GPU leg): virtualizer rows
-/// realize on the new core. Two distinct pre-fix failure modes are
-/// pinned at once:
+/// realize. Two distinct failure modes are pinned at once:
 ///
-/// 1. **Re-entrant borrow** — the GPU backend used to mount every row
-///    EAGERLY inside `create_virtualizer` / `virtualizer_data_changed`,
-///    both of which run under `backend.borrow_mut()` on the new core
-///    while `mount_item` realizes rows through the same
-///    `Rc<RefCell<WgpuBackend>>` → "RefCell already borrowed" abort
-///    (the vocabulary contract forbids the synchronous fill; the fill
-///    is now deferred via `schedule_virtualizer_fill`).
+/// 1. **Re-entrant borrow** — mounting rows EAGERLY inside
+///    `create_virtualizer` / `virtualizer_data_changed`, both of which
+///    run under `backend.borrow_mut()`, while `mount_item` realizes rows
+///    through the same `Rc<RefCell<WgpuBackend>>` → "RefCell already
+///    borrowed" abort (the vocabulary contract forbids the synchronous
+///    fill; the fill is deferred via `schedule_virtualizer_fill`).
 /// 2. **World entry** — the deferred fill invokes `mount_item` from a
 ///    scheduler microtask, OUTSIDE `World::enter`; row realization is
 ///    creation-side (row signals, Dyn text effects) and panics there
@@ -941,8 +937,8 @@ fn start_in_world_realizes_into_the_host_world_and_shares_its_flush() {
 /// app's `stop()`, NOT with the (page-lifetime) world. Without the
 /// `collect_owned` harvest in `start_in_world` both would be
 /// world-root-owned and leak past the unmount; without the
-/// scoped-scheduling anchor the timer would either never fire (old-core
-/// anchoring is inert on the new core) or fire after teardown.
+/// scoped-scheduling anchor the timer would either never fire or fire
+/// after teardown.
 #[test]
 fn start_in_world_stop_disposes_build_level_effects_and_scoped_timers() {
     ensure_test_scheduler();
@@ -1070,7 +1066,7 @@ fn embedded_stop_keeps_replacement_flush_driver_alive() {
 // Viewport source — `Host::set_viewport` → world ViewportCtx
 // ===========================================================================
 
-/// Regression (native new-core breakpoints frozen at their seed): the
+/// Regression (native breakpoints frozen at their seed): the
 /// GPU viewport seam — [`render_wgpu::Host::set_viewport`], the one
 /// source of truth for this backend's author-visible LOGICAL viewport
 /// — must stage the size into the mounted world's viewport ctx from
@@ -1085,7 +1081,7 @@ fn embedded_stop_keeps_replacement_flush_driver_alive() {
 fn regression_host_set_viewport_recomputes_breakpoint() {
     ensure_test_scheduler();
     // The windowed host's pre-mount TLS seed
-    // (`host_winit::newcore::run_with`): the ctx seeds from this at
+    // (`host_winit::run_with`): the ctx seeds from this at
     // first breakpoint read, so the build classifies the real profile
     // size instead of 0-width Xs.
     runtime_shared::set_viewport_size(runtime_shared::ViewportSize {
@@ -1198,16 +1194,15 @@ fn embedded_start_in_world_does_not_clobber_the_page_viewport() {
 }
 
 // ===========================================================================
-// Host structural seam — the four `Backend`-default landmines
+// Host structural seam — append-only defaults
 // ===========================================================================
 
 /// `insert_at`, `remove_child`, `supports_splice` and `create_anchor` are
-/// REQUIRED on `runtime_scene::Host`, but this backend never overrode
-/// their old `Backend` counterparts — it rode the mega-trait's defaults,
-/// which the de-trait pass had to respell as real bodies (see
-/// `docs/runtime-v2-deletion-baseline.md` §2.2). This pins each one's
-/// behavior to the deleted default, so a future "improvement" to any of
-/// them is a deliberate, visible change rather than a silent one.
+/// REQUIRED on `runtime_scene::Host`; this backend implements the
+/// append-only shape (no splice, index ignored, `remove_child` a no-op —
+/// see `docs/runtime-v2-deletion-baseline.md` §2.2). This pins each
+/// one's behavior so a future "improvement" to any of them is a
+/// deliberate, visible change rather than a silent one.
 #[test]
 fn newcore_host_seam_reproduces_the_deleted_backend_defaults() {
     use runtime_scene::Host;
@@ -1215,25 +1210,21 @@ fn newcore_host_seam_reproduces_the_deleted_backend_defaults() {
     let backend = make_backend();
     let mut b = backend.borrow_mut();
 
-    // supports_child_splice's default was `false` — anchored regions
-    // only. Literal assertion (the cross-core comparison against
-    // `Backend::supports_child_splice` died with the old core).
+    // Anchored regions only.
     assert!(
         !Host::supports_splice(&*b),
         "wgpu has no remove_child/insert_at, so regions must stay anchored"
     );
 
-    // `create_anchor` is NOT one of this backend's landmines — it has a
-    // real override (`NodeKind::ReactiveAnchor`, a transparent
-    // control-flow container). Pinned here so the four-landmine list
-    // stays honest about which of them wgpu actually inherited.
+    // `create_anchor` has a real implementation
+    // (`NodeKind::ReactiveAnchor`, a control-flow container).
     let anchor = Host::create_anchor(&mut *b);
     assert!(
         matches!(anchor.borrow().kind, NodeKind::ReactiveAnchor),
         "wgpu overrides the anchor with its own transparent container kind"
     );
 
-    // insert_at's default APPENDED and ignored the index.
+    // insert_at APPENDS and ignores the index.
     let mut parent = Host::create_anchor(&mut *b);
     let first = Host::create_anchor(&mut *b);
     let second = Host::create_anchor(&mut *b);
@@ -1246,8 +1237,8 @@ fn newcore_host_seam_reproduces_the_deleted_backend_defaults() {
         "index 0 was ignored — insert_at appended, exactly as the default did"
     );
 
-    // remove_child's default was a no-op (the framework never calls it
-    // while supports_splice is false).
+    // remove_child is a no-op (the framework never calls it while
+    // supports_splice is false).
     Host::remove_child(&mut *b, &parent, &first);
     assert_eq!(
         parent.borrow().children.len(),
@@ -1255,8 +1246,7 @@ fn newcore_host_seam_reproduces_the_deleted_backend_defaults() {
         "remove_child is the default no-op"
     );
 
-    // insert_many's Host default is the same N-x-insert loop the Backend
-    // default was; order is preserved.
+    // insert_many's Host default is an N-x-insert loop; order is preserved.
     let mut bulk = Host::create_anchor(&mut *b);
     let a = Host::create_anchor(&mut *b);
     let c = Host::create_anchor(&mut *b);
@@ -1267,18 +1257,14 @@ fn newcore_host_seam_reproduces_the_deleted_backend_defaults() {
 }
 
 // ===========================================================================
-// Touch-handler install (ported from the deleted old-walker tests that
-// lived in `src/host.rs::tests` — "Walker → Backend wiring")
+// Touch-handler install
 // ===========================================================================
 
 /// A `view().on_touch(..)` primitive must reach the backend's
 /// `install_touch_handler` and leave the handler on `NodeData`, and the
 /// stored handler must be CALLABLE with the author's semantics intact
-/// (the new-core caps impl wraps it to schedule a flush after the author
-/// fn returns — the wrapper must not change the returned
-/// `TouchResponse`). Ported from `render_view_with_on_touch_installs_handler`
-/// / `render_view_without_on_touch_leaves_handler_unset` /
-/// `installed_handler_is_callable`, which drove `runtime_shared::render`.
+/// (the caps impl wraps it to schedule a flush after the author fn
+/// returns — the wrapper must not change the returned `TouchResponse`).
 #[test]
 fn on_touch_reaches_the_node_and_the_stored_handler_is_callable() {
     use runtime_shared::{TouchEvent, TouchId, TouchPhase, TouchPoint, TouchResponse};

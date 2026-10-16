@@ -51,7 +51,7 @@ use runtime_shared::Easing;
 ///   `Animator::colors`.
 ///
 /// The animator routes via the variant. Callers reach for the
-/// matching `animate_f32` / `animate_color` (and `sample_f32` /
+/// matching `animate` / `animate_color` (and `sample` /
 /// `sample_color`) method; passing the wrong variant to the
 /// wrong method is a no-op (sample returns fallback, animate
 /// silently does the wrong thing). Keeping one enum across both

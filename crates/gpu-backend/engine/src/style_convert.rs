@@ -488,7 +488,7 @@ pub fn parse_color(c: &Color) -> [f32; 4] {
 }
 
 // Identity conversion. The wgpu sim swapchain runs in a non-sRGB
-// format (see `crates/host/winit/src/gpu.rs`) so the GPU blend
+// format (see `crates/gpu-backend/host/winit/src/gpu.rs`) so the GPU blend
 // equation operates on raw sRGB-numbers — same posture as
 // CAGradientLayer / CSS / standard UI compositors. We keep the
 // `srgb_rgba_to_linear` name (rather than removing 27 call sites)

@@ -154,9 +154,8 @@ pub enum MountError {
     Platform(PlatformMountError),
 }
 
-/// Compatibility alias. This enum was `NewCoreMountError` while the
-/// framework carried two cores; there is one mount now and its error
-/// is [`MountError`].
+/// Alias of [`MountError`] under its former name; kept so external
+/// code naming `NewCoreMountError` keeps resolving.
 pub use MountError as NewCoreMountError;
 
 impl std::fmt::Display for MountError {
@@ -227,8 +226,6 @@ pub async fn mount(
     }
 }
 
-/// Compatibility alias. This entry was `mount_newcore` while the
-/// framework carried two cores; there is one mount now and it is
-/// [`mount`]. Kept so existing call sites (the website Simulator)
-/// keep resolving.
+/// Alias of [`mount`] under its former name; kept so external call
+/// sites spelling `mount_newcore` keep resolving.
 pub use self::mount as mount_newcore;

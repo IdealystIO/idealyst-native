@@ -5,7 +5,7 @@
 //!
 //! - [`FontSystem`] (cosmic-text's font DB + shaper). Owned via
 //!   `Rc<RefCell<FontSystem>>` so the framework-side `create_text`
-//!   path (running inside `Backend` methods) and the GPU-side
+//!   path (running inside backend methods) and the GPU-side
 //!   `render_text` (running inside the wgpu render pass) can both
 //!   reach it.
 //! - [`TextStore`] — the `HashMap<LayoutNode, BufferEntry>` of
@@ -14,7 +14,7 @@
 //!
 //! Splitting these two stores out of `WgpuBackend` lets the Taffy
 //! measure closure capture `Weak` handles and `borrow_mut` them
-//! safely. The earlier raw-pointer dance is gone.
+//! safely.
 
 use std::collections::HashMap;
 
@@ -41,7 +41,7 @@ pub struct BufferEntry {
     pub font_size: f32,
     pub content: String,
     pub attrs: TextAttrs,
-    /// `Some` for styled-text nodes (`Backend::create_styled_text`):
+    /// `Some` for styled-text nodes (`TextOps::create_styled_text`):
     /// the resolved per-run deltas, kept so every re-shape path
     /// (`set_attrs` base change, theme re-realize) rebuilds the buffer
     /// via `set_rich_text` instead of flattening to plain text. The
@@ -52,7 +52,7 @@ pub struct BufferEntry {
 
 /// One resolved styled-run for the GPU text engine. Colors are
 /// resolved sRGB at realize time (theme swaps re-realize through
-/// `Backend::update_styled_text`).
+/// `TextOps::update_styled_text`).
 #[derive(Clone, Debug, Default)]
 pub struct RichSpan {
     pub text: String,
@@ -184,7 +184,7 @@ fn apply_buffer_align(buffer: &mut Buffer, align: TextAlign) {
     }
 }
 
-/// Shared text-buffer store. Both the `Backend` impl (writer) and
+/// Shared text-buffer store. Both the backend (writer) and
 /// the renderer + measure-fn closures (readers) hold an
 /// `Rc<RefCell<TextStore>>` to this.
 pub struct TextStore {
@@ -403,10 +403,9 @@ impl TextStore {
     /// wrapped at every legal break — i.e. the longest single word (the
     /// longest unbreakable run). This is the value CSS uses as a flex/grid
     /// item's automatic minimum, so Taffy knows the text can't shrink past
-    /// it. Returning max-content here instead (the old `_ => None` bug) hid
-    /// the real floor: with `min-width:0` items the layout then shrank the
-    /// text to width 0, forcing per-glyph wrapping (the tall 1-char
-    /// columns).
+    /// it. Returning max-content here instead would hide the real floor:
+    /// with `min-width:0` items the layout would shrink the text to width
+    /// 0, forcing per-glyph wrapping (tall 1-char columns).
     ///
     /// Probe with `Wrap::Word` at width 0 so a word that can't fit *stays*
     /// on its line (overflows) rather than breaking to glyphs — the
@@ -448,7 +447,7 @@ impl TextStore {
 
 /// Resolve a framework `TextRun` list into engine [`RichSpan`]s:
 /// tokenized colors resolve against the CURRENT theme (which is why
-/// theme swaps re-enter here via `Backend::update_styled_text`),
+/// theme swaps re-enter here via `TextOps::update_styled_text`),
 /// families classify to cosmic-text roles, sizes flatten to px.
 pub fn resolve_rich_spans(runs: &[runtime_shared::TextRun]) -> Vec<RichSpan> {
     runs.iter()

@@ -5,10 +5,10 @@
 //! [`AccessibilityTree`](runtime_shared::accessibility::AccessibilityTree)
 //! via the local [`TreeSource`] trait and queues live-region
 //! announcements via the inherent `WgpuBackend::drain_pending_announcements`
-//! method. Nothing in the workspace consumes either today — this crate
-//! fills the gap by projecting both into AccessKit, which then drives
+//! method. This crate projects both into AccessKit, which then drives
 //! the platform AX layer (UIA on Windows, AT-SPI on Linux,
-//! NSAccessibility on macOS, ARIA on web).
+//! NSAccessibility on macOS, ARIA on web). `host-winit` wires it in
+//! behind its `a11y` feature.
 //!
 //! See `docs/accessibility-design.md` §5 for the contract this bridge
 //! implements.
@@ -74,9 +74,8 @@ impl AnnouncementSource for render_wgpu::WgpuBackend {
     }
 }
 
-/// Source of the parallel semantics tree. Runtime v2 has no `Backend`
-/// mega-trait to bound on, and the capability trait that carries this
-/// method (`runtime_vocabulary::caps::A11yOps`) would drag the
+/// Source of the parallel semantics tree. The capability trait that
+/// carries this method (`runtime_vocabulary::caps::A11yOps`) would drag the
 /// vocabulary into this host-shell crate — so the bridge names the one
 /// operation it needs, exactly like [`AnnouncementSource`] above.
 /// Defined locally so the impl for the foreign `WgpuBackend` is legal.

@@ -3,9 +3,8 @@
 //! author code (scheduler `after_ms` timers, `after_animation_frame`
 //! one-shots, `raf_loop` iterations).
 //!
-//! Mirrors `backend_web::dispatch_hook` / `backend_android::dispatch_hook`
-//! — the SETTLED new-core flush-driver shape. The new core
-//! ([`crate::newcore`]) stages signal writes; nothing is observable until
+//! Mirrors `backend_web::dispatch_hook` / `backend_android::dispatch_hook`.
+//! The kernel ([`crate::newcore`]) stages signal writes; nothing is observable until
 //! the flush driver calls `World::flush`. Author callbacks the backend
 //! installs (press, input, toggle, …) get their flush from the
 //! dispatch-site glue in `newcore.rs`; author code that runs from the
@@ -14,12 +13,10 @@
 //! staged there would sit uncommitted until some unrelated event
 //! happened to trigger a flush.
 //!
-//! This module is **unconditional** (not `new-core`-gated) because the
-//! fire sites live in a *different crate* (`host-winit`'s scheduler,
-//! which cannot see this crate's features). The slot defaults to `None`
-//! and every fire is a single thread-local `Cell` read — a no-op unless
-//! `newcore::start` installed the flush driver, so the old core never
-//! pays for it.
+//! The fire sites live in a *different crate* (`host-winit`'s
+//! scheduler). The slot defaults to `None` and every fire is a single
+//! thread-local `Cell` read — a no-op unless `newcore::start` installed
+//! the flush driver.
 //!
 //! # What deliberately does NOT fire the hook
 //!
@@ -28,8 +25,7 @@
 //!   lowers to `after_ms(0)`), and the flush itself is dispatched as a
 //!   scheduled microtask — firing the hook after every microtask would
 //!   re-schedule a flush from inside the flush's own dispatch and spin
-//!   the 0 ms timer queue forever (the same trap Android documents for
-//!   its shared JNI trampoline). `host-winit` therefore wraps the hook
+//!   the 0 ms timer queue forever. `host-winit` therefore wraps the hook
 //!   at the `Scheduler` impl's `after_ms`/`raf_loop` surface and routes
 //!   `schedule_microtask` through an unwrapped inner path.
 //! - The redraw hook / render loop: the renderer's frame walk runs no

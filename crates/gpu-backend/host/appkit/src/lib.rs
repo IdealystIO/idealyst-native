@@ -24,12 +24,8 @@ pub use app::{RunError, RunOptions};
 #[cfg(target_os = "macos")]
 pub use boot::{run, run_with};
 
-/// Compatibility path. The windowed boot used to live behind a
-/// `newcore` module while the framework carried two cores; callers and
-/// docs spell it `host_appkit::newcore::run` / `::run_with`. There is
-/// one core now and the entries live at the crate root ([`crate::run`],
-/// [`crate::run_with`]) — this re-export keeps the historical paths
-/// resolving.
+/// Re-exports [`crate::run`] / [`crate::run_with`] under the
+/// `host_appkit::newcore::` path that existing callers and docs still use.
 pub mod newcore {
     pub use crate::{run, run_with};
 }

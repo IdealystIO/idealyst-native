@@ -18,11 +18,8 @@ mod boot;
 
 pub use boot::{run, run_at, run_with};
 
-/// Compatibility path. These entries used to live behind a `newcore`
-/// module while the framework carried two cores; callers and docs
-/// spell them `variant_tablet::newcore::run` / `::run_at` / `::run_with`. There is
-/// one core now and they live at the crate root — this re-export keeps
-/// the historical paths resolving.
+/// Re-exports [`run`] / [`run_at`] / [`run_with`] under the
+/// `variant_tablet::newcore::` path older callers and docs use.
 pub mod newcore {
     pub use crate::{run, run_at, run_with};
 }

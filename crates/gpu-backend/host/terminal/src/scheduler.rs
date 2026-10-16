@@ -186,7 +186,7 @@ impl Drop for TerminalHandle {
 /// `raf_loop` subscribers. Called once per frame by the host's
 /// render loop.
 ///
-/// New-core flush discipline: after each TIMER / NEXT-FRAME / RAF
+/// Flush discipline: after each TIMER / NEXT-FRAME / RAF
 /// callback (which may run author code that stages signal writes) the
 /// backend's post-dispatch hook fires
 /// (`backend_terminal::dispatch_hook`), queuing one deduped flush

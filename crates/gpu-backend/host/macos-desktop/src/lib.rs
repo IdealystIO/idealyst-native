@@ -1,7 +1,7 @@
 //! macOS native shell for the wgpu render backend — embed a live
 //! idealyst preview inside another idealyst app.
 //!
-//! The framework's `Element::Graphics` primitive on macOS
+//! The framework's `graphics` primitive on macOS
 //! (`backend-macos`) creates an `NSView` whose backing layer is a
 //! `CAMetalLayer` and packs a `MacosSurfaceProvider` (raw_window_handle
 //! `AppKitWindowHandle`) into the `GraphicsSurface` it hands to the
@@ -32,9 +32,8 @@ pub use macos::{MacosHostHandle, MountError};
 #[cfg(target_os = "macos")]
 pub use macos::mount;
 
-/// Compatibility alias. This entry was `mount_newcore` while the
-/// framework carried two cores; there is one mount now and it is
-/// [`mount`]. Kept so existing call sites keep resolving.
+/// Alias of [`mount`] under its former name; kept so external call
+/// sites spelling `mount_newcore` keep resolving.
 #[cfg(target_os = "macos")]
 pub use macos::mount as mount_newcore;
 

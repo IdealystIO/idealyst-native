@@ -1,5 +1,6 @@
-//! wgpu render backend — implements `runtime_shared::Backend` and
-//! the [`render_api::EventSink`] contract.
+//! wgpu render backend — implements `runtime_scene::Host` + the
+//! `runtime_vocabulary::caps` traits (see [`newcore`]) and the
+//! [`render_api::EventSink`] contract.
 //!
 //! **No winit. No browser deps.** Any native shell that translates
 //! its platform events into the `render_api` event vocabulary
@@ -7,13 +8,13 @@
 //!
 //! # Architecture
 //!
-//! - [`backend_impl::WgpuBackend`] — `runtime_shared::Backend` trait
-//!   impl. Builds and mutates the node tree + Taffy layout tree.
+//! - [`WgpuBackend`] — the backend mechanism. Builds and mutates the
+//!   node tree + Taffy layout tree.
 //!   Owns the animator and the shared text + font-system stores.
 //! - [`Host`] — interaction state (focus, press, drag, momentum,
 //!   keyboard slide) + the `EventSink` impl. The native shell
 //!   talks to the render side only through this trait.
-//! - [`Renderer`] — wgpu pipeline + tree walker. Render one frame
+//! - [`Renderer`] — wgpu pipeline + frame walk. Render one frame
 //!   into a `wgpu::TextureView`.
 //! - [`animation::Animator`] — tween engine used by both widget
 //!   animations (toggle thumb) and style-driven transitions
@@ -33,10 +34,9 @@ mod app_pointer;
 mod backend_impl;
 mod border_marks;
 mod device_frame_pipeline;
-/// Post-dispatch hook for the new-core flush driver. Unconditional
-/// (not `new-core`-gated) because the fire sites live in `host-winit`,
-/// which cannot see this crate's features; the slot is a no-op `Cell`
-/// read until `newcore::start` installs the flush driver.
+/// Post-dispatch hook for the flush driver. `pub` because the fire
+/// sites live in `host-winit`; the slot is a no-op `Cell` read until
+/// `newcore::start` installs the flush driver.
 pub mod dispatch_hook;
 mod handles;
 mod host;
@@ -62,12 +62,10 @@ pub mod widgets;
 #[cfg(feature = "headless")]
 pub mod headless;
 
-/// New-core adoption (idea-lite migration, P5): `runtime_scene::Host` +
-/// all 30 `runtime_vocabulary::caps` traits on `WgpuBackend`, the
-/// `newcore::start` mount path, and the dispatch-site flush driver.
-/// Behind the `new-core` cargo feature; with the feature off the build
-/// is unchanged (module + deps not compiled). `host_winit::newcore::run`
-/// is the windowed entry point.
+/// `runtime_scene::Host` + the `runtime_vocabulary::caps` traits on
+/// `WgpuBackend`, the `newcore::start` mount path, and the
+/// dispatch-site flush driver. `host_winit::run` is the windowed entry
+/// point.
 pub mod newcore;
 
 // Re-export the api vocabulary so consumers of this crate
@@ -91,10 +89,6 @@ pub use nav_anim::{
     ScreenTransition, ScreenXform, SlideFromBottom, SlideFromRight, TransitionDirection,
     TransitionFrame,
 };
-// New-core harness seam: structural assertions on the live node tree
-// (the newcore integration tests + smoke self-test read `NodeData.kind`
-// / `.children` the way the macOS suite reads NSView hierarchies).
-// Gated so the default public surface is unchanged.
 pub use native_skin::NativeSkin;
 pub use node::{
     GraphicsDrawer, GraphicsFrame, WgpuNode, KEYBOARD_KEY_FONT_SIZE, KEYBOARD_KEY_GAP,
@@ -102,6 +96,9 @@ pub use node::{
     NAV_HEADER_HEIGHT, SLIDER_THUMB_SIZE, SLIDER_TRACK_HEIGHT, TEXT_INPUT_CARET_WIDTH,
     TOGGLE_THUMB_INSET,
 };
+// Harness seam: structural assertions on the live node tree (the
+// newcore integration tests + smoke self-test read `NodeData.kind` /
+// `.children` the way the macOS suite reads NSView hierarchies).
 pub use node::{NodeData, NodeKind};
 pub use painter::{
     ButtonPressVisual, NavigatorHeaderAction, NavigatorHeaderChrome, NavigatorHeaderHit, Painter,

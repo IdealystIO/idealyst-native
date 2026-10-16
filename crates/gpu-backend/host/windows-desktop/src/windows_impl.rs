@@ -469,7 +469,7 @@ mod tests {
 
 /// Where this host's swapchain is mounted: a composition visual (the
 /// Windows backend's graphics surfaces) or a real window handle (the
-/// legacy fallback).
+/// fallback for a host that hands one in).
 enum SurfaceAnchor {
     Composed(Arc<dyn ComposedTarget>),
     Window(isize),
@@ -515,7 +515,7 @@ fn draw_frame(inner: &mut HostInner) {
     if !visible {
         return;
     }
-    // wgpu 29: reconfigure on Outdated/Lost; skip on Timeout/
+    // Reconfigure on Outdated/Lost; skip on Timeout/
     // Occluded/Validation — same handling as the web and mobile hosts.
     let surface_tex = match inner.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t)

@@ -24,8 +24,8 @@ runtime-server = ["host-winit/runtime-server"]
 [dependencies]
 host-winit = { workspace = true }
 render-wgpu = { workspace = true }
-# Style/host vocabulary (`ColorScheme`). `runtime-core` is NOT a
-# dependency: this variant has no `Element`/`Backend` surface left.
+# Style/host vocabulary (`ColorScheme`). `runtime-core` (the
+# author surface) is NOT a dependency.
 runtime-shared = { workspace = true }
 
 [dev-dependencies]

@@ -59,10 +59,8 @@ const IOS_HEADER_TITLE: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const IOS_HEADER_SLOT_SIZE: f32 = 28.0;
 /// Inset from the header's left/right edge to the slot square.
 const IOS_HEADER_SLOT_INSET: f32 = 8.0;
-/// Title font size — matches iOS' inline title style. Kept
-/// here for reference; the actual buffer is shaped in the
-/// renderer's `attach_screen_metadata`, which picks a
-/// font_size shared across skins.
+/// Title font size — matches iOS' inline title style. Reference
+/// value only: nothing reads it (hence `dead_code`).
 #[allow(dead_code)]
 const IOS_HEADER_TITLE_SIZE: f32 = 17.0;
 

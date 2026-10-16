@@ -913,8 +913,8 @@ mod tests {
         assert_eq!(*log.borrow(), vec![Event::Error]);
     }
 
-    /// GIF (first frame) and WebP decode — the formats the contract adds
-    /// over the old PNG+JPEG build.
+    /// GIF (first frame) and WebP decode — required by the src contract
+    /// alongside PNG and JPEG.
     #[test]
     fn gif_and_webp_decode() {
         let rgba = image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 255]));

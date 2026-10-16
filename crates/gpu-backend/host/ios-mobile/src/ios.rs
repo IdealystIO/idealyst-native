@@ -201,7 +201,7 @@ struct WgpuInit {
     config: wgpu::SurfaceConfiguration,
 }
 
-/// Steps 1–2 of both mounts: UiKit-handle validation + the async wgpu
+/// Steps 1–2 of [`mount`]: UiKit-handle validation + the async wgpu
 /// init (instance → surface → adapter → device → configure). Metal
 /// backend.
 async fn init_wgpu(
@@ -223,8 +223,8 @@ async fn init_wgpu(
         _ => return Err(MountError::NoUiKitHandle),
     };
 
-    // 2. wgpu init. `wgpu 29` requires explicit `InstanceDescriptor`
-    //    fields — see `host-web` for the matching set on the GL path.
+    // 2. wgpu init. `InstanceDescriptor` has no `Default`, so every
+    //    field is explicit — see `host-web` for the GL-path set.
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::METAL,
         flags: wgpu::InstanceFlags::empty(),
@@ -295,7 +295,7 @@ async fn init_wgpu(
     })
 }
 
-/// Shared tail of both mounts: the pending-font log, `HostInner`
+/// Tail of [`mount`]: the pending-font log, `HostInner`
 /// assembly, and the per-frame render loop.
 fn finish_mount(
     init: WgpuInit,
@@ -392,9 +392,9 @@ struct HostInner {
     /// lifetime of the Host.
     ui_view: *const NSObject,
 
-    /// Visibility state on the previous frame. Used to detect
-    /// transitions: visible→hidden triggers `host.unmount()`,
-    /// hidden→visible triggers `host.mount(build_ui.clone())`.
+    /// Visibility state on the previous frame, as last written by
+    /// `draw_frame`. Nothing reads it; the visibility gate publishes
+    /// `set_frame_active` instead of acting on transitions.
     was_visible: bool,
     /// RAII guard for this host's `session::REGISTRY` scope. Pushed
     /// inside `mount(…)` so the embedded app's `keyed(…)` AVs and
@@ -453,10 +453,10 @@ fn draw_frame(inner: &mut HostInner) {
     // by the global animation clock. Whether a hidden embedded app
     // should *keep running in the background* (e.g. a live monitor
     // preview, a benchmark visualiser ticking over) or freeze is a
-    // policy decision that belongs to the caller — pair the
-    // navigator's focus signal with [`IosHostHandle::pause`] /
-    // [`resume`] to wire it up. The default is "keep running"
-    // (matches React Navigation's Stack default).
+    // policy decision that belongs to the caller; the hook for it,
+    // [`IosHostHandle::pause`] / `resume`, is a no-op today (no host
+    // visibility gate). The default is "keep running" (matches React
+    // Navigation's Stack default).
     let visible = unsafe { is_view_visible(inner.ui_view) };
     // Publish to the per-thread frame-active flag so author-side
     // animation tickers (any `raf_loop_scoped` consumer that reads
@@ -469,8 +469,7 @@ fn draw_frame(inner: &mut HostInner) {
         return;
     }
     inner.was_visible = true;
-    // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
-    // enum. Reconfigure on Outdated/Lost; skip on Timeout/Occluded/
+    // Reconfigure on Outdated/Lost; skip on Timeout/Occluded/
     // Validation — same handling as host-web.
     let surface_tex = match inner.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(t)

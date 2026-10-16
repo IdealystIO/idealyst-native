@@ -6,10 +6,10 @@
 //! that platform shells (winit on desktop, browser, UIKit, …)
 //! drive from their native event stream.
 //!
-//! Nothing in this module depends on a platform. The winit shim in
-//! [`crate::app`] is one client; a future web or iOS shell would
-//! consume the same `Host` API by translating its own events to
-//! [`crate::input::PointerEvent`] / [`crate::input::KeyEvent`].
+//! Nothing in this module depends on a platform. The winit shell
+//! (`host-winit`) is one client; the web / iOS / Android GPU shells
+//! consume the same `Host` API by translating their own events to
+//! [`render_api::PointerEvent`] / [`render_api::KeyEvent`].
 //!
 //! # Threading
 //!
@@ -28,10 +28,10 @@ use std::rc::Rc;
 use crate::time::Instant;
 use std::time::Duration;
 
-// Runtime v2: the host no longer builds the tree. `newcore::start` /
-// `start_in_world` (crate::newcore) realize the scene into a world and
-// own the resulting `Realized`; this type is purely the interaction +
-// layout + render surface the platform shell drives.
+// The host does not build the tree: `newcore::start` / `start_in_world`
+// (crate::newcore) realize the scene into a world and own the resulting
+// `Realized`; this type is purely the interaction + layout + render
+// surface the platform shell drives.
 use glyphon::FontSystem;
 use runtime_layout::LayoutNode;
 #[allow(unused_imports)]
@@ -181,11 +181,10 @@ pub(crate) struct HeaderHit {
     pub action: HeaderHitAction,
 }
 
-/// Unreachable under runtime v2 until the native-nav seam re-lands: the old
-/// core drove header/drawer chrome from `Backend::create_navigator`, a cap
-/// that was deleted with the old core
-/// (docs/runtime-v2-deletion-baseline.md §2.3). Kept as the substrate a
-/// scene-registry navigator handler will drive.
+/// Currently unreachable: no navigator handler on this backend mounts
+/// native header/drawer chrome (docs/runtime-v2-deletion-baseline.md
+/// §2.3). Kept as the substrate a scene-registry navigator handler will
+/// drive.
 #[allow(dead_code)]
 /// What to do when a header hit is resolved on pointer-up.
 #[derive(Clone)]
@@ -362,19 +361,14 @@ impl Host {
             color_scheme,
             skin.clone(),
         )));
-        // Plumb a weak self-reference into the backend so its
-        // navigator / tab / drawer dispatchers can re-acquire a
-        // mutable borrow when the user calls `handle.push(...)`
-        // etc. The framework releases its own borrow before
-        // user callbacks fire, so this upgrade-then-borrow_mut
-        // is sound — see `install_navigator_dispatcher`.
+        // Plumb a weak self-reference into the backend.
         let _ = backend
             .borrow()
             .self_weak
             .set(std::rc::Rc::downgrade(&backend));
         // ALSO publish the weak via a thread-local handle so the
         // framework's animation subscribers (which reach the backend
-        // from outside any current `Backend` borrow) can route
+        // from outside any current backend borrow) can route
         // per-frame writes through `set_animated_f32` /
         // `set_animated_color`. Same shape as iOS's
         // `install_global_self`.
@@ -409,13 +403,14 @@ impl Host {
     /// is.
     pub fn set_viewport(&mut self, w: f32, h: f32) {
         self.viewport = (w, h);
-        // New-core mirror: the logical viewport is this backend's
-        // author-visible viewport, and this method is its one source
-        // of truth — forward it into the mounted world's viewport ctx
-        // so breakpoint-dependent reactivity tracks it live (no-op TLS
-        // read on old-core and embedded boots; deliberately NOT an
-        // old-core TLS write — see newcore.rs, "Viewport source", for
-        // the embedded-simulator clobber rationale).
+        // The logical viewport is this backend's author-visible
+        // viewport, and this method is its one source of truth —
+        // forward it into the mounted world's viewport ctx so
+        // breakpoint-dependent reactivity tracks it live (no-op TLS
+        // read on embedded boots; deliberately NOT a write to the
+        // global `runtime_shared::set_viewport_size` signal — see
+        // newcore.rs, "Viewport source", for the embedded-simulator
+        // clobber rationale).
         crate::newcore::forward_viewport(runtime_shared::ViewportSize {
             width: w,
             height: h,
@@ -654,9 +649,9 @@ impl Host {
     /// frame catches the next step.
     pub fn tick(&mut self) -> bool {
         // Sample the clock once per tick so every animation reads
-        // the same "now." Shells no longer thread an `Instant`
-        // across the API boundary — clock choice is local to the
-        // render backend (here, `crate::time::Instant` on the
+        // the same "now." Shells don't thread an `Instant` across
+        // the API boundary — clock choice is local to the render
+        // backend (here, `crate::time::Instant` on the
         // framework's installed source, so wasm32 doesn't panic on
         // `std::time::Instant::now()`).
         let now = Instant::now();
@@ -877,7 +872,7 @@ impl Host {
     /// the same [`TouchId`] route directly to it (no re-walk).
     ///
     /// Returns `true` if a handler consumed the event. Callers use
-    /// this to short-circuit the legacy widget-action / scroll-pan
+    /// this to short-circuit the widget-action / scroll-pan
     /// paths — touch-claimed interactions own the pointer until
     /// release.
     fn dispatch_touch_began(&mut self, ev: &PointerEvent) -> bool {
@@ -963,7 +958,7 @@ impl Host {
 
     /// Raw-touch dispatch — `Moved`. Routes the event to the handler
     /// that consumed `Began` for this [`TouchId`], if any. Returns
-    /// `true` when dispatched (caller skips the legacy move path).
+    /// `true` when dispatched (caller skips the widget move path).
     fn dispatch_touch_moved(&mut self, ev: &PointerEvent) -> bool {
         let touch_id = TouchId(ev.id.0);
         let Some(active) = self.active_touches.get(&touch_id) else {
@@ -1170,7 +1165,7 @@ impl Host {
         self.momentum = None;
 
         // Raw-touch responder chain runs first. A consumed `Began`
-        // captures the interaction; the legacy widget-action and
+        // captures the interaction; the widget-action and
         // scroll-pan paths below are skipped for the duration of
         // this pointer's lifecycle. Once the future Rust tap /
         // long-press recognizers replace Pressable's native path,
@@ -1268,10 +1263,9 @@ impl Host {
         };
         if let Some((action, _navigator)) = header_action {
             match action {
-                // Stack-Back and Drawer-Close header taps had their
-                // dispatch removed alongside the legacy nav substrate.
-                // The new per-kind SDK paths will repopulate this hook
-                // when they're wired up for the wgpu backend.
+                // Stack-Back and Drawer-Close have no dispatch on this
+                // backend: no navigator handler mounts native header /
+                // drawer chrome (see `HeaderHitAction`).
                 HeaderHitAction::Back | HeaderHitAction::CloseDrawer => {}
                 HeaderHitAction::HeaderLeft(cb) | HeaderHitAction::HeaderRight(cb) => {
                     cb();

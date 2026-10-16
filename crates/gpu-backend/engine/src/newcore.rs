@@ -1,84 +1,42 @@
-//! New-core adoption for the wgpu backend (idea-lite migration, P5).
+//! The wgpu backend's runtime front: [`runtime_scene::Host`] plus every
+//! `runtime_vocabulary::caps` capability trait implemented on
+//! [`WgpuBackend`], the [`start`] / [`start_in_world`] mount paths, and
+//! the flush driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`WgpuBackend`] — the
-//! production shape of the migration: no `LegacyBridge` wrapper in the
-//! render path. Every trait method delegates via UFCS
-//! (`<WgpuBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the GPU mechanism code (node/Taffy tree building,
-//! glyphon text, the animator, style→render projection, the interaction
-//! `Host`'s hit-testing) is REUSED verbatim — this module adds a second
-//! *front* onto the same machinery, exactly like
-//! `backend-web/src/newcore.rs` does for the DOM and
-//! `backend-macos/src/newcore.rs` does for AppKit (this file mirrors
-//! those modules mechanically; keep them in sync).
+//! Each trait method is a thin adapter onto the backend's inherent
+//! `*_impl` methods (`backend_impl.rs`), which own the GPU mechanism —
+//! node/Taffy tree building, glyphon text, the animator, style→render
+//! projection. The only logic added here is the author-callback
+//! wrapping described under *Flush driver*. Parallels
+//! `backend-macos/src/newcore.rs` and `backend-web/src/newcore.rs`.
 //!
-//! # Delegation status — every capability accounted for
-//!
-//! | Trait | Status |
-//! |---|---|
-//! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct |
-//! | `LifecycleOps` | direct (`is_hydrating` is always `false` on this backend — no hydration on native) |
-//! | `ViewOps` | direct |
-//! | `InputOps` | direct |
-//! | `PressableOps` | direct |
-//! | `TextOps` | direct (the js-binding methods resolve to the trait-default no-ops, same as the old walker: `supports_js_text_bindings` is `false` here) |
-//! | `ButtonOps` | direct |
-//! | `ImageOps` | direct |
-//! | `IconOps` | direct |
-//! | `LinkOps` | direct |
-//! | `TextInputOps` | direct |
-//! | `ToggleOps` | direct |
-//! | `SliderOps` | direct |
-//! | `ActivityIndicatorOps` | direct |
-//! | `ScrollOps` | direct |
-//! | `SafeAreaOps` | direct |
-//! | `VirtualizerOps` | direct |
-//! | `GraphicsOps` | direct |
-//! | `PortalOps` | direct |
-//! | `PresenceOps` | direct |
-//! | `NavigatorOps` | direct |
-//! | `ExternalOps` | direct |
-//! | `DocumentOps` | direct (web-flavored methods resolve to the same trait-default no-ops the old walker hit on this backend) |
-//! | `StyleOps` | direct (class-minting methods return the trait-default `None` on native; the vocabulary's `attach_style` then takes the `apply_styled_variants` path — identical routing to the old walker; token updates re-fire through the theme-cohort driver, `token_updates_propagate_via_cascade` is `false`) |
-//! | `AssetOps` | direct |
-//! | `A11yOps` | direct |
-//! | `AnimationOps` | direct |
-//! | `IntrospectionOps` | direct |
-//! | `BatchOps` | direct |
-//! | `WireBindingOps` | direct (wire-recorder no-ops on this backend, same as today) |
-//!
-//! **30/30 direct, 0 adapted, 0 stubbed.** Nothing panics, nothing
-//! silently no-ops beyond what the wrapped `Backend` impl already does.
-//! Where the wgpu backend does not override a `Backend` method (the
-//! DOM-only and wire-only families), the UFCS call resolves to the same
-//! trait-default fallback the old walker would hit — behavior is
-//! identical by construction. The impl bodies below are generated
-//! mechanically from `backend-macos/src/newcore.rs` (itself generated
-//! from `backend-web/src/newcore.rs` / `runtime_vocabulary::bridge`,
-//! the compile-time proof of the signature freeze), with
-//! `MacosBackend` → `WgpuBackend`, plus the web module's dispatch-site
-//! author-callback wrapping (see *Flush driver*).
+//! Capability notes:
+//! - `LifecycleOps::is_hydrating` is always `false` (no hydration on native).
+//! - `TextOps`' js-binding methods and the web-flavored `DocumentOps`
+//!   methods resolve to the trait-default no-ops
+//!   (`supports_js_text_bindings` is `false`).
+//! - `StyleOps` class-minting returns the trait-default `None`, so the
+//!   vocabulary's `attach_style` takes the `apply_styled_variants` path;
+//!   token updates re-fire through the theme-cohort driver
+//!   (`token_updates_propagate_via_cascade` is `false`).
+//! - `NavigatorOps` and `WireBindingOps` are all trait defaults.
 //!
 //! # Boot path — [`start`]
 //!
 //! Client-render-only mount of a `runtime_scene::Element` tree against
-//! the live GPU node tree through the registry. Host duties are split
-//! exactly like macOS: the windowed shell (`host-winit`) owns the winit
-//! event loop / window / wgpu surface and constructs the interaction
-//! [`crate::Host`] (which builds the `WgpuBackend` and installs the
-//! global self-handle); THIS function owns everything from "backend
-//! exists" onward. `host_winit::newcore::run` is the all-in-one windowed
-//! entry apps call; the `headless::Screenshotter` path can drive the
-//! same `start` against its own backend for offscreen captures.
+//! the live GPU node tree through the registry. The windowed shell
+//! (`host-winit`) owns the winit event loop / window / wgpu surface and
+//! constructs the interaction [`crate::Host`] (which builds the
+//! `WgpuBackend` and installs the global self-handle); THIS function
+//! owns everything from "backend exists" onward. `host_winit::run` is
+//! the all-in-one windowed entry apps call; the `headless::Screenshotter`
+//! path drives the same `start` against its own backend for offscreen
+//! captures.
 //!
-//! Sequence (mirrors `runtime_shared::mount`'s ordering where they
-//! overlap):
+//! Sequence:
 //!
-//! 1. Install the default monotonic time source (the analogue of web
-//!    `start_in`'s `install_time_source` — without it the animation
-//!    clock and `PhaseTimer` read 0), then
+//! 1. Install the default monotonic time source (without it the
+//!    animation clock and `PhaseTimer` read 0), then
 //!    `runtime_vocabulary::backend::install_env_services` for the
 //!    ambient environment reads (current platform, color scheme, URL
 //!    opener, full-screen setter, AX announcer). Both precede the
@@ -87,78 +45,70 @@
 //!    `world.enter(realize)`.
 //! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — a no-op
 //!    under the winit scheduler (which has no buffering window; deferred
-//!    build microtasks arrive as 0 ms timers on the event loop, same as
-//!    the old GPU boot), but load-bearing under the **headless buffering
-//!    scheduler** (`headless.rs`), where every microtask queued during
-//!    the build — including a buffered [`schedule_flush`] — buffers and
-//!    must commit here, before `finish`, so a one-shot capture renders
-//!    the settled tree. Must run with NO backend borrow held (drained
-//!    tasks re-borrow the backend).
-//! 4. `Backend::finish(root)` — records the single root in
-//!    `backend.roots` (the renderer's frame walk starts there) and
-//!    requests a redraw: the exact root-attachment mechanism of the old
-//!    mount.
+//!    build microtasks arrive as 0 ms timers on the event loop), but
+//!    load-bearing under the **headless buffering scheduler**
+//!    (`headless.rs`), where every microtask queued during the build —
+//!    including a buffered [`schedule_flush`] — buffers and must commit
+//!    here, before `finish`, so a one-shot capture renders the settled
+//!    tree. Must run with NO backend borrow held (drained tasks
+//!    re-borrow the backend).
+//! 4. `finish(root)` — records the single root in `backend.roots` (the
+//!    renderer's frame walk starts there) and requests a redraw.
 //! 5. `world.flush()` — commit anything staged during mount (ref-fill
 //!    callbacks, handler setup) before the first paint.
 //! 6. Install the flush driver ([`crate::dispatch_hook`] +
 //!    `FLUSH_WORLD`), retain `{Realized, backend, registry, world}` in
 //!    the returned [`NewCoreApp`]. The windowed host `std::mem::forget`s
-//!    it (the process exits with the event loop, same retention as the
-//!    old boot's `forget(owner)`).
+//!    it (the process exits with the event loop).
 //!
 //! **Hydration is NOT in scope** (native never hydrates).
 //!
-//! # Flush driver (the SETTLED web design — precise dispatch-site glue)
+//! # Flush driver
 //!
-//! The new kernel stages writes; nothing is observable until the driver
+//! The kernel stages writes; nothing is observable until the driver
 //! calls [`World::flush`]. There is no event monitor and no per-frame
 //! safety net — coverage is exact:
 //!
 //! 1. **Author-callback wrapping (this module).** Every callback-taking
-//!    capability impl below wraps the author callback before delegating
-//!    to the `Backend` machinery: press/click, input/change, toggle,
-//!    slider, scroll, hover, wheel, touch, key, blur/focus, file-drop,
-//!    image load/error, link activation, portal dismiss, graphics
-//!    lifecycle, virtualizer row mount/release/measure, state setters,
-//!    and the app-level key handler. The wrapper calls the author fn,
-//!    then [`schedule_flush`] — one deduped
-//!    `runtime_shared::scheduling::schedule_microtask` → `world.flush()`.
-//!    The interaction `Host` (`host.rs`) dispatches *these wrapped
-//!    closures* from whatever surface invokes them — winit
-//!    `WindowEvent`s, the on-screen keyboard router, momentum-scroll
-//!    ticks inside `Host::tick` — so every author entry through the
-//!    interaction layer is covered regardless of the triggering event,
-//!    with zero edits to `host.rs`. Because the wrapping happens in
-//!    these new-core-only impls, the shared old-core interaction code is
-//!    reused verbatim and the old core never pays for it.
+//!    capability impl below wraps the author callback before handing it
+//!    to the backend: press/click, input/change, toggle, slider, scroll,
+//!    hover, wheel, touch, key, blur/focus, file-drop, image load/error,
+//!    link activation, portal dismiss, graphics lifecycle, virtualizer
+//!    row mount/release/measure, state setters, and the app-level key
+//!    handler. The wrapper calls the author fn, then [`schedule_flush`]
+//!    — one deduped `runtime_shared::scheduling::schedule_microtask` →
+//!    `world.flush()`. The interaction `Host` (`host.rs`) dispatches
+//!    *these wrapped closures* from whatever surface invokes them —
+//!    winit `WindowEvent`s, the on-screen keyboard router,
+//!    momentum-scroll ticks inside `Host::tick` — so every author entry
+//!    through the interaction layer is covered without `host.rs` knowing
+//!    about the world.
 //! 2. **Post-dispatch hook ([`crate::dispatch_hook`]).** Author code
 //!    also runs from the scheduler: `after_ms` timers,
 //!    `after_animation_frame` one-shots, and `raf_loop` iterations. The
 //!    `host-winit` scheduler fires the thread-local hook after each such
-//!    callback ([`start`] installs [`schedule_flush`] into the slot;
-//!    no-op default, so the old core is untouched). Scheduled
-//!    *microtasks* deliberately do NOT fire the hook — on this host a
-//!    microtask IS a 0 ms timer, and the flush itself rides one, so
-//!    hooking microtasks would re-arm the flush forever (see
-//!    `dispatch_hook`'s module docs and the Android precedent).
+//!    callback ([`start`] installs [`schedule_flush`] into the slot).
+//!    Scheduled *microtasks* deliberately do NOT fire the hook — on this
+//!    host a microtask IS a 0 ms timer, and the flush itself rides one,
+//!    so hooking microtasks would re-arm the flush forever (see
+//!    `dispatch_hook`'s module docs).
 //!
 //! **No frame-tick safety net** — the winit host has no AppKit-style
 //! control tracking loop that bypasses installed callbacks (every input
 //! reaches author code through the wrapped closures above), so there is
-//! nothing left for a per-frame poll to catch. Mirrors iOS/Android.
+//! nothing left for a per-frame poll to catch. Same as iOS/Android.
 //!
-//! Residual surfaces NOT covered (documented, not silent):
-//! - `Element::External` GPU glue that installs its own callbacks (the
-//!   External registry predates the new core; its port must call
-//!   [`schedule_flush`] after author callbacks).
-//! - The old-core navigator header chrome (skin-painted back button →
-//!   `NavigatorControl::dispatch`): the vocabulary navigator handlers
-//!   never call `create_navigator` on this backend, so that chrome does
-//!   not exist under a new-core mount — native nav-surface parity is
-//!   the same P5/P6 seam documented for iOS/Android.
-//! - Futures: no async executor is installed on this host today
-//!   (`runtime_shared::driver::spawn` has no wgpu executor); when one is
-//!   added it must fire the dispatch hook per poll like web's.
+//! Residual surfaces NOT covered:
+//! - Registry-mounted third-party primitives (`ExternalOps`) that
+//!   install their own callbacks must call [`schedule_flush`] after
+//!   author code themselves.
+//! - Native navigator header chrome: the vocabulary navigator handlers
+//!   never reach a backend navigator cap here (see the `NavigatorOps`
+//!   impl), so the skin-painted back button is never mounted.
+//! - Futures: no async executor is installed on this host
+//!   (`runtime_shared::driver::install_async_executor` is never called
+//!   for wgpu); when one is added it must fire the dispatch hook per
+//!   poll like web's.
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
 //! skips re-entrant flushes (`world.is_flushing()`) — belt and braces;
@@ -215,8 +165,7 @@ thread_local! {
 /// the realized tree unmounts before the collected top-level state
 /// (embedded boots) and the world (its slots' owner) die.
 /// The windowed host typically `std::mem::forget`s this before entering
-/// the event loop (same retention as the old boot's `forget(owner)` —
-/// the process exits with the event loop).
+/// the event loop (the process exits with the event loop).
 pub struct NewCoreApp {
     realized: Realized<WgpuNode>,
     /// Embedded boots only ([`start_in_world`]): the `collect_owned`
@@ -282,7 +231,7 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend.
+/// Mount an element tree into an already-constructed backend.
 ///
 /// The host must have: constructed the backend (typically via
 /// [`crate::Host::new`], which also installs the global self-handle the
@@ -290,7 +239,7 @@ impl NewCoreApp {
 /// rides `schedule_microtask`; the winit host installs its scheduler
 /// before the event loop runs, the headless path installs the buffering
 /// scheduler). See the module docs for the exact sequence and
-/// `host_winit::newcore::run` for the canonical windowed caller.
+/// `host_winit::run` for the canonical windowed caller.
 ///
 /// `register` runs after [`runtime_vocabulary::register_builtins`], so
 /// apps/SDKs can register their own payload handlers on the same
@@ -330,7 +279,7 @@ pub fn start_with<S, R, B>(
     // Monotonic clock (step 1 in the module docs). Idempotent, first
     // install wins. The platform identity comes from the active skin
     // (`NativeSkin` reports the real host OS; sim skins report their
-    // pretend platform) — same value the old boot would install.
+    // pretend platform).
     let platform = backend.borrow().platform_impl();
     runtime_shared::time::install_default_time_source(platform);
 
@@ -369,7 +318,7 @@ pub fn start_with<S, R, B>(
     // post-`start` (0 ms timer), where the stored world covers it.
     world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
-    // Single-root contract, matching the old-core mount: `finish`
+    // Single-root contract: `finish`
     // records the root for the renderer's frame walk and requests a
     // redraw.
     let mut roots = realized.collect_nodes();
@@ -405,11 +354,11 @@ pub fn start_with<S, R, B>(
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend,
+/// Mount an element tree into an already-constructed backend,
 /// realizing it into an EXISTING world owned by an embedding host —
 /// the embedded-preview seam (the marketing website's wgpu Simulator
 /// running the `welcome` app inside a `backend-web` page is the
-/// consumer, via `host_web::mount_newcore`).
+/// consumer, via `host_web::mount`).
 ///
 /// Differences from [`start`], each load-bearing:
 ///
@@ -531,7 +480,7 @@ fn set_flush_world(world: Option<World>) {
     FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
@@ -587,8 +536,8 @@ fn flush_now() {
 /// Run a platform-invoked vocabulary callback with the mounted world
 /// ambient (`World::enter`).
 ///
-/// WHY (bug: flat_list rendered ZERO rows on new-core web — every
-/// backend shared the gap): virtualizer `mount_item` REALIZES a row
+/// WHY (bug: flat_list rendered ZERO rows — every backend shared the
+/// gap): virtualizer `mount_item` REALIZES a row
 /// from the backend's own scroll/window machinery, and realization is
 /// creation-side (`signal()`/`effect()`/`inject` for `ThemeCtx`), which
 /// panics outside `World::enter`. Ordinary author callbacks only stage
@@ -607,7 +556,7 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 }
 
 // ===========================================================================
-// Viewport source (the new-core GPU viewport seam)
+// Viewport source
 // ===========================================================================
 //
 // The vocabulary's per-world viewport/breakpoint ctx
@@ -624,13 +573,13 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 // backend-specific thresholds — the mechanism differs (fixed logical
 // size vs live window), the observable contract converges.
 //
-// Old-TLS seeding split: `Host::set_viewport` must NOT write the
-// old-core TLS value itself — an EMBEDDED simulator (`host_web::
-// mount_newcore`, the website's in-page wgpu preview) shares its
-// thread's TLS with the embedding page, and stamping the sim profile
-// over the page's real viewport would collapse the page to phone
-// breakpoints. The WINDOWED host (`host_winit::newcore::run_with`)
-// seeds the TLS pre-mount instead, where the window owns the thread.
+// Global-signal seeding split: `Host::set_viewport` must NOT write the
+// thread-global `runtime_shared::set_viewport_size` signal itself — an
+// EMBEDDED simulator (`host_web::mount`, the website's in-page wgpu
+// preview) shares its thread's TLS with the embedding page, and
+// stamping the sim profile over the page's real viewport would collapse
+// the page to phone breakpoints. The WINDOWED host (`host_winit::run_with`)
+// seeds the global pre-mount instead, where the window owns the thread.
 // The sink is equally embed-safe: only the windowed [`start`] installs
 // it ([`start_in_world`] leaves the page backend's own resize listener
 // as the ctx's source).
@@ -643,8 +592,8 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 
 thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
-    /// outside a windowed new-core boot, so `Host::set_viewport` costs
-    /// one TLS read and nothing else on old-core and embedded paths.
+    /// outside a windowed boot, so `Host::set_viewport` costs one TLS
+    /// read and nothing else on embedded and unmounted paths.
     static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
@@ -673,10 +622,9 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
 // Each helper wraps an author callback so that, AFTER the author code
 // returns, one deduped flush microtask is queued. These are used by the
 // callback-taking caps impls below — the precise dispatch-site glue the
-// flush driver is built on (module docs, "Flush driver"). Wrapping here
-// (instead of inside the shared interaction `Host` / `Backend` code)
-// keeps the old-core render path byte-identical: the old core applies
-// writes synchronously and must not pay a flush per event.
+// flush driver is built on (module docs, "Flush driver"). Wrapping here,
+// at the caps boundary, covers every surface that later invokes the
+// closure without the interaction `Host` knowing about the world.
 
 /// Wrap a zero-arg author callback (`on_press`, `on_dismiss`,
 /// `on_activate`, image error, …).
@@ -748,14 +696,12 @@ fn flushing_pointer_sink(
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// backend-macos/src/newcore.rs / runtime_vocabulary::bridge — keep
-// mechanically in sync; the scene-parity goldens + the AllCaps bound on
-// register_builtins are the compile gates)
+// Host + capability-trait delegation (the `AllCaps` bound on
+// `register_builtins` is the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for WgpuBackend {
@@ -766,20 +712,17 @@ impl Host for WgpuBackend {
     }
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
-        // Runtime v2: `Host::insert_at` is REQUIRED, and this backend never
-        // overrode the old `Backend::insert_at`, whose default appended and
-        // ignored the index. Reproduced verbatim so behavior is unchanged —
-        // legitimate here because `supports_splice` is `false`, so the scene
-        // drivers only ever mount anchored (append-only) and no caller can
-        // observe the index. See docs/runtime-v2-deletion-baseline.md §2.2.
+        // Appends and ignores the index — legitimate because
+        // `supports_splice` is `false`, so the scene drivers only ever
+        // mount anchored (append-only) and no caller can observe the
+        // index. See docs/runtime-v2-deletion-baseline.md §2.2.
         let _ = index;
         WgpuBackend::insert_impl(self, parent, child)
     }
 
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) {
-        // Runtime v2: required on `Host`; the old `Backend::remove_child`
-        // default was a no-op, and the framework never calls it while
-        // `supports_splice` is `false`. Verbatim default (§2.2).
+        // No-op: the framework never calls it while `supports_splice`
+        // is `false` (§2.2).
         let _ = (parent, child);
     }
 
@@ -810,11 +753,10 @@ impl Host for WgpuBackend {
     }
 
     fn supports_splice(&self) -> bool {
-        // Verbatim value of the old `Backend::supports_child_splice`
-        // default this backend relied on: anchored (rebuild) regions only.
+        // Anchored (rebuild) regions only.
         // Splicing needs `remove_child` + `insert_at`, which the wgpu scene
         // tree does not implement — pinned by
-        // `tests/newcore.rs::newcore_host_is_anchored`.
+        // `tests/newcore.rs::newcore_host_seam_reproduces_the_deleted_backend_defaults`.
         false
     }
 }
@@ -1044,7 +986,7 @@ impl caps::LinkOps for WgpuBackend {
         a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core).
+        // (stages nav-queue tick signals).
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
         WgpuBackend::create_link_impl(self, config, a11y)
@@ -1231,7 +1173,7 @@ impl caps::VirtualizerOps for WgpuBackend {
         // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`) that
         // aborts outside `World::enter` (the flat_list-renders-zero-rows
         // bug); `release_item` drops the row scope, whose cleanups get
-        // the same ambient guarantee the old walker's teardown had.
+        // the same ambient world guarantee.
         let VirtualizerCallbacks {
             item_count,
             item_key,
@@ -1361,17 +1303,12 @@ impl caps::PresenceOps for WgpuBackend {
 }
 
 impl caps::NavigatorOps for WgpuBackend {
-    // Every method of this capability is now the caps trait's default.
-    // The old-core `create_navigator` (which registered the per-instance
-    // `NavigatorHandler` these four methods dispatched to) was DELETED
-    // with the old core — it does not fall back to a default
-    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
-    // registered and the vocabulary's navigator handler never calls
-    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
-    // folds screen chrome itself. Native push / header chrome on this
-    // backend is the documented native-nav seam, tracked in the module
-    // docs; it must be re-entered through the scene registry, not
-    // through a resurrected mega-trait cap.
+    // Every method is the caps trait's default: the vocabulary's
+    // navigator handler never calls them — it mounts navigators over
+    // `ViewOps`/`LifecycleOps` and folds screen chrome itself
+    // (docs/runtime-v2-deletion-baseline.md §2.3). Native push / header
+    // chrome on this backend must come through the scene registry, not
+    // a new backend cap.
 }
 
 // ---------------------------------------------------------------------------

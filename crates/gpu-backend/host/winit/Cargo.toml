@@ -36,9 +36,8 @@ render-api = { workspace = true }
 # font fetcher (unlike host-web, which leaves the feature off and
 # fetches the served `/fonts/*.ttf` at mount).
 render-wgpu = { workspace = true, features = ["embed-font-bytes"] }
-# Style/scheduling/a11y vocabulary substrate. `runtime-core` is NOT a
-# dependency: this host has no `Element`/`Backend` surface left — it
-# mounts scene elements through `render_wgpu::newcore::start`.
+# Style/scheduling/a11y vocabulary substrate. `runtime-core` (the
+# author surface) is NOT a dependency — the host mounts scene elements through `render_wgpu::newcore::start`.
 runtime-shared = { workspace = true }
 
 # Only used when `runtime-server` is on. Pulls tungstenite + the

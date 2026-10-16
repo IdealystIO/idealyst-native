@@ -1,12 +1,12 @@
 //! Windows native shell for the wgpu render backend — embed a live
 //! idealyst preview inside another idealyst app.
 //!
-//! The framework's `Element::Graphics` primitive on Windows
-//! (`backend-windows`) creates a plain child HWND and packs a
-//! `Win32SurfaceProvider` (raw_window_handle `Win32WindowHandle`)
-//! into the `GraphicsSurface` it hands to the `on_ready` callback.
-//! We take that `GraphicsSurface`, build a wgpu DX12 surface against
-//! it, spin up the `render_wgpu::Host` + `Renderer`, mount the
+//! The framework's `graphics` primitive on Windows
+//! (`backend-windows`) is a DirectComposition visual; the
+//! `GraphicsSurface` it hands to the `on_ready` callback carries it
+//! as a `ComposedTarget` (a raw Win32 window handle is accepted as a
+//! fallback). We take that `GraphicsSurface`, build a wgpu DX12
+//! surface on the visual, spin up the `render_wgpu::Host` + `Renderer`, mount the
 //! caller's UI, and drive per-frame paint via
 //! `runtime_core::driver::render_loop` (the raf-backed driver
 //! `host-win32` installs at boot).

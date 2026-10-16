@@ -15,7 +15,7 @@
 //!
 //! The boot entries ([`run`], [`render_headless`]) live in `boot.rs`
 //! and are re-exported at the crate root; [`newcore`] re-exports them
-//! again under their historical path.
+//! again under the `newcore::` path.
 
 use std::io::{self, Write};
 use std::rc::Rc;
@@ -30,13 +30,9 @@ pub use boot::{render_headless, run};
 #[cfg(feature = "runtime-server")]
 pub use runtime_server::run_runtime_server;
 
-/// Compatibility path. The boot entries used to live behind a
-/// `newcore` module while the framework carried two cores; every
-/// caller and doc spells them `host_terminal::newcore::run` /
-/// `::render_headless`. There is one core now and the entries live at
-/// the crate root ([`crate::run`], [`crate::render_headless`]) — this
-/// re-export keeps the historical paths resolving so callers don't
-/// churn.
+/// Re-exports [`crate::run`] / [`crate::render_headless`] under the
+/// `host_terminal::newcore::` path that existing callers and docs
+/// still use.
 pub mod newcore {
     pub use crate::{render_headless, run};
 }

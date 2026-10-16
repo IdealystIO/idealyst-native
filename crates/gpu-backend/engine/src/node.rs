@@ -174,12 +174,10 @@ pub const TAB_BAR_HEIGHT: f32 = 49.0;
 pub const NAV_HEADER_HEIGHT: f32 = 44.0;
 /// Width of the drawer sidebar when fully open, as a fraction of
 /// the viewport width. iOS UIKit drawers use ~80%.
-// Unreachable under runtime v2 until the native-nav seam re-lands: the
-// old core drove this chrome from `Backend::create_navigator`, a cap that
-// was deleted with the old core
-// (docs/runtime-v2-deletion-baseline.md §2.3). Kept — the geometry and
-// animation work is the substrate a scene-registry navigator handler will
-// drive — but nothing calls it today.
+// Unreachable: no navigator handler on this backend mounts native
+// drawer chrome (docs/runtime-v2-deletion-baseline.md §2.3). Kept — the
+// geometry and animation work is the substrate a scene-registry
+// navigator handler will drive — but nothing calls it today.
 #[allow(dead_code)]
 pub const DRAWER_WIDTH_RATIO: f32 = 0.78;
 /// Drawer slide-in / slide-out duration in milliseconds.
@@ -194,12 +192,13 @@ pub const DRAWER_SCRIM_MAX_ALPHA: f32 = 0.32;
 /// not overlap consecutive keystrokes.
 pub const KEY_PRESS_FLASH_MS: u32 = 120;
 
-/// Public alias used by the `Backend` impl's associated type.
+/// The backend's node type (`runtime_scene::Host::Node`).
 pub type WgpuNode = Rc<RefCell<NodeData>>;
 
 /// Per-frame overrides written by the framework's animation system
-/// via [`runtime_shared::Backend::set_animated_f32`] /
-/// [`runtime_shared::Backend::set_animated_color`]. The renderer
+/// via `AnimationOps::set_animated_f32` / `set_animated_color`
+/// (or the free [`crate::set_animated_f32`] /
+/// [`crate::set_animated_color`] writers). The renderer
 /// composes these with the static `RenderStyle` each frame so an
 /// in-flight `AnimatedValue` always wins over the stylesheet's
 /// resting value without invalidating the underlying style.
@@ -427,7 +426,7 @@ pub enum NodeKind {
     /// against the full window; [`PortalTarget::Anchor`] re-queries
     /// the anchor's rect each frame (cheap because we re-render
     /// every frame anyway); [`PortalTarget::Named`] is unsupported
-    /// in this backend. Backdrop is no longer a backend concern —
+    /// in this backend. Backdrop is not a backend concern —
     /// the composition layer (`runtime_shared::primitives::overlay`)
     /// emits a backdrop primitive as a child of the portal, so it
     /// just flows through the regular walk.
@@ -443,7 +442,7 @@ pub enum NodeKind {
     /// vocabulary contract requires `mount_item`/`release_item` to be
     /// invoked with the backend UNBORROWED (they realize/release rows
     /// through the shared `Rc<RefCell<WgpuBackend>>`), and both entry
-    /// points are called under `backend.borrow_mut()` on the new core.
+    /// points are called under `backend.borrow_mut()`.
     Virtualizer {
         horizontal: bool,
         /// `mount_item(idx) -> (node, scope_id)`. Kept so
@@ -464,17 +463,17 @@ pub enum NodeKind {
         /// request one — a single refill serves both).
         fill_queued: std::cell::Cell<bool>,
     },
-    /// Stack-based navigator. The renderer paints only the
+    /// Stack-based navigator. Not constructed by any current mount
+    /// path (the navigator variants are dormant substrate — see
+    /// `DRAWER_WIDTH_RATIO`). The renderer paints only the
     /// last child (top of stack); older screens stay mounted
     /// for back-navigation but are clipped out of the visible
     /// area. `scope_ids` records the framework scope id for
     /// each mounted screen so `release_screen` can be called
     /// with the right id on pop / replace / reset.
-    /// `control` is the `NavigatorControl` the framework handed
-    /// us at `create_stack_navigator` time, kept so
-    /// `make_stack_navigator_handle` can wire the user-facing
-    /// `NavigatorHandle` to the same control (otherwise calls
-    /// like `handle.push(...)` reach a no-op stub).
+    /// `control` is the navigator's `NavigatorControl`, so the
+    /// user-facing `NavigatorHandle` can be wired to the same
+    /// control.
     Navigator {
         scope_ids: std::cell::RefCell<Vec<u64>>,
         control: Rc<runtime_shared::primitives::navigator::NavigatorControl>,
@@ -493,8 +492,8 @@ pub enum NodeKind {
         /// Navigator-level chrome styles set via
         /// `.header_style(...)` / `.title_style(...)` /
         /// `.button_style(...)` on the framework's `Navigator`
-        /// builder. Each screen's own `ScreenOptions` (title
-        /// color, header background, …) merges on top. The
+        /// builder. Each screen's own options (title color, header
+        /// background, …) merge on top. The
         /// renderer reads these every frame so theme swaps
         /// repaint the header in lockstep with content.
         header_style: std::cell::RefCell<Option<Rc<runtime_shared::StyleRules>>>,
@@ -519,12 +518,8 @@ pub enum NodeKind {
         active_tab: std::cell::Cell<usize>,
         tab_count: std::cell::Cell<usize>,
         routes: std::cell::RefCell<Vec<TabRoute>>,
-        /// The framework's `NavigatorControl` for this tab nav.
-        /// Kept so `make_tab_navigator_handle` can wire the
-        /// user-facing `TabsHandle` to the same control the
-        /// installed dispatcher subscribes to — otherwise
-        /// `handle.select(...)` would dispatch into a no-op
-        /// default handle.
+        /// The framework's `NavigatorControl` for this tab nav, so
+        /// a user-facing handle dispatches to the same control.
         control: Rc<runtime_shared::primitives::navigator::NavigatorControl>,
         /// Tab-bar chrome styles. `bar_style` is read at paint
         /// time by the renderer's `paint_tab_bar`; the icon /
@@ -544,14 +539,10 @@ pub enum NodeKind {
         is_open: Rc<std::cell::Cell<bool>>,
         active_screen: std::cell::Cell<usize>,
         routes: std::cell::RefCell<Vec<TabRoute>>,
-        /// The sidebar subtree, attached via
-        /// `drawer_navigator_attach_sidebar`. `None` until then.
+        /// The sidebar subtree. `None` until attached.
         sidebar: std::cell::RefCell<Option<WgpuNode>>,
         /// `NavigatorControl` for this drawer. Same reason as
-        /// the tab variant: lets `make_drawer_navigator_handle`
-        /// produce a `DrawerHandle` whose `open_drawer()` /
-        /// `toggle_drawer()` calls reach the installed
-        /// dispatcher.
+        /// the tab variant.
         control: Rc<runtime_shared::primitives::navigator::NavigatorControl>,
         /// Wall-clock at which the most recent open/close edge
         /// fired. Sampled by the renderer to interpolate the
@@ -759,7 +750,7 @@ pub struct NodeData {
     /// field still took focus and raised the on-screen keyboard.
     pub disabled: bool,
     /// Raw touch handler installed by
-    /// [`runtime_shared::Backend::install_touch_handler`]. Present
+    /// `InputOps::install_touch_handler`. Present
     /// only on nodes whose primitive carries an `on_touch` slot. The
     /// host's pointer dispatch resolves the responder chain by
     /// collecting, during hit-test, every ancestor whose
@@ -806,12 +797,12 @@ pub struct NodeData {
     /// The framework's accessibility prop bag for this node. wgpu
     /// has no real platform widget to attach a11y to, so the prop
     /// bag is stashed here verbatim and surfaced via
-    /// [`runtime_shared::Backend::dump_accessibility_tree`] for the
-    /// host shell to project into the platform AX layer.
+    /// [`WgpuBackend::dump_accessibility_tree_impl`](crate::WgpuBackend::dump_accessibility_tree_impl)
+    /// for the host shell to project into the platform AX layer.
     ///
     /// See `docs/accessibility-design.md` §5 for the full design.
     /// `Clone`d in from the `a11y` parameter on each `create_*`;
-    /// replaced wholesale by [`Backend::update_accessibility`]. The
+    /// replaced wholesale by `update_accessibility_impl`. The
     /// default value matches `AccessibilityProps::default()` so
     /// pre-a11y call sites and existing tests that don't supply
     /// props still produce a valid (empty-prop) node.

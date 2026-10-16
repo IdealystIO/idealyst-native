@@ -2,7 +2,7 @@
 //!
 //! [`run`] does the NSApplication / NSWindow / content-view sequence and
 //! mounts through `backend_macos::newcore::start` — World + Registry +
-//! `realize` + `Backend::finish` + post-mount flush. The window's
+//! `realize` + `LifecycleOps::finish` + post-mount flush. The window's
 //! content view is handed to the backend via `create_host_root` →
 //! `setContentView` → `set_host_root`.
 //!

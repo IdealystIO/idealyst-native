@@ -1,7 +1,7 @@
 //! Android native shell for the wgpu render backend — embed a live
 //! idealyst preview inside another idealyst app.
 //!
-//! The framework's `Element::Graphics` primitive on Android
+//! The framework's `graphics` primitive on Android
 //! (`backend-android-mobile`) creates a `SurfaceView`, hooks
 //! `SurfaceHolder.Callback`, and converts the `Surface` to an
 //! `ANativeWindow*` which it packs into a `GraphicsSurface`
@@ -38,8 +38,7 @@ pub use android::{AndroidHostHandle, MountError};
 #[cfg(target_os = "android")]
 pub use android::mount;
 
-/// Compatibility alias. This entry was `mount_newcore` while the
-/// framework carried two cores; there is one mount now and it is
-/// [`mount`]. Kept so existing call sites keep resolving.
+/// Alias of [`mount`] under its former name; kept so external call
+/// sites spelling `mount_newcore` keep resolving.
 #[cfg(target_os = "android")]
 pub use android::mount as mount_newcore;

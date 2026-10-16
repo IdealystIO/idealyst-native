@@ -211,23 +211,14 @@ pub fn default_transition() -> Rc<dyn ScreenTransition> {
 // ---------------------------------------------------------------
 // Per-navigator override
 //
-// Users select a non-default animator by wrapping the
-// `Navigator::new(...).bind(handle).into()` chain in
-// [`with_transition`]. The wgpu backend's `create_stack_navigator`
-// consumes whatever's installed at call time.
-//
-// Lifecycle note: the override stays installed until the next
-// `create_stack_navigator` call consumes it — it is *not* cleared on
-// `with_transition`'s exit. This is intentional: the framework's
-// walker processes the returned `Element::Navigator` *after*
-// the screen-builder closure (and `with_transition`) has
-// already returned, so an auto-cleared override would always
-// be gone by the time `create_stack_navigator` actually runs. Leaving
-// it set lets the deferred walker pick it up. If a
-// `with_transition` block ends without producing a Navigator
-// the override stays staged for the next nav built on this
-// thread — call [`clear_transition_override`] manually if you
-// need to abandon a staged value.
+// [`with_transition`] stages an animator in a thread-local for the
+// next stack navigator built on this thread; the override stays
+// staged until something takes it (it is *not* cleared on
+// `with_transition`'s exit, because a navigator node is created after
+// the builder closure returns). Nothing takes it today:
+// `take_transition_override` has no caller, because no navigator
+// handler on this backend mounts native navigator chrome
+// (docs/runtime-v2-deletion-baseline.md §2.3).
 // ---------------------------------------------------------------
 
 thread_local! {
@@ -235,25 +226,11 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Stage an animator for the next `Navigator` constructed on
-/// this thread. The framework's walker only fires
-/// `create_stack_navigator` *after* the user closure that built the
-/// `Element::Navigator` has returned, so this thread-local
-/// stays set across the closure boundary and is consumed
-/// when the walker eventually reaches the navigator node.
-///
-/// ```ignore
-/// nav_anim::with_transition(Rc::new(SlideFromBottom::new()), || {
-///     Navigator::new(&MODAL_ROUTE)
-///         .screen(MODAL_ROUTE, |_| Screen::new(modal_root()))
-///         .bind(nav)
-///         .into()
-/// })
-/// ```
-///
-/// Place `with_transition` immediately around the `Navigator`
-/// construction. If multiple Navigators are built before any
-/// of them mount, the last `with_transition` wins.
+/// Stage an animator for the next stack navigator constructed on
+/// this thread, then run `build`. The override stays staged across
+/// the closure boundary (see the section comment above — nothing
+/// currently consumes it). If multiple navigators are built before
+/// any of them mount, the last `with_transition` wins.
 pub fn with_transition<R>(anim: Rc<dyn ScreenTransition>, build: impl FnOnce() -> R) -> R {
     TRANSITION_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(anim);
@@ -262,23 +239,20 @@ pub fn with_transition<R>(anim: Rc<dyn ScreenTransition>, build: impl FnOnce() -
 }
 
 /// Drop a staged transition override without binding it to a
-/// navigator. Rarely needed in normal flow — the next
-/// `create_stack_navigator` consumes the stage automatically.
+/// navigator.
 pub fn clear_transition_override() {
     TRANSITION_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = None;
     });
 }
 
-/// Take and clear the current transition override. The wgpu
-/// backend's `create_stack_navigator` calls this once per navigator;
-/// `None` means use [`default_transition`].
-// Unreachable under runtime v2 until the native-nav seam re-lands: the
-// old core drove this chrome from `Backend::create_navigator`, a cap that
-// was deleted with the old core
-// (docs/runtime-v2-deletion-baseline.md §2.3). Kept — the geometry and
-// animation work is the substrate a scene-registry navigator handler will
-// drive — but nothing calls it today.
+/// Take and clear the current transition override; `None` means use
+/// [`default_transition`]. Meant to be called once per stack navigator
+/// at creation.
+// Unreachable: no navigator handler on this backend mounts native
+// chrome (docs/runtime-v2-deletion-baseline.md §2.3). Kept — the
+// geometry and animation work is the substrate a scene-registry
+// navigator handler will drive — but nothing calls it today.
 #[allow(dead_code)]
 pub(crate) fn take_transition_override() -> Option<Rc<dyn ScreenTransition>> {
     TRANSITION_OVERRIDE.with(|cell| cell.borrow_mut().take())

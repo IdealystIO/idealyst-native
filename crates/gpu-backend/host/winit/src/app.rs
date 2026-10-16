@@ -125,8 +125,8 @@ mod mac {
             // delegate — the one that normally translates
             // `windowWillClose:` into `WindowEvent::CloseRequested`
             // — is no longer attached. Without an explicit close
-            // handler here, clicking the red traffic-light just
-            // hid the window and left the process running.
+            // handler here, clicking the red traffic-light only
+            // hides the window and leaves the process running.
             // Forwarding to winit's delegate is the "proper" fix but would
             // require holding its `Retained` and `super`-style
             // chaining; for the single-window simulator this
@@ -746,10 +746,9 @@ impl App {
         let Some(gpu) = self.gpu.as_mut() else { return FrameOutcome::Ok };
         let Some(renderer) = self.renderer.as_mut() else { return FrameOutcome::Ok };
 
-        // wgpu 29: `get_current_texture` returns a `CurrentSurfaceTexture`
-        // *enum* (was `Result<SurfaceTexture, SurfaceError>`). Map every
-        // non-Success variant we care about to our own outcome so the
-        // caller's match doesn't need to know wgpu internals.
+        // Map every non-Success `CurrentSurfaceTexture` variant we care
+        // about to our own outcome so the caller's match doesn't need to
+        // know wgpu internals.
         let surface_tex = match gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -832,9 +831,8 @@ impl App {
     }
 }
 
-/// Outcome of a single render-frame pump. wgpu 29 collapsed the
-/// old `Result<SurfaceError>` into a per-call enum (`CurrentSurfaceTexture`);
-/// we surface the subset the redraw loop needs to act on without
+/// Outcome of a single render-frame pump: the subset of wgpu's
+/// `CurrentSurfaceTexture` the redraw loop needs to act on, without
 /// leaking wgpu types up to the event-handler arm.
 enum FrameOutcome {
     /// Frame rendered (or no-op because gpu / renderer not initialized yet).

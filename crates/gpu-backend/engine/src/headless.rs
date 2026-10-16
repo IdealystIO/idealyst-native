@@ -58,25 +58,24 @@ use crate::text::StagedText;
 
 thread_local! {
     /// Microtasks queued during a headless mount, drained by
-    /// `mount`'s call to `drain_buffered_microtasks` once the walk's
-    /// backend borrow is released.
+    /// `newcore::start`'s call to `drain_buffered_microtasks` once the
+    /// realize's backend borrow is released.
     static HEADLESS_MICROTASKS: RefCell<VecDeque<Box<dyn FnOnce() + 'static>>> =
         RefCell::new(VecDeque::new());
 }
 
 /// A **buffering** scheduler for headless rendering.
 ///
-/// Why buffering and not synchronous: SDKs that build chrome lazily — the
-/// drawer/stack navigators call `schedule_microtask` from inside
-/// `create_navigator`, which the walker invokes while holding
-/// `backend.borrow_mut()`. The synchronous no-scheduler fallback would run
-/// that microtask *immediately*, re-entering the walker (it re-borrows the
-/// same backend to build the slot's child tree) and panicking with
-/// "RefCell already borrowed". Buffering instead defers each microtask;
-/// `runtime_shared::mount` drains them via `drain_buffered_microtasks` after
-/// the mount walk completes and the borrow is free, so the slot/screen
-/// builds run safely. This is what lets a `DrawerNavigator` (or any
-/// navigator) app rasterize headlessly on the GPU backend.
+/// Why buffering and not synchronous: deferred builds — the virtualizer's
+/// row fill, navigator slot/screen builds — are queued with
+/// `schedule_microtask` from code running under `backend.borrow_mut()`.
+/// The synchronous no-scheduler fallback would run that microtask
+/// *immediately*, re-borrowing the same backend to build the child tree
+/// and panicking with "RefCell already borrowed". Buffering instead defers
+/// each microtask; `newcore::start` drains them via
+/// `drain_buffered_microtasks` after realize completes and the borrow is
+/// free, so those builds run safely and a one-shot capture renders the
+/// settled tree.
 ///
 /// `after_ms` / `after_animation_frame` / `raf_loop` are inert: a static
 /// one-frame capture has no animation clock to drive, so deferring an
