@@ -30,11 +30,33 @@ and is treated as one.
 
 ```json
 {"id": 7, "kind": "Toggle", "test_id": "wifi", "label": null,
+ "visible": true, "in_viewport": true,
  "state": {"checked": true, "disabled": false}}
 ```
 
-`state` is present on elements that have any (below); `get_snapshot`
-nodes carry it too.
+`visible` and `in_viewport` are on every element; `state` on elements that
+have any (below). `get_snapshot` nodes carry the same fields.
+
+### Visibility
+
+`visible` follows Playwright's rule: the toolkit shows the element and its
+laid-out box is not empty. "Shown" is the backend's own answer
+(`IntrospectionOps::is_shown`): in a window, not hidden by itself or an
+ancestor, not fully transparent. Scrolled-away content is still visible;
+`in_viewport` says whether its box overlaps the window (absent when the
+frame or the window size is unknown).
+
+| Backend | "Shown" means |
+|---|---|
+| Web | `isConnected` and `checkVisibility({opacityProperty, visibilityProperty})` |
+| macOS | in a window, not `isHiddenOrHasHiddenAncestor`, `alphaValue` × layer opacity up the chain above ~0 |
+| iOS | in a window, no `isHidden` up the chain, `alpha` × layer opacity above ~0 (compile-checked; not yet run on a simulator) |
+| Linux | `is_drawable` (visible and mapped), `opacity` up the parent chain above ~0 |
+| Windows | reachable from a root through no hidden node, opacity product above ~0 — the painters' walk |
+| Android, terminal | not yet: the robot falls back on the box alone |
+
+An element with no answer and no frame (a headless host) is visible:
+mounted is all that's known.
 
 ### State
 
@@ -47,6 +69,7 @@ would see on screen — with no help from the app:
 | `checked` | `toggle` | What the switch shows |
 | `disabled` | toggle, slider, text input/area, pressable, button | Whether it refuses input |
 | `focused` | `text_input` | Whether it holds keyboard focus |
+| `scroll` | `scroll_view` | `{x, y}` content offset, read from the native scroller |
 
 It is the primitive's view, not the author's: an uncontrolled toggle reports
 what it was last flipped to, a controlled one the author's value after each
@@ -113,8 +136,8 @@ fn sign_in(app: &mut App) {
   then `.nth(i)`.
 - Act: `click`, `fill` / `type_text`, `set_toggle`, `set_slider`, `focus`,
   `blur`, `scroll_to`, `drag`, `drag_with_hold`.
-- Read: `state()` ([`ElementState`]), `label()`, `count()`.
-- Assert: `assert_visible`, `assert_hidden`, `assert_text`,
+- Read: `state()` ([`ElementState`]), `is_visible()`, `label()`, `count()`.
+- Assert: `assert_visible`, `assert_hidden`, `assert_in_viewport`, `assert_text`,
   `assert_text_contains`, `assert_value`, `assert_checked`,
   `assert_enabled`, `assert_disabled`, `assert_focused`, `assert_count`.
 - App: `navigate` / `navigate_with` / `back` / `assert_path` /
@@ -122,8 +145,9 @@ fn sign_in(app: &mut App) {
   `signal(name).assert_eq` / `.value()` / `.set(v)`, `logs()`,
   `screenshot()`, and `call(verb, args)` for any other verb.
 
-`assert_visible` checks that the element is mounted; an element hidden by its
-layout still passes.
+`assert_visible` needs the element mounted and `visible`; `assert_hidden`
+passes when nothing matches or the match is not visible (a closed overlay,
+a navigated-away screen).
 
 ### MCP server
 

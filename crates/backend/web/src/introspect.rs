@@ -229,3 +229,66 @@ fn shadow_blur_radius(s: &str) -> Option<f32> {
         .collect();
     lengths.get(2).copied()
 }
+
+
+web_glue::import! {
+    /// 1 shown / 0 not / 2 can't tell (not an element). `checkVisibility`
+    /// is the browser's own answer — `display: none` on it or an ancestor,
+    /// `content-visibility`, and (asked for) `visibility` and `opacity: 0`;
+    /// browsers without it fall back on "renders any box".
+    fn js_is_shown(n: u32) -> u32 =
+        "(n) => { const e = G.get(n); if (!e.isConnected) return 0; if (e.nodeType !== 1) return 2; \
+           if (typeof e.checkVisibility === 'function') \
+             return e.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ? 1 : 0; \
+           return e.getClientRects().length ? 1 : 0; }";
+}
+
+/// Whether the browser shows `node` (see `IntrospectionOps::is_shown`):
+/// connected to the document, and not hidden by its own or an ancestor's
+/// `display` / `visibility` / `opacity`.
+pub(crate) fn is_shown(node: &web_glue::dom::Node) -> Option<bool> {
+    let raw = AsRef::<web_glue::JsValue>::as_ref(node).raw();
+    match unsafe { js_is_shown(raw) } {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod is_shown_tests {
+    use wasm_bindgen_test::*;
+
+    fn el(parent: &web_glue::dom::Element, style: &str) -> web_glue::dom::Element {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let e = doc.create_element("div").unwrap();
+        e.set_attribute("style", &format!("width:20px;height:20px;{style}")).unwrap();
+        parent.append_child(&e).unwrap();
+        e
+    }
+
+    fn shown(e: &web_glue::dom::Element) -> Option<bool> {
+        let node: &web_glue::dom::Node = e.as_ref();
+        super::is_shown(node)
+    }
+
+    /// The robot's `visible` on web is the browser's own `checkVisibility`:
+    /// hidden by the element's or an ancestor's `display` / `visibility` /
+    /// `opacity`, or not in the document, is not shown.
+    #[wasm_bindgen_test]
+    fn is_shown_is_what_the_browser_renders() {
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+        let root = doc.create_element("div").unwrap();
+        doc.body().unwrap().append_child(&root).unwrap();
+
+        assert_eq!(shown(&el(&root, "")), Some(true));
+        assert_eq!(shown(&el(&root, "display:none")), Some(false));
+        assert_eq!(shown(&el(&root, "visibility:hidden")), Some(false));
+        assert_eq!(shown(&el(&root, "opacity:0")), Some(false));
+        let hidden_parent = el(&root, "display:none");
+        assert_eq!(shown(&el(&hidden_parent, "")), Some(false), "an ancestor hides it");
+        let detached = doc.create_element("div").unwrap();
+        assert_eq!(shown(&detached), Some(false), "not in the document");
+        root.remove();
+    }
+}

@@ -39,7 +39,7 @@ mod client;
 mod harness;
 pub mod parity;
 
-pub use app::{App, Component, ElementState, Locator, NavigatorInfo, SignalAssert, DEFAULT_TIMEOUT};
+pub use app::{App, Component, ElementState, Locator, NavigatorInfo, ScrollOffset, SignalAssert, DEFAULT_TIMEOUT};
 pub use client::{
     default_apps_dir, default_apps_dirs, discover, discover_all, RobotClient, WINE_APPS_DIR_NAME,
 };

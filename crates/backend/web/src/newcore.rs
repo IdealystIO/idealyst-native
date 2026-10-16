@@ -1964,6 +1964,11 @@ impl caps::IntrospectionOps for WebBackend {
         WebBackend::note_introspection_root_impl(self, node)
     }
 
+    #[cfg(feature = "robot")]
+    fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+        crate::introspect::is_shown(node)
+    }
+
     // Geometry: the same DOM measurements a view ref's `frame()` and
     // overlay anchoring already use (`WebViewOps`). Unwired, the robot's
     // `get_frame` / `get_absolute_frame` answered `null` on web and the

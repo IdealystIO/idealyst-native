@@ -42,6 +42,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   missing element to fail fast) now fails after the timeout; failure
   messages read "still failing after …: <last seen>".
 
+- **The robot reads real visibility and scroll offsets** (`runtime-vocabulary`,
+  every desktop/web/iOS backend, `robot-test`, `robot-e2e`). Elements carry
+  `visible` (the toolkit shows it and its box isn't empty — Playwright's
+  rule) and `in_viewport`; scroll views report `state.scroll`. New
+  `IntrospectionOps::is_shown` (default `None`), implemented for web
+  (`checkVisibility`), macOS, iOS, Linux and Windows; Linux and Windows gain
+  `ScrollOps::node_scroll` (Linux also `set_node_scroll`, so the navigator's
+  scroll restore works there). robot-test `assert_visible` / `assert_hidden`
+  and robot-e2e `to_be_visible` / `not_to_be_visible` now mean visible, not
+  mounted, and `assert_in_viewport` / `is_visible` are new. *Migration:*
+  a test that asserted `assert_visible` on content behind a closed overlay
+  or a navigated-away screen now fails, as it should.
+
 - **`text_input` `secure` masks on Android; remote and dev-wire versions
   bumped** (`backend-android-mobile`, `runtime-vocabulary`, `wire`).
   Android ignored `secure` (a password field showed its text); it now sets

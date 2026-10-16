@@ -175,3 +175,9 @@ harness = false
 [[test]]
 name = "portal_click_through"
 harness = false
+
+# Real-AppKit test of the robot's visibility read (`IntrospectionOps::is_shown`):
+# window membership, hidden ancestors, alpha and layer opacity. Main-thread only.
+[[test]]
+name = "robot_visibility"
+harness = false

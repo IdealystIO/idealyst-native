@@ -102,6 +102,10 @@ use backend_ios_core::style::{
 };
 
 // =========================================================================
+/// Opacity at or below which a view counts as invisible (`is_shown_impl`) —
+/// the painted backends' hit-test bar (`effective_opacity() <= 0.003`).
+const TRANSPARENT_ALPHA: f64 = 0.003;
+
 // UIKit enum values we use via `msg_send`. UIKit's Swift/ObjC enums
 // aren't exposed by `objc2_ui_kit` as numeric constants, so we mirror
 // the raw integer values here with the named UIKit constant in scope.
@@ -4032,6 +4036,32 @@ impl IosBackend {
             width: frame.size.width as f32,
             height: frame.size.height as f32,
         })
+    }
+
+    /// Whether UIKit shows `node` (`IntrospectionOps::is_shown`): in a
+    /// window, and no view up the superview chain hidden or faded out
+    /// (`alpha` × layer `opacity` above ~0 — the framework animates
+    /// opacity on the layer). Mirrors the macOS read.
+    pub(crate) fn is_shown_impl(&self, node: &IosNode) -> bool {
+        let view = node.as_view();
+        let window: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, window] };
+        if window.is_null() {
+            return false;
+        }
+        let mut alpha = 1.0f64;
+        let mut cur: *const UIView = view;
+        while !cur.is_null() {
+            let hidden: bool = unsafe { msg_send![cur, isHidden] };
+            if hidden {
+                return false;
+            }
+            let a: f64 = unsafe { msg_send![cur, alpha] };
+            let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![cur, layer] };
+            let l: f32 = if layer.is_null() { 1.0 } else { unsafe { msg_send![layer, opacity] } };
+            alpha *= a * l as f64;
+            cur = unsafe { msg_send![cur, superview] };
+        }
+        alpha > TRANSPARENT_ALPHA
     }
 
     pub(crate) fn absolute_frame_impl(&self, node: &IosNode) -> Option<runtime_shared::primitives::portal::ViewportRect> {

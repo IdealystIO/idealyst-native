@@ -164,6 +164,38 @@ pub struct ElementState {
     pub disabled: Option<bool>,
     /// Whether a text field holds keyboard focus.
     pub focused: Option<bool>,
+    /// A scroll view's content offset `(x, y)`, logical px.
+    pub scroll: Option<(f64, f64)>,
+}
+
+/// Whether an element can be seen — the rule Playwright uses: the toolkit
+/// shows it ([`IntrospectionOps::is_shown`]: in a window, not hidden by
+/// itself or an ancestor, not fully transparent) and its laid-out box is
+/// not empty. Off-screen content (scrolled away, beyond the window) is still
+/// visible; [`in_viewport`](Self::in_viewport) says whether it is on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Visibility {
+    pub visible: bool,
+    /// Whether the element's box overlaps the window; `None` when the
+    /// frame or the window size is unknown.
+    pub in_viewport: Option<bool>,
+}
+
+impl Visibility {
+    /// From the toolkit's answer, the window-relative box and the window
+    /// size. Unknown parts don't hide an element: with neither answer it is
+    /// visible (mounted is all that's known).
+    pub fn from_parts(shown: Option<bool>, frame: Option<ViewportRect>, window: Option<(f32, f32)>) -> Self {
+        let empty = frame.is_some_and(|r| r.width <= 0.0 || r.height <= 0.0);
+        let visible = shown != Some(false) && !empty;
+        let in_viewport = match (frame, window) {
+            (Some(r), Some((w, h))) if w > 0.0 && h > 0.0 => {
+                Some(visible && r.x < w && r.y < h && r.x + r.width > 0.0 && r.y + r.height > 0.0)
+            }
+            _ => None,
+        };
+        Self { visible, in_viewport }
+    }
 }
 
 /// A primitive's value: a text field's text or a slider's number.
@@ -192,6 +224,9 @@ impl ElementState {
             if let Some(v) = v {
                 map.insert(key.into(), serde_json::Value::Bool(v));
             }
+        }
+        if let Some((x, y)) = self.scroll {
+            map.insert("scroll".into(), serde_json::json!({ "x": x, "y": y }));
         }
         serde_json::Value::Object(map).to_string()
     }
@@ -230,6 +265,8 @@ pub(crate) struct ElementActions {
     pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
     /// The element's own state ([`ElementState`]).
     pub state: Option<Rc<dyn Fn() -> ElementState>>,
+    /// The toolkit's answer to "is it shown" ([`IntrospectionOps::is_shown`]).
+    pub shown: Option<Rc<dyn Fn() -> Option<bool>>>,
 }
 
 /// The handler-supplied half of [`ElementActions`] — what the mount
@@ -642,6 +679,11 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         Rc::new(move || b.borrow().introspect_native(&n))
             as Rc<dyn Fn() -> Option<runtime_shared::introspect::NativeNode>>
     };
+    let shown = {
+        let b = backend.clone();
+        let n = node.clone();
+        Rc::new(move || b.borrow().is_shown(&n)) as Rc<dyn Fn() -> Option<bool>>
+    };
     backend.borrow().note_introspection_root(node);
     ensure_region_hook();
 
@@ -675,6 +717,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 touch: None,
                 slider_drag,
                 state,
+                shown: Some(shown),
             },
             parent,
             children: Vec::new(),
@@ -1053,6 +1096,16 @@ fn refuse_if_disabled(actions: &ElementActions, action: &'static str) -> Result<
         Some(state) if state().is_disabled() => Err(RobotError::Disabled(action)),
         _ => Ok(()),
     }
+}
+
+/// Element `id`'s [`Visibility`]; `None` once it has unmounted.
+fn visibility_of(id: ElementId) -> Option<Visibility> {
+    let (shown, frame) = REGISTRY.with(|r| {
+        r.borrow().get(id).map(|e| (e.actions.shown.clone(), e.actions.absolute_frame.clone()))
+    })?;
+    let window = runtime_shared::viewport::viewport_size().get();
+    let window = (window.width > 0.0 && window.height > 0.0).then_some((window.width, window.height));
+    Some(Visibility::from_parts(shown.and_then(|f| f()), frame.and_then(|f| f()), window))
 }
 
 /// The registered state of element `id`, if it has any.
@@ -1551,6 +1604,12 @@ impl Robot {
                 .ok_or(RobotError::ElementGone)
         })?;
         Ok(f.map(|f| f()))
+    }
+
+    /// Whether the element can be seen, and whether it is on screen
+    /// ([`Visibility`]).
+    pub fn visibility(&self, element: &Element) -> Result<Visibility, RobotError> {
+        visibility_of(element.id).ok_or(RobotError::ElementGone)
     }
 
     fn with_actions(
@@ -2213,13 +2272,20 @@ pub mod bridge {
         })
     }
 
-    /// `,"state":{…}` for an element with state, else nothing — so a
-    /// stateless element's JSON is unchanged.
+    /// `,"visible":…[,"in_viewport":…][,"state":{…}]` — visibility for
+    /// every element, `state` for one that has any.
     fn state_field(id: ElementId) -> String {
-        match state_of(id) {
-            Some(state) => format!(",\"state\":{}", state.to_json()),
-            None => String::new(),
+        let mut out = String::new();
+        if let Some(v) = visibility_of(id) {
+            out.push_str(&format!(",\"visible\":{}", v.visible));
+            if let Some(on) = v.in_viewport {
+                out.push_str(&format!(",\"in_viewport\":{on}"));
+            }
         }
+        if let Some(state) = state_of(id) {
+            out.push_str(&format!(",\"state\":{}", state.to_json()));
+        }
+        out
     }
 
     fn element_json(el: &Element) -> String {
@@ -2371,7 +2437,9 @@ mod tests {
         assert_eq!(
             found,
             format!(
-                "{{\"id\":{},\"kind\":\"Button\",\"test_id\":\"inc\",\"label\":\"Increment\"}}",
+                // `visible`: no toolkit answer and no frame — mounted is
+                // all that's known (`Visibility::from_parts`).
+                "{{\"id\":{},\"kind\":\"Button\",\"test_id\":\"inc\",\"label\":\"Increment\",\"visible\":true}}",
                 id.0
             )
         );

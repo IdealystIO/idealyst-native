@@ -68,6 +68,9 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
                 if m.late_looks >= 3 { json!({ "id": 5, "kind": "View", "label": null, "test_id": "late" }) } else { Value::Null }
             }
             Some("field") => field(m, 11),
+            // Mounted, but its overlay is closed: not visible.
+            Some("closed") => json!({ "id": 20, "kind": "View", "label": null, "test_id": "closed", "visible": false }),
+            Some("below") => json!({ "id": 21, "kind": "View", "label": null, "test_id": "below", "visible": true, "in_viewport": false }),
             _ => Value::Null,
         },
         "find_all_elements" => match args.get("kind").and_then(|v| v.as_str()) {
@@ -233,4 +236,19 @@ fn raw_call_reaches_any_verb() {
     let mut app = app();
     assert_eq!(app.call("ping", json!({})), json!("pong"));
     assert!(app.try_call("no_such_verb", json!({})).is_err());
+}
+
+/// `assert_visible` / `assert_hidden` read the element's `visible`: a
+/// mounted element hidden by its overlay is hidden, not visible.
+#[test]
+fn visibility_assertions_follow_visible_not_mounted() {
+    let mut app = app();
+    app.test_id("closed").assert_hidden();
+    assert!(!app.test_id("closed").is_visible());
+    app.set_timeout(Duration::from_millis(200));
+    let msg = panic_message(|| app.test_id("closed").assert_visible());
+    assert!(msg.contains("mounted but not visible"), "got: {msg}");
+    app.test_id("below").assert_visible();
+    let msg = panic_message(|| app.test_id("below").assert_in_viewport());
+    assert!(msg.contains("outside the window"), "got: {msg}");
 }

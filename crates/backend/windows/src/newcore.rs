@@ -953,6 +953,10 @@ impl caps::ScrollOps for WindowsBackend {
         WindowsBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
     }
 
+    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+        WindowsBackend::node_scroll(self, node)
+    }
+
     fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
         WindowsBackend::set_node_scroll(self, node, x, y)
     }
@@ -1180,6 +1184,11 @@ impl caps::AnimationOps for WindowsBackend {
 // (`node_frame` / `node_abs_frame`) stay ungated — `ViewHandle::absolute_frame`
 // is a production author API.
 impl caps::IntrospectionOps for WindowsBackend {
+    #[cfg(feature = "robot")]
+    fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+        Some(self.node_is_shown(node.id))
+    }
+
     #[cfg(feature = "robot")]
     fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
         self.node_frame(node.id)

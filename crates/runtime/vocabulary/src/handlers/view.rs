@@ -255,6 +255,15 @@ where
             None,
             crate::robot::MountActions {
                 set_scroll: Some(Rc::new(move |x, y| handle.scroll_to(x, y))),
+                // The offset the native scroller is at, read at query time.
+                state: Some({
+                    let b = backend.clone();
+                    let n = node.clone();
+                    Rc::new(move || {
+                        let (x, y) = b.borrow().node_scroll(&n);
+                        crate::robot::ElementState { scroll: Some((x as f64, y as f64)), ..Default::default() }
+                    })
+                }),
                 ..Default::default()
             },
         )

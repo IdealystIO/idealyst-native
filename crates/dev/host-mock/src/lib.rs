@@ -237,6 +237,9 @@ pub struct Shared {
     pub scroll_offsets: RefCell<BTreeMap<Node, (f32, f32)>>,
     /// Frames served by `IntrospectionOps::{frame,absolute_frame,device_frame}`.
     pub frames: RefCell<BTreeMap<Node, ViewportRect>>,
+    /// Nodes `IntrospectionOps::is_shown` reports hidden (every other node
+    /// is shown) — set by a test as a toolkit would hide a view.
+    pub hidden: RefCell<std::collections::BTreeSet<Node>>,
     /// The app-level keyboard sink currently installed
     /// (`AppEnvOps::set_keyboard_sink`) — drive it like a native key source.
     pub keyboard_sink: RefCell<Option<primitives::key::KeyboardSink>>,
@@ -291,6 +294,7 @@ impl Default for Shared {
             mint_class: RefCell::new(None),
             scroll_offsets: RefCell::new(BTreeMap::new()),
             frames: RefCell::new(BTreeMap::new()),
+            hidden: RefCell::new(std::collections::BTreeSet::new()),
             keyboard_sink: RefCell::new(None),
             pointer_sink: RefCell::new(None),
         }
@@ -1552,6 +1556,10 @@ impl caps::AnimationOps for HostMock {
 }
 
 impl caps::IntrospectionOps for HostMock {
+    fn is_shown(&self, node: &Node) -> Option<bool> {
+        Some(!self.s.hidden.borrow().contains(node))
+    }
+
     fn frame(&self, node: &Node) -> Option<ViewportRect> {
         self.s.frames.borrow().get(node).copied()
     }

@@ -1106,6 +1106,25 @@ impl caps::ActivityIndicatorOps for LinuxBackend {
 // ---------------------------------------------------------------------------
 
 impl caps::ScrollOps for LinuxBackend {
+    /// The `ScrolledWindow`'s adjustment values; `(0, 0)` for a node that
+    /// isn't one. Read by the robot's scroll state and the navigator's
+    /// scroll snapshot.
+    fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
+        match node.widget().downcast_ref::<gtk4::ScrolledWindow>() {
+            Some(sw) => (sw.hadjustment().value() as f32, sw.vadjustment().value() as f32),
+            None => (0.0, 0.0),
+        }
+    }
+
+    /// Set the `ScrolledWindow`'s adjustments, clamped to their range (the
+    /// navigator's scroll restore). A no-op on any other node.
+    fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
+        let Some(sw) = node.widget().downcast_ref::<gtk4::ScrolledWindow>() else { return };
+        for (adj, v) in [(sw.hadjustment(), x), (sw.vadjustment(), y)] {
+            adj.set_value((v as f64).clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower())));
+        }
+    }
+
     fn create_scroll_view(
         &mut self,
         horizontal: bool,
@@ -1413,6 +1432,11 @@ impl caps::AnimationOps for LinuxBackend {
 // compare a section's absolute frame against the scroll viewport on every
 // scroll event. Gating the helpers would break a shipping feature; gating this
 // trait only removes the bridge's access to them.
+/// Opacity at or below which a widget counts as invisible (`is_shown`) —
+/// the painted backends' hit-test bar (`effective_opacity() <= 0.003`).
+#[cfg(feature = "robot")]
+const TRANSPARENT_ALPHA: f64 = 0.003;
+
 impl caps::IntrospectionOps for LinuxBackend {
     #[cfg(feature = "robot")]
     fn frame(&self, node: &Self::Node) -> Option<ViewportRect> {
@@ -1433,6 +1457,24 @@ impl caps::IntrospectionOps for LinuxBackend {
     // be a guess that silently misaims injected clicks. Reporting `None`
     // makes callers fall back to widget-relative injection, which this
     // backend does support.
+
+    /// GTK shows the widget: `is_drawable` (visible and mapped — so every
+    /// ancestor is too, and it is in a realized window) and not faded out
+    /// (the product of `opacity` up the parent chain above ~0).
+    #[cfg(feature = "robot")]
+    fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+        let widget = node.widget();
+        if !widget.is_drawable() {
+            return Some(false);
+        }
+        let mut alpha = 1.0f64;
+        let mut cur = Some(widget.clone());
+        while let Some(w) = cur {
+            alpha *= w.opacity();
+            cur = w.parent();
+        }
+        Some(alpha > TRANSPARENT_ALPHA)
+    }
 
     #[cfg(feature = "robot")]
     fn supports_native_introspection(&self) -> bool {

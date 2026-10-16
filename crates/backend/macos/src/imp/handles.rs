@@ -368,6 +368,38 @@ pub(crate) fn make_text_handle(node: &MacosNode) -> TextHandle {
 /// Window/viewport-relative rect for a node, or `None` when the view isn't
 /// mounted in a window yet. Shared by `ViewOps::rect` (overlay anchoring) and
 /// `ViewOps::absolute_frame` so both agree on coordinate space.
+/// Whether AppKit shows `node` (`IntrospectionOps::is_shown`): in a
+/// window, not hidden itself or through an ancestor
+/// (`isHiddenOrHasHiddenAncestor`), and not faded out — the product of
+/// `alphaValue` × layer opacity up the superview chain above ~0. The layer
+/// counts because the framework animates opacity on the layer, which
+/// `alphaValue` doesn't reflect.
+pub(crate) fn is_node_shown(node: &MacosNode) -> bool {
+    let view = node.as_view();
+    let window: *mut NSView = unsafe { msg_send![view, window] };
+    if window.is_null() {
+        return false;
+    }
+    let hidden: bool = unsafe { msg_send![view, isHiddenOrHasHiddenAncestor] };
+    if hidden {
+        return false;
+    }
+    let mut alpha = 1.0f64;
+    let mut cur: *mut NSView = view as *const NSView as *mut NSView;
+    while !cur.is_null() {
+        let a: f64 = unsafe { msg_send![cur, alphaValue] };
+        let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![cur, layer] };
+        let l: f32 = if layer.is_null() { 1.0 } else { unsafe { msg_send![layer, opacity] } };
+        alpha *= a * l as f64;
+        cur = unsafe { msg_send![cur, superview] };
+    }
+    alpha > TRANSPARENT
+}
+
+/// Opacity at or below which a view counts as invisible — the same bar the
+/// painted backends use for hit testing (`effective_opacity() <= 0.003`).
+const TRANSPARENT: f64 = 0.003;
+
 pub(crate) fn absolute_rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
     let macos_node = node.downcast_ref::<MacosNode>()?;
     let view = macos_node.as_view();

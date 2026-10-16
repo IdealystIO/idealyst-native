@@ -280,3 +280,76 @@ fn bridge_reports_state_on_elements_and_through_get_state() {
     assert!(disabled_err.contains("disabled"), "{disabled_err}");
     robot.reset();
 }
+
+/// Visibility is what a user could see: hidden by the toolkit (a closed
+/// portal, a navigated-away screen, an ancestor's `hidden`) or with an empty
+/// box is not visible — before, a robot "visible" check meant "registered",
+/// so a closed drawer's links passed it. On-screen is reported apart.
+#[test]
+fn regression_visibility_follows_the_toolkit_and_the_box() {
+    use runtime_shared::primitives::portal::ViewportRect;
+    use runtime_vocabulary::robot::Visibility;
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .test_id("root")
+                .child(view().test_id("shown").build())
+                .child(view().test_id("hidden").build())
+                .child(view().test_id("empty").build())
+                .child(view().test_id("offscreen").build())
+                .build(),
+        )
+    });
+    runtime_shared::viewport::set_viewport_size(runtime_shared::viewport::ViewportSize { width: 400.0, height: 300.0 });
+    let rect = |x, y, w, h| ViewportRect { x, y, width: w, height: h };
+    {
+        let mut frames = h.shared.frames.borrow_mut();
+        frames.insert(0, rect(0.0, 0.0, 400.0, 300.0));
+        frames.insert(1, rect(10.0, 10.0, 50.0, 20.0));
+        frames.insert(2, rect(10.0, 40.0, 50.0, 20.0));
+        frames.insert(3, rect(10.0, 70.0, 0.0, 20.0));
+        frames.insert(4, rect(10.0, 900.0, 50.0, 20.0));
+    }
+    h.shared.hidden.borrow_mut().insert(2);
+    let vis = |id: &str| robot.visibility(&robot.find(Query::test_id(id)).unwrap()).unwrap();
+
+    assert_eq!(vis("shown"), Visibility { visible: true, in_viewport: Some(true) });
+    assert_eq!(vis("hidden"), Visibility { visible: false, in_viewport: Some(false) });
+    assert_eq!(vis("empty").visible, false, "an empty box shows nothing");
+    assert_eq!(vis("offscreen"), Visibility { visible: true, in_viewport: Some(false) });
+
+    let json: serde_json::Value =
+        serde_json::from_str(&invoke_command("find_element", &json!({"test_id": "hidden"})).unwrap()).unwrap();
+    assert_eq!((json["visible"].clone(), json["in_viewport"].clone()), (json!(false), json!(false)));
+    robot.reset();
+}
+
+/// With no toolkit answer and no layout (a headless host), an element is
+/// visible: mounted is all that's known.
+#[test]
+fn unknown_visibility_does_not_hide_an_element() {
+    use runtime_vocabulary::robot::Visibility;
+    assert_eq!(Visibility::from_parts(None, None, None), Visibility { visible: true, in_viewport: None });
+    assert_eq!(Visibility::from_parts(Some(false), None, None).visible, false);
+}
+
+/// A scroll view reports its offset, read from the native scroller.
+#[test]
+fn scroll_view_state_reports_its_offset() {
+    use runtime_vocabulary::builders::scroll_view;
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(&h.backend, &h.registry, scroll_view().test_id("list").child(view().build()).build())
+    });
+    assert_eq!(state(&robot, "list").scroll, Some((0.0, 0.0)));
+    h.shared.scroll_offsets.borrow_mut().insert(0, (0.0, 240.0));
+    assert_eq!(state(&robot, "list").scroll, Some((0.0, 240.0)));
+    robot.reset();
+}

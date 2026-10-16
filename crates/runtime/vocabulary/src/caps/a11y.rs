@@ -82,6 +82,16 @@ pub trait IntrospectionOps: Host {
         None
     }
 
+    /// Whether the toolkit shows `node`: attached to a window, not hidden
+    /// (itself or an ancestor), not fully transparent. The robot's
+    /// `visible` is this AND a non-empty laid-out box (the rule Playwright
+    /// uses). `None` = this backend can't tell, and the robot falls back on
+    /// the box alone.
+    #[allow(unused_variables)]
+    fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+        None
+    }
+
     /// Whether [`introspect_native`](Self::introspect_native) works here.
     fn supports_native_introspection(&self) -> bool {
         false

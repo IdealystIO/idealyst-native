@@ -1500,6 +1500,10 @@ impl caps::IntrospectionOps for MacosBackend {
         crate::imp::handles::absolute_rect_of_node(node as &dyn std::any::Any)
     }
 
+    fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+        Some(crate::imp::handles::is_node_shown(node))
+    }
+
     fn supports_native_introspection(&self) -> bool {
         MacosBackend::supports_native_introspection_impl(self)
     }

@@ -1644,6 +1644,10 @@ mod ios_impl {
             IosBackend::absolute_frame_impl(self, node)
         }
 
+        fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+            Some(IosBackend::is_shown_impl(self, node))
+        }
+
         fn supports_screenshot(&self) -> bool {
             IosBackend::supports_screenshot_impl(self)
         }

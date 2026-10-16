@@ -17,7 +17,7 @@
 //! | (slider drag)              | [`Locator::set_slider`]       | `Robot::set_slider` |
 //! | `mouse.down/move/up`       | [`Locator::drag`]             | `Robot::drag`       |
 //! | `locator.focus()/.blur()`  | [`Locator::focus`]/[`blur`]   | `Robot::focus`/`blur`|
-//! | `expect(l).toBeVisible()`  | [`Expect::to_be_visible`]     | `find().is_some()`  |
+//! | `expect(l).toBeVisible()`  | [`Expect::to_be_visible`]     | `visibility().visible` |
 //! | `expect(l).toHaveText()`   | [`Expect::to_have_text`]      | live `label`        |
 //! | `expect(l).toHaveCount()`  | [`Expect::to_have_count`]     | `find_all().len()`  |
 //!
@@ -305,31 +305,32 @@ pub struct Expect {
 }
 
 impl Expect {
-    /// `expect(locator).toBeVisible()` — the element is in the live tree.
+    /// `expect(locator).toBeVisible()` — the element is mounted and visible
+    /// (shown by the toolkit, with a non-empty box).
     pub fn to_be_visible(self) -> Result<(), String> {
-        match self.loc.resolve() {
-            Ok(_) => {
-                log(format!("  ✓ expect({}).toBeVisible()", self.loc.desc));
-                Ok(())
-            }
-            Err(_) => Err(format!(
-                "expect({}).toBeVisible() — element not found",
-                self.loc.desc
-            )),
+        let el = self
+            .loc
+            .resolve()
+            .map_err(|_| format!("expect({}).toBeVisible() — element not found", self.loc.desc))?;
+        if !visible(&el) {
+            return Err(format!("expect({}).toBeVisible() — mounted but not visible", self.loc.desc));
         }
+        log(format!("  ✓ expect({}).toBeVisible()", self.loc.desc));
+        Ok(())
     }
 
-    /// `expect(locator).not.toBeVisible()` — the element is absent.
+    /// `expect(locator).not.toBeVisible()` — the element is absent, or
+    /// mounted but not visible (a closed overlay, a navigated-away screen).
     pub fn not_to_be_visible(self) -> Result<(), String> {
         match self.loc.resolve() {
-            Err(_) => {
+            Ok(el) if visible(&el) => Err(format!(
+                "expect({}).not.toBeVisible() — element is visible",
+                self.loc.desc
+            )),
+            _ => {
                 log(format!("  ✓ expect({}).not.toBeVisible()", self.loc.desc));
                 Ok(())
             }
-            Ok(_) => Err(format!(
-                "expect({}).not.toBeVisible() — element is present",
-                self.loc.desc
-            )),
         }
     }
 
@@ -746,4 +747,10 @@ fn json_escape(s: &str) -> String {
         .replace('\n', " ")
         .replace('\r', " ")
         .replace('\t', " ")
+}
+
+/// Whether `el` can be seen (`Robot::visibility`: shown by the toolkit, a
+/// non-empty box); an element gone since it was found is not.
+fn visible(el: &Element) -> bool {
+    Robot::new().visibility(el).is_ok_and(|v| v.visible)
 }

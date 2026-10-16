@@ -706,6 +706,11 @@ pub(crate) fn render_test_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Opacity at or below which a node counts as invisible — the bar the hit
+/// test uses (`effective_opacity() <= 0.003`), so "shown" and "hittable"
+/// agree.
+pub(crate) const TRANSPARENT_OPACITY: f32 = 0.003;
+
 /// Which renderer draws the painted scene.
 ///
 /// - `Gdi`: the GDI+ painter (`scene.rs`) — CPU rasterization into a back
@@ -2735,6 +2740,35 @@ impl WindowsBackend {
         node
     }
 
+    /// A scroll view's content offset; `(0, 0)` for any other node (the
+    /// robot's scroll state, the navigator's scroll snapshot).
+    pub(crate) fn node_scroll(&self, node: &WindowsNode) -> (f32, f32) {
+        match self.nodes.get(&node.id).map(|m| &m.kind) {
+            Some(NodeKind::View(ViewVisual { scroll: Some(s), .. })) => (s.offset_x, s.offset_y),
+            _ => (0.0, 0.0),
+        }
+    }
+
+    /// Whether node `id` is painted: reachable from a root (the scene's, or
+    /// a private layer's) through no hidden node and with the opacity
+    /// product down the path above ~0 — the same rules the painters and
+    /// the hit test apply. A node that isn't reachable (unmounted, under a
+    /// navigated-away screen) is not shown.
+    pub(crate) fn node_is_shown(&self, id: u64) -> bool {
+        fn walk(b: &WindowsBackend, at: u64, target: u64, alpha: f32) -> bool {
+            let Some(meta) = b.nodes.get(&at) else { return false };
+            let alpha = alpha * meta.effective_opacity();
+            if meta.hidden || alpha <= TRANSPARENT_OPACITY {
+                return false;
+            }
+            if at == target {
+                return true;
+            }
+            b.children.get(&at).is_some_and(|kids| kids.iter().any(|k| walk(b, *k, target, alpha)))
+        }
+        private_layer::all_roots(self).any(|root| walk(self, root, id, 1.0))
+    }
+
     fn set_node_scroll(&mut self, node: &WindowsNode, x: f32, y: f32) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::View(v) = &mut meta.kind {
@@ -3919,5 +3953,53 @@ mod dpi_tests {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(all(test, feature = "robot"))]
+mod robot_visibility_tests {
+    use super::*;
+    use runtime_scene::Host;
+    use runtime_vocabulary::caps::{IntrospectionOps, ScrollOps, StyleOps, ViewOps};
+
+    /// The robot's `visible` on Windows: a painted node is shown when the
+    /// painters would draw it — reachable from a root (the scene's or a
+    /// private layer's) with no hidden node and no zero opacity on the way.
+    /// Before, Windows had no visibility read: "visible" meant "registered",
+    /// so a navigated-away screen's content passed. The scroll offset is the
+    /// one the painter applies.
+    #[test]
+    fn is_shown_follows_the_paint_walk_and_scroll_reads_the_offset() {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = AccessibilityProps::default();
+        let mut root = b.create_view(&a11y);
+        let mut parent = b.create_view(&a11y);
+        let child = b.create_view(&a11y);
+        let stray = b.create_view(&a11y);
+        b.insert(&mut parent, child.clone());
+        b.insert(&mut root, parent.clone());
+        b.root_id = Some(root.id);
+
+        assert_eq!(b.is_shown(&child), Some(true));
+        assert_eq!(b.is_shown(&stray), Some(false), "never inserted: not painted");
+
+        b.nodes.get_mut(&parent.id).unwrap().hidden = true;
+        assert_eq!(b.is_shown(&child), Some(false), "an ancestor is hidden");
+        b.nodes.get_mut(&parent.id).unwrap().hidden = false;
+
+        let mut faded = StyleRules::default();
+        faded.opacity = Some(0.0.into());
+        b.apply_style(&parent, &Rc::new(faded));
+        assert_eq!(b.is_shown(&child), Some(false), "an ancestor is fully transparent");
+        let mut solid = StyleRules::default();
+        solid.opacity = Some(1.0.into());
+        b.apply_style(&parent, &Rc::new(solid));
+        assert_eq!(b.is_shown(&child), Some(true));
+
+        let scroller = b.create_scroll_view(false, None, &a11y);
+        assert_eq!(b.node_scroll(&scroller), (0.0, 0.0));
+        b.set_node_scroll(&scroller, 0.0, 120.0);
+        assert_eq!(ScrollOps::node_scroll(&b, &scroller), (0.0, 120.0));
+        assert_eq!(ScrollOps::node_scroll(&b, &child), (0.0, 0.0), "not a scroller");
     }
 }

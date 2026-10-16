@@ -253,6 +253,15 @@ pub struct ElementState {
     pub checked: Option<bool>,
     pub disabled: Option<bool>,
     pub focused: Option<bool>,
+    /// A scroll view's content offset.
+    pub scroll: Option<ScrollOffset>,
+}
+
+/// A scroll view's content offset, logical px.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+pub struct ScrollOffset {
+    pub x: f64,
+    pub y: f64,
 }
 
 /// A located (or to-be-located) element. Actions and assertions consume `self`
@@ -432,22 +441,47 @@ impl<'a> Locator<'a> {
 
     // --- assertions (retry until they hold) ---
 
-    /// Assert the element is mounted. (Being mounted is all this checks for
-    /// now; an element hidden by its layout still passes.)
+    /// Assert the element can be seen: mounted, shown by the toolkit (not
+    /// hidden by itself or an ancestor, not fully transparent) and with a
+    /// non-empty box. Scrolled out of view still counts — see
+    /// [`assert_in_viewport`](Self::assert_in_viewport).
     pub fn assert_visible(self) {
-        self.expect("assert_visible()", |_| Ok(()));
+        self.expect("assert_visible()", |el| match el.get("visible") {
+            Some(Value::Bool(false)) => Err("it is mounted but not visible".into()),
+            _ => Ok(()),
+        });
     }
 
-    /// Assert no element matches (it unmounted, or never mounted).
+    /// Assert nothing matching can be seen: no element matches, or the one
+    /// that does is not visible (a closed overlay, a navigated-away screen).
     pub fn assert_hidden(mut self) {
         let desc = format!("{}.assert_hidden()", self.desc);
         let deadline = Instant::now() + self.app.timeout;
-        while self.resolve().is_ok() {
+        while let Ok(el) = self.resolve() {
+            if el.get("visible") == Some(&Value::Bool(false)) {
+                return;
+            }
             if Instant::now() >= deadline {
-                panic!("{desc} — the element is still mounted after {:?}", self.app.timeout);
+                panic!("{desc} — the element is still visible after {:?}", self.app.timeout);
             }
             std::thread::sleep(POLL);
         }
+    }
+
+    /// Assert the element is visible and overlaps the window (not scrolled
+    /// or placed out of view).
+    pub fn assert_in_viewport(self) {
+        self.expect("assert_in_viewport()", |el| match (el.get("visible"), el.get("in_viewport")) {
+            (Some(Value::Bool(false)), _) => Err("it is not visible".into()),
+            (_, Some(Value::Bool(true))) => Ok(()),
+            (_, Some(Value::Bool(false))) => Err("it is outside the window".into()),
+            _ => Err("its frame or the window size is unknown on this backend".into()),
+        });
+    }
+
+    /// Whether the element is mounted and visible now (does not wait).
+    pub fn is_visible(mut self) -> bool {
+        self.resolve().is_ok_and(|el| el.get("visible") != Some(&Value::Bool(false)))
     }
 
     /// Assert the element's label equals `expected`.

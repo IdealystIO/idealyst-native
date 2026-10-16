@@ -1302,7 +1302,7 @@ impl CatalogService {
     // returns "robot tools disabled" and the catalog tools keep
     // working.
 
-    #[tool(description = "Find a UI element in the running app by test_id, label, label_contains, or kind. Returns the first match. With multiple apps registered, pass `app` to select. Requires the app to be running with `--features robot`.")]
+    #[tool(description = "Find a UI element in the running app by test_id, label, label_contains, or kind. Returns the first match as { id, kind, test_id, label, visible (shown by the toolkit with a non-empty box), in_viewport, state? }. With multiple apps registered, pass `app` to select. Requires the app to be running with `--features robot`.")]
     async fn find_element(
         &self,
         Parameters(args): Parameters<RobotFindArgs>,
