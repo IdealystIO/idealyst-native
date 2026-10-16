@@ -1,12 +1,11 @@
 //! Macros — the proc-macro surface area: `ui!`, `#[component]`,
-//! `signal!`, `stylesheet!`, `jsx!`.
+//! `#[method]`, `stylesheet!`, `jsx!`.
 
 use runtime_core::{ui, Element};
 use idea_ui::{Typography, Card};
 
 use crate::shell::{
-    CodeBlock, PageBody, PageHeader, Section, CodeBlockProps, PageTypographyProps, PageHeaderProps,
-    SectionProps,
+    CodeBlock, PageBody, PageHeader, CodeBlockProps, PageTypographyProps, PageHeaderProps,
 };
 
 pub fn page() -> Element {
@@ -31,32 +30,46 @@ pub fn page() -> Element {
             Card {
                 Typography(content = "`#[component]`".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "Function attribute that turns `fn foo(props: &FooProps) -> \
-                               Element` into a callable component. Generates a per-component \
-                               invocation macro (`foo!(...)`), wires default values via \
-                               `#[component(default(field = expr))]`, and registers the \
-                               function in the hot-reload table when that feature is on.".to_string(),
+                    content = "Function attribute that turns `fn Foo(...) -> Element` into a \
+                               `ui!` tag. Props are declared as fn parameters (defaults via \
+                               `#[prop(default = expr)]`), or as one explicit `props: &FooProps` \
+                               struct (defaults via `#[component(default(field = expr))]`). \
+                               Either way it emits a `pub type Foo = FooProps` alias and a \
+                               `BuildElement` impl — that is what `ui! { Foo(...) }` calls; \
+                               there is no per-component macro. It also registers the function \
+                               in the hot-reload table when that feature is on.".to_string(),
                     muted = true,
                 )
                 CodeBlock(
-                    code = "#[derive(Default)]\n\
-                            pub struct BadgeProps { pub label: String, pub intent: IntentTag }\n\
+                    code = "#[component]\n\
+                            pub fn Badge(label: String, #[prop(default = 3)] count: i32) -> Element {\n    \
+                                ui! { text { format!(\"{} ({})\", label.get(), count.get()) } }\n\
+                            }\n\
                             \n\
-                            #[component(default(intent = IntentTag::Primary))]\n\
-                            pub fn badge(props: &BadgeProps) -> Element { /* ... */ }".to_string(),
+                            // Call site:\n\
+                            ui! { Badge(label = \"Inbox\") }".to_string(),
                 )
             }
 
             Card {
-                Typography(content = "`signal!`".to_string(), kind = idea_ui::typography_kind::H2)
+                Typography(content = "`#[method]`".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "Shorthand for `Signal::new(value)`. Identical in every way; \
-                               just less typing.".to_string(),
+                    content = "Marks a nested fn inside a `#[component]` body as an imperative \
+                               method. The macro generates a `FooHandle` type and adds a \
+                               `bind_to: Option<Ref<FooHandle>>` prop; the parent passes a \
+                               `Ref` and calls methods through `.get()`. Methods return `()`. \
+                               State itself needs no macro: `signal(value)` is a plain \
+                               function. See Components.".to_string(),
                     muted = true,
                 )
                 CodeBlock(
-                    code = "let count = signal(0);\n\
-                            let username = signal(String::new());".to_string(),
+                    code = "#[method]\n\
+                            fn reset() { count.set(0); }\n\
+                            \n\
+                            // Parent:\n\
+                            let h: Ref<CounterHandle> = Ref::new();\n\
+                            ui! { Counter(bind_to = h) }\n\
+                            h.get().map(|c| c.reset());".to_string(),
                 )
             }
 
@@ -75,21 +88,12 @@ pub fn page() -> Element {
                 Typography(content = "`jsx!`".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
                     content = "A sibling of `ui!` that accepts JSX-style angle-bracket syntax \
-                               (`<Stack gap={StackGap::Md}>...</Stack>`). Same primitives, \
+                               (`<Stack gap={StackGap::Md}>...</Stack>`, `<text>\"hi\"</text>`). Same primitives, \
                                same reactivity, same control-flow rules — authors pick \
                                whichever feels more natural.".to_string(),
                     muted = true,
                 )
             }
-
-            Section(
-                title = "`children!`".to_string(),
-                body = "Builds a `Vec<Element>` from a mixed list of children expressions. \
-                        Flattens `Option<Element>` (skipping `None`) and `Vec<Element>` \
-                        (inlined) so call sites can mix conditionals and pre-built lists in \
-                        one place. Useful outside `ui!` blocks where you need to assemble a \
-                        children list imperatively.".to_string(),
-            )
         }
     }
 }

@@ -11,7 +11,7 @@ docs! {
     title = "Lists and virtualization",
     category = Reference,
     description = "Virtualized lists that mount only what's on screen and recycle the rest.",
-    related = ["primitives", "reactivity", "backends", "hot-reload"],
+    related = ["primitives", "reactivity", "backends", "dev-tools"],
     concepts = [Virtualizer, FlatList, ItemKey, ItemSize],
 
     section(heading = "Overview") {
@@ -21,17 +21,17 @@ docs! {
            currently in (or near) the viewport, recycles them as you scroll, and \
            discards the rest. Memory stays bounded by the window size; scroll \
            performance stays smooth regardless of how big the data is."),
-        p("The wrapper underneath every Idealyst virtualized list is the ",
-          code("Virtualizer"), " primitive. ", code("flat_list"),
-          " is the typed convenience layer on top — the API you'll actually use \
-           from app code."),
+        p(code("flat_list"), " is a ", code("ui!"),
+          " primitive. Underneath it is the framework's virtualizer windowing \
+           engine; ", code("flat_list"), " is the typed layer that adapts a ",
+          code("Signal<Vec<T>>"), " to it."),
     },
 
     section(heading = "The shape") {
         code(rust, r##"
-            use runtime_core::{flat_list, fixed_size, signal, ui, Signal};
+            use runtime_core::{component, fixed_size, signal, ui, Element, Signal};
 
-            #[derive(Clone)]
+            #[derive(Clone, PartialEq)]
             pub struct Message {
                 pub id: u64,
                 pub author: String,
@@ -39,15 +39,15 @@ docs! {
             }
 
             #[component]
-            pub fn inbox() -> Element {
+            pub fn Inbox() -> Element {
                 let messages: Signal<Vec<Message>> = signal(load_messages());
 
                 ui! {
                     flat_list(
                         data       = messages,
-                        key        = |_idx, msg| msg.id,
-                        item_size  = fixed_size(72.0),
-                        render_item = |_idx, msg| message_row(msg),
+                        key    = |_idx, msg| msg.id,
+                        size   = fixed_size(72.0),
+                        render = |_idx, msg| message_row(msg),
                     )
                 }
             }
@@ -62,18 +62,23 @@ docs! {
             }
         "##),
 
-        p("Four required pieces:"),
+        p("Four pieces:"),
         list(
-            [code("data"), " — a ", code("Signal<Vec<T>>"), " holding the source of truth."],
-            [code("key"), " — a function that returns a stable ", code("u64"), " identity per item."],
-            [code("item_size"), " — either ", code("fixed_size(N)"), " for uniform-height rows, or a per-item closure for variable heights (see below)."],
-            [code("render_item"), " — builds the subtree for one item. Called only when the item enters the mount window."],
+            [code("data"), " — a ", code("Signal<Vec<T>>"), " holding the source of truth. ",
+             code("T"), " must be ", code("Clone + PartialEq"), "."],
+            [code("key"), " — a function that returns a stable ", code("u64"),
+             " identity per item. Defaults to the index when omitted."],
+            [code("size"), " — either ", code("fixed_size(N)"),
+             " for uniform-height rows, or a per-item closure for variable heights \
+              (see below). Defaults to ", code("fixed_size(48.0)"), "."],
+            [code("render"), " — builds the subtree for one item. Called only when the item enters the mount window."],
         ),
 
-        p("That's the whole API surface for the common case. The advanced knobs (",
-          code("overscan"), ", ", code("axis"), ", ", code("lanes"), ", ", code("gap"),
-          ") are builder methods on the returned handle — ", code("lanes"),
-          " turns the list into a grid (see below)."),
+        p("That's the whole API surface for the common case. The other knobs are \
+           inline props too: ", code("overscan"), ", ", code("axis"), ", ",
+          code("lanes"), " (turns the list into a grid), ", code("gap"), " or ",
+          code("main_spacing"), " / ", code("cross_spacing"), ", ",
+          code("on_scroll"), ", and ", code("on_end_reached"), "."),
     },
 
     section(heading = "How it stays bounded") {
@@ -81,16 +86,16 @@ docs! {
            When you scroll, the backend computes which rows are now inside the \
            viewport (plus an overscan buffer for smooth-feeling scrolling), tells \
            the framework which to mount and which to unmount, and the framework \
-           runs your ", code("render_item"), " for the new ones."),
+           runs your ", code("render"), " for the new ones."),
         p("Each rendered item lives in its own per-item reactive scope. When the \
            item scrolls out of the window:"),
         list(
             ["The scope drops."],
-            ["Every signal allocated in that item's ", code("render_item"), " is freed."],
+            ["Every signal allocated in that item's ", code("render"), " is freed."],
             ["Every effect, every ref, every backend node tied to that item is torn down."],
         ),
         p("When the item scrolls back in, a fresh scope is built and ",
-          code("render_item"), " runs again. State that lived inside the item's \
+          code("render"), " runs again. State that lived inside the item's \
            scope doesn't persist across scroll-out events — if you need state \
            that survives, lift it into the parent's scope or into the item's ",
           code("Message"), " struct."),
@@ -136,10 +141,10 @@ docs! {
 
         code(rust, r##"
             // Every row is 72px tall.
-            item_size = fixed_size(72.0)
+            size = fixed_size(72.0)
 
             // Or per-item, from data:
-            item_size = FlatListItemSize::Known(Rc::new(|_idx, msg: &Message| {
+            size = FlatListItemSize::Known(Rc::new(|_idx, msg: &Message| {
                 if msg.has_image { 200.0 } else { 72.0 }
             }))
         "##),
@@ -155,7 +160,7 @@ docs! {
            measured value."),
 
         code(rust, r##"
-            item_size = FlatListItemSize::Measured(Rc::new(|_idx, _msg| 100.0))
+            size = FlatListItemSize::Measured(Rc::new(|_idx, _msg| 100.0))
         "##),
 
         p("Use this when the rendered size depends on layout/content the \
@@ -175,11 +180,11 @@ docs! {
     },
 
     section(heading = "Overscan and direction") {
-        p("The two builder methods worth knowing:"),
+        p("The two layout props worth knowing:"),
         list(
-            [code(".overscan(factor)"), " — multiplier on the viewport height for the mount window. ",
+            [code("overscan = factor"), " — multiplier on the viewport height for the mount window. ",
              code("1.0"), " (default) means mount one viewport-height of rows above and below the visible area. Higher values trade memory for smoother scroll feel on fast flicks; lower values save memory."],
-            [code(".axis(Axis::Horizontal)"), " — flip the scroll axis. Items are laid out left-to-right and the viewport scrolls horizontally. Default is vertical."],
+            [code("axis = Axis::Horizontal"), " — flip the scroll axis. Items are laid out left-to-right and the viewport scrolls horizontally. Default is vertical."],
         ),
 
         code(rust, r##"
@@ -187,11 +192,11 @@ docs! {
                 flat_list(
                     data = items,
                     key = |_, item| item.id,
-                    item_size = fixed_size(120.0),
-                    render_item = |_, item| card_view(item),
+                    size = fixed_size(120.0),
+                    render = |_, item| card_view(item),
+                    overscan = 2.0,
+                    axis = Axis::Horizontal,   // runtime_core::primitives::flat_list::Axis
                 )
-                .overscan(2.0)
-                .axis(Axis::Horizontal)
             }
         "##),
     },
@@ -199,16 +204,16 @@ docs! {
     section(heading = "What each backend does") {
         p("Same Rust contract, different native widgets:"),
         list(
-            ["Web — A JS-side scroll handler (in ", code("backend-web/runtime/ts/virtualizer.ts"),
-             ") owns the ", code("IntersectionObserver"),
-             " and the visible-range diff. It calls back into Rust only when items enter or leave the window. Per-item scopes drop on exit, freeing signals/effects."],
+            ["Web — A JS-side windowing engine (", code("backend-web/runtime/js/virtualizer.js"),
+             ") listens to the container's ", code("scroll"),
+             " events and owns the visible-range diff. It calls back into Rust only when items enter or leave the window. Per-item scopes drop on exit, freeing signals/effects."],
             ["iOS — ", code("UICollectionView"), " with a flow layout that consults ",
-             code("item_size"), ". Real cell recycling: ", code("prepareForReuse"),
+             code("size"), ". Real cell recycling: ", code("prepareForReuse"),
              " releases an item's subtree; ", code("cellForItemAt"),
              " builds the next one when scrolling brings it back."],
             ["Android — ", code("RecyclerView"), " plus a ", code("ListAdapter"), " with ",
              code("DiffUtil"), ". ", code("onBindViewHolder"), " runs ",
-             code("render_item"), "; ", code("onViewRecycled"), " releases the scope."],
+             code("render"), "; ", code("onViewRecycled"), " releases the scope."],
             ["Roku — Different model. As a generator backend, Roku can't ship closures, so the row template is built once at snapshot time. The device-side BrightScript runtime materializes per-row instances and remaps signal references per row. Trade-off: more constrained, no measured sizing."],
         ),
         p("You write one ", code("flat_list(...)"),
@@ -269,8 +274,8 @@ docs! {
                         s.hash(&mut h);
                         h.finish()
                     },
-                    item_size = fixed_size(44.0),
-                    render_item = |_, s| ui! { text { s.clone() } },
+                    size = fixed_size(44.0),
+                    render = |_, s| ui! { text { s.clone() } },
                 )
             }
         "##),
@@ -278,10 +283,10 @@ docs! {
 
     section(heading = "List with reactive item content") {
         p("If your items have reactive state, lift it into a struct that includes \
-           the signal, and have ", code("render_item"), " set up the bindings:"),
+           the signal, and have ", code("render"), " set up the bindings:"),
 
         code(rust, r##"
-            #[derive(Clone)]
+            #[derive(Clone, PartialEq)]
             pub struct TodoItem {
                 pub id: u64,
                 pub title: String,
@@ -292,15 +297,15 @@ docs! {
                 flat_list(
                     data = todos,
                     key = |_, t| t.id,
-                    item_size = fixed_size(56.0),
-                    render_item = |_, t| {
+                    size = fixed_size(56.0),
+                    render = |_, t| {
                         let done = t.done;
-                        ui! {
-                            Pressable(on_click = move || done.update(|v| !v)) {
-                                text { t.title.clone() }
-                                text { if done.get() { "✔" } else { "" } }
-                            }
-                        }
+                        let row = ui! {
+                            text { t.title.clone() }
+                            text { if done.get() { "✔" } else { "" } }
+                        };
+                        // `pressable` is a function, not a `ui!` tag.
+                        pressable(vec![row], move || done.update(|v| !v)).into_element()
                     },
                 )
             }
@@ -319,10 +324,10 @@ docs! {
                 flat_list(
                     data = featured,
                     key = |_, c| c.id,
-                    item_size = fixed_size(280.0),    // width here, since horizontal
-                    render_item = |_, c| card_view(c),
+                    size = fixed_size(280.0),    // width here, since horizontal
+                    render = |_, c| card_view(c),
+                    axis = Axis::Horizontal,
                 )
-                .axis(Axis::Horizontal)
             }
         "##),
     },
@@ -332,8 +337,8 @@ docs! {
             ["Duplicate keys. Two items returning the same key get conflated. The visible symptom is rows appearing to \"lose\" state on a reorder. Pick a key from a unique field."],
             ["Index-as-key (also the default when ", code("key"), " is omitted). ", code("key = |idx, _| idx as u64"),
              " keeps content correct, but an insertion or reorder shifts every index, so every visible row is rebuilt and loses its state. Use a stable id from the data instead."],
-            ["Stale closure captures in ", code("render_item"), ". ",
-             code("render_item"),
+            ["Stale closure captures in ", code("render"), ". ",
+             code("render"),
              " runs per mount — every time an item enters the window. If you capture a ", code("Vec"),
              " snapshot outside the closure and refer to it inside, you'll see the snapshot's value, not the current signal value. Read signals inside the closure."],
             ["Mixing ", code("Known"), " and ", code("Measured"),
@@ -350,10 +355,10 @@ docs! {
     section(heading = "Where to read more") {
         list(
             [link("Primitives", to = "primitives"), " — the ",
-             code("Virtualizer"), " primitive entry and the rest of the primitive list."],
+             code("flat_list"), " entry and the rest of the primitive list."],
             [link("Reactivity", to = "reactivity"), " — per-item scopes and the cleanup model."],
             [link("Backends", to = "backends"), " — what each backend does to implement virtualization."],
-            [link("Hot reload", to = "dev-tools"), " — what happens to mounted items when the source code changes (spoiler: identity-keyed nodes survive)."],
+            [link("Dev tools", to = "dev-tools"), " — what happens to mounted items when the source code changes (spoiler: identity-keyed nodes survive)."],
         ),
     },
 }

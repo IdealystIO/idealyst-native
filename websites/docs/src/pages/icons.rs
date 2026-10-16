@@ -15,10 +15,10 @@ docs! {
     concepts = [IconData, IconRegistry, StrokeAnimation],
 
     section(heading = "Overview") {
-        p("Icons in Idealyst are vector paths stored as ", code("&'static IconData"),
+        p("Icons in Idealyst are vector paths stored as ", code("IconData"),
           " constants. Backends render them natively — inline SVG on web, ",
-          code("CAShapeLayer"), " on iOS, ", code("VectorDrawable"),
-          " on Android. Because the data is ", code("const"),
+          code("CAShapeLayer"), " on iOS, an ", code("android.graphics.Path"),
+          " drawable on Android. Because the data is ", code("const"),
           ", only the icons your code actually references end up in the final binary; \
            LTO strips the rest."),
         p("You're not stuck with a particular icon pack. The framework ships \
@@ -29,19 +29,19 @@ docs! {
 
     section(heading = "Using an icon") {
         code(rust, r##"
-            use runtime_core::icon;
             use icons_lucide::{SEARCH, MENU};
 
             ui! {
-                icon(SEARCH)
-                icon(MENU).color(|| theme.primary())
+                icon(data = SEARCH)
+                icon(data = MENU, color = move || accent.get())
             }
         "##),
-        p("That's the entire surface for the simple case. ", code("icon(...)"),
-          " takes an ", code("IconData"), " constant and returns a primitive you \
-           can drop into any tree. The chainable methods (", code(".color"), ", ",
-          code(".stroke"), ", ", code(".draw_in"),
-          ") add reactive behavior; we'll cover them below."),
+        p("That's the entire surface for the simple case. ", code("icon"),
+          " takes an ", code("IconData"), " constant by value as ", code("data"),
+          ". The other props (", code("color"), ", ", code("size"), ", ",
+          code("stroke"), ", ", code("draw_in"), ", ", code("animate"),
+          ") add reactive behavior; we'll cover them below. Outside ", code("ui!"),
+          ", the same thing is ", code("runtime_core::icon(SEARCH).color(...)"), "."),
     },
 
     section(heading = "What IconData actually is") {
@@ -83,9 +83,9 @@ docs! {
             ["iOS — a ", code("CAShapeLayer"),
              " per path. Vector all the way down; no anti-aliasing artifacts at the \
               icon's natural rendering scale."],
-            ["Android — a ", code("VectorDrawable"),
-             ". Same story — the platform rasterizes only at draw time, at the \
-              exact display density."],
+            ["Android — the paths parsed into ", code("android.graphics.Path"),
+             " objects inside a custom drawable. Same story — the platform \
+              rasterizes only at draw time, at the exact display density."],
         ),
         p("This gives you sharp icons at every backbone size without shipping \
            multiple raster assets."),
@@ -107,7 +107,7 @@ docs! {
            you the platform's standard tint behavior, hit testing, accessibility, \
            and layout — exactly the \"this is a button\" feel you want — at the cost \
            of a one-time rasterization per icon."),
-        p("Standalone ", code("icon { ... }"),
+        p("Standalone ", code("icon(...)"),
           " invocations still go through the vector path. The rasterization is a ",
           code("Button"), "-only adaptation, not a global mode."),
         p("You don't choose between the two. The framework picks based on where the \
@@ -119,7 +119,7 @@ docs! {
           " on web, label color on native. To override, pass a closure:"),
         code(rust, r##"
             ui! {
-                icon(STAR).color(|| {
+                icon(data = STAR, color = move || {
                     if active.get() {
                         Color::from("#ffd700")
                     } else {
@@ -131,21 +131,25 @@ docs! {
         p("The closure runs inside an Effect. Reading a signal subscribes to it; \
            when the signal changes, only this icon's color updates on the backend. \
            No re-render, no parent rebuild."),
-        p("For static colors, wrap the literal: ",
-          code(".color(|| Color::from(\"#ff0000\"))"), "."),
+        p("For a static color, pass the value: ",
+          code("color = Color::from(\"#ff0000\")"), "."),
     },
 
     section(heading = "Stroke draw animations") {
         p("Icons support stroke-draw animations — the path progressively reveals \
-           itself from 0% to 100%. This works natively on every backend:"),
+           itself from 0% to 100%. Four backends draw it natively:"),
         list(
             ["Web — ", code("stroke-dasharray"), " + ", code("stroke-dashoffset"),
              " with a CSS transition."],
             ["iOS — ", code("CAShapeLayer.strokeEnd"), " driven by ",
              code("CABasicAnimation"), "."],
-            ["Android — ", code("ObjectAnimator"), " on the path's ",
-             code("trimPathEnd"), "."],
+            ["Android — an ", code("ObjectAnimator"),
+             " on the drawable's level, which trims the stroked path."],
+            ["GPU (wgpu) backend — the renderer trims the path each frame. A looping or autoreversing animation plays once and holds."],
         ),
+        p("Every other backend (macOS, Linux, Windows, terminal, SSR) renders the \
+           icon fully drawn and ignores the animation, so app code never needs to \
+           check."),
         p("Two ways to invoke it."),
     },
 
@@ -156,13 +160,13 @@ docs! {
             let progress = signal(0.0);
 
             ui! {
-                icon(LOGO).stroke(move || progress.get())
+                icon(data = LOGO, stroke = move || progress.get())
             }
 
             // Anywhere:
             progress.set(0.75);    // logo path is now 75% drawn
         "##),
-        p("The closure is wrapped in an Effect, same as ", code(".color"),
+        p("The closure is wrapped in an Effect, same as ", code("color"),
           ". Setting ", code("progress"), " re-fires the Effect, which calls a backend ",
           code("update_icon_stroke"),
           " operation — at most one cheap native animation update per change."),
@@ -171,23 +175,25 @@ docs! {
     section(heading = "Animate-in on mount") {
         p("For a one-shot draw-on when the icon first appears:"),
         code(rust, r##"
-            use runtime_core::{StrokeAnimation, Easing};
+            use runtime_core::{Easing, StrokeAnimation};
 
             ui! {
-                icon(LOGO).draw_in(600, Easing::EaseOut)
+                icon(data = LOGO, draw_in = (600, Easing::EaseOut))
             }
         "##),
-        p("The animation fires once after the icon mounts. The ",
-          code("StrokeAnimation"), " builder supports loops and autoreverses too:"),
+        p("The animation fires once after the icon mounts. For loops and \
+           autoreverse, pass a ", code("StrokeAnimation"), " as ",
+          code("animate"), " instead (", code("draw_in"), " and ", code("animate"),
+          " together is a compile error):"),
         code(rust, r##"
-            StrokeAnimation::new(800, Easing::EaseInOut)
-                .range(0.2, 0.8)    // partial reveal
-                .looping()          // forever
-                .reverse()          // back and forth
+            icon(
+                data = LOGO,
+                animate = StrokeAnimation::new(800, Easing::EaseInOut)
+                    .range(0.2, 0.8)    // partial reveal
+                    .looping()          // forever
+                    .reverse(),         // back and forth
+            )
         "##),
-        p("Platforms that lack stroke-animation support (none of the shipped ones \
-           today) would ignore the animation and render the icon fully drawn — the \
-           API degrades gracefully without app code needing to check."),
     },
 
     section(heading = "Building your own icon suite") {
@@ -222,12 +228,11 @@ docs! {
         p("That's it. Copy path data from any SVG, drop it into a constant, use it \
            like any other icon:"),
         code(rust, r##"
-            use runtime_core::icon;
             use my_icons::{STAR, LOGO};
 
             ui! {
-                icon(STAR)
-                icon(LOGO).color(|| theme.brand())
+                icon(data = STAR)
+                icon(data = LOGO, color = Color::from("#6d28d9"))
             }
         "##),
         p("For a few custom icons, this manual form is enough. No build step, no \
@@ -306,22 +311,21 @@ docs! {
         p("Multiple icon packs coexist without ceremony. They're just Rust modules \
            of constants:"),
         code(rust, r##"
-            use runtime_core::icon;
             use icons_lucide::SEARCH;       // first-party pack
             use my_icons::LOGO;             // custom pack
             use heroicons::CHECK;           // third-party pack (hypothetical)
 
             ui! {
-                icon(SEARCH)
-                icon(LOGO)
-                icon(CHECK)
+                icon(data = SEARCH)
+                icon(data = LOGO)
+                icon(data = CHECK)
             }
         "##),
         p("Each pack ships its own crate. Your app's ", code("Cargo.toml"),
           " lists the packs it pulls in:"),
         code(text, r##"
             [dependencies]
-            icons-lucide = "0.1"
+            icons-lucide = "2"
             my-icons = { path = "../my-icons" }
             heroicons = "0.2"
         "##),
@@ -330,7 +334,7 @@ docs! {
           code("heroicons::SEARCH"),
           "). Use one pack for most icons, supplement with another for icons your \
            primary pack doesn't include, add your own for brand assets — every \
-           icon is just a ", code("&'static IconData"),
+           icon is just an ", code("IconData"),
           ", identical at the use site regardless of where it came from."),
     },
 
@@ -338,7 +342,7 @@ docs! {
         p("Because ", code("IconData"), " is ", code("const"),
           ", the linker can drop any icon your code doesn't reference. In release \
            builds (LTO on), an app that uses three Lucide icons ships only those \
-           three icons' path strings — not the whole 1000-icon pack."),
+           three icons' path strings — not the whole pack of roughly 2,000."),
         p("This makes \"vendor a big icon pack so you have everything available\" a \
            reasonable strategy. Unused icons don't show up in the WASM bundle, the \
            iOS binary, or the Android APK."),
@@ -351,8 +355,8 @@ docs! {
         list(
             ["Primitives — Icon — the primitive entry with constructor variants."],
             ["Styles — using theme colors for icon tints."],
-            ["Reactivity — what's happening when ", code(".color"), " or ",
-             code(".stroke"), " takes a closure."],
+            ["Reactivity — what's happening when ", code("color"), " or ",
+             code("stroke"), " takes a closure."],
             [code("icons-lucide"),
              " source — the reference implementation for building your own pack \
               from SVGs."],

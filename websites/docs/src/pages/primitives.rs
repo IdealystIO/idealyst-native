@@ -38,12 +38,12 @@ docs! {
             ["Styles are orthogonal. Every primitive takes an optional ",
              code("style"), " slot. A primitive can have any style applied to \
              it, and styling is its own subsystem — see Styles for the full story."],
-            ["Refs are optional. Every primitive takes an optional ref so parent \
-             code can hold a handle to the underlying node and call imperative \
-             methods on it. See Refs."],
-            ["Test ids are optional. With ", code("--features robot"), ", every \
-             primitive accepts a ", code("test_id"), " that the Robot \
-             introspection layer uses to find it. See Robot."],
+            ["Refs are optional. Primitives take ", code("bind = my_ref"),
+             " so parent code can hold a handle to the underlying node and call \
+              imperative methods on it. See Refs."],
+            ["Test ids are optional. Primitives accept a ", code("test_id"),
+             " in every build; when the app is built with ", code("--features robot"),
+             ", the Robot introspection layer uses it to find the node. See Robot."],
             ["Some primitives are reactive on their content. When an input is a \
              closure that reads a signal (or a ", code("format!"), " that reads ",
              code(".get()"), "), the framework wraps that read in an Effect and \
@@ -72,7 +72,7 @@ docs! {
            flex engine (via runtime-layout on native backends, via the \
            browser on web). A View has no behavior of its own — no press target, \
            no scrolling, no clipping unless its style says so."),
-        p("Optional ", code("safe_area_sides"), " opts the view into per-side \
+        p("Optional ", code("safe_area"), " opts the view into per-side \
            safe-area padding. The backend reactively adds the platform's inset \
            (status bar, home indicator, dynamic island) to the matching sides; \
            rotation and dynamic-island changes propagate without a rebuild."),
@@ -96,17 +96,19 @@ docs! {
            the inset."),
     },
 
-    section(heading = "Pressable") {
+    section(heading = "pressable") {
         p("A View that's also tappable. No native chrome — the visual is whatever \
-           its children and style say it is."),
+           its children and style say it is. It is a function, not a ",
+          code("ui!"), " tag: ", code("pressable(children, on_click)"), "."),
         code(rust, r##"
+            use runtime_core::{pressable, ui};
+
+            let row = ui! { text { "Open" } };
             ui! {
-                Pressable(on_click = move || open_sheet()) {
-                    Card { /* ... */ }
-                }
+                { pressable(vec![row], move || open_sheet()) }
             }
         "##),
-        p("Use Pressable when you want button behavior without button visuals: \
+        p("Use pressable when you want button behavior without button visuals: \
            tappable card surfaces, menu rows, custom-styled buttons whose look \
            is owned by the stylesheet. For a button with a label and native \
            semantics (form submission, default focus ring), use ", code("Button"),
@@ -152,7 +154,8 @@ docs! {
 
     section(heading = "Icon") {
         p("A vector icon, rendered as inline SVG on web, ", code("CAShapeLayer"),
-          " on iOS, ", code("VectorDrawable"), " on Android."),
+          " on iOS, and an ", code("android.graphics.Path"),
+          " drawable on Android."),
         code(rust, r##"
             ui! {
                 icon(data = icons_lucide::CHEVRON_RIGHT)
@@ -166,12 +169,14 @@ docs! {
     },
 
     section(heading = "Video") {
-        p("Video playback lives in the third-party ",
-          code("video"), " SDK crate, not the closed-enum primitive set. \
-          ", code("AVPlayerLayer"), " on iOS, ",
+        p("Video playback lives in the ", code("video"),
+          " SDK crate, not the builtin primitive set. ",
+          code("AVPlayerLayer"), " on iOS and macOS, ",
           code("android.widget.VideoView"), " on Android, ",
-          code("<video>"), " on web. Add the dependency and call ",
-          code("video::register(&mut backend)"), " once at app boot."),
+          code("<video>"), " on web. Add the dependency and pass ",
+          code("video::register"), " to the app's boot call (",
+          code("start_in(\"#app\", video::register, app)"),
+          "), which installs its handler on the scene registry."),
         code(rust, r##"
             use video::prelude::*;
             ui! {
@@ -186,19 +191,18 @@ docs! {
     },
 
     section(heading = "WebView") {
-        p("Embedded web content lives in the third-party ",
-          code("webview"), " SDK crate, not the closed-enum primitive \
-          set. A sandboxed iframe on web, ", code("WKWebView"),
-          " on iOS, ", code("android.webkit.WebView"), " on Android. \
-          Call ", code("webview::register(&mut backend)"),
-          " once at bootstrap, then mount via interpolation:"),
+        p("Embedded web content lives in the ", code("webview"),
+          " SDK crate, not the builtin primitive set. An iframe on web, \
+           WebKitGTK on Linux, WebView2 on Windows. iOS and Android have no \
+           native renderer yet and show the host's \"not supported\" placeholder. \
+           Pass ", code("webview::register"),
+          " to the app's boot call, then use the tag:"),
         code(rust, r##"
+            use webview::WebView;
+
             ui! {
                 view {
-                    { webview::WebView(webview::WebViewProps {
-                        url: webview::url("https://example.com"),
-                        ..Default::default()
-                    }) }
+                    WebView(url = webview::url("https://example.com"))
                 }
             }
         "##),
@@ -248,9 +252,7 @@ docs! {
     },
 
     section(heading = "Toggle") {
-        p("A switch / checkbox bound to a ", code("Signal<bool>"),
-          ". The builder function is ", code("toggle(...)"),
-          "; the primitive variant is ", code("Toggle"), "."),
+        p("A switch / checkbox bound to a ", code("Signal<bool>"), "."),
         code(rust, r##"
             let enabled = signal(true);
 
@@ -297,18 +299,21 @@ docs! {
     },
 
     section(heading = "ActivityIndicator") {
-        p("An indeterminate loading spinner. No methods, no value — it just spins."),
+        p("An indeterminate loading spinner. No methods, no value — it just spins. ",
+          code("size"), " is ", code("Small"), " (the default) or ", code("Large"),
+          "; ", code("color"), " is a ", code("Color"), "."),
         code(rust, r##"
             ui! {
-                activity_indicator(size = ActivityIndicatorSize::Medium, color = Some(my_color))
+                activity_indicator(size = ActivityIndicatorSize::Large, color = my_color)
             }
         "##),
     },
 
     section(heading = "Reactive control flow") {
-        p("These three primitives express dynamic structure: they decide what \
-           to build based on a signal, and rebuild atomically when the signal \
-           changes."),
+        p("These forms express dynamic structure: they decide what to build \
+           based on a signal, and rebuild atomically when the signal changes. You \
+           write ordinary ", code("if"), ", ", code("match"), ", and ", code("for"),
+          " inside ", code("ui!"), "; the macro picks the lowering."),
     },
 
     section(heading = "When") {
@@ -316,7 +321,7 @@ docs! {
           ". You usually don't construct this directly — write a plain ",
           code("if"), " inside ", code("ui!"),
           " whose condition reads a signal, and the macro lowers it to ",
-          code("When"), "."),
+          code("when(...)"), "."),
         code(rust, r##"
             ui! {
                 if logged_in.get() {
@@ -332,44 +337,43 @@ docs! {
     },
 
     section(heading = "Switch") {
-        p("Reactive multi-way match — the n-way version of ", code("When"),
-          ". Each arm has a JSON-serializable pattern; the framework picks the \
-           first arm whose pattern equals the discriminant."),
+        p("Reactive multi-way match — the n-way version of ", code("when"),
+          ". Write a ", code("match"), " inside ", code("ui!"),
+          " whose scrutinee reads a signal, and the macro lowers it to ",
+          code("switch(...)"), "."),
         code(rust, r##"
             ui! {
-                Switch(discriminant = mode) {
-                    Arm(pattern = "loading") { activity_indicator() }
-                    Arm(pattern = "ready") { Body { /* ... */ } }
-                    Default { text { "error" } }
+                match mode.get() {
+                    Mode::Loading => { activity_indicator() }
+                    Mode::Ready => { text { "ready" } }
+                    _ => { text { "error" } }
                 }
             }
         "##),
-        p("(The exact ", code("ui!"), " syntax for this is settling — see \
-           Reactive control flow for current shape.)"),
-        p("The JSON constraint exists because the match must round-trip through \
-           both the runtime path and the generator-backend wire format with the \
-           same equality semantics."),
+        p("The scrutinee type must be ", code("PartialEq"),
+          ": the arm is rebuilt only when the value actually changes."),
     },
 
     section(heading = "Repeat") {
-        p("Bulk children. The macro lowers ", code("for i in 0..n { ... }"),
-          " inside ", code("ui!"), " into ", code("Repeat"),
-          ", which collapses the whole expansion into a single batched \
-           backend call when the rows are simple enough — one FFI hop \
-           instead of N."),
-        p("You don't write ", code("Repeat"), " by hand; you write a ",
-          code("for"), "."),
+        p("Bulk children. A ", code("for"), " inside ", code("ui!"),
+          " over a static range with a single-node body (",
+          code("for i in 0..n { ... }"), ") lowers to a repeat, which mounts the \
+           whole expansion in one batched backend call — one FFI hop instead of N."),
+        p("Other loops pick their lowering from the iterator's type: a plain ",
+          code("Vec"), " or slice builds its rows once, and a ",
+          code("Signal<Vec<T>>"), " becomes a keyed reactive list (",
+          code("for item in items, key = item.id { ... }"), ")."),
         code(rust, r##"
             ui! {
                 view {
-                    for item in items {
-                        Card { text { item.title } }
+                    for item in items, key = item.id {
+                        Card { text { item.title.clone() } }
                     }
                 }
             }
         "##),
-        p("For large lists you want a ", code("Virtualizer"), ", not a ",
-          code("Repeat"), " — see below."),
+        p("For large lists you want ", code("flat_list"),
+          ", which only mounts visible rows — see below."),
     },
 
     section(heading = "Lists") {
@@ -379,22 +383,20 @@ docs! {
 
     section(heading = "Virtualizer (via flat_list)") {
         p("A virtualized list that only realizes the visible rows. The typed \
-           entry point is ", code("flat_list(data, key, item_size, render_item)"), "."),
+           entry point is ", code("flat_list(data, key, size, render)"), "."),
         code(rust, r##"
             ui! {
                 flat_list(
                     data = signal_of_items,
-                    key = |_idx, item| item.id as u64,
+                    key = |_idx, item| item.id,
                     size = fixed_size(72.0),
-                    render = |_idx, item| ui! { Card { text { &item.title } } },
+                    render = |_idx, item| ui! { Card { text { item.title.clone() } } },
                 )
             }
         "##),
         p("Backends drive their native virtualization widget (",
           code("UICollectionView"), " on iOS, ", code("RecyclerView"),
-          " on Android, intersection-observer-based on web). For Roku and other \
-           generator backends, the row template is pre-built once and the device \
-           runtime materializes per-row instances."),
+          " on Android, a scroll-listener windowing engine on web)."),
         p("See Lists for keying, overscan, item-size strategies, and horizontal \
            lists."),
     },
@@ -428,11 +430,15 @@ docs! {
            a ", code("NavCommand"), " against the closest ambient navigator."),
         code(rust, r##"
             ui! {
-                link(route = "/profile/:id", params = ProfileParams { id: 42 }) {
+                link(route = &PROFILE_ROUTE, params = ProfileParams { id: 42 }) {
                     text { "Open profile" }
                 }
             }
         "##),
+        p(code("route"), " takes a typed ", code("&Route<P>"),
+          " constant (", code("Route::<ProfileParams>::new(\"profile\", \"/profile/:id\")"),
+          "), resolved against the enclosing navigator. For an off-app URL use ",
+          code("external = \"https://…\""), " instead."),
         p("On web, the wrapper emits an ", code("<a href=…>"),
           " so right-click \"open-in-new-tab\" works. On native, the wrapper is \
            invisible and the press dispatches in-process."),
@@ -537,15 +543,15 @@ docs! {
 
     section(heading = "Where to read more") {
         list(
-            ["Reactivity — ", code("When"), ", ", code("Switch"), ", and ",
-             code("Repeat"), " rest on the reactive substrate."],
+            ["Reactivity — reactive ", code("if"), ", ", code("match"), ", and ",
+             code("for"), " rest on the reactive substrate."],
             ["Styles — the styling system every primitive's ", code("style"),
              " slot feeds into."],
             ["Refs — programmatic handles on a primitive."],
             ["Navigation — ", code("SwapNavigator"), ", ",
              code("StackNavigator"), ", the outlet model, and ",
              code("Link"), "."],
-            ["Lists — ", code("Virtualizer"), " / ", code("flat_list"), " in depth."],
+            ["Lists — ", code("flat_list"), " in depth."],
             [link("Portal & Overlays", to = "portal"), " — ",
              code("Portal"), " (the primitive), ", code("overlay()"),
              " / ", code("anchored_overlay()"), " (compositions), and ",

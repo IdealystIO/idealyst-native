@@ -12,27 +12,24 @@ docs! {
     category = Foundation,
     description = "Rust functions, wrapped in compile-time machinery, that compose into trees.",
     related = ["reactivity", "ui-dsl", "refs", "styles"],
-    concepts = [Component, ComponentMethods, Bindable, Bound, Props, Defaults, UiMacro, JsxMacro],
+    concepts = [Component, ComponentMethods, Props, Defaults, UiMacro, JsxMacro],
 
     section(heading = "Overview") {
-        p("A component is a Rust function that returns a ", code("Element"),
-          ". The framework wraps that function in some compile-time machinery so it \
-           can be called from a DSL, reuse a stable identity for hot reload, expose \
-           imperative methods, and rewrite reactive call sites for ergonomics. This \
-           page covers all of that."),
+        p("A component is a Rust function that returns an ", code("Element"),
+          ". The ", code("#[component]"), " attribute turns that function into a \
+           tag you can call from ", code("ui!"), " or ", code("jsx!"),
+          ", gives it a stable identity for hot reload, can expose imperative \
+           methods, and rewrites reactive reads in its body. This page covers all \
+           of that."),
     },
 
     section(heading = "The shape") {
         code(rust, r##"
             use runtime_core::{component, signal, ui, Element};
 
-            pub struct CounterProps {
-                pub initial: i32,
-            }
-
             #[component]
-            pub fn counter(props: &CounterProps) -> Element {
-                let count = signal(props.initial);
+            pub fn Counter(#[prop(static, default = 0)] initial: i32) -> Element {
+                let count = signal(initial);
 
                 ui! {
                     view {
@@ -49,88 +46,80 @@ docs! {
         p("Three rules cover the basic shape:"),
         list(
             ["Annotate the function with ", code("#[component]"),
-             ". This is what generates the per-component invocation macro, handles hot \
-              reload, and rewrites the body for reactivity."],
-            ["Take one parameter, by reference: ", code("props: &MyProps"),
-             ". The props struct is a regular Rust struct you declare next to (or above) \
-              the function. Field names become prop names in the invocation macro."],
-            ["Return ", code("Element"), ". The framework wraps the returned value \
-              through ", code("IntoElement::into_element(...)"), ", so you can return \
-              a bare ", code("Element"), ", a builder from a primitive \
-              constructor, or anything else that implements ", code("IntoElement"), "."],
+             ". Name it in PascalCase — the tag you write in ", code("ui!"),
+             " is the function name."],
+            ["Declare props as ordinary parameters. The macro generates a ",
+             code("CounterProps"), " struct from them, a ", code("Default"),
+             " impl from the ", code("#[prop(default = …)]"), " values, a ",
+             code("pub type Counter = CounterProps"), " alias, and a ",
+             code("BuildElement"), " impl. That alias and impl are what ",
+             code("ui!"), " calls — there is no per-component macro. Data props are \
+              wrapped in ", code("Reactive<T>"), " by default; ",
+             code("#[prop(static)]"), " keeps a prop as a plain value."],
+            ["Return ", code("Element"), ". ", code("ui!"), " already produces one, \
+              so the macro block is the whole tail."],
         ),
     },
 
     section(heading = "Calling a component") {
-        p("The macro generates two ways to invoke a ", code("#[component]"), " function:"),
+        p("A component is called by its tag:"),
 
         code(rust, r##"
-            // Inside a ui! / jsx! block (the normal case):
             ui! {
-                counter(initial = 0)
+                Counter(initial = 0)
+                Counter()            // every prop is optional; omitted ones use the default
             }
-
-            // Directly, as a plain Rust call:
-            let prim: Element = counter(&CounterProps { initial: 0 });
         "##),
 
-        p("Inside a DSL, the call site reads like a constructor. Outside, it's a \
-           function call with a struct-literal props argument. They produce the same ",
-          code("Element"), "."),
+        p("The tag lowers to a struct literal plus a ", code("BuildElement::build"),
+          " call: ", code("CounterProps { initial: (0).into(), ..defaults() }"),
+          ". Because the call site is a real struct literal, rust-analyzer gives \
+           completion, hover, and go-to-definition on every prop, and the tag \
+           resolves across crates by ordinary ", code("use"), " paths."),
+
+        p("Inside ", code("ui!"), ", the known snake_case names (", code("view"),
+          ", ", code("text"), ", ", code("button"), ", …) are primitives. Every \
+           other tag is a component, so write component tags in PascalCase."),
     },
 
-    section(heading = "Variants of the signature") {
-        p("The shape above is the common case. Three legitimate variants:"),
-        list(
-            ["No props: ", code("pub fn header() -> Element"),
-             ". The invocation macro accepts ", code("Header()"), " with no arguments."],
-            ["By value: ", code("pub fn list_view(props: MyProps) -> Element"),
-             ". Used when the component needs to take ownership of something in ",
-             code("props"), " — typically a ", code("Vec<Element>"),
-             " of children it consumes. The macro detects this and emits the right \
-              ownership form."],
-            ["Bindable return: ", code("pub fn counter(props: &Props) -> Bindable<CounterHandle>"),
-             ". Used when the component exposes a ", code("methods!"),
-             " block (see below). The DSL coerces it back to a ", code("Element"),
-             " automatically."],
-        ),
-    },
-
-    section(heading = "Defaults") {
-        p("If you want some props to default to a value when the caller omits them, \
-           declare them on the attribute:"),
+    section(heading = "The explicit props form") {
+        p("When the props struct needs extra derives or a hand-written ",
+          code("Default"), ", declare it yourself and take it as the one parameter:"),
 
         code(rust, r##"
-            #[component(default(initial = 0, step = 1))]
-            pub fn counter(props: &CounterProps) -> Element {
-                // ...
+            #[derive(Default)]
+            pub struct BadgeProps {
+                pub label: String,
+                pub count: i32,
+            }
+
+            #[component(default(count = 3))]
+            pub fn Badge(props: &BadgeProps) -> Element {
+                ui! { text { format!("{} ({})", props.label, props.count) } }
             }
         "##),
 
-        p("The invocation macro then accepts the call without those props (",
-          code("counter()"), " or ", code("counter(initial = 5)"),
-          "), filling in the defaults at the call site. Defaults are evaluated per \
-           call, not once at component definition, so an expression like ",
-          code("default(now = std::time::Instant::now())"), " does what you'd expect."),
+        p(code("#[component(default(field = expr, …))]"),
+          " overrides the struct's ", code("Default"), " for the listed fields. \
+           Defaults are evaluated per call, not once. Take ", code("props: BadgeProps"),
+          " by value when the component needs to move something out of it, such as \
+           a ", code("children: Vec<Element>"), " field. ", code("#[method]"),
+          " fns (below) need the parameter form."),
     },
 
-    section(heading = "Sub-macros at a glance") {
-        p("Seven macros come with the framework. Each does one thing:"),
+    section(heading = "Macros at a glance") {
+        p("The authoring macros, each doing one thing:"),
         list(
             [code("#[component]"),
-             " — wraps a function as a component. Generates the invocation macro, \
-              handles reactivity rewriting and hot reload. Covered on this page."],
-            [code("signal(value)"), " — shorthand for ", code("Signal::new(value)"),
-             ". Covered in Reactivity."],
+             " — turns a function into a tag. Generates the props glue, rewrites \
+              reactive reads, and handles hot reload. Covered on this page."],
+            [code("#[method]"),
+             " — marks a nested fn inside a ", code("#[component]"),
+             " body as an imperative method. Covered below."],
             [code("effect!({ … })"),
              " — a reactive side effect owned by the surrounding component \
               scope (", code("watch(…)"), " is the out-of-tree peer). \
               Covered in Reactivity."],
-            [code("children![ … ]"),
-             " — builds a ", code("Vec<Element>"),
-             " from a mixed-shape list (single primitives, ",
-             code("Option<Element>"), ", ", code("Vec<Element>"),
-             "). Used to assemble children outside ", code("ui!"), "."],
             [code("ui! { … }"),
              " — the primary UI DSL. Lowers to plain runtime-core calls. Covered \
               below and on the UI DSL page."],
@@ -139,41 +128,34 @@ docs! {
              " with identical output. Covered below."],
             [code("stylesheet! { … }"), " — declares a themed stylesheet. Covered in Styles."],
         ),
-        p(code("methods! { … }"),
-          " is a sub-form recognized inside a ", code("#[component]"),
-          " body — it declares imperative methods exposed through a handle. \
-           Covered below."),
-        p("Everything else in the framework is a plain function or type — no hidden \
-           macro magic."),
+        p("State is a plain function: ", code("signal(value)"),
+          " returns a ", code("Signal<T>"), ". See Reactivity."),
     },
 
-    section(heading = "methods! — imperative handles") {
-        p("Sometimes a parent component needs to trigger an imperative action on a \
-           child — focus an input, reset a counter, scroll a list to the top. The \
-           reactive substrate isn't the right tool for \"do something now\"; an \
-           imperative handle is."),
+    section(heading = "#[method] — imperative handles") {
+        p("Sometimes a parent needs to trigger an action on a child — reset a \
+           counter, clear a form, scroll a list to the top. The reactive substrate \
+           isn't the right tool for \"do something now\"; an imperative handle is."),
 
-        p("You declare methods inside the component's body:"),
+        p("Declare methods as nested fns marked ", code("#[method]"),
+          " inside the component body:"),
 
         code(rust, r##"
-            use runtime_core::{component, signal, ui, Bindable, Element};
-
-            #[derive(Default)]
-            pub struct CounterProps {
-                pub initial: i32,
-            }
+            use runtime_core::{component, signal, ui, Element};
 
             #[component]
-            pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-                let value = signal(props.initial);
+            pub fn Counter(#[prop(static, default = 0)] initial: i32) -> Element {
+                let value = signal(initial);
 
-                methods! {
-                    fn reset(&self) {
-                        value.set(0);
-                    }
-                    fn bump_by(&self, n: i32) {
-                        value.update(|v| v + n);
-                    }
+                #[method]
+                /// Reset the count to zero.
+                fn reset() {
+                    value.set(0);
+                }
+
+                #[method]
+                fn bump_by(n: i32) {
+                    value.update(|v| v + n);
                 }
 
                 ui! {
@@ -186,24 +168,25 @@ docs! {
 
         p("The macro generates a ", code("CounterHandle"), " struct with ",
           code("reset"), " and ", code("bump_by"),
-          " methods. The component now returns ", code("Bindable<CounterHandle>"),
-          " instead of ", code("Element"), "."),
+          " methods, and adds a ", code("bind_to: Option<Ref<CounterHandle>>"),
+          " prop to ", code("CounterProps"), ". The component still returns ",
+          code("Element"), "."),
 
-        p("The parent captures the handle via a ", code("Ref"), ":"),
+        p("The parent passes a ", code("Ref"), " through that prop:"),
 
         code(rust, r##"
             use runtime_core::Ref;
 
             #[component]
-            pub fn parent_app() -> Element {
-                let handle: Ref<CounterHandle> = Ref::new();
+            pub fn ParentApp() -> Element {
+                let counter: Ref<CounterHandle> = Ref::new();
 
                 ui! {
-                    counter(initial = 0).bind(handle)
+                    Counter(initial = 0, bind_to = counter)
 
                     button(
                         label = "Reset",
-                        on_click = move || { handle.with(|h| h.reset()); },
+                        on_click = move || { counter.get().map(|c| c.reset()); },
                     )
                 }
             }
@@ -211,15 +194,21 @@ docs! {
 
         p("A few rules:"),
         list(
-            ["A component may have at most one ", code("methods!"), " block."],
-            ["Each method takes ", code("&self"),
-             " (cosmetic — captures come from the closure, not from struct fields) \
-              plus zero or more typed parameters."],
-            ["Method bodies return ", code("()"),
-             ". (Returning a value from a method is a v1 limitation.)"],
-            ["The handle name is derived from the function name: ", code("counter"),
-             " → ", code("CounterHandle"),
-             ". The macro converts snake_case to PascalCase and appends ", code("Handle"), "."],
+            ["No ", code("pub"), " and no ", code("&self"),
+             ": the body captures the component's locals directly, and the handle \
+              carries the public surface."],
+            ["Methods return ", code("()"),
+             ". They are commands; reads stay signals."],
+            ["Call through ", code("Ref::get()"), ", not ", code("Ref::with()"),
+             ": methods write signals, and ", code("with"),
+             " holds a borrow while the closure runs."],
+            ["The handle name is the function name plus ", code("Handle"), ": ",
+             code("Counter"), " → ", code("CounterHandle"), "."],
+            ["Methods are also registered for the robot and inspector, which can \
+              call them by name with JSON arguments."],
+            ["Methods need the parameter form of props (zero parameters is fine). \
+              The explicit ", code("props: &FooProps"),
+             " form and generic components are rejected with a compile error."],
         ),
 
         p("See Refs for the full handle / ref surface."),
@@ -254,20 +243,20 @@ docs! {
     section(heading = "jsx!") {
         code(rust, r##"
             jsx! {
-                <View style={card_style()}>
-                    <Text>"Hello"</Text>
-                    <Button label="Click me" on_click={move || println!("click")} />
+                <view style={card_style()}>
+                    <text>"Hello"</text>
+                    <button label="Click me" on_click={move || println!("click")} />
 
                     if logged_in.get() {
-                        <Text>"Welcome back!"</Text>
+                        <text>"Welcome back!"</text>
                     } else {
-                        <Text>"Please log in."</Text>
+                        <text>"Please log in."</text>
                     }
 
                     for item in items.iter() {
-                        <Text>{item.name.clone()}</Text>
+                        <text>{item.name.clone()}</text>
                     }
-                </View>
+                </view>
             }
         "##),
 
@@ -278,19 +267,22 @@ docs! {
         list(
             [code("ui!"), ": parens for props, braces for children. ",
              code("style = expr"), ", ", code("text { \"hi\" }"), ", ",
-             code("Card(kind = Outlined) { Counter() }"), "."],
+             code("Card(variant = card::variant::Outline) { Counter() }"), "."],
             [code("jsx!"), ": angle brackets. String attrs are bare (",
              code("label=\"x\""), "), expression attrs are braced (",
              code("value={signal}"), "). Closing tags must match (",
              code("<Foo>...</Foo>"), "); ", code("</>"),
-             " is not supported. Text content goes through a ", code("Text"), " wrapper."],
+             " is not supported. Text content goes through a ", code("<text>"),
+             " wrapper."],
+            ["Both: primitives are snake_case (", code("view"), ", ",
+             code("<view>"), "), components are PascalCase."],
         ),
 
         p("Pick whichever reads better to you."),
     },
 
     section(heading = "What ui! actually emits") {
-        p("This is where it gets fun. ", code("ui!"),
+        p(code("ui!"),
           " is syntax sugar — the macro parses tokens and emits ordinary Rust calls \
            into runtime-core's primitive constructors. You can write the same \
            component without the macro, and the framework can't tell the difference."),
@@ -301,8 +293,8 @@ docs! {
     section(heading = "With ui!") {
         code(rust, r##"
             #[component]
-            pub fn counter(props: &CounterProps) -> Element {
-                let count = signal(props.initial);
+            pub fn Counter(#[prop(static, default = 0)] initial: i32) -> Element {
+                let count = signal(initial);
 
                 ui! {
                     view {
@@ -320,17 +312,17 @@ docs! {
     section(heading = "With jsx!") {
         code(rust, r##"
             #[component]
-            pub fn counter(props: &CounterProps) -> Element {
-                let count = signal(props.initial);
+            pub fn Counter(#[prop(static, default = 0)] initial: i32) -> Element {
+                let count = signal(initial);
 
                 jsx! {
-                    <View>
-                        <Text>{format!("Count: {}", count.get())}</Text>
-                        <Button
+                    <view>
+                        <text>{format!("Count: {}", count.get())}</text>
+                        <button
                             label="Increment"
                             on_click={move || count.update(|n| n + 1)}
                         />
-                    </View>
+                    </view>
                 }
             }
         "##),
@@ -338,12 +330,14 @@ docs! {
 
     section(heading = "With no macro at all") {
         code(rust, r##"
-            use runtime_core::{button, component, signal, text, view, IntoElement, Element};
+            use runtime_core::{button, component, signal, text, view, Element, IntoElement};
 
             #[component]
-            pub fn counter(props: &CounterProps) -> Element {
-                let count = signal(props.initial);
+            pub fn Counter(#[prop(static, default = 0)] initial: i32) -> Element {
+                let count = signal(initial);
 
+                // Builders outside a macro do need `.into_element()`;
+                // `ui!` / `jsx!` output is already an `Element`.
                 view(vec![
                     text(move || format!("Count: {}", count.get())).into_element(),
                     button("Increment", move || count.update(|n| n + 1)).into_element(),
@@ -352,12 +346,11 @@ docs! {
             }
         "##),
 
-        p("All three compile to the same code. The third form makes the \
-           \"primitives are just functions\" claim concrete — you can drop the DSL \
-           entirely, write your tree out of plain function calls, and the result is \
-           indistinguishable. You might do this in places where the DSL gets in the \
-           way (highly procedural generation, programmatic trees built from data), or \
-           just to read what the macro is producing when debugging."),
+        p("All three build the same tree. The third form shows that primitives \
+           are just functions — you can drop the DSL, write your tree out of plain \
+           calls, and the result is the same. You might do this where the DSL gets \
+           in the way (highly procedural generation), or just to see what the macro \
+           produces when debugging."),
     },
 
     section(heading = "The pieces being emitted") {
@@ -366,23 +359,21 @@ docs! {
             [code("view { ... }"), " → ", code("view(vec![...])"), ". The ",
              code("view"), " constructor takes a ", code("Vec<Element>"),
              ". The primitive constructors (", code("text"), ", ", code("button"),
-             ", etc.) return their own builder types, so each child is coerced to a ",
-             code("Element"), " via ",
-             code(".into_element()"), " before joining the vec."],
+             ", etc.) return their own builder types, so each child is coerced to an ",
+             code("Element"), " before joining the vec."],
             [code("text { format!(\"...\", count.get()) }"),
-             " → because the expression contains ", code(".get()"),
-             ", the macro emits a reactive text: ", code("text(move || format!(...))"),
-             ". A static ", code("text { \"hi\" }"), " emits the non-reactive form: ",
+             " → a reactive text, ", code("text(move || format!(...))"),
+             ". A literal ", code("text { \"hi\" }"), " emits the static form, ",
              code("text(\"hi\")"), "."],
             [code("button(label = \"...\", on_click = ...)"), " → ",
              code("button(label, on_click)"),
              ". Both arguments go through the framework's coercion traits (",
-             code("IntoTextSource"), ", ", code("IntoAction"), ")."],
-            ["The trailing coercion — ", code(".into_element()"), " on the outer ",
-             code("view(...)"), " returns a ", code("Element"),
-             ", which is what the function signature expects. The macro adds this \
-              coercion automatically when the function's return type is ",
-             code("Element"), "."],
+             code("TextContent"), ", ", code("IntoAction"), ")."],
+            ["A component tag ", code("Counter(initial = 0)"), " → ",
+             code("BuildElement::build(Counter { initial: (0).into(), ..defaults() })"),
+             "."],
+            ["The macro coerces its whole output to ", code("Element"),
+             ", so a ", code("ui!"), " block is the function's return value as is."],
         ),
     },
 
@@ -401,31 +392,41 @@ docs! {
 
         code(rust, r##"
             when(
-                Derived { /* ...captures count, evaluates count.get() > 0... */ },
-                || text("positive"),
-                || text("zero or negative"),
+                move || count.get() > 0,
+                move || text("positive"),
+                move || text("zero or negative"),
             )
         "##),
 
-        p(code("when"), " is the reactive conditional primitive. The macro picks it \
-           up when the ", code("if"), "'s condition contains ", code(".get()"),
-          "; a plain boolean condition lowers to a regular Rust ", code("if"),
-          " (the branch is decided once at construction)."),
+        p(code("when"), " is the reactive conditional. The macro uses it for any \
+           condition that might read a signal — a method call, a function call, or a ",
+          code(".get()"), " anywhere in it. Only a condition that provably reads no \
+           signal lowers to a plain Rust ", code("if"),
+          ". To force a plain ", code("if"), ", read with ", code(".peek()"),
+          " or compute the condition in a ", code("let"), " above the block."),
     },
 
     section(heading = "Reactive for") {
         code(rust, r##"
             ui! {
-                for item in items {
-                    text { item.name.clone() }
+                for todo in todos, key = todo.id {
+                    text { todo.title.clone() }
                 }
             }
         "##),
 
-        p("…lowers to a ", code("Repeat"), " primitive or a regular ",
-          code("Vec<Element>"),
-          " build, depending on whether the iterator is signal-backed. The macro \
-           takes care of the dispatch."),
+        p("The iterator's type picks the lowering:"),
+        list(
+            ["A ", code("Signal<Vec<T>>"), " (or another signal of an iterable) → a keyed \
+              reactive list. The ", code("key = …"),
+             " clause is required; rows whose key survives an update keep their state."],
+            ["Any other ", code("IntoIterator"), " (a ", code("Vec"),
+             ", a slice, a map) → built once, no key needed."],
+            ["A range whose bound reads a signal (", code("for i in 0..n.get()"),
+             ") → a reactive list keyed by index."],
+            ["A static range with a single-node body (", code("for i in 0..n"),
+             ") → one batched repeat."],
+        ),
     },
 
     section(heading = "Bringing your own front-end") {
@@ -434,19 +435,13 @@ docs! {
            framework privileges either one: a third macro that emits the same calls \
            would slot in alongside them."),
 
-        p("Building one today means writing a ", code("proc_macro"),
+        p("Building one means writing a ", code("proc_macro"),
           " that emits the shapes shown in the \"What ", code("ui!"),
           " actually emits\" section above — ", code("view(...)"), ", ",
           code("text(...)"), ", ", code("button(...)"), ", ", code("when(...)"),
-          ", per-component ", code("name!(...)"), " invocations, and a final ",
-          code(".into_element()"),
-          " coercion. That's all that's required, and it's all there is — but it \
-           does mean parsing tokens and emitting them by hand."),
-
-        p("Tooling to make this easier (so you can describe a DSL's shape \
-           declaratively rather than write a proc-macro from scratch) is on the \
-           roadmap. Until that lands, the existing ", code("ui!"), " and ",
-          code("jsx!"), " sources in ", code("crates/runtime/macros-expand/src/"),
+          ", and ", code("BuildElement::build(Foo { … })"),
+          " for component tags. The ", code("ui!"), " and ", code("jsx!"),
+          " sources in ", code("crates/runtime/macros-expand/src/"),
           " are the working references."),
     },
 
@@ -454,21 +449,17 @@ docs! {
         p("Tying everything together:"),
 
         code(rust, r##"
-            use runtime_core::{component, signal, ui, Bindable, Element};
+            use runtime_core::{component, signal, ui, Element};
 
-            #[derive(Default)]
-            pub struct CounterProps {
-                pub initial: i32,
-            }
+            #[component]
+            pub fn Counter(#[prop(static, default = 0)] initial: i32) -> Element {
+                let value = signal(initial);
 
-            #[component(default(initial = 0))]
-            pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
-                let value = signal(props.initial);
+                #[method]
+                fn reset() { value.set(0); }
 
-                methods! {
-                    fn reset(&self) { value.set(0); }
-                    fn bump_by(&self, n: i32) { value.update(|v| v + n); }
-                }
+                #[method]
+                fn bump_by(n: i32) { value.update(|v| v + n); }
 
                 ui! {
                     view {
@@ -481,47 +472,45 @@ docs! {
 
         p("What's happening here:"),
         list(
-            [code("#[component(default(initial = 0))]"),
-             " registers the function as a component and declares a default for ",
-             code("initial"), "."],
-            [code("signal!"), " allocates a reactive state slot."],
-            [code("methods!"), " declares ", code("reset"), " and ", code("bump_by"),
-             " as imperative operations. The macro generates ", code("CounterHandle"),
-             " and rewrites the return type from ", code("Element"), " to ",
-             code("Bindable<CounterHandle>"), "."],
+            [code("#[component]"), " turns ", code("Counter"),
+             " into a tag and generates ", code("CounterProps"),
+             " with a default of ", code("0"), " for ", code("initial"), "."],
+            [code("signal(initial)"), " allocates a reactive state slot owned by the \
+              component's scope."],
+            [code("#[method]"), " declares ", code("reset"), " and ", code("bump_by"),
+             ". The macro generates ", code("CounterHandle"), " and adds the ",
+             code("bind_to"), " prop."],
             [code("ui!"),
-             " lowers to plain runtime-core calls, with the reactive text being \
-              wrapped in an Effect and the trailing value coerced to ",
-             code("Element"), "."],
+             " lowers to plain runtime-core calls, with the text bound reactively to ",
+             code("value"), "."],
         ),
 
         p("The parent calls this with:"),
 
         code(rust, r##"
-            let handle = Ref::<CounterHandle>::new();
+            let counter = Ref::<CounterHandle>::new();
             ui! {
-                counter().bind(handle)
-                button(label = "Reset", on_click = move || { handle.with(|h| h.reset()); })
+                Counter(bind_to = counter)
+                button(label = "Reset", on_click = move || { counter.get().map(|c| c.reset()); })
             }
         "##),
 
-        p("— and ", code("counter()"), " reads as a constructor, ", code("bind"),
-          " attaches the handle to the parent's ref, and ",
-          code("handle.with(|h| h.reset())"), " later fires the method."),
+        p("— ", code("Counter()"), " reads as a constructor, ", code("bind_to"),
+          " fills the parent's ref when the component builds, and ",
+          code("counter.get().map(|c| c.reset())"), " later fires the method."),
     },
 
     section(heading = "Where to read more") {
         list(
-            ["Reactivity — signals, effects, the substrate components run on."],
-            ["The UI DSL — the full ", code("ui!"),
-             " grammar, including styles, control flow, refs, and the \
-              trailing-method escape hatch."],
-            ["Refs — ", code("Ref<H>"),
+            [link("Reactivity", to = "reactivity"),
+             " — signals, effects, the substrate components run on."],
+            [link("The UI DSL", to = "ui-dsl"), " — the full ", code("ui!"),
+             " grammar, including styles, control flow, and trailing method chains."],
+            [link("Refs", to = "refs"), " — ", code("Ref<H>"),
              " and the surface for built-in handles plus user-component handles via ",
-             code("methods!"), "."],
-            ["Hot reload — what ", code("#[component]"),
-             " does to make each function swappable at runtime."],
-            ["Building your own DSL — a worked example of a third front-end macro."],
+             code("#[method]"), "."],
+            [link("Dev tools", to = "dev-tools"), " — hot reload and what ",
+             code("#[component]"), " does to make each function swappable at runtime."],
         ),
     },
 }
