@@ -43,10 +43,12 @@ pub enum Kind {
 ///
 /// Skipped in workspace/git mode: those deps name no registry, and writing a
 /// config that points at a registry the project never uses is just noise.
-fn write_cargo_config(dir: &Path, source: &FrameworkSource) -> Result<()> {
-    if source.registry_name().is_none() {
-        return Ok(());
-    }
+/// Written for every source, not just a registry one: path and git
+/// framework crates name `registry = "idealyst"` on their own internal
+/// deps, so cargo needs the index defined even when this project's direct
+/// deps are paths — without it a scaffold outside the framework checkout
+/// fails with "registry index was not found in any configuration".
+fn write_cargo_config(dir: &Path, _source: &FrameworkSource) -> Result<()> {
     fs::create_dir_all(dir.join(".cargo"))
         .with_context(|| format!("create {}", dir.join(".cargo").display()))?;
     let body = format!(
@@ -316,8 +318,8 @@ dev-session = ["idealyst/hot-reload", "idealyst/hydrate", "idealyst/robot", "ide
 
 [dependencies]
 # The platform surface, used by `src/main.rs` only. It carries whatever
-# the target needs — `backend-web` + the wasm-bindgen glue on wasm, a
-# native shell otherwise — so this manifest names no backend directly
+# the target needs — `backend-web` (on the framework's own web-glue,
+# no wasm-bindgen) on wasm, a native shell otherwise — so this manifest names no backend directly
 # and `cargo build` alone produces a runnable artifact.
 idealyst = {idealyst_dep}
 # The author surface. `runtime-core` is the crate this project aliases
@@ -428,6 +430,7 @@ fn write_library(
     let scene_dep = source.dep("crates/runtime/scene", &[]);
     let world_dep = source.dep("crates/runtime/world", &[]);
     let bweb_dep = source.dep("crates/backend/web", &[]);
+    let glue_dep = source.dep("crates/runtime/web-glue", &[]);
     let bios_dep = source.dep("crates/backend/ios/mobile", &[]);
     let bandroid_dep = source.dep("crates/backend/android/mobile", &[]);
 
@@ -458,12 +461,13 @@ runtime-vocabulary = {vocab_dep}
 # subtree and dies at unmount.
 runtime-world = {world_dep}
 
-# Web leaf. `web-sys` is pulled in for the DOM-construction path in
-# `src/web.rs`. Add bindings as you need them
-# (`features = ["HtmlElement", ...]`).
+# Web leaf (`src/web.rs`). The DOM goes through `web-glue`, the
+# framework's own JS boundary — `WebBackend`'s node type is
+# `web_glue::dom::Node`. Adding `web-sys` / `wasm-bindgen` here would put
+# every app using this library into the hybrid (wasm-bindgen) build.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 backend-web = {bweb_dep}
-web-sys = {{ version = "0.3", features = ["Document", "Element", "Window"] }}
+web-glue = {glue_dep}
 
 # iOS leaf — a `Registry<IosBackend>`-concrete handler (src/ios.rs).
 [target.'cfg(target_os = "ios")'.dependencies]
@@ -665,6 +669,12 @@ fn library_web_rs(pascal: &str, props_type: &str) -> String {
     format!(
         r##"//! Web leaf — a `Registry<WebBackend>`-concrete handler that builds a
 //! DOM node from [`{props_type}`].
+//!
+//! The DOM goes through `web_glue`, the framework's own JS boundary:
+//! `WebBackend`'s node type IS `web_glue::dom::Node`. Don't reach for
+//! `web-sys` here — a `web_sys::Node` is a different type, and any crate
+//! linking wasm-bindgen puts every app that uses this library into the
+//! slower hybrid build.
 
 use std::rc::Rc;
 
@@ -686,9 +696,9 @@ fn mount(
     cx: &mut MountCx<'_, WebBackend>,
     prim: &Rc<{pascal}Prim>,
     _children: Vec<Element>,
-) -> web_sys::Node {{
+) -> web_glue::dom::Node {{
     let backend = cx.backend().clone();
-    let document = web_sys::window()
+    let document = web_glue::dom::window()
         .expect("no window")
         .document()
         .expect("no document");
@@ -698,7 +708,7 @@ fn mount(
     let _ = el.set_text_content(Some(&prim.props.example));
     let _ = el.set_attribute("data-primitive", "{props_type}");
 
-    let node: web_sys::Node = el.into();
+    let node: web_glue::dom::Node = el.into();
     finish_mount(&backend, &node, prim);
     node
 }}
@@ -932,5 +942,77 @@ mod tests {
             manifest.contains("idealyst = { path = \"/framework/crates/idealyst\" }"),
             "the facade must be a dependency of every scaffolded project: {manifest}"
         );
+    }
+
+    fn scaffold_library(name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let source = FrameworkSource::Workspace { root: root.canonicalize().expect("workspace root") };
+        write(dir.path(), name, Kind::Library, &source, None).expect("scaffold library");
+        dir
+    }
+
+    fn code_lines(src: &str) -> impl Iterator<Item = &str> {
+        src.lines().map(str::trim).filter(|l| !l.starts_with("//") && !l.starts_with('#'))
+    }
+
+    /// The library scaffold's web leaf was written against `web-sys`:
+    /// `mount` returned `web_sys::Node`, but `WebBackend`'s node type is
+    /// `web_glue::dom::Node`, so a fresh `idealyst new --lib` failed to
+    /// build for wasm32 (E0271). Fixing the types alone would still be
+    /// wrong — any crate linking wasm-bindgen puts every app using the
+    /// library into the hybrid build.
+    #[test]
+    fn regression_library_web_leaf_builds_on_web_glue_not_web_sys() {
+        let dir = scaffold_library("my-widget");
+        let web_rs = fs::read_to_string(dir.path().join("src/web.rs")).unwrap();
+        let manifest = fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
+
+        assert!(web_rs.contains("-> web_glue::dom::Node"), "{web_rs}");
+        for line in code_lines(&web_rs) {
+            assert!(!line.contains("web_sys") && !line.contains("wasm_bindgen"), "web.rs: {line}");
+        }
+        assert!(manifest.contains("web-glue = { path = "), "{manifest}");
+        for line in code_lines(&manifest) {
+            assert!(
+                !line.starts_with("web-sys") && !line.starts_with("wasm-bindgen"),
+                "Cargo.toml: {line}"
+            );
+        }
+    }
+
+    /// A path-sourced scaffold outside the framework checkout must still
+    /// resolve: the framework crates it points at name the `idealyst`
+    /// registry on their own deps.
+    #[test]
+    fn regression_path_sourced_scaffold_defines_the_registry() {
+        let dir = scaffold_library("my-widget");
+        let config = fs::read_to_string(dir.path().join(".cargo/config.toml"))
+            .expect("a path-sourced scaffold writes .cargo/config.toml");
+        assert!(config.contains("[registries.idealyst]"), "{config}");
+    }
+
+    /// End to end: the generated library type-checks for the host and for
+    /// wasm32 against this checkout. Slow (compiles the framework), so
+    /// `--ignored` like the other scaffold/build E2Es.
+    #[test]
+    #[ignore = "compiles the framework for the host and wasm32; run with --ignored"]
+    fn library_scaffold_builds_for_host_and_wasm32() {
+        let dir = scaffold_library("my-widget");
+        let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/scaffold-library-check");
+        for target in [None, Some("wasm32-unknown-unknown")] {
+            let mut cmd = std::process::Command::new(env!("CARGO"));
+            cmd.arg("check").current_dir(dir.path()).env("CARGO_TARGET_DIR", &target_dir);
+            if let Some(t) = target {
+                cmd.args(["--target", t]);
+            }
+            let out = cmd.output().expect("run cargo check");
+            assert!(
+                out.status.success(),
+                "cargo check ({target:?}) failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 }

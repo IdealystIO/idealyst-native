@@ -1361,6 +1361,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst new --lib` scaffolds a library that builds on web**
+  (`idealyst-cli`). The web leaf returned `web_sys::Node`, but
+  `WebBackend`'s node is `web_glue::dom::Node`, so a fresh library failed
+  to compile for wasm32 — and its `web-sys` dependency would have put every
+  app using it into the hybrid (wasm-bindgen) build. It now builds on
+  `web-glue`. A scaffold sourced from a framework path or git checkout also
+  writes `.cargo/config.toml` with the `idealyst` registry, which the
+  framework crates' own dependencies need — without it, a scaffold outside
+  the framework tree failed with "registry index was not found".
 - **Linux `video-decode` opens audio-only clips, and plays with no audio
   output.** The video appsink was always in the pipeline and waited forever
   for a first frame an audio-only clip never has; and on a box with no
