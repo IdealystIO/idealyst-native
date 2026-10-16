@@ -134,11 +134,10 @@ const SHEET_SLIDE_PX: f32 = 32.0;
 /// full-height sheet lands exactly off the bottom edge and a shorter one
 /// is already gone before the tween ends.
 ///
-/// This is the fix for "the sheet just disappears". It used to exit the
-/// way a card does — a 32px nudge plus an opacity fade over 150ms — and
-/// a fade that short reads as a vanishing, not a departure. A sheet is
-/// the one surface whose whole identity is the edge it came from, so it
-/// has to go back there.
+/// Not the card's exit (a 32px nudge plus a 150ms fade): a fade that
+/// short reads as the sheet vanishing, not departing. A sheet is the one
+/// surface whose whole identity is the edge it came from, so it has to
+/// go back there.
 fn sheet_exit_travel(avail_h: f32) -> f32 {
     presentation_max_height(ModalPresentation::Sheet, avail_h, None)
 }
@@ -876,10 +875,8 @@ struct DismissRouting {
     /// when dismissable, else inert.
     backdrop: Option<Rc<dyn Fn()>>,
     /// The platform gesture — Escape on web/desktop, the back key on
-    /// Android: `on_dismiss` when dismissable. A non-dismissable modal
-    /// used to route Escape to `on_dismiss` anyway (only the backdrop
-    /// honored the flag), so a modal its author meant to be undismissable
-    /// closed on Escape.
+    /// Android: `on_dismiss` when dismissable. Gating only the backdrop on
+    /// the flag would let a non-dismissable modal close on Escape.
     ///
     /// A non-dismissable modal hands the portal a handler that does
     /// nothing rather than none: the Android overlay attaches its back-key
@@ -1009,8 +1006,8 @@ fn assemble_overlay(
         })
         .into_element();
 
-    // Both presentations hold the scroller alone. A sheet used to wear a
-    // grabber here; it is the app's now — see [`ModalProps::sheet_slide`].
+    // Both presentations hold the scroller alone. A sheet grabber is the
+    // app's to build — see [`ModalProps::sheet_slide`].
     let top_offset_for_surface = top_offset.clone();
     let surface = runtime_core::view(vec![scroller])
         .with_style(move || {
@@ -1244,26 +1241,7 @@ mod tests {
     });
     }
 
-    /// Regression: the Modal's card layer must be a touch-CONSUMING
-    /// `Element::Pressable`, not a plain `Element::View`.
-    ///
-    /// The bug ([[project_android_portal_is_dialog_smell]] follow-up):
-    /// after the Android portal became a single-window view overlay, the
-    /// overlay's children are `[backdrop, card]` siblings in one
-    /// `FrameLayout`. A tap on the card landed on a non-clickable
-    /// `ViewGroup`, which returns `false` from `onTouchEvent`, so
-    /// `FrameLayout` fell through to the lower backdrop child whose
-    /// pressable consumed the tap and dismissed the modal — i.e. tapping
-    /// the card *closed* it. iOS/web don't fall through (topmost view at a
-    /// point wins hit-testing), so this was Android-only. Making the card
-    /// layer a `pressable` (no-op handler) makes it consume taps on every
-    /// backend, so the card no longer leaks to the backdrop.
-    ///
-    /// We assert the structure the fix relies on: the portal's second
-    /// child (the card, painted above the first-child backdrop) is a
-    /// `Pressable`. If a refactor reverts it to a plain `view`, the
-    /// Android tap-through regression returns and this test fails.
-    /// Regression (CrewForge, 2026-10-01): `dismissable = false` with an
+    /// Regression (CrewForge): `dismissable = false` with an
     /// `on_dismiss` still closed on Escape. The flag only gated the
     /// backdrop; `on_dismiss` went to the portal unconditionally, and the
     /// web portal installs its Escape listener whenever it has one.
@@ -1293,13 +1271,29 @@ mod tests {
         assert_eq!(hits.get(), 2);
     }
 
+    /// Regression: the Modal's card layer must be a touch-CONSUMING
+    /// `pressable`, not a plain `view`.
+    ///
+    /// The Android portal is a single-window view overlay whose children
+    /// are `[backdrop, card]` siblings in one `FrameLayout`. A tap on a
+    /// non-clickable card `ViewGroup` returns `false` from `onTouchEvent`,
+    /// so `FrameLayout` falls through to the lower backdrop child, whose
+    /// pressable consumes the tap and dismisses the modal — tapping the
+    /// card *closed* it. iOS/web don't fall through (topmost view at a
+    /// point wins hit-testing). A `pressable` card layer (no-op handler)
+    /// consumes taps on every backend.
+    ///
+    /// We assert the structure the fix relies on: the portal's second
+    /// child (the card, painted above the first-child backdrop) is a
+    /// `Pressable`. If a refactor reverts it to a plain `view`, the
+    /// Android tap-through regression returns and this test fails.
     #[test]
     fn regression_modal_card_layer_consumes_touches() {
         with_test_world(|| {
             // Assemble the portal structure directly. We call `assemble_overlay`
             // (the pure structural half) rather than the full Modal because
             // `build_overlay` creates an `effect!`, which requires a live reactive
-            // scope (provided by the walker in real use, absent in a unit test).
+            // scope (provided by realize in real use, absent in a unit test).
             // `AnimatedValue::bind` no-ops without a backend and `viewport_size`
             // just returns a signal, so the structure builds fine here.
             let portal = assemble_overlay(
@@ -1409,8 +1403,8 @@ mod tests {
     /// sheets got no build-time CSS. Every Modal sheet must therefore be
     /// a `stylesheet!` (LINK-time registration, construction-independent)
     /// and every default-modal application must premint; the safe-area
-    /// padding rides the inline layer (the old `with_computed` spelling
-    /// disqualified the centering overlay). Fails against the
+    /// padding rides the inline layer (a `with_computed` layer would
+    /// disqualify the centering overlay). Fails against the
     /// closure-sheet form: those have no premint class at all.
     #[test]
     fn regression_default_modal_styles_all_premint() {
@@ -1670,14 +1664,13 @@ mod tests {
     /// card's — the two presentations differ in geometry and animation, not
     /// in structure.
     ///
-    /// This is a regression test for a removal. The sheet used to grow a
-    /// grabber child here, with a pan gesture that dragged the surface down
-    /// to dismiss. It went back to the apps: the bar is a lie unless
-    /// something drags it, the gesture stuttered on iOS (two touch origins
-    /// 8px apart reaching one recognizer), and what a downward drag MEANS is
-    /// a screen's decision, not a modal's. An app that wants one builds it
-    /// in `content` and drives the surface through `ModalProps::sheet_slide`.
-    /// If a child reappears in this arm, that decision is being taken back.
+    /// A built-in grabber + drag-to-dismiss gesture belongs to the app, not
+    /// the modal: the bar is a lie unless something drags it, the gesture
+    /// stuttered on iOS (two touch origins 8px apart reaching one
+    /// recognizer), and what a downward drag MEANS is a screen's decision.
+    /// An app that wants one builds it in `content` and drives the surface
+    /// through `ModalProps::sheet_slide`. If a child reappears in this arm,
+    /// that decision is being taken back.
     ///
     /// This also pins the Android fall-through fix for the sheet arm — the
     /// card layer must stay a `Pressable` in both presentations, or a tap on
@@ -1753,9 +1746,8 @@ mod tests {
 
     /// The placement container for `Top` must anchor the card's top edge:
     /// `justify_content: FlexStart` and the offset added to the top inset.
-    /// Against the pre-fix code there was no `Top` arm at all — the only
-    /// non-sheet container was `ModalCenterSheet` (`justify_content:
-    /// Center`), under which a card that grew 35px moved its top up ~17px.
+    /// Under the centered container (`ModalCenterSheet`, `justify_content:
+    /// Center`) a card that grew 35px moved its top up ~17px.
     #[test]
     fn regression_top_modal_anchors_card_top_edge() {
         with_test_world(|| {

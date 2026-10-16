@@ -44,7 +44,7 @@
 //!   the surface (painted above the backdrop) and is not treated as
 //!   "outside", so it doesn't dismiss.
 //!
-//! Note this means the page behind a popover is no longer click-through
+//! Note this means the page behind a popover is not click-through
 //! while it's open — the first outside tap is consumed to dismiss it.
 //! That's the standard menu behaviour and matches `Modal`. `on_dismiss`
 //! is only wired to the backdrop when the host supplied it; with no
@@ -202,9 +202,8 @@ impl Default for PopoverProps {
 #[component(children)]
 pub fn Popover(props: PopoverProps) -> Element {
     // No anchor → nothing to position against. Degrade to an empty,
-    // layout-free element instead of panicking. (Regression: a `None`
-    // target used to `.expect()` and crash — see the `none_target_*`
-    // tests below.)
+    // layout-free element instead of panicking (pinned by the
+    // `none_target_*` tests below).
     let Some(target) = props.target else {
         return runtime_core::view(Vec::new()).into_element();
     };
@@ -276,7 +275,7 @@ mod tests {
     #[test]
     fn none_target_does_not_panic() {
         with_test_world(|| {
-            // Would have panicked on the old `.expect(...)`.
+            // Must not panic.
             let el = Popover(PopoverProps {
                 target: None,
                 children: vec![runtime_core::text("hi").into_element()],

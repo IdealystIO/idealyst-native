@@ -71,8 +71,7 @@ struct Cell {
 
 /// Filter `ALL` by a case-insensitive name substring into a flat cell
 /// list — one cell per icon. The grid lanes them into columns; no manual
-/// row-chunking or filler padding (the old fixed-`COLS` approach). An
-/// empty query yields the whole set.
+/// row-chunking or filler padding. An empty query yields the whole set.
 fn build_cells(query: &str) -> Vec<Cell> {
     let q = query.trim().to_lowercase();
     ALL.iter()

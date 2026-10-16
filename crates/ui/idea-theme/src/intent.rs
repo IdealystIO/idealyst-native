@@ -11,12 +11,11 @@
 //! - [`Warning`]   — caution required.
 //! - [`Info`]      — informational.
 //!
-//! Intent is orthogonal to **visual treatment**: how an intent looks
-//! is controlled by per-component `kind` props (Solid / Soft /
-//! Outlined / Ghost on Button, Solid / Soft / Outlined on Badge,
-//! etc.). The intent picks the *palette* the kind reaches into;
-//! "Danger Outlined" is a red bordered button, "Danger Solid" is a
-//! red filled button — same intent, different visual.
+//! idea-ui's components do not take an `Intent`: they take a `tone`
+//! (see [`crate::extensible::tone`], whose semantic tones resolve
+//! through the same `theme.intents()` blocks) plus a `variant` for the
+//! visual treatment. These markers are distinct types from the
+//! same-named `tone::*` markers.
 //!
 //! # Adding a custom intent
 //!

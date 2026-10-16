@@ -627,10 +627,9 @@ mod tests {
     // Field report 3.1b (HIGH): a filled Primary button's label rendered
     // INVISIBLE on Android/iOS because the white label color lived only on
     // the wrapping pressable and native text doesn't inherit parent color.
-    // The label text node must carry the intent foreground itself. A test
-    // that passed against the old (bare, uncolored) text node is not a
-    // valid regression test — so we assert the label node's OWN resolved
-    // color is the intent-primary-solid-text white.
+    // The label text node must carry the intent foreground itself, so we
+    // assert the label node's OWN resolved color is the
+    // intent-primary-solid-text white.
     #[test]
     fn regression_filled_button_label_carries_intent_text_color() {
         with_test_world(|| {

@@ -3,8 +3,7 @@
 //!
 //! ```ignore
 //! use std::rc::Rc;
-//! use idea_ui::extensible::tag::{tag, TagProps};
-//! use idea_theme::extensible::{tone, variant};
+//! use idea_ui::{tone, variant, Tag};
 //!
 //! ui! {
 //!     Tag(
@@ -16,11 +15,12 @@
 //! }
 //! ```
 //!
-//! Same Tone + Variant axes as [`badge`](super::badge::badge) — the
-//! only difference is the optional close affordance. Reuses
-//! [`Tag`](crate::stylesheets::Tag) base sheet for the container
-//! and [`TagLabel`](crate::stylesheets::TagLabel)/[`TagClose`](crate::stylesheets::TagClose)
-//! for the children.
+//! Same Tone + Variant axes as [`Badge`](super::badge::Badge) — the
+//! only difference is the optional close affordance. The container
+//! applies the installed theme's tag sheet (`installed_tag_sheet()`),
+//! the label and `×` the matching text sheets
+//! (`installed_tag_text_sheets()`), plus
+//! [`TagClose`](crate::stylesheets::TagClose) for the close button.
 
 use std::rc::Rc;
 
@@ -34,26 +34,16 @@ use idea_theme::extensible::{
 
 use crate::stylesheets::TagClose;
 
-/// Resolves `text_style` and overlays the parent fill's foreground
-/// `color` onto its own node.
-///
-/// Native `UILabel`/`TextView` do NOT inherit text color from a parent
-/// (only web's CSS cascade does), so a label colored solely via its
-/// wrapping container renders invisible on the colored fill on
-/// iOS/Android. Resolving the container's `color` and stamping it on the
-/// label node makes every backend match web — the same pattern
-/// `Typography` uses (color lives on the text node). The merged
-/// `Tokenized` values keep their token references, so theme swaps still
-/// re-resolve in bulk via the cohort.
-// The label/`×` text color used to be COMPOSED at the call site
-// (resolve the container fill, copy its foreground onto an anonymous
-// static sheet). Native needs the color on the text node itself, but
-// per-instance composition is invisible to the premint dump, so every
-// Tag text node dragged the live style engine into `--premint` builds.
-// The text sheets now carry their own enumerated `appearance` axis
-// (`installed_tag_text_sheets`, built by `TagSheetBuilder` alongside
-// the fill), so the component applies the same key it gives the
-// container.
+// Text color lives on the label/`×` text nodes, not just the container:
+// native `UILabel`/`TextView` do NOT inherit text color from a parent
+// (only web's CSS cascade does), so a label colored solely via its
+// wrapping container renders invisible on the colored fill on
+// iOS/Android — the same pattern `Typography` uses. The text sheets
+// carry their own enumerated `appearance` axis (`installed_tag_text_sheets`,
+// built by `TagSheetBuilder` alongside the fill), so the component
+// applies the same key it gives the container. Composing the color per
+// instance at the call site would be invisible to the premint dump and
+// pull the live style engine into `--premint` builds.
 
 // Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
 // `label` is already reactive and `on_remove` (an `Rc<dyn Fn()>` handler) is
@@ -238,9 +228,8 @@ mod tests {
 
     // Field report 3.1b: a bare label colored only via the container's
     // appearance vanished on native (no parent-color inheritance). The
-    // label node must carry the intent foreground itself. A test that
-    // passed against the old bare/uncolored label is not a valid
-    // regression — so we assert the label node's OWN resolved color equals
+    // label node must carry the intent foreground itself, so we assert
+    // the label node's OWN resolved color equals
     // the filled container's foreground (white intent-primary-solid-text).
     #[test]
     fn regression_filled_tag_label_carries_intent_text_color() {

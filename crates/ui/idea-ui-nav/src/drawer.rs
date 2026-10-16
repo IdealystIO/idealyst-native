@@ -334,9 +334,9 @@ mod tests {
     }
 
     // Every Drawer style must PREMINT, in both open states, off ONE sheet.
-    // The old spelling was `with_computed` layers over an empty base — a
-    // premint disqualifier, so a Drawer in a `--premint-only` app panicked
-    // at MOUNT — and sheet identity keyed on open state would panic
+    // `with_computed` layers over an empty base are a premint
+    // disqualifier, so a Drawer in a `--premint-only` app would panic at
+    // MOUNT — and sheet identity keyed on open state would panic
     // UNCRAWLED on first open instead (the dump mounts the drawer closed
     // and never interacts; `AppShell` had exactly that bug). Fails against
     // both wrong spellings: `preminted_class_list()` is `None` for a

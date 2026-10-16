@@ -717,7 +717,7 @@ mod tests {
         });
     }
 
-    /// `with_description` is additive: `new` keeps the old two-field shape
+    /// `with_description` is additive: `new` keeps the two-field shape
     /// (description `None`), and equality accounts for the description so a
     /// `Signal<Vec<SelectOption>>` republishes when only a note changes.
     #[test]

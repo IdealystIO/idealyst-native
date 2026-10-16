@@ -204,7 +204,7 @@ fn the_active_underline_covers_the_divider() {
         l.h.tree(host)
     );
 
-    // The bar no longer draws its own border — a border can't be overlapped.
+    // The bar draws no border of its own — a border can't be overlapped.
     let host_border = l.styles[&host].border_bottom_width.as_ref().map(|t| t.resolve()).unwrap_or(0.0);
     assert_eq!(host_border, 0.0, "the divider is the rule, not a border on the bar");
 }

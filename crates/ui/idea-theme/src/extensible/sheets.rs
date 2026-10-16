@@ -532,8 +532,8 @@ where
     // is a 1px border, and the borderless appearances (filled, soft, ghost)
     // have none at rest. On a content-sized pill the ring then added 2px to
     // each axis on focus, and since a press focuses, pressing a chip pushed
-    // its neighbours 1px over and everything below it 1px down (CrewForge,
-    // 2026-10-01). `interactive` merges after `appearance`, so this sets only
+    // its neighbours 1px over and everything below it 1px down.
+    // `interactive` merges after `appearance`, so this sets only
     // the WIDTH: an outlined chip keeps its stroke colour, and a borderless one
     // keeps the transparent colour `no_border` gave it. Inert Tags, Badges and
     // Alerts never focus, so they reserve nothing and keep their size.
@@ -994,14 +994,13 @@ pub fn install_default_alert_sheet() {
 // Native text nodes (`UILabel`/`NSTextField`/Android `TextView`) inherit
 // NOTHING from their container — only web's CSS cascade does — so a
 // component's label/title/body must carry the container fill's foreground
-// on its OWN node. These used to be composed at the call site: resolve
-// the container application, copy its `color` onto a fresh anonymous
-// `StyleSheet::r#static`. That composition is invisible to the premint
-// dump (the sheet's content depends on which appearance the instance
-// picked), so every Alert/Tag text node dragged the live style engine
-// into `--premint` builds.
+// on its OWN node. Composing that at the call site (copying the resolved
+// container `color` onto an anonymous static sheet) would be invisible to
+// the premint dump — the sheet's content depends on which appearance the
+// instance picked — and drag the live style engine into `--premint`
+// builds.
 //
-// Instead the text sheets carry an `appearance` axis of their own,
+// So the text sheets carry an `appearance` axis of their own,
 // mirroring the container's: one COLOR-ONLY arm per (tone, variant),
 // resolved from the same `variant.render(ctx)` the fill uses, built
 // up-front at install time. Enumerated arms premint; the component
@@ -1061,9 +1060,8 @@ pub struct AlertTextSheets {
 
 impl AlertSheetBuilder {
     /// Build the text-slot sheets for the SAME tones/variants as
-    /// [`Self::build`]. Typography mirrors the former `AlertTitle` /
-    /// `AlertBody` stylesheets; the color arms are what replaces the
-    /// call-site composition (see the module section comment above).
+    /// [`Self::build`]: title/body typography plus the color-only
+    /// `appearance` arms (see the section comment above).
     pub fn build_text(&self) -> AlertTextSheets {
         let title = default_neutral_soft(text_color_axis(
             StyleSheet::new(|_vs: &VariantSet| StyleRules {
@@ -1165,9 +1163,8 @@ impl ButtonSheetBuilder {
     /// The Button LABEL sheet: the container's typography split out onto
     /// the text node (native text inherits neither color nor
     /// weight/size/alignment from the box — the macOS "not bold / not
-    /// centered" bug), as enumerated axes instead of the former
-    /// per-instance snapshot (`label_typography_style` + a color
-    /// override), which was invisible to the premint dump.
+    /// centered" bug), as enumerated axes so it premints (a per-instance
+    /// snapshot would be invisible to the premint dump).
     ///
     /// `appearance` arms carry the fill's foreground; `size` arms carry
     /// the label-relevant half of the container's size arms (font-size
@@ -1307,13 +1304,11 @@ impl TypographySheetBuilder {
             // `font-family: var(--iy-default-font, inherit)` which the
             // host driver redefines on every theme swap.
             //
-            // Baking `theme_ref.font_family()` here instead — which this
-            // used to do — is exactly the shape premint cannot honour: a
-            // theme-varying value that is NOT a token, so a build-time
-            // class would freeze the font of whichever theme the dump
-            // build happened to install. Both paths still keep web text
-            // out of the browser's serif fallback, which was the original
-            // point.
+            // Not `theme_ref.font_family()` baked here: that is exactly the
+            // shape premint cannot honour — a theme-varying value that is
+            // NOT a token, so a build-time class would freeze the font of
+            // whichever theme the dump build happened to install. Both
+            // paths keep web text out of the browser's serif fallback.
             StyleRules {
                 // Color transitions for theme swap.
                 color_transition: Some(Transition::new(250, Easing::EaseInOut)),
@@ -1385,12 +1380,11 @@ impl TypographySheetBuilder {
         // baked-in weight. `FontWeight` is a closed enum, so it enumerates as
         // variant arms and premints.
         //
-        // It used to ride a `with_computed` layer, which was also a latent
-        // correctness bug: `StyleApplication` has exactly ONE computed slot
-        // (`with_computed` assigns, it doesn't stack), so a Typography with
-        // BOTH `font` and `weight` set had its font layer silently overwritten
-        // by the weight layer. Moving weight to an axis leaves `font` as the
-        // sole computed layer and the override survives.
+        // Not a `with_computed` layer: `StyleApplication` has exactly ONE
+        // computed slot (`with_computed` assigns, it doesn't stack), so a
+        // Typography with BOTH `font` and `weight` set would have its font
+        // layer silently overwritten by the weight layer. As an axis, weight
+        // leaves `font` as the sole computed layer.
         sheet = sheet.variant("weight", "inherit", |_vs| StyleRules::default());
         for (key, w) in FONT_WEIGHT_KEYS {
             sheet = sheet.variant("weight", key, move |_vs| StyleRules {
@@ -1553,8 +1547,6 @@ impl IconButtonSheetBuilder {
 
         // Size arms — hardcoded square dimensions (closed enum).
         // Fully round, resolved against the box at paint (see `Length::Full`).
-        // Took a px argument while the pill was the magic `999`; the value is
-        // no longer meaningful, so the argument is gone rather than ignored.
         let pill = || Tokenized::token("radius-pill", Length::Full);
         sheet = sheet
             .variant("size", "sm", move |_vs| StyleRules {
@@ -2791,7 +2783,7 @@ mod selection_sheet_tests {
         assert!(has(&sheet, "__state_focused", "on"));
     }
 
-    /// Regression (CrewForge, 2026-10-01): a soft Chip gained a 1px border
+    /// Regression (CrewForge): a soft Chip gained a 1px border
     /// only while focused. Pressing focuses it, so the chip grew 2px and
     /// shifted its neighbours and everything below. An interactive chip
     /// reserves the ring's width at rest, so focus only recolours it. An
@@ -3076,8 +3068,8 @@ mod selection_sheet_tests {
         }
     }
 
-    /// Regression: the Avatar's initials used to get their color only from
-    /// the disc's `color`, which native `UILabel`/`TextView` never inherit
+    /// Regression: the Avatar's initials got their color only from the
+    /// disc's `color`, which native `UILabel`/`TextView` never inherit
     /// (only web's cascade does) — so on a Filled disc the initials kept the
     /// default text color. The TEXT sheet must carry the appearance's
     /// foreground itself: the contrast slot (`*-solid-text`) for Filled, the

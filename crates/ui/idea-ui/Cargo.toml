@@ -46,42 +46,24 @@ catalog = ["runtime-core/catalog", "idea-theme/catalog", "dep:mcp-catalog"]
 table = ["dep:table"]
 
 # ---------------------------------------------------------------------------
-# WHY THERE IS NO PER-COMPONENT `prim-*` GATING ANY MORE
+# WHY THERE IS NO PER-COMPONENT `prim-*` GATING
 # ---------------------------------------------------------------------------
-# This crate used to carry six `prim-icon` / `prim-image` /
-# `prim-text-input` / `prim-activity` / `prim-portal` / `prim-presence`
-# features that `#[cfg]`-deleted every component rendering the matching
-# primitive family. They existed to be the *author-facing half* of the old
-# core's `runtime-core/prim-*` features, which compiled out three real
-# things: the render walker's per-`Element`-variant dispatch arms, the
-# authoring builder fns, and the `Backend` trait's per-primitive methods.
-# Turning a family off on both crates measurably shrank a wasm bundle, and
-# using a gated-out component was a compile error naming the missing
-# feature instead of a runtime placeholder.
+# `runtime_vocabulary::handlers::register_builtins` installs one handler per
+# primitive into a `runtime_scene::Registry`, and reachability — not a cargo
+# feature — decides what links. `runtime-vocabulary` has no `prim-*`
+# features, so a per-component gate here would delete components from the
+# public API while shrinking nothing.
 #
-# That lever does not exist on the current runtime. There is no walker and
-# no `Backend` mega-trait: `runtime_vocabulary::handlers::register_builtins`
-# installs one handler per primitive into a `runtime_scene::Registry`, and
-# reachability — not a cargo feature — decides what links.
-# `runtime-vocabulary` has no `prim-*` features at all, so these features had
-# nothing left to forward to. Keeping them would have kept deleting
-# components from this crate's public API while shrinking nothing, which is
-# strictly worse than not having them: the size win WAS the whole point.
-#
-# The bundle lever on this runtime is the boot seam. `register_builtins` holds
-# the only reference to each prim module and its caps calls, so it is what
-# makes every builtin handler reachable from `main`. A per-family gate
-# therefore belongs THERE (plus each backend's caps impls) — a size-restricted
-# app's route to a smaller binary is a narrower registration set, with LTO
-# dropping whatever nothing registers, not a compile-time amputation of the
-# component library. If that split lands, restoring this crate's author-facing
-# half is mechanical: the per-component family map is preserved in the crate
-# docs (`src/lib.rs`, "Primitive families per component") precisely so it can
-# be.
+# The bundle lever is the boot seam: `register_builtins` holds the only
+# reference to each prim module and its caps calls, so a per-family gate
+# belongs THERE (plus each backend's caps impls) — a size-restricted app gets
+# a smaller binary from a narrower registration set, with LTO dropping
+# whatever nothing registers. The per-component family map in the crate docs
+# (`src/lib.rs`, "Primitive families per component") is what an
+# author-facing gate here would be built from.
 
 [dependencies]
-# The framework author surface, reached under the historical `runtime_core`
-# name via the crate-root `extern crate runtime_core as runtime_core;`
+# The framework author surface, reached as `runtime_core` via the crate-root `extern crate runtime_core as runtime_core;`
 # alias in lib.rs (see the note there).
 runtime-core = { workspace = true }
 # Same reason as idea-theme: Card's `card::variant` markers are annotated

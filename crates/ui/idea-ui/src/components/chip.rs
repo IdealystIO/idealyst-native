@@ -149,10 +149,10 @@ pub fn Chip(props: &ChipProps) -> Element {
             // picks the padding arm. The pointer cursor — "anything
             // selectable shows a pointer" — rides the sheet's `interactive`
             // variant, so `clickable` is part of the resolution cache
-            // identity. It used to ride a `with_computed` layer under the
-            // constant key `"chip-box"`, which left `clickable` out of that
-            // identity and let two chips with the same tone+variant but
-            // different `on_select` share one resolved style.
+            // identity. A `with_computed` layer under a constant key would
+            // leave `clickable` out of that identity and let two chips with
+            // the same tone+variant but different `on_select` share one
+            // resolved style.
             StyleApplication::new(installed_tag_sheet())
                 .with("appearance", appearance())
                 .with("size", size.get().as_variant_str().to_string())
@@ -277,7 +277,7 @@ mod tests {
             };
 
             // Inert FIRST so a shared cache entry would be seeded without a
-            // cursor — the ordering that made the old bug visible.
+            // cursor — the ordering that exposes the shared-cache bug.
             let inert = cursor_of(None);
             let clickable = cursor_of(Some(std::rc::Rc::new(|| {})));
 

@@ -47,8 +47,8 @@ pub(crate) fn menu_max_height(viewport_height: f32) -> f32 {
 }
 
 /// The inner body view that holds the rows in a column. Carries the inter-row
-/// `gap` the `SelectMenu` panel used to supply directly (the panel now has a
-/// single child — the scroller — so its own gap no longer spaces the rows), and
+/// `gap` (the panel's single child is the scroller, so a gap on the panel
+/// would not space the rows), and
 /// `flex_shrink: 0` so the body keeps its full content height inside the capped
 /// scroller instead of shrinking to fit it — without this there'd be nothing to
 /// scroll (same reason as `modal.rs::modal_body_sheet`).

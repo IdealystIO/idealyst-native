@@ -9,29 +9,31 @@
 //! type implementing the trait) via [`install_idea_theme`]. See the
 //! `theme` module for how to extend the theme with custom fields.
 //!
-//! # Intents
+//! # Tones and variants
 //!
-//! Themed components (Pressable, Badge, …) take an [`Intent`] —
-//! a marker type implementing the [`Intent`](intent::Intent) trait —
-//! that determines their semantic coloring. Ships with `Primary`,
-//! `Secondary`, `Neutral`, `Ghost`, `Success`, `Warning`, `Danger`.
-//! Apps add new intents by implementing the trait on their own
-//! marker types; the same marker then works in every intent-aware
-//! component. See the `intent` module for details.
+//! Themed components (Button, Badge, Tag, …) take a `tone` (semantic
+//! `tone::Primary`/`tone::Danger`/… or a palette hue) and a `variant`
+//! (`variant::Filled`/`Soft`/`Outlined`/`Ghost`). Both are extensible:
+//! apps add their own by implementing [`Tone`]/[`Variant`] on a marker
+//! type (or with the `tone!`/`variant!` macros), and the marker then
+//! works in every tone-aware component.
 //!
 //! Quick start:
 //!
 //! ```ignore
 //! use runtime_core::{component, signal, ui, Element};
-//! use idea_ui::{install_idea_theme, light_theme, ButtonKind, IntentTag, StackGap};
+//! use idea_ui::{
+//!     install_idea_theme, light_theme, tone, typography_kind, variant, Button, Card, Stack,
+//!     StackGap, Typography,
+//! };
 //!
 //! #[component]
-//! pub fn app() -> Element {
+//! pub fn App() -> Element {
 //!     install_idea_theme(light_theme());
 //!     let count = signal(0);
 //!     ui! {
 //!         Stack(gap = StackGap::Lg) {
-//!             Typography(content = "Hello, idea-ui".to_string(), kind = TypographyKind::H1)
+//!             Typography(content = "Hello, idea-ui".to_string(), kind = typography_kind::H1)
 //!             Card {
 //!                 Typography(content = format!("Count: {}", count.get()))
 //!                 // PascalCase `Button` is idea-ui's themed clickable;
@@ -59,23 +61,18 @@
 //! - `robot` — forward an optional `test_id` prop to each component's
 //!   root interactive primitive for robot/E2E location.
 //!
-//! ## Primitive families per component (historical, non-gating)
+//! ## Primitive families per component (non-gating)
 //!
-//! Components used to be `#[cfg]`-deleted per primitive family through six
-//! `prim-*` features paired with the old core's `runtime-core/prim-*`
-//! gating of walker dispatch arms, authoring builder fns, and `Backend`
-//! trait methods. None of those exist now: handlers are registered into a
+//! The component set is unconditional: handlers are registered into a
 //! `runtime_scene::Registry` by
 //! `runtime_vocabulary::handlers::register_builtins`, and reachability from
-//! that boot seam (plus LTO), not a cargo feature, decides what links.
-//! `runtime-vocabulary` has no `prim-*` equivalent, so the features could
-//! only have deleted components while shrinking nothing — they are gone and
-//! the component set is unconditional. See this crate's Cargo.toml for the
-//! full rationale and where a real per-family gate would belong.
+//! that boot seam (plus LTO), not a cargo feature, decides what links. A
+//! per-family cargo feature here could only delete components while
+//! shrinking nothing; see this crate's Cargo.toml for where a real
+//! per-family gate would belong.
 //!
-//! The family map is recorded here because it is the thing that would have
-//! to be recovered if `register_builtins` is ever split behind features and
-//! the author-facing half is restored:
+//! The family map is recorded here because it is what a per-family gate
+//! would need if `register_builtins` is ever split behind features:
 //!
 //! | Family | Components that (transitively) render it |
 //! | --- | --- |
@@ -127,14 +124,12 @@ pub mod theme;
 mod theme_runtime;
 
 // `theme`, `intent`, `theme_runtime`, and the extensible-system trait
-// surface now live in the sibling crate `idea-theme`. The local
-// `theme`/`intent`/`theme_runtime` modules above are thin shims so
-// that internal code and existing consumers can keep using
-// `idea_ui::theme::*` / `idea_ui::intent::*` paths unchanged.
+// surface live in the sibling crate `idea-theme`. The local
+// `theme`/`intent`/`theme_runtime` modules above are thin re-export
+// shims so `idea_ui::theme::*` / `idea_ui::intent::*` paths resolve.
 
-// Convenience re-exports at the crate root — mirror the API surface
-// that existed before the split so apps using `use idea_ui::Button,
-// install_idea_theme, …` keep compiling.
+// Convenience re-exports at the crate root, so apps can write
+// `use idea_ui::{Button, install_idea_theme, …}`.
 pub use idea_theme::theme::{
     dark_theme, idea_color, idea_header, idea_theme_palette, install_idea_theme,
     install_idea_theme_reactive, install_idea_theme_schemes, light_theme, set_idea_color_scheme, set_idea_theme, Colors,
@@ -178,7 +173,7 @@ pub use breakpoint::{
 // function and a `pub type Tag = TagProps` alias emitted by `#[component]`)
 // and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
-// they coexist in different namespaces. See [[project_buildelement_dispatch]].
+// they coexist in different namespaces.
 pub use components::alert::{Alert, AlertClose, AlertProps};
 pub use components::autocomplete::{
     Autocomplete, AutocompleteProps, AutocompleteSlot, AutocompleteSlotCx,

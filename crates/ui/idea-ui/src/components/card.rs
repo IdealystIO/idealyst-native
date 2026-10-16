@@ -499,7 +499,7 @@ mod tests {
     // A toned Card must still PREMINT: the tint rides the INLINE layer
     // (out-of-band, applied over the preminted classes), never a
     // `with_computed` layer — a computed layer is a premint disqualifier,
-    // so the old spelling made any `Card(tone = …)` panic at mount in a
+    // so it would make any `Card(tone = …)` panic at mount in a
     // `--premint-only` app. Fails against the computed spelling
     // (`preminted_class_list()` is `None` for a computed-carrying
     // application).

@@ -637,7 +637,7 @@ mod tests {
     /// UIKit does not inherit a superview's colour into a `UILabel`, so a
     /// colour left on `CalendarDay` alone is a web-only fact. Guards both
     /// that the label sheet inverts on selection and that the cell sheet
-    /// no longer pretends to.
+    /// does not pretend to.
     #[test]
     fn day_numeral_colour_lives_on_the_label() {
         with_test_world(|| {

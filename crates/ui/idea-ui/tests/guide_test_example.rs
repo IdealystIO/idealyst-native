@@ -3,8 +3,8 @@
 //! run for real.
 //!
 //! Regression #34: the guide's example had no world setup and matched
-//! `Element::View` / `StyleSource::Static` — shapes that no longer exist
-//! (primitives are type-erased `Element::Item`s now) — so a reader who
+//! `Element::View` / `StyleSource::Static` — shapes that don't exist
+//! (primitives are type-erased `Element::Item`s) — so a reader who
 //! copied it got a test that didn't compile. The guide spells the body
 //! as an in-crate unit test (`use super::*;`, `crate::test_support`);
 //! this copy differs ONLY in those paths. Change the two together.

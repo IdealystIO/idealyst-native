@@ -179,11 +179,10 @@ mod tests {
         install_idea_theme(light_theme());
     }
 
-    /// The pointer cursor on a pressable row used to ride a constant
-    /// `with_computed("li-cursor", …)` layer. It now rides the sheet's
-    /// `interactive` variant so the rule premints — this pins the observable
-    /// behavior across that move: pressable rows get a pointer, plain rows
-    /// keep the default.
+    /// The pointer cursor on a pressable row rides the sheet's `interactive`
+    /// variant (not a `with_computed` layer) so the rule premints. Pins the
+    /// observable behavior: pressable rows get a pointer, plain rows keep
+    /// the default.
     #[test]
     fn regression_pressable_list_item_keeps_pointer_cursor() {
         with_test_world(|| {

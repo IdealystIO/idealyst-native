@@ -183,10 +183,10 @@ pub fn Typography(props: &TypographyProps) -> Element {
             // Per-instance font override and line limit, layered over the
             // sheet base. They ride the INLINE layer: a typeface is an
             // app-supplied asset, not a closed set the sheet could enumerate
-            // as an axis — and unlike the old `with_computed` spelling,
-            // inline does not disqualify the application from preminting (a
-            // `--premint-only` app panicked on any Typography with a `font`
-            // override). ONE inline layer: `with_inline` replaces, so both
+            // as an axis — and unlike a `with_computed` layer, inline does
+            // not disqualify the application from preminting (a
+            // `--premint-only` app would panic on any Typography with a
+            // `font` override). ONE inline layer: `with_inline` replaces, so both
             // go in the same rules.
             let (font, lines) = (font.get(), lines.get());
             if font.is_some() || lines.is_some() {
@@ -252,17 +252,17 @@ mod tests {
     /// override, Typography text must still land on the theme's sans
     /// stack, so web text isn't left in the browser serif fallback.
     ///
-    /// The sheet deliberately does NOT carry the family (it used to —
-    /// see `TypographySheetBuilder::build`). A baked `FontFamily` is not
+    /// The sheet deliberately does NOT carry the family (see
+    /// `TypographySheetBuilder::build`). A baked `FontFamily` is not
     /// `Tokenized`, so it is exactly the shape premint cannot honour: a
     /// build-time class would freeze whichever theme the dump installed.
-    /// The guarantee now rides the framework's default-text-font channel
+    /// The guarantee rides the framework's default-text-font channel
     /// instead, which BOTH style paths already consume — the live path
     /// via `fill_default_text_font` at apply time, the preminted path via
     /// the `--iy-default-font` custom property the dump emits into the
     /// base rule.
     ///
-    /// So this pins the two halves of the new chain that are reachable
+    /// So this pins the two halves of the chain that are reachable
     /// from here: the theme feeds the channel on install, and the sheet
     /// leaves the slot empty for the fill to occupy. (That the fill then
     /// happens is `style_attach`'s contract, and the end-to-end result is
@@ -347,7 +347,7 @@ mod tests {
         }
     }
 
-    /// Regression (arena nav-notes, 2026-07-21): a heading `kind` produced
+    /// Regression (arena nav-notes): a heading `kind` produced
     /// large text with NO heading role, so locators/screen readers saw
     /// plain text and the "title as a heading" requirement was unearnable.
     /// A heading kind must now auto-attach `Role::Header`.
@@ -448,8 +448,8 @@ mod tests {
 
     /// A Typography with a `font` override must still PREMINT: the typeface
     /// rides the INLINE layer (out-of-band, applied over the preminted
-    /// classes) — the old `with_computed` spelling was a premint
-    /// disqualifier, so any `font = …` Typography panicked at mount in a
+    /// classes) — a `with_computed` layer is a premint disqualifier, so
+    /// any `font = …` Typography would panic at mount in a
     /// `--premint-only` app. Fails against the computed spelling
     /// (`preminted_class_list()` is `None` for a computed-carrying
     /// application).

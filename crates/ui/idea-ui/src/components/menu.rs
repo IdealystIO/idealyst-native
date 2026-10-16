@@ -482,25 +482,25 @@ impl SubMenuSlot {
 // SubMenu flyout: level coordination + hover-out policy
 // =============================================================================
 
-/// The submenu flyout currently open on the menu level, if any.
-///
-/// A `Menu`'s children are constructed by the CALLER before `Menu` itself
-/// runs, so a sibling `SubMenu` cannot be reached through `provide`/`inject`
-/// (there is no ancestor scope to hang the context on by the time the rows
-/// exist) — this thread-local is the level. One slot is enough because a
-/// `SubMenu`'s rows are [`MenuEntry`] data, which cannot nest another
-/// `SubMenu`: every submenu in a menu is a sibling on the same level.
-///
-/// Hover alone used to keep the "one open submenu at a time" invariant —
-/// hovering a sibling means the pointer LEFT this row, which collapsed it.
-/// A latching flyout ([`HoverLatch`]) deliberately stops obeying hover-out,
-/// so the invariant needs an explicit holder: opening any flyout collapses
-/// whichever one held the level.
-///
-/// Not a signal and not world context: the claim is made from hover
-/// callbacks, which backends dispatch OUTSIDE `World::enter` (the same
-/// constraint that parks `toast.rs`'s queue handle in a thread-local).
 thread_local! {
+    /// The submenu flyout currently open on the menu level, if any.
+    ///
+    /// A `Menu`'s children are constructed by the CALLER before `Menu` itself
+    /// runs, so a sibling `SubMenu` cannot be reached through `provide`/`inject`
+    /// (there is no ancestor scope to hang the context on by the time the rows
+    /// exist) — this thread-local is the level. One slot is enough because a
+    /// `SubMenu`'s rows are [`MenuEntry`] data, which cannot nest another
+    /// `SubMenu`: every submenu in a menu is a sibling on the same level.
+    ///
+    /// Hover alone cannot keep the "one open submenu at a time" invariant:
+    /// hovering a sibling means the pointer LEFT this row, which collapses it,
+    /// but a latching flyout ([`HoverLatch`]) deliberately stops obeying hover-out,
+    /// so the invariant needs an explicit holder: opening any flyout collapses
+    /// whichever one held the level.
+    ///
+    /// Not a signal and not world context: the claim is made from hover
+    /// callbacks, which backends dispatch OUTSIDE `World::enter` (the same
+    /// constraint that parks `toast.rs`'s queue handle in a thread-local).
     static OPEN_FLYOUT: RefCell<Option<OpenFlyout>> = const { RefCell::new(None) };
     static NEXT_SUBMENU_ID: Cell<u64> = const { Cell::new(0) };
 }
@@ -644,7 +644,7 @@ pub struct SubMenuProps {
     ///
     /// Built per flyout-open with a [`SubMenuSlotCx`]. A flyout with either
     /// slot set also LATCHES once the pointer has been inside it, so hover
-    /// can no longer collapse it under a typing user — see [`SubMenu`].
+    /// cannot collapse it under a typing user — see [`SubMenu`].
     #[prop(static)]
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub header: Option<SubMenuSlot>,
@@ -847,10 +847,9 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     // open.
     //
     // Hover is the desktop nested-menu standard. Press is what a finger
-    // has: until 2026-09-15 this row was hover-only, so on iOS and Android
-    // — and any touch surface too wide for an app to swap the menu out —
-    // the chevron was a row that did nothing. It is also what a keyboard
-    // activates. A press only ever OPENS: on a pointer the row is already
+    // has: a hover-only row is dead on iOS and Android — and any touch
+    // surface too wide for an app to swap the menu out. It is also what a
+    // keyboard activates. A press only ever OPENS: on a pointer the row is already
     // open by the time it is clicked, and macOS does not collapse a
     // submenu for clicking its row either. Closing stays with hover-out,
     // Escape, a pick, and the outside catcher.
@@ -1347,8 +1346,8 @@ mod tests {
         assert!(latch.closes_on_hover_out(), "closing drops the latch for the next open");
     }
 
-    /// Only one submenu per level is open at a time. Hover alone used to
-    /// carry that (hovering a sibling means the pointer LEFT this row), but a
+    /// Only one submenu per level is open at a time. Hover alone can't carry
+    /// that (hovering a sibling means the pointer LEFT this row), because a
     /// latched flyout ignores hover-out — so opening any flyout must
     /// explicitly collapse whichever one held the level, or two panels
     /// overlap.

@@ -329,8 +329,7 @@ fn slider_container_sheet() -> Rc<StyleSheet> {
     })
 }
 
-/// Opacity of a disabled Slider — matches the dim the old computed
-/// layer applied.
+/// Opacity of a disabled Slider.
 const SLIDER_DISABLED_OPACITY: f32 = 0.45;
 
 #[cfg(test)]

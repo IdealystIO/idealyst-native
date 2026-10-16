@@ -755,17 +755,16 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // `Preminted` class carries no application to compose with — the app
     // must stay introspectable in the payload.
     //
-    // `.into_style_application()` alone used to say that and stopped:
-    // `IntoStyleProp for StyleApplication` gained a preminted fast path, so
-    // the application preminted anyway, the composition found nothing to
-    // compose with, and `make_row_cell_interactive` silently skipped the
-    // whole overlay — clickable rows lost their pointer cursor and their
-    // hover highlight in every `--premint` build, with nothing logged.
-    // Naming the variant is what actually pins the intent, and
-    // `regression_premint_keeps_table_cells_on_the_live_engine` holds it
-    // there.
+    // `.into_style_application()` alone is not enough: `IntoStyleProp for
+    // StyleApplication` has a preminted fast path, so the application would
+    // premint anyway, the composition would find nothing to compose with,
+    // and `make_row_cell_interactive` would silently skip the whole overlay
+    // — clickable rows lose their pointer cursor and hover highlight in
+    // every `--premint` build, with nothing logged. Naming the variant pins
+    // the intent; `regression_premint_keeps_table_cells_on_the_live_engine`
+    // holds it there.
     //
-    // This no longer costs the premint anything: the row overlay is axis
+    // This costs the premint nothing: the row overlay is axis
     // SELECTION (build-time CSS per arm), not runtime overrides, and the
     // `--premint-only` attach premints an explicit `Sheet` whose
     // application qualifies — the spelling only pins introspectability.
@@ -1051,20 +1050,16 @@ mod tests {
                  later resolve has something to overwrite the tint with"
             );
 
-            // The hovered arm resolves to the themed row highlight — same
-            // value the old override layer produced.
+            // The hovered arm resolves to the themed row highlight.
             let hovered_app = TableBodyCell()
                 .into_style_application()
                 .with("interactive", "on")
                 .with("row_hovered", "on");
             assert!(hovered_app.preminted_class_list().is_some());
             let hovered = runtime_core::resolve_style(&hovered_app);
-            // Asserted against the palette, not a literal: this used to
-            // pin `#eef0f7`, the fallback the cell's own
-            // `Tokenized::token("color-surface-alt", …)` restated — which
-            // had drifted from the palette's `#f1f5f9`. Deriving the
-            // expectation from `light_theme()` means the two can't
-            // disagree again.
+            // Asserted against the palette, not a literal: a restated hex
+            // fallback can drift from the palette. Deriving the expectation
+            // from `light_theme()` means the two can't disagree.
             let surface_alt = crate::light_theme().colors.surface_alt.value().0.to_ascii_lowercase();
             assert_eq!(
                 hovered.background.as_ref().map(|b| b.resolve().0.to_ascii_lowercase()),
@@ -1074,13 +1069,12 @@ mod tests {
         });
     }
 
-    /// The header band reads its OWN token, not `color-surface-alt`.
-    /// Head cells used to paint `surface_alt` directly, which made
-    /// "retint table headers" impossible without dragging every other
-    /// `surface_alt` consumer (cards, field wells, row hover) along.
-    /// Asserting the token NAME is the load-bearing half: a literal —
-    /// or the old `color-surface-alt` reference — is exactly what an
-    /// app-level `color-table-header` override could never reach.
+    /// The header band reads its OWN token, not `color-surface-alt`, so
+    /// "retint table headers" doesn't drag every other `surface_alt`
+    /// consumer (cards, field wells, row hover) along. Asserting the
+    /// token NAME is the load-bearing half: a literal — or a
+    /// `color-surface-alt` reference — is exactly what an app-level
+    /// `color-table-header` override could never reach.
     #[test]
     fn head_cell_background_reads_the_table_header_token() {
         with_test_world(|| {
@@ -1111,14 +1105,13 @@ mod tests {
     }
 
     /// A cell styled REACTIVELY takes the row's hover the same as any
-    /// other. This is the app-side shape the overlay used to miss: an
-    /// author who needs a width on a cell (idea-ui's `TableCell` has
-    /// none) drops to the SDK cell and hands it a style CLOSURE, because
-    /// the width has to move while a resize handle is being dragged. The
-    /// old read-then-replace wiring could only see a static
-    /// `StyleProp::Sheet`, so every such column sat un-tinted in a row
-    /// whose other cells lit up — sloppy, and with nothing logged to say
-    /// why. Composing means the cell keeps its width and takes the axes.
+    /// other. The app-side shape: an author who needs a width on a cell
+    /// (idea-ui's `TableCell` has none) drops to the SDK cell and hands it
+    /// a style CLOSURE, because the width has to move while a resize
+    /// handle is being dragged. A read-then-replace wiring that only sees a
+    /// static `StyleProp::Sheet` leaves every such column un-tinted in a
+    /// row whose other cells light up, with nothing logged. Composing means
+    /// the cell keeps its width and takes the axes.
     #[test]
     fn regression_reactive_cell_style_still_takes_the_row_hover() {
         with_test_world(|| {
@@ -1273,17 +1266,14 @@ mod tests {
         });
     }
 
-    /// Regression (5.2.0): a plain `Table` — no `scroll_x`, no slot —
-    /// rendered square corners on web, because its sheet landed on the
+    /// Regression: a plain `Table` — no `scroll_x`, no slot — rendered
+    /// square corners on web, because its sheet landed on the
     /// collapsed-border `<table>`, where browsers ignore the radius (the
-    /// SDK now wraps it; `table`'s
+    /// SDK wraps it; `table`'s
     /// `regression_styled_plain_table_rounds_on_a_surface_not_the_collapsed_table`
     /// pins that placement). The plain table's surface must carry the
     /// radius AND the clip, or the header band paints square over the
-    /// corners the radius rounds. (It replaces the test that kept the
-    /// plain table UNclipped: that clip would have shaved the collapsed
-    /// border of the `<table>` the sheet used to land on — a node the
-    /// sheet no longer reaches.)
+    /// corners the radius rounds.
     #[test]
     fn regression_plain_table_surface_rounds_and_clips() {
         with_test_world(|| {

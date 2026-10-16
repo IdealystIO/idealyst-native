@@ -39,8 +39,8 @@
 //! get a × close affordance (on by default) wired to [`dismiss_toast`].
 //!
 //! The queue is a process-global (thread-local) signal created with
-//! `unscope` so it outlives any one render scope; see
-//! [[project_global_cache_signals_unscope]].
+//! `unscope` so it outlives any one render scope — a scoped signal would
+//! be disposed with whichever component first created it.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -788,11 +788,11 @@ mod tests {
     }
 
     /// Regression: a standard (Filled) toast must render its text in the
-    /// intent foreground, not the default label color. The toast surface
-    /// used to be a hand-rolled `view + text(AlertTitle)` that set no
-    /// `color` — fine on web (the container fill cascades), but on
-    /// iOS/Android (no text-color inheritance) the title rendered in the
-    /// default dark color and vanished on the solid fill. Routing the
+    /// intent foreground, not the default label color. A hand-rolled
+    /// `view + text` surface that sets no `color` is fine on web (the
+    /// container fill cascades), but on iOS/Android (no text-color
+    /// inheritance) the title renders in the default dark color and
+    /// vanishes on the solid fill. Routing the
     /// standard path through `Alert` carries Alert's per-node color
     /// stamping, so the title text node carries the intent foreground.
     #[test]

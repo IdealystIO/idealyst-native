@@ -100,7 +100,7 @@ fn hug_sheet() -> Rc<StyleSheet> {
 /// radius and the max-width clamp, with the label `text` inside it.
 ///
 /// The box has to be a real container. Painting the bubble on the text node
-/// itself (what this used to do) yields one background rect per *line* on
+/// itself yields one background rect per *line* on
 /// backends that lay text out inline — a wrapped hint rendered as ragged bars
 /// behind each line rather than a single rounded bubble — and leaves the
 /// padding hanging off the text box. Splitting box from label makes every
@@ -219,8 +219,8 @@ mod tests {
         });
     }
 
-    /// Regression: the bubble used to be a lone `text` node carrying the
-    /// background/padding/max-width, which paints one ragged rect per line
+    /// Regression: a lone `text` node carrying the bubble's
+    /// background/padding/max-width paints one ragged rect per line
     /// once the hint wraps (inline text layout) instead of a single rounded
     /// box. The surface must be a `view` BOX holding the label, with the box
     /// owning background + padding + the width clamp, and the label owning

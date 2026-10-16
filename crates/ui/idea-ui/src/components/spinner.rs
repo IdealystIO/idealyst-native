@@ -80,7 +80,7 @@ pub fn Spinner(props: &SpinnerProps) -> Element {
         }
     }
     // A live `size` routes to the primitive's reactive `.size_reactive()` sink
-    // (the walker installs an Effect → `update_activity_indicator_size`); a
+    // (the handler installs an Effect → `update_activity_indicator_size`); a
     // `Static` size uses the one-shot `.size()` setter.
     let spinner = if props.size.is_static() {
         activity_indicator().size(to_native(props.size.get()))

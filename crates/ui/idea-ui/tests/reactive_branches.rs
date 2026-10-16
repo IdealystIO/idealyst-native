@@ -3,11 +3,10 @@
 //!
 //! Every component here swaps part of its subtree when a signal changes
 //! (a glyph that exists only while checked, a popup that exists only while
-//! open, a pager row rebuilt per page). Those swaps used to be wired with
-//! hand-called `runtime_core::switch` / `when`; most now live as `if` /
-//! `match` inside `ui!`. These tests were written against the hand-wired
-//! versions FIRST and kept unchanged across the conversion, so they are
-//! the evidence that the conversion changed spelling, not behavior.
+//! open, a pager row rebuilt per page), mostly as `if` / `match` inside
+//! `ui!`. The tests assert mounted behavior, not spelling, so they hold
+//! whether a swap is written in the macro or with a hand-called
+//! `runtime_core::switch` / `when`.
 //!
 //! What is asserted is what a backend would actually be showing —
 //! `Harness::live_tree`, with node ids stripped where only the SHAPE
@@ -498,7 +497,7 @@ fn autocomplete_without_clearable_has_no_clear_x() {
     assert_eq!(press_count(&h), 1, "just the chevron");
 }
 
-/// REGRESSION (CrewForge report 2026-10-13): `options` was read once at
+/// REGRESSION (CrewForge report): `options` was read once at
 /// build, so rows fetched while the user typed never showed — the menu kept
 /// the mount-time (empty) list. Passing the options SIGNAL must make rows
 /// that land later appear in the already-open menu.

@@ -16,12 +16,12 @@
 //!
 //! ## Why this module lives in idea-ui rather than the docs crate
 //!
-//! Rust's orphan rule means a `DocControls for PressableProps`
-//! impl has to live in either idea-ui (where `PressableProps`
-//! lives) or `idea-ui-docs-core` (where the trait lives) — and
-//! a `*-docs-core` crate can't depend on idea-ui *and* be
-//! depended on by idea-ui (cycle). So the trait, helpers, and
-//! the per-Props derives all live here, gated by the `docs`
+//! Rust's orphan rule means a `DocControls for ButtonProps` impl
+//! has to live in the crate that owns either the trait or the
+//! props type — and a separate docs crate holding the trait can't
+//! depend on idea-ui *and* be depended on by idea-ui (cycle). So
+//! the trait, helpers, and the per-Props derives all live here,
+//! gated by the `docs`
 //! feature to keep the dead-code cost out of production apps that
 //! don't render the docs.
 //!
@@ -33,7 +33,8 @@
 //! | `bool`                      | Switch                      |
 //! | `Option<String>`            | Switch + Field (when on)    |
 //! | `T: VariantEnum`            | Pressable row (one per variant) |
-//! | `Rc<dyn Intent>`            | Built-in intent picker      |
+//! | `*Ref` handle (`ToneRef`, …) | Select over the builtins    |
+//! | `Rc<dyn Intent>`            | (none — uses Default)       |
 //! | callbacks (`Rc<dyn Fn…>`)   | (none — uses Default)       |
 //! | other types                 | (none — falls back to Default) |
 //!
@@ -252,10 +253,6 @@ where
         )
     }
 }
-
-// Legacy IntentKind / intent_control removed: doc-controls now use
-// `IntentTag` directly through the generic `variant_enum_control`
-// path, since `IntentTag` implements `VariantEnum`.
 
 /// Generic picker over a typed `*Ref` handle (`ToneRef`,
 /// `VariantRef`, `ButtonSizeRef`, `ShapeRef`, `TypographyKindRef`).

@@ -117,7 +117,7 @@ pub fn Image(props: &ImageProps) -> Element {
 
     // `src` routes to the framework `image` primitive's reactive source: a
     // `Reactive::Static` URL is a constant, a `Signal`/`rx!` URL repaints the
-    // image in place (the primitive's walker re-runs `update_image_src`).
+    // image in place (the primitive's handler re-runs `update_image_src`).
     let src = props.src.clone();
     let img = runtime_core::image(move || src.get());
     let mut img = if style_is_reactive {
@@ -127,7 +127,7 @@ pub fn Image(props: &ImageProps) -> Element {
     };
 
     // A live `alt` routes to the primitive's reactive `.alt_reactive()` sink
-    // (the walker installs an Effect → `update_image_alt`); a `Static` alt is
+    // (the handler installs an Effect → `update_image_alt`); a `Static` alt is
     // set once via the one-shot `.alt()` setter.
     if props.alt.is_static() {
         if let Some(alt) = props.alt.get() {

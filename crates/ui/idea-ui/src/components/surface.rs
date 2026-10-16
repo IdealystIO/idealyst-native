@@ -116,10 +116,9 @@ pub fn Surface(props: SurfaceProps) -> Element {
         move || -> StyleApplication {
             // Closed props ride the sheet's axes; the continuous `grow`
             // weight rides the INLINE layer, keeping the application
-            // premintable (the previous per-instance `StyleSheet::new`
-            // was invisible to the premint dump). `resolve()` folds the
-            // inline layer into the resolved rules on the live path, so
-            // SSR/native output is byte-identical to the old shape.
+            // premintable (a per-instance `StyleSheet::new` would be
+            // invisible to the premint dump). `resolve()` folds the
+            // inline layer into the resolved rules on the live path.
             let grow = grow_r.get();
             let mut app = StyleApplication::new(crate::stylesheets::SurfaceSheet::sheet())
                 .with("bg", background.get().bg_key().to_string())
@@ -196,10 +195,9 @@ mod tests {
         });
     }
 
-    /// The resolved rules of the new shape must match the OLD per-instance
-    /// sheet property-for-property — same background token, same paddings,
-    /// and `resolve()` folds the inline grow back in — so live/SSR output
-    /// (and every minted class hash) is unchanged.
+    /// The resolved rules carry the background token, the paddings, and
+    /// the inline grow (with its `flex_basis`/`min_width` zeroes) folded
+    /// back in by `resolve()` on the live path.
     #[test]
     fn surface_resolved_rules_match_the_old_per_instance_shape() {
         use runtime_core::resolve_style;

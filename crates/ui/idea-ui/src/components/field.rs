@@ -617,7 +617,7 @@ pub fn build_field_input_sheet(tones: Vec<ToneRef>) -> Rc<StyleSheet> {
     // selectors, and this is exactly the "value depends on two axes"
     // shape they exist for. Gap = edge_pad(size) − FIELD_BARE_H_PAD so
     // the icon↔input spacing visually equals the edge↔icon spacing (see
-    // the shell builder in `field_shell`).
+    // the adorned shell in `Field`).
     sheet = sheet.variant("adorned", "on", |_vs| StyleRules {
         flex_direction: Some(runtime_core::FlexDirection::Row),
         align_items: Some(runtime_core::AlignItems::Center),
@@ -1291,8 +1291,8 @@ mod tests {
 
     // A live `secure` source must thread to the `text_input` reactively —
     // NOT snapshotted at build — so the mask can toggle at runtime without
-    // rebuilding the Field (the password show/hide path that previously
-    // needed a `switch`). Observable form: flip the signal AFTER the Field
+    // rebuilding the Field (the password show/hide path). Observable form:
+    // flip the signal AFTER the Field
     // is built, then evaluate — a build-time snapshot would still report
     // the old value.
     #[test]

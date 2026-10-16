@@ -10,7 +10,7 @@
 //!   per user name).
 //!
 //! ```ignore
-//! use idea_ui::extensible::tone;
+//! use idea_ui::tone;
 //!
 //! Button(tone = tone::Primary, ...);
 //! Button(tone = tone::Danger, ...);
@@ -18,7 +18,7 @@
 //!
 //! Apps add custom tones by implementing [`super::Tone`] on a marker
 //! struct of their own. The convention is to place them in a `tone`
-//! module within the app that `pub use idea_ui::extensible::tone::*`
+//! module within the app that `pub use idea_ui::tone::*`
 //! so call sites uniformly read `tone::Name` regardless of origin.
 
 use runtime_core::{Color, IdealystSchema, Tokenized};

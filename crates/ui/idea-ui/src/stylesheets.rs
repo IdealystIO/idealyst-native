@@ -1014,8 +1014,8 @@ stylesheet! {
         // (Autocomplete's ArrowUp/ArrowDown position) — styled like the
         // hover state, since pointer hover and keyboard cursor mean the
         // same thing: "Enter/click commits this row". Two distinct looks so
-        // an open menu never shows two solid rows (the old shape rendered
-        // cursor and selection identically). Select uses only `on`/`off`.
+        // an open menu never shows two solid rows. Select uses only
+        // `on`/`off`.
         variant active {
             #[default]
             off(_t) {}
@@ -2210,8 +2210,8 @@ stylesheet! {
 // Deliberately NOT the Tabs look. A tab strip is navigation (underlined
 // labels on the page's divider); a segmented control picks a VALUE, so it
 // reads as one control: a bordered, tinted track with the selected segment
-// filled in like a raised key. It used to reuse `TabBar`/`TabButton`, and a
-// three-way setting rendered as a second tab strip on the page.
+// filled in like a raised key. Reusing `TabBar`/`TabButton` would render a
+// three-way setting as a second tab strip on the page.
 
 /// How far the selected segment sits inside the track's border, and the
 /// gap between segments. Below the spacing scale on purpose (`xs` is 4):
@@ -2730,8 +2730,7 @@ stylesheet! {
         //
         // - The axis alone would decide nothing reliably: `tone` sorts
         //   after `row_hovered`, so a resting tone would also beat the
-        //   hover (a toned row stopped responding to the pointer — the
-        //   reported bug with the old `with_overrides` workaround), and
+        //   hover (a toned row would stop responding to the pointer), and
         //   the pinned compounds above would repaint frozen cells.
         // - So every (tone, row_hovered) pair is stated as a compound,
         //   declared AFTER the pinned and footer compounds. Compounds
@@ -3516,8 +3515,8 @@ stylesheet! {
             // the framework imposes no default cursor on any primitive. So
             // without declaring it the SAME author code shows a hand on web
             // and an arrow everywhere else — the divergence CLAUDE.md §7
-            // exists to prevent. Declaring it converges them and stays
-            // overridable, unlike the old hardcoded inline style.
+            // exists to prevent. Declaring it in the sheet converges them
+            // and stays overridable.
             cursor: Cursor::Pointer,
         }
         state hovered(t) { color: t.intent.primary.solid_bg() }
@@ -3633,7 +3632,7 @@ stylesheet! {
 // on web and through nothing at all on UIKit, where a `UILabel` draws
 // its own `textColor` whatever its superview says. Measured on an
 // iPhone 17 Pro Max simulator: the selected day's solid fill kept a
-// dark numeral. `Button` splits the same way (`ButtonLabel`).
+// dark numeral. `Button` splits the same way (its label sheet).
 stylesheet! {
     pub CalendarDay<IdeaThemeRef> {
         base(t) {

@@ -59,10 +59,9 @@ thread_local! {
     /// palette it comes from is a cosmetic pre-install detail — but it
     /// must come from a real palette rather than a restated literal, or
     /// the two drift. Reading `light_theme()` keeps the accessor honest
-    /// by construction and matches what the retired `theme_token!` macro
-    /// did.
+    /// by construction.
     ///
-    /// Built once because the alternative — the old
+    /// Built once because the alternative — the string
     /// `canonical_color(name)` path — reconstructed the whole theme and
     /// linear-scanned ~70 entries on *every* property, and idea-ui alone
     /// references 600+.
@@ -433,8 +432,8 @@ impl RadiusTokens {
     /// Declared by hand rather than through `length_namespace!` because it is
     /// the one radius that is NOT a px number: "fully round" depends on the box
     /// it paints on, so it emits [`Length::Full`] and each backend resolves it
-    /// against the element. It used to be `Px(999.0)`, which quietly stopped
-    /// being a pill on any box taller than 1998px.
+    /// against the element (a `Px(999.0)` stops being a pill on any box
+    /// taller than 1998px).
     pub const PILL: &'static str = "radius-pill";
 
     /// Theme token `radius-pill` — fully round, resolved against the box.

@@ -925,7 +925,7 @@ mod tests {
         assert_eq!(Weekday::Monday.add(6), Weekday::Sunday);
     }
 
-    /// CrewForge, 2026-10-01: `display_format = "ddd D MMM YYYY"` rendered
+    /// Regression (CrewForge): `display_format = "ddd D MMM YYYY"` rendered
     /// the letters as literal text. The names live in `DateLabels`, which
     /// the format tokens could not reach.
     #[test]

@@ -527,8 +527,8 @@ mod tests {
         });
     }
 
-    /// The control's two sheets are its own, not the Tabs sheets it used to
-    /// borrow: distinct sheets with distinct premint identities, a single
+    /// The control's two sheets are its own, not the Tabs sheets: distinct
+    /// sheets with distinct premint identities, a single
     /// author axis `selected` (default `off`) instead of the tab's `active`,
     /// and the hovered/pressed/focused state overlays — focus draws the
     /// themed ring rather than the platform default.

@@ -84,7 +84,7 @@ impl TStyle {
     }
 }
 
-/// The normalized primitive mirror (field names follow the old enum).
+/// The normalized primitive mirror — one arm per modeled primitive.
 pub enum P {
     View {
         children: Vec<Element>,

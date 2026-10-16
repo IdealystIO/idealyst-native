@@ -169,13 +169,9 @@ fn sim_next(cur: f32, rand01: f32) -> f32 {
 }
 
 /// Arm the next simulated creep step. `after_ms_scoped` is the
-/// TOP-LEVEL `runtime_core` export — the newcore World-anchored one
-/// from `runtime_vocabulary::scoped_scheduling`. (Its old-arena
-/// predecessor, formerly reachable as
-/// `runtime_core::scheduling::after_ms_scoped`, re-entered only the
-/// pre-World reactive ctx — a world-signal timer chain registered
-/// through it silently died; it's `pub(crate)` in runtime-shared now,
-/// so the wrong choice no longer compiles.) The callback re-enters
+/// TOP-LEVEL `runtime_core` export — the World-anchored one from
+/// `runtime_vocabulary::scoped_scheduling` (runtime-shared's same-named
+/// fn is `pub(crate)` and does not re-enter the World). The callback re-enters
 /// the registering anchor, so the recursive re-arm chains in the SAME
 /// scope and the whole chain dies with it (a mode flip or unmount
 /// drops the pending shot — no detached timers).
@@ -354,9 +350,8 @@ pub fn Progress(props: &ProgressProps) -> Element {
                     let end = w / PROGRESS_SWEEP_FRACTION;
                     // Prefer a RENDER-SERVER keyframe loop: a forever
                     // per-frame animation forces a full-tree commit every
-                    // frame on Apple (measurably steals scroll frames —
-                    // the same rationale as the old opacity pulse's native
-                    // path). Falls back to the per-frame AnimatedValue
+                    // frame on Apple (measurably steals scroll frames).
+                    // Falls back to the per-frame AnimatedValue
                     // clock when the backend has no native keyPath for
                     // the prop.
                     let native = fill_ref

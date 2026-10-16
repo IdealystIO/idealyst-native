@@ -1156,7 +1156,7 @@ recipe!(
     /// Declare the theme type in the `<…>` slot and the block binding (`base(t)`)
     /// becomes the token vocabulary: `t.spacing.md()` references the `spacing-md`
     /// token. The accessor path IS the token name, so a typo won't compile —
-    /// unlike a string, which used to compile and silently render its fallback
+    /// unlike a string, which compiles and silently renders its fallback
     /// forever. Namespaces: `t.color.*`, `t.intent.<intent>.<slot>()`,
     /// `t.spacing.*`, `t.radius.*`, `t.typography.*_size()`. No palette hex
     /// appears here, so a reskin (or a light/dark swap) re-flows this sheet with

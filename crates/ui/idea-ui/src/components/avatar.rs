@@ -349,7 +349,7 @@ mod tests {
         with_test_world(|| {
             install_idea_theme(light_theme());
             // `application()` evaluates a reactive style closure or returns the
-            // static application — covers both style paths the old match did.
+            // static application — covers both style paths.
             let app = match classify(Avatar(&AvatarProps { initials: "AB".into(), ..Default::default() })) {
                 P::View { style, .. } => style.expect("Avatar attaches a style").application(),
                 _ => panic!("Avatar renders a styled View"),

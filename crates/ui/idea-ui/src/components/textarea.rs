@@ -150,7 +150,7 @@ impl Default for TextareaProps {
 
 /// Normalize the `rows` / `max_rows` props to the primitive's `min_rows` /
 /// `max_rows` (in text lines). The primitive + each backend convert rows→px
-/// using the REAL font line height, so idea-ui no longer estimates pixels here.
+/// using the REAL font line height, so idea-ui does not estimate pixels here.
 ///
 /// - `rows` floors at 1 — a zero-row textarea is meaningless.
 /// - `max_rows == 0` leaves the autogrow uncapped (`None`).

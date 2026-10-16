@@ -22,8 +22,9 @@
 //! | `String`                      | `string_control`              |
 //! | `bool`                        | `bool_control`                |
 //! | `Option<String>`              | `optional_string_control`     |
-//! | `Rc<dyn Intent>`              | `intent_control` + `IntentKind` round-trip |
+//! | `*Ref` handle (`ToneRef`, …)  | `ref_picker_control`          |
 //! | Anything else implementing `VariantEnum` | `variant_enum_control` (by-type fallback) |
+//! | `Rc<dyn Intent>`              | skipped — `Default::default()` |
 //! | Other (`Rc<dyn Fn…>`, etc.)   | skipped — `Default::default()` |
 //!
 //! The type-matching is **syntactic** — we look at the field's
@@ -103,13 +104,8 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                     pub #f_ident: ::runtime_core::Signal<::std::string::String>
                 });
                 // `::runtime_core::signal(v)` (the free fn), NOT
-                // `Signal::new(v)`: on the old core they're the same
-                // function, but the new-core glue facade
-                // (runtime-vocabulary/glue, aliased in as
-                // `runtime_core` by dual-core consumers) only mirrors
-                // the free fn — the world kernel's `Signal<T>` has no
-                // `new` associated fn. Emitting the free fn keeps the
-                // derive core-agnostic (idea-ui-docs new-core build).
+                // `Signal::new(v)`: the world kernel's `Signal<T>` has
+                // no `new` associated fn.
                 init_field_inits.push(quote! {
                     #f_ident: ::runtime_core::signal(::std::string::String::default())
                 });
@@ -180,12 +176,9 @@ pub fn derive_doc_controls(input: TokenStream) -> TokenStream {
                 key_reads.push(quote! { state.#f_ident.get() });
             }
             FieldKind::Intent => {
-                // Legacy `Rc<dyn Intent>` props are no longer the
-                // public surface — component props now hold a
-                // typed `IntentTag` enum, which dispatches through
-                // the `VariantEnum` path below. If a custom
-                // component still uses `Rc<dyn Intent>`, the panel
-                // skips it; the field falls through to
+                // `Rc<dyn Intent>` props get no control (component
+                // props carry tones as `*Ref` handles, handled by
+                // `RefHandle`); the field falls through to
                 // `Default::default()`.
             }
             FieldKind::VariantEnum(ty) => {
@@ -314,7 +307,7 @@ enum FieldKind {
     String,
     Bool,
     OptionString,
-    /// `Rc<dyn Intent>` — uses the hardcoded built-in intent picker.
+    /// `Rc<dyn Intent>` — no control; the field takes `Default::default()`.
     Intent,
     /// A type expected to implement `VariantEnum`. The generated
     /// code uses `all_variants()` on it.
@@ -373,8 +366,7 @@ fn classify_field_type(ty: &Type) -> FieldKind {
     // Variant-enum fallback: simple path types whose name ends in a
     // suffix the stylesheet macro generates (look like
     // `*Size`, `*Kind`, `*Tone`, `*Axis`, `*Padding`, `*Align`,
-    // `*Justify`, `*Gap`, `*Tag` — the latter covers `IntentTag`,
-    // the per-component "which intent" picker). The generated
+    // `*Justify`, `*Gap`, `*Tag`). The generated
     // `VariantEnum` impl exists for these by convention. Anything
     // else falls through to Unknown so we don't get cryptic
     // trait-bound errors.

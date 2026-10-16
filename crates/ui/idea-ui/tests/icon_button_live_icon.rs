@@ -2,12 +2,11 @@
 //! the real `realize` path against `host-mock`:
 //!
 //! - a live `icon` swaps the glyph in place (a light/dark toggle's
-//!   sun ↔ moon). It used to be snapshotted at build.
+//!   sun ↔ moon), not a build-time snapshot.
 //! - the icon's tint follows a theme swap. It's stamped on the icon's own
-//!   node as `.color(move || fg.resolve())`, and that effect never re-ran
-//!   on the new kernel, because `resolve()` read a legacy-arena token
-//!   signal no world effect subscribes to. After a swap to dark, the
-//!   Inspector's icons kept the light theme's dark gray.
+//!   node as `.color(move || fg.resolve())`, so `resolve()` must subscribe
+//!   the world effect to the token; if it doesn't, after a swap to dark
+//!   the icons keep the light theme's dark gray.
 
 use std::rc::Rc;
 

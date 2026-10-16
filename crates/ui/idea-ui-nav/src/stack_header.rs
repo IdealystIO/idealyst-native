@@ -174,9 +174,9 @@ mod tests {
     use super::*;
     use idea_theme::testing::with_test_world;
 
-    // Both header styles must PREMINT. The old spelling was `with_computed`
-    // layers over an empty base — a premint disqualifier, so a StackHeader
-    // in a `--premint-only` app panicked. Worse, the bar is rebuilt per
+    // Both header styles must PREMINT. `with_computed` layers over an empty
+    // base are a premint disqualifier, so a StackHeader in a
+    // `--premint-only` app would panic. Worse, the bar is rebuilt per
     // navigation inside `dynamic`, so even a construction-registered sheet
     // could first construct after the premint dump's crawl; `stylesheet!`
     // registers at LINK time, construction-independent. Fails against the

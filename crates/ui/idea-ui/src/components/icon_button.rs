@@ -2,8 +2,7 @@
 //! extensible Tone + Variant trait surface.
 //!
 //! ```ignore
-//! use idea_ui::extensible::icon_button::{icon_button, IconButtonProps, IconButtonSize};
-//! use idea_theme::extensible::{tone, variant};
+//! use idea_ui::{tone, variant, IconButton, IconButtonSize};
 //!
 //! ui! {
 //!     IconButton(
@@ -254,13 +253,11 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
     // THE ICON CARRIES IT ON ITS OWN NODE, because nothing hands it down:
     // native backends have no style cascade, so an `icon` with no explicit
     // color resolves a SYSTEM constant (`UIColor.labelColor` on iOS) that
-    // bears no relation to whatever its ancestor is painted. This used to
-    // claim the icon "inherits the button's tone text color"; that is a
-    // web-only truth — CSS `color` inherits into the glyph, UIKit has no
-    // such rule — and under it every Filled IconButton painted a dark
-    // glyph on its own dark disc. `Button` stamps its leading/trailing
-    // icons for exactly this reason; this is the same fix on the same
-    // seam.
+    // bears no relation to whatever its ancestor is painted. "The icon
+    // inherits the button's tone text color" is a web-only truth — CSS
+    // `color` inherits into the glyph, UIKit has no such rule — and relying
+    // on it paints a dark glyph on a Filled IconButton's own dark disc.
+    // `Button` stamps its leading/trailing icons for the same reason.
     //
     // One resolve answers every input, because the container application
     // already encodes all of them: the tone × variant appearance arm, the
@@ -488,12 +485,10 @@ mod tests {
     // Regression: nothing hands a color down to the icon. Native backends
     // have no style cascade, so an `icon` with no explicit color resolves a
     // SYSTEM constant — `UIColor.labelColor` on iOS — which bears no
-    // relation to the disc its ancestor painted. This component's comment
-    // used to assert the opposite ("the icon inherits the button's tone
-    // text color"), which is true only on web, where CSS `color` inherits
-    // into the glyph.
+    // relation to the disc its ancestor painted. Only on web does CSS
+    // `color` inherit into the glyph.
     //
-    // Under that assumption a Filled IconButton painted a near-black glyph
+    // Relying on inheritance, a Filled IconButton painted a near-black glyph
     // on its own near-black disc: measured on an iOS 26.5 simulator,
     // container (24, 24, 27) and glyph (0, 0, 0) — a control that is
     // present, sized and pressable, and invisible. `Button` already stamps

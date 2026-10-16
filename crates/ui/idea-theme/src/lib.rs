@@ -152,8 +152,8 @@ pub use theme::{
     DEFAULT_FONT_STACK, INTENT_NAMES, INTENT_SLOTS, PALETTE_NAMES,
 };
 
-// The legacy `Intent` trait + 7 built-in marker types for apps that
-// want custom intents (used by the older closed-enum-style components).
+// The legacy `Intent` trait + 7 built-in marker types. No idea-ui
+// component takes an `Intent`; components use `tone`/`variant`.
 pub use intent::{
     Danger, Info, Intent, IntoRcIntent, Neutral, Primary, Secondary, Success, Warning,
 };

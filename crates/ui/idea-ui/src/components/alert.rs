@@ -45,16 +45,13 @@ use idea_theme::extensible::{
 
 use crate::stylesheets::{AlertContent, TagClose};
 
-// The title/body/`×` text nodes used to COMPOSE their color at the call
-// site: resolve the container fill, copy its foreground onto a fresh
-// anonymous `StyleSheet::r#static`. Native needs the color on the text
-// node itself (no parent-color inheritance off web), but per-instance
-// composition is invisible to the premint dump, so every Alert text
-// node dragged the live style engine into `--premint` builds. The text
-// sheets now carry their own enumerated `appearance` axis
-// (`installed_alert_text_sheets`, built by `AlertSheetBuilder`
-// alongside the fill), so the component just applies the same key it
-// gives the container.
+// Native needs the title/body/`×` color on the text node itself (no
+// parent-color inheritance off web). The text sheets carry their own
+// enumerated `appearance` axis (`installed_alert_text_sheets`, built by
+// `AlertSheetBuilder` alongside the fill), so the component applies the
+// same key it gives the container. Composing the color per instance at
+// the call site would be invisible to the premint dump and pull the live
+// style engine into `--premint` builds.
 
 /// The close affordance shown at an [`Alert`]'s trailing edge.
 ///
@@ -316,8 +313,7 @@ mod tests {
     // via the container appearance, so they vanished on native (no
     // parent-color inheritance). Each text node must carry the intent
     // foreground itself. Assert the title, body, AND close glyph carry the
-    // filled container's resolved color (white intent-primary-solid-text) —
-    // an assertion the old uncolored nodes would have failed.
+    // filled container's resolved color (white intent-primary-solid-text).
     #[test]
     fn regression_filled_alert_text_nodes_carry_intent_text_color() {
         with_test_world(|| {

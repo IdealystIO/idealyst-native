@@ -15,7 +15,7 @@
 //! use idea_ui::{tone, color_token};
 //!
 //! tone! {
-//!     pub Hype using theme {
+//!     pub Hype using self, theme {
 //!         key = "hype",
 //!         fill_bg = color_token!("tone-hype-fill-bg", "#ff00aa"),
 //!         fill_fg = color_token!("tone-hype-fill-fg", "#ffffff"),
@@ -57,14 +57,15 @@
 //!     pub Elevated {
 //!         key = "elevated",
 //!         render(ctx) {
-//!             let mut s = ctx.modifier_defaults();
-//!             s.background = Some(ctx.tone.fill_bg(ctx.theme));
-//!             s.color = Some(ctx.tone.fill_fg(ctx.theme));
-//!             s.shadow = Some(runtime_core::Shadow {
-//!                 x: 0.0, y: 2.0, blur: 8.0,
-//!                 color: runtime_core::Color("rgba(0,0,0,0.18)".into()),
-//!             });
-//!             s
+//!             runtime_core::StyleRules {
+//!                 background: Some(ctx.tone.fill_bg(ctx.theme)),
+//!                 color: Some(ctx.tone.fill_fg(ctx.theme)),
+//!                 shadow: Some(runtime_core::Shadow {
+//!                     x: 0.0, y: 2.0, blur: 8.0,
+//!                     color: runtime_core::Color("rgba(0,0,0,0.18)".into()),
+//!                 }),
+//!                 ..Default::default()
+//!             }
 //!         }
 //!     }
 //! }
@@ -97,8 +98,7 @@
 /// ```
 ///
 /// both take effect — the override is keyed by the field, not by the name
-/// you pass. (Historically a non-canonical name here *silently no-opped*;
-/// that footgun is fixed.) The `name` is only load-bearing for **brand-new
+/// you pass. The `name` is only load-bearing for **brand-new
 /// custom tokens** (e.g. a `tone!`/`variant!` slot whose value reaches a
 /// stylesheet that references the same string) — there it must match the
 /// reader exactly.

@@ -187,8 +187,8 @@ pub struct Colors {
     /// footer row built from `head = true` cells).
     ///
     /// Component-scoped rather than one of the neutrals above: it
-    /// defaults to the same value as `surface_alt` (which is what head
-    /// cells used to read directly), but it is its own token so an app
+    /// defaults to the same value as `surface_alt`, but it is its own
+    /// token so an app
     /// can retint table headers without dragging every other
     /// `surface_alt` consumer — cards, field wells, row hover — along
     /// with it.
@@ -234,8 +234,8 @@ pub struct Radius {
     pub lg: f32,
     // No `pill` field: "fully round" is a property of the BOX, not a number a
     // theme can pick. It is emitted as `Length::Full` and resolved against the
-    // element at paint. The field used to be `999.0`, which stopped being a
-    // pill on any box taller than 1998px.
+    // element at paint. A number like `999.0` stops being a pill on any box
+    // taller than 1998px.
 }
 
 /// Per-variant font size knobs. Each field corresponds to one
@@ -405,9 +405,9 @@ impl IdeaTheme for IdeaThemeRef {
 /// value under the field's canonical name regardless of what the field
 /// itself says (see its comment — that's what makes a non-canonical
 /// `color_token!` override take effect instead of silently no-opping).
-/// That fixes the WRITE side only. The READ side — what a component
-/// sheet emits into a rule — used to hand back the field verbatim, so
-/// the two could disagree:
+/// That fixes the WRITE side only. If the READ side — what a component
+/// sheet emits into a rule — handed back the field verbatim, the two
+/// could disagree:
 ///
 /// - A **literal** field (`Color("#18181b").into()`, the shape a
 ///   hand-rolled `Colors { .. }` produces) emitted a baked hex. Web has
@@ -630,10 +630,10 @@ fn intent_slot_token(intent: &str, slot: &str) -> &'static str {
 /// field? This is the predicate that distinguishes a name idea-ui will
 /// actually resolve from a free-form name that nothing reads.
 ///
-/// The install path ([`ThemeTokens::tokens`]) no longer *depends* on the
+/// The install path ([`ThemeTokens::tokens`]) does not *depend* on the
 /// author using a canonical name — it keys every field off its fixed
 /// canonical name regardless — so a non-canonical `color_token!` override
-/// now WORKS instead of silently no-opping. This predicate exists for
+/// still takes effect. This predicate exists for
 /// tooling/lints (and the regression test) that want to flag a token name
 /// the registry would otherwise ignore.
 pub fn is_canonical_token(name: &str) -> bool {
@@ -676,10 +676,6 @@ pub fn is_canonical_token(name: &str) -> bool {
 //   name read from data). An unknown name returns a transparent/0px
 //   fallback and warns in debug — the loud version of the failure the
 //   typed path makes impossible.
-//
-// The `theme_token!` / `theme_length!` macros that used to live here are
-// gone: they were the compile-checked *string* form, and the vocabulary
-// supersedes them by making the name a path instead of a literal.
 
 /// Flattened canonical intent color token names (`intent-<intent>-<slot>`),
 /// intents in [`INTENT_NAMES`] order, each expanded through [`INTENT_SLOTS`]
@@ -1089,11 +1085,9 @@ fn tok(name: &'static str, fallback: &str) -> Tokenized<Color> {
 ///
 /// Order: `solid_bg, solid_text, soft_bg, soft_text, fg, border`.
 ///
-/// Previously a `fn` that did `Box::leak(format!(...))` for each name,
-/// allocating 6 `&'static str`s on every call. Multiple constructions
-/// of the same theme (hot-reload, fixture teardown, tests) accumulated
-/// duplicate allocations; the compile-time form deduplicates by
-/// pointer.
+/// A macro rather than a `fn` building names with `format!`: the names
+/// must be `&'static str`, and leaking a fresh allocation per theme
+/// construction (hot-reload, fixture teardown, tests) would accumulate.
 macro_rules! intent_colors {
     (
         $name:literal,
@@ -1645,8 +1639,7 @@ mod tests {
             assert_eq!(active_background().0, light_bg.0, "initial theme is light");
 
             dark.set(true);
-            // Old core: `set` runs subscribed effects synchronously (commit is
-            // a no-op). New core: writes stage until the flush `commit()` runs.
+            // Writes stage until the flush `commit()` runs.
             crate::testing::commit();
             assert_eq!(active_background().0, dark_bg.0, "flipping the signal re-themes");
 
@@ -1732,8 +1725,7 @@ mod tests {
         assert_eq!(px(find_length(&toks, "radius-md")), 8.0);
         assert_eq!(px(find_length(&toks, "radius-lg")), 12.0);
         // The pill is NOT a px value: it resolves against the box it paints
-        // on. It used to be `Px(999.0)`, which stopped being round on any box
-        // taller than 1998px.
+        // on; a `Px(999.0)` stops being round on any box taller than 1998px.
         assert_eq!(*find_length(&toks, "radius-pill"), Length::Full);
         // Typography — one token per Typography variant.
         assert_eq!(px(find_length(&toks, "typography-display-size")), 40.0);
@@ -1876,8 +1868,8 @@ mod tests {
     /// install registry off each field's CANONICAL name, so the override's
     /// VALUE lands under `color-surface` / `intent-primary-solid-bg` — the
     /// keys idea-ui's stylesheets actually resolve — regardless of the
-    /// bogus name. Before the fix the value was registered under the bogus
-    /// name and the whole theme silently fell back to idea-ui defaults.
+    /// bogus name. The failure mode is the value registered under the bogus
+    /// name and the whole theme silently falling back to idea-ui defaults.
     #[test]
     fn noncanonical_override_name_still_takes_effect() {
         let mut t = light_theme();
@@ -2257,9 +2249,8 @@ mod tests {
 
     /// An unknown name is a runtime-checked no-panic on the function path:
     /// transparent fallback + still keyed by the name (so it resolves if some
-    /// custom token by that name was installed). The macro path rejects the
-    /// same name at compile time — see the `compile_fail` doctest on
-    /// [`theme_token!`].
+    /// custom token by that name was installed). The typed path
+    /// ([`crate::tokens`]) makes the same name unrepresentable.
     #[test]
     fn unknown_reference_name_falls_back_transparent() {
         assert!(canonical_color("not-a-token").is_none());
