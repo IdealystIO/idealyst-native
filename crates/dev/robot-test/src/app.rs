@@ -30,7 +30,8 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// A connection to the running app under test — the handle a `#[robot_test]`
 /// body receives. Locate elements with [`App::test_id`] / [`App::text`] /
-/// [`App::label`] / [`App::role`]; drive navigation, components and signals
+/// [`App::label`] / [`App::role`]; drive navigation, components, signals and
+/// robot functions ([`App::call_function`])
 /// from here too.
 pub struct App {
     client: RobotClient,
@@ -131,6 +132,15 @@ impl App {
         self.navigate_with("pop", "");
     }
 
+    /// Open `url` as if the OS handed it to the running app (a deep link
+    /// or universal link): observers see it, an interceptor may claim it,
+    /// otherwise the navigators move to it. Returns whether a navigator
+    /// took it (or already showed it). Follow with
+    /// [`assert_path`](Self::assert_path).
+    pub fn open_link(&mut self, url: &str) -> bool {
+        self.call("open_link", json!({ "url": url })) == true
+    }
+
     /// Assert the current navigator's active path is `path`, waiting for it.
     pub fn assert_path(&mut self, path: &str) {
         let desc = format!("assert_path({path:?})");
@@ -168,6 +178,66 @@ impl App {
                 .ok_or_else(|| "no instance is mounted".to_string())
         });
         Component { app: self, instance_id, desc }
+    }
+
+    // --- functions ---
+
+    /// Call the robot function registered as `name` (a `#[robot_fn]`, or an
+    /// SDK's test control such as `location.set`) with named `args`
+    /// (`json!({ "latitude": 52.5, "longitude": 13.4 })`) and return its
+    /// result. Waits for the function to be registered, and for an async
+    /// one to finish, up to the app's timeout. Panics if it fails; see
+    /// [`try_call_function`](Self::try_call_function) to handle that.
+    pub fn call_function(&mut self, name: &str, args: Value) -> Value {
+        self.try_call_function(name, args)
+            .unwrap_or_else(|e| panic!("function {name:?} failed: {e}"))
+    }
+
+    /// [`call_function`](Self::call_function), returning the function's
+    /// failure (its `Err`, or an argument that didn't decode) instead of
+    /// panicking. Still panics when the function never registers or an
+    /// async call outlasts the timeout.
+    pub fn try_call_function(&mut self, name: &str, args: Value) -> Result<Value, String> {
+        let deadline = Instant::now() + self.timeout;
+        // Only "not registered" is retried: the function did not run, so
+        // asking again cannot run it twice.
+        let first = loop {
+            match self.try_call("call_function", json!({ "name": name, "args": args.clone() })) {
+                Ok(v) => break v,
+                Err(e) => {
+                    let e = e.to_string();
+                    if !e.contains("no function named") {
+                        return Err(e);
+                    }
+                    if Instant::now() >= deadline {
+                        panic!("function({name:?}) — still not registered after {:?}: {e}", self.timeout);
+                    }
+                    std::thread::sleep(POLL);
+                }
+            }
+        };
+        if first["done"] == true {
+            return Ok(first["value"].clone());
+        }
+        let call = first["call"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("call_function: unexpected shape {first}"));
+        loop {
+            match self.try_call("poll_function", json!({ "call": call })) {
+                Ok(v) if v["done"] == true => return Ok(v["value"].clone()),
+                Ok(_) if Instant::now() >= deadline => {
+                    panic!("function({name:?}) — still running after {:?}", self.timeout)
+                }
+                Ok(_) => std::thread::sleep(POLL),
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    }
+
+    /// The functions the app registered with the robot.
+    pub fn functions(&mut self) -> Vec<FunctionInfo> {
+        serde_json::from_value(self.call("list_functions", json!({})))
+            .unwrap_or_else(|e| panic!("list_functions: unexpected shape: {e}"))
     }
 
     // --- whole-app ---
@@ -605,6 +675,31 @@ pub struct NavigatorInfo {
     pub is_current: bool,
     #[serde(default)]
     pub controllable: bool,
+}
+
+/// One robot function, as `list_functions` reports it.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FunctionInfo {
+    pub name: String,
+    /// Its doc comment.
+    #[serde(default)]
+    pub doc: String,
+    #[serde(default)]
+    pub args: Vec<FunctionArg>,
+    /// The Rust return type as written.
+    #[serde(default)]
+    pub returns: String,
+    #[serde(default, rename = "async")]
+    pub is_async: bool,
+}
+
+/// One parameter of a [`FunctionInfo`].
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct FunctionArg {
+    pub name: String,
+    /// The Rust type as written.
+    #[serde(rename = "type")]
+    pub ty: String,
 }
 
 /// A mounted component instance — invoke its `#[method]`s, read its props.

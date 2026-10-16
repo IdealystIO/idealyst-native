@@ -217,7 +217,14 @@ pub async fn authorize() -> PermissionStatus {
 /// [`Notification::id`] if set, else a freshly generated id. Posting again
 /// with the same id replaces the existing notification.
 pub async fn notify(n: Notification) -> Result<NotificationId, NotifyError> {
-    imp::notify(n).await
+    runtime_vocabulary::robot_only! {
+        let posted = n.clone();
+    }
+    let outcome = imp::notify(n).await;
+    runtime_vocabulary::robot_only! {
+        robot_controls::record_post(&posted, None, &outcome);
+    }
+    outcome
 }
 
 /// Deliver `n` after `after` has elapsed (a single, one-shot delay).
@@ -230,18 +237,49 @@ pub async fn notify(n: Notification) -> Result<NotificationId, NotifyError> {
 /// [`NotifyError::NotSupported`] there (post from your service worker /
 /// server instead).
 pub async fn schedule(n: Notification, after: Duration) -> Result<NotificationId, NotifyError> {
-    imp::schedule(n, after).await
+    runtime_vocabulary::robot_only! {
+        let posted = n.clone();
+    }
+    let outcome = imp::schedule(n, after).await;
+    runtime_vocabulary::robot_only! {
+        robot_controls::record_post(&posted, Some(after.as_millis()), &outcome);
+    }
+    outcome
 }
 
 /// Cancel the pending/delivered notification with `id`. A no-op if no such
 /// notification exists.
 pub async fn cancel(id: &NotificationId) {
+    runtime_vocabulary::robot_only! {
+        robot_controls::record_cancel(Some(id));
+    }
     imp::cancel(id).await
 }
 
 /// Cancel every pending and delivered notification this app posted.
 pub async fn cancel_all() {
+    runtime_vocabulary::robot_only! {
+        robot_controls::record_cancel(None);
+    }
     imp::cancel_all().await
+}
+
+/// Register this SDK's robot test controls, so an E2E test can assert on
+/// what the app posted without reading the device's notification shade:
+/// `notifications.log` returns every [`notify`] / [`schedule`] (with its
+/// outcome) and [`cancel`] / [`cancel_all`] since launch, and
+/// `notifications.clear_log` empties it. Call once at boot, on the UI
+/// thread; a no-op outside robot (dev) builds.
+pub fn register_robot_controls() {
+    runtime_vocabulary::robot_only! {
+        robot_controls::register();
+    }
+}
+
+// Robot test controls (`notifications.log` / `notifications.clear_log`):
+// only in robot builds.
+runtime_vocabulary::robot_only! {
+    mod robot_controls;
 }
 
 /// The platform's remote-push token for *app-owned* delivery — an APNs

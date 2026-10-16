@@ -84,6 +84,12 @@ pub fn app() -> Element {
     #[cfg(feature = "robot")]
     runtime_vocabulary::robot::watch_signal("count", count);
 
+    // Robot functions a host-side test calls by name (`call_function`).
+    // Registration needs no cfg: it is inert outside robot builds.
+    COUNT.with(|c| c.set(Some(count)));
+    runtime_vocabulary::robot_fn::register(set_count::robot());
+    runtime_vocabulary::robot_fn::register(set_count_later::robot());
+
     // Kick off the E2E suite shortly after mount, once the first render
     // has populated the Robot registry. `after_ms_detached` self-manages
     // its handle (no cancel-on-drop), so a fire-and-forget schedule from
@@ -99,6 +105,62 @@ pub fn app() -> Element {
     }
 
     screen(count, show_secret, name)
+}
+
+thread_local! {
+    /// The counter, for the robot functions below (free functions: they
+    /// can't capture the `app()` local).
+    static COUNT: std::cell::Cell<Option<Signal<i32>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set the counter to `value`.
+#[runtime_core::robot_fn(name = "demo.set_count")]
+fn set_count(value: i32) -> Result<i32, String> {
+    let count = COUNT.with(|c| c.get()).ok_or("the app has not mounted")?;
+    count.set(value);
+    Ok(value)
+}
+
+/// Set the counter to `value` after `delay_ms` — an async robot function:
+/// the bridge answers at once and the test polls until it is done.
+#[runtime_core::robot_fn(name = "demo.set_count_later")]
+async fn set_count_later(value: i32, delay_ms: u32) -> Result<i32, String> {
+    Delay::new(delay_ms).await;
+    set_count(value)
+}
+
+/// A future that resolves after `ms`, on the app's own timer
+/// (`after_ms_detached`), woken through the backend's executor.
+struct Delay {
+    state: std::rc::Rc<std::cell::RefCell<(bool, Option<std::task::Waker>)>>,
+}
+
+impl Delay {
+    fn new(ms: u32) -> Self {
+        let state = std::rc::Rc::new(std::cell::RefCell::new((false, None::<std::task::Waker>)));
+        let fire = state.clone();
+        runtime_core::after_ms_detached(ms as i32, move || {
+            let mut s = fire.borrow_mut();
+            s.0 = true;
+            if let Some(waker) = s.1.take() {
+                waker.wake();
+            }
+        });
+        Delay { state }
+    }
+}
+
+impl std::future::Future for Delay {
+    type Output = ();
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        let mut s = self.state.borrow_mut();
+        if s.0 {
+            std::task::Poll::Ready(())
+        } else {
+            s.1 = Some(cx.waker().clone());
+            std::task::Poll::Pending
+        }
+    }
 }
 
 /// ~1s gives the first layout/paint time to settle before the suite runs.

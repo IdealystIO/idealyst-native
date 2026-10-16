@@ -22,7 +22,7 @@
 //! Each test is the sole mutator of the state it asserts, so they're independent
 //! of run order (the harness also holds the one shared app for a whole test).
 
-use robot_test::{robot_test, App};
+use robot_test::{json, robot_test, App};
 
 /// find → act → assert a signal: clicking the buttons drives the `count` signal
 /// (exposed via `watch_signal` in the app).
@@ -50,4 +50,19 @@ fn the_greeting_follows_the_name_field(app: &mut App) {
     app.test_id("greeting").assert_text("Hello, stranger");
     app.test_id("name").type_text("Ada");
     app.test_id("greeting").assert_text("Hello, Ada");
+}
+
+/// The app's robot functions set state a test would otherwise click its way
+/// to: a sync one answers at once, an async one is polled until done.
+#[robot_test]
+fn robot_functions_set_the_counter(app: &mut App) {
+    let names: Vec<String> = app.functions().into_iter().map(|f| f.name).collect();
+    assert!(names.contains(&"demo.set_count".to_string()), "{names:?}");
+    assert_eq!(app.call_function("demo.set_count", json!({ "value": 5 })), json!(5));
+    app.test_id("counter").assert_text("Counter: 5");
+    assert_eq!(app.call_function("demo.set_count_later", json!({ "value": 9, "delay_ms": 300 })), json!(9));
+    app.signal("count").assert_eq(9);
+    // Leave the counter where the other tests expect it.
+    app.call_function("demo.set_count", json!({ "value": 0 }));
+    app.signal("count").assert_eq(0);
 }

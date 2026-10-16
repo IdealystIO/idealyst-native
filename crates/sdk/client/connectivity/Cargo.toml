@@ -58,6 +58,11 @@ web-glue = { workspace = true }
 # Browser tests (`tests/web_watch.rs`) — run with
 # `cargo test -p connectivity --target wasm32-unknown-unknown` (the
 # workspace runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[dev-dependencies]
+# The robot test controls (`src/robot_controls.rs`) compile only in robot
+# builds; the unit tests turn the vocabulary's `robot` on to reach them.
+runtime-vocabulary = { workspace = true, features = ["robot"] }
+
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 

@@ -17,7 +17,8 @@ and is treated as one.
   builtin primitive registers on mount and deregisters on teardown), the
   [`Robot`] API, and `bridge::invoke_command`, the verb dispatcher.
 - `robot_methods.rs` (components and `#[method]`s), `robot_watch.rs`
-  (`watch_signal`), `robot_props.rs`, `robot_ext.rs` (SDK nodes).
+  (`watch_signal`), `robot_props.rs`, `robot_ext.rs` (SDK nodes),
+  `robot_fn.rs` (functions a test calls by name, `#[robot_fn]`).
 - `crates/runtime/shared/src/robot/` — the transport (TCP bridge, relay
   client) and the registry-independent verbs (`get_logs`, `screenshot`, …).
 - Clients: `crates/dev/robot-test` (`#[robot_test]` host-side tests),
@@ -50,10 +51,11 @@ frame or the window size is unknown).
 |---|---|
 | Web | `isConnected` and `checkVisibility({opacityProperty, visibilityProperty})` |
 | macOS | in a window, not `isHiddenOrHasHiddenAncestor`, `alphaValue` × layer opacity up the chain above ~0 |
-| iOS | in a window, no `isHidden` up the chain, `alpha` × layer opacity above ~0 (compile-checked; not yet run on a simulator) |
+| iOS | in a window, no `isHidden` up the chain, `alpha` × layer opacity above ~0 |
+| Android | `isShown` (attached, `VISIBLE` up the chain), `getAlpha` up the chain above ~0 |
 | Linux | `is_drawable` (visible and mapped), `opacity` up the parent chain above ~0 |
 | Windows | reachable from a root through no hidden node, opacity product above ~0 — the painters' walk |
-| Android, terminal | not yet: the robot falls back on the box alone |
+| Terminal | not yet: the robot falls back on the box alone |
 
 An element with no answer and no frame (a headless host) is visible:
 mounted is all that's known.
@@ -97,15 +99,69 @@ These actions run inside the app, through the framework: they test the
 framework's logic and the backend's widget updates, not the OS's event
 delivery or hit testing.
 
+## Functions
+
+Some things a test needs have no element to act on: seed data, fake a
+location, take the device offline, read what notifications the app posted.
+The app or an SDK registers them as robot functions, and a test calls them
+by name.
+
+```rust
+/// Fill the inbox with `count` sample messages.
+#[robot_fn(name = "demo.seed")]
+fn seed_inbox(count: u32) -> Result<Vec<String>, String> { … }
+
+// At boot, on the UI thread (no cfg: inert outside robot builds):
+runtime_vocabulary::robot_fn::register(seed_inbox::robot());
+```
+
+`#[robot_fn]` keeps the function as written and adds `<name>::robot()`, its
+record (name, doc comment, parameters, return type). The name defaults to
+the function's; SDKs namespace theirs. Arguments arrive as a JSON object
+keyed by parameter name, each decoded with `serde` (a missing `Option` is
+`None`); the return value is encoded back, and a `Result`'s `Err` fails the
+call with its `Display`. Free functions only, no generics or borrowed
+parameters. Only robot builds compile the adapter, so a release build
+carries none of it.
+
+| Verb | Answers |
+|---|---|
+| `list_functions` | `[{name, doc, args: [{name, type}], returns, async}]` |
+| `call_function {name, args}` | `{done: true, value}`, or for an `async fn` `{done: false, call}` |
+| `poll_function {call}` | `{done: false}` while it runs; then `{done: true, value}` (or its error), once |
+
+An async function runs on the backend's executor and never holds the
+bridge: every transport answers each request within its own timeout, and a
+function may take longer. Functions run on the UI thread outside any
+`World`, like an event handler, and the robot settles after each call.
+
+### SDK test controls
+
+| SDK | Register | Functions |
+|---|---|---|
+| `location` | `location::register_robot_controls()` | `location.set {latitude, longitude, accuracy_m?, …}`, `location.clear` |
+| `connectivity` | `connectivity::register_robot_controls()` | `connectivity.set {online, transport?}`, `connectivity.clear` |
+| `notifications` | `notifications::register_robot_controls()` | `notifications.log`, `notifications.clear_log` |
+
+A fake replaces the platform for the SDK's whole surface: `location.set`
+makes `current()` resolve the fix (with no permission prompt) and sends it
+to every live `watch`, and the platform's own updates are dropped until
+`location.clear`. The fakes and their hooks compile only into robot builds
+(`robot_only!` / `robot_select!`). Each SDK's README has the details.
+
+Deep links need no SDK: `open_link {url}` delivers a URL as the OS would
+(below).
+
 ## Other verbs
 
 | Area | Verbs |
 |---|---|
 | Tree | `get_snapshot`, `get_children`, `get_parent`, `count_elements` |
 | Geometry / rendering | `get_frame`, `get_absolute_frame`, `get_device_frame`, `introspect_native`, `introspect_subtree`, `screenshot` |
-| Navigation | `list_navigators`, `get_navigator_state`, `navigate {nav_id, action: push\|replace\|reset\|pop, path}` |
+| Navigation | `list_navigators`, `get_navigator_state`, `navigate {nav_id, action: push\|replace\|reset\|pop, path}`, `open_link {url}` (a deep / universal link, as the OS delivers one: observers, interceptors, then the navigators; answers whether a navigator took it) |
 | Components | `list_components` (mounted instances), `get_component {instance_id}` (live props), `invoke_method {instance_id, method, args}` |
 | Signals | `list_watched_signals`, `read_signal`, `write_signal` (`watch_signal_writable` only), `get_signal_history` |
+| Functions | `list_functions`, `call_function`, `poll_function` (above) |
 | App | `get_logs`, `clear_logs`, `get_identity`, `ping` |
 
 ## Clients
@@ -141,7 +197,9 @@ fn sign_in(app: &mut App) {
   `assert_text_contains`, `assert_value`, `assert_checked`,
   `assert_enabled`, `assert_disabled`, `assert_focused`, `assert_count`.
 - App: `navigate` / `navigate_with` / `back` / `assert_path` /
-  `navigators()`, `component(name).invoke(method, args)` / `.prop(name)`,
+  `navigators()`, `open_link(url)`, `call_function(name, args)` /
+  `try_call_function` / `functions()` (waits for the function to register
+  and for an async one to finish), `component(name).invoke(method, args)` / `.prop(name)`,
   `signal(name).assert_eq` / `.value()` / `.set(v)`, `logs()`,
   `screenshot()`, and `call(verb, args)` for any other verb.
 
@@ -175,5 +233,7 @@ Every verb is reachable: dedicated tools for the element verbs (`find_element`, 
 `get_state`, `set_scroll`, …), `list_navigators` / `get_navigator_state` /
 `navigate`, `list_watched_signals` / `read_signal` / `write_signal`,
 `list_component_instances` / `get_component_instance` / `invoke_method`
-(`list_components` is the *catalog*), and `call_verb` for any verb without
+(`list_components` is the *catalog*), `open_link`, `list_functions` /
+`call_function` (which polls an async function to completion), and
+`call_verb` for any verb without
 its own tool (`get_device_frame`, `get_signal_history`, an SDK's custom verb).

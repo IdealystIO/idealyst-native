@@ -259,6 +259,9 @@ pub(crate) mod robot_highlight;
 // Always compiled (inert without `robot`): extension handlers register
 // their nodes through it unconditionally.
 pub mod robot_ext;
+// Always compiled (inert without `robot`): `#[robot_fn]` emits
+// `robot_fn::…` and SDKs register their test controls unconditionally.
+pub mod robot_fn;
 // Always compiled (stub-shaped without `robot`): every `#[component]`
 // emits `glue::__inspect::…` (and a `#[method]` component `glue::robot::…`)
 // unconditionally (see robot_methods' module docs).

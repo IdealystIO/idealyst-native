@@ -106,6 +106,25 @@ geofencing, geocoding, distance/region math, map rendering (`maps`), and
 reactive `Signal` bindings are deliberately left to higher-level SDKs built on
 top of this one rather than baked in here.
 
+## Robot test controls
+
+For E2E tests (`idealyst test`), a robot (dev) build can fake the position.
+Register the controls once at boot — a no-op in release builds:
+
+```rust
+location::register_robot_controls();
+```
+
+| Function | Effect |
+|---|---|
+| `location.set {latitude, longitude, accuracy_m?, altitude?, heading?, speed?}` | `current()` resolves this fix at once (no permission prompt) and every live `watch` receives it; the platform's own updates are ignored until `location.clear`. `accuracy_m` defaults to 5 m. |
+| `location.clear` | Back to the platform's real position. |
+
+```rust
+app.call_function("location.set", json!({ "latitude": 52.52, "longitude": 13.405 }));
+app.test_id("city").assert_text("Berlin");
+```
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code

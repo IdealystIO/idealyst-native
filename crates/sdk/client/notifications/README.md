@@ -110,6 +110,28 @@ attachments, notification categories/grouping, calendar/recurring schedules,
 and server-side remote-push *delivery* are deliberately later layers, not
 baked in here.
 
+## Robot test controls
+
+A test can't read the device's notification shade, and on a simulator
+without the grant nothing appears there. A robot (dev) build logs what the
+app asked for instead. Register the controls once at boot — a no-op in
+release builds:
+
+```rust
+notifications::register_robot_controls();
+```
+
+| Function | Returns |
+|---|---|
+| `notifications.log` | Every `notify` / `schedule` since launch — `{op, id, title, body, subtitle, data, delay_ms, error}`, `error` set when the post failed (e.g. not authorized) — and every `cancel` (`{op: "cancel", id}`) / `cancel_all`, oldest first. |
+| `notifications.clear_log` | Empties the log. |
+
+```rust
+app.test_id("save").click();
+let log = app.call_function("notifications.log", json!({}));
+assert_eq!(log[0]["title"], "Saved");
+```
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code

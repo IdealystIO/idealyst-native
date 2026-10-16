@@ -157,6 +157,17 @@ pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand::host_fn(attr.into(), item.into()).into()
 }
 
+/// `#[robot_fn]` / `#[robot_fn(name = "…")]` — a function a test can call
+/// by name over the robot bridge. Keeps the function and adds
+/// `<name>::robot()`, its record for `runtime_vocabulary::robot_fn::register`;
+/// arguments are decoded by parameter name from JSON, the result encoded
+/// back, and an `async fn` is driven on the backend's executor. Only robot
+/// builds compile the adapter. See `robot_fn`.
+#[proc_macro_attribute]
+pub fn robot_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
+    expand::robot_fn(attr.into(), item.into()).into()
+}
+
 /// `#[props]` — reactive-by-default props struct. Rewrites each scalar-data
 /// field `T` → `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!`
 /// and have it carry through live, while plain values stay zero-overhead

@@ -113,6 +113,7 @@ mod reactivity;
 mod remote_component;
 mod remote_derive;
 mod host_fn;
+mod robot_fn;
 mod key_derive;
 mod stylesheet;
 mod ui;
@@ -297,6 +298,15 @@ pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     let func = parse_or_return!(item => ItemFn);
     match host_fn::expand(func) {
+        Ok(out) => out,
+        Err(e) => e.to_compile_error(),
+    }
+}
+
+/// `#[robot_fn]`. See [`robot_fn`].
+pub fn robot_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_or_return!(item => ItemFn);
+    match robot_fn::expand(attr, func) {
         Ok(out) => out,
         Err(e) => e.to_compile_error(),
     }

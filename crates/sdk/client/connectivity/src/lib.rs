@@ -130,6 +130,18 @@ mod imp;
 #[cfg(feature = "catalog")]
 mod recipes;
 
+// Robot test controls (`connectivity.set` / `connectivity.clear`): only in
+// robot builds; a release build's `watch` keeps no tap.
+runtime_vocabulary::robot_select! {
+    on: {
+        mod robot_controls;
+        use robot_controls::WatchTap;
+    }
+    off: {
+        type WatchTap = ();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public, platform-agnostic surface.
 // ---------------------------------------------------------------------------
@@ -193,6 +205,11 @@ impl Connectivity {
 /// "should I attempt the request?" check. Use [`watch`] for authoritative,
 /// up-to-the-moment state delivered as it changes.
 pub fn current() -> Connectivity {
+    runtime_vocabulary::robot_only! {
+        if let Some(fake) = robot_controls::fake() {
+            return fake;
+        }
+    }
     imp::current()
 }
 
@@ -226,8 +243,26 @@ pub fn current() -> Connectivity {
 /// not fire on change — see `src/android.rs`. [`current`] is fully
 /// implemented and authoritative on Android regardless.
 pub fn watch(callback: impl Fn(Connectivity) + 'static) -> ConnectivitySubscription {
+    let boxed: WatchCallback = Box::new(callback);
+    let (boxed, tap): (WatchCallback, WatchTap) = runtime_vocabulary::robot_select! {
+        on: { robot_controls::tap_watch(boxed) }
+        off: { (boxed, ()) }
+    };
     ConnectivitySubscription {
-        _inner: imp::watch(Box::new(callback)),
+        _inner: imp::watch(boxed),
+        _robot: tap,
+    }
+}
+
+/// Register this SDK's robot test controls, for E2E tests of offline and
+/// transport-dependent behavior: `connectivity.set {online, transport?}`
+/// fakes the network — [`current`] reports it and every live [`watch`]
+/// receives it, the platform's own reports ignored meanwhile — and
+/// `connectivity.clear` stops faking. Call once at boot, on the UI thread;
+/// a no-op outside robot (dev) builds.
+pub fn register_robot_controls() {
+    runtime_vocabulary::robot_only! {
+        robot_controls::register();
     }
 }
 
@@ -245,6 +280,8 @@ pub(crate) type WatchCallback = Box<dyn Fn(Connectivity) + 'static>;
 pub struct ConnectivitySubscription {
     // The concrete type is backend-specific; its `Drop` does the teardown.
     _inner: imp::Subscription,
+    // Robot builds: keeps the callback reachable by a fake network.
+    _robot: WatchTap,
 }
 
 #[cfg(test)]

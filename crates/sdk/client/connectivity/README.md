@@ -86,6 +86,25 @@ metered / expensive-network flags (`NetworkCapabilities.NET_CAPABILITY_*` /
 to higher-level layers rather than baked in here — this crate establishes the
 raw capability via a plain snapshot + callback.
 
+## Robot test controls
+
+For E2E tests (`idealyst test`), a robot (dev) build can fake the network.
+Register the controls once at boot — a no-op in release builds:
+
+```rust
+connectivity::register_robot_controls();
+```
+
+| Function | Effect |
+|---|---|
+| `connectivity.set {online, transport?}` | `current()` reports it and every live `watch` receives it (if it changed); the platform's own reports are ignored until `connectivity.clear`. `transport` is `wifi` (default), `cellular`, `ethernet` or `other`; offline has none. |
+| `connectivity.clear` | Back to the platform's real state; watches receive it if it differs from the fake. |
+
+```rust
+app.call_function("connectivity.set", json!({ "online": false }));
+app.test_id("offline-banner").assert_visible();
+```
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code

@@ -553,6 +553,30 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Robot functions: tests call app and SDK code by name**
+  (`runtime-vocabulary`, `runtime-macros`, `runtime-macros-expand`,
+  `runtime-core`, `robot-test`, `mcp-server`, `location`, `connectivity`,
+  `notifications`; dev builds only). `#[robot_fn]` on a free function adds
+  `<name>::robot()`, registered with `runtime_vocabulary::robot_fn::register`;
+  a test calls it with `call_function {name, args}` (arguments by parameter
+  name, decoded with serde; a `Result`'s `Err` fails the call), and an
+  `async fn` answers `pending` and is collected with `poll_function`, so a
+  long call never holds the bridge. `list_functions` lists them with their
+  docs and signatures. SDK test controls, registered with each SDK's
+  `register_robot_controls()`: `location.set` / `location.clear` (a fake fix
+  for `current()` and every `watch`, no permission prompt),
+  `connectivity.set` / `connectivity.clear` (a fake network for `current()`
+  and every `watch`), `notifications.log` / `notifications.clear_log` (what
+  the app posted, with each outcome). While faked, the platform's own
+  updates are dropped. The fakes compile only into robot builds
+  (`robot_only!` / `robot_select!`). New verb `open_link {url}` delivers a
+  deep link as the OS does. `robot-test`: `App::call_function` /
+  `try_call_function` / `functions` / `open_link`, and re-exports `json!`;
+  MCP: `list_functions`, `call_function`, `open_link`. The vocabulary's
+  `robot` feature now enables `async-driver`. The demo suite calls a sync
+  and an async function on web, macOS, iOS, Android and Windows. See
+  `docs/robot.md` ("Functions").
+
 - **`random` SDK: random numbers that are the same on every platform**
   (`random`, new). `random::range(1..=6)`, `float`, `bool`, `chance`,
   `shuffle`, `choose` and `u64` draw from a per-thread xoshiro256++

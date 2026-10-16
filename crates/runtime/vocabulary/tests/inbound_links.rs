@@ -283,3 +283,37 @@ fn intercepted_link_waits_until_the_app_routes_it() {
     assert!(shows(&h, root, "SETTINGS"), "{}", h.tree(root));
     drop(realized);
 }
+
+/// The robot's `open_link` verb is the OS's warm link: observers see it,
+/// the navigators move, and it reports whether one did — so an E2E test
+/// drives deep links the same way on every platform.
+#[test]
+fn robot_open_link_routes_like_an_os_link() {
+    use runtime_shared::__serde_json::json;
+    use runtime_shared::inbound_link::observe;
+    use runtime_vocabulary::robot::bridge::invoke_command;
+
+    let h = Harness::new();
+    let (_fx, element) = nested_app(MountPolicy::LazyPersistent);
+    let realized = h.mount(element);
+    let root = one_root(&realized);
+    let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+    let _watch = {
+        let seen = seen.clone();
+        observe(move |url| seen.borrow_mut().push(url.to_string()))
+    };
+
+    assert_eq!(invoke_command("open_link", &json!({ "url": "myapp://settings" })).unwrap(), "true");
+    h.flush();
+    assert!(shows(&h, root, "SETTINGS"), "{}", h.tree(root));
+    assert_eq!(seen.borrow().as_slice(), ["myapp://settings"]);
+
+    assert!(invoke_command("open_link", &json!({})).unwrap_err().contains("'url'"));
+    // Teardown runs effect cleanups, which need the world entered.
+    h.world.enter(|| drop(realized));
+    assert_eq!(
+        invoke_command("open_link", &json!({ "url": "myapp://settings" })).unwrap(),
+        "false",
+        "no navigator is left to take it"
+    );
+}

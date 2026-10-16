@@ -1821,8 +1821,10 @@ pub fn settle() {
 ///
 /// Also served here: `list_components` / `invoke_method` (the
 /// `#[method]` registry), `list_watched_signals` / `read_signal` (the
-/// watch registry), and `list_navigators` / `get_navigator_state` (the
-/// nav registry). Verbs the registry doesn't own at all (`get_logs`,
+/// watch registry), `list_navigators` / `get_navigator_state` (the
+/// nav registry), `list_functions` / `call_function` / `poll_function`
+/// (`robot_fn`) and `open_link` (the inbound-link ingress). Verbs the
+/// registry doesn't own at all (`get_logs`,
 /// `screenshot`, custom commands) return `unknown command: …` — the
 /// transport falls back to its platform path for those (the web relay
 /// client routes them to `runtime_shared::robot::bridge::dispatch`,
@@ -2192,6 +2194,30 @@ pub mod bridge {
                     Some(s) => Ok(nav_snapshot_json(&s)),
                     None => Ok("null".into()),
                 }
+            }
+            "open_link" => {
+                let url = args["url"].as_str().ok_or("missing 'url' argument")?;
+                // What a host does when the OS hands the running app a
+                // link: observers, interceptors, then the navigators — and
+                // the flush it owes (`settle`).
+                let landed = runtime_shared::inbound_link::deliver(url);
+                settle();
+                Ok(landed.to_string())
+            }
+            "list_functions" => Ok(crate::robot_fn::list_json()),
+            "call_function" => {
+                let name = args["name"].as_str().ok_or("missing 'name' argument")?;
+                let fn_args = args
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                // Author code: runs outside the world and settles, like
+                // `invoke_method`.
+                crate::robot_fn::call_json(name, &fn_args)
+            }
+            "poll_function" => {
+                let call = args["call"].as_u64().ok_or("missing 'call' argument")?;
+                crate::robot_fn::poll_json(call)
             }
             _ => Err(format!("unknown command: {cmd}")),
         }

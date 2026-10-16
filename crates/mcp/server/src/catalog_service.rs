@@ -415,6 +415,30 @@ pub struct RobotInvokeMethod {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotOpenLink {
+    /// The URL to deliver, e.g. `myapp://items/42`.
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotCallFunction {
+    /// The function's registered name (from `list_functions`), e.g.
+    /// `location.set`.
+    pub name: String,
+    /// Arguments keyed by parameter name. Omit / pass `{}` for none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    /// How long to wait for an async function to finish, in ms
+    /// (default 10000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotSetScroll {
     /// A ScrollView's element ID.
     pub element_id: u64,
@@ -1585,6 +1609,61 @@ impl CatalogService {
         let app = args.app.clone();
         let body = strip_app(serde_json::to_value(args).unwrap_or_default());
         self.robot_call("get_component", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Open a URL in the running app as if the OS delivered it (a deep link `myapp://items/42` or a universal link `https://example.com/items/42`): the app's link observers see it, an interceptor may claim it, otherwise the navigators move to its path. Returns whether a navigator took it (or already showed it).")]
+    async fn open_link(
+        &self,
+        Parameters(args): Parameters<RobotOpenLink>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("open_link", app.as_deref(), body).await
+    }
+
+    #[tool(description = "List the functions the running app registered with the robot (`#[robot_fn]`, and SDK test controls such as `location.set` / `connectivity.set` / `notifications.log`): [{ name, doc, args:[{name,type}], returns, async }]. Call one with `call_function`.")]
+    async fn list_functions(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("list_functions", args.app.as_deref(), json!({})).await
+    }
+
+    #[tool(description = "Call a function the app registered with the robot (see `list_functions`) with `args` keyed by parameter name, and return its result as JSON. An async function is waited for (up to `timeout_ms`, default 10 s). A failure returns the function's own error message.")]
+    async fn call_function(
+        &self,
+        Parameters(args): Parameters<RobotCallFunction>,
+    ) -> Result<CallToolResult, McpError> {
+        let bridge = self.resolve_bridge(args.app.as_deref()).await?;
+        let body = json!({ "name": args.name, "args": args.args.clone().unwrap_or_else(|| json!({})) });
+        let text = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+        let first = match bridge.call("call_function", body).await {
+            Ok(v) => v,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        };
+        if first["done"] == true {
+            return Ok(CallToolResult::success(vec![Content::text(text(&first["value"]))]));
+        }
+        let Some(call) = first["call"].as_u64() else {
+            return Ok(CallToolResult::error(vec![Content::text(format!("call_function: unexpected reply {first}"))]));
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(args.timeout_ms.unwrap_or(10_000));
+        loop {
+            match bridge.call("poll_function", json!({ "call": call })).await {
+                Ok(v) if v["done"] == true => {
+                    return Ok(CallToolResult::success(vec![Content::text(text(&v["value"]))]))
+                }
+                Ok(_) if std::time::Instant::now() >= deadline => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "function '{}' is still running after {} ms (call {call}; `call_verb` poll_function {{call}} collects it later)",
+                        args.name,
+                        args.timeout_ms.unwrap_or(10_000)
+                    ))]))
+                }
+                Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                Err(e) => return Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+            }
+        }
     }
 
     #[tool(description = "Call any Robot bridge verb by name with JSON `args` and return its raw result — for verbs no dedicated tool covers (custom verbs an SDK or host registered). See docs/robot.md for the verb set.")]
@@ -6268,6 +6347,8 @@ mod tests {
         svc.call_verb(Parameters(RobotRawCall { verb: "get_identity".into(), args: json!({}), app: None }))
             .await
             .unwrap();
+        svc.list_functions(Parameters(RobotAppOnly { app: None })).await.unwrap();
+        svc.open_link(Parameters(RobotOpenLink { url: "myapp://items/4".into(), app: None })).await.unwrap();
 
         let seen = seen.lock().unwrap().clone();
         let expected = vec![
@@ -6282,8 +6363,57 @@ mod tests {
             ("list_components", json!({})),
             ("get_component", json!({ "instance_id": 9 })),
             ("get_identity", json!({})),
+            ("list_functions", json!({})),
+            ("open_link", json!({ "url": "myapp://items/4" })),
         ];
         let got: Vec<(&str, serde_json::Value)> = seen.iter().map(|(c, a)| (c.as_str(), a.clone())).collect();
         assert_eq!(got, expected);
+    }
+
+    /// `call_function` waits for an async robot function: the bridge
+    /// answers `pending` with a call id, and the tool polls
+    /// `poll_function` until the call is done, returning its value.
+    #[tokio::test]
+    async fn call_function_waits_for_an_async_function() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut lines = BufReader::new(r).lines();
+            let mut polls = 0;
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let ok = match (req["cmd"].as_str().unwrap(), req["args"]["name"].as_str()) {
+                    ("call_function", Some("demo.slow")) => json!({ "done": false, "call": 4 }),
+                    ("call_function", _) => json!({ "done": true, "value": req["args"]["args"]["x"] }),
+                    ("poll_function", _) => {
+                        polls += 1;
+                        if polls < 3 { json!({ "done": false }) } else { json!({ "done": true, "value": [1, 2] }) }
+                    }
+                    (cmd, _) => panic!("unexpected verb {cmd}"),
+                };
+                let resp = json!({ "id": req["id"], "ok": ok });
+                w.write_all(format!("{resp}\n").as_bytes()).await.unwrap();
+            }
+        });
+        let svc = CatalogService::with_robot_mode(true, Some(addr.to_string()));
+        let text = |r: CallToolResult| format!("{:?}", r.content);
+
+        let sync = svc
+            .call_function(Parameters(RobotCallFunction { name: "demo.echo".into(), args: Some(json!({ "x": 5 })), timeout_ms: None, app: None }))
+            .await
+            .unwrap();
+        assert_ne!(sync.is_error, Some(true));
+        assert!(text(sync).contains('5'));
+
+        let slow = svc
+            .call_function(Parameters(RobotCallFunction { name: "demo.slow".into(), args: None, timeout_ms: Some(5_000), app: None }))
+            .await
+            .unwrap();
+        assert_ne!(slow.is_error, Some(true), "{slow:?}");
+        let body = text(slow);
+        assert!(body.contains('1') && body.contains('2'), "polled until done: {body}");
     }
 }

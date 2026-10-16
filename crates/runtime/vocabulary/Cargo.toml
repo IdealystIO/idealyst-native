@@ -23,8 +23,10 @@ license.workspace = true
 # slots always exist (so `ui! { view(test_id = …) }` compiles in every
 # build), only the per-mount registration overhead is gated. `serde`
 # carries the `Deserialize` bound of `robot::watch_signal_writable` (the
-# bridge's `write_signal` verb parses the new value as JSON).
-robot = ["dep:serde"]
+# bridge's `write_signal` verb parses the new value as JSON) and the
+# argument decoding of `#[robot_fn]`s; `async-driver` drives an async
+# robot function (`robot_fn`).
+robot = ["dep:serde", "async-driver"]
 
 # `ui-overlay`: the dev-time overlay's RUNTIME half — the per-node tag a
 # patch addresses by, the applier that edits a built `Element`, and the

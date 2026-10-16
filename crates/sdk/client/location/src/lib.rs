@@ -221,6 +221,18 @@ mod imp {
     }
 }
 
+// Robot test controls (`location.set` / `location.clear`): only in robot
+// builds; a release build's `watch` keeps no tap.
+runtime_vocabulary::robot_select! {
+    on: {
+        mod robot_controls;
+        use robot_controls::WatchTap;
+    }
+    off: {
+        type WatchTap = ();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API.
 // ---------------------------------------------------------------------------
@@ -236,6 +248,11 @@ mod imp {
 /// signal / the platform times out, and [`LocationError::NotSupported`] on a
 /// target with no geolocation backend.
 pub async fn current() -> Result<Position, LocationError> {
+    runtime_vocabulary::robot_only! {
+        if let Some(fake) = robot_controls::fake() {
+            return Ok(fake);
+        }
+    }
     // The grant flow is owned by the `permissions` SDK — we never call the OS
     // location-permission API ourselves, only the position-data API below.
     //
@@ -271,8 +288,26 @@ pub async fn current() -> Result<Position, LocationError> {
 #[must_use = "dropping the LocationWatch immediately stops updates"]
 pub fn watch(callback: impl PositionCallback) -> LocationWatch {
     let boxed: BoxedCallback = Box::new(callback);
+    let (boxed, tap): (BoxedCallback, WatchTap) = runtime_vocabulary::robot_select! {
+        on: { robot_controls::tap_watch(boxed) }
+        off: { (boxed, ()) }
+    };
     LocationWatch {
         _handle: imp::start_watch(boxed),
+        _robot: tap,
+    }
+}
+
+/// Register this SDK's robot test controls, for E2E tests that need a
+/// position the device doesn't have: `location.set {latitude, longitude,
+/// accuracy_m?, altitude?, heading?, speed?}` fakes one — [`current`]
+/// resolves it without a permission prompt and every live [`watch`]
+/// receives it, the platform's own updates ignored meanwhile — and
+/// `location.clear` stops faking. Call once at boot, on the UI thread; a
+/// no-op outside robot (dev) builds.
+pub fn register_robot_controls() {
+    runtime_vocabulary::robot_only! {
+        robot_controls::register();
     }
 }
 
@@ -289,6 +324,8 @@ pub fn watch(callback: impl PositionCallback) -> LocationWatch {
 pub struct LocationWatch {
     // The concrete handle is backend-specific; its `Drop` stops updates.
     _handle: imp::WatchHandle,
+    // Robot builds: keeps the callback reachable by a fake position.
+    _robot: WatchTap,
 }
 
 #[cfg(test)]

@@ -395,7 +395,7 @@ pub enum MacroKind {
     /// Component declaration: `#[component]`.
     Component,
     /// Documentation + introspection tooling: `recipe!`, `doc_scope!`,
-    /// `#[derive(IdealystSchema)]`, `#[idealyst_tool]`.
+    /// `#[derive(IdealystSchema)]`, `#[idealyst_tool]`, `#[robot_fn]`.
     Catalog,
 }
 

@@ -281,3 +281,16 @@ inventory::submit! {
         _seal: (),
     }
 }
+
+inventory::submit! {
+    MacroEntry {
+        name: "robot_fn",
+        invocation: "#[robot_fn] / #[robot_fn(name = \"…\")]",
+        kind: MacroKind::Catalog,
+        module_path: "runtime_macros",
+        docs: "Attribute that makes a free function callable by name over the robot bridge, for E2E tests and agents: seed data, fake a location, read app state an element doesn't show. Keeps the function and adds `<name>::robot()`; register it at boot with `runtime_vocabulary::robot_fn::register(f::robot())` (inert outside robot builds, so no cfg). A test calls it with `app.call_function(name, json!({…}))` / the `call_function` MCP tool — arguments by parameter name (serde), the return value as JSON, a `Result`'s `Err` as the failure; an `async fn` is polled to completion. The name defaults to the fn's; SDKs namespace theirs (`location.set`). Free functions only — no generics, `self` or borrowed parameters. See docs/robot.md (Functions).",
+        expansion: "the fn, plus `mod <name> { pub fn robot() -> RobotFunction }`",
+        snippet: "/// ${1:What it does}.\n#[robot_fn(name = \"${2:app.action}\")]\nfn ${3:action}($4) {\n\t$0\n}",
+        _seal: (),
+    }
+}

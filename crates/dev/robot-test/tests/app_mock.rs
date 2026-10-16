@@ -26,6 +26,10 @@ struct Mock {
     /// one look behind the count (a reactive update landing late).
     counter_lag: bool,
     path: String,
+    /// `call_function` calls on "late.fn": registered from the third.
+    late_fn_calls: u32,
+    /// `poll_function` calls on the pending "demo.slow" call.
+    slow_polls: u32,
 }
 
 /// A mock app:
@@ -33,7 +37,9 @@ struct Mock {
 /// - `late` (View 5) mounts on the third look;
 /// - `field` (TextInput 11) is disabled for two attempts, then takes text;
 /// - two TextInputs by role (11, 12);
-/// - one navigator, at `path`.
+/// - one navigator, at `path`;
+/// - robot functions: `demo.count` (sync), `demo.slow` (async, done on the
+///   third poll), `late.fn` (registers on the third call), `demo.fail`.
 fn spawn_mock_app() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -105,6 +111,33 @@ fn respond(cmd: &str, args: &Value, m: &mut Mock) -> Result<Value, String> {
             m.path = args["path"].as_str().unwrap_or("/").into();
             json!("ok")
         }
+        "open_link" => {
+            let url = args["url"].as_str().unwrap_or("");
+            m.path = url.split_once("://").map(|(_, rest)| format!("/{rest}")).unwrap_or_default();
+            json!(true)
+        }
+        "list_functions" => json!([
+            { "name": "demo.count", "doc": "Counts.", "args": [{ "name": "by", "type": "u32" }], "returns": "u32", "async": false },
+            { "name": "demo.slow", "doc": "", "args": [], "returns": "u32", "async": true },
+        ]),
+        "call_function" => match args["name"].as_str() {
+            Some("demo.count") => json!({ "done": true, "value": args["args"]["by"].as_u64().unwrap_or(0) * 10 }),
+            Some("demo.slow") => json!({ "done": false, "call": 9 }),
+            Some("demo.fail") => return Err("the inbox is full".into()),
+            Some("late.fn") => {
+                m.late_fn_calls += 1;
+                if m.late_fn_calls < 3 {
+                    return Err("no function named 'late.fn'; registered: [demo.count]".into());
+                }
+                json!({ "done": true, "value": "late" })
+            }
+            other => return Err(format!("no function named '{}'; registered: [demo.count]", other.unwrap_or(""))),
+        },
+        "poll_function" if args["call"] == 9 => {
+            m.slow_polls += 1;
+            if m.slow_polls < 3 { json!({ "done": false }) } else { json!({ "done": true, "value": 7 }) }
+        }
+        "poll_function" => return Err("no pending call".into()),
         _ => return Err(format!("unknown command: {cmd}")),
     })
 }
@@ -198,6 +231,8 @@ fn navigate_and_wait_for_the_path() {
     app.navigate("/settings");
     app.assert_path("/settings");
     assert_eq!(app.navigators()[0].active_path.as_deref(), Some("/settings"));
+    assert!(app.open_link("myapp://inbox"));
+    app.assert_path("/inbox");
 }
 
 /// A missing element fails after the timeout, saying what it last saw.
@@ -251,4 +286,28 @@ fn visibility_assertions_follow_visible_not_mounted() {
     app.test_id("below").assert_visible();
     let msg = panic_message(|| app.test_id("below").assert_in_viewport());
     assert!(msg.contains("outside the window"), "got: {msg}");
+}
+
+/// A robot function is called by name; an async one is polled until it is
+/// done; one that registers late is waited for; a failure is the
+/// function's own message.
+#[test]
+fn robot_functions_are_called_awaited_and_waited_for() {
+    let mut app = app();
+    assert_eq!(app.call_function("demo.count", json!({ "by": 3 })), json!(30));
+    assert_eq!(app.call_function("demo.slow", json!({})), json!(7), "polled until done");
+    assert_eq!(app.call_function("late.fn", json!({})), json!("late"), "waited for registration");
+    assert_eq!(app.try_call_function("demo.fail", json!({})), Err("the inbox is full".into()));
+
+    let fns = app.functions();
+    assert_eq!(fns.len(), 2);
+    assert_eq!(fns[0].name, "demo.count");
+    assert_eq!(fns[0].args[0].ty, "u32");
+    assert!(fns[1].is_async);
+
+    app.set_timeout(Duration::from_millis(200));
+    let msg = panic_message(|| {
+        app.call_function("never.registered", json!({}));
+    });
+    assert!(msg.contains("still not registered"), "got: {msg}");
 }

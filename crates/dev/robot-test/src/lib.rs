@@ -39,7 +39,7 @@ mod client;
 mod harness;
 pub mod parity;
 
-pub use app::{App, Component, ElementState, Locator, NavigatorInfo, ScrollOffset, SignalAssert, DEFAULT_TIMEOUT};
+pub use app::{App, Component, ElementState, FunctionArg, FunctionInfo, Locator, NavigatorInfo, ScrollOffset, SignalAssert, DEFAULT_TIMEOUT};
 pub use client::{
     default_apps_dir, default_apps_dirs, discover, discover_all, discover_project, RobotClient,
     WINE_APPS_DIR_NAME,
@@ -48,6 +48,8 @@ pub use parity::{capture_native, diff as diff_native, report as report_parity, C
 
 // The attribute macro that turns a function into a `#[test]`.
 pub use robot_test_macros::robot_test;
+/// For building robot-function and verb arguments: `json!({ "value": 5 })`.
+pub use serde_json::{json, Value};
 
 // Called by the `#[robot_test]` expansion — public for the macro, hidden from
 // the authoring surface.
