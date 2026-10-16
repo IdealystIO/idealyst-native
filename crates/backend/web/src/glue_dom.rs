@@ -1,4 +1,4 @@
-//! Listener helpers over `web_glue::dom` (own-web-bindings phase 2).
+//! Listener helpers over `web_glue::dom`.
 //!
 //! Every value the backend holds is a glue handle, so a listener target is
 //! just the node itself — `AsRef<JsValue>` covers every typed class.
@@ -22,8 +22,7 @@ pub(crate) fn listen(
 
 /// Attach `f` to `t` for `ty` for the element's lifetime: the element keeps
 /// the listener alive, and the Rust closure is released when JS collects
-/// the element (see `web_glue::Closure::into_js_value` and
-/// `primitives::own_listener`'s history). For listeners on nodes with no
+/// the element (see `web_glue::Closure::into_js_value`). For listeners on nodes with no
 /// teardown record; anything that must detach earlier uses
 /// `WebBackend::track_listener`.
 pub(crate) fn listen_for_element_lifetime(

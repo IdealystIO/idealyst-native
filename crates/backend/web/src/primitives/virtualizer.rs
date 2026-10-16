@@ -1,9 +1,9 @@
-//! `Element::Virtualizer` — a scrolling `<div>` whose visible-range
+//! The `virtualizer` primitive — a scrolling `<div>` whose visible-range
 //! diff is handled by `runtime/js/virtualizer.js`.
 //!
 //! The shim defines `window.__idealystVirtualizer` (a JS class).
 //! `create` constructs an instance with a callbacks bundle. Each
-//! Rust callback is wrapped in a wasm-bindgen `Closure`; the
+//! Rust callback is wrapped in a glue `Closure`; the
 //! `Closure` handles are *owned* by the backend (not forgotten)
 //! so `release` can destroy them when the surrounding scope drops.
 //!
@@ -18,8 +18,8 @@
 //! below first asks the JS instance to disconnect every listener
 //! (`instance.release()`), THEN drops the closures so any callback
 //! the browser has already queued but not yet dispatched fails
-//! cleanly (wasm-bindgen sees a destroyed Closure — itself a
-//! panic, but a less confusing one than a freed Signal).
+//! cleanly (the glue reports a callback "called after its Rust owner
+//! dropped it" — a less confusing failure than a freed Signal).
 
 use crate::WebBackend;
 use web_glue::JsValue;
@@ -31,9 +31,9 @@ use web_glue::dom::Node;
 /// The `JsValue` is the JS-side `Virtualizer` instance (which the
 /// framework calls back into via `dataChanged()` / `release()`).
 /// The `_closures` Vec is the type-erased holder for the six
-/// wasm-bindgen `Closure`s passed to the JS shim — they must live
+/// glue `Closure`s passed to the JS shim — they must live
 /// at least as long as the JS instance, and dropping them is what
-/// destroys their wasm-bindgen state.
+/// revokes them.
 pub(crate) struct VirtualizerInstance {
     pub(crate) js: JsValue,
     // Type-erased Vec<Box<dyn Any>> so we can hold heterogeneously-
@@ -73,13 +73,11 @@ pub(crate) fn create(
     let id = virt_id;
 
     // 3) Build the JS callbacks object. Each Rust callback is wrapped
-    //    in a Closure so JS can invoke it; we keep the closures alive
-    //    by stashing them as properties on the Virtualizer instance
-    //    (JS holds refs through the instance's lifetime), then `.forget()`
-    //    the Rust-side wrappers.
+    //    in a glue Closure so JS can invoke it; step 5 hands them to the
+    //    JS instance and keeps Rust ownership (never `.forget()`).
     //
-    //    NOTE: wasm-bindgen-typed Closures are FnMut even when the
-    //    underlying Rust closure is Fn — that's fine, we just invoke
+    //    NOTE: the `glue_dom::fn*` helpers take `FnMut` even when the
+    //    underlying Rust closure is `Fn` — that's fine, we just invoke
     //    through the immutable signature.
 
     let item_count_cb = {
@@ -329,7 +327,7 @@ pub(crate) fn create(
     container_node
 }
 
-/// Called from `Backend::release_virtualizer` when the virtualizer's
+/// Called from `VirtualizerOps::release_virtualizer` when the virtualizer's
 /// surrounding scope drops (a `when` branch flip, a `switch` arm
 /// rebuild, `Owner` teardown). Two-phase:
 ///
@@ -371,17 +369,11 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
 
     // Step 2: defer the heavy release work to a microtask. The
     // outer `backend.borrow_mut()` (held by the cleanup Effect's
-    // Drop) is released before the microtask runs, so the
-    // re-entrant `borrow_mut()` from per-item scope drops is safe.
-    //
-    // That re-entrancy is no longer reachable: the handler's teardown
-    // probe now drops every live row BEFORE it takes the borrow, so by
-    // the time this runs the scope map is empty (see
-    // `handlers::virtualizer`'s probe — the same hazard, aborting on a
-    // backend whose frames cannot unwind, which is why iOS died where
-    // web only got this workaround). The deferral stays for its other
-    // half: the JS-side `release()` loop is heavy and has no business
-    // running inside a teardown.
+    // Drop) is released before the microtask runs. Per-item scope
+    // drops can't re-enter here — the handler's teardown probe
+    // (`handlers::virtualizer`) drops every live row BEFORE it takes
+    // the borrow — but the JS-side `release()` loop is heavy and has
+    // no business running inside a teardown.
     runtime_shared::schedule_microtask(move || {
         // Best-effort `release()` call on the JS side. If the
         // method is missing (older shim version), we silently
@@ -395,7 +387,7 @@ pub(crate) fn release(b: &mut WebBackend, node: &Node) {
             }
         }
         // `instance` drops here — `_closures` drops with it,
-        // destroying the wasm-bindgen Closures and dropping their
+        // revoking the glue Closures and dropping their
         // captured user state (the `data` Signal handle, etc.).
         drop(instance);
     });

@@ -3,23 +3,22 @@
 //! author code (the terminal scheduler's `after_ms` timers,
 //! `after_animation_frame` one-shots, `raf_loop` iterations).
 //!
-//! Mirrors `render_wgpu::dispatch_hook` / `backend_web::dispatch_hook`
-//! — the SETTLED new-core flush-driver shape. The new core
-//! ([`crate::newcore`]) stages signal writes; nothing is observable
-//! until the flush driver calls `World::flush`. Author callbacks the
-//! backend installs (press, input, toggle, scroll, …) get their flush
-//! from the dispatch-site glue in `newcore.rs`; author code that runs
-//! from the *scheduler* (an `after_ms` debounce that sets a signal, a
-//! `raf_loop` animation tick) has no wrapped callback — without this
-//! hook a write staged there would sit uncommitted until some unrelated
-//! event happened to trigger a flush.
+//! Same flush-driver shape as `render_wgpu::dispatch_hook` /
+//! `backend_web::dispatch_hook`; this is the canonical explanation the
+//! CPU and Roku backends point to. The runtime ([`crate::newcore`])
+//! stages signal writes; nothing is observable until the flush driver
+//! calls `World::flush`. Author callbacks the backend installs (press,
+//! input, toggle, scroll, …) get their flush from the dispatch-site glue
+//! in `newcore.rs`; author code that runs from the *scheduler* (an
+//! `after_ms` debounce that sets a signal, a `raf_loop` animation tick)
+//! has no wrapped callback — without this hook a write staged there
+//! would sit uncommitted until some unrelated event happened to trigger
+//! a flush.
 //!
-//! This module is **unconditional** (not `new-core`-gated) because the
-//! fire sites live in a *different crate* (`host-terminal`'s scheduler
-//! tick, which cannot see this crate's features). The slot defaults to
+//! The fire sites live in a *different crate* (`host-terminal`'s
+//! scheduler tick), hence the `pub` fn-pointer slot. It defaults to
 //! `None` and every fire is a single thread-local `Cell` read — a no-op
-//! unless `newcore::start` installed the flush driver, so the old core
-//! never pays for it.
+//! unless `newcore::start` installed the flush driver.
 //!
 //! # What deliberately does NOT fire the hook
 //!

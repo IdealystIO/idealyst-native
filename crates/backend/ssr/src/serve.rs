@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use tiny_http::{Header, Response, Server};
 
-/// Configuration for [`serve`].
+/// Configuration for [`newcore::serve`](crate::newcore::serve).
 pub struct ServeConfig {
     /// JS module the served HTML boots to hydrate, e.g.
     /// `Some("/pkg/website.js")`. `None` serves the rendered screen with
@@ -72,12 +72,11 @@ pub fn resolve_bundle_module(static_dir: &Path, lib_name: &str) -> Option<String
 }
 
 
-/// The HTTP mechanism both cores' `serve` entries share: accept loop,
-/// static-asset resolution under `static_dir`, and a fresh-thread
-/// render per route request (a thread per request is the isolation
-/// contract for the OLD core's thread-local reactive arena; the new
-/// core's per-request `World` doesn't need it but is unaffected —
-/// worlds are per-thread-table entries torn down with the render).
+/// The HTTP mechanism behind `newcore::serve`: accept loop, static-asset
+/// resolution under `static_dir`, and a fresh-thread render per route
+/// request — thread-local slots (initial path, viewport, minted-class
+/// guard) start clean, and a render panic is caught at `join` and
+/// served as a 500.
 /// `render_page` maps a route path to the complete HTML document.
 pub(crate) fn serve_loop<P>(addr: &str, config: ServeConfig, render_page: P) -> std::io::Result<()>
 where
@@ -107,7 +106,7 @@ where
         }
 
         // 2) Otherwise render the route. Fresh thread = clean thread-local
-        //    reactive state per request (see the fn docs).
+        //    state per request (see the fn docs).
         let render_page = render_page.clone();
         let req_path = path.clone();
         let html = std::thread::spawn(move || render_page(&req_path))

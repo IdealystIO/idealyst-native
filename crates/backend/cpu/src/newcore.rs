@@ -1,22 +1,12 @@
 //! Rendering: the `runtime_scene::Host` + capability-trait surface, the
 //! boot entry, and the flush driver.
 //!
-//! [`CpuBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration. Every mechanism body in this file was moved here
-//! verbatim from the crate's old `impl runtime_core::Backend for CpuBackend`
-//! when the 159-method mega-trait was deleted, so the rasterizer mechanism code (node allocation,
-//! Taffy layout, hit-testing, `render`)
-//! is unchanged: the same scene paints the same pixels
-//! (pinned by `tests/newcore_parity.rs` against the frozen old-core
-//! framebuffers).
-//! Capabilities this backend does not implement are simply absent — the
-//! caps-trait DEFAULT bodies serve them, and those defaults were audited
-//! byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 128 of this backend's
-//! 152 caps methods resolve to a default).
-//!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! [`CpuBackend`] implements [`runtime_scene::Host`] plus the capability
+//! traits (`runtime_vocabulary::caps`): node allocation, Taffy layout,
+//! hit-testing and `render` are driven from here. The painted pixels are
+//! pinned by the golden framebuffers in `tests/newcore_parity.rs`.
+//! Capability methods this backend does not override fall through to the
+//! caps-trait default bodies.
 //!
 //! # Two layers in one file: mechanism + flush policy
 //!
@@ -48,7 +38,7 @@
 //!
 //! # Flush driver — the dispatch-hook discipline
 //!
-//! The new core stages signal writes; nothing observes them until the
+//! The runtime stages signal writes; nothing observes them until the
 //! driver calls [`World::flush`]. Two delivery mechanisms, identical to
 //! the terminal shape:
 //!
@@ -64,9 +54,7 @@
 //!    interactive dispatch schedules a flush. All other callback-taking
 //!    caps are wrapped uniformly per the template even though the
 //!    backend currently drops them into text placeholders (the wrap
-//!    keeps the delegation mechanically uniform and future-proof — the
-//!    same rationale the terminal file gives for graphics callbacks it
-//!    never fires).
+//!    keeps the delegation mechanically uniform and future-proof).
 //! 2. **Post-dispatch hook** ([`crate::dispatch_hook`]): author code
 //!    that runs from a *scheduler* (`after_ms` debounces, `raf_loop`
 //!    animation ticks) has no wrapped callback. The CPU backend owns NO
@@ -75,8 +63,7 @@
 //!    must fire the hook after each such callback, and headless hosts
 //!    settle via [`flush_sync`] (the embedder contract in
 //!    `dispatch_hook`'s module docs). [`start`] installs
-//!    [`schedule_flush`] into the slot; no-op default, so the old core
-//!    never pays.
+//!    [`schedule_flush`] into the slot.
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
 //! skips re-entrant flushes (`world.is_flushing()`).
@@ -84,23 +71,20 @@
 //! # Viewport source
 //!
 //! [`CpuBackend::set_viewport`] is the one source of truth for the
-//! pixel viewport (the host calls it on every resize). It already
-//! writes the old-core TLS value (which seeds the per-world ctx at
-//! creation); under `new-core` it ALSO forwards through
-//! [`forward_viewport`] into the mounted world's viewport signal —
-//! captured, not injected, so the push stages through the handle and
-//! rides one deduped [`schedule_flush`] (the backend-web
-//! resize-listener discipline). Pixel counts are pushed, matching the
-//! old TLS write — the CPU backend's logical px is one framebuffer
-//! pixel.
+//! pixel viewport (the host calls it on every resize). It writes the
+//! `runtime_shared` viewport TLS value (which seeds the per-world ctx at
+//! creation) and also forwards through [`forward_viewport`] into the
+//! mounted world's viewport signal — captured, not injected, so the
+//! push stages through the handle and rides one deduped
+//! [`schedule_flush`] (the backend-web resize-listener discipline).
+//! Pixel counts are pushed — the CPU backend's logical px is one
+//! framebuffer pixel.
 //!
 //! # Residual seams (named, none silent)
 //!
-//! - The old-core `NavigatorRegistry`/inventory registrars keep serving
-//!   the old path only; new-core navigators are vocabulary built-ins
-//!   (swap/stack), so `Element::Navigator` with an SDK presentation
-//!   type routes through `Backend::create_navigator` exactly as before
-//!   (which, on this backend, renders the visible placeholder).
+//! - Navigators are vocabulary built-ins (swap/stack) mounted through
+//!   `runtime_vocabulary::handlers::navigator`; every `NavigatorOps`
+//!   method resolves to its caps default.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -149,8 +133,7 @@ thread_local! {
 /// the realized tree unmounts before the world (its slots' owner) dies.
 /// The host loop holds this value for the whole session and calls
 /// [`NewCoreApp::stop`] on quit — the reactive teardown must run while
-/// the thread's TLS is intact (same teardown-ordering care the old host
-/// takes with its `Owner`).
+/// the thread's TLS is intact.
 pub struct NewCoreApp {
     realized: Realized<CpuNode>,
     _backend: Rc<RefCell<CpuBackend>>,
@@ -182,7 +165,7 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend.
+/// Mount an element tree into an already-constructed backend.
 ///
 /// The host must have: constructed the backend, installed a scheduler
 /// if it drives one (the flush driver rides `schedule_microtask`;
@@ -232,8 +215,8 @@ pub fn start_with<S, R, B>(
     B: FnOnce() -> Element,
 {
     // Monotonic clock (idempotent, first install wins) — animation and
-    // presence timing read it; the old boot relied on the host's lazy
-    // default, the new boot installs it explicitly like macOS/terminal.
+    // presence timing read it; installed explicitly like macOS/terminal
+    // rather than relying on the host's lazy default.
     let platform = caps::AppEnvOps::platform(&*backend.borrow());
     runtime_shared::time::install_default_time_source(platform);
 
@@ -266,7 +249,7 @@ pub fn start_with<S, R, B>(
     // buffered task may do creation-side work.
     world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
-    // Single-root contract, matching the old-core mount (`find_root`
+    // Single-root contract (`find_root`
     // wants exactly one application root — id 1).
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
@@ -302,7 +285,7 @@ fn set_flush_world(world: Option<World>) {
     FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
@@ -370,13 +353,13 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 }
 
 // ===========================================================================
-// Viewport source (the new-core CPU viewport seam)
+// Viewport source (the CPU viewport seam)
 // ===========================================================================
 
 thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
-    /// outside a new-core boot, so `set_viewport` costs one TLS read
-    /// and nothing else on the old core.
+    /// when no app is booted, so `set_viewport` then costs one TLS read
+    /// and nothing else.
     static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
@@ -386,9 +369,9 @@ fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportS
 }
 
 /// Forward one viewport report (in PIXELS, the CPU backend's logical
-/// px — same value the old TLS write carries) into the mounted world's
-/// viewport ctx. No-op before [`start`] / after teardown. Called by
-/// [`CpuBackend::set_viewport`] right beside the old-core TLS write —
+/// px — same value the `runtime_shared` TLS write carries) into the
+/// mounted world's viewport ctx. No-op before [`start`] / after teardown.
+/// Called by [`CpuBackend::set_viewport`] right beside that TLS write —
 /// the two sinks must never diverge.
 pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     let Some(sig) = VIEWPORT_SINK.with(|s| s.get()) else {
@@ -406,10 +389,7 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
 // ---------------------------------------------------------------------------
 //
 // Each helper wraps an author callback so that, AFTER the author code
-// returns, one deduped flush microtask is queued. Wrapping here (instead
-// of inside the shared Backend code) keeps the old-core path
-// byte-identical: the old core applies writes synchronously and must not
-// pay a flush per event.
+// returns, one deduped flush microtask is queued.
 
 /// Wrap a zero-arg author callback (`on_press`, link `on_activate`, …).
 fn flushing0(f: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
@@ -439,14 +419,13 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// backend_terminal/src/newcore.rs / runtime_vocabulary::bridge — keep
-// mechanically in sync; the AllCaps bound on register_builtins is the
-// compile gate)
+// Host + capability-trait delegation (same layout as
+// backend_terminal/src/newcore.rs; the AllCaps bound on register_builtins
+// is the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for CpuBackend {
@@ -461,15 +440,10 @@ impl Host for CpuBackend {
         }
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // resulting child order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop gives the right child order.
 
-    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
-    /// ignoring the index. `Host` makes the method REQUIRED, so the default
-    /// that used to supply this body is gone — reproduced verbatim rather
-    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// Append, ignoring the index. Never reached in practice:
     /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
     /// regions rebuild wholesale under their own anchor and no positional
     /// splice is ever emitted.
@@ -477,10 +451,7 @@ impl Host for CpuBackend {
         self.insert(parent, child)
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
-    /// inherited (deletion-baseline S2.2). Only meaningful for
-    /// splice-capable hosts; this one is anchored, so the framework never
+    /// No-op. Only meaningful for splice-capable hosts; this one is anchored, so the framework never
     /// calls it.
     fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
         // default: no-op
@@ -496,9 +467,7 @@ impl Host for CpuBackend {
         }
     }
 
-    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
-    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
-    /// it is stated here rather than inherited (deletion-baseline S2.2).
+    /// A plain `create_view` with default a11y.
     ///
     /// TODO(anchor-display-contents): this is NOT a correct anchor. An
     /// unstyled view draws nothing, but it is still a flex item, and a
@@ -523,14 +492,11 @@ impl Host for CpuBackend {
         self.create_view(&AccessibilityProps::default())
     }
 
-    /// Explicit `false` — the port of the old
-    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
-    /// `Host` makes it REQUIRED, so the value is stated here instead of
-    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
-    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
-    /// to `true` would move every reactive region out from under its anchor
-    /// and change the output wholesale. Pinned by a literal assertion in the
-    /// crate's parity suite.
+    /// Explicit `false`: this backend is ANCHORED, which is what the
+    /// committed snapshots in `tests/goldens/` record. Flipping it to
+    /// `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in
+    /// `tests/newcore_parity.rs`.
     fn supports_splice(&self) -> bool {
         false
     }
@@ -996,10 +962,8 @@ impl caps::StyleOps for CpuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Degrade LOUDLY, once. `CPU` has no scrolling gesture model,
         // so `Position::Sticky` renders as `Relative` and
-        // `overscroll-behavior` has nothing to govern. Both were
-        // previously dropped in silence — the exact "no warning,
-        // nothing to grep for" failure `runtime_shared::unsupported`
-        // exists to end.
+        // `overscroll-behavior` has nothing to govern. Warn rather than
+        // drop them silently (`runtime_shared::unsupported`).
         if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
             runtime_shared::unsupported::warn_once(
                 "cpu.sticky",

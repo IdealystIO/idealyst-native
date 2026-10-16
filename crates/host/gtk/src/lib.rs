@@ -118,10 +118,9 @@ where
 /// (codeblock, table, svg, …). Runs after `register_builtins`, mirroring
 /// `host_appkit::run_with`.
 ///
-/// The hook takes the REGISTRY, not the backend: `Element::External` and
-/// the per-backend External table are gone in v2, so a handler that isn't
-/// registered here has no entry at all and realizing that payload panics
-/// by design.
+/// The hook takes the REGISTRY, not the backend: SDK payload handlers
+/// live on the scene registry, so a handler that isn't registered here
+/// has no entry at all and realizing that payload panics by design.
 ///
 /// [`Registry`]: runtime_scene::Registry
 pub fn run_with<R, F>(opts: RunOptions, register: R, build_ui: F) -> i32
@@ -160,9 +159,8 @@ where
     ))));
 
     // Keep the mounted `NewCoreApp` (and the backend) alive for the
-    // window's lifetime. v2 replaced the reactive `Owner` with this: it
-    // owns the realized tree, the registry and the world, and drops them
-    // in field order on `stop()`.
+    // window's lifetime: it owns the realized tree, the registry and the
+    // world, and drops them in field order on `stop()`.
     let keep: Rc<RefCell<Option<(NewCoreApp, Rc<RefCell<LinuxBackend>>)>>> =
         Rc::new(RefCell::new(None));
     let keep_for_activate = keep.clone();
@@ -234,16 +232,14 @@ where
         // for its whole lifetime); a general app would want to gate the
         // pump on "is any animation active" (e.g. off the animation
         // clock's registration count) — a follow-on optimization.
-        // v2 boot: `newcore::start` installs the time source, builds the
+        // Boot: `newcore::start` installs the time source, builds the
         // scene `Registry` (builtins, then the app's own handlers), enters
-        // the world and realizes the tree. It replaces `runtime_core::mount`,
-        // which went away with the old walker.
+        // the world and realizes the tree.
         //
         // `register` runs on the REGISTRY, not the backend: SDK payloads
-        // (codeblock, table, svg, …) install typed handlers there now that
-        // `Element::External` and the per-backend External table are gone.
-        // Passing a no-op here — as this host did briefly — silently left
-        // every SDK unregistered, so any payload realize would panic.
+        // (codeblock, table, svg, …) install typed handlers there. Passing
+        // a no-op here silently leaves every SDK unregistered, so any
+        // payload realize would panic.
         let app_handle = newcore::start(backend_rc.clone(), register, build_ui);
         let backend_for_pump = backend_rc.clone();
         gtk4::glib::source::timeout_add_local(std::time::Duration::from_millis(16), move || {

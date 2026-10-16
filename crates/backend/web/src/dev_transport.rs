@@ -87,8 +87,8 @@ pub struct WebClientHandle {
 
 thread_local! {
     /// The page's one `resize` listener for the runtime-server session,
-    /// replaced (the old one detaching) on every connect. It used to be
-    /// `.forget()`-ed per connect, adding a listener per reconnect.
+    /// replaced (the previous one detaching) on every connect, so a
+    /// reconnect never stacks a second listener.
     static RESIZE_LISTENER: RefCell<Option<Listener>> = const { RefCell::new(None) };
 }
 
@@ -231,8 +231,7 @@ where
     // WebSocket's `error` is a plain `Event`, NOT an `ErrorEvent` —
     // it has no `.message`, `.filename`, `.lineno`. Casting to
     // `ErrorEvent` and reading `.message()` returns JS `undefined`,
-    // which wasm-bindgen rejects with a non-`catch` panic
-    // ("expected a string argument, found undefined"). The close
+    // not a string — there is nothing to log there. The close
     // event's `.reason` is the property that actually carries the
     // human-readable disconnect cause, and the close handler below
     // already logs it.

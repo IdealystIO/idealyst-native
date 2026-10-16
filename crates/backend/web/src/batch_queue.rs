@@ -191,7 +191,8 @@ fn utf16_len(s: &str) -> u32 {
 ///
 /// Same wire shape as `__idealystReleaseTextBatch` already uses —
 /// this factors out the lookup+cache+ship plumbing so each surface
-/// just calls `IdBatch::flush_to(&mut ..., "__idealystReleaseXxxBatch")`.
+/// just names its `__idealystReleaseXxxBatch` function at construction
+/// (`IdBatch::new`) and calls `flush`.
 pub(crate) struct IdBatch {
     ids: Vec<u32>,
     flush_fn: Option<Function>,

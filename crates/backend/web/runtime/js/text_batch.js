@@ -21,8 +21,8 @@
 //     teardown. The Rust side calls it via the same batched flush
 //     so the unregister cost is also O(1).
 //   - `__idealystRegisterText` is a single-pair register; the
-//     create-time path doesn't batch (creates are spread across the
-//     walker's recursion, no natural batch point). Each create
+//     create-time path doesn't batch (creates are spread across
+//     realize's recursion, no natural batch point). Each create
 //     costs one extra FFI hop over the unbatched path.
 (function () {
   if (window.__idealystTextRegistry) return;

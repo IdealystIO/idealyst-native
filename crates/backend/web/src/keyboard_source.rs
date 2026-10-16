@@ -92,8 +92,8 @@ thread_local! {
     static AVOIDERS: RefCell<Vec<(web_glue::JsValue, KeyboardAvoid)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Start observing the soft keyboard. Called at the end of every new-core
-/// boot path, next to the viewport source; replaces any previous source.
+/// Start observing the soft keyboard. Called at the end of every
+/// boot path (`newcore::start_in_with` / hydrate), next to the viewport source; replaces any previous source.
 pub(crate) fn install_keyboard_source() {
     remove_keyboard_source();
     let source = unsafe { web_glue::JsValue::from_raw(js_kb_source()) };
@@ -184,8 +184,8 @@ fn avoid_one(
     in_document != 0
 }
 
-// Browser-side tests (backend-web compiles for wasm32 only). Run per
-// `reference_backend_web_browser_tests`:
+// Browser-side tests (backend-web compiles for wasm32 only). Run with
+// plain cargo, not wasm-pack (see the `tests.rs` module docs):
 //   cd crates/backend/web && CHROMEDRIVER=… WASM_BINDGEN_TEST_ONLY_WEB=1 \
 //   cargo test --target wasm32-unknown-unknown --lib keyboard_source
 #[cfg(test)]

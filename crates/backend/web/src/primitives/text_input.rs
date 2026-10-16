@@ -1,4 +1,4 @@
-//! `Element::TextInput` — an `<input type="text">` with a controlled
+//! The `text_input` primitive — an `<input type="text">` with a controlled
 //! value signal and a per-keystroke `on_change` callback.
 
 use crate::WebBackend;
@@ -21,7 +21,7 @@ pub(crate) fn create(
     secure: bool,
 ) -> Node {
     // Hydration adoption: reuse the SSR `<input>` if the cursor is on
-    // a matching tag. Without this, the walker would build a fresh
+    // a matching tag. Without this, the scene would build a fresh
     // input next to the SSR one and the divergence cascade leaves
     // both in the DOM. Even a leaf input must register with the
     // adoption cursor or every sibling element after it desyncs.
@@ -72,7 +72,7 @@ pub(crate) fn create(
 
 /// Install the author `on_focus` notifier on an existing input/textarea `node`:
 /// DOM `focus` → `handler(true)`, `blur` → `handler(false)`. Backs
-/// `Backend::set_text_input_focus_handler`. The closures are stashed under the
+/// `TextInputOps::set_text_input_focus_handler`. The closures are stashed under the
 /// node id so they live as long as the node. Used by the idea-ui `Field` to
 /// light its bordered shell's ring for an adorned (borderless-input) layout —
 /// the bare `<input>`'s own `:focus` can't style the wrapping shell `<div>`.

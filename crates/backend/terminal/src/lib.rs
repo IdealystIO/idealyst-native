@@ -1,4 +1,4 @@
-//! ASCII / terminal backend for `runtime_shared::Backend`.
+//! ASCII / terminal backend.
 //!
 //! Renders the framework's primitive tree into a character grid. The
 //! companion `host-terminal` crate paints the grid to stdout (ANSI
@@ -12,34 +12,29 @@
 //! **terminal cell** (1 col x 1 row), not pixel — author stylesheets
 //! that say `width: 40` get 40 columns wide.
 
-//! # New core (`new-core` feature)
+//! # Boot path
 //!
-//! The crate also carries the idea-lite (new-core) mount leg:
 //! [`newcore::start`] mounts a scene-element tree on a
 //! `runtime_world::World` through the vocabulary's builtin handlers,
-//! with [`TerminalBackend`] implementing `runtime_scene::Host` + all 30
+//! with [`TerminalBackend`] implementing `runtime_scene::Host` + the
 //! capability traits directly and a dispatch-hook flush driver (input
 //! events → staged writes → one deduped flush before the next paint;
 //! timers through the host scheduler, which fires [`dispatch_hook`]
-//! after author callbacks). The grid mechanism (`render_to_grid`,
-//! hit-testing, Taffy layout) is shared verbatim, so the same scene
-//! paints the same cells on both cores — pinned by
-//! `tests/newcore_parity.rs`. Additive: the old-core mount path is
-//! untouched with or without the feature. The live crossterm loop's
-//! new-core leg is `host_terminal::newcore::run`.
+//! after author callbacks). The rendered cells are pinned by the golden
+//! snapshots in `tests/newcore_parity.rs`. The live crossterm loop is
+//! `host_terminal::newcore::run`.
 
 mod handles;
 mod node;
 mod pointer;
 mod render;
 
-// Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
-// host-terminal's scheduler, which can't see this crate's features);
-// a no-op single Cell read unless `newcore::start` installed the
-// flush driver.
+// Post-dispatch hook slot (the fire sites live in host-terminal's
+// scheduler); a no-op single Cell read unless `newcore::start`
+// installed the flush driver.
 pub mod dispatch_hook;
 
-/// `runtime_scene::Host` + the 30 capability traits on
+/// `runtime_scene::Host` + the capability traits on
 /// [`TerminalBackend`], plus the boot entry and flush driver.
 pub mod newcore;
 
@@ -1061,8 +1056,8 @@ mod regression_tests {
     use runtime_shared::{
         accessibility::AccessibilityProps, animation::AnimProp, StyleRules, Tokenized,
     };
-    // The mechanism now lives on the capability traits (the `Backend`
-    // mega-trait is gone), so the unit tests reach it through them.
+    // The mechanism lives on the capability traits, so the unit tests
+    // reach it through them.
     use runtime_vocabulary::caps::{AnimationOps, ExternalOps, StyleOps, ViewOps};
     use std::rc::Rc;
 
@@ -1217,7 +1212,7 @@ mod regression_tests {
     /// `--terminal` crashed with "create_external not implemented for this
     /// backend". The placeholder is the documented graceful-degradation
     /// path (mirrors macOS/iOS), and it is also what
-    /// `missing_primitive_placeholder` routes through on the new core.
+    /// `missing_primitive_placeholder` routes through.
     #[test]
     fn create_external_renders_placeholder_instead_of_panicking() {
         let mut be = TerminalBackend::new();

@@ -54,12 +54,10 @@
 //!
 //! [`newcore::start`] mounts a scene-element tree on a
 //! `runtime_world::World` through the vocabulary's builtin handlers;
-//! `RokuBackend`'s `runtime_scene::Host` + 30 capability impls live in
-//! [`newcore`]. Every mechanism body moved there verbatim from this
-//! crate's old `impl runtime_core::Backend` when the mega-trait was
-//! deleted, so the emitted command stream is unchanged — pinned against
-//! the old core's frozen streams by `tests/newcore_parity.rs` +
-//! `tests/goldens/`. The flush model is embedder-driven: wrapped author
+//! `RokuBackend`'s `runtime_scene::Host` + capability impls live in
+//! [`newcore`]. The emitted command stream is pinned by the golden
+//! snapshots in `tests/goldens/` (checked by `tests/newcore_parity.rs`).
+//! The flush model is embedder-driven: wrapped author
 //! callbacks land in the [`HandlerTable`], and after dispatching device
 //! events the embedder calls `newcore::settle()` before draining the
 //! queue.
@@ -216,16 +214,16 @@ pub struct RokuBackend {
     handlers: RefCell<HandlerTable>,
     next_node: u64,
     next_handler: u64,
-    /// Signal IDs already shipped via a `CreateSignal` command. The
-    /// walker calls `note_signal_initial` once per binding-per-signal
+    /// Signal IDs already shipped via a `CreateSignal` command.
+    /// `note_signal_initial` is called once per binding-per-signal
     /// pair; deduping here means each signal lands on the wire
     /// exactly once with its snapshot-time initial value.
     created_signals: std::collections::HashSet<u64>,
     /// Stack of in-progress slot-capture buffers. While the stack is
-    /// non-empty, every command produced by the walker is pushed
-    /// onto the top buffer instead of the main `commands` vec.
-    /// Slot bindings (`bind_when!`, `bind_switch!`, `bind_repeat!`)
-    /// open one frame per slot, walk the slot's subtree, then call
+    /// non-empty, every emitted command is pushed onto the top buffer
+    /// instead of the main `commands` vec. A slot binding's caller
+    /// opens one frame per slot (`begin_slot_capture`), builds the
+    /// slot's subtree, then calls
     /// `end_slot_capture(slot_root)` which pops the frame and stores
     /// it in `captured_slots` keyed by the slot's root node id.
     capture_stack: Vec<Vec<RokuCommand>>,
@@ -409,9 +407,8 @@ fn inspect_simple_text_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The mechanism lives on the capability traits (the `Backend`
-    // mega-trait is gone), so these tests reach it through them; `Host`
-    // supplies the structural ops.
+    // The mechanism lives on the capability traits, so these tests
+    // reach it through them; `Host` supplies the structural ops.
     use runtime_scene::Host;
     use runtime_vocabulary::caps::{ButtonOps, LifecycleOps, StyleOps, TextOps, ViewOps};
 

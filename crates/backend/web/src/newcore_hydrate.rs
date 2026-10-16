@@ -1,53 +1,42 @@
-//! Hydration (adopt-mode) boot for the new core — the SSR/SSG
-//! counterpart of [`super::start`] / [`super::start_in`].
+//! Hydration (adopt-mode) boot — the SSR/SSG counterpart of
+//! [`super::start`] / [`super::start_in`].
 //!
 //! [`hydrate`] / [`hydrate_in`] mount a `runtime_scene::Element` tree by
 //! ADOPTING the server-rendered DOM under the mount instead of creating
 //! fresh nodes: the backend is constructed via [`WebBackend::hydrate`],
-//! which arms the OLD core's hydration machinery (the pre-order adoption
+//! which arms `WebBackend`'s hydration machinery (the pre-order adoption
 //! cursor, the mismatch → subtree-remount policy, the microtask
-//! buffering window). Because every `runtime_vocabulary::caps` method on
-//! [`WebBackend`] delegates UFCS-style to the existing `Backend` impl
-//! (see the module docs in `newcore.rs`), the cursor-aware `create_*`
-//! paths — and therefore the whole adoption/mismatch policy — are reused
-//! verbatim; this module only sequences the boot around them.
+//! buffering window). Every `runtime_vocabulary::caps` method on
+//! [`WebBackend`] forwards to the cursor-aware `WebBackend::*_impl`
+//! methods (see the module docs in `newcore.rs`), so the whole
+//! adoption/mismatch policy lives there; this module only sequences the
+//! boot around it.
 //!
-//! # Why adoption lines up with new-core realize order
+//! # Why adoption lines up with realize order
 //!
-//! The cursor adopts in pre-order **creation** order, so adoption is
-//! correct iff the new core calls `create_*` in the same order the old
-//! walker did against the same author tree — which is exactly what the
-//! scene-parity goldens pin (`crates/dev/scene-parity`): the structural
-//! and full-op suites prove the op streams match byte-for-byte, and every
-//! sanctioned divergence in that README is a *teardown-window* ordering
-//! (release/cleanup interleaving, LIFO-vs-creation-order frees, the
-//! skipped virgin-anchor `clear_children`) — none reorders `create_*` at
-//! mount, so none can shift the cursor. Divergence #2 (the new drivers
-//! skip the first-fire `clear_children` on a fresh anchor) is actively
-//! REQUIRED here: under hydration the adopted anchor is NOT empty (it
-//! holds the SSR branch), and clearing it would delete the very nodes the
-//! branch build is about to adopt — the old walker special-cases this
-//! with an explicit `if !hydrating` skip (`when_switch.rs`); the new
-//! drivers never clear on first fire, so the same protection holds by
-//! construction.
+//! The cursor adopts in pre-order **creation** order. SSR
+//! (`backend_ssr`) and this boot realize the same author tree through the
+//! same scene core, so `create_*` order matches by construction
+//! (`crates/dev/scene-parity` pins that order). One driver property is
+//! REQUIRED here: the scene drivers never `clear_children` a fresh
+//! anchor on first fire. Under hydration the adopted anchor is NOT empty
+//! (it holds the SSR branch), and clearing it would delete the very
+//! nodes the branch build is about to adopt.
 //!
 //! # Anchored-mode gate
 //!
 //! SSR renders with `supports_child_splice() == false`, so the server DOM
 //! nests every reactive region (`Dyn` hole, `Keyed` list) under a
-//! `display:contents` anchor `<div>`. The old walker forces the anchored
-//! path during hydration (`view.rs`: `!is_hydrating()` on the spliced
-//! `When`/`Switch` arms) for the same reason; on the new core the
-//! equivalent gate lives in `Host::supports_splice` (`newcore.rs`), which
-//! reports `false` while `is_hydrating()`. Without it the spliced drivers
+//! `display:contents` anchor `<div>`. The client must take the anchored
+//! path while adopting: `Host::supports_splice` (`newcore.rs`) reports
+//! `false` while `is_hydrating()`. Without it the spliced drivers
 //! would adopt the SSR *anchor* as the region's first content node — off
 //! by one tree level — and every following sibling would mismatch (the
 //! `[hydrate] diverge` remount cascade). Regions first mounted AFTER
 //! `finish` clears `is_hydrating` splice as usual; a region adopted
-//! anchored keeps its anchor for its lifetime, same as the old core.
+//! anchored keeps its anchor for its lifetime.
 //!
-//! # Boot sequence (mirrors the old `start_local` hydration path in
-//! `tools/build/web` + `walker.rs::mount`)
+//! # Boot sequence
 //!
 //! 1. `WebBackend::hydrate(selector)` — cursor at the SSR root, microtask
 //!    buffering ON (deferred builds must not escape the adoption window).
@@ -57,20 +46,18 @@
 //!    the server render — the clean-adoption prerequisite).
 //! 3. `world.enter`: build + `realize` (every `create_*` adopts), then
 //!    `drain_buffered_microtasks()` — deferred builds run while the
-//!    cursor is still live, matching `walker.rs`'s drain-before-`finish`.
-//!    Skipping the drain would let deferred subtree builds fire after
+//!    cursor is still live. Skipping the drain would let deferred subtree builds fire after
 //!    `finish` and build FRESH beside the already-adopted DOM
 //!    (duplicated content — the bug the buffering exists to prevent).
-//! 4. `Backend::finish(root)` — exits hydration mode, ends buffering, and
-//!    (root already being the mount's child) leaves the server DOM in
-//!    place: no clear, no flash.
+//! 4. `WebBackend::finish_impl(root)` — exits hydration mode, ends
+//!    buffering, and (root already being the mount's child) leaves the
+//!    server DOM in place: no clear, no flash.
 //! 5. First `world.flush()` + flush-driver (dispatch hook) install —
 //!    identical to [`super::start_in`] from here on.
 //!
-//! # Mismatch policy (ported, not reinvented)
+//! # Mismatch policy
 //!
-//! Inherited wholesale from the old machinery: a tag mismatch parks the
-//! cursor, `hydrate_note_fresh` records the freshly-built node as a
+//! A tag mismatch parks the cursor, `hydrate_note_fresh` records the freshly-built node as a
 //! subtree-local remount root (with a `[hydrate] SSR/client diverge`
 //! `console.warn`), the remount subtree builds fresh, and the
 //! `insert`/`insert_at`/`insert_many` resync swaps it in for the stale
@@ -80,8 +67,7 @@
 //! # Degraded modes
 //!
 //! - Mount has no server DOM (`page_is_prerendered` false): falls through
-//!   to [`super::start_in`] — a plain fresh boot, the same policy as the
-//!   old CLI wrapper's `start_local`.
+//!   to [`super::start_in`] — a plain fresh boot.
 //! - `hydrate` cargo feature off: `WebBackend::hydrate` stubs to
 //!   `WebBackend::new`, so this boot degrades to clear-and-rebuild (same
 //!   flicker as a fresh boot, nothing broken).
@@ -113,15 +99,15 @@
 //!   place, so it always builds fresh. Deferred (microtask) screen
 //!   builds — lazy chunks resolving after `finish` — still take the
 //!   mismatch-remount path rather than adopting.
-//! - ~~Viewport reconciliation~~ CLOSED: the boot now creates the
-//!   per-world viewport ctx (`runtime_vocabulary::viewport`) seeded from
-//!   the SSR viewport, then — post-`finish` — installs the new-core
-//!   resize source and pushes the REAL window size through it, so a
-//!   client window that differs from the server's assumption reconciles
-//!   reactively (mirroring the old boot's post-mount
-//!   `install_viewport_observer` ordering). Old-core seeding (step 2)
-//!   remains — it both protects old-core value reads during the build
-//!   AND is what the world ctx seeds from.
+//!
+//! # Viewport reconciliation
+//!
+//! The per-world viewport ctx (`runtime_vocabulary::viewport`) seeds from
+//! the SSR viewport written in step 2 (which also covers
+//! `runtime_shared` value reads during the build); post-`finish` the boot
+//! installs the resize source and pushes the REAL window size through
+//! it, so a client window that differs from the server's assumption
+//! reconciles reactively.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -132,7 +118,7 @@ use runtime_world::World;
 use super::{schedule_flush, App, APP, FLUSH_WORLD};
 use crate::WebBackend;
 
-/// Boot the new core by adopting server-rendered DOM under `#app`.
+/// Boot by adopting server-rendered DOM under `#app`.
 /// Falls back to a fresh [`super::start`]-style mount when `#app` holds
 /// no server DOM. See the module docs for the full sequence.
 // `#[inline]` is load-bearing, not a perf hint: as a plain `pub` non-generic
@@ -193,12 +179,8 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     // unconditional call (it anchors `NavigatorControl` + drop glue,
     // 10,827 bytes, in nav-less bundles).
     //
-    // `install_url_provider` used to reach this path by riding
-    // `install_scheduler`; `newcore_url_sync::install` never did, so a
-    // PRERENDERED page's outlet navigators registered no URL sync service
-    // at all and pushState/popstate silently did nothing. (The
-    // non-prerendered branch below forwards to `start_in_with`, which
-    // installs both — so only true hydration was affected.) Both run
+    // Without this a PRERENDERED page's outlet navigators register no URL
+    // sync service and pushState/popstate silently do nothing. Both run
     // before the build, which is what the handlers' `resolve_initial`
     // deep-link seed requires.
     S::nav_services(|| {
@@ -210,18 +192,16 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
     #[cfg(feature = "async-driver")]
     crate::install_async_executor();
     // Premint builds: arm the minted-class guard BEFORE any style
-    // attaches, exactly as `start_in_with` does. This path skipped the
-    // install (regression: hydrate boots ran with the guard DISARMED, so
-    // `minted_class_known` answered true for every class and a sheet
-    // whose class had no CSS in the shipped asset stamped it anyway —
-    // silently unstyled instead of engine-fallback/loud-uncrawled). The
-    // non-prerendered branch below forwards to `start_in_with`, whose
-    // second install harmlessly overwrites this one.
+    // attaches, exactly as `start_in_with` does. Without it
+    // `minted_class_known` answers true for every class and a sheet whose
+    // class has no CSS in the shipped asset is silently unstyled instead
+    // of falling back to the engine. The non-prerendered branch below
+    // forwards to `start_in_with`, whose second install harmlessly
+    // overwrites this one.
     #[cfg(idealyst_premint)]
     crate::premint_guard::install_minted_class_guard();
 
-    // No server DOM → nothing to adopt; plain fresh boot. Same
-    // prerendered/fresh dispatch the old CLI wrapper's `start_local` does.
+    // No server DOM → nothing to adopt; plain fresh boot.
     //
     // MUST forward `S`, not call the non-generic `start_in`. Correctness:
     // the fallback would otherwise register a DIFFERENT builtin set than
@@ -272,8 +252,7 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
         // inside their build). A ctx created mid-build seeded from the
         // SSR viewport written above, so the adopted first render
         // agreed with the server about the breakpoint; the REAL window
-        // size is pushed post-finish (below), mirroring the old-core
-        // "observer installed post-mount" reconcile ordering.
+        // size is pushed post-finish (below).
         let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
         (vp_sig, realized)
     });
@@ -328,11 +307,10 @@ pub fn hydrate_in_with<S: runtime_vocabulary::BuiltinSet>(
 }
 
 // ===========================================================================
-// Browser-side tests. backend-web compiles for wasm32 only (see
-// tests.rs) — there is no native-Rust test path for this crate, so ALL
-// coverage lives here. Run with:
-//   cd crates/backend/web
-//   wasm-pack test --headless --chrome -- --features new-core,hydrate
+// Browser-side tests. They need a real DOM — there is no native-Rust
+// test path for this boot, so ALL its coverage lives here. Run
+// as tests.rs's module docs describe, with `--features hydrate` (not
+// `wasm-pack test`, which bypasses the repo's wasm32 test runner).
 // ===========================================================================
 
 #[cfg(test)]
@@ -538,8 +516,7 @@ mod tests {
         super::super::stop();
     }
 
-    /// Mismatch policy (ported from the old core, not reinvented): a
-    /// diverging server node triggers a subtree-local remount — the stale
+    /// Mismatch policy: a diverging server node triggers a subtree-local remount — the stale
     /// SSR node is swapped out for the fresh build IN PLACE, and the
     /// siblings AFTER the divergence still adopt.
     #[cfg(feature = "hydrate")]
@@ -595,7 +572,7 @@ mod tests {
 // Native source-shape pins. The minted-class guard install is
 // `cfg(idealyst_premint)` and its effect (a veto consulted deep inside
 // style attach) only manifests in a full premint browser build — not
-// reachable from wasm-pack unit tests, whose builds don't carry the cfg.
+// reachable from the browser unit tests, whose builds don't carry the cfg.
 // Pinning the source is the closest deterministic test (CLAUDE.md §8):
 // each pin fails the moment the install line disappears from its boot
 // path, which is exactly the regression shape.

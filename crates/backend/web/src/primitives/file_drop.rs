@@ -1,6 +1,6 @@
 //! OS file drag-and-drop delivery for the web backend.
 //!
-//! Implements [`runtime_shared::Backend::install_file_drop_handler`] using the
+//! Implements `InputOps::install_file_drop_handler` using the
 //! HTML5 drag-and-drop events. Four listeners on the subscribed element cover
 //! the drag lifecycle:
 //!

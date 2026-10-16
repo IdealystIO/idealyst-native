@@ -1,4 +1,4 @@
-//! `Element::Link` — a real `<a href>` element.
+//! The `link` primitive — a real `<a href>` element.
 //!
 //! The `<a>` is what makes web link semantics work without
 //! re-implementation: hover URL preview in the status bar,
@@ -87,8 +87,8 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
         on_activate();
     });
     // The anchor owns the listener; its closure is released when JS
-    // collects the anchor (it used to sit in a never-cleared backend
-    // pool for the life of the app).
+    // collects the anchor (not pinned in a backend pool for the life
+    // of the app).
 
     // Hold the on_activate Rc separately so `make_link_handle` can
     // reach it through the node's data attribute (see below). The

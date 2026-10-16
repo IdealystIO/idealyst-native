@@ -1,14 +1,13 @@
-//! `Element::View` — a `<div data-iv>`. Like every native backend's view
-//! it is a flex column: the `data-iv` marker is matched by
+//! The `view` primitive — a `<div data-iv>`. Like every native backend's
+//! view it is a flex column: the `data-iv` marker is matched by
 //! `css::VIEW_FLEX_RESET`, a zero-specificity base-reset rule, so an
 //! author `display` / `flex_direction` always wins.
 //!
-//! Views were plain blocks on web for a while (the old per-node
-//! `.ui-default` class was dropped for its 10k-row layout cost), and a
-//! child's `flex-grow` or percentage height then did nothing inside an
-//! unstyled view: the same layout filled on native and collapsed on web.
-//! Measured when the marker went in: mount + first layout unchanged, a
-//! full relayout of ~3k otherwise-unstyled views 3.4 → 8 ms.
+//! As a plain block, a child's `flex-grow` or percentage height does
+//! nothing inside an unstyled view: the same layout fills on native and
+//! collapses on web. A per-node class costs too much layout at 10k rows;
+//! the marker measured mount + first layout unchanged, a full relayout of
+//! ~3k otherwise-unstyled views 3.4 → 8 ms.
 
 use crate::WebBackend;
 use web_glue::JsCast;
@@ -30,7 +29,7 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
 
 /// Placeholder `<div>` for reactive `when` / `switch` branches.
 ///
-/// The walker creates this as a stable parent that survives across
+/// The scene creates this as a stable parent that survives across
 /// branch swaps. It has no class (no stylesheet is ever attached),
 /// so by default the browser treats it as a plain block-level
 /// `<div>` — which collapses widths inside a flex column and
@@ -40,7 +39,7 @@ pub(crate) fn create(b: &mut WebBackend) -> Node {
 /// tree entirely: its children are promoted to direct children of
 /// the surrounding parent, inheriting the parent's flex / sizing
 /// context as if the anchor weren't there. The anchor still exists
-/// in the DOM (so the walker can `clear_children` + reinsert on
+/// in the DOM (so the scene can `clear_children` + reinsert on
 /// each rebuild), it's just invisible to layout.
 pub(crate) fn create_reactive_anchor(b: &mut WebBackend) -> Node {
     if let Some(el) = b.hydrate_next("div") {
@@ -58,8 +57,8 @@ pub(crate) fn create_reactive_anchor(b: &mut WebBackend) -> Node {
 }
 
 pub(crate) fn insert(parent: &mut Node, child: Node) {
-    // Overlay primitives portal themselves to `<body>` inside
-    // `create_overlay`, so the framework's subsequent
+    // Portals attach themselves to `<body>` inside
+    // `portal::create`, so the framework's subsequent
     // `insert(surrounding_parent, overlay_node)` call would yank
     // the overlay back into the layout tree. The web backend
     // stamps overlay-content containers with

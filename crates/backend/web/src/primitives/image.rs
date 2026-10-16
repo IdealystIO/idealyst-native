@@ -1,4 +1,4 @@
-//! `Element::Image` — an `<img>` with reactive `src`.
+//! The `image` primitive — an `<img>` with reactive `src`.
 
 use crate::WebBackend;
 use runtime_shared::image_src::{self, ImageSrc, RejectReason};
@@ -132,22 +132,22 @@ pub(crate) fn update_src(b: &WebBackend, node: &Node, src: &str) {
 /// Install an `on_load` handler: fire the framework's [`ImageLoadHandler`]
 /// with the decoded bitmap's natural dimensions.
 ///
-/// The `<img>` may already be complete by the time the walker installs
-/// this (a hydrated SSR `<img>` loaded before the wasm booted; a cached
+/// The `<img>` may already be complete by the time the media handler
+/// installs this (a hydrated SSR `<img>` loaded before the wasm booted; a cached
 /// image is complete synchronously), so we check
 /// `HtmlImageElement::complete()` up front and fire — if the `load` event
 /// already fired we would otherwise drop it. If it is merely queued (the
 /// cached case), [`take_replayed`] drops it so `on_load` fires once.
 /// `complete && naturalWidth > 0` distinguishes a decoded image from
 /// a still-loading or errored one. The `<img>` owns the closure (see
-/// [`super::own_listener`]) — same pattern as touch/hover.
+/// `glue_dom::listen_for_element_lifetime`) — same pattern as touch/hover.
 ///
 /// The already-decoded fire is **deferred to a microtask** rather than
-/// invoked inline. This install runs from inside `walker::image::build`
-/// while the backend `RefCell` is `borrow_mut`'d; a user `on_load` that
-/// writes a signal a reactive style depends on would re-enter that same
-/// borrow through the style effect and panic ("RefCell already borrowed",
-/// see `walker/style.rs`). Deferring also matches the browser: a cached
+/// invoked inline. This install runs from inside the vocabulary's image
+/// handler (`handlers/media.rs`) while the backend `RefCell` is
+/// `borrow_mut`'d; a user `on_load` that writes a signal a reactive style
+/// depends on would re-enter that same borrow through the style effect
+/// and panic ("RefCell already borrowed"). Deferring also matches the browser: a cached
 /// `<img>`'s real `load` event dispatches as a queued task, never inline.
 pub(crate) fn install_load(node: &Node, handler: ImageLoadHandler) {
     let Ok(img) = node.clone().dyn_into::<HtmlImageElement>() else {

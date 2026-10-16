@@ -1,4 +1,4 @@
-//! `Element::ActivityIndicator` — a `<span>` with a CSS-animated
+//! The `activity_indicator` primitive — a `<span>` with a CSS-animated
 //! ring. Keyframes are injected once on first creation by
 //! `ensure_spinner_keyframes`.
 

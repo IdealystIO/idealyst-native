@@ -1,9 +1,9 @@
-//! Render-parity tests for the CPU-rasterizer backend: the rule-7 gate
-//! (a scene must paint the exact PIXELS the OLD core painted,
-//! byte-for-byte on `MemSurface`) plus op-level coverage of the caps
-//! adoption's flush discipline (click → staged writes → flush → paint).
+//! Golden-snapshot tests for the CPU rasterizer (a scene must paint
+//! exactly the committed PIXELS, byte-for-byte on `MemSurface`) plus
+//! op-level coverage of the flush discipline (click → staged writes →
+//! flush → paint).
 //!
-//! The pixel-parity suite on the real rasterizer is the live evidence for
+//! The pixel suite on the real rasterizer is the live evidence for
 //! this backend — there is no windowed host to screenshot; the
 //! framebuffer IS the output surface.
 //!
@@ -12,14 +12,13 @@
 //! `install_scheduler` is process-global/first-wins, but the queue state
 //! is thread-local, so each test thread drains only its own tasks.
 //!
-//! # The frozen corpus is the contract
+//! # The committed goldens are the contract
 //!
-//! Every scene below compares against a **frozen old-core framebuffer**
-//! committed under `tests/goldens/` (lossless RGBA8 PNG), written by the
-//! old walker before it was deleted. A mismatch is a real rendering
-//! change, NOT a stale artifact: `IDEALYST_FREEZE_GOLDENS=1` can now only
-//! RE-BASELINE against the current renderer, permanently discarding the
-//! old core's testimony — see `tests/goldens/README.md`.
+//! Every scene below compares against a framebuffer committed under
+//! `tests/goldens/` (lossless RGBA8 PNG) — a snapshot of the current
+//! renderer's output. A mismatch is a real rendering change; re-freeze
+//! with `IDEALYST_FREEZE_GOLDENS=1` only for an intended change — see
+//! `tests/goldens/README.md`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -95,8 +94,8 @@ const CLEAR: [u8; 4] = [0, 0, 0, 255];
 fn fresh_backend() -> Rc<RefCell<CpuBackend>> {
     test_scheduler::ensure_installed();
     let backend = Rc::new(RefCell::new(CpuBackend::new(W, H)));
-    // Seeds the old-core viewport TLS (which the new core's per-world
-    // ctx reads at creation) — the pre-mount half of the viewport seam.
+    // Seeds the `runtime_shared` viewport TLS (which the per-world ctx
+    // reads at creation) — the pre-mount half of the viewport seam.
     backend.borrow_mut().set_viewport(W, H);
     backend
 }
@@ -121,14 +120,14 @@ fn assert_pixels_identical(name: &str, old: &[u8], new: &[u8]) {
 }
 
 // ---------------------------------------------------------------------------
-// Frozen-artifact gate
+// Golden gate
 // ---------------------------------------------------------------------------
 
 fn goldens() -> parity_goldens::Goldens {
     parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The gate: the rendered framebuffer must match the frozen old-core PNG
+/// The gate: the rendered framebuffer must match the committed golden PNG
 /// pixel-for-pixel.
 fn check_new_frame(name: &str, new: &[u8]) {
     goldens().check_rgba(name, W, H, new);
@@ -169,14 +168,13 @@ fn sized(width: f32, height: f32, background: &str) -> StyleRules {
 }
 
 // ===========================================================================
-// 1. Full-scene pixel parity: styled view trees
+// 1. Full-scene golden: styled view trees
 // ===========================================================================
 
-/// The rule-7 gate for the view path: nested views exercising every
-/// paint feature the rasterizer has — backgrounds, per-side borders,
-/// corner radii, a linear gradient, opacity (composited against the
-/// parent), and a static translate — must produce byte-identical
-/// framebuffers on both cores.
+/// The view path: nested views exercising every paint feature the
+/// rasterizer has — backgrounds, per-side borders, corner radii, a
+/// linear gradient, opacity (composited against the parent), and a
+/// static translate — must match the golden framebuffer byte-for-byte.
 #[test]
 fn newcore_styled_view_tree_pixel_parity() {
     fn root_rules() -> StyleRules {
@@ -238,9 +236,9 @@ fn newcore_styled_view_tree_pixel_parity() {
 // 2. Text: fg color + font-size scale
 // ===========================================================================
 
-/// Text parity through the 8x8 bitmap-font path: default-scale white
-/// text and a `font_size: 16px` (scale-2) colored line must rasterize
-/// identical glyph pixels on both cores.
+/// Text through the 8x8 bitmap-font path: default-scale white text and
+/// a `font_size: 16px` (scale-2) colored line must rasterize the golden
+/// glyph pixels.
 #[test]
 fn newcore_text_color_and_font_scale_pixel_parity() {
     fn root_rules() -> StyleRules {
@@ -281,7 +279,7 @@ fn newcore_text_color_and_font_scale_pixel_parity() {
 /// Button (label through the Text paint path), pressable (View paint +
 /// on_click slot), and a scroll_view that CLIPS an oversized child to
 /// its own frame — the three interactive/container kinds the backend
-/// implements natively — paint identically on both cores.
+/// implements natively — match the golden frame.
 #[test]
 fn newcore_button_pressable_scrollview_pixel_parity() {
     fn root_rules() -> StyleRules {
@@ -334,10 +332,10 @@ fn newcore_button_pressable_scrollview_pixel_parity() {
 // ===========================================================================
 
 /// A conditional branch between static siblings (`dyn_keyed`) must paint
-/// the old core's frozen pixels for BOTH initial states. This backend is
+/// the golden pixels for BOTH initial states. This backend is
 /// anchorless-incapable (no splice, see the splice-contract test), so the
 /// branch mounts under a reactive anchor view that participates in flex
-/// layout — exactly as the old walker's `when` did.
+/// layout.
 #[test]
 fn newcore_dyn_branch_pixel_parity_both_initial_states() {
     fn root_rules() -> StyleRules {
@@ -391,8 +389,8 @@ fn newcore_dyn_branch_pixel_parity_both_initial_states() {
 }
 
 /// A keyed list ([1, 2, 3], key = the number) between static header and
-/// footer — old-core `each_keyed` vs new-core `keyed` — paints its rows
-/// (size + color varying per key) identically on both cores.
+/// footer paints its rows (size + color varying per key) to match the
+/// golden frame.
 #[test]
 fn newcore_keyed_list_pixel_parity() {
     fn root_rules() -> StyleRules {
@@ -433,7 +431,7 @@ fn newcore_keyed_list_pixel_parity() {
 }
 
 // ===========================================================================
-// 4b. Caps-breadth scene (guards the de-trait pass's default resolution)
+// 4b. Caps-breadth scene (guards caps default resolution)
 // ===========================================================================
 
 /// COVERAGE BREADTH: every remaining leaf primitive this backend has a
@@ -442,12 +440,10 @@ fn newcore_keyed_list_pixel_parity() {
 /// which the CPU backend does NOT implement and therefore resolves to a
 /// **trait default** (`create_link` → `create_view`).
 ///
-/// Why this scene exists: the deletion wave converts each backend's
-/// caps impls off the `Backend` trait, at which point every
-/// default-resolved method stops resolving to a `Backend` default and
-/// starts resolving to a **caps** default. A silently-differing default
-/// would change behavior invisibly. Freezing a frame that actually
-/// paints these primitives makes such a change fail loudly here.
+/// Why this scene exists: methods this backend does not override resolve
+/// to **caps** defaults, and a silently-changed default would change
+/// behavior invisibly. A golden frame that actually paints these
+/// primitives makes such a change fail loudly here.
 ///
 /// The CPU rasterizer renders each unsupported leaf as its diagnostic
 /// placeholder string through the same bitmap-font path, so the frame
@@ -526,8 +522,8 @@ fn newcore_caps_breadth_leaf_primitives_pixel_parity() {
 // 5. Input events → staged writes → flush → paint (the driver contract)
 // ===========================================================================
 
-/// The click scene both the flush-discipline test and its old-core
-/// reference leg mount: a reactive count readout over an absolutely
+/// The click scene the flush-discipline test mounts: a reactive count
+/// readout over an absolutely
 /// positioned pressable (fixed hit coordinates — the CPU backend has no
 /// text-scan diagnostics like the terminal's grid rows).
 const PRESS_X: u32 = 20;
@@ -550,17 +546,16 @@ fn press_target_rules() -> StyleRules {
     })
 }
 
-/// REGRESSION (flush discipline): on the new core a click handler's
+/// REGRESSION (flush discipline): a click handler's
 /// `Signal::update` is STAGED — nothing observable until the flush
 /// driver commits. The caps layer wraps `create_pressable`'s on_click,
 /// so the closure `dispatch_click` returns IS the wrapped one: firing
 /// it queues one deduped flush microtask; the host's drain then commits
 /// it before the next paint. The test pins all three phases — pixels
 /// UNCHANGED after the handler fires (still staged), changed after the
-/// drain, and byte-identical to the old core after the same click.
+/// drain, and both frames matching their goldens.
 #[test]
 fn newcore_click_commits_via_flush_before_next_paint() {
-    // --- new-core leg ---
     let backend = fresh_backend();
     let app = backend_cpu::newcore::start(backend.clone(), |_| {}, move || {
         use runtime_vocabulary::builders::{pressable, text, view};
@@ -601,8 +596,8 @@ fn newcore_click_commits_via_flush_before_next_paint() {
     assert!(after != before, "flush must commit the click before the next paint");
     app.stop();
 
-    // Both frames of the click cycle against the frozen old-core
-    // reference — the pre-click paint AND the post-flush paint — so a
+    // Both frames of the click cycle against the goldens — the
+    // pre-click paint AND the post-flush paint — so a
     // regression in either the initial render or the commit path fails.
     check_new_frame("click_before.png", &before);
     check_new_frame("click_after.png", &after);
@@ -612,13 +607,9 @@ fn newcore_click_commits_via_flush_before_next_paint() {
 // 6. Op-level caps adoption
 // ===========================================================================
 
-/// The structural seam must stay ANCHORED. `supports_child_splice` used
-/// to be a `Backend` trait DEFAULT here (the CPU backend never overrode
-/// it); `Host` makes it REQUIRED, so `newcore.rs` now carries an explicit
-/// body reproducing that default — see
-/// docs/runtime-v2-deletion-baseline.md §2.2. A silent flip to spliced
+/// The structural seam must stay ANCHORED. A silent flip to spliced
 /// would move reactive regions out from under their anchor view and
-/// change layout in every frozen PNG, so pin the literal here.
+/// change layout in every golden PNG, so pin the literal here.
 #[test]
 fn newcore_host_splice_is_anchored() {
     use runtime_scene::Host;
@@ -705,8 +696,8 @@ fn newcore_set_viewport_forwards_into_world() {
 // Patterned borders (dashed / dotted)
 // ===========================================================================
 //
-// No frozen golden exists for these — the old core never drew a pattern —
-// so they assert the pattern's structure on the real framebuffer instead.
+// No golden exists for these, so they assert the pattern's structure on
+// the real framebuffer instead.
 
 /// A 60×30 box at the origin with a uniform 2px white border in `style`.
 fn patterned_border_frame(style: Option<runtime_shared::BorderStyle>) -> Vec<u8> {

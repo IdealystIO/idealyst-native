@@ -76,9 +76,8 @@ fn image_card(w: f32, h: f32, fit: ObjectFit) -> Rc<StyleSheet> {
 
 /// A 64×64 diagonal gradient as an SVG document. Shipped to `image()` as a
 /// percent-encoded `data:` URI — a `src` every backend loads
-/// (`docs/image-src.md`). This example used to stage a BMP to `%TEMP%` and
-/// load it by `file://` URL, which the contract rejects: `file:` is readable
-/// on some platforms only.
+/// (`docs/image-src.md`). Not a `file://` URL: the contract rejects `file:`,
+/// which is readable on some platforms only.
 const GRADIENT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
 <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
 <stop offset="0" stop-color="#0000c8"/><stop offset="1" stop-color="#ffffc8"/>

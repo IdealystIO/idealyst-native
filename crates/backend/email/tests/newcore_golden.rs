@@ -1,24 +1,21 @@
 //! Golden-output corpus: the email backend's rendered output must match
-//! the **frozen bytes the OLD core produced** for the same logical
-//! template, exactly, with **zero normalization**.
+//! the committed snapshots in `tests/goldens/` exactly, with **zero
+//! normalization**.
 //!
 //! Model: `backend-ssr/tests/newcore_byte_identity.rs`.
 //!
-//! # The frozen corpus is the contract
+//! # The golden corpus is the contract
 //!
 //! Each item compares this crate's render against
 //! `tests/goldens/<item>.html` plus `tests/goldens/<item>.txt` (which
-//! carries the subject header + the plaintext alternative). Those files
-//! were written by the old walker + `Element` render path before it was
-//! deleted; a mismatch means a real behavior change, NOT a stale
-//! artifact. `IDEALYST_FREEZE_GOLDENS=1` can now only RE-BASELINE against
-//! the current renderer, permanently discarding the old core's testimony
-//! — see `tests/goldens/README.md`.
+//! carries the subject header + the plaintext alternative). A mismatch
+//! means a real rendering change, NOT a stale artifact. Re-freeze with
+//! `IDEALYST_FREEZE_GOLDENS=1` only for an intended change — see
+//! `tests/goldens/README.md`.
 //!
-//! For the headline item this matters most: `idea_ui_mail_welcome.{html,txt}`
-//! is the last artifact in the tree that records what the REAL
-//! idea-ui-mail welcome template rendered to under the old core. The
-//! builder replica below must stay in lockstep with
+//! The headline item, `idea_ui_mail_welcome.{html,txt}`, records what the
+//! REAL idea-ui-mail welcome template renders to. The builder replica
+//! below must stay in lockstep with
 //! `crates/ui/idea-ui-mail/src/lib.rs`; if the components change, the
 //! replica and the golden move together and the diff is the substance of
 //! the change.
@@ -47,7 +44,7 @@ fn goldens() -> parity_goldens::Goldens {
     parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The gate: the rendered email must match the frozen old-core bytes
+/// The gate: the rendered email must match the committed goldens
 /// exactly (html + subject + plaintext), with no normalization.
 fn assert_matches_frozen(name: &str, email: &RenderedEmail) {
     goldens().check_text(&format!("{name}.html"), &email.html);
@@ -388,9 +385,7 @@ fn golden_idea_ui_mail_welcome_template() {
 // 6. The anchoring contract the goldens depend on
 // ===========================================================================
 
-/// `Host::supports_splice` used to be inherited from a `Backend` trait
-/// DEFAULT (`false`); `Host` makes it required, so the value is now an
-/// explicit body in `newcore.rs`. Every frozen artifact in
+/// `Host::supports_splice` must stay `false`. Every golden in
 /// `tests/goldens/` was recorded in ANCHORED mode — flipping this to
 /// `true` would move reactive regions out from under their anchor
 /// `<div>`s and change the emitted HTML wholesale.

@@ -1,6 +1,6 @@
 //! Web-specific deferred-drop policy for the framework reactive system.
 //!
-//! `runtime-core::Scope::drop` hands its drained effect closures + scope
+//! `runtime_shared::reactive::Scope::drop` hands its drained effect closures + scope
 //! guards to whatever policy has been installed via
 //! `runtime_shared::install_drop_deferral`. The web backend installs the
 //! `defer` function below, which:
@@ -9,8 +9,8 @@
 //! 2. Schedules a `requestAnimationFrame` callback to drain them in slices.
 //!
 //! Why deferral matters on web (it doesn't on native): each box typically
-//! holds a wasm-bindgen `Closure` whose `Drop` releases a JS-side handle
-//! through `__wbindgen_drop_closure`. The web backend's benchmark suite
+//! holds a glue `Closure` whose `Drop` releases a JS-side handle. The
+//! web backend's benchmark suite
 //! measures `apply` as the synchronous JS cost of `set_rows(...)`. A
 //! microtask scheduled during the rebuild runs *immediately* after the
 //! rebuild's awaiting Promise resolves — same event-loop turn, but not
@@ -20,12 +20,9 @@
 //! tick per display refresh, paused while the page isn't repainting), so
 //! the queue empties between iterations without compounding.
 //!
-//! Pre-refactor this whole machinery lived behind
-//! `#[cfg(target_arch = "wasm32")]` in `runtime-core/src/reactive.rs`,
-//! which violated the framework-purity rule (no platform-specific
-//! implementations in `framework/`). Moving it here is the framework-
-//! purity fix; runtime-core just exposes a portable `install_drop_
-//! deferral` seam.
+//! The policy lives here, not in the reactive core, so the core stays
+//! platform-agnostic: `runtime_shared` only exposes the portable
+//! `install_drop_deferral` seam.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};

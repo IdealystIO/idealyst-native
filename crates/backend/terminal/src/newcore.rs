@@ -1,22 +1,12 @@
 //! Rendering: the `runtime_scene::Host` + capability-trait surface, the
 //! boot entry, and the flush driver.
 //!
-//! [`TerminalBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration. Every mechanism body in this file was moved here
-//! verbatim from the crate's old `impl runtime_core::Backend for TerminalBackend`
-//! when the 159-method mega-trait was deleted, so the grid mechanism code (node allocation, Taffy
-//! layout, hit-testing, `render_to_grid`)
-//! is unchanged: the same scene renders to the same cells
-//! (pinned by `tests/newcore_parity.rs` against the frozen old-core grid
-//! dumps).
-//! Capabilities this backend does not implement are simply absent — the
-//! caps-trait DEFAULT bodies serve them, and those defaults were audited
-//! byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 120 of this backend's
-//! 152 caps methods resolve to a default).
-//!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! [`TerminalBackend`] implements [`runtime_scene::Host`] plus the
+//! capability traits (`runtime_vocabulary::caps`): node allocation, Taffy
+//! layout, hit-testing and `render_to_grid` are driven from here. The
+//! rendered cells are pinned by the golden snapshots in
+//! `tests/newcore_parity.rs`. Capability methods this backend does not
+//! override fall through to the caps-trait default bodies.
 //!
 //! # Two layers in one file: mechanism + flush policy
 //!
@@ -48,7 +38,7 @@
 //!
 //! # Flush driver — the dispatch-hook discipline
 //!
-//! The new core stages signal writes; nothing observes them until the
+//! The runtime stages signal writes; nothing observes them until the
 //! driver calls [`World::flush`]. Two delivery mechanisms, identical to
 //! the wgpu/macOS shape:
 //!
@@ -65,9 +55,9 @@
 //!    that runs from the *scheduler* (`after_ms` debounces, `raf_loop`
 //!    animation ticks) has no wrapped callback; `host-terminal`'s tick
 //!    fires the hook after each such callback ([`start`] installs
-//!    [`schedule_flush`] into the slot; no-op default, so the old core
-//!    never pays). Microtasks deliberately do NOT fire the hook — the
-//!    flush itself rides one (see `dispatch_hook`'s module docs).
+//!    [`schedule_flush`] into the slot). Microtasks deliberately do NOT
+//!    fire the hook — the flush itself rides one (see `dispatch_hook`'s
+//!    module docs).
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
 //! skips re-entrant flushes (`world.is_flushing()`).
@@ -75,22 +65,19 @@
 //! # Viewport source
 //!
 //! [`TerminalBackend::set_viewport`] is the one source of truth for the
-//! cell viewport (the host calls it on every resize). It already writes
-//! the old-core TLS value (which seeds the per-world ctx at creation);
-//! under `new-core` it ALSO forwards through [`forward_viewport`] into
-//! the mounted world's viewport signal — captured, not injected, so the
+//! cell viewport (the host calls it on every resize). It writes the
+//! `runtime_shared` viewport TLS value (which seeds the per-world ctx at
+//! creation) and also forwards through [`forward_viewport`] into the
+//! mounted world's viewport signal — captured, not injected, so the
 //! push stages through the handle and rides one deduped
 //! [`schedule_flush`] (the backend-web resize-listener discipline).
-//! Cell counts are pushed, matching the old TLS write — the terminal's
-//! logical px is one cell.
+//! Cell counts are pushed — the terminal's logical px is one cell.
 //!
 //! # Residual seams (named, none silent)
 //!
 //! - Navigators are vocabulary built-ins (swap/stack) mounted through
-//!   `runtime_vocabulary::handlers::navigator`; the backend-side
-//!   `NavigatorRegistry` + inventory registrars the old core dispatched
-//!   through are gone (deletion-baseline S2.3), and every surviving
-//!   `NavigatorOps` method resolves to its caps default.
+//!   `runtime_vocabulary::handlers::navigator`; every `NavigatorOps`
+//!   method resolves to its caps default.
 //! - `dispatch_key`'s default-editing path defers its `on_change` to a
 //!   microtask (borrow discipline); the wrapped `on_change` then queues
 //!   the flush from inside that microtask — the host's drain-until-empty
@@ -142,8 +129,8 @@ thread_local! {
 /// Everything the boot path must keep alive. Field order is drop order:
 /// the realized tree unmounts before the world (its slots' owner) dies.
 /// The live host loop holds this value for the whole session and calls
-/// [`NewCoreApp::stop`] on quit (the terminal host RETURNS on quit —
-/// same teardown-ordering care the old host takes with its `Owner`).
+/// [`NewCoreApp::stop`] on quit (the terminal host RETURNS on quit, so
+/// teardown must be explicit and ordered).
 pub struct NewCoreApp {
     realized: Realized<TermNode>,
     _backend: Rc<RefCell<TerminalBackend>>,
@@ -165,8 +152,7 @@ impl NewCoreApp {
     /// Unmount: drops the `Realized` (cleanups fire), uninstalls the
     /// flush driver + viewport sink, and drops the world. The terminal
     /// host calls this on quit BEFORE restoring the terminal — the
-    /// reactive teardown must run while the thread's TLS is intact
-    /// (same rationale as the old host's explicit `Owner` drop).
+    /// reactive teardown must run while the thread's TLS is intact.
     pub fn stop(self) {
         crate::dispatch_hook::clear_dispatch_hook();
         set_viewport_sink(None);
@@ -176,7 +162,7 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend.
+/// Mount an element tree into an already-constructed backend.
 ///
 /// The host must have: constructed the backend, installed the global
 /// self-handle ([`crate::install_global_self`] — the toggle-press and
@@ -225,8 +211,8 @@ pub fn start_with<S, R, B>(
     B: FnOnce() -> Element,
 {
     // Monotonic clock (idempotent, first install wins) — animation and
-    // presence timing read it; the old boot relied on the host's lazy
-    // default, the new boot installs it explicitly like macOS/wgpu.
+    // presence timing read it; installed explicitly like macOS/wgpu
+    // rather than relying on the host's lazy default.
     let platform = caps::AppEnvOps::platform(&*backend.borrow());
     runtime_shared::time::install_default_time_source(platform);
 
@@ -259,7 +245,7 @@ pub fn start_with<S, R, B>(
     // ENTERED because a buffered task may do creation-side work.
     world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
-    // Single-root contract, matching the old-core mount (`find_root`
+    // Single-root contract (`find_root`
     // wants exactly one application root — id 1).
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
@@ -295,7 +281,7 @@ fn set_flush_world(world: Option<World>) {
     FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
@@ -357,13 +343,13 @@ fn flush_now() {
 // `backend_web::newcore` along with it.
 
 // ===========================================================================
-// Viewport source (the new-core terminal viewport seam)
+// Viewport source (the terminal viewport seam)
 // ===========================================================================
 
 thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
-    /// outside a new-core boot, so `set_viewport` costs one TLS read
-    /// and nothing else on the old core.
+    /// when no app is booted, so `set_viewport` then costs one TLS read
+    /// and nothing else.
     static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
@@ -373,7 +359,7 @@ fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportS
 }
 
 /// Forward one viewport report (in CELLS, the terminal's logical px —
-/// same value the old TLS write carries) into the mounted world's
+/// same value the `runtime_shared` TLS write carries) into the mounted world's
 /// viewport ctx. No-op before [`start`] / after teardown. Called by
 /// [`TerminalBackend::set_viewport`].
 pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
@@ -392,10 +378,7 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
 // ---------------------------------------------------------------------------
 //
 // Each helper wraps an author callback so that, AFTER the author code
-// returns, one deduped flush microtask is queued. Wrapping here (instead
-// of inside the shared Backend code) keeps the old-core path
-// byte-identical: the old core applies writes synchronously and must not
-// pay a flush per event.
+// returns, one deduped flush microtask is queued.
 
 /// Wrap a zero-arg author callback (`on_press`, link `on_activate`, …).
 fn flushing0(f: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
@@ -465,14 +448,13 @@ fn flushing_pointer_sink(
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// render_wgpu/src/newcore.rs / runtime_vocabulary::bridge — keep
-// mechanically in sync; the AllCaps bound on register_builtins is the
-// compile gate)
+// Host + capability-trait delegation (same layout as
+// render_wgpu/src/newcore.rs; the AllCaps bound on register_builtins is
+// the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for TerminalBackend {
@@ -492,15 +474,10 @@ impl Host for TerminalBackend {
         }
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // resulting child order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop gives the right child order.
 
-    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
-    /// ignoring the index. `Host` makes the method REQUIRED, so the default
-    /// that used to supply this body is gone — reproduced verbatim rather
-    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// Append, ignoring the index. Never reached in practice:
     /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
     /// regions rebuild wholesale under their own anchor and no positional
     /// splice is ever emitted.
@@ -508,10 +485,7 @@ impl Host for TerminalBackend {
         self.insert(parent, child)
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
-    /// inherited (deletion-baseline S2.2). Only meaningful for
-    /// splice-capable hosts; this one is anchored, so the framework never
+    /// No-op. Only meaningful for splice-capable hosts; this one is anchored, so the framework never
     /// calls it.
     fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
         // default: no-op
@@ -524,9 +498,10 @@ impl Host for TerminalBackend {
         for cid in &children {
             let cdata = self.nodes.remove(cid);
             if let Some(cd) = cdata {
-                // Strip the Taffy edge first, then drop the slot.
-                // Mirrors the iOS pattern; see
-                // [[project_ios_clear_children_taffy_sync]].
+                // Strip the Taffy edge first, then drop the slot; with
+                // the `mark_dirty(parent)` below this keeps the parent
+                // from holding dead children / a stale cached size after
+                // a branch swap (same rule as iOS).
                 self.layout.remove_child(parent_layout, cd.layout);
                 self.layout.remove_node(cd.layout);
                 self.layout_to_id.remove(&cd.layout);
@@ -541,9 +516,7 @@ impl Host for TerminalBackend {
         }
     }
 
-    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
-    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
-    /// it is stated here rather than inherited (deletion-baseline S2.2).
+    /// A plain `create_view` with default a11y.
     ///
     /// TODO(anchor-display-contents): this is NOT a correct anchor. An
     /// unstyled view draws nothing, but it is still a flex item, and a
@@ -568,14 +541,11 @@ impl Host for TerminalBackend {
         self.create_view(&AccessibilityProps::default())
     }
 
-    /// Explicit `false` — the port of the old
-    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
-    /// `Host` makes it REQUIRED, so the value is stated here instead of
-    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
-    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
-    /// to `true` would move every reactive region out from under its anchor
-    /// and change the output wholesale. Pinned by a literal assertion in the
-    /// crate's parity suite.
+    /// Explicit `false`: this backend is ANCHORED, which is what the
+    /// committed snapshots in `tests/goldens/` record. Flipping it to
+    /// `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in
+    /// `tests/newcore_parity.rs`.
     fn supports_splice(&self) -> bool {
         false
     }
@@ -774,7 +744,7 @@ impl caps::LinkOps for TerminalBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core). The wrapped
+        // (stages nav-queue tick signals). The wrapped
         // closure lands in the node's on_click slot, so nav-link clicks
         // flush exactly like pressables.
         let mut config = config;
@@ -947,8 +917,8 @@ impl caps::ActivityIndicatorOps for TerminalBackend {
             let (cw, ch) = self.cell_size;
             self.layout.set_intrinsic_size(d.layout, w_cells * cw, 1.0 * ch);
         }
-        // The walker fires no per-frame effect for this primitive,
-        // so we install our own `raf_loop` to advance the phase.
+        // Nothing upstream drives a per-frame effect for this
+        // primitive, so we install our own `raf_loop` to advance the phase.
         // Each tick bumps `anim_phase` by ~one frame's worth of the
         // 10-step braille cycle. The render path samples
         // `anim_phase` to pick the current glyph.
@@ -1047,13 +1017,8 @@ impl caps::PortalOps for TerminalBackend {
 
 impl caps::PresenceOps for TerminalBackend {}
 
-// The four surviving `NavigatorOps` methods all resolve to their caps
-// DEFAULTS (no-op release / no-op slot style / no-op handle). The old
-// bodies routed through a backend-side `NavigatorRegistry` +
-// per-instance `NavigatorHandler`, both populated exclusively by
-// `create_navigator` — the one caps method that CEASES TO EXIST with the
-// old core (deletion-baseline S2.3), so the registry could never be
-// populated again. Navigators mount through
+// Every `NavigatorOps` method resolves to its caps default (no-op
+// release / no-op slot style / no-op handle). Navigators mount through
 // `runtime_vocabulary::handlers::navigator` over the Lifecycle/View caps
 // instead, and never call this trait.
 impl caps::NavigatorOps for TerminalBackend {}
@@ -1070,16 +1035,11 @@ impl caps::ExternalOps for TerminalBackend {
         _payload: &std::rc::Rc<dyn std::any::Any>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // The terminal backend has no external-primitive registry, so every
-        // `Element::External` (codeblock, maps, webview, …) lands here. The
-        // default `Backend::create_external` is `unimplemented!()`, which
-        // PANICS — a terminal app that mounts any external aborts at render
-        // (the tutorial mounts `codeblock`, so local `--terminal` crashed
-        // here). Render the framework's standard "not supported" text
-        // placeholder instead, mirroring the macOS/iOS backends. When a
-        // terminal external handler is genuinely needed, add a registry +
-        // inventory registrar here (see `MacosBackend::external_handlers`);
-        // until then graceful degradation beats a crash.
+        // Reached via `missing_primitive_placeholder` for every primitive
+        // this backend does not implement. The caps default is
+        // `unimplemented!()`, which would abort the app at render; render
+        // the framework's standard "not supported" text placeholder
+        // instead, mirroring the macOS/iOS backends.
         let text = format!("[external \"{type_name}\" not supported in terminal]");
         self.create_text(&text, a11y)
     }
@@ -1102,10 +1062,8 @@ impl caps::StyleOps for TerminalBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Degrade LOUDLY, once. `terminal` has no scrolling gesture model,
         // so `Position::Sticky` renders as `Relative` and
-        // `overscroll-behavior` has nothing to govern. Both were
-        // previously dropped in silence — the exact "no warning,
-        // nothing to grep for" failure `runtime_shared::unsupported`
-        // exists to end.
+        // `overscroll-behavior` has nothing to govern. Warn rather than
+        // drop them silently (`runtime_shared::unsupported`).
         if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
             runtime_shared::unsupported::warn_once(
                 "terminal.sticky",

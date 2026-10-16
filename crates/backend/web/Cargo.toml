@@ -9,13 +9,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-# The `prim-*` / `style-dynamic` bundle-size gates are GONE (runtime v2).
-# They compiled out walker arms, builder fns and `Backend` methods — none
-# of which exist any more; the vocabulary has no per-primitive gating
-# model, so keeping them only made the capability impls call mechanism
-# functions that a non-default build had removed. Same cleanup idea-ui
-# made. A consumer's `features = ["prim-…"]` is an unknown-feature error
-# now, which is the honest signal.
+# No per-primitive (`prim-*`) bundle-size features: the vocabulary has no
+# per-primitive gating model, so every capability impl is always
+# compiled. A consumer's `features = ["prim-…"]` is an unknown-feature
+# error.
 hydrate = []
 # The dev-time UI overlay's PAGE half: `__idealyst_overlay_patch`, the
 # entry point the livereload script calls when the dev loop decided a
@@ -29,7 +26,8 @@ hydrate = []
 # the app crate enabling `runtime-core/ui-overlay`, which is what
 # `idealyst dev --web` passes. `build --web` never does.
 ui-overlay = ["runtime-vocabulary/ui-overlay", "dep:wire", "wire/runtime-patch", "dep:runtime-template"]
-# Forwards to runtime-core's `debug-stats`. When on, the web
+# Forwards to runtime-shared's `debug-stats` (the crate that owns the
+# phase-counter gate; runtime-core has no such feature). When on, the web
 # backend reports per-phase timings (`set_attribute`, `insert_rule`,
 # etc.) into the framework's phase-counter aggregator so apply-style
 # hot paths can be profiled from JS via `dump_debug_events`.
@@ -74,23 +72,12 @@ debug-node-ids = []
 # WebSocket dial-out to a `robot-relay` so a browser app exposes the Robot
 # bridge it can't host itself. Forwards to `runtime-shared/robot` for the
 # dispatch core. Off by default; `idealyst dev --web` enables it.
-# `runtime-vocabulary?/robot`: when the `new-core` boot path is ALSO
-# compiled, the transport routes verbs to the vocabulary registry for a
-# new-core app (see robot_transport::dispatch_verb) — the `?/` forward
-# turns that registry on without dragging runtime-vocabulary into
-# old-core-only robot builds.
+# `runtime-vocabulary/robot` turns on the vocabulary's robot registry,
+# which the transport routes verbs to once the app has booted (see
+# robot_transport::dispatch_verb).
 robot = ["runtime-shared/robot", "runtime-vocabulary/robot"]
 
 [dependencies]
-# PATH dep with `default-features = false`, NOT `workspace = true`: the
-# workspace spec carries runtime-core's default (all-prim) feature set, and
-# cargo ignores `default-features = false` on workspace-inherited deps — a
-# plain `workspace = true` here would force every `prim-*` feature back ON
-# for any app that disabled them (feature unification), silently defeating
-# the whole gating scheme. The `prim-*` forwards above re-enable exactly
-# the families this crate's own features select; this crate's defaults
-# cover all of them, so consumers with default features see no change.
-# (Same precedent as canvas-vello → canvas-native `self-register`.)
 runtime-shared = { workspace = true }
 # The runtime the backend renders: world (signal arenas), scene (Host +
 # Registry) and vocabulary (the capability traits + builtin handlers).
@@ -102,7 +89,7 @@ css = { workspace = true }
 inventory = "0.3"
 # The framework-owned JS boundary (docs/proposals/own-web-bindings.md):
 # every DOM operation, listener, timer and shim call in this crate goes
-# through it (phase 2b).
+# through it.
 # A dropped file reaches the file-picker SDK as a `web_glue::dom::File` in
 # `DroppedFile::source`; no crate boundary here names web-sys.
 web-glue = { workspace = true }
@@ -135,7 +122,9 @@ js-min = { workspace = true }
 # when packaging (docs/registry.md).
 js-min = { path = "../../tools/js-min" }
 # Browser-side test harness for `WebBackend` unit tests. Runs via
-# `wasm-pack test --headless --chrome --package backend-web`. Required
+# `cargo test --target wasm32-unknown-unknown` (the repo's
+# `.cargo/config.toml` runner; `wasm-pack test` overrides that runner
+# and hangs on web-glue binaries). Required
 # for tests that need real DOM (the `node_id` identity invariant
 # can't be verified without it).
 wasm-bindgen-test = "0.3"

@@ -5,7 +5,7 @@
 //!
 //! # Why this exists (the bug prevented)
 //!
-//! The new core ([`crate::newcore`]) stages signal writes; nothing is
+//! The world ([`crate::newcore`] boots it) stages signal writes; nothing is
 //! observable until the flush driver calls `World::flush`. DOM-event
 //! callbacks get their flush from the dispatch-site glue in
 //! `newcore.rs` (every author callback the backend installs is wrapped
@@ -20,15 +20,14 @@
 //!   (resource/server-call completions that set signals),
 //! - `ResizeObserver` deliveries behind `ViewHandle::on_layout`
 //!   (`subscribe_layout` in `lib.rs` — a measured height written into a
-//!   signal; FRAMEWORK-NOTES #103).
+//!   signal).
 //!
 //! Without this hook, a write staged from any of those would sit
 //! uncommitted until some unrelated DOM event happened to trigger a
 //! flush — i.e. "my `after_ms` callback ran but the UI never updated".
-//! The old-core reactive system applies writes synchronously and never
-//! needs this, so the slot defaults to `None` and every fire site is a
-//! single thread-local read — a no-op unless `newcore::start` installed
-//! the flush driver.
+//! The slot defaults to `None` and every fire site is a single
+//! thread-local read — a no-op unless `newcore::start` installed the
+//! flush driver.
 //!
 //! # What deliberately does NOT fire the hook
 //!
@@ -38,9 +37,10 @@
 //!   own dispatch and spin the microtask queue forever. No author code
 //!   reaches the microtask queue outside an already-hooked surface
 //!   (events, timers, frames, future polls), so nothing is lost.
-//! - **`render_loop.rs`** (the old-core animation clock) and
-//!   `viewport_observer.rs` (old-core viewport signal): both feed
-//!   old-core state that the new-core boot path does not install.
+//! - **`render_loop.rs`** (`runtime_shared::driver::render_loop`) and
+//!   `viewport_observer.rs` (`runtime_shared`'s viewport signal): both
+//!   feed `runtime_shared` state, whose signals apply writes
+//!   synchronously rather than staging them.
 
 use std::cell::Cell;
 

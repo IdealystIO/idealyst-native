@@ -1,4 +1,4 @@
-//! `Element::Button` — a `<button>` element plus a click closure
+//! The `button` primitive — a `<button>` element plus a click closure
 //! the element owns (`glue_dom::set_onclick`).
 
 use crate::WebBackend;
@@ -21,7 +21,7 @@ pub(crate) fn create(
     let _ = b.ensure_style_element();
     // HYDRATION: adopt the SSR `<button>` (its label/content is already
     // there) and only wire the click handler below. The button's content
-    // is built internally (not via separate walker `create_*` calls), so
+    // is built internally (not via separate scene `create_*` calls), so
     // the cursor treats it as one node — we skip the content-build branch.
     if let Some(adopted) = b.hydrate_next("button") {
         let button: web_glue::dom::HtmlElement = adopted.unchecked_into();
@@ -40,8 +40,6 @@ pub(crate) fn create(
     if leading_icon.is_some() || trailing_icon.is_some() {
         // Use inline-flex layout for icon + text alignment.
         let _ = button.set_attribute("style", css::BUTTON_CONTENT_STYLE);
-        // Icon slot rides the icon primitive's gate: with `prim-icon`
-        // off, a button renders its label only.
         if let Some(icon_data) = leading_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);
@@ -50,8 +48,6 @@ pub(crate) fn create(
         let span = b.doc.create_element("span").expect("create span");
         span.set_text_content(Some(label));
         let _ = button.append_child(&span);
-        // Icon slot rides the icon primitive's gate: with `prim-icon`
-        // off, a button renders its label only.
         if let Some(icon_data) = trailing_icon {
             let svg_node = super::icon::create(b, icon_data, None);
             let _ = button.append_child(&svg_node);
@@ -73,7 +69,7 @@ pub(crate) fn create(
 
 /// The node was created via `create_element("button")` then upcast to
 /// `Node`. Cast it back to `HtmlElement` so the ops table can call
-/// `.click()` on it. The clone is cheap — it's a wasm-bindgen JsValue
+/// `.click()` on it. The clone is cheap — it's a glue `JsValue`
 /// clone (refcount bump on the JS object handle, no DOM duplication).
 pub(crate) fn make_handle(node: &Node) -> ButtonHandle {
     let html: web_glue::dom::HtmlElement = node

@@ -309,8 +309,7 @@ impl TerminalBackend {
 
         // 4. Compute the clip + scroll offset passed down to children.
         //
-        // Per [[feedback_terminal_minimalism]] the terminal applies
-        // `overflow: hidden` semantics by default — children always
+        // The terminal applies `overflow: hidden` semantics by default — children always
         // get clipped to their parent's frame. The other backends
         // honor CSS `overflow: visible` (children can bleed outside
         // the parent's box) because their layered rendering can deal

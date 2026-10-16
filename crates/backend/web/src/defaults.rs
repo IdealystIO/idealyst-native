@@ -10,13 +10,11 @@
 //! `pkg/__idealyst_glue.js` as ordinary code. Each `ensure_*_shim`
 //! evaluates its module once (`G.m(name)`), which runs the shim's IIFE and
 //! installs its `window.__idealyst*` globals — the surface the call sites
-//! still read in phase 2a (they become `import!`s in 2b).
+//! read.
 //!
-//! This replaced evaluating the source at run time with
-//! `web_glue::js::Function::new_no_args(src).call0()`: no `eval`-class call (a
-//! CSP with no `unsafe-eval` now runs every shim), and the shim text is no
-//! longer a data-section string in the shipped wasm. The embedded copies
-//! are still build.rs-minified (`OUT_DIR/js-min/`).
+//! No `eval`-class call is involved (a CSP with no `unsafe-eval` runs every
+//! shim), and the shim text is not a data-section string in the shipped
+//! wasm. The embedded copies are build.rs-minified (`OUT_DIR/js-min/`).
 //!
 //! These live in their own `impl WebBackend` block so they're separate
 //! from per-primitive create code and from the CSS converter helpers
@@ -164,10 +162,10 @@ impl WebBackend {
         // The shim just WRAPPED `window.__idealystOnSignalChanged`
         // (text_bindings' handler) with the class dispatcher. Drop any
         // cached handle `ship_signal_change_to_js` captured BEFORE the
-        // wrap — on the new core a text-binding notifier can fire before
-        // the first class binding registers, and shipping through the
-        // stale pre-wrap handle would bypass class bindings forever
-        // (sclass rows freeze; found by the js-framework-bench gate).
+        // wrap — a text-binding notifier can fire before the first class
+        // binding registers, and shipping through the stale pre-wrap
+        // handle would bypass class bindings forever (sclass rows freeze
+        // in the js-framework-bench gate).
         self.signal_changed_fn = None;
     }
 

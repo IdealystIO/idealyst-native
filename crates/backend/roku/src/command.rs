@@ -277,7 +277,7 @@ pub enum RokuCommand {
 
     // ---------------- Reactivity ----------------
     //
-    // Phase 2 wire additions. Signals and bindings let the device
+    // Signals and bindings let the device
     // express reactive UI without a host round-trip: a signal lives
     // entirely in BrightScript, bindings register subscribers, and
     // button presses execute `#[method]`-transpiled BrightScript on
@@ -543,7 +543,7 @@ pub enum DynamicFieldKind {
     Text,
 }
 
-/// A `bind_switch!` arm — pattern value (compared by JSON equality
+/// A switch-binding arm — pattern value (compared by JSON equality
 /// on device) + the slot whose commands the device replays when the
 /// arm matches.
 #[derive(Clone, Debug, Serialize, Deserialize)]

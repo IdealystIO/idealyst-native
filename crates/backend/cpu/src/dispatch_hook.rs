@@ -2,16 +2,10 @@
 //! infrastructure **after** it has invoked a callback that may run
 //! author code.
 //!
-//! Mirrors `backend_terminal::dispatch_hook` — the SETTLED new-core
-//! flush-driver shape. The new core ([`crate::newcore`]) stages signal
-//! writes; nothing is observable until the flush driver calls
-//! `World::flush`. Author callbacks the backend installs (the click
-//! handler [`crate::ClickOutcome::HandlerFired`] hands back) get their
-//! flush from the dispatch-site glue in `newcore.rs`; author code that
-//! runs from a *scheduler* (an `after_ms` debounce that sets a signal,
-//! a `raf_loop` animation tick) has no wrapped callback — without this
-//! hook a write staged there would sit uncommitted until some unrelated
-//! event happened to trigger a flush.
+//! Same shape as `backend_terminal::dispatch_hook` — see that module for
+//! why scheduler-driven author code needs a post-dispatch flush. Here the
+//! only wrapped author callback is the click handler
+//! [`crate::ClickOutcome::HandlerFired`] hands back.
 //!
 //! # The embedder contract (the CPU backend owns NO scheduler)
 //!
@@ -32,19 +26,10 @@
 //!   scheduler-driven author code settles staged writes explicitly via
 //!   [`crate::newcore::flush_sync`] after draining microtasks.
 //!
-//! This module is **unconditional** (not `new-core`-gated) because the
-//! fire sites live in *host crates*, which cannot see this crate's
-//! features. The slot defaults to `None` and every fire is a single
-//! thread-local `Cell` read — a no-op unless `newcore::start` installed
-//! the flush driver, so the old core never pays for it.
-//!
 //! # What deliberately does NOT fire the hook
 //!
-//! - **Scheduled microtasks** (`schedule_microtask`). The flush itself
-//!   is dispatched as a scheduled microtask; firing the hook after
-//!   every microtask would re-schedule a flush from inside the flush's
-//!   own dispatch and spin a drain-until-empty microtask loop forever
-//!   (the same trap the terminal/winit hooks document).
+//! - **Scheduled microtasks** — same infinite-reschedule trap as the
+//!   terminal hook documents.
 //! - The render pass ([`crate::CpuBackend::render`]): the paint walk
 //!   runs no author code.
 

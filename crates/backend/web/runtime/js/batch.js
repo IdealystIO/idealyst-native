@@ -46,7 +46,7 @@
 
     // Pre-split the strings once. `split` on a typical batch (hundreds
     // of strings, tens of KB total) is fast in V8 — way cheaper than
-    // calling JS via wasm-bindgen N times to read individual strings.
+    // crossing the wasm→JS boundary N times to read individual strings.
     var strings = stringsJoined === "" ? [] : stringsJoined.split("\0");
 
     // Pre-allocate the node slots so we index by `local_id` without
@@ -87,9 +87,8 @@
     // Combined attach path. When the caller passed a parent + locals
     // buffer, bulk-parent the row tops here. Using a
     // `DocumentFragment` for the multi-child case so the parent sees
-    // exactly one mutation regardless of N (matches what the
-    // Rust-side `insert_many` used to do, but with the per-child
-    // `appendChild` calls living JS-side).
+    // exactly one mutation regardless of N, with the per-child
+    // `appendChild` calls living JS-side.
     if (attachParent != null && attachLocalsBuf != null) {
       var nLocals = attachLocalsBuf.length;
       if (nLocals === 1) {

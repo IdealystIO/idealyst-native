@@ -8,7 +8,7 @@ use runtime_shared::driver::{
 };
 use web_glue::Closure;
 
-/// Register this backend's driver with `runtime-core`. Idempotent —
+/// Register this backend's driver with `runtime_shared::driver`. Idempotent —
 /// first install wins.
 pub fn install_render_loop() {
     install_render_loop_driver(Box::new(WebRenderLoopDriver));

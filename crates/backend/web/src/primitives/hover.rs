@@ -1,6 +1,6 @@
 //! Hover (pointer-over) delivery for the web backend.
 //!
-//! Implements [`runtime_shared::Backend::install_hover_handler`] with the
+//! Implements `InputOps::install_hover_handler` with the
 //! Pointer Events API. The element gets two listeners — `pointerenter`
 //! and `pointerleave` — which fire the framework's handler with `true`
 //! and `false` respectively.
@@ -12,7 +12,8 @@
 //! is over the view — exactly the semantics a hover tooltip wants. The
 //! over/out pair would spuriously toggle on every child boundary.
 //!
-//! The element owns its listener closures (see [`super::own_listener`]) —
+//! The element owns its listener closures (see
+//! `glue_dom::listen_for_element_lifetime`) —
 //! same pattern as touch/wheel.
 
 use runtime_shared::HoverHandler;

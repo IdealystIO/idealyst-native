@@ -24,13 +24,13 @@ use crate::WebBackend;
 
 impl WebBackend {
     /// Record a framework primitive root for the introspection boundary walk.
-    /// Backs `Backend::note_introspection_root`.
+    /// Backs `IntrospectionOps::note_introspection_root`.
     pub(crate) fn note_introspection_root_impl(&self, node: &web_glue::dom::Node) {
         self.introspection_roots.add(node.as_ref());
     }
 
     /// Read the native render tree for `node`. Backs
-    /// `Backend::introspect_native`.
+    /// `IntrospectionOps::introspect_native`.
     pub(crate) fn introspect_native_impl(&self, node: &web_glue::dom::Node) -> Option<NativeNode> {
         let _t = crate::phase_timer::PhaseTimer::start("introspect_native");
         let root: Element = node.clone().dyn_into::<Element>().ok()?;

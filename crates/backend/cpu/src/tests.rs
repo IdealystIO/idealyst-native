@@ -19,9 +19,8 @@ use runtime_shared::animation::AnimProp;
 use runtime_shared::{
     Gradient, GradientKind, GradientStop, Length, RadialExtent, StyleRules, Tokenized,
 };
-// The mechanism lives on the capability traits (the `Backend`
-// mega-trait is gone), so these tests reach it through them; `Host`
-// supplies the structural ops.
+// The mechanism lives on the capability traits, so these tests reach
+// it through them; `Host` supplies the structural ops.
 use runtime_scene::Host;
 use runtime_vocabulary::caps::{
     AnimationOps, LifecycleOps, PressableOps, StyleOps, TextOps, ViewOps,

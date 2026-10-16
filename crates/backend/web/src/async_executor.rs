@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 
 use runtime_shared::driver::AsyncExecutor;
 
-/// Register this backend's executor with `runtime-core`. Idempotent —
+/// Register this backend's executor with `runtime_shared::driver`. Idempotent —
 /// first install wins.
 pub fn install_async_executor() {
     runtime_shared::driver::install_async_executor(Box::new(WasmAsyncExecutor));
@@ -26,11 +26,11 @@ impl AsyncExecutor for WasmAsyncExecutor {
 }
 
 /// Fires the post-dispatch hook after every poll of a spawned future.
-/// Each `.await` resume runs author code that may stage new-core signal
+/// Each `.await` resume runs author code that may stage world signal
 /// writes (a server-call completion setting a resource signal); without
 /// the per-poll hook those writes would sit uncommitted until an
-/// unrelated event flushed them. No-op under the old core (hook slot
-/// empty) — see `dispatch_hook` module docs.
+/// unrelated event flushed them. A no-op until boot installs the hook —
+/// see `dispatch_hook` module docs.
 struct HookedFuture(Pin<Box<dyn Future<Output = ()> + 'static>>);
 
 impl Future for HookedFuture {

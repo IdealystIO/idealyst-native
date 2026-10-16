@@ -1,20 +1,11 @@
 //! Email rendering: the `runtime_scene::Host` + capability-trait surface
-//! and the one-shot-world render entries (idea-lite core).
+//! and the one-shot-world render entries.
 //!
-//! [`EmailBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration (the same choice ssr/web/macOS made). Every method
-//! body in this file IS the email mechanism: it was moved here verbatim
-//! from the crate's old `impl Backend for EmailBackend` when the
-//! 159-method mega-trait was deleted, so the HTML mechanism (node
-//! building, deferred token resolution, inline-style serialization) is
-//! unchanged. Capabilities email does not implement are simply absent —
-//! the caps-trait DEFAULT bodies serve them, and those defaults were
-//! audited byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 116 of email's 152
-//! caps methods resolve to a default).
-//!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! [`EmailBackend`] implements [`runtime_scene::Host`] plus every
+//! capability trait (`runtime_vocabulary::caps`). The method bodies in
+//! this file are the email mechanism (node building, deferred token
+//! resolution, inline-style serialization); methods email has nothing
+//! to do for are left to the caps-trait DEFAULT bodies.
 //!
 //! # One-shot world per render
 //!
@@ -38,24 +29,21 @@
 //!   (`crate::scheduler`): a static email has no animation loop.
 //! - **No dispatch-site callback wrapping.** Email swallows every author
 //!   callback (there is no interaction in the output), so no capability
-//!   method here wraps a callback — exactly like SSR. That is why every
-//!   body below could be moved from the old `Backend` impl unchanged.
+//!   method here wraps a callback — exactly like SSR.
 //!
 //! # Anchoring
 //!
 //! [`Host::supports_splice`] is `false`, so every reactive region nests
-//! under a [`Host::create_anchor`] `<div>`. See the method's comment: the
-//! value used to be inherited from a `Backend` trait default and is now
-//! stated explicitly, pinned by `newcore_host_is_anchored`.
+//! under a [`Host::create_anchor`] `<div>`, pinned by
+//! `newcore_host_is_anchored`.
 //!
-//! # Output parity with the old core
+//! # Golden output
 //!
-//! The frozen artifacts in `tests/goldens/` are what the OLD core
-//! rendered for the corpus (static styled trees, installed tokens,
-//! dropped state/breakpoint overlays, links, dyn branches, and the real
+//! `tests/goldens/` holds committed snapshots of this module's output
+//! for the corpus (static styled trees, installed tokens, dropped
+//! state/breakpoint overlays, links, dyn branches, and the real
 //! idea-ui-mail welcome template). `tests/newcore_golden.rs` compares
-//! this module's output against them byte-for-byte, with zero
-//! normalization.
+//! against them byte-for-byte, with zero normalization.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -161,10 +149,8 @@ impl Host for EmailBackend {
         parent.borrow_mut().children.push(child);
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // emitted node order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop is exactly the order email needs.
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
         let mut p = parent.borrow_mut();
@@ -172,10 +158,7 @@ impl Host for EmailBackend {
         p.children.insert(index, child);
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so the default that used to
-    /// supply this body is gone — the body is reproduced verbatim rather
-    /// than inherited (deletion-baseline S2.2). Never called here anyway:
+    /// No-op. Never called:
     /// [`supports_splice`](Self::supports_splice) is `false`, so every
     /// reactive region tears down through `clear_children` on its own
     /// anchor.
@@ -195,12 +178,9 @@ impl Host for EmailBackend {
         nref(HtmlNode::new("div"))
     }
 
-    /// Explicit `false` — the port of the old `Backend::supports_child_splice`
-    /// DEFAULT this backend relied on. `Host` makes it REQUIRED, so the
-    /// value is now stated here instead of inherited
-    /// (deletion-baseline S2.2). Email has no hydration consumer; ANCHORED
-    /// mode is what every frozen golden in `tests/goldens/` recorded from
-    /// the old core, and `newcore_host_is_anchored` pins the value.
+    /// Explicit `false`. Email has no hydration consumer; ANCHORED mode is
+    /// what every golden in `tests/goldens/` recorded, and
+    /// `newcore_host_is_anchored` pins the value.
     fn supports_splice(&self) -> bool {
         false
     }
@@ -378,9 +358,9 @@ impl caps::IconOps for EmailBackend {
             svg.attrs.push(("stroke-linejoin", "round".to_string()));
         }
         // A block box the size of its glyph, as on web/SSR (`css::ICON_STYLE`).
-        // An email `view` is a plain `<div>`, so the old `inline-block;
-        // vertical-align: middle` put the icon on a line box: the div grew
-        // to the inherited line-height and the glyph sat ~2px low in it.
+        // An email `view` is a plain `<div>`, so `inline-block;
+        // vertical-align: middle` would put the icon on a line box: the div
+        // grows to the inherited line-height and the glyph sits ~2px low.
         svg.default_style = Some(css::ICON_STYLE);
         let fill_rule = match data.fill_rule {
             runtime_shared::primitives::icon::FillRule::NonZero => "nonzero",
@@ -674,8 +654,8 @@ impl caps::StyleOps for EmailBackend {
         push_style_dedup(node, base);
     }
 
-    // Email opts into the "native state" model only so the walker hands us the
-    // base + overlays in one call (`apply_styled_states`) — we keep the base
+    // Email opts into the "native state" model only so style attach hands us
+    // the base + overlays in one call (`apply_styled_states`) — we keep the base
     // and DROP the overlays. There is no `:hover`/`:active`/`:focus` in email.
     fn handles_states_natively(&self) -> bool {
         true
@@ -685,7 +665,7 @@ impl caps::StyleOps for EmailBackend {
         // Merge, never replace: the web backend `setProperty`s each token
         // onto its existing `:root` rule, so a second install (a base
         // theme, then an extension's token block, flushed in separate
-        // windows) ADDS to the active set there. Replacing here dropped
+        // windows) ADDS to the active set there. Replacing here would drop
         // the first install's tokens from the rendered output.
         self.update_tokens(tokens);
     }

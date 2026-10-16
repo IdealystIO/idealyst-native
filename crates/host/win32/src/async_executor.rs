@@ -3,10 +3,10 @@
 //! Without an installed executor `runtime_core::driver::spawn_async` falls
 //! back to `pollster::block_on`: it drives the future to completion ON THE
 //! CALLING THREAD — the UI thread. Every async SDK call (a storage write, a
-//! clipboard read, an HTTP request, an update check) froze the window until
-//! it finished, and a future that waits for an event (a socket's next
-//! message, a change delivered from another thread) never returned, so the
-//! app hung for good.
+//! clipboard read, an HTTP request, an update check) would freeze the window
+//! until it finished, and a future that waits for an event (a socket's next
+//! message, a change delivered from another thread) would never return,
+//! hanging the app for good.
 //!
 //! This executor polls each spawned future only up to its next `.await` and
 //! returns. Its waker may fire from any thread: it queues the task id and

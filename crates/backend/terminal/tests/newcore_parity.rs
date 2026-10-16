@@ -1,7 +1,6 @@
-//! Render-parity tests for the terminal backend: the rule-7 gate (a
-//! scene must paint the exact cells the OLD core painted) plus op-level
-//! coverage of the caps adoption's flush discipline (input event →
-//! staged writes → flush → paint).
+//! Golden-snapshot tests for the terminal renderer (a scene must paint
+//! exactly the committed cells) plus op-level coverage of the flush
+//! discipline (input event → staged writes → flush → paint).
 //!
 //! Harness notes: the tests install a queue-only scheduler (mirroring
 //! `host-terminal`'s tick semantics for microtasks: drain-until-empty).
@@ -9,15 +8,13 @@
 //! state is thread-local, so each test thread drains only its own
 //! tasks.
 
-//! # The frozen corpus is the contract
+//! # The committed goldens are the contract
 //!
-//! The grid-parity gates compare against a **frozen old-core grid dump**
-//! committed under `tests/goldens/` (cell-exact: glyph + fg + bg,
-//! run-length encoded per row), written by the old walker before it was
-//! deleted. A mismatch is a real rendering change, NOT a stale artifact:
-//! `IDEALYST_FREEZE_GOLDENS=1` can now only RE-BASELINE against the
-//! current renderer, permanently discarding the old core's testimony —
-//! see `tests/goldens/README.md`.
+//! The grid gates compare against grid dumps committed under
+//! `tests/goldens/` (cell-exact: glyph + fg + bg, run-length encoded per
+//! row) — snapshots of the current renderer's output. A mismatch is a
+//! real rendering change; re-freeze with `IDEALYST_FREEZE_GOLDENS=1`
+//! only for an intended change — see `tests/goldens/README.md`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -171,7 +168,7 @@ fn grid_dump(grid: &Grid) -> String {
     out
 }
 
-/// The gate: the rendered grid must match the frozen old-core dump
+/// The gate: the rendered grid must match the committed golden dump
 /// cell-for-cell (glyph + fg + bg), with a readable rows dump on
 /// divergence.
 fn check_new_grid(name: &str, new: &Grid) {
@@ -196,13 +193,12 @@ fn test_rules(width: f32, background: &str) -> StyleRules {
 }
 
 // ===========================================================================
-// 1. Full-scene render snapshot vs the frozen old-core grid
+// 1. Full-scene render snapshot vs the committed golden grid
 // ===========================================================================
 
-/// The rule-7 gate for this port: a torture scene (styled views, text,
-/// button chrome `[ label ]`, toggle glyphs, pressable, colored
-/// backgrounds) must paint the exact cells the OLD core painted —
-/// glyphs AND colors.
+/// A torture scene (styled views, text, button chrome `[ label ]`,
+/// toggle glyphs, pressable, colored backgrounds) must paint exactly the
+/// golden cells — glyphs AND colors.
 #[test]
 fn newcore_full_scene_grid_parity() {
     let new = render_new(|| {
@@ -227,7 +223,7 @@ fn newcore_full_scene_grid_parity() {
 }
 
 // ===========================================================================
-// 1b. Caps-breadth scene (guards the de-trait pass's default resolution)
+// 1b. Caps-breadth scene (guards caps default resolution)
 // ===========================================================================
 
 /// COVERAGE BREADTH: the leaf/container primitives the torture scene
@@ -237,13 +233,9 @@ fn newcore_full_scene_grid_parity() {
 /// oversized child — plus `slider` and `text_area`, which this backend
 /// does NOT implement and therefore resolve to **trait defaults**.
 ///
-/// Why this scene exists: the deletion wave moved this backend's caps
-/// impls off the `Backend` trait, so every default-resolved method
-/// stopped resolving to a `Backend` default and now resolves to a
-/// **caps** default. A frozen grid that actually paints these primitives
-/// makes a silently-differing default fail loudly. See
-/// `docs/runtime-v2-deletion-baseline.md` for this backend's
-/// default-resolved list.
+/// Why this scene exists: methods this backend does not override resolve
+/// to **caps** defaults. A golden grid that actually paints these
+/// primitives makes a silently-changed default fail loudly.
 #[test]
 fn newcore_caps_breadth_grid_parity() {
     fn icon_data() -> runtime_shared::primitives::icon::IconData {
@@ -302,7 +294,7 @@ fn newcore_caps_breadth_grid_parity() {
 // 2. Input events → staged writes → flush → paint (the driver contract)
 // ===========================================================================
 
-/// REGRESSION (flush discipline): on the new core a click handler's
+/// REGRESSION (flush discipline): a click handler's
 /// `Signal::set` is STAGED — nothing observable until the flush driver
 /// commits. The caps layer wraps every author callback so firing the
 /// handler `dispatch_click` returns queues one deduped flush microtask;
@@ -410,13 +402,9 @@ fn newcore_toggle_press_flushes_and_flips_glyph() {
 fn newcore_host_splice_is_anchored() {
     use runtime_scene::Host;
     let b = TerminalBackend::new();
-    // `supports_child_splice` used to be a `Backend` trait DEFAULT here
-    // (this backend never overrode it); `Host` makes it REQUIRED, so
-    // `newcore.rs` now carries an explicit body reproducing that default
-    // — see docs/runtime-v2-deletion-baseline.md §2.2. Pin the value so a
-    // silent flip to spliced (which would move reactive regions out from
-    // under their anchor and change every frozen grid dump) fails here
-    // rather than in a rendering diff.
+    // Pin the value so a silent flip to spliced (which would move
+    // reactive regions out from under their anchor and change every
+    // golden grid dump) fails here rather than in a rendering diff.
     assert!(
         !Host::supports_splice(&b),
         "the terminal backend renders ANCHORED (the frozen grid dumps pin it)"

@@ -1,61 +1,17 @@
-//! New-core adoption for the web backend (idea-lite migration, P3b).
+//! The web backend's boot path ([`start`] / [`hydrate`]), its flush
+//! driver, and its [`runtime_scene::Host`] + capability-trait
+//! (`runtime_vocabulary::caps`) impls.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`WebBackend`] — the
-//! production shape of the migration: no `LegacyBridge` wrapper in the
-//! render path. Every trait method delegates via UFCS
-//! (`<WebBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the DOM mechanism code (node creation, style
-//! minting, hydration bookkeeping, event closures) is REUSED verbatim —
-//! this module adds a second *front* onto the same machinery, exactly
-//! like `LegacyBridge` does generically, but as direct impls on the
-//! concrete type (no orphan-rule issue: `WebBackend` is local).
-//!
-//! # Delegation status — every capability accounted for
-//!
-//! | Trait | Status |
-//! |---|---|
-//! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct |
-//! | `LifecycleOps` | direct (`is_hydrating` delegates to the Backend impl; `false` under the [`start`] boot, `true` inside the [`hydrate`] adoption window — see *Hydration* below) |
-//! | `ViewOps` | direct |
-//! | `InputOps` | direct |
-//! | `PressableOps` | direct |
-//! | `TextOps` | direct |
-//! | `ButtonOps` | direct |
-//! | `ImageOps` | direct |
-//! | `IconOps` | direct |
-//! | `LinkOps` | direct |
-//! | `TextInputOps` | direct |
-//! | `ToggleOps` | direct |
-//! | `SliderOps` | direct |
-//! | `ActivityIndicatorOps` | direct |
-//! | `ScrollOps` | direct |
-//! | `SafeAreaOps` | direct |
-//! | `VirtualizerOps` | direct |
-//! | `GraphicsOps` | direct |
-//! | `PortalOps` | direct |
-//! | `PresenceOps` | direct |
-//! | `NavigatorOps` | direct |
-//! | `ExternalOps` | direct |
-//! | `DocumentOps` | direct |
-//! | `StyleOps` | direct |
-//! | `AssetOps` | direct |
-//! | `A11yOps` | direct |
-//! | `AnimationOps` | direct |
-//! | `IntrospectionOps` | direct |
-//! | `BatchOps` | direct |
-//! | `WireBindingOps` | direct (wire-recorder no-ops on this backend, same as today) |
-//!
-//! **30/30 direct, 0 adapted, 0 stubbed.** Nothing panics, nothing
-//! silently no-ops beyond what the wrapped `Backend` impl already does.
-//! Where a `Backend` method is itself feature-gated on this crate
-//! (`prim-*` families), the UFCS call resolves to the same
-//! trait-default fallback the old walker would hit — behavior is
-//! identical by construction. The impl bodies below are generated
-//! mechanically from `runtime_vocabulary::bridge` (the compile-time
-//! proof of the signature freeze), with `LegacyBridge<B>` → `WebBackend`
-//! and `&mut self.0` → `self`.
+//! [`WebBackend`] implements `Host` and every `*Ops` trait directly.
+//! Each trait method forwards to an inherent `WebBackend::*_impl` method
+//! in `lib.rs`, which owns the DOM mechanism (node creation, style
+//! minting, hydration bookkeeping, event closures); the impls here add
+//! only the flush-driver wrapping described below. The `AllCaps` bound
+//! on `register_builtins` is the compile gate that every trait is
+//! implemented. `LifecycleOps::is_hydrating` is `false` under the
+//! [`start`] boot and `true` inside the [`hydrate`] adoption window.
+//! `NavigatorOps` and `WireBindingOps` keep the trait defaults — see the
+//! notes on those impls.
 //!
 //! # Boot path — [`start`] / [`start_in`]
 //!
@@ -63,8 +19,8 @@
 //! the real DOM through the registry: create the backend + `Registry`
 //! (`register_builtins` + an app-registration seam) + a [`World`],
 //! `world.enter(realize)`, hand the single root node to
-//! `Backend::finish` (which clears `#app` and appends — same as the
-//! old-core mount), then install the flush driver and retain everything
+//! `WebBackend::finish_impl` (which clears `#app` and appends), then
+//! install the flush driver and retain everything
 //! in a thread-local for the page's lifetime (the same
 //! `OWNER`-thread-local convention the CLI-generated wrappers use).
 //!
@@ -74,9 +30,9 @@
 //! replaced, not adopted. `hydrate` constructs via `WebBackend::hydrate`
 //! and adopts the server DOM node-for-node.
 //!
-//! # Flush driver (design §3: web = microtask after event dispatch)
+//! # Flush driver (web: one microtask after event dispatch)
 //!
-//! The new kernel stages writes; nothing is observable until the host
+//! The kernel stages writes; nothing is observable until the host
 //! driver calls [`World::flush`]. The driver is **precise dispatch-site
 //! glue** — every place the backend invokes author code triggers one
 //! deduped flush microtask AFTER the author callback returns. There is
@@ -84,7 +40,7 @@
 //!
 //! 1. **Author-callback wrapping (this module).** Every callback-taking
 //!    capability impl below wraps the author callback before delegating
-//!    to the `Backend` machinery: press/click, input/change, toggle,
+//!    to the `WebBackend` machinery: press/click, input/change, toggle,
 //!    slider, scroll, hover, wheel, touch, key, blur/focus, file-drop,
 //!    image load/error, link activation, portal dismiss, graphics
 //!    lifecycle, virtualizer row mount/release, state setters, and the
@@ -92,27 +48,24 @@
 //!    [`schedule_flush`] — one deduped
 //!    `runtime_shared::scheduling::schedule_microtask` → `world.flush()`.
 //!    Net effect: stage during dispatch, commit in the microtask
-//!    checkpoint right after — the idea-lite contract. Because the
-//!    wrapping happens in these new-core-only impls, the shared
-//!    old-core event closures are reused verbatim and the old core
-//!    never pays for it.
+//!    checkpoint right after.
 //! 2. **Post-dispatch hook ([`crate::dispatch_hook`]).** Author code
 //!    also runs from non-DOM surfaces: `after_ms` timers,
 //!    `after_animation_frame` one-shots, `raf_loop` iterations, and
 //!    executor-spawned future polls. The scheduler and async executor
 //!    fire a thread-local hook after each such callback; [`start_in`]
-//!    installs [`schedule_flush`] into that slot (no-op default, so the
-//!    old core is untouched). This REPLACES the former rAF-poll safety
-//!    net — no idle per-frame wakeup.
+//!    installs [`schedule_flush`] into that slot (its default is a
+//!    no-op). There is no per-frame poll, so an idle page never wakes.
 //!
-//! Residual surfaces NOT covered (documented, not silent): DOM closures
-//! installed by `Element::External` third-party glue (the External web
-//! registry predates the new core; its port must call
-//! [`schedule_flush`] after author callbacks). Browser-back / popstate
-//! is covered now: the navigator URL-sync port (`newcore_url_sync`,
-//! installed by [`start_in`]) fires [`schedule_flush`] after staging
-//! reconciled nav commands. Raw `wasm_bindgen_futures::spawn_local`
-//! calls that bypass `runtime_shared::driver::spawn` are the app's own
+//! Browser-back / popstate is covered by the navigator URL sync
+//! (`newcore_url_sync`, installed by [`start_in`]), which fires
+//! [`schedule_flush`] after staging reconciled nav commands.
+//!
+//! Residual surfaces NOT covered (documented, not silent): DOM listeners
+//! a third-party scene-`Registry` extension installs itself — its
+//! handler must call [`schedule_flush`] after the author callback — and
+//! raw `web_glue::task::spawn_local` calls that bypass
+//! `runtime_shared::driver::spawn`, which are the app's own
 //! responsibility.
 //!
 //! Everything funnels through [`schedule_flush`]/`flush_now`, which
@@ -159,14 +112,13 @@ pub use newcore_hydrate::{hydrate, hydrate_in, hydrate_in_with};
 // ===========================================================================
 
 thread_local! {
-    /// The mounted new-core app: dropping this tears everything down
+    /// The mounted app: dropping this tears everything down
     /// (Realized first — unmount — then the World). Page-lifetime, same
     /// retention convention as the CLI wrapper's `OWNER` slot.
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     /// The installed window-`resize` listener (viewport source), kept so
-    /// [`stop`] can remove it — unlike the old-core observer's
-    /// `forget()` leak, repeated boot/stop cycles (tests) must not pile
-    /// listeners. The closure captures the mounted world's viewport
+    /// [`stop`] can remove it — repeated boot/stop cycles (tests) must
+    /// not pile up listeners. The closure captures the mounted world's viewport
     /// signal HANDLE only; after `stop` a straggler event would stage
     /// into a dead world (silent kernel no-op), so removal is hygiene,
     /// not correctness.
@@ -189,29 +141,13 @@ struct App {
     world: World,
 }
 
-/// Apply a dev-time overlay patch to the mounted app.
+/// Publish the overlay-patch entry point as
+/// `window.__idealyst_overlay_patch`.
 ///
-/// The page's livereload script calls this (as
-/// `window.__idealyst_overlay_patch`) when the dev loop decided a save
-/// needs no rebuild. `json` is `{ "site": u64, "edits": [...] }` —
-/// `wire::WireOverlayPatch`, the same shape the runtime-server path puts
-/// on the socket, so one payload format serves both dev shapes.
-///
-/// Both halves are applied, and both are needed: `stage_key` so every
-/// future build of the site carries the edit (a signal firing must not
-/// revert it), and `apply_live_to` for what is already on screen. See
-/// `runtime_vocabulary::overlay::live`.
-///
-/// Returns an error string rather than panicking. A failed patch is a
-/// dev-loop event; the page's handler logs it and reloads, which is the
-/// correct fallback and a much better outcome than a wasm trap taking
-/// the app down mid-edit.
-/// Publish [`overlay_patch`] as `window.__idealyst_overlay_patch`.
-///
-/// `#[wasm_bindgen]` puts an export on the MODULE, not on `window` — so
-/// the livereload script, which is plain inline JS in the page and never
-/// imports the module, could not see it. It looked, found nothing, and
-/// logged "this bundle has no overlay" on a bundle that had one.
+/// It goes on `window`, not on the wasm module's exports: the
+/// livereload script is plain inline JS in the page that never imports
+/// the module, so a module export is invisible to it (it then logs "this
+/// bundle has no overlay" on a bundle that has one).
 ///
 /// `window` owns the function — and so the closure — for the life of the
 /// page (`web_glue::Closure::into_js_value`).
@@ -248,8 +184,25 @@ fn install_overlay_patch_entry() {
     );
 }
 
-/// Apply an overlay patch, returning how many nodes the patch updated in place
-/// and how many wait for their site's next render.
+/// Apply a dev-time overlay patch to the mounted app, returning how many
+/// nodes the patch updated in place and how many wait for their site's
+/// next render.
+///
+/// The page's livereload script calls this (through
+/// `window.__idealyst_overlay_patch`) when the dev loop decided a save
+/// needs no rebuild. `json` is `{ "site": u64, "edits": [...] }` —
+/// `wire::WireOverlayPatch`, the same shape the runtime-server path puts
+/// on the socket, so one payload format serves both dev shapes.
+///
+/// Both halves are applied, and both are needed: `stage_key` so every
+/// future build of the site carries the edit (a signal firing must not
+/// revert it), and `apply_live_to` for what is already on screen. See
+/// `runtime_vocabulary::overlay::live`.
+///
+/// Returns an error rather than panicking. A failed patch is a dev-loop
+/// event; the page's handler logs it and reloads, which is the correct
+/// fallback and a much better outcome than a wasm trap taking the app
+/// down mid-edit.
 #[cfg(feature = "ui-overlay")]
 fn overlay_patch_counts(json: &str) -> Result<(usize, usize), web_glue::JsValue> {
     let patch: wire::WireOverlayPatch = serde_json::from_str(json)
@@ -286,7 +239,7 @@ fn overlay_patch_counts(json: &str) -> Result<(usize, usize), web_glue::JsValue>
     }
 }
 
-/// Mount a new-core element tree into `#app`. Client-render-only (no
+/// Mount an element tree into `#app`. Client-render-only (no
 /// hydration — see the module docs). The build closure runs inside
 /// `world.enter`, so free `signal()`/`effect()` calls work; top-level
 /// creations are world-root-owned (they live until page teardown).
@@ -352,8 +305,7 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     // first. Idempotent, so an embedder that already installed them
     // pays nothing.
     //
-    // This is NOT the full host bootstrap, despite what the comment
-    // here used to imply. `install_logger`, `install_async_executor`
+    // This is NOT the full host bootstrap. `install_logger`, `install_async_executor`
     // and `install_render_loop` are the embedder's job
     // (`idealyst::boot::web::run` does it) and are deliberately absent:
     // nothing below reaches them, and calling them unconditionally
@@ -386,8 +338,7 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     // popstate listener calls `nav::handle_popstate`, which anchors
     // `NavigatorControl::dispatch` + drop glue. It seeds the cold-start
     // deep-link path that the navigator handlers read during
-    // `resolve_initial`, so it must run BEFORE the build below — which it
-    // does, same as when `install_scheduler` piggybacked it.
+    // `resolve_initial`, so it must run BEFORE the build below.
     S::nav_services(|| {
         crate::url_provider::install_url_provider();
         crate::newcore_url_sync::install();
@@ -399,7 +350,7 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
 
     let backend = Rc::new(RefCell::new(WebBackend::new(selector)));
     // Animation writes + batched-text microtasks need the global weak
-    // self-handle, exactly as on the old-core path.
+    // self-handle.
     crate::install_global_self(&backend);
 
     // Ambient environment services (platform identity, color scheme, URL
@@ -413,7 +364,7 @@ pub fn start_in_with<S: runtime_vocabulary::BuiltinSet>(
     register(&mut registry);
     let registry = Rc::new(registry);
 
-    // Seed the SHARED old-core viewport value from the real window
+    // Seed the shared `runtime_shared` viewport value from the real window
     // BEFORE the build — the world's per-world `ViewportCtx` (created
     // below) seeds from it, so the first build classifies the correct
     // breakpoint instead of 0-width `Xs`. (Hydrate boots deliberately
@@ -496,12 +447,12 @@ pub(crate) fn mount_tree(
         // would pin the DEFAULT table and misclassify every width the
         // two tables disagree on. Post-build this either fetches the
         // build's ctx or creates one for apps that never read
-        // breakpoints (matching the old core's capture-on-first-read).
+        // breakpoints.
         let vp_sig = runtime_vocabulary::viewport::viewport_ctx().size_signal();
         (vp_sig, realized)
     });
 
-    // Single-root contract, matching the old-core mount: `finish` clears
+    // Single-root contract: `finish` clears
     // any prior `#app` contents and appends the live root.
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
@@ -574,8 +525,8 @@ pub(crate) fn take_tree() -> Option<World> {
     Some(world)
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
-/// Core-selection probe for shared transports (robot relay).
+/// True while an app is mounted (`start`/`hydrate` ran, `stop` hasn't).
+/// Probe for shared transports (robot relay).
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
@@ -599,7 +550,7 @@ pub fn mounted_world() -> Option<World> {
 }
 
 /// Run `f` with the mounted app's world ambient (`World::enter`).
-/// JS-interop seam: wasm-bindgen exports that must CREATE reactive
+/// JS-interop seam: JS-facing exports that must CREATE reactive
 /// state (`signal()`, `memo()`) run outside any handler/effect, where
 /// no world is ambient — creation would panic. Reads and writes on
 /// existing handles do NOT need this (handles route to their own
@@ -610,11 +561,10 @@ pub fn with_world_entered<R>(f: impl FnOnce() -> R) -> Option<R> {
 }
 
 /// Synchronously commit staged writes (skipped mid-flush; no-op before
-/// [`start`]). JS-interop seam: a wasm-bindgen export that staged
+/// [`start`]). JS-interop seam: a JS-facing export that staged
 /// writes and must return with the tree updated (bench drivers, robot
 /// verbs) cannot ride the async microtask the dispatch-site glue
-/// queues — it flushes before returning instead, exactly like an
-/// old-core export whose `set()` applied synchronously.
+/// queues — it flushes before returning instead.
 pub fn flush_sync() {
     flush_now();
 }
@@ -647,37 +597,26 @@ pub fn stop() {
 // JS sid namespace fold
 // ===========================================================================
 
-/// Fold a world signal's `raw_id` into the JS-side sid namespace,
-/// DISJOINT from old-core arena ids: keep the slot (low 31 bits — the
-/// per-live-world uniqueness the JS tables need) and set the high bit.
+/// Fold a world signal's `raw_id` into the JS-side sid namespace: keep
+/// the slot (low 31 bits — the per-live-world uniqueness the JS tables
+/// need) and set the high bit.
 ///
-/// WHY (bug: cross-core sid aliasing poisons an old-core binding's
-/// first paint): the JS binding tables (`__idealystSignalValues` /
-/// `__idealystSignalSubscribers`, keyed u32) are PAGE-global and shared
-/// by both cores. World `raw_id`s were previously truncated to their
-/// low-32 slot, and old-core arena signal ids are the same small
-/// integers — so a still-mounted new-core app's live subscriber could
-/// hold a cached value at the exact sid a later old-core signal
-/// allocates (the browser battery's
-/// `regression_fstring_two_bindings_one_signal` painted a sibling
-/// test's cached value on first paint once an unrelated boot-order
-/// change shifted old-arena ids by one). The high bit keeps the two
-/// cores' key spaces disjoint: old arena ids are sequential slab
-/// indices that never reach 2^31. EVERY new-core path that hands a sid
-/// to the JS layer must fold through here — registration
-/// (`register_reactive_text_binding` / `register_reactive_class_binding`)
-/// and delivery (`notify_signal_text_js` / `notify_signal_value_js`)
-/// alike, or commits ship to a key nothing subscribed.
+/// The JS binding tables (`__idealystSignalValues` /
+/// `__idealystSignalSubscribers`, keyed u32) are PAGE-global. EVERY path
+/// that hands a sid to the JS layer must fold through here —
+/// registration (`register_reactive_text_binding` /
+/// `register_reactive_class_binding`) and delivery
+/// (`notify_signal_text_js` / `notify_signal_value_js`) alike — or
+/// commits ship to a key nothing subscribed.
 ///
-/// Two live worlds sharing a slot still alias each other (same caveat
-/// the plain low-32 truncation documented: one interactive world per
-/// page); dropping the generation bits is likewise unchanged.
+/// Two live worlds sharing a slot alias each other (one interactive
+/// world per page); the generation bits are dropped.
 fn js_sid(raw_id: u64) -> u64 {
     (raw_id & 0x7FFF_FFFF) | 0x8000_0000
 }
 
 // ===========================================================================
-// Viewport source (the new-core web resize seam)
+// Viewport source (the web resize seam)
 // ===========================================================================
 //
 // The vocabulary's per-world viewport/breakpoint signal
@@ -690,18 +629,17 @@ fn js_sid(raw_id: u64) -> u64 {
 //   OUTSIDE `World::enter` — capture, don't inject) so breakpoint-
 //   dependent author reactivity (`when(!sidebar_pinned(Lg))`) re-fires
 //   on the flush it schedules;
-// - the shared old-core TLS value (`runtime_shared::set_viewport_size`) so
+// - the shared TLS value (`runtime_shared::set_viewport_size`) so
 //   every value-read seam (the vocabulary's native breakpoint-overlay
 //   merge, `Tokenized` apply paths, a later hydrate's seed) stays
 //   coherent with what author reactivity sees.
 //
-// Mirrors `viewport_observer.rs` (the old-core source) but is
-// removable: `stop()` uninstalls it, so boot/stop cycles in the browser
-// test battery don't accumulate listeners.
+// Removable: `stop()` uninstalls it, so boot/stop cycles in the browser
+// test battery don't accumulate listeners. (`viewport_observer.rs` is the
+// TLS-only push for boots that mount no world, e.g. runtime-server mode.)
 
 /// `window.inner{Width,Height}` as a logical-pixel [`ViewportSize`].
-/// `None` outside a browser context (workers) — degrade like the
-/// old-core observer.
+/// `None` outside a browser context (workers).
 fn current_window_viewport() -> Option<runtime_shared::ViewportSize> {
     let win = web_glue::dom::window()?;
     let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -735,8 +673,7 @@ pub(crate) fn install_viewport_source(
 
 /// Push the REAL window size through the source once — the hydrate
 /// boot's post-adoption reconcile (its build seeded the SSR viewport;
-/// the real one lands after the server DOM is adopted, mirroring the
-/// old-core "observer installed post-mount" ordering).
+/// the real one lands after the server DOM is adopted).
 pub(crate) fn push_current_viewport_now(
     sig: runtime_world::Signal<runtime_shared::ViewportSize>,
 ) {
@@ -755,8 +692,7 @@ fn remove_viewport_source() {
 
 /// Queue one flush of the mounted world on the framework microtask
 /// queue (deduped). Safe to call any time; a no-op before [`start`].
-/// Event glue and future new-core wrappers call this right after
-/// author-visible dispatch.
+/// Event glue calls this right after author-visible dispatch.
 pub fn schedule_flush() {
     if FLUSH_QUEUED.with(|q| q.replace(true)) {
         return;
@@ -782,7 +718,7 @@ fn flush_now() {
 /// Run a platform-invoked vocabulary callback with the mounted world
 /// ambient (`World::enter`).
 ///
-/// WHY (bug: flat_list rendered ZERO rows on new-core web): the
+/// WHY (bug: flat_list rendered ZERO rows on web): the
 /// virtualizer inverts control — the backend's own scroll/window
 /// machinery calls the handler's `mount_item` to REALIZE a row, and
 /// realization is creation-side (`signal()`/`effect()`/`inject` for
@@ -809,10 +745,7 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 // Each helper wraps an author callback so that, AFTER the author code
 // returns, one deduped flush microtask is queued. These are used by the
 // callback-taking caps impls below — the precise dispatch-site glue the
-// flush driver is built on (module docs, "Flush driver"). Wrapping here
-// (instead of inside the shared `Backend` event closures) keeps the
-// old-core render path byte-identical: the old core applies writes
-// synchronously and must not pay a flush per event.
+// flush driver is built on (module docs, "Flush driver").
 
 /// Wrap a zero-arg author callback (`on_press`, `on_dismiss`,
 /// `on_activate`, image error, …).
@@ -843,13 +776,12 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// runtime_vocabulary::bridge — keep mechanically in sync; the scene-parity
-// goldens + the AllCaps bound on register_builtins are the compile gates)
+// Host + capability-trait impls (the AllCaps bound on register_builtins is
+// the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for WebBackend {
@@ -889,9 +821,7 @@ impl Host for WebBackend {
     }
 
     fn supports_splice(&self) -> bool {
-        // Hydration gate — the new-core equivalent of the old walker's
-        // `!is_hydrating()` guard on the spliced `When`/`Switch` arms
-        // (`walker/view.rs`): SSR renders with
+        // Hydration gate: SSR renders with
         // `supports_child_splice() == false`, so the server DOM nests
         // every reactive region under a `display:contents` anchor.
         // Splicing during adoption would consume the SSR *anchor* as the
@@ -1132,7 +1062,7 @@ impl caps::TextOps for WebBackend {
         initial_values: &[&str],
         stringifiers: &[Rc<dyn Fn() -> String>],
     ) {
-        // Fold into the new-core half of the JS sid namespace — see
+        // Fold into the JS sid namespace — see
         // [`js_sid`]; must match the `notify_signal_text_js` delivery
         // fold or commits go to a key no binding subscribed.
         let folded: Vec<u64> = signal_ids.iter().map(|id| js_sid(*id)).collect();
@@ -1150,12 +1080,12 @@ impl caps::TextOps for WebBackend {
         WebBackend::release_reactive_text_binding_impl(self, text_id)
     }
 
-    /// New-core-only channel (string sibling of
-    /// `StyleOps::notify_signal_value_js`): the vocabulary's per-signal
-    /// TEXT notifier effect ships committed values here — world signals
-    /// have no `Signal::set` hook to fire the old-core notifier closure
-    /// `register_reactive_text_binding` auto-installs, so this is the
-    /// delivery path that makes JS text bindings live on the new core.
+    /// String sibling of `StyleOps::notify_signal_value_js`: the
+    /// vocabulary's per-signal TEXT notifier effect ships committed values
+    /// here. World signals have no `Signal::set` hook to fire the
+    /// `runtime_shared` notifier closure `register_reactive_text_binding`
+    /// auto-installs, so this is the delivery path that keeps JS text
+    /// bindings live.
     fn notify_signal_text_js(&mut self, signal_id: u64, value: &str) {
         // Ensure the dispatcher exists FIRST: the notifier's seeding
         // first-run happens BEFORE the first
@@ -1283,7 +1213,7 @@ impl caps::LinkOps for WebBackend {
         a11y: &AccessibilityProps,
     ) -> Self::Node {
         // Dispatch-site glue: link activation dispatches navigation
-        // (stages nav-queue tick signals on the new core).
+        // (stages nav-queue tick signals).
         let mut config = config;
         config.on_activate = flushing0(config.on_activate.clone());
         WebBackend::create_link_impl(self, config, a11y)
@@ -1598,8 +1528,8 @@ impl caps::VirtualizerOps for WebBackend {
         // (`enter_mounted_world`): `mount_item` realizes the row —
         // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`) that
         // aborts outside `World::enter` (the flat_list-renders-zero-rows
-        // bug); `release_item` drops the row scope, whose cleanups get
-        // the same ambient guarantee the old walker's teardown had.
+        // bug); `release_item` drops the row scope, whose cleanups also
+        // need the world ambient.
         let VirtualizerCallbacks {
             item_count,
             item_key,
@@ -1753,17 +1683,11 @@ impl caps::PresenceOps for WebBackend {
 }
 
 impl caps::NavigatorOps for WebBackend {
-    // Every method of this capability is now the caps trait's default.
-    // The old-core `create_navigator` (which registered the per-instance
-    // `NavigatorHandler` these four methods dispatched to) was DELETED
-    // with the old core — it does not fall back to a default
-    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
-    // registered and the vocabulary's navigator handler never calls
-    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
-    // folds screen chrome itself. Native push / header chrome on this
-    // backend is the documented native-nav seam, tracked in the module
-    // docs; it must be re-entered through the scene registry, not
-    // through a resurrected mega-trait cap.
+    // Every method keeps the caps trait default: the vocabulary's
+    // navigator handler mounts navigators over `ViewOps`/`LifecycleOps`
+    // and folds screen chrome itself, so nothing calls these on web.
+    // Native push / header chrome, if web ever needs it, belongs in a
+    // scene-`Registry` extension, not in this cap.
 }
 
 // ---------------------------------------------------------------------------
@@ -1936,7 +1860,7 @@ impl caps::StyleOps for WebBackend {
         classes: &[&str],
         value_reader: Rc<dyn Fn() -> u32>,
     ) -> u32 {
-        // Folded into the new-core sid half — see [`js_sid`]; must
+        // Folded into the JS sid namespace — see [`js_sid`]; must
         // match the `notify_signal_value_js` delivery fold.
         WebBackend::register_reactive_class_binding_impl(
             self,
@@ -1953,8 +1877,7 @@ impl caps::StyleOps for WebBackend {
     }
 
     fn notify_signal_value_js(&mut self, signal_id: u64, value: u32) {
-        // New-core-only channel (no Backend counterpart): the
-        // vocabulary's per-signal notifier effect ships world-signal
+        // The vocabulary's per-signal notifier effect ships world-signal
         // commits here; JS fans out to every bound node
         // (`__idealystOnSignalChanged`). Ensure the shim exists — the
         // notifier's seeding first-run happens BEFORE the first
@@ -2083,11 +2006,11 @@ impl caps::WireBindingOps for WebBackend {
 }
 
 // ===========================================================================
-// Browser-side tests (the crate's only test seam — backend-web compiles
-// for wasm32 only, so there is no native-Rust test path; see tests.rs).
-// Run with:
-//   cd crates/backend/web
-//   wasm-pack test --headless --chrome -- --features new-core
+// Browser-side tests (the crate's only test seam — they need a real DOM,
+// so there is no native-Rust test path). Run them as
+// tests.rs's module docs describe (`cargo test --target
+// wasm32-unknown-unknown` with a matching CHROMEDRIVER; not `wasm-pack
+// test`, which bypasses the repo's wasm32 test runner).
 // ===========================================================================
 
 #[cfg(test)]
@@ -2240,8 +2163,8 @@ mod tests {
     }
 
     /// Regression (post-dispatch hook): a signal set from an `after_ms`
-    /// timer callback commits without any event and without the old
-    /// rAF safety net — the scheduler fires the dispatch hook after the
+    /// timer callback commits without any event and without a per-frame
+    /// poll — the scheduler fires the dispatch hook after the
     /// timer body returns. Fails if the scheduler's `after_ms` hook
     /// fire is removed.
     #[wasm_bindgen_test]
@@ -2502,7 +2425,7 @@ mod tests {
         drop(world);
     }
 
-    /// Regression (flat_list rendered ZERO rows on new-core web): the
+    /// Regression (flat_list rendered ZERO rows on web): the
     /// JS windowing machinery invokes the vocabulary handler's
     /// `mount_item` from its own deferred fill — OUTSIDE `World::enter`
     /// — and row realization is creation-side (row signals, Dyn text
@@ -2688,8 +2611,7 @@ mod tests {
     }
 
 
-    /// Batched repeat (the old core's `Element::Repeat` fast path,
-    /// ported): a static-range repeat of styled view+text rows mounts
+    /// Batched repeat: a static-range repeat of styled view+text rows mounts
     /// through ONE `execute_batch_with_attach` into the real DOM, a
     /// keyed sibling AFTER the repeat bases its splice index correctly
     /// (reorders land in the right positions), and swapping the region
@@ -2803,9 +2725,8 @@ mod tests {
         // 3, not 2: the batch ATTEMPT builds row 0 first (running its
         // probe registration) before the reactive-text shape bails it to
         // the fallback, which rebuilds all rows — so row 0's builder ran
-        // twice. Old-core parity: `try_build_repeat_batched` also ran
-        // `row_builder` again after a bail, double-registering any
-        // scope-level cleanups a row builder creates.
+        // twice, double-registering any scope-level cleanups a row
+        // builder creates.
         assert_eq!(cleanups.get(), 3, "per-row cleanups fire at teardown");
         drop(world);
         setup_mount();
@@ -2854,15 +2775,12 @@ mod tests {
         setup_mount();
     }
 
-    /// Regression (cross-core JS sid aliasing): world signal ids used
-    /// to enter the PAGE-global JS binding tables as their bare low-32
-    /// slot — the same small integers old-core arena signals use — so a
-    /// live new-core binding could poison a later old-core binding's
-    /// first paint at the aliased sid (surfaced as
-    /// `tests::regression_fstring_two_bindings_one_signal` painting a
-    /// sibling test's cached value once a boot-order change shifted
-    /// old-arena ids). New-core sids must land in the folded high-bit
-    /// range (`js_sid`), on BOTH the registration and delivery paths.
+    /// Regression (JS sid aliasing): world signal ids entered as their
+    /// bare low-32 slot collide in the PAGE-global JS binding tables with
+    /// other small-integer sids, so a live binding's cached value painted
+    /// on another binding's first paint. World sids must land in the
+    /// folded high-bit range (`js_sid`), on BOTH the registration and
+    /// delivery paths.
     #[wasm_bindgen_test]
     async fn regression_newcore_sids_stay_out_of_oldcore_arena_range() {
         setup_mount();
@@ -2915,10 +2833,8 @@ mod tests {
         setup_mount();
     }
 
-    /// Regression (ported from the deleted old-core walker battery's
-    /// `regression_fstring_two_bindings_one_signal` +
-    /// `regression_fstring_existing_js_notifier_not_clobbered`): TWO text
-    /// bindings against the SAME signal must both update. The second
+    /// Regression: TWO text bindings against the SAME signal must both
+    /// update. The second
     /// binding's per-signal auto-register loop sees
     /// `signal_has_js_notifier == true` and short-circuits, so the
     /// FIRST notifier must still be live and the JS dispatcher must fan
@@ -3151,8 +3067,8 @@ mod tests {
     }
 
     /// Regression (the idea-ui-docs "hamburger visible at desktop
-    /// width" bug): the per-world breakpoint signal was SEED-ONLY on
-    /// the new core — no web resize source — so author reactivity
+    /// width" bug): the per-world breakpoint signal was SEED-ONLY — no
+    /// web resize source — so author reactivity
     /// reading `current_breakpoint()` (the shell's
     /// `when(!sidebar_pinned(Lg))`) never re-fired. The boot must seed
     /// the real window size, and a window `resize` must re-fire

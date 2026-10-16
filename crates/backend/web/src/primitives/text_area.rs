@@ -1,4 +1,4 @@
-//! `Element::TextArea` — a `<textarea>` with a controlled value
+//! The `text_area` primitive — a `<textarea>` with a controlled value
 //! signal and a per-keystroke `on_change` callback. Mirrors the
 //! shape of `text_input.rs`; the only difference is the element
 //! tag (`<textarea>` instead of `<input type="text">`) and the
@@ -152,8 +152,8 @@ pub(crate) fn create(
     // synchronous measure reads `scrollHeight == 0` AND `getComputedStyle`
     // returns nothing — so `line-height` resolves to 0 and the `min_rows`→px
     // floor collapses, pinning the box to ~0px ("very short on init"). The
-    // controlled-value Effect that `build_text_area` installs does NOT save us:
-    // it fires synchronously during the walker build, while the node is still
+    // controlled-value Effect the text-area handler installs does NOT save us:
+    // it fires synchronously during the scene's build, while the node is still
     // detached, so it measures 0 too and only re-runs on a later `value`
     // change. So we measure once now (best-effort; covers an already-attached
     // hydrated node) and again after one animation frame — by which point the

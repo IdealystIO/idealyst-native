@@ -20,11 +20,8 @@
 //! [`newcore::render_all`] the SSG crawl, and [`newcore::serve`] the
 //! preview server; the backend's capability implementation (the
 //! `runtime_scene::Host` seam plus the 30 `runtime_vocabulary::caps`
-//! traits) lives in [`newcore`]. This crate carried a second,
-//! `Element`-walking `impl runtime_core::Backend` until the old core was
-//! removed; every method body moved into the capability impls verbatim,
-//! so the emitted bytes are unchanged — pinned against the old core's
-//! frozen output by `tests/newcore_byte_identity.rs` + `tests/goldens/`
+//! traits) lives in [`newcore`]. The emitted bytes are pinned by the
+//! committed goldens in `tests/goldens/` (`tests/newcore_byte_identity.rs`)
 //! and by `websites/website/tests/ssg_parity.rs`.
 
 use std::cell::RefCell;
@@ -151,24 +148,19 @@ pub(crate) fn arm_minted_class_guard_if_installed() {
     }
 }
 
-// New-core (idea-lite) render path: `SsrBackend` as a direct
-// `runtime_scene::Host` + 30-caps implementor, with per-request
-// `runtime_world::World` lifecycles (`newcore::render_path`). Additive —
-// nothing in the old-core path below changes under the feature.
 /// `runtime_scene::Host` + the 30 capability traits on [`SsrBackend`],
 /// plus the per-request-world render entries.
 pub mod newcore;
 
 /// A self-contained node handle — like a DOM node or a `UIView`, not an
 /// arena index. Children splice in via interior mutability without
-/// going through the backend, which is what lets deferred chrome (a
-/// drawer sidebar built post-mount via `build_node`) attach itself into
-/// its slot from a closure that has no backend reference.
+/// going through the backend, so a closure holding only the node can
+/// attach into it.
 pub type NodeRef = Rc<RefCell<HtmlNode>>;
 
 /// One element in the accumulated HTML tree. Public only because it's
 /// named by the backend's `Node` associated type; its fields are
-/// private (build nodes via the `Backend` methods, not directly).
+/// private (build nodes via the capability-trait methods, not directly).
 pub struct HtmlNode {
     tag: &'static str,
     /// Text content for leaf text nodes (escaped at serialization time).
@@ -344,7 +336,7 @@ fn set_styled_class(node: &NodeRef, class: &str) -> StyledClassChange {
 /// Append an inline CSS declaration (`prop:value`) to a node's inline
 /// style, merging with any existing one. Used for the drawer navigator's
 /// per-instance `--drawer-width` custom property (see
-/// `Backend::attach_html_style`) so the SSR first paint matches the width
+/// `caps::DocumentOps::attach_html_style`) so the SSR first paint matches the width
 /// the live web client sets on hydration.
 fn add_inline_style(node: &NodeRef, prop: &str, value: &str) {
     let mut n = node.borrow_mut();
@@ -411,11 +403,12 @@ fn is_void(tag: &str) -> bool {
 pub struct SsrBackend {
     root: Option<NodeRef>,
     metadata: runtime_shared::PageMetadata,
-    /// Stylesheets registered via [`Backend::register_raw_css`] (e.g. the
+    /// Stylesheets registered via [`runtime_vocabulary::caps::DocumentOps::register_raw_css`] (e.g. the
     /// navigator layout sheet). Deduped, emitted in the document `<head>`.
     raw_css: Vec<String>,
     /// The active theme's tokens, captured from
-    /// [`Backend::install_tokens`]/[`Backend::update_tokens`]. Emitted as
+    /// [`runtime_vocabulary::caps::StyleOps::install_tokens`] /
+    /// [`runtime_vocabulary::caps::StyleOps::update_tokens`]. Emitted as
     /// a `:root { … }` block so the SSR first paint resolves
     /// `var(--token, fallback)` to the real theme value (matching the
     /// live web build, which installs the same variables at runtime).
@@ -430,21 +423,21 @@ pub struct SsrBackend {
     /// byte-identical to before.
     palettes: Vec<runtime_shared::ThemePalette>,
     /// The theme's default text font, captured from
-    /// [`Backend::apply_default_text_font`] (premint host driver).
+    /// [`runtime_vocabulary::caps::StyleOps::apply_default_text_font`] (premint host driver).
     /// Emitted as `--iy-default-font` on `:root` so preminted rule
     /// bodies (`font-family: var(--iy-default-font, inherit)`) resolve
     /// on the SSR first paint exactly like the live web build.
     default_text_font: Option<runtime_shared::FontFamily>,
     /// Served URL per registered asset id (fonts/images), from
-    /// [`Backend::register_asset`] — or, for an `embed_asset!` image, a
+    /// [`runtime_vocabulary::caps::AssetOps::register_asset`] — or, for an `embed_asset!` image, a
     /// `data:` URI of its bytes. Fonts feed the `@font-face` rules
     /// below; image URLs are read at `create_image` time.
     asset_urls: HashMap<runtime_shared::assets::AssetId, String>,
-    /// `@font-face` rules from [`Backend::register_typeface`], emitted in
+    /// `@font-face` rules from [`runtime_vocabulary::caps::AssetOps::register_typeface`], emitted in
     /// `<head>` so the SSR first paint uses the real fonts (matching the
     /// live web build, which links the same served font files).
     font_faces: Vec<String>,
-    /// Content-keyed style classes from [`Backend::apply_style`]
+    /// Content-keyed style classes from [`runtime_vocabulary::caps::StyleOps::apply_style`]
     /// (`ui-<hash>` → declaration body), deduped — the same class+rule
     /// model the web backend uses, emitted as a `<head>` stylesheet
     /// instead of inline `style="…"`. `BTreeMap` for deterministic output.
@@ -463,7 +456,8 @@ pub struct SsrBackend {
     /// `StateBits::precedence_rank` makes it the one
     /// `runtime_shared::StateBits::PRECEDENCE` defines.
     state_rules: std::collections::BTreeMap<(String, usize), (&'static str, String)>,
-    /// Responsive breakpoint overlays from [`Backend::apply_styled_variants`],
+    /// Responsive breakpoint overlays from 
+    /// [`runtime_vocabulary::caps::StyleOps::apply_styled_variants`],
     /// emitted as `@media (min-width: …) { .ui-<hash> { … } }` rules so the
     /// SSR first paint already respects size boundaries — a mobile request
     /// gets the mobile layout in static HTML, with no JS/hydration needed
@@ -483,17 +477,18 @@ pub struct SsrBackend {
     /// rule (plus its pseudo/media derivatives) is dropped from the
     /// head stylesheet — the web backend's dynamic-slot refcount model.
     /// Without this, a reactive style resolving to its final value at
-    /// flush left the mount-time rule behind as a dead head entry that
-    /// old-core SSR (single final apply) never emits.
+    /// flush would leave the mount-time rule behind as a dead head entry.
     style_rule_refs: HashMap<String, u32>,
-    /// Host-surface background captured from [`Backend::set_app_background`].
+    /// Host-surface background captured from 
+    /// [`runtime_vocabulary::caps::AppEnvOps::set_app_background`].
     /// Emitted in `<head>` as `html, body { background: …; }` so the SSR
     /// first paint matches what the web backend installs at runtime. For a
     /// `Tokenized::Token` we emit `var(--<name>)` (live-reactive after
     /// hydration via the `:root` setProperty path); for `Tokenized::Literal`
     /// we emit the resolved color value.
     app_bg: Option<runtime_shared::Tokenized<runtime_shared::Color>>,
-    /// Scrollbar (thumb, track) captured from [`Backend::set_scrollbar_theme`].
+    /// Scrollbar (thumb, track) captured from 
+    /// [`runtime_vocabulary::caps::AppEnvOps::set_scrollbar_theme`].
     /// Emitted in `<head>` as `scrollbar-color` + `::-webkit-scrollbar-*`
     /// rules — same shape the web backend installs at runtime so the SSR
     /// first paint matches.
@@ -510,9 +505,9 @@ impl SsrBackend {
 
     /// Book a node's minted-class change into the rule refcounts,
     /// dropping a superseded class's rules once nothing wears it (see
-    /// [`Self::style_rule_refs`]). Node teardown does NOT decrement —
-    /// the old core keeps rules of dropped nodes in the head too, and
-    /// the cross-core byte gate compares against that behavior.
+    /// [`Self::style_rule_refs`]). Node teardown does NOT decrement: a
+    /// dropped node's rules stay in the head (the committed goldens pin
+    /// that output).
     fn book_styled_class(&mut self, class: &str, change: StyledClassChange) {
         match change {
             StyledClassChange::Unchanged => {}
@@ -547,7 +542,7 @@ impl SsrBackend {
     }
 
     /// Serialize the tree to an HTML string, rooted at the node passed to
-    /// [`Backend::finish`]. Empty string if nothing was mounted.
+    /// [`runtime_vocabulary::caps::LifecycleOps::finish`]. Empty string if nothing was mounted.
     pub fn into_html(&self) -> String {
         let mut out = String::new();
         if let Some(root) = &self.root {
@@ -696,13 +691,12 @@ fn escape_attr(s: &str, out: &mut String) {
 // ---------------------------------------------------------------------------
 // Microtask scheduler.
 //
-// SSR is synchronous and has no event loop, but chrome that renders an
-// author `Element` (a drawer sidebar) must call `host.build_node`, which
-// can't run inside the `create_navigator` borrow. Handlers defer it via
-// `schedule_microtask`; without an installed scheduler that runs INLINE
-// (still inside the borrow → double-borrow panic). So SSR installs a
-// scheduler that QUEUES microtasks, and `render_path` drains the queue
-// after `mount` (borrow released) so deferred builds run cleanly.
+// SSR is synchronous and has no event loop, but handlers still defer
+// work through `schedule_microtask` (e.g. portal placement); without an
+// installed scheduler that runs INLINE, possibly inside a backend
+// borrow. So SSR installs a scheduler that QUEUES microtasks, and
+// `newcore::render_path` drains the queue after mount with no backend
+// borrow held.
 // ---------------------------------------------------------------------------
 
 mod scheduler {
@@ -773,7 +767,7 @@ pub struct RenderedPage {
     pub html: String,
     pub metadata: runtime_shared::PageMetadata,
     /// Stylesheets the render registered via
-    /// [`Backend::register_raw_css`] (navigator layout sheet, etc.).
+    /// [`runtime_vocabulary::caps::DocumentOps::register_raw_css`] (navigator layout sheet, etc.).
     /// [`render_document`] emits these in `<head>` so the server's first
     /// paint matches the live web layout.
     pub head_css: String,
@@ -976,7 +970,8 @@ pub fn render_document(
 /// sensible wide default for first paint.
 const SSR_VIEWPORT: runtime_shared::ViewportSize = runtime_shared::ViewportSize::new(1280.0, 800.0);
 
-/// Result of crawling an app's navigator hierarchy via [`render_all`].
+/// Result of crawling an app's navigator hierarchy via
+/// [`newcore::render_all`].
 /// `pages` maps each rendered literal path (e.g. `/`, `/about`) to its
 /// [`RenderedPage`]. `skipped_parameterized` lists any patterns with
 /// `:placeholder` segments that the crawler skipped — those need an
@@ -991,9 +986,8 @@ mod tests {
     use super::*;
     use runtime_shared::accessibility::AccessibilityProps;
     use runtime_shared::{Color, Tokenized};
-    // The rendering mechanism now lives on the capability traits (the
-    // `Backend` mega-trait is gone), so the unit tests reach it through
-    // them; `Host` supplies the structural ops.
+    // The rendering mechanism lives on the capability traits, so the
+    // unit tests reach it through them; `Host` supplies the structural ops.
     use runtime_scene::Host;
     use runtime_vocabulary::caps::{
         AppEnvOps, AssetOps, DocumentOps, ExternalOps, LifecycleOps, LinkOps, PressableOps,
@@ -1203,11 +1197,11 @@ mod tests {
     /// class (the web backend's one-mutable-dynamic-slot-per-node
     /// model) instead of accumulating both. The bug: a reactive style
     /// whose value changed between the mount-time apply and the
-    /// request's flush (the new core stages writes — e.g. a scroll-spy
-    /// TOC link resolving its `active` variant post-mount) serialized
-    /// wearing BOTH classes, while old-core SSR (and the live DOM
-    /// after the same flush) carries only the final one — breaking SSG
-    /// byte-parity and hydration adoption. Structural classes stamped
+    /// request's flush (writes are staged — e.g. a scroll-spy TOC link
+    /// resolving its `active` variant post-mount) serialized wearing
+    /// BOTH classes, while the live DOM after the same flush carries
+    /// only the final one — breaking SSG byte-parity and hydration
+    /// adoption. Structural classes stamped
     /// via `attach_html_class` must survive the swap.
     #[test]
     fn regression_reapply_replaces_minted_class_keeps_structural() {
@@ -1238,9 +1232,8 @@ mod tests {
         );
 
         // The superseded rule leaves the head stylesheet once nothing
-        // wears it (web's dynamic-slot refcount model): old-core SSR
-        // applies only the final style, so a lingering first-apply rule
-        // breaks head_css byte-parity.
+        // wears it (web's dynamic-slot refcount model): a lingering
+        // first-apply rule is a dead head entry.
         let head = b.head_css();
         assert!(
             !head.contains(&first_class),

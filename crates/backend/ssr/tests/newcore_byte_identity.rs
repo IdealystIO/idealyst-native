@@ -1,15 +1,12 @@
-//! Frozen-golden corpus: the SSR backend's output must match the
-//! **frozen bytes the OLD core produced** for the same logical app,
-//! exactly — `html` AND `head_css`, with **zero normalization**.
+//! Golden corpus: the SSR backend's output must match the committed
+//! snapshots in `tests/goldens/` exactly — `html` AND `head_css`, with
+//! **zero normalization**.
 //!
-//! This is the hydration acceptance gate for the port: the web backend's
-//! adopt-mode boot (`backend-web`'s `newcore_hydrate`) walks SSR DOM
-//! cursor-style in creation order and adopted old-core SSR output, so
-//! byte-identical output adopts identically. Any divergence found here is
-//! a hydration bug, not a formatting nit; do NOT normalize it away, and
-//! do NOT re-freeze to make it pass (`IDEALYST_FREEZE_GOLDENS=1` can now
-//! only RE-BASELINE against the current renderer, permanently discarding
-//! the old core's testimony — see `tests/goldens/README.md`).
+//! The web backend's adopt-mode boot (`backend-web`'s `newcore_hydrate`)
+//! walks SSR DOM cursor-style in creation order, so a mismatch here is a
+//! real rendering change that can break hydration, not a formatting nit;
+//! do NOT normalize it away. Re-freeze with `IDEALYST_FREEZE_GOLDENS=1`
+//! only for an intended change (see `tests/goldens/README.md`).
 //!
 //! Corpus (mirrors scene-parity's paired scenarios, serialized to HTML
 //! instead of op streams): static kitchen sink, sheet/token styling with
@@ -55,9 +52,8 @@ fn stem(name: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-/// The gate: the rendered page must match the frozen old-core bytes
-/// exactly (html + head_css), with no normalization. This is the
-/// hydration-compatibility proof, so any difference is a bug.
+/// The gate: the rendered page must match the committed goldens exactly
+/// (html + head_css), with no normalization.
 fn assert_matches_frozen(name: &str, page: &RenderedPage) {
     let stem = stem(name);
     goldens().check_text(&format!("{stem}.html"), &page.html);
@@ -356,10 +352,7 @@ fn corpus_styled_text_underline_runs() {
         use runtime_vocabulary::builders::{text, view};
         view().child(text().runs(runs())).build()
     });
-    // No frozen golden: underline/italic runs postdate the old core, so
-    // there is no byte-identity artifact to compare against (see
-    // tests/goldens/README.md — these files cannot be re-derived). The
-    // assertions below are the fence instead.
+    // No golden for this case: the assertions below are the fence.
     assert!(
         new.html.contains("text-decoration-style: dotted")
             && new.html.contains("text-decoration-color: #c00"),
@@ -416,13 +409,13 @@ fn corpus_swap_navigator_at_path() {
 }
 
 // ===========================================================================
-// 7. SSG crawl (`render_all` old ↔ `newcore::render_all` new): route
-//    discovery through the shared collector + per-page byte identity
+// 7. SSG crawl (`newcore::render_all`): route discovery through the
+//    collector + per-page goldens
 // ===========================================================================
 
 const NAV_DOCS: Route<()> = Route::new("docs", "/docs");
 /// Parameterized pattern — the crawl must SKIP it (no param values),
-/// reporting it in `skipped_parameterized` on both cores.
+/// reporting it in `skipped_parameterized`.
 const NAV_ITEM: Route<()> = Route::new("item", "/item/:id");
 
 fn crawl_new() -> runtime_scene::Element {
@@ -441,10 +434,9 @@ fn crawl_new() -> runtime_scene::Element {
         .build()
 }
 
-/// The new-core SSG crawl mirrors the old one end-to-end: same route
-/// discovery (the vocabulary navigator mounts publish their screen
-/// paths into the SAME collector `dispatch_navigator` feeds), same
-/// parameterized-skip behavior, and byte-identical rendered pages.
+/// The SSG crawl end-to-end: route discovery (the vocabulary navigator
+/// mounts publish their screen paths into the route collector),
+/// parameterized-skip behavior, and golden-matching rendered pages.
 #[test]
 fn corpus_render_all_crawl_discovers_and_matches() {
     let new = backend_ssr::newcore::render_all(|_| {}, crawl_new);
@@ -474,25 +466,20 @@ fn corpus_render_all_crawl_discovers_and_matches() {
 //    theme default into font-less rules; DYNAMIC (reactive) ones don't
 // ===========================================================================
 
-/// Pins the old walker's asymmetric fill contract on BOTH cores —
-/// `apply_one` (static) runs `with_default_text_font`, while
-/// `attach_style_reactive` never does (reactive nodes ride the
-/// `apply_default_text_font` document channel). The new core's
-/// `style_attach` briefly folded the default into the DYNAMIC path too,
-/// minting class hashes old-core SSR never mints — which broke website
-/// SSG byte-parity site-wide (every reactive-styled node hashed
-/// differently). Byte-comparing a static + dynamic pair with a default
-/// font installed is the regression net for that whole class of drift.
+/// Pins the asymmetric fill contract: a STATIC application runs
+/// `fill_default_text_font` (`runtime_vocabulary::style_attach`), while a
+/// reactive one never does (reactive nodes ride the
+/// `apply_default_text_font` document channel). Folding the default
+/// into the DYNAMIC path too mints different class hashes for every
+/// reactive-styled node, which broke website SSG byte-parity site-wide.
+/// Byte-comparing a static + dynamic pair with a default font installed
+/// is the regression net for that whole class of drift.
 ///
-/// AMENDED GOLDEN (the one deliberate re-baseline in this corpus, see
-/// `goldens/README.md`): `default_font_fill.head.css` now carries the
-/// `:root` default-font block. The old core never emitted it because
-/// the document publication was gated on premint use — which was
-/// itself the bug: the "document channel" the dynamic path rides was
-/// switched off on live builds, so reactive nodes rendered in the
-/// browser serif. The `.html` golden is untouched old-core bytes (no
-/// class hash moved), and the `folds == 2` assertion below pins the
-/// fill asymmetry independent of the frozen artifact.
+/// `default_font_fill.head.css` carries the `:root` default-font block:
+/// the "document channel" the dynamic path rides must be published on
+/// every build, or reactive nodes render in the browser serif. The
+/// `folds == 2` assertion below pins the fill asymmetry independent of
+/// the golden.
 #[test]
 fn corpus_default_font_fill_static_folds_dynamic_does_not() {
     let test_font = || runtime_shared::FontFamily::System("TestFont, serif".to_string());
@@ -510,7 +497,7 @@ fn corpus_default_font_fill_static_folds_dynamic_does_not() {
     });
 
     assert_matches_frozen("default_font_fill", &new);
-    // Sanity on the contract itself (not just old==new): the static
+    // Sanity on the contract itself (not just the golden): the static
     // nodes' rules carry the folded font, the dynamic node's rule
     // doesn't. Count the FOLDED declaration form — the `:root` document
     // publication also names the font, but as the variable's value
@@ -523,7 +510,7 @@ fn corpus_default_font_fill_static_folds_dynamic_does_not() {
         new.head_css
     );
     // And the document publication is present for the dynamic node to
-    // inherit — the amended half of the golden.
+    // inherit — the `:root` half of the golden.
     assert!(
         new.head_css.contains("font-family: var(--iy-default-font)"),
         "the :root block must declare the inheritable font-family: {}",

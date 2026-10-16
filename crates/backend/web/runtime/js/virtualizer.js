@@ -1,12 +1,11 @@
 // Virtualizer — JS-side scroll handler + visible-range diff for the
-// web backend's `Primitive::Virtualizer`. Owns the scroll listener
-// so the wasm-bindgen boundary is crossed only when items
+// web backend's `virtualizer` primitive. Owns the scroll listener
+// so the wasm→JS boundary is crossed only when items
 // enter/leave the visible window, not on every scroll tick.
 //
-// The framework's `backend-web::create_virtualizer` injects this
-// file's contents into a `<script>` tag on first use, then constructs
-// an instance and hands it the Rust callbacks via wasm-bindgen-
-// wrapped closures.
+// The web backend's `create_virtualizer` evaluates this shim on first
+// use, then constructs an instance and hands it the Rust callbacks as
+// web-glue closures.
 //
 // # Lanes / grid
 //

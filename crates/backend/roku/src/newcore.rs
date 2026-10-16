@@ -1,22 +1,12 @@
 //! Rendering: the `runtime_scene::Host` + capability-trait surface, the
 //! boot entry, and the flush driver.
 //!
-//! [`RokuBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration. Every mechanism body in this file was moved here
-//! verbatim from the crate's old `impl runtime_core::Backend for RokuBackend`
-//! when the 159-method mega-trait was deleted, so the command-stream mechanism code (node
-//! allocation, style translation, command emission)
-//! is unchanged: the same scene emits the same commands
-//! (pinned by `tests/newcore_parity.rs` against the frozen old-core
-//! command streams).
-//! Capabilities this backend does not implement are simply absent — the
-//! caps-trait DEFAULT bodies serve them, and those defaults were audited
-//! byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 115 of this backend's
-//! 152 caps methods resolve to a default).
-//!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! [`RokuBackend`] implements [`runtime_scene::Host`] plus the capability
+//! traits (`runtime_vocabulary::caps`): node allocation, style
+//! translation and command emission are driven from here. The emitted
+//! command stream is pinned by the golden snapshots in
+//! `tests/newcore_parity.rs`. Capability methods this backend does not
+//! override fall through to the caps-trait default bodies.
 //!
 //! # Two layers in one file: mechanism + flush policy
 //!
@@ -37,7 +27,7 @@
 //! 4. Entered buffered-microtask drain (no-op without a buffering
 //!    scheduler; load-bearing under one).
 //! 5. Single root → `caps::LifecycleOps::finish` (emits the `Finish { root }`
-//!    wire op, matching the old-core mount).
+//!    wire op).
 //! 6. `world.flush()` commits anything staged during mount, so the
 //!    first [`RokuBackend::drain`] carries the complete initial scene.
 //! 7. Install the flush driver and retain
@@ -45,7 +35,7 @@
 //!
 //! # Flush driver — the embedder contract
 //!
-//! The new core stages signal writes; nothing is observable until the
+//! The runtime stages signal writes; nothing is observable until the
 //! driver calls [`World::flush`]. Roku's ONLY author-callback dispatch
 //! surface is the embedder invoking a [`crate::HandlerTable`] closure
 //! (device event → `dispatch_unit`/`dispatch_string`/`dispatch_bool`/
@@ -83,23 +73,21 @@
 //! # Viewport
 //!
 //! Roku has **no viewport report surface** — `RokuBackend` neither
-//! implements a `set_viewport` nor writes the old-core viewport TLS
-//! (the device's 1280×720 / 1920×1080 design space is the BrightScript
-//! client's concern; the wire ships author intent, not resolved
-//! layout). There is therefore no viewport sink to install here — the
-//! world's viewport ctx keeps its default, exactly as the old core's
-//! TLS default did. If a future wire op reports device resolution,
-//! wire the sink beside it (see `backend_terminal::newcore` for the
-//! shape).
+//! implements a `set_viewport` nor writes the `runtime_shared` viewport
+//! TLS (the device's 1280×720 / 1920×1080 design space is the
+//! BrightScript client's concern; the wire ships author intent, not
+//! resolved layout). There is therefore no viewport sink to install
+//! here — the world's viewport ctx keeps its default. If a future wire
+//! op reports device resolution, wire the sink beside it (see
+//! `backend_terminal::newcore` for the shape).
 //!
 //! # Residual seams (named, none silent)
 //!
-//! - Navigators: `Element::Navigator` with an SDK presentation type
-//!   routes through `Backend::create_navigator` exactly as before —
-//!   which on Roku is the trait's `unimplemented!()` default on BOTH
-//!   cores (the module docs on [`crate`] document the gap).
+//! - Navigators are vocabulary built-ins (swap/stack) mounted through
+//!   `runtime_vocabulary::handlers::navigator`; every `NavigatorOps`
+//!   method resolves to its caps default.
 //! - There is no live device/thin-client: the serialized command
-//!   stream IS the observable output, which is why the parity tests
+//!   stream IS the observable output, which is why the golden tests
 //!   compare JSON bytes rather than pixels.
 
 use std::cell::{Cell, RefCell};
@@ -173,8 +161,7 @@ impl NewCoreApp {
 
     /// Unmount: drops the `Realized` (cleanups fire), uninstalls the
     /// flush driver, and drops the world. Call while the mounting
-    /// thread's TLS is intact (same rationale as the old host's
-    /// explicit `Owner` drop). A late `HandlerTable` dispatch or
+    /// thread's TLS is intact. A late `HandlerTable` dispatch or
     /// [`settle`] after `stop` is a safe no-op — the flush driver's
     /// world slot is cleared before the reactive teardown runs.
     pub fn stop(self) {
@@ -185,7 +172,7 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend.
+/// Mount an element tree into an already-constructed backend.
 ///
 /// The embedder must have constructed the backend; a scheduler is
 /// OPTIONAL (see the module docs — without one, flushes commit
@@ -232,8 +219,8 @@ pub fn start_with<S, R, B>(
     B: FnOnce() -> Element,
 {
     // Monotonic clock (idempotent, first install wins) — animation and
-    // presence timing read it; the old boot relied on the host's lazy
-    // default, the new boot installs it explicitly like macOS/wgpu.
+    // presence timing read it; installed explicitly like macOS/wgpu
+    // rather than relying on the host's lazy default.
     let platform = caps::AppEnvOps::platform(&*backend.borrow());
     runtime_shared::time::install_default_time_source(platform);
 
@@ -264,7 +251,7 @@ pub fn start_with<S, R, B>(
     // creation-side work.
     world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
-    // Single-root contract, matching the old-core mount (the wire's
+    // Single-root contract (the wire's
     // `Finish { root }` op names exactly one application root).
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
@@ -298,7 +285,7 @@ fn set_flush_world(world: Option<World>) {
     FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
@@ -376,12 +363,8 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 // ---------------------------------------------------------------------------
 //
 // Each helper wraps an author callback so that, AFTER the author code
-// returns, one deduped flush microtask is queued. Wrapping here (instead
-// of inside the shared Backend code) keeps the old-core path
-// byte-identical: the old core applies writes synchronously and must not
-// pay a flush per event. On Roku the wrapped closure is what the caps
-// impl hands to `Backend::create_*` — i.e. what lands in the
-// `HandlerTable` — so the embedder's plain `dispatch_*` call is covered
+// returns, one deduped flush microtask is queued. On Roku the wrapped
+// closure is what the caps impl registers in the `HandlerTable`, so the embedder's plain `dispatch_*` call is covered
 // with no embedder-side glue.
 
 /// Wrap a zero-arg author callback (`on_press`, portal `on_dismiss`, …).
@@ -412,14 +395,13 @@ fn flushing_key(f: primitives::key::KeyDownHandler) -> primitives::key::KeyDownH
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// backend_terminal/src/newcore.rs / runtime_vocabulary::bridge — keep
-// mechanically in sync; the AllCaps bound on register_builtins is the
-// compile gate)
+// Host + capability-trait delegation (same layout as
+// backend_terminal/src/newcore.rs; the AllCaps bound on register_builtins
+// is the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for RokuBackend {
@@ -432,15 +414,10 @@ impl Host for RokuBackend {
         });
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // resulting child order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop gives the right child order.
 
-    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
-    /// ignoring the index. `Host` makes the method REQUIRED, so the default
-    /// that used to supply this body is gone — reproduced verbatim rather
-    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// Append, ignoring the index. Never reached in practice:
     /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
     /// regions rebuild wholesale under their own anchor and no positional
     /// splice is ever emitted.
@@ -448,10 +425,7 @@ impl Host for RokuBackend {
         self.insert(parent, child)
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
-    /// inherited (deletion-baseline S2.2). Only meaningful for
-    /// splice-capable hosts; this one is anchored, so the framework never
+    /// No-op. Only meaningful for splice-capable hosts; this one is anchored, so the framework never
     /// calls it.
     fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
         // default: no-op
@@ -477,14 +451,11 @@ impl Host for RokuBackend {
         id
     }
 
-    /// Explicit `false` — the port of the old
-    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
-    /// `Host` makes it REQUIRED, so the value is stated here instead of
-    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
-    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
-    /// to `true` would move every reactive region out from under its anchor
-    /// and change the output wholesale. Pinned by a literal assertion in the
-    /// crate's parity suite.
+    /// Explicit `false`: this backend is ANCHORED, which is what the
+    /// committed snapshots in `tests/goldens/` record. Flipping it to
+    /// `true` would move every reactive region out from under its anchor
+    /// and change the output wholesale. Pinned by a literal assertion in
+    /// `tests/newcore_parity.rs`.
     fn supports_splice(&self) -> bool {
         false
     }
@@ -578,8 +549,8 @@ impl caps::ButtonOps for RokuBackend {
         // Dispatch-site glue: wrap the Action's runtime evaluator (the
         // closure `create_button` registers in the HandlerTable); the
         // serialization metadata (method/inputs/output → BindButton
-        // wire op) passes through untouched, keeping the emitted
-        // command stream byte-identical to the old core.
+        // wire op) passes through untouched, so the emitted command
+        // stream is unaffected by the wrap.
         let on_click = Action {
             method: on_click.method,
             inputs: on_click.inputs.clone(),
@@ -990,10 +961,8 @@ impl caps::StyleOps for RokuBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Degrade LOUDLY, once. `Roku` has no scrolling gesture model,
         // so `Position::Sticky` renders as `Relative` and
-        // `overscroll-behavior` has nothing to govern. Both were
-        // previously dropped in silence — the exact "no warning,
-        // nothing to grep for" failure `runtime_shared::unsupported`
-        // exists to end.
+        // `overscroll-behavior` has nothing to govern. Warn rather than
+        // drop them silently (`runtime_shared::unsupported`).
         if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
             runtime_shared::unsupported::warn_once(
                 "roku.sticky",
@@ -1066,13 +1035,9 @@ impl caps::StyleOps for RokuBackend {
         // to any of the changed tokens; each of those effects calls
         // `apply_style` again with freshly-resolved literal values. So the
         // wire stream picks up the new values automatically — this method
-        // doesn't need to emit anything.
-        //
-        // Previously this panicked via `unimplemented!()`, breaking any app
-        // that touched the token system on Roku (theme switching, custom
-        // tokens). The earlier comment referenced a removed
-        // `register_theme_variant` hook; the framework moved on to a
-        // re-apply-driven model, so the no-op is now the correct behavior.
+        // doesn't need to emit anything. (Must not panic: any app that
+        // touches the token system — theme switching, custom tokens —
+        // reaches this.)
     }
 
     fn update_tokens(&mut self, _tokens: &[runtime_shared::TokenEntry]) {
@@ -1114,8 +1079,8 @@ impl caps::WireBindingOps for RokuBackend {
         signal_ids: &[u64],
         method: &'static str,
     ) {
-        // The walker hands us a `TextSource::Bound` after the
-        // `create_text` step; we round-trip the binding into the
+        // A bound text arrives here after its `create_text` step; we
+        // round-trip the binding into the
         // wire stream so the device-side runtime can subscribe the
         // Label to the signals and apply the transformer on every
         // change. The subsequent Effect will still fire once at
@@ -1303,9 +1268,8 @@ impl caps::WireBindingOps for RokuBackend {
     }
 
     fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-        // Walker is expected to balance begin/end calls. Popping
-        // without a matching begin would mean the walker has a bug
-        // — error loudly rather than silently swallow the slot.
+        // Callers must balance begin/end calls. Popping without a
+        // matching begin is a caller bug — error loudly rather than silently swallow the slot.
         let buf = self
             .capture_stack
             .pop()

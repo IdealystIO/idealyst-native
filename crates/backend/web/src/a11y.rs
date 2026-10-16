@@ -4,7 +4,7 @@
 //! Strategy: a single [`apply`] function takes a DOM `Element` and the
 //! resolved `AccessibilityProps` and writes (or clears) each attribute.
 //! All `create_*` paths call it after constructing the node; the
-//! dynamic [`update_accessibility`](runtime_shared::Backend::update_accessibility)
+//! dynamic `A11yOps::update_accessibility`
 //! path reuses it identically. Removing-on-`None` is intentional —
 //! `update_accessibility` must be able to clear an attribute that was
 //! previously set, otherwise reactive a11y prop changes leak stale
@@ -235,7 +235,7 @@ fn bool_or_remove(elem: &Element, attr: &str, on: bool) {
 ///    suppress identical consecutive text).
 ///
 /// Idempotent across calls; safe to invoke from any
-/// `Backend::announce_for_accessibility` site.
+/// `A11yOps::announce_for_accessibility` site.
 pub(crate) fn announce(msg: &str, priority: LiveRegionPriority) {
     let Some(window) = web_glue::dom::window() else { return };
     let Some(document) = window.document() else { return };

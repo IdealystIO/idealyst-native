@@ -26,7 +26,7 @@ use web_glue::JsCast;
 /// Is this the text primitive's node? Detected by tag: the text
 /// primitive renders a `<span>`, and `apply_style` targets no other
 /// `<span>` — button labels and spinner internals are created inside
-/// their primitive and aren't style-attached by the walker. Consulted
+/// their primitive and aren't style-attached by the scene. Consulted
 /// ONLY when a `shadow` is present (see the callers), so the common
 /// no-shadow path never pays this FFI, and the sole ambiguity — an
 /// author putting a `shadow` directly on an `ActivityIndicator` (also a
@@ -67,9 +67,9 @@ const REJECTED_RULE_PLACEHOLDER: &str = ".__idl-rejected-rule{}";
 /// the engine can't parse the rule (most commonly a vendor-prefixed
 /// selector like `::-webkit-scrollbar*` that Gecko doesn't recognize).
 /// A `<style>`/`<link>` stylesheet silently *drops* such rules; the CSSOM
-/// `insertRule` API rejects instead. The old code did `.expect(...)` on
-/// that fallible call, so under `panic = abort` a single browser-disliked
-/// rule aborted the entire WASM module before first paint — the Firefox
+/// `insertRule` API rejects instead. An `.expect(...)` on that fallible
+/// call would, under `panic = abort`, let a single browser-disliked rule
+/// abort the entire WASM module before first paint — the Firefox
 /// white-screen this guards against. A UI framework must treat unknown CSS
 /// the way browsers do: inert, not fatal.
 ///
@@ -239,8 +239,8 @@ impl WebBackend {
 
             // Index 5 — a graphics `<canvas>` fills its parent by default.
             //
-            // Zero specificity, so an author size (a minted class) wins; it
-            // used to be an inline style, which no class can beat. See
+            // Zero specificity, so an author size (a minted class) wins (an
+            // inline style here would beat every class). See
             // `css::GRAPHICS_FILL_RESET`. Web-only (SSR never stamps
             // `data-graphics-id`, so it is not in `base_reset_css`).
             let _ = sheet.insert_rule_with_index(css::GRAPHICS_FILL_RESET, 5);
@@ -610,12 +610,11 @@ impl WebBackend {
     /// stylesheet. No-op when the rules carry no gradient.
     ///
     /// Called from BOTH `impl_apply_style` and
-    /// `impl_apply_styled_states` — the walker picks one based on
-    /// `Backend::handles_states_natively`, and we want the snapshot
+    /// `impl_apply_styled_states` — the style engine picks one based on
+    /// `StyleOps::handles_states_natively`, and we want the snapshot
     /// to land identically either way. Keeping the logic in one
-    /// place prevents the two paths from drifting (every prior
-    /// drift left animations broken on whichever path didn't get
-    /// the latest changes).
+    /// place prevents the two paths from drifting (a drift leaves
+    /// animations broken on whichever path didn't get the change).
     pub(crate) fn snapshot_gradient_for_animation(
         &mut self,
         id: u32,
@@ -852,7 +851,7 @@ impl WebBackend {
         // pregen returns because any of them might apply, and the
         // snapshot is independent of which class-application path
         // wins. (Mirrors the same block in `impl_apply_style` — the
-        // walker dispatches to `apply_styled_states` whenever the
+        // style engine dispatches to `apply_styled_states` whenever the
         // backend reports `handles_states_natively = true`, which is
         // every web view.)
         self.snapshot_gradient_for_animation(id, base.background_gradient.as_ref());
@@ -1030,7 +1029,7 @@ impl WebBackend {
             // group insert (`insert_rule_group`) guarantees the base's
             // physical index is below every overlay's, which the
             // equal-specificity mobile-first cascade depends on; per-rule
-            // inserts through the LIFO slot recycler used to invert that
+            // inserts through the LIFO slot recycler would invert that
             // order on re-mint. All indices go in one vec so
             // `release_dynamic_rule` deletes them on teardown.
             let group_rules = {
@@ -1119,7 +1118,7 @@ impl WebBackend {
     }
 
     /// Mint a class name for a `StyleApplication` without applying
-    /// it to any node. Used by the SignalClass walker path to
+    /// it to any node. Used by the SignalClass path to
     /// pre-resolve the (value → class) table at mount.
     ///
     /// Same shape as the slow path in `impl_apply_styled_states`

@@ -118,7 +118,7 @@ fn stored_choice_hook_is_emitted_and_specificity_inert() {
 }
 
 /// Apps that declare nothing must be byte-unaffected — this feature is
-/// additive, and the frozen SSR corpus depends on that.
+/// additive, and the SSR golden corpus depends on that.
 #[test]
 fn app_without_palettes_emits_no_extra_css() {
     let head = backend_ssr::newcore::render_path("/", || {
@@ -176,11 +176,10 @@ fn palette_blocks_carry_only_the_tokens_that_differ() {
     );
 }
 
-/// SSR renders the light palette, so it must SAY light. It previously
-/// inherited the trait default `Auto` — every app spells the check
-/// `matches!(color_scheme(), Dark)`, so the light branch was taken
-/// anyway, but the backend claimed no preference was known while
-/// emitting a specific one.
+/// SSR renders the light palette, so it must SAY light, not the trait
+/// default `Auto`. Every app spells the check `matches!(color_scheme(),
+/// Dark)`, so `Auto` would still take the light branch, but the backend
+/// would claim no preference was known while emitting a specific one.
 #[test]
 fn ssr_reports_the_scheme_it_actually_renders() {
     use runtime_vocabulary::caps::AppEnvOps;

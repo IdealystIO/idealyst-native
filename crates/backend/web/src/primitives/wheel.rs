@@ -1,6 +1,6 @@
 //! Wheel / magnify delivery for the web backend.
 //!
-//! Implements [`runtime_shared::Backend::install_wheel_handler`] using the DOM
+//! Implements `InputOps::install_wheel_handler` using the DOM
 //! `wheel` event. One listener on the subscribed element translates each
 //! event into a [`WheelEvent`] for the framework's handler.
 //!

@@ -1,4 +1,4 @@
-//! `Element::Icon` — inline `<svg>` with `<path>` children.
+//! The `icon` primitive — inline `<svg>` with `<path>` children.
 //!
 //! Each icon renders as a self-contained SVG element sized via CSS
 //! (defaults to `1em` so it scales with surrounding text). Color is
@@ -30,7 +30,7 @@ pub(crate) fn create(b: &mut WebBackend, data: &IconData, color: Option<&Color>)
     // so the SSR content is correct as-is; we just hand it back and
     // skip rebuilding the children. `_skip_subtree` advances the
     // cursor PAST the icon (not into its `<path>` children) because
-    // the framework's walker never enters an icon's internals.
+    // the scene never enters an icon's internals.
     if let Some(el) = b.hydrate_next_skip_subtree("svg") {
         return el.unchecked_into::<Node>();
     }

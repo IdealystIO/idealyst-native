@@ -1,20 +1,11 @@
 //! SSR rendering: the `runtime_scene::Host` + capability-trait surface
 //! and the per-request-world render entries.
 //!
-//! [`SsrBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration (the same choice web/macOS/iOS made). Every method
-//! body in this file IS the SSR mechanism: it was moved here verbatim
-//! from the crate's old `impl runtime_core::Backend for SsrBackend` when
-//! the 159-method mega-trait was deleted, so the HTML mechanism (node
-//! building, class minting, `<head>` accumulation) is unchanged.
-//! Capabilities SSR does not implement are simply absent — the
-//! caps-trait DEFAULT bodies serve them, and those defaults were audited
-//! byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 102 of SSR's 152 caps
-//! methods resolve to a default).
-//!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! [`SsrBackend`] implements [`runtime_scene::Host`] plus every
+//! capability trait (`runtime_vocabulary::caps`). The method bodies in
+//! this file are the SSR mechanism (node building, class minting,
+//! `<head>` accumulation); methods SSR has nothing to do for are left to
+//! the caps-trait DEFAULT bodies.
 //!
 //! # SSR is ANCHORED — the hydration contract
 //!
@@ -24,10 +15,7 @@
 //! (`backend-web`'s `newcore_hydrate`) adopts SSR DOM cursor-style in
 //! creation order and gates its own splice support on
 //! `!is_hydrating()` — it can only adopt what an anchored render
-//! produced. The value is also what the old `Backend` trait default
-//! supplied, so the emitted bytes are unchanged; `Host` makes it
-//! REQUIRED, so it is now stated here instead of inherited
-//! (deletion-baseline S2.2), and `newcore_host_is_anchored` pins it.
+//! produced. `newcore_host_is_anchored` pins the value.
 //!
 //! # Per-request worlds — the multi-world payoff
 //!
@@ -43,27 +31,24 @@
 //! entry — nothing accumulates across requests
 //! (`tests/newcore_isolation.rs` pins this with weak-probe assertions).
 //!
-//! # Byte-identity with old-core SSR
+//! # Golden output
 //!
-//! The same app rendered through [`crate::render_path`] (old core) and
-//! [`render_path`] (this module) emits **byte-identical** `html` and
-//! `head_css` — pinned by `tests/newcore_byte_identity.rs` across
+//! `tests/newcore_byte_identity.rs` compares the emitted `html` and
+//! `head_css` against committed goldens in `tests/goldens/` across
 //! static trees, sheet/token styling, state overlays, dyn branches,
-//! keyed lists, styled-text runs, and a swap navigator with chrome.
-//! This is the hydration acceptance proof for this native crate: the
-//! browser adoption path already adopts old-core SSR output, so
-//! byte-identical output adopts identically (the wasm hydrate fixtures
-//! themselves live in backend-web).
+//! keyed lists, styled-text runs, and a swap navigator with chrome. A
+//! mismatch is a real rendering change, and hydration adopts this DOM
+//! cursor-style, so it can break adoption too (the wasm hydrate fixtures
+//! live in backend-web).
 //!
 //! # What SSR deliberately does NOT install
 //!
 //! - **No flush driver / dispatch hook.** A request renders the
 //!   committed initial state; there is no event dispatch, so the single
 //!   post-realize `world.flush()` is the whole commit story.
-//! - **No URL sync.** The initial path is seeded through the same
-//!   `set_initial_path` slot the old render uses; the vocabulary
-//!   navigator handlers `peek_initial_path()` during mount (deep links
-//!   need no deferral on the new core).
+//! - **No URL sync.** The initial path is seeded through the
+//!   `set_initial_path` slot; the vocabulary navigator handlers
+//!   `peek_initial_path()` during mount, so deep links need no deferral.
 //! - **Frames/timers are dropped** by the crate's queue-only scheduler
 //!   (presence exit timers, repeat release deferrals): the live bundle
 //!   drives animation after hydration, and the world drop frees
@@ -71,28 +56,22 @@
 //!
 //! # Server flows (SSG crawl + per-request serving)
 //!
-//! Both CLI-facing server flows have native new-core legs mirroring
-//! the old entries 1:1:
-//!
-//! - **SSG crawl** ([`render_all`]): same hierarchy-driven loop as
-//!   [`crate::render_all`], over the SAME route collector — the
-//!   vocabulary navigator handlers publish their screen path patterns
-//!   at mount via `record_route_paths` (the new-core twin of the old
-//!   walker's `record_routes` hook), so nested navigators surface
-//!   their routes when their parent screen mounts. No
+//! - **SSG crawl** ([`render_all`]): a hierarchy-driven loop over the
+//!   route collector — the vocabulary navigator handlers publish their
+//!   screen path patterns at mount via `record_route_paths`, so nested
+//!   navigators surface their routes when their parent screen mounts. No
 //!   `reset_for_ssg_render` between pages: the per-world theme tables
 //!   own registration/typeface dedup, so every fresh `World`
 //!   re-registers against its fresh backend by construction.
-//! - **Per-request serving** ([`serve`], feature `serve`): delegates to
-//!   the same HTTP loop as the old [`crate::serve`]
-//!   (`serve::serve_loop` — asset resolution, thread-per-request,
-//!   panic fallback) with this module's [`render_path_with`] as the
-//!   route renderer. The CLI's generated SSR wrapper selects the leg
-//!   via its `new-core` feature (see `crates/tools/build/ssr`).
+//! - **Per-request serving** ([`serve`], feature `serve`): the HTTP loop
+//!   in `serve::serve_loop` (asset resolution, thread-per-request, panic
+//!   fallback) with this module's [`render_path_with`] as the route
+//!   renderer. The CLI's generated SSR wrapper calls it (see
+//!   `crates/tools/build/ssr`).
 //!
 //! # Residual seams (each named, none silent)
 //!
-//! - **Streaming SSR**: out of scope for both cores; the accumulated
+//! - **Streaming SSR**: not supported; the accumulated
 //!   `HtmlNode` tree serializes at the end of the request.
 
 use std::cell::RefCell;
@@ -113,7 +92,7 @@ use crate::{
 // Render entry points
 // ===========================================================================
 
-/// Render a new-core element tree to its body HTML string on a fresh
+/// Render an element tree to its body HTML string on a fresh
 /// per-request world. The build closure runs inside `World::enter`, so
 /// free `signal()`/`effect()`/`memo()` calls work; the world (and every
 /// signal/effect the render created) is torn down before this returns.
@@ -127,9 +106,9 @@ where
     render_path("/", build).html
 }
 
-/// Render an app headlessly at a given URL path — the new-core mirror of
-/// [`crate::render_path`] (same seeding: initial navigator path, the
-/// [`SSR_VIEWPORT`] size), returning the same [`RenderedPage`] shape.
+/// Render an app headlessly at a given URL path (seeding the initial
+/// navigator path and the [`SSR_VIEWPORT`] size), returning a
+/// [`RenderedPage`].
 ///
 /// Per-request lifecycle: fresh backend + registry + `World`; realize
 /// inside `enter`; `finish` the single root; one `flush`; serialize;
@@ -144,9 +123,7 @@ where
 /// [`render_path`] with a registration seam: `register` runs after
 /// [`runtime_vocabulary::register_builtins`], so apps/SDKs can register
 /// their own payload handlers on the same registry before the tree
-/// realizes (the new-core analogue of the old `setup(&mut SsrBackend)`
-/// hook, which existed to register navigator chrome handlers — those are
-/// vocabulary built-ins now).
+/// realizes.
 #[inline]
 pub fn render_path_with<S, F>(path: &str, register: S, build: F) -> RenderedPage
 where
@@ -173,8 +150,7 @@ where
     S: FnOnce(&mut Registry<SsrBackend>),
     F: FnOnce() -> Element,
 {
-    // Queue-only scheduler (shared with the old render path): microtasks
-    // queue and drain below; frames/timers drop (module docs).
+    // Queue-only scheduler: microtasks queue and drain below; frames/timers drop (module docs).
     scheduler::ensure_installed();
     // Premint builds: arm this thread's minted-class guard from the
     // process-global set the wrapper installed at startup, so the server
@@ -184,13 +160,13 @@ where
     // thread and the guard is thread-local; export mode's single thread
     // just re-installs idempotently. No-op on non-premint servers.
     crate::arm_minted_class_guard_if_installed();
-    // Seed the same slots the old render seeds. The vocabulary navigator
-    // handlers peek the SAME `set_initial_path` slot; the viewport seed
+    // Seed the initial path and viewport. The vocabulary navigator
+    // handlers peek the `set_initial_path` slot; the viewport seed
     // keeps breakpoint folding + sheet closures at the identical
     // SSR-assumed size (the value the served page embeds as
     // `data-ssr-viewport` for the hydrating client). Seeding runs
-    // OUTSIDE the world on purpose — it is old-core thread-level state,
-    // exactly as backend-web's `newcore_hydrate` boot does it.
+    // OUTSIDE the world on purpose — these slots are thread-level state,
+    // exactly as backend-web's `newcore_hydrate` boot treats them.
     runtime_shared::primitives::navigator::set_initial_path(Some(path.to_string()));
     runtime_shared::set_viewport_size(SSR_VIEWPORT);
 
@@ -215,8 +191,8 @@ where
         realize(&backend, &registry, element)
     });
 
-    // Single-root contract, matching the old-core mount and the web
-    // new-core boot: `finish` roots the HTML serialization.
+    // Single-root contract, matching the web boot: `finish` roots the
+    // HTML serialization.
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
         1 => roots.pop().expect("len checked"),
@@ -232,10 +208,9 @@ where
     world.flush();
 
     // Clear in case the tree had no navigator to consume it (the root
-    // navigator clears it itself — old walker contract, ported).
+    // navigator clears it itself).
     runtime_shared::primitives::navigator::set_initial_path(None);
-    // Run any queued microtasks with no backend borrow held (parity with
-    // the old render path's post-mount drain).
+    // Run any queued microtasks with no backend borrow held.
     scheduler::drain();
 
     let page = {
@@ -256,21 +231,17 @@ where
 }
 
 /// Crawl every route reachable from the app's navigator hierarchy and
-/// render each as an SSG'd page — the new-core leg of
-/// [`crate::render_all`], driving `idealyst build --ssg` for new-core
-/// apps.
+/// render each as an SSG'd page — drives `idealyst build --ssg`.
 ///
-/// Identical crawl contract: the route collector
-/// (`runtime_shared::primitives::navigator`, shared by both cores) is
-/// enabled before each render; the vocabulary navigator handlers
+/// Crawl contract: the route collector
+/// (`runtime_shared::primitives::navigator`) is enabled before each render; the vocabulary navigator handlers
 /// publish every mounting navigator's `NavScreenEntry.path` set; the
 /// loop drains discovered literal paths and queues the unrendered
 /// ones, so nested navigators fall out of the same loop. Routes with
 /// `:placeholder` segments are returned in
 /// [`skipped_parameterized`](crate::CrawlResult::skipped_parameterized).
 ///
-/// Unlike the old leg there is NO per-page `reset_for_ssg_render`:
-/// registration/typeface dedup lives in the per-world theme context,
+/// There is no per-page reset: registration/typeface dedup lives in the per-world theme context,
 /// and each page renders on a fresh [`World`] (module docs).
 pub fn render_all<S, F>(register: S, app: F) -> crate::CrawlResult
 where
@@ -309,9 +280,8 @@ where
     crate::CrawlResult { pages, skipped_parameterized: skipped }
 }
 
-/// Serve a new-core `app` over HTTP at `addr` — the new-core leg of
-/// [`crate::serve`] (feature `serve`), sharing its HTTP loop
-/// (`serve_loop`: static assets under `static_dir`, thread-per-request
+/// Serve `app` over HTTP at `addr` (feature `serve`) through the shared
+/// HTTP loop (`serve_loop`: static assets under `static_dir`, thread-per-request
 /// render, panic → 500 fallback) with this module's
 /// [`render_path_with`] as the per-request renderer. `register` is the
 /// scene-registry seam ([`render_path_with`]'s `register`, cloned per
@@ -352,10 +322,8 @@ impl Host for SsrBackend {
         parent.borrow_mut().children.push(child);
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // emitted child order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop is exactly the order SSR needs.
 
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize) {
         let mut p = parent.borrow_mut();
@@ -363,10 +331,7 @@ impl Host for SsrBackend {
         p.children.insert(index, child);
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so the default that used to
-    /// supply this body is gone — reproduced verbatim rather than
-    /// inherited (deletion-baseline S2.2). Never reached here anyway:
+    /// No-op. Never reached:
     /// [`supports_splice`](Self::supports_splice) is `false`, so every
     /// reactive region tears down through `clear_children` on its own
     /// anchor.
@@ -391,13 +356,9 @@ impl Host for SsrBackend {
         nref(node)
     }
 
-    /// Hard `false`. This is BOTH the value the old
-    /// `Backend::supports_child_splice` default supplied (so SSR output is
-    /// unchanged) and a load-bearing invariant in its own right: the web
-    /// hydration boot adopts the anchors this render emits, so SSR must
-    /// stay ANCHORED regardless of what any default says. `Host` makes it
-    /// required, so it is stated here rather than inherited
-    /// (deletion-baseline S2.2). Pinned by `newcore_host_is_anchored`.
+    /// Hard `false`, a load-bearing invariant: the web hydration boot
+    /// adopts the anchors this render emits, so SSR must stay ANCHORED.
+    /// Pinned by `newcore_host_is_anchored`.
     fn supports_splice(&self) -> bool {
         false
     }
@@ -611,8 +572,8 @@ impl SsrBackend {
     /// The `docs/image-src.md` contract for server-rendered HTML: the URL
     /// to emit as `<img src>`, or `None` to emit no `src` at all.
     ///
-    /// `asset://<id>` is resolved here (it used to leak into the HTML as
-    /// the literal sentinel, which no browser can load). A rejected or
+    /// `asset://<id>` is resolved here — emitting the literal sentinel
+    /// would give the browser a URL it cannot load. A rejected or
     /// unregistered src gets no `src` attribute rather than its raw text:
     /// the browser must not fetch a relative path native platforms can't,
     /// and the hydrating web backend reaches the same `<img>` with no
@@ -640,10 +601,9 @@ impl caps::IconOps for SsrBackend {
     ) -> Self::Node {
         // Emit the same `<svg>` structure the web backend produces so
         // `WebBackend::hydrate` can adopt the SSR node by tag-matching
-        // (`svg` == `svg`). The earlier placeholder `<span>` triggered
-        // a tag mismatch on every icon and `primitives::icon::create`
-        // on web doesn't honor the hydration cursor — the fresh `<svg>`
-        // appended next to the stale `<span>`, leaving both in the DOM.
+        // (`svg` == `svg`). Any other tag mismatches, and since web's
+        // icon create doesn't honor the hydration cursor, the fresh
+        // `<svg>` would land next to the stale node, leaving both.
         let (vw, vh) = data.view_box;
         let mut svg = HtmlNode::new("svg");
         svg.attrs
@@ -917,14 +877,10 @@ impl caps::PortalOps for SsrBackend {
 
 impl caps::PresenceOps for SsrBackend {}
 
-// Both surviving `NavigatorOps` methods resolve to their caps DEFAULTS
-// (no-op release; `navigator_attach_initial` drops the screen). The old
-// bodies routed through a backend-side per-instance `NavigatorHandler`
-// map populated exclusively by `create_navigator` — the one caps method
-// that CEASES TO EXIST with the old core (deletion-baseline S2.3) — so
-// the map could never be populated again. Navigators mount through
-// `runtime_vocabulary::handlers::navigator` over the Lifecycle/View caps
-// instead and never call this trait.
+// Both `NavigatorOps` methods resolve to their caps DEFAULTS (no-op
+// release; `navigator_attach_initial` drops the screen). Navigators
+// mount through `runtime_vocabulary::handlers::navigator` over the
+// Lifecycle/View caps and never call this trait.
 impl caps::NavigatorOps for SsrBackend {}
 
 // ===========================================================================
@@ -944,9 +900,7 @@ impl caps::ExternalOps for SsrBackend {
         // reach this method — the registry realizes their real DOM so
         // hydration adopts it. `create_external` therefore only serves
         // `missing_primitive_placeholder`: an empty host `<div>` the
-        // client bundle fills in. (The old core routed here through a
-        // backend-side `ExternalRegistry`, which died with
-        // `Element::External`; the fallback shape is unchanged.)
+        // client bundle fills in.
         nref(HtmlNode::new("div"))
     }
 }
@@ -1101,12 +1055,10 @@ impl caps::StyleOps for SsrBackend {
     ) {
         // Key the class by base + every state overlay + every breakpoint
         // overlay + every container overlay through `css::variant_class_key`
-        // — the SINGLE SOURCE shared with the web backend. Building the key
-        // here independently (as this used to) drifted from web's scheme
-        // (`|<bits>:` vs `;<tag>:`), so the SAME stateful style minted
-        // DIFFERENT classes on server vs client and hydration couldn't
-        // reuse the server's styling. Sharing the builder guarantees
-        // byte-identical classes.
+        // — the SINGLE SOURCE shared with the web backend. A separately
+        // built key drifts from web's scheme, so the SAME stateful style
+        // mints DIFFERENT classes on server vs client and hydration can't
+        // reuse the server's styling.
         let combined = css::variant_class_key(
             &base.content_key(),
             overlays,
@@ -1145,7 +1097,7 @@ impl caps::StyleOps for SsrBackend {
         // Breakpoint overlays → `@media (min-width: …) { .ui-<hash> { … } }`.
         // Keyed by `{class}@{rank}` so `head_css`'s BTreeMap iteration emits
         // them ascending by rank (mobile-first cascade). `None` only for Xs,
-        // which the walker never sends as an overlay.
+        // which is never sent as an overlay.
         for (bp, overlay) in breakpoint_overlays {
             let Some(query) = css::breakpoint_media_query(*bp) else { continue };
             self.media_rules
@@ -1305,11 +1257,9 @@ mod tests {
 
     /// REGRESSION: SSR's `Host::supports_splice` must be `false`. An
     /// anchored render is what the web hydration boot adopts (module
-    /// docs), and every frozen artifact in `tests/goldens/` was recorded
-    /// in anchored mode. The value used to arrive from a `Backend` trait
-    /// default; it is now an explicit body, so this literal assertion is
-    /// the only thing standing between a typo and silently-broken
-    /// hydration.
+    /// docs), and every golden in `tests/goldens/` was recorded in
+    /// anchored mode. This literal assertion is the only thing standing
+    /// between a typo and silently-broken hydration.
     #[test]
     fn newcore_host_is_anchored() {
         let b = SsrBackend::new();

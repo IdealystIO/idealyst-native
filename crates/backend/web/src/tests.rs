@@ -242,7 +242,7 @@ fn node_id_unique_across_many_create_drop_cycles() {
 // Gradient snapshot fires from BOTH apply paths
 // ---------------------------------------------------------------------------
 
-/// `apply_style` (path used when `Backend::handles_states_natively`
+/// `apply_style` (path used when `StyleOps::handles_states_natively`
 /// is `false`, or as the no-overlays branch of
 /// `apply_styled_states`) snapshots the gradient shape onto the
 /// node's animation state so per-frame
@@ -378,7 +378,7 @@ fn apply_styled_variants_emits_media_rule_for_breakpoint_overlay() {
         ..Default::default()
     });
     // Resolved md overlay (base merged with the bp overlay), as the
-    // walker hands it over.
+    // style engine hands it over.
     let md_overlay = Rc::new(StyleRules {
         width: Some(Tokenized::Literal(Length::Px(500.0))),
         ..Default::default()
@@ -725,7 +725,7 @@ fn regression_web_disabled_state_styles_div_pressable() {
         opacity: Some(Tokenized::Literal(1.0)),
         ..Default::default()
     });
-    // The disabled overlay the walker resolves for `state disabled { ... }`.
+    // The disabled overlay the style engine resolves for `state disabled { ... }`.
     let disabled_overlay = Rc::new(StyleRules {
         opacity: Some(Tokenized::Literal(0.45)),
         // A second property so we can tell the overlay rule apart from
@@ -1005,7 +1005,7 @@ fn install_for_text_bindings() -> std::rc::Rc<std::cell::RefCell<WebBackend>> {
 ///
 /// The bug: the FFI-batching work routed every class apply — including
 /// the first — through `queue_class_apply`'s microtask-deferred queue.
-/// The build walker styles a node before inserting it into its parent,
+/// The scene styles a node before inserting it into its parent,
 /// so deferring the first class meant the node was attached and got its
 /// FIRST style resolution class-less: `border-color` resolved to
 /// `currentColor` (black), `background` to transparent. When the class
@@ -1035,8 +1035,8 @@ fn regression_first_class_apply_is_synchronous_no_boot_transition() {
 
     let doc = web_glue::dom::window().unwrap().document().unwrap();
     let element = doc.create_element("div").unwrap();
-    // DETACHED on purpose: mirrors the walker's order (style applied
-    // during `build`, BEFORE the node is `insert`ed into its parent).
+    // DETACHED on purpose: mirrors the scene's order (style applied
+    // during mount, BEFORE the node is `insert`ed into its parent).
     let node: web_glue::dom::Node = element.clone().unchecked_into();
 
     let rules = Rc::new(StyleRules {
@@ -1159,12 +1159,8 @@ fn benchmark_node_id_ffi_cost() {
         per_call_distinct_us,
     );
 }
-// The three f-string JS-binding regressions that lived here
-// (`regression_fstring_signal_set_updates_dom_via_js_binding`,
-// `..._existing_js_notifier_not_clobbered`, `..._two_bindings_one_signal`)
-// drove `runtime_shared::render` + `ui!`, i.e. the deleted walker. Their
-// SUBJECT — the per-signal JS text-binding shim on this backend — is
-// covered on the surviving path by `newcore.rs`'s battery:
+// The per-signal JS text-binding shim on this backend is covered by
+// `newcore.rs`'s battery (it needs the full boot path):
 // `regression_newcore_sids_stay_out_of_oldcore_arena_range` (set →
 // notifier → DOM, plus the sid namespace),
 // `regression_two_text_bindings_on_one_signal_both_update` (the fan-out
@@ -1172,22 +1168,19 @@ fn benchmark_node_id_ffi_cost() {
 // `regression_class_binding_registered_after_text_binding_still_swaps`.
 
 // ---------------------------------------------------------------------------
-// Cross-backend @font-face dedup — the lazy-chunk double-download fix.
+// Cross-backend @font-face dedup — the font double-download fix.
 // ---------------------------------------------------------------------------
 
 /// REGRESSION GUARD: registering the same typeface across TWO live
 /// `WebBackend` instances on the same wasm thread must inject the
 /// `@font-face` rule exactly ONCE.
 ///
-/// The bug this guards against: when a lazy chunk's `mount_chunk`
-/// spins up its own `WebBackend` (so the chunk's children get their
-/// own walker), it re-runs the theme's typeface registration. Each
-/// backend has its own `font_face_rule_indices`, so without a
-/// process-wide dedup set BOTH backends emit a `@font-face` rule for
-/// the same font URL — the browser then fetches the font file again
-/// (the user-reported "double download" on the home page). The fix is
-/// the thread-local `FONT_FACES_PRESENT` HashSet in `lib.rs`; this
-/// test pins it.
+/// The bug this guards against: a second `WebBackend` on the page
+/// re-runs the theme's typeface registration. Each backend has its own
+/// `font_face_rule_indices`, so without a process-wide dedup set BOTH
+/// backends emit a `@font-face` rule for the same font URL — the browser
+/// then fetches the font file again. The fix is the thread-local
+/// `FONT_FACES_PRESENT` HashSet in `lib.rs`; this test pins it.
 #[wasm_bindgen_test]
 fn font_face_dedup_across_backends_inserts_rule_once() {
     use runtime_shared::assets::{AssetId, AssetSource, AssetTag, SystemFallback, TypefaceFace, TypefaceId};
@@ -1225,9 +1218,9 @@ fn font_face_dedup_across_backends_inserts_rule_once() {
         "backend A must inject exactly ONE @font-face for the single face; got {a_indices:?}"
     );
 
-    // ---- Backend B — same typeface, fresh backend (mirrors a lazy
-    // chunk's `mount_chunk` re-running the theme registration). The
-    // dedup must catch it before the second @font-face is injected.
+    // ---- Backend B — same typeface, fresh backend re-running the
+    // theme registration. The dedup must catch it before the second
+    // @font-face is injected.
     let mut b = WebBackend::new("#app");
     b.register_asset_impl(asset_id, AssetTag::Font, &AssetSource::Bundled { path: url_path });
     b.register_typeface_impl(type_id, family_name, &[face], SystemFallback::SansSerif);
@@ -1296,7 +1289,7 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 
     // SSR-style markup: one root child, one `<input>` inside it. The
     // hydration cursor starts on the root child (the same element a
-    // walker-built View would land on).
+    // scene-built View would land on).
     app.set_inner_html(
         r#"<div><input value="seed" placeholder="hint"></div>"#,
     );
@@ -1307,7 +1300,7 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 
     let mut backend = WebBackend::hydrate("#app");
 
-    // Drive the walker's order: the View wrapper adopts first, then
+    // Drive the scene's order: the View wrapper adopts first, then
     // the input inside it.
     let _wrapper = backend.create_view_impl(&Default::default());
     let input_node = backend.create_text_input_impl(
@@ -1352,16 +1345,16 @@ fn text_input_create_adopts_ssr_input_during_hydration() {
 /// REGRESSION TEST — the duplicated absolutely-positioned nav.
 ///
 /// A subtree-local hydration remount (SSR/client diverge) records the
-/// stale SSR node and swaps the fresh client node in for it. The resync
-/// used to live ONLY in `Backend::insert`; the anchorless `when` / `switch`
-/// splice (`build_when_spliced`) and keyed `Each` reconcile parent their
-/// branch/rows through `Backend::insert_at`, which did NOT run the resync.
+/// stale SSR node and swaps the fresh client node in for it. The anchorless
+/// `when` / `switch` splice and the keyed reconciler parent their
+/// branch/rows through `insert_at`, so the resync must run there too, not
+/// only in `insert`.
 ///
-/// So a top-level `when(...)` nav (no style ⇒ anchorless splice) whose arm
-/// root diverged from SSR got its fresh copy inserted via `insert_at` while
-/// the stale SSR nav stayed in the DOM — two nav bars, the orphan pinned to
-/// `top:0`. This test arms exactly that remount and asserts `insert_at`
-/// detaches the stale node (the fix), leaving a single, correct child.
+/// When it didn't, a top-level `when(...)` nav (no style ⇒ anchorless
+/// splice) whose arm root diverged from SSR got its fresh copy inserted via
+/// `insert_at` while the stale SSR nav stayed in the DOM — two nav bars, the
+/// orphan pinned to `top:0`. This test arms exactly that remount and asserts
+/// `insert_at` detaches the stale node, leaving a single, correct child.
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen_test]
 fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
@@ -1386,13 +1379,13 @@ fn insert_at_removes_stale_ssr_node_on_divergence_remount() {
     // `<div>` is the remount root; the `<span>` is the recorded stale).
     let fresh_nav = backend.create_view_impl(&Default::default());
 
-    // The anchorless-splice attach path: `build_when_spliced` calls exactly
-    // this to parent its branch node. Before the fix it left the stale in
-    // place; after the fix it swaps the stale out.
+    // The anchorless-splice attach path: the splice calls exactly this to
+    // parent its branch node. It must swap the stale out.
     backend.insert_at_impl(&mut approot, fresh_nav.clone(), 0);
 
     // Exactly one element child under `.approot`, and it's the fresh nav
-    // `<div>` — the stale `<span>` is gone. Pre-fix this was 2 (span + div).
+    // `<div>` — the stale `<span>` is gone (2 = span + div means the
+    // resync didn't run).
     let approot_el: web_glue::dom::Element = approot.unchecked_into();
     assert_eq!(
         count_element_children(&approot_el),
@@ -1650,7 +1643,7 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
         &payload,
         &Default::default(),
     );
-    // The walker parents the external via insert_at → resync swaps the fresh
+    // The scene parents the external via insert_at → resync swaps the fresh
     // node in for the stale host.
     backend.insert_at_impl(&mut approot, ext.clone(), 0);
 
@@ -1687,14 +1680,6 @@ fn create_external_consumes_stale_ssr_host_when_handler_builds_fresh() {
     // "deferred on_load must fire" failure under `--features hydrate`.
     crate::scheduler::end_hydration_buffering();
 }
-// `create_external_drains_lazily_deferred_handler_before_dispatch` and
-// `create_external_adopting_handler_reuses_ssr_host` are gone with the
-// backend-side External registry (runtime v2: third-party primitives
-// register a payload handler on the scene `Registry`, which dispatches
-// before any backend cap, so there is no per-backend handler table and
-// no `defer_external_registration` drain). The SDK-side successors are
-// each SDK's `tests/newcore.rs` op-log suite; the "unregistered payload"
-// behaviour is the scene contract, pinned in runtime-scene/vocabulary.
 
 // ---------------------------------------------------------------------------
 // Pointer-keyed dynamic cache rejects stale entries on content mismatch.
@@ -1966,23 +1951,21 @@ fn regression_unstyled_view_is_a_flex_column_like_native() {
 /// That `.focus()` SYNCHRONOUSLY re-dispatches `focusin`, re-entering
 /// the very same listener before the outer call returns.
 ///
-/// When the listener was a `Closure<dyn FnMut>`, wasm-bindgen's
-/// exclusive-borrow guard threw "closure invoked recursively or after
-/// being dropped" at the FFI boundary on that re-entrant call —
+/// An `FnMut` glue closure (`Closure::new`) refuses re-entry and throws
+/// "invoked recursively" at the FFI boundary on that re-entrant call —
 /// BEFORE the Rust body (and its `in_progress` short-circuit) could
 /// run. The throw escaped as an uncaught exception inside the inner
 /// `focusin` dispatch and surfaced as a console error on every focus
 /// bounce (and on teardown, when removing a focused portal moves
-/// focus through the trap). The fix makes the listener a
-/// `Closure<dyn Fn>`, which carries no re-entrancy guard (re-entry is
+/// focus through the trap). The listener is therefore an `Fn` closure
+/// (`Closure::new_fn`), which carries no re-entrancy guard (re-entry is
 /// memory-safe through the `RefCell`), so the inner call runs the body
 /// and `in_progress` bails it cleanly with no throw.
 ///
 /// This test drives a focus escape through a real trap and asserts (a)
 /// no uncaught error is reported to `window`, and (b) the trap still
 /// works (focus lands back on the portal's first focusable child).
-/// Against the old `FnMut` listener, assertion (a) fails; the fix
-/// makes both hold.
+/// With an `FnMut` listener, assertion (a) fails.
 #[wasm_bindgen_test]
 fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     use std::cell::Cell;
@@ -2063,15 +2046,14 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
 // Touch responder model — regression for the web backend ignoring
 // `TouchResponse::CONSUMED` when deciding event propagation.
 //
-// The framework's responder contract (crates/runtime/core/src/touch/mod.rs)
-// says: whichever ancestor consumes the `Began` keeps the gesture and the
+// The framework's responder contract (`runtime_shared::touch`) says: whichever ancestor consumes the `Began` keeps the gesture and the
 // event does NOT bubble to further ancestors; an unconsumed `Began` bubbles
 // up to retry one level higher. The web backend delivers touches via native
 // DOM Pointer Event listeners and relies on DOM bubbling to walk the
 // ancestor chain — so honoring "consumed" means calling
-// `stop_propagation()` on the consumed event. Before the fix it never did,
-// and a child's CONSUMED still let the parent's `on_touch` fire (e.g. an
-// overlay closing on every interior button press).
+// `stop_propagation()` on the consumed event. Without it a child's
+// CONSUMED still lets the parent's `on_touch` fire (e.g. an overlay
+// closing on every interior button press).
 // ---------------------------------------------------------------------------
 
 /// Build a `pointerdown` that actually bubbles, dispatch it on `target`,
@@ -3684,7 +3666,7 @@ fn regression_breakpoint_overlay_survives_class_remint_in_cascade_order() {
     backend.drop_dynamic_slot(id1);
 
     // Re-mint the SAME content on a fresh node — the resolution cache
-    // hands the walker fresh Rcs after a rebuild, so use fresh Rcs
+    // hands the backend fresh Rcs after a rebuild, so use fresh Rcs
     // here too. Pre-fix, the LIFO recycle inverted the pair.
     let element2 = doc.create_element("div").unwrap();
     doc.body().unwrap().append_child(&element2).unwrap();
@@ -3755,13 +3737,12 @@ async fn decoded_img() -> web_glue::dom::HtmlImageElement {
 /// REGRESSION — an `on_load` handler that re-enters the backend
 /// `RefCell` must not panic when the image is already decoded.
 ///
-/// `walker::image::build` installs the load handler while holding
-/// `backend.borrow_mut()`. Before the fix, `install_load` fired the
-/// already-decoded notification *inline*, so a handler that writes a
-/// signal a reactive style depends on re-entered that same borrow via
-/// the style effect and aborted with "RefCell already borrowed"
-/// (`walker/style.rs`). The already-decoded fire is now deferred to a
-/// microtask, out of the borrow. This test reproduces the exact layer:
+/// The vocabulary's image handler installs the load handler while holding
+/// `backend.borrow_mut()`. If `install_load` fires the already-decoded
+/// notification *inline*, a handler that writes a signal a reactive style
+/// depends on re-enters that same borrow via the style effect and aborts
+/// with "RefCell already borrowed". The already-decoded fire is deferred
+/// to a microtask, out of the borrow. This test reproduces the exact layer:
 /// install under a live `borrow_mut`, with a handler that itself takes
 /// `borrow_mut`. Inline firing panics; deferred firing does not.
 #[wasm_bindgen_test]
@@ -3791,7 +3772,7 @@ async fn regression_image_on_load_cached_does_not_reenter_borrow() {
         })
     };
 
-    // Install exactly as the walker does: under a live `borrow_mut`.
+    // Install exactly as the image handler does: under a live `borrow_mut`.
     {
         let mut b = backend.borrow_mut();
         b.install_image_load_handler_impl(&node, handler);

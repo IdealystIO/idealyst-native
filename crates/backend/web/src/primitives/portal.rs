@@ -1,4 +1,4 @@
-//! `Element::Portal` — a floating subtree mounted directly to `<body>`,
+//! The `portal` primitive — a floating subtree mounted directly to `<body>`,
 //! escaping the parent's layout and clipping context.
 //!
 //! # Why we portal
@@ -11,17 +11,17 @@
 //! render the floating content outside its logical parent, directly
 //! under `<body>`, where no ancestor can clip or restack it.
 //!
-//! Backdrops are no longer the backend's concern. The framework's
+//! Backdrops are not the backend's concern. The framework's
 //! composition layer (`primitives::overlay`) renders a backdrop
 //! primitive as a child of the portal — the backend just sees a portal
 //! whose children include whatever scrim the caller put there.
 //!
 //! # The insert hijack
 //!
-//! The render walker calls `Backend::insert(parent, child)` to
+//! The scene calls `Host::insert(parent, child)` to
 //! parent every primitive into its surrounding container. For
 //! portals we don't want that — the portal element is already attached
-//! to `<body>`. To keep the walker simple, we stamp every portal-
+//! to `<body>`. To keep the scene uniform, we stamp every portal-
 //! created `<div>` with `data-overlay-skip-insert` and the global
 //! `view::insert` checks the attribute and skips the `append_child`
 //! call.
@@ -43,8 +43,8 @@ use web_glue::dom::Node;
 /// Per-portal runtime state. Stored in `WebBackend::portal_instances`,
 /// keyed by the `data-portal-id` attribute stamped on the portal
 /// element. Holds the JS closures so they stay alive while the portal
-/// is mounted; dropping the instance fires `Closure::Drop` which
-/// destroys the wasm-bindgen handle and frees its JS-side allocation.
+/// is mounted; dropping the instance fires `Closure::Drop`, which
+/// revokes the glue callback and frees its JS-side allocation.
 pub(crate) struct PortalInstance {
     /// The outer `<div>` parented to `<body>`. Removing this from
     /// `<body>` on `release` tears down the entire portal subtree.
@@ -75,7 +75,7 @@ pub(crate) struct PortalInstance {
     reposition_scroll_handler: Option<web_glue::dom::Listener>,
     #[allow(dead_code)]
     reposition_resize_handler: Option<web_glue::dom::Listener>,
-    /// First-paint reposition task. The walker calls
+    /// First-paint reposition task. The scene calls
     /// `create_portal` *before* it inserts the portal's children,
     /// so the content element has no size when we install the
     /// initial inline `top`/`left`. We schedule a one-shot
@@ -149,8 +149,7 @@ pub(crate) fn create(
     let _ = portal_root.set_attribute("data-portal-id", &id.to_string());
     // `data-overlay-skip-insert` keeps the framework's later
     // `insert(parent, this)` call from yanking the portal back into
-    // the surrounding layout tree. Shared with the old overlay path
-    // — see `view::insert`.
+    // the surrounding layout tree — see `view::insert`.
     let _ = portal_root.set_attribute("data-overlay-skip-insert", "1");
 
     // Apply target-specific positioning on top of the base style.
@@ -511,11 +510,10 @@ fn install_anchor_reposition(
         (reposition_resize)();
     });
 
-    // First-paint reposition: the walker hasn't inserted our
+    // First-paint reposition: the scene hasn't inserted our
     // children yet, so the portal element has no measurable size
-    // right now. The next animation frame runs after the walker's
-    // `insert_children` call completes and the browser has laid the
-    // children out.
+    // right now. The next animation frame runs after the children
+    // are inserted and the browser has laid them out.
     let reposition_initial = reposition.clone();
     let initial_measure_task = runtime_shared::after_animation_frame(move || {
         (reposition_initial)();
@@ -611,10 +609,10 @@ const FOCUSABLE_SELECTOR: &str = concat!(
 ///
 /// The handler's own `.focus()` call (below) synchronously
 /// re-dispatches a `focusin` event, which re-enters THIS closure
-/// before the outer invocation returns. wasm-bindgen guards
-/// `Closure<dyn FnMut>` with an exclusive-borrow check at the FFI
-/// boundary: a re-entrant call throws "closure invoked recursively
-/// or after being dropped" *before* the Rust body runs — so the
+/// before the outer invocation returns. The glue refuses re-entry of
+/// an `FnMut` closure (`Closure::new`) at the FFI boundary: a
+/// re-entrant call throws "invoked recursively" *before* the Rust
+/// body runs — so the
 /// `in_progress` flag never gets a chance to short-circuit it, and
 /// the throw surfaces as an uncaught console error during any focus
 /// bounce (and on teardown, when removing a focused portal moves

@@ -4,17 +4,13 @@
 //! provider (pushState / replaceState / back / current path) and wires
 //! the window `popstate` event to the substrate reconciler. Outlet-model
 //! navigators (`swap-navigator`, `stack-navigator`) opt in via
-//! `NavigatorControl::enable_url_sync()`; the legacy class-based
-//! navigators keep their own helpers-crate URL machinery and ignore
-//! this entirely.
+//! `NavigatorControl::enable_url_sync()`.
 //!
 //! Also seeds `runtime_shared`'s initial-path slot from
-//! `window.location.pathname` so the walker's cold-start deep-link
-//! resolution (the same path SSR and native deep links use) mounts the
-//! URL's screen instead of the configured initial. The walker clears
-//! the slot once the root navigator subtree has mounted, and the legacy
-//! web navigators discard the walker's initial build regardless, so the
-//! seed is invisible to them.
+//! `window.location.pathname` so the navigator handlers' cold-start
+//! deep-link resolution (the same path SSR and native deep links use)
+//! mounts the URL's screen instead of the configured initial. The root
+//! navigator clears the slot once its subtree has mounted.
 
 use runtime_shared::primitives::navigator::{self as nav, UrlProvider};
 use std::cell::Cell;
@@ -38,10 +34,9 @@ fn pathname() -> String {
 /// Called from the boot seam's `BuiltinSet::nav_services` closure
 /// ([`crate::newcore::start_in_with`] /
 /// [`crate::newcore_hydrate::hydrate_in_with`]), NOT from
-/// `install_scheduler` — it used to ride the scheduler so every web host
-/// got it for free, but the popstate listener below calls
-/// `nav::handle_popstate`, which kept `NavigatorControl` reachable from
-/// boot in bundles that had dropped the navigator primitives (10,827
+/// `install_scheduler`: the popstate listener below calls
+/// `nav::handle_popstate`, which would keep `NavigatorControl` reachable
+/// from boot in bundles that dropped the navigator primitives (10,827
 /// bytes on a `--primitives view,text` hello-world). Behind the set, an
 /// app without `nav` never names this fn at all.
 pub fn install_url_provider() {
@@ -90,7 +85,7 @@ pub fn install_url_provider() {
     });
     POPSTATE_LISTENER.with(|slot| *slot.borrow_mut() = Some(listener));
 
-    // Cold-start deep-link seed for the walker's initial resolution.
+    // Cold-start deep-link seed for the navigators' initial resolution.
     nav::set_initial_path(Some(pathname()));
     // The page address is this target's launch link: record it for
     // `deep_link::initial_link()` (the slot above is already seeded from

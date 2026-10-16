@@ -7,14 +7,14 @@
 //! memory and `__indirect_function_table`, instantiates the patch into
 //! them — supplying every import from the plan the dev loop appended to
 //! the module (`build_web::hotpatch_prepare`) — and commits the jump
-//! table through `dev_hot`, so a `fn` pointer that used to name the
-//! base's slot now names the patch's.
+//! table through `dev_hot`, so a `fn` pointer that named the base's
+//! slot now names the patch's.
 //!
-//! It used to be `subsecond::apply_patch`, which supplies a patch only
-//! the base's exports. Everything else the patch imports then had to be
-//! rewritten away on the dev machine — a walrus pass over the whole
-//! patch, 0.7–1.0 s of every save on CrewForge. Supplying the imports
-//! here removes the rewrite: the dev loop only reads them.
+//! Supplying every import here (not just the base's exports, as
+//! `subsecond::apply_patch` does) means the dev machine never has to
+//! rewrite the patch's other imports away — a walrus pass over the whole
+//! patch that costs 0.7–1.0 s of every save on CrewForge. The dev loop
+//! only reads them.
 //!
 //! That alone changes nothing on screen. The patched bodies are live but
 //! nothing has called them: the DOM in front of the user was built by

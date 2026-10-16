@@ -17,9 +17,9 @@ use web_glue::Closure;
 #[cfg(feature = "hydrate")]
 thread_local! {
     /// SSR-hydration microtask buffer. `None` normally (dispatch via
-    /// `Promise.then`). While hydrating, microtasks buffer here and
+    /// `queueMicrotask`). While hydrating, microtasks buffer here and
     /// `mount` drains them synchronously inside the adoption window, so
-    /// the navigator SDK's deferred chrome/screen builds adopt the
+    /// deferred builds (e.g. a navigator's chrome/screen) adopt the
     /// server's DOM. Set by [`begin_hydration_buffering`], cleared by
     /// [`end_hydration_buffering`].
     static HYDRATION_BUFFER: RefCell<Option<VecDeque<Box<dyn FnOnce() + 'static>>>> =
@@ -38,7 +38,7 @@ pub(crate) fn begin_hydration_buffering() {
     });
 }
 
-/// Stop buffering (called by `WebBackend::finish`). Any still-buffered
+/// Stop buffering (called when `finish` attaches the root). Any still-buffered
 /// tasks flush via the normal async path so none are dropped.
 #[cfg(feature = "hydrate")]
 pub(crate) fn end_hydration_buffering() {
@@ -53,8 +53,8 @@ pub(crate) fn end_hydration_buffering() {
 /// Whether the SSR-hydration window is open (between
 /// [`begin_hydration_buffering`] and [`end_hydration_buffering`], i.e. the
 /// whole `hydrate → mount → drain → finish` span). Borrow-free (reads a
-/// thread-local, not the backend), so navigator SDK code can consult it
-/// while it already holds `&mut WebBackend` — unlike `Backend::is_hydrating`.
+/// thread-local, not the backend), so code can consult it while it already
+/// holds `&mut WebBackend` — unlike `LifecycleOps::is_hydrating`.
 #[cfg(feature = "hydrate")]
 pub(crate) fn is_hydration_active() -> bool {
     HYDRATION_BUFFER.with(|b| b.borrow().is_some())
@@ -76,17 +76,14 @@ fn dispatch_via_promise(f: Box<dyn FnOnce() + 'static>) {
     web_glue::queue_microtask(f);
 }
 
-/// Register this backend's scheduler with `runtime-core`. Idempotent —
-/// first install wins.
+/// Register this backend's scheduler with `runtime_shared::scheduling`.
+/// Idempotent — first install wins.
 ///
-/// Deliberately does NOT install the browser URL provider. That used to
-/// be piggybacked here ("every web host calls `install_scheduler()`
-/// anyway"), which made it unconditional — and
-/// `url_provider::install_url_provider`'s popstate listener calls
-/// `nav::handle_popstate`, so it kept `NavigatorControl::dispatch` plus
-/// its `Rc` drop glue (10,827 bytes measured) alive in bundles that had
-/// dropped the navigator primitives entirely. The install now rides
-/// `BuiltinSet::nav_services` at the boot seam
+/// Deliberately does NOT install the browser URL provider: its popstate
+/// listener calls `nav::handle_popstate`, which keeps
+/// `NavigatorControl::dispatch` plus its `Rc` drop glue (10,827 bytes
+/// measured) alive in bundles that dropped the navigator primitives
+/// entirely. The install rides `BuiltinSet::nav_services` at the boot seam
 /// ([`crate::newcore::start_in_with`] / [`crate::newcore_hydrate::hydrate_in_with`]),
 /// next to `newcore_url_sync::install`, so a set without `nav` never
 /// names it and LLVM drops the whole chain.
@@ -130,7 +127,7 @@ impl Scheduler for WebScheduler {
         let closure = Closure::once(move |_| {
             f();
             // One-shot frame callbacks can run author code that
-            // stages new-core writes (animation ticks). See
+            // stages world writes (animation ticks). See
             // `dispatch_hook` module docs.
             crate::dispatch_hook::fire_dispatch_hook();
         });
@@ -159,7 +156,7 @@ impl Scheduler for WebScheduler {
             f();
             // Timer callbacks are a primary author-code surface
             // (`after_ms` bodies that set signals) — the flush hook
-            // is what commits those writes on the new core. See
+            // is what commits those staged writes. See
             // `dispatch_hook` module docs.
             crate::dispatch_hook::fire_dispatch_hook();
         });
@@ -203,7 +200,7 @@ impl Scheduler for WebScheduler {
             // only defers the closure's own release to the return.)
             user_fn();
             // rAF-loop iterations can run author code that stages
-            // new-core writes (frame-paced drag/scroll state). See
+            // world writes (frame-paced drag/scroll state). See
             // `dispatch_hook` module docs.
             crate::dispatch_hook::fire_dispatch_hook();
             let mut s = state.borrow_mut();

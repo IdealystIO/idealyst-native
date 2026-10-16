@@ -1,7 +1,7 @@
 //! App-level keyboard handling + the shared browser→framework key-event
-//! translator. Lives OUTSIDE the `prim-text-input` gate: global shortcuts
-//! (`set_keyboard_sink`) are an app-level capability that must keep
-//! working when the text-input primitive is compiled out.
+//! translator. Kept apart from `text_input`: global shortcuts
+//! (`set_keyboard_sink`) are an app-level capability independent of the
+//! text-input primitive.
 
 use crate::WebBackend;
 use runtime_shared::primitives::key::{AppKeyEvent, KeyEvent, KeyOutcome, KeyPhase, KeyboardSink};

@@ -1,4 +1,4 @@
-//! Web backend implementation of `Backend::set_animated_*`.
+//! Web backend implementation of `AnimationOps::set_animated_*`.
 //!
 //! Per-frame writes from
 //! [`AnimatedValue`](runtime_shared::animation::AnimatedValue)
@@ -27,7 +27,7 @@
 //! Inline animated writes take precedence over the class-based
 //! transform set by `apply_style`. So an element with both
 //! `transform: scale(0.5)` in its stylesheet and
-//! `Backend::set_animated_f32(_, Scale, 1.2)` ends up at 1.2 — the
+//! `AnimationOps::set_animated_f32(_, Scale, 1.2)` ends up at 1.2 — the
 //! inline writes win per CSS specificity. Authors who want the
 //! static base to compose into the animated value should also
 //! bind a scale-animated value seeded at 0.5.
@@ -107,7 +107,7 @@ impl AnimatedNodeState {
 }
 
 impl WebBackend {
-    /// `Backend::set_animated_f32` implementation. Routes via
+    /// `AnimationOps::set_animated_f32` implementation. Routes via
     /// [`AnimProp`] family.
     pub(crate) fn impl_set_animated_f32(
         &mut self,
@@ -190,7 +190,7 @@ impl WebBackend {
         }
     }
 
-    /// `Backend::set_animated_color` implementation.
+    /// `AnimationOps::set_animated_color` implementation.
     pub(crate) fn impl_set_animated_color(
         &mut self,
         node: &web_glue::dom::Node,

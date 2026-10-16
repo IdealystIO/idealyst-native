@@ -7,7 +7,7 @@ license.workspace = true
 # Win32 host shell for the `backend-windows` native backend. Owns the
 # top-level HWND + window class, runs the Win32 message pump, installs
 # a message-loop-integrated scheduler, constructs `WindowsBackend`, and
-# drives `runtime_core::mount`. Mirrors `host-appkit` (the AppKit host
+# mounts through `backend_windows::newcore::start`. Mirrors `host-appkit` (the AppKit host
 # for `backend-macos`): the *host* owns the window and event loop, the
 # *backend* only builds and positions child controls.
 #

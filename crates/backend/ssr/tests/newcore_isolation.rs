@@ -1,8 +1,7 @@
-//! Per-request world isolation — the multi-world payoff the SSR port
-//! exists for (design §10 P5): many `runtime_world::World`s per thread,
+//! Per-request world isolation: many `runtime_world::World`s per thread,
 //! independent flush/teardown, zero cross-talk, zero accumulation.
 //!
-//! Covers the wave's isolation gates:
+//! Covers:
 //! - two worlds alive simultaneously on one thread, interleaved renders
 //!   and flushes, no cross-talk (structure, signals, or theme);
 //! - sequential renders do not leak (weak-probe proves each request's

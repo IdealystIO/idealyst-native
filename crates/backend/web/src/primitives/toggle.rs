@@ -1,4 +1,4 @@
-//! `Element::Toggle` — an `<input type="checkbox" role="switch">`.
+//! The `toggle` primitive — an `<input type="checkbox" role="switch">`.
 
 use crate::WebBackend;
 use std::rc::Rc;
@@ -11,7 +11,7 @@ pub(crate) fn create(
     on_change: Rc<dyn Fn(bool)>,
 ) -> Node {
     // Cursor-aware: adopt the SSR-rendered `<input>` if present so the
-    // walker doesn't mint a second checkbox alongside it. Without this,
+    // scene doesn't mint a second checkbox alongside it. Without this,
     // SSR's `<input type="checkbox">` stays in the DOM and the fresh
     // one is inserted as a sibling — the user sees two checkboxes.
     // Same pattern as `create_element`: adopt via `hydrate_next`, fall

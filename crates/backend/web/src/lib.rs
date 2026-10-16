@@ -11,14 +11,16 @@
 //!
 //! - `style.rs` — CSS converters (`rules_to_css` + per-enum helpers),
 //!   stylesheet rule-index bookkeeping (`insert_rule` / `delete_rule`
-//!   on `WebBackend`), and the register/apply Backend methods that
-//!   live next to the data they mutate.
+//!   on `WebBackend`), and the register/apply methods that live next to
+//!   the data they mutate.
 //! - `defaults.rs` — global baselines: spinner
 //!   keyframes, virtualizer JS shim, dynamic-slot teardown.
-//! - `primitives/` — one module per `Element` kind. Each owns its
+//! - `primitives/` — one module per primitive. Each owns its
 //!   create/update functions, any `Ops` impl, and the `make_*_handle`
-//!   builder where applicable. The `impl Backend for WebBackend`
-//!   block at the bottom of this file is a thin delegation layer.
+//!   builder where applicable. The `*_impl` inherent methods at the
+//!   bottom of this file are a thin delegation layer; `newcore.rs`
+//!   adapts them onto `runtime_scene::Host` and the
+//!   `runtime_vocabulary::caps::*Ops` traits.
 //!
 //! # Style architecture
 //!
@@ -109,13 +111,13 @@ pub use time_source::{install_time_source, install_wall_clock_source};
 pub use viewport_observer::{install_viewport_observer, page_is_prerendered, ssr_viewport};
 
 /// Install a `Weak` self-handle for the active `WebBackend`. Required
-/// by any code path that needs `&mut WebBackend` from outside the
-/// build walker:
+/// by any code path that needs `&mut WebBackend` from outside a
+/// capability call (where the scene already hands one in):
 ///  - [`AnimatedValue::bind`](runtime_shared::animation::AnimatedValue::bind)
 ///    and friends (per-frame animation writes from author closures).
 ///  - The batched text-update microtask flush
-///    ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`]).
-///  - Future per-frame writers that fire outside a backend borrow.
+///    (`TextOps::create_text_with_id` / `TextOps::update_text_by_id`).
+///  - Any other per-frame writer that fires outside a backend borrow.
 ///
 /// Call once after constructing the backend `Rc<RefCell<>>`. Idempotent
 /// — re-installing overwrites the previous handle.
@@ -181,7 +183,7 @@ fn element_has_class(el: &web_glue::dom::Element, class: &str) -> bool {
 }
 
 /// During hydration, point the adoption cursor at the first element child
-/// of `region` (an adopted frame slot / body outlet) so the next walker
+/// of `region` (an adopted frame slot / body outlet) so the next
 /// `create_*` calls adopt the server content inside it. No-op off
 /// hydration.
 #[cfg(feature = "hydrate")]
@@ -203,20 +205,13 @@ pub fn hydrate_enter(region: &web_glue::dom::Node) {
 }
 
 /// Off-feature stub — `hydrate_enter` is a no-op when the `hydrate`
-/// feature is disabled. SDK navigator helpers call this on every region
-/// entry; this stub keeps them callable without `#[cfg]` plumbing in
-/// the SDK crates.
+/// feature is disabled, so callers need no `#[cfg]` plumbing.
 #[cfg(not(feature = "hydrate"))]
 pub fn hydrate_enter(_region: &web_glue::dom::Node) {}
 
 /// Whether an SSR-hydration pass is currently in progress. Borrow-free
 /// (reads the scheduler's hydration-buffer thread-local, not the backend),
-/// so navigator SDK code can call it while holding `&mut WebBackend`. Used
-/// to make the navigator's INITIAL screen mount authoritative-and-adopting
-/// during hydration (via the walker's `attach_initial`) while the deferred
-/// create-time auto-mount microtask skips — otherwise the initial screen is
-/// built twice (walker adopts the SSR screen, microtask builds a fresh one)
-/// and the whole screen duplicates.
+/// so it can be called while holding `&mut WebBackend`.
 #[cfg(feature = "hydrate")]
 pub fn is_hydrating() -> bool {
     crate::scheduler::is_hydration_active()
@@ -229,7 +224,7 @@ pub fn is_hydrating() -> bool {
 }
 
 /// Install a self-handle so the batched text-update path
-/// ([`Backend::create_text_with_id`] / [`Backend::update_text_by_id`])
+/// (`TextOps::create_text_with_id` / `TextOps::update_text_by_id`)
 /// can schedule its microtask flush. Must be called once after the
 /// app's `Rc<RefCell<WebBackend>>` is constructed; if it's never
 /// called, `create_text_with_id` returns `None` and the framework
@@ -276,24 +271,20 @@ std::thread_local! {
 
     /// `@font-face` rules already present in the document, keyed by the
     /// exact rule text (`css::font_face_css`). Shared across EVERY
-    /// `WebBackend` on the (single wasm) thread — the main page backend,
-    /// the SSR `<head>` it adopts, AND each lazy chunk's own
-    /// `mount_chunk` backend. A face must be injected at most once:
-    /// otherwise a second `@font-face` for the same URL makes the browser
-    /// fetch the font file AGAIN (the lazy-chunk double-download bug). The
-    /// SSR/hydration case seeds this set without injecting (the rule is
-    /// already in the server `<head>`); the live page injects on first
-    /// sight; chunks then find it present and skip.
+    /// `WebBackend` on the (single wasm) thread and the SSR `<head>` it
+    /// adopts. A face must be injected at most once: a second
+    /// `@font-face` for the same URL makes the browser fetch the font
+    /// file AGAIN. The SSR/hydration case seeds this set without
+    /// injecting (the rule is already in the server `<head>`); the live
+    /// page injects on first sight; later registrations find it present
+    /// and skip.
     static FONT_FACES_PRESENT: std::cell::RefCell<FxHashSet<String>> =
         std::cell::RefCell::new(FxHashSet::default());
 }
 
-/// EXPERIMENT (External-anchoring probe): run `f` with the ambient WebBackend —
-/// the most-recently-installed one, reached weakly. This lets a lazy chunk build
-/// an external's node ITSELF (running the SDK handler inside the chunk) instead
-/// of routing through the main-resident `ExternalRegistry` + `call_indirect`,
-/// which anchors the handler's code (and its wgpu/vello deps) in `main.wasm`.
-/// Returns `None` if no backend is installed or it's currently borrowed.
+/// Run `f` with the ambient WebBackend — the most-recently-installed one,
+/// reached weakly. Returns `None` if no backend is installed or it's
+/// currently borrowed.
 pub fn with_ambient_backend<R>(f: impl FnOnce(&mut WebBackend) -> R) -> Option<R> {
     let weak = WEB_BACKEND_HANDLE.with(|h| h.borrow().clone())?;
     let rc = weak.upgrade()?;
@@ -310,28 +301,17 @@ use std::rc::Rc;
 use web_glue::JsCast;
 use web_glue::dom::{Document, Node};
 
-/// Read the `data-navigator-id` attribute the SDK helpers crate stamps
-/// on each navigator container. Returns `None` when `node` isn't an
-/// Element or the attribute isn't present — every Backend trait nav
-/// method gracefully no-ops in that case.
+/// Read a `data-navigator-id` attribute off `node`. Returns `None` when `node` isn't an
+/// Element or the attribute isn't present.
 fn nav_id_from_node(node: &Node) -> Option<u32> {
     let elem: web_glue::dom::Element = node.clone().dyn_into().ok()?;
     elem.get_attribute("data-navigator-id")?.parse().ok()
 }
 
-/// No-op `NavigatorOps` returned by `make_navigator_handle` when no
-/// SDK handler is registered for the given node. Keeps the
-/// fallback handle inert without depending on the helpers crate
-/// (which would be circular: helpers depends on backend-web).
+/// Inert `NavigatorOps` for a navigator handle with no handler behind it.
 struct NoopNavOps;
 impl runtime_shared::primitives::navigator::NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
-
-// NOTE: the `BACKEND_NAV_ID` counter and `next_backend_nav_id()` lived here
-// to keep backend-assigned navigator ids from colliding with the low ids the
-// `web-navigator-helpers` crate stamped for the legacy handlers. Both that
-// crate and those handlers went with the runtime-v2 deletion, leaving the
-// counter with nothing to avoid and no call sites, so it was removed.
 
 /// One DOM event listener owned by a node's teardown record
 /// (`WebBackend::state_listeners`).
@@ -357,7 +337,7 @@ pub struct WebBackend {
     /// creating a fresh element — so the booting bundle reuses the
     /// server's DOM (and its layout) and just wires handlers/reactivity
     /// onto it. The cursor walks the SSR tree in pre-order, matching the
-    /// walker's pre-order `create_*` calls. Turned off in `finish` once
+    /// scene's pre-order `create_*` calls. Turned off in `finish` once
     /// the initial adoption pass completes (later reactive rebuilds
     /// create fresh nodes normally).
     #[cfg(feature = "hydrate")]
@@ -365,7 +345,7 @@ pub struct WebBackend {
     /// Next SSR node to adopt (pre-order). `None` once exhausted.
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_cursor: Option<web_glue::dom::Node>,
-    /// SUBTREE-LOCAL REMOUNT: when the walker's node doesn't match the
+    /// SUBTREE-LOCAL REMOUNT: when the realized node doesn't match the
     /// SSR node at the cursor, we don't fail the whole hydration — we
     /// build *that one subtree* fresh, replace the stale SSR node in
     /// place, and resume adopting its siblings. These four fields track
@@ -381,13 +361,13 @@ pub struct WebBackend {
     /// [`Self::hydrate_note_fresh`]).
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_pending_fresh: bool,
-    /// The tag the walker asked for on the mismatching `hydrate_next` —
+    /// The tag the client asked for on the mismatching `hydrate_next` —
     /// carried into [`Self::hydrate_note_fresh`]'s diagnostic so the
     /// console warning says WHAT the client wanted, not just what the
     /// server had.
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_pending_tag: Option<String>,
-    /// The fresh subtree root being built; when the walker `insert`s it,
+    /// The fresh subtree root being built; when the scene `insert`s it,
     /// the remount completes (replace the stale node, resume cursor).
     #[cfg(feature = "hydrate")]
     pub(crate) hydration_remount_root: Option<web_glue::dom::Node>,
@@ -445,7 +425,7 @@ pub struct WebBackend {
     pub(crate) virtualizer_shim_injected: bool,
     pub(crate) virtual_grid_shim_injected: bool,
     /// Has the local-render batch executor (`runtime/js/batch.js`)
-    /// been injected? First batched `Element::Repeat` triggers
+    /// been injected? First batched repeat (`BatchOps`) triggers
     /// injection, subsequent calls reuse the cached
     /// `window.__idealystExecuteBatch` function.
     pub(crate) batch_shim_injected: bool,
@@ -551,9 +531,8 @@ pub struct WebBackend {
     /// Per-virtualizer instance state — keyed by node id so we can
     /// route `virtualizer_data_changed` to the right instance AND
     /// drop its closures on `release_virtualizer`. The wrapped
-    /// `VirtualizerInstance` owns the wasm-bindgen `Closure`s
-    /// handed to the JS shim; dropping it destroys them via
-    /// `__wbindgen_destroy_closure`, which is what prevents
+    /// `VirtualizerInstance` owns the glue `Closure`s handed to the
+    /// JS shim; dropping it revokes them, which is what prevents
     /// queued-but-not-yet-fired JS callbacks from reaching a
     /// freed-Signal arena slot after the surrounding scope has
     /// dropped.
@@ -608,10 +587,9 @@ pub struct WebBackend {
     /// content. Populated lazily on `apply_styled_states` slow-path
     /// misses; collapsed when the last `DynamicSlot` referencing a
     /// key drops. The reactive-style cohort (one signal fanning out
-    /// to N styled nodes) is the canonical user — pre-dedupe, every
-    /// fan-out minted N identical rules + did N `insert_rule` / N
-    /// `delete_rule` calls; deduped, the first node mints and the
-    /// rest just bump the refcount.
+    /// to N styled nodes) is the canonical user: the first node mints
+    /// the rule and the rest just bump the refcount, instead of N
+    /// identical `insert_rule` / `delete_rule` calls.
     pub(crate) dynamic_by_content: FxHashMap<String, DynamicRule>,
     /// Pointer-keyed mirror of `dynamic_by_content` for the hot apply
     /// path. The framework's `RESOLUTION_CACHE` hands us the SAME
@@ -665,20 +643,18 @@ pub struct WebBackend {
     /// pattern as `app_bg_rule_index`.
     pub(crate) scrollbar_rule_indices: Vec<u32>,
     /// Per-portal state, keyed by the `data-portal-id` attribute
-    /// stamped on the portal root. Holds the wasm-bindgen `Closure`
+    /// stamped on the portal root. Holds the glue `Closure`
     /// handles wired to dismiss / reposition / focus-trap events so
     /// they stay alive while the portal is mounted; dropping the
     /// instance entry in `release_portal` is what frees the
     /// JS-side closures and prevents late-firing events from
     /// reaching a freed `Signal` slot.
     pub(crate) portal_instances: primitives::portal::PortalInstances,
-    /// Monotonic id counter for portals. Same pattern as
-    /// `next_navigator_id` — stamped as `data-portal-id` on the
-    /// portal root.
+    /// Monotonic id counter for portals, stamped as `data-portal-id`
+    /// on the portal root.
     pub(crate) next_portal_id: u32,
     /// Asset id → resolved URL. Filled by `register_asset`; queried
-    /// by `register_typeface` (for the `@font-face` `src: url(...)`)
-    /// and, in a follow-up, by the `Image` primitive's `<img src>`.
+    /// by `register_typeface` (for the `@font-face` `src: url(...)`).
     pub(crate) asset_urls: FxHashMap<AssetId, String>,
     /// Ids whose `asset_urls` entry is a `blob:` URL backed by
     /// `URL.createObjectURL` (i.e. `AssetSource::Embedded`). Used by
@@ -691,39 +667,20 @@ pub struct WebBackend {
     /// `unregister_typeface` reclaim the slots through the regular
     /// `delete_rule` recycle path.
     pub(crate) font_face_rule_indices: runtime_shared::collections::SmallIdMap<TypefaceId, Vec<u32>>,
-    /// Registry of `Element::Navigator` handler factories,
-    /// populated by `register_navigator::<P, _>(...)` calls from
-    /// SDK leaf crates (e.g. `stack_navigator::register`).
-    /// `create_navigator` looks the factory up by presentation
-    /// TypeId; unregistered kinds panic at create time.
-    /// Per-navigator-instance SDK handler. Keyed by the navigator id
-    /// stamped on the container's `data-navigator-id` attribute.
-    /// `Backend::create_navigator` resolves the factory, runs `init`,
-    /// and stores the returned handler here so subsequent
-    /// `navigator_attach_initial` / `release_navigator` /
-    /// `make_navigator_handle` / `apply_navigator_slot_style` calls
-    /// can route through the handler's kind-specific logic instead
-    /// of through hard-coded backend machinery.
-    ///
-    /// `Rc<RefCell<...>>` so the trait impl methods can clone an
-    /// independent handle out of the map, drop the map borrow, then
-    /// call `&mut B`-taking methods on the handler without
-    /// double-borrowing `self`.
     /// Per-node animated-property state. Tracks the most recent
-    /// values written via `Backend::set_animated_f32` /
+    /// values written via `AnimationOps::set_animated_f32` /
     /// `set_animated_color` so compound properties like CSS
     /// `translate: <x> <y>` and `scale: <x> <y>` can be re-emitted
     /// without clobbering unrelated axes. See [`animated`] module
     /// for the per-property routing.
     pub(crate) animated_states: animated::AnimatedStateMap,
     /// Identity set of framework primitive **root** DOM nodes, populated by
-    /// `note_introspection_root` (called from the walker as each primitive is
+    /// `IntrospectionOps::note_introspection_root` (called as each primitive is
     /// registered). The native-introspection walk uses object identity here
     /// to know where one primitive's DOM ends and a child primitive's begins
     /// — it prunes the tree at any descendant in this set. A `web_glue::js::Set`
     /// (SameValueZero identity for objects) so it needs no node-id round-trip.
-    /// Populated only in robot builds (the walker calls
-    /// `note_introspection_root`); a single cheap JS Set otherwise idle.
+    /// Populated only in robot builds; a single cheap JS Set otherwise idle.
     pub(crate) introspection_roots: web_glue::js::Set,
 }
 
@@ -747,10 +704,9 @@ pub(crate) struct PregenEntry {
 pub(crate) struct DynamicSlot {
     /// Shared (class_name, content_key) pair, refcounted across the
     /// pointer cache, the dynamic_by_content entry, and every
-    /// `DynamicSlot` referencing it. Pre-Rc, every slot held its
-    /// own two `String` copies; with N reactive-styled nodes
-    /// sharing the same content, that was 2N heap allocations
-    /// every fan-out for no semantic gain.
+    /// `DynamicSlot` referencing it, so N reactive-styled nodes
+    /// sharing the same content don't pay 2N `String` allocations
+    /// per fan-out.
     pub(crate) shared: std::rc::Rc<DynamicPtrEntry>,
 }
 
@@ -797,15 +753,14 @@ pub(crate) struct DynamicRule {
 
 
 impl WebBackend {
-    /// Constructs a backend that will mount its root under `mount_selector`
-    /// (e.g. `"#app"`). Panics if the element is not found.
     /// Boot in HYDRATION mode against a server-rendered mount: instead
     /// of clearing `#app` and rebuilding, the backend ADOPTS the existing
     /// SSR DOM — `create_*` returns the matching pre-rendered node (walked
     /// in pre-order) and just wires handlers/reactivity onto it. The
     /// browser keeps the server's already-laid-out DOM (no flash, no
-    /// rebuild). On a tag mismatch (server/client render divergence) it
-    /// disables adoption and `finish` falls back to a clean rebuild.
+    /// rebuild). On a tag mismatch (server/client render divergence) only
+    /// the diverging subtree is built fresh and swapped in for the stale
+    /// SSR node (see [`Self::hydrate_note_fresh`]); its siblings still adopt.
     ///
     /// PREREQUISITE for a clean adoption: the first client render must
     /// match the server render. The viewport is the main divergence — seed
@@ -817,7 +772,7 @@ impl WebBackend {
     pub fn hydrate(mount_selector: &str) -> Self {
         let mut b = Self::new(mount_selector);
         b.hydrating = true;
-        // First element child of the mount = the SSR root the walker's
+        // First element child of the mount = the SSR root the scene's
         // first `create_*` will adopt.
         b.hydration_cursor = b.mount.first_element_child().map(|e| e.unchecked_into());
         // Buffer microtasks during the build so `mount` drains the nav's
@@ -827,10 +782,9 @@ impl WebBackend {
     }
 
     /// During hydration, adopt the SSR navigator container: the element at
-    /// the cursor if it carries `class` (e.g. `"ui-nav-root"`). Returns it
-    /// (leaving the cursor on it); the navigator adopts its frame via
-    /// [`hydrate_adopt_child`] + re-enters regions via [`hydrate_enter`].
-    /// `None` when not hydrating or the cursor doesn't match.
+    /// the cursor if it carries `class` (e.g. `"ui-nav-root"`). Returns it,
+    /// leaving the cursor on it. `None` when not hydrating or the cursor
+    /// doesn't match.
     #[cfg(feature = "hydrate")]
     pub fn hydrate_adopt_container(&mut self, class: &str) -> Option<web_glue::dom::Node> {
         if !self.hydrating {
@@ -845,11 +799,8 @@ impl WebBackend {
     }
 
     /// During hydration, adopt the server-rendered child of `parent`
-    /// carrying `class` (match-by-class, parent-relative). METHOD form —
-    /// for callers that hold `&mut WebBackend` synchronously (e.g. the
-    /// navigator frame build runs *inside* `create_navigator`'s
-    /// `borrow_mut`, so the global-handle free fn's `try_borrow` would
-    /// fail there). `None` when not hydrating or no match.
+    /// carrying `class` (match-by-class, parent-relative). `None` when not
+    /// hydrating or no match.
     #[cfg(feature = "hydrate")]
     pub fn hydrate_adopt_child_of(
         &self,
@@ -933,10 +884,8 @@ impl WebBackend {
         }
     }
 
-    /// During hydration, suspend the cursor so the next `create_*` build
-    /// fresh without adopting/arming a remount. METHOD form for the
-    /// synchronous in-`borrow_mut` caller (end of the navigator frame
-    /// build, before the walker's throwaway initial screen).
+    /// During hydration, suspend the cursor so the next `create_*` calls
+    /// build fresh without adopting/arming a remount.
     #[cfg(feature = "hydrate")]
     pub fn hydrate_suspend_cursor(&mut self) {
         if !self.hydrating {
@@ -948,12 +897,9 @@ impl WebBackend {
     }
 
     /// During hydration, descend the cursor into the first element child of
-    /// `region`. METHOD form of the free [`hydrate_enter`] fn — for callers
-    /// holding `&mut WebBackend` synchronously (e.g. inside `create_navigator`'s
-    /// `borrow_mut`, where the global-handle free fn's `try_borrow` would fail
-    /// and silently no-op). A no-layout stack/tab navigator uses this right
-    /// after adopting its container so the SYNCHRONOUS walker `attach_initial`
-    /// screen build adopts the screen's root node — not the container itself.
+    /// `region`. METHOD form of the free [`hydrate_enter`] fn, for callers
+    /// already holding `&mut WebBackend` (where the free fn's `try_borrow`
+    /// would fail and silently no-op).
     #[cfg(feature = "hydrate")]
     pub fn hydrate_enter_region(&mut self, region: &web_glue::dom::Node) {
         if !self.hydrating {
@@ -1014,7 +960,7 @@ impl WebBackend {
     /// subtree instead of descending into its children. For primitives
     /// whose contents (icon `<path>`s, etc.) are built internally and
     /// NOT walked by the framework — without this, the cursor would
-    /// land on a child of the adopted node and the next walker step
+    /// land on a child of the adopted node and the next `create_*`
     /// would mismatch against it.
     #[cfg(feature = "hydrate")]
     pub(crate) fn hydrate_next_skip_subtree(
@@ -1087,8 +1033,8 @@ impl WebBackend {
         self.hydration_suppress = true;
     }
 
-    /// Snapshot the SSR adoption cursor before an `Element::External`
-    /// handler runs. `None` off the hydrate path. Paired with
+    /// Snapshot the SSR adoption cursor before an external node is built
+    /// (`create_external_impl`). `None` off the hydrate path. Paired with
     /// [`Self::hydrate_external_note_if_unadopted`].
     #[cfg(feature = "hydrate")]
     pub(crate) fn hydrate_cursor_snapshot(&self) -> Option<web_glue::dom::Node> {
@@ -1099,12 +1045,11 @@ impl WebBackend {
         }
     }
 
-    /// Called right after an external handler builds its node. If the cursor
-    /// is unchanged from `before`, the handler did NOT adopt the SSR host at
-    /// the cursor (it built fresh — e.g. the GPU canvas), so arm a subtree
-    /// remount: the fresh `node` becomes the remount root that
-    /// [`Self::hydrate_resync_remount`] swaps in for the stale SSR host when
-    /// the walker parents it. This keeps the cursor aligned for the external's
+    /// Called right after an external node is built. If the cursor is
+    /// unchanged from `before`, the build did NOT adopt the SSR host at the
+    /// cursor (it built fresh), so arm a subtree remount: the fresh `node`
+    /// becomes the remount root that [`Self::hydrate_resync_remount`] swaps
+    /// in for the stale SSR host when the scene parents it. This keeps the cursor aligned for the external's
     /// siblings and detaches the orphaned host. A hydration-aware handler
     /// (one that calls `hydrate_next`) advances the cursor, so `before !=`
     /// cursor and this no-ops.
@@ -1137,15 +1082,12 @@ impl WebBackend {
     /// next sibling, and exit `suppress`. Returns `true` when it handled
     /// `child` — the caller must then NOT insert it again.
     ///
-    /// Shared by [`Backend::insert`], [`Backend::insert_at`], and
-    /// [`Backend::insert_many`] so a remount root gets its stale SSR
-    /// subtree detached no matter which attach path the walker parents it
-    /// through. This matters because the anchorless `when` / `switch`
-    /// splice (`build_when_spliced` / the `Each` reconciler) parents the
-    /// branch via `insert_at`, and the `Repeat` fallback via `insert_many`
-    /// — neither of which used to run the resync. A remount root parented
-    /// by `insert_at` therefore left the stale SSR node in the DOM: the
-    /// duplicated absolutely-positioned nav this method was added to fix.
+    /// Shared by `insert_impl`, `insert_at_impl` and `insert_many_impl` so
+    /// a remount root gets its stale SSR subtree detached no matter which
+    /// attach path parents it: the anchorless `when` / `switch` splice and
+    /// the keyed reconciler parent via `insert_at`, the batched repeat via
+    /// `insert_many`. A path that skipped the resync would leave the stale
+    /// SSR node in the DOM and render the diverged subtree twice.
     #[cfg(feature = "hydrate")]
     fn hydrate_resync_remount(&mut self, parent: &mut web_glue::dom::Node, child: &web_glue::dom::Node) -> bool {
         if !self
@@ -1184,11 +1126,11 @@ impl WebBackend {
     }
 
     // ---------------------------------------------------------------
-    // No-hydrate stubs. Public surface stays callable from SDK crates +
-    // generated wrappers; bodies optimize to a const `None` / no-op
-    // and DCE drops the cursor/diagnostic machinery from the bundle.
-    // `WebBackend::hydrate(...)` falls back to `new(...)` — the v1
-    // clear-and-rebuild path in `finish()` then runs (flicker on
+    // No-hydrate stubs. Public surface stays callable without `#[cfg]`;
+    // bodies optimize to a const `None` / no-op and DCE drops the
+    // cursor/diagnostic machinery from the bundle.
+    // `WebBackend::hydrate(...)` falls back to `new(...)`, so `finish()`
+    // clears the SSR markup and attaches a fresh build (a flicker on
     // bundle boot, but no broken DOM).
     // ---------------------------------------------------------------
 
@@ -1238,7 +1180,7 @@ impl WebBackend {
     }
 
     /// Next node in a pre-order DFS of the SSR tree, bounded by `mount`.
-    /// Descends into children first. Matches the walker's pre-order
+    /// Descends into children first. Matches the scene's pre-order
     /// `create_*` order.
     #[cfg(feature = "hydrate")]
     fn next_preorder(node: &web_glue::dom::Node, mount: &web_glue::dom::Element) -> Option<web_glue::dom::Node> {
@@ -1269,6 +1211,8 @@ impl WebBackend {
         }
     }
 
+    /// Constructs a backend that will mount its root under `mount_selector`
+    /// (e.g. `"#app"`). Panics if the element is not found.
     pub fn new(mount_selector: &str) -> Self {
         let window = web_glue::dom::window().expect("no window");
         let doc = window.document().expect("no document");
@@ -1426,10 +1370,10 @@ impl WebBackend {
     /// Ship a `(signal_id, new_value)` notification to the JS-side
     /// reactive layer. Single FFI hop — JS handles the per-binding
     /// fan-out internally. Called from the notifier closure
-    /// installed by [`Self::register_signal_for_js`], and (pub(crate))
-    /// from the new-core `notify_signal_value_js` capability override
-    /// in `newcore.rs` — world signals have no `Signal::set` JS hook,
-    /// so a vocabulary notifier effect delivers commits instead.
+    /// installed by [`Self::register_signal_for_js`], and from the
+    /// `StyleOps::notify_signal_value_js` override in `newcore.rs` —
+    /// world signals have no `Signal::set` JS hook, so a vocabulary
+    /// notifier effect delivers commits instead.
     pub(crate) fn ship_signal_change_to_js(&mut self, sid_raw: u64, value: &str) {
         use web_glue::JsValue;
         if self.signal_changed_fn.is_none() {
@@ -1466,7 +1410,7 @@ impl WebBackend {
     /// Effect, no per-leaf wasm crossing on fan-out.
     ///
     /// - `text_id`         : the id returned by
-    ///                       [`Backend::create_text_with_id`](runtime_shared::Backend::create_text_with_id).
+    ///                       `TextOps::create_text_with_id`.
     /// - `signal_ids`      : signal raw ids (`Signal::id()`) the
     ///                       binding interpolates, in template-slot
     ///                       order.
@@ -1482,8 +1426,8 @@ impl WebBackend {
     ///
     /// Each signal in `signal_ids` should have a JS-side notifier
     /// installed by the time this returns; the
-    /// [`runtime_shared::Backend::register_reactive_text_binding`]
-    /// trait method that wraps this passes `stringifiers` and we
+    /// `TextOps::register_reactive_text_binding` capability method that
+    /// wraps this passes `stringifiers` and we
     /// auto-register a notifier per signal here (only if one isn't
     /// already installed — preserves notifiers a class-binding may
     /// have set up on the same signal first).
@@ -1752,7 +1696,7 @@ impl WebBackend {
     /// into a single FFI hop via `__idealystUpdateTextBatch`.
     ///
     /// Called from the microtask scheduled by
-    /// [`WebBackend::update_text_by_id`]. The bench's `apply`
+    /// [`WebBackend::update_text_by_id_impl`]. The bench's `apply`
     /// timer measures synchronous JS + the immediately-following
     /// microtask drain, so this work still counts against `apply`
     /// — but the per-leaf FFI cost collapses from one
@@ -1819,10 +1763,9 @@ impl WebBackend {
     /// boundary crossing per update at fan-out (~60 ms at N=100k
     /// shared-signal subscribers).
     ///
-    /// If the JS-side shim handle isn't installed (e.g. variant
-    /// forgot to call `install_text_batcher`), this falls back to a
-    /// direct `set_attribute` so correctness never depends on the
-    /// fast path being wired up.
+    /// If no global self-handle is installed ([`install_global_self`]),
+    /// this falls back to a direct `set_attribute` so correctness never
+    /// depends on the fast path being wired up.
     pub(crate) fn queue_class_apply(&mut self, node: &Node, class_name: &str) {
         let _t = crate::phase_timer::PhaseTimer::start("queue_class_apply");
         // Fall back to direct setAttribute if the shim batcher hasn't
@@ -1844,22 +1787,22 @@ impl WebBackend {
             // id) AND set the class SYNCHRONOUSLY rather than queuing
             // it for the microtask flush.
             //
-            // The build walker styles a node BEFORE inserting it into
-            // its parent (`walker/view.rs`: `build(...)` then
-            // `insert(...)`), so the node is still DETACHED here — a
+            // The scene mounts (and styles) a node BEFORE inserting it
+            // into its parent (`runtime_scene` realize: `mount_item` then
+            // `insert`), so the node is still DETACHED here — a
             // synchronous `setAttribute` can't trigger a visible reflow,
             // and it guarantees the node carries its themed class on its
             // FIRST style resolution once it's attached.
             //
-            // Deferring this first class to the batch microtask was the
-            // boot/navigation FOUC: the node attached and got its first
+            // Deferring this first class to the batch microtask causes a
+            // boot/navigation FOUC: the node attaches and gets its first
             // style resolution class-less (border-color resolves to
             // `currentColor`/black, background to transparent), so the
-            // class's `transition` then animated from that unstyled
+            // class's `transition` then animates from that unstyled
             // state to the themed value on the first painted frame. CSS
             // suppresses transitions on an element's first style
             // computation — but only when that first computation already
-            // carries the final class. Setting it synchronously restores
+            // carries the final class. Setting it synchronously keeps
             // that invariant. The value written is byte-identical to what
             // the batch flush would set (same `class_name`, same full
             // `setAttribute('class', …)` replace the JS shim does), so
@@ -1959,48 +1902,6 @@ impl WebBackend {
         }
     }
 
-    /// Assigns a stable per-Node id we use as a key in `dynamic`,
-    /// `state_listeners`, `animated_states`, and friends.
-    ///
-    /// Identity is keyed by the underlying JS object — multiple
-    /// Rust `web_glue::dom::Node` wrappers around the same DOM element
-    /// always resolve to the same id. That's necessary because the
-    /// framework freely constructs fresh wrappers (e.g. when
-    /// filling a `Ref<ViewHandle>`'s `Rc<dyn Any>`), and the
-    /// `*const Node` Rust pointer has no relationship to the
-    /// underlying JS object — different wrappers around the same
-    /// DOM element have different pointer values, and the Rust
-    /// allocator readily reuses freed wrapper addresses for
-    /// unrelated wrappers.
-    ///
-    /// Implementation:
-    ///
-    /// - **Every call goes through the JS-side `WeakMap<Node, u32>`**
-    ///   (see `runtime/js/node_ids.js`). Same JS object always →
-    ///   same id. The WeakMap auto-clears entries when DOM
-    ///   elements are GC'd, so no explicit registry teardown is
-    ///   needed.
-    /// - **No Rust-side cache.** An earlier pointer-keyed
-    ///   `FxHashMap<*const Node, u32>` fast cache had a stale-id
-    ///   bug: a freed wrapper's address could be reused by a
-    ///   completely unrelated wrapper, and the cache would
-    ///   return the prior wrapper's id for the new wrapper —
-    ///   leaking per-node state across DOM elements. That cache
-    ///   has been removed; correctness wins over the FFI savings.
-    /// - **Optional debug**: with the `debug-node-ids` feature
-    ///   on, mirror the id outward as a `data-idealyst-id="N"`
-    ///   attribute on Elements so it shows up in devtools / e2e
-    ///   selectors. Off by default — production builds don't
-    ///   pollute the DOM.
-    ///
-    /// Cost: one FFI hop per call. `node_id` is invoked from
-    /// every `apply_style` / `apply_styled_states` /
-    /// `set_animated_*` / `on_node_unstyled`. If this ever
-    /// becomes a measurable bottleneck, a safer cache scheme
-    /// — e.g. keying by `Rc<Node>` for paths that own one —
-    /// would restore the fast path without the correctness hole.
-    /// Not measured yet; see `tests/web_perf.rs` for the
-    /// benchmark when it lands.
     /// Attach `closure` to `target` for `event` and keep it in the node's
     /// teardown record, so the listener is detached (not merely orphaned)
     /// when the node is torn down. The one way to register a per-node
@@ -2017,19 +1918,27 @@ impl WebBackend {
         self.state_listeners.entry(id).or_default().push(TrackedListener(listener));
     }
 
+    /// Assigns a stable per-Node id we use as a key in `dynamic`,
+    /// `state_listeners`, `animated_states`, and friends.
+    ///
+    /// Identity is keyed by the underlying JS object — multiple
+    /// Rust `web_glue::dom::Node` wrappers around the same DOM element
+    /// always resolve to the same id. Every call goes through the
+    /// JS-side `WeakMap<Node, u32>` (`runtime/js/node_ids.js`), which
+    /// auto-clears entries when DOM elements are GC'd.
+    ///
+    /// There is deliberately no Rust-side cache: the framework freely
+    /// constructs fresh wrappers (e.g. when filling a `Ref<ViewHandle>`'s
+    /// `Rc<dyn Any>`), and the allocator readily reuses a freed wrapper's
+    /// address for an unrelated one, so a pointer-keyed cache returns a
+    /// stale id and leaks per-node state across DOM elements. Cost: one
+    /// FFI hop per call.
+    ///
+    /// With the `debug-node-ids` feature on, the id is mirrored outward
+    /// as a `data-idealyst-id="N"` attribute on Elements for devtools /
+    /// e2e selectors.
     pub(crate) fn node_id(&mut self, node: &Node) -> u32 {
-        // No Rust-side pointer cache: the framework regularly
-        // constructs fresh `web_glue::dom::Node` wrappers around the same
-        // DOM element (e.g. when filling a `Ref<ViewHandle>`'s
-        // `Rc<dyn Any>`), and the wrapper's heap address has no
-        // relationship to the underlying JS object. The Rust
-        // allocator readily reuses freed wrapper addresses for
-        // unrelated wrappers, so a pointer-keyed cache returns a
-        // stale id the moment a fresh wrapper recycles an address
-        // we've cached before — the exact bug that left only one
-        // band's gradient animating on the welcome example. We
-        // always go through the JS-side `WeakMap` (one FFI per
-        // call) and trust *that* as the source of truth.
+        // No Rust-side pointer cache — see the doc above.
         self.ensure_node_id_shim();
         if self.node_id_fn.is_none() {
             let window = web_glue::dom::window().expect("no window");
@@ -2195,16 +2104,13 @@ impl WebBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Backend trait impl. Each method delegates to the matching primitive
-// module (or to one of the style/defaults helpers on `WebBackend`).
-// Keep this thin — anything substantial belongs in the primitive's file.
+// The backend mechanism, as inherent `*_impl` methods. Each delegates to the
+// matching primitive module (or to one of the style/defaults helpers on
+// `WebBackend`); keep it thin — anything substantial belongs in the
+// primitive's file. `newcore.rs` adapts these onto `runtime_scene::Host` +
+// the `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
+// method; the `_impl` suffix keeps the adapter's call sites unambiguous.
 // ---------------------------------------------------------------------------
-
-// The backend mechanism, as inherent methods (runtime v2: the `Backend`
-// mega-trait is gone). Bodies are verbatim what the trait impl carried;
-// `newcore.rs` adapts them onto `runtime_scene::Host` + the
-// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
-// method. `_impl` suffix keeps the adapter's call sites unambiguous.
 impl WebBackend {
 
     pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
@@ -2361,8 +2267,8 @@ impl WebBackend {
 
     pub(crate) fn create_element_impl(&mut self, tag: &str) -> Node {
         // Cursor-aware: during hydration, adopt the matching SSR element
-        // (so an External handler built through the Backend reuses the
-        // server's DOM rather than bypassing it via raw `web_sys`).
+        // (so a registry handler building through `create_element` reuses
+        // the server's DOM rather than creating a duplicate).
         if let Some(el) = self.hydrate_next(tag) {
             return el.unchecked_into::<web_glue::dom::Node>();
         }
@@ -2386,10 +2292,8 @@ impl WebBackend {
         }
     }
 
-    /// Set the HTML `id` attribute on the underlying element. Used
-    /// by `Element::Lazy`'s web handler to give the placeholder
-    /// container a stable id the chunk's `mount_chunk` can root its
-    /// own `WebBackend` against.
+    /// Set the HTML `id` attribute on the underlying element — a stable,
+    /// `getElementById`-findable id (`DocumentOps::attach_html_id`).
     pub(crate) fn attach_html_id_impl(&self, node: &Node, id: &str) {
         use web_glue::JsCast;
         if let Some(el) = node.dyn_ref::<web_glue::dom::Element>() {
@@ -2410,8 +2314,8 @@ impl WebBackend {
         use web_glue::JsCast;
         // `set_property` handles CSS custom properties (`--drawer-width`)
         // and normal declarations alike, and merges into the element's
-        // existing inline style rather than clobbering it (the walker's
-        // `apply_style` swaps the *class* attribute, not inline style, so
+        // existing inline style rather than clobbering it (`apply_style`
+        // swaps the *class* attribute, not inline style, so
         // these coexist).
         if let Some(el) = node.dyn_ref::<web_glue::dom::HtmlElement>() {
             let _ = el.style().set_property(prop, value);
@@ -2576,7 +2480,7 @@ impl WebBackend {
     // directly, so keyed `Each` reconciliation runs in place — unchanged
     // rows keep their nodes (and their render scope), removed rows are
     // detached one-by-one, and reorders move existing nodes rather than
-    // rebuilding. Without this the framework falls back to full rebuild.
+    // rebuilding. Reported to the scene as `Host::supports_splice`.
     pub(crate) fn supports_child_splice_impl(&self) -> bool {
         true
     }
@@ -2678,12 +2582,11 @@ impl WebBackend {
     }
 
     pub(crate) fn supports_js_text_bindings_impl(&self) -> bool {
-        // True iff the variant has installed the text batcher (which
-        // also pre-injects the bindings shim and sets
-        // `WEB_BACKEND_HANDLE`). Without that, the signal-change
-        // notifier closure has no way back to `&mut self` and the
-        // JS-side update path wouldn't fire — better to fall back
-        // to the Rust Effect.
+        // True iff a global self-handle is installed in
+        // `WEB_BACKEND_HANDLE` (`install_global_self`). Without it, the
+        // signal-change notifier closure has no way back to `&mut self`
+        // and the JS-side update path wouldn't fire — better to fall
+        // back to the Rust Effect.
         WEB_BACKEND_HANDLE.with(|s| s.borrow().is_some())
     }
 
@@ -2695,10 +2598,8 @@ impl WebBackend {
         initial_values: &[&str],
         stringifiers: &[std::rc::Rc<dyn Fn() -> String>],
     ) {
-        // Delegates to the inherent method on `WebBackend`. The
-        // inherent method exists separately because it predates the
-        // trait-method (and is also useful directly for code paths
-        // that hold a concrete `&mut WebBackend`).
+        // Delegates to the inherent method on `WebBackend`, which code
+        // holding a concrete `&mut WebBackend` can also call directly.
         WebBackend::register_reactive_text_binding(
             self,
             text_id,
@@ -3098,7 +2999,6 @@ impl WebBackend {
         _payload: &Rc<dyn std::any::Any>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> Node {
-        // Runtime v2: there is no backend-side External registry any more.
         // Third-party primitives register a payload handler on the scene
         // `Registry` (`runtime_scene::Registry::register`), which dispatches
         // BEFORE reaching a backend cap, so this method is only ever the
@@ -3119,10 +3019,7 @@ impl WebBackend {
     }
 
     pub(crate) fn release_external_impl(&mut self, _node: &Node) {
-        // The web backend has no per-external bookkeeping today.
-        // Future hooks (e.g. per-instance event-listener cleanup)
-        // would land here, queried by `data-external-id` like
-        // portals/virtualizers/graphics.
+        // The web backend keeps no per-external bookkeeping.
     }
 
     pub(crate) fn apply_presence_impl(
@@ -3259,20 +3156,19 @@ impl WebBackend {
         self.impl_set_animated_color(node, prop, value);
     }
 
-    /// Opt into the walker's batched-Repeat path. When the walker sees
-    /// a `Element::Repeat` whose rows are pure View+Text+static-style,
-    /// it builds a [`BackendBatch`] and ships it through
-    /// [`execute_batch`] instead of issuing per-row backend calls.
+    /// Opt into the batched-repeat path (`BatchOps`). When the repeat
+    /// handler sees static rows that are pure View+Text+static-style, it
+    /// builds a `BackendBatch` and ships it through `execute_batch`
+    /// instead of issuing per-row backend calls.
     pub(crate) fn supports_batched_repeat_impl(&self) -> bool {
         true
     }
 
     /// Resolve a content-keyed CSS class for a static `StyleRules`.
     /// Returns the cached class name if the rules were registered
-    /// (the walker calls `register_stylesheet` via
-    /// `style::ensure_registered_with` before invoking this), or
-    /// `None` if no cache hit — the walker then bails out of the
-    /// batch path for this Repeat and the per-call apply route mints
+    /// (the repeat handler registers the sheet before invoking this),
+    /// or `None` if no cache hit — the handler then bails out of the
+    /// batch path for this repeat and the per-call apply route mints
     /// a dynamic class through `impl_apply_style`.
     ///
     /// Returning `None` is the safe fallback. The batch path only
@@ -3327,10 +3223,9 @@ impl WebBackend {
 
     /// Execute the batch AND parent the row tops in one FFI round-trip.
     ///
-    /// Folds what used to be `execute_batch` + `insert_many` into one
-    /// shim invocation. The savings come from the per-child
-    /// `appendChild` calls — previously N FFI hops, now N pure JS
-    /// loop iterations inside the shim. Measured ~10 ms reduction
+    /// Folds `execute_batch` + `insert_many` into one shim invocation:
+    /// the per-child `appendChild` calls become N pure JS loop iterations
+    /// inside the shim instead of N FFI hops. Measured ~10 ms reduction
     /// per 100 k-row transition (~115 ms across the rebuild bench
     /// suite via the debug-stats phase counters). The benefit
     /// surfaces more clearly in the `worstFrame` metric than in
@@ -3476,9 +3371,9 @@ impl WebBackend {
     /// override `attach_states` to a no-op so the framework's
     /// signal-driven state machinery doesn't fire on web.
     ///
-    /// Why not listeners + signal-driven re-style? It causes wasm-
-    /// bindgen `WasmRefCell` re-entry crashes when DOM events fire
-    /// while a style is being applied, and the CSS path is both
+    /// Why not listeners + signal-driven re-style? It risks re-entrant
+    /// borrow crashes when DOM events fire while a style is being
+    /// applied, and the CSS path is both
     /// simpler and faster (browser tracks the state natively, no
     /// per-event Rust↔JS round trip).
     pub(crate) fn attach_states_impl(
@@ -3502,15 +3397,14 @@ impl WebBackend {
 
     pub(crate) fn make_view_handle_impl(&self, node: &Node) -> runtime_shared::ViewHandle {
         // Wrap the actual `web_glue::dom::Node` (not the trait-default
-        // `Rc<()>`), so framework helpers like `LayoutPlan` can
-        // downcast back to the concrete node and operate on it.
+        // `Rc<()>`), so code holding the handle can downcast back to the
+        // concrete node and operate on it.
         runtime_shared::ViewHandle::new(Rc::new(node.clone()), &WebViewOps)
     }
 
     pub(crate) fn make_text_handle_impl(&self, node: &Node) -> runtime_shared::TextHandle {
         // Same plumbing as `make_view_handle` for the text element so
-        // author-level animation drivers (welcome's `drive_color_text_av`)
-        // can downcast `text_ref.as_any()` to `web_glue::dom::Node` and write
+        // author-level animation drivers can downcast `text_ref.as_any()` to `web_glue::dom::Node` and write
         // `style.color` directly. Without this the typed handle stores
         // the trait-default `Rc<()>` and the downcast silently fails,
         // leaving text color frozen at its stylesheet value.
@@ -3783,11 +3677,11 @@ impl runtime_shared::ViewOps for WebViewOps {
                 callback(rect.width() as f32, rect.height() as f32);
                 // A ResizeObserver delivery is an author-code entry point
                 // like a timer or a DOM event: `on_layout` bodies write
-                // signals (`natural_height.set(h)`), which the new core
-                // only STAGES. Without this the write sat uncommitted
-                // until some unrelated event flushed (FRAMEWORK-NOTES
-                // #103). Same post-dispatch hook the scheduler fires
-                // after `after_ms` / rAF bodies — a no-op before boot.
+                // signals (`natural_height.set(h)`), which the world only
+                // STAGES. Without this the write sits uncommitted until
+                // some unrelated event flushes. Same post-dispatch hook
+                // the scheduler fires after `after_ms` / rAF bodies — a
+                // no-op before boot.
                 crate::dispatch_hook::fire_dispatch_hook();
         });
         let Ok(observer) = web_glue::dom::ResizeObserver::new(cb.as_js().unchecked_ref()) else {
@@ -3797,7 +3691,7 @@ impl runtime_shared::ViewOps for WebViewOps {
         // Move both into the cleanup closure so they live as long as
         // the subscription. Dropping the subscription drops the
         // observer (auto-disconnects via DOM ownership) and the JS
-        // closure (so the wasm-bindgen ref doesn't leak).
+        // closure (so the glue closure doesn't leak).
         runtime_shared::LayoutSubscription::new(move || {
             observer.disconnect();
             drop(cb);
@@ -3840,10 +3734,9 @@ fn view_rect_from_node(node: &dyn std::any::Any) -> Option<runtime_shared::Viewp
     })
 }
 
-/// Build a "not supported" placeholder element for an unregistered
-/// external primitive. Visible in dev so missing SDK bindings on this
-/// platform are obvious; user-space `has_external::<T>()` discovery is
-/// the supported way to render custom degradation instead.
+/// Build a "not supported" placeholder element for an external primitive
+/// whose SDK handler has no web leg (`create_external_impl`). Deliberately
+/// loud so a missing platform binding is obvious.
 fn external_placeholder_element(
     doc: &web_glue::dom::Document,
     type_name: &'static str,

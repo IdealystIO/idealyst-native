@@ -2,7 +2,7 @@
 //! diff is handled by `runtime/js/virtual_grid.js`.
 //!
 //! Sibling of [`virtualizer`](super::virtualizer); read that module's
-//! header for the closure-ownership contract (why the wasm-bindgen
+//! header for the closure-ownership contract (why the glue
 //! `Closure` handles are *owned* here rather than `.forget()`-ed, and
 //! why release is two-phase). Both apply verbatim.
 //!

@@ -1,29 +1,23 @@
 //! End-to-end Rust-authored reactive Roku app.
 //!
-//! Single `app()` function covering the Phase 2 reactivity surface:
+//! `app()` covers:
 //!
-//! - **Reactiveness**: a `count` signal threads through four
-//!   reactive `Text` labels via structured bindings. Each label has
-//!   its own `#[method]` transformer.
-//! - **if/else inside `#[method]`**: `parity_label`.
-//! - **`match` inside `#[method]`**: `status_label` — literal arms
-//!   + a `_` fallback. Transpiler lowers to chained
-//!   `if/else if/else`.
-//! - **`for` loop inside `#[method]`**: `sum_to`.
-//! - **`for` loop inside `ui! {}`**: the four carousel rows iterate
-//!   a `Signal<Vec<i32>>` with a `key =` clause — the keyed reactive
-//!   list form. (The generator-backend *count* sugar,
-//!   `for i in items_count(sig) { … }`, lowered to the structured
-//!   `Derived<usize>` wire binding + row-template cloning; that
-//!   surface is deferred until generator backends re-land, so the
-//!   rows now ship as an ordinary keyed list.)
-//! - **Button press**: `bind_press!(increment(count) => count)`
-//!   and `bind_press!(decrement(count) => count)`.
-//! - **Focus navigation across multiple buttons**: D-pad
-//!   left/right cycles; OK fires the focused button. The visual
-//!   highlight comes from the framework's `state hovered { ... }`
-//!   stylesheet overlay — same author API web uses for CSS
-//!   `:hover`, shipped to Roku as a per-state wire command.
+//! - **Theme switching**: a `theme` signal drives `install_themes`;
+//!   the "Theme" button's `on_click = next_theme(theme) => theme`
+//!   action runs a transpiled `#[method]` and writes the result back.
+//! - **`for` loop inside `ui! {}`**: four carousel rows iterate a
+//!   `Signal<Vec<i32>>` with a `key =` clause — the keyed reactive
+//!   list form.
+//! - **Focus highlight**: the button's `state hovered { ... }`
+//!   stylesheet overlay — same author API web uses for CSS `:hover`,
+//!   shipped to Roku as a per-state wire command and activated by
+//!   D-pad focus.
+//!
+//! The other `#[method]` fns below (`parity_label` if/else,
+//! `status_label` match, `sum_to` for-loop, …) are transpiler
+//! demos: every `#[method]` lands in the device's `methods.brs`
+//! whether or not `app()` references it. Likewise the `StatusBadge` /
+//! `BadgeEven` / `BadgeOdd` stylesheets are not mounted by `app()`.
 
 use backend_roku::method;
 use runtime_core::{
@@ -211,9 +205,8 @@ stylesheet! {
     }
 }
 
-// Per-bucket stylesheet for the `bind_switch!` demo — five
-// pre-built badges, each shown when the count_bucket method
-// returns its matching value.
+// Badge style for a `count_bucket`-keyed status line (not mounted by
+// `app()`).
 stylesheet! {
     pub StatusBadge<Theme> {
         base(_t) {
@@ -263,10 +256,7 @@ stylesheet! {
     }
 }
 
-// Two stylistically distinct badges; `bind_when!` picks one or the
-// other based on the parity of `count`. Same author syntax both
-// branches would use on any backend — Roku's runtime toggles
-// `.visible` between them.
+// Two stylistically distinct parity badges (not mounted by `app()`).
 stylesheet! {
     pub BadgeEven<Theme> {
         base(_t) {
@@ -357,17 +347,14 @@ pub fn sum_to(n: i32) -> i32 {
     total
 }
 
-/// Condition for `bind_when!` — structural reactivity. The two
-/// `then` / `else_` subtrees ship over the wire pre-built; the
-/// device-side runtime toggles which one is visible on every
-/// signal change.
+/// Parity condition (transpiler demo).
 #[method]
 pub fn is_even(n: i32) -> bool {
     n % 2 == 0
 }
 
-/// Discriminant for `bind_switch!`. Clamps the count into a
-/// small bucket so the switch arms cover every reachable value.
+/// Clamps a count into a small bucket (transpiler demo: chained
+/// `if/else if`).
 #[method]
 pub fn count_bucket(n: i32) -> i32 {
     if n <= 0 {
@@ -383,16 +370,13 @@ pub fn count_bucket(n: i32) -> i32 {
     }
 }
 
-/// Count source for `bind_repeat!`. Identity in this demo; in a
-/// real app you might `min(count, max)` here.
+/// Identity count source (transpiler demo).
 #[method]
 pub fn row_count(n: i32) -> i32 {
     n
 }
 
-/// Per-row label transpiled to BS. Each cloned row's synthetic
-/// row-index signal seeds this method's argument, so the cloned
-/// Label ends up displaying its own index.
+/// 1-based row label (transpiler demo).
 #[method]
 pub fn row_label(i: i32) -> i32 {
     i + 1
@@ -417,11 +401,7 @@ pub fn items_count(v: Vec<i32>) -> usize {
     v.len()
 }
 
-/// Per-row content derived from the same `Signal<Vec<i32>>`:
-/// looks up `v[i]` and returns the integer. The structured binding
-/// in the row template subscribes to BOTH `items` and the row-index
-/// signal, so mutating `items` (replacing the whole Vec via
-/// `items.set(...)`) re-fires every row with the new data.
+/// Looks up `v[i]` (transpiler demo: `Vec` indexing).
 #[method]
 pub fn item_at(v: Vec<i32>, i: i32) -> i32 {
     v[i as usize].clone()
@@ -447,11 +427,9 @@ pub fn app() -> Element {
         ],
     );
 
-    // Four independent data rails. Each one is its own
-    // `Signal<Vec<i32>>`; the `items_count` + `item_at` methods
-    // are generic over the signal they're called against, so the
-    // same #[method] pair drives every row. Mutating any one
-    // signal reactively repopulates only that carousel.
+    // Four independent data rails, each its own `Signal<Vec<i32>>`.
+    // Mutating any one signal reactively repopulates only that
+    // carousel.
     let trending: Signal<Vec<i32>> = signal(vec![1, 2, 3, 5, 8, 13, 21, 34, 55]);
     let recent: Signal<Vec<i32>> = signal(vec![10, 20, 30, 40, 50, 60, 70, 80]);
     let top_picks: Signal<Vec<i32>> = signal(vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);

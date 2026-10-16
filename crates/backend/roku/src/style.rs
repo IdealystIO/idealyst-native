@@ -85,11 +85,9 @@ pub(crate) fn length(l: &Length) -> WireLength {
         Length::Auto => WireLength::Auto,
         // The wire has no pill and is resolved before the client knows
         // the box — the case `FULL_RADIUS_FALLBACK_PX` exists for, and
-        // the same collapse `length_px` below already makes. This arm
-        // was missed when `Full` landed, and since every other arm is
-        // named the crate simply stopped compiling; a wildcard would
-        // have hidden that and the test below keeps the next variant
-        // loud in one place instead.
+        // the same collapse `length_px` below already makes. Every arm
+        // is named (no wildcard) so a new `Length` variant fails to
+        // compile here; the test below keeps it loud in one place.
         Length::Full => WireLength::Px(Length::FULL_RADIUS_FALLBACK_PX),
     }
 }

@@ -2,9 +2,9 @@
 //! image decoder reads neither SVG nor `data:` URIs: iOS and macOS
 //! (`UIImage`/`NSImage(data:)`) and Android (`BitmapFactory`).
 //!
-//! An `image("data:image/svg+xml,…")` used to draw an empty slot with no
-//! warning on every native backend while the web rendered it. This crate
-//! owns the missing pieces so every native backend behaves identically
+//! Without it, an `image("data:image/svg+xml,…")` draws an empty slot with
+//! no warning on native backends while the web renders it. This crate owns
+//! the missing pieces so every native backend behaves identically
 //! (CLAUDE.md §7):
 //!
 //! - [`parse_data_uri`] / [`classify`] — re-exported from

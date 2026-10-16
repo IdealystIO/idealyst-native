@@ -45,11 +45,8 @@
 //! [`newcore::render_email`] / [`newcore::render_email_with`] are the
 //! entry points; the backend's capability implementation (the
 //! `runtime_scene::Host` seam plus the 30 `runtime_vocabulary::caps`
-//! traits) lives in [`newcore`]. This crate carried a second,
-//! `Element`-walking `impl runtime_core::Backend` until the old core was
-//! removed; every method body moved into the capability impls verbatim,
-//! so the emitted HTML is unchanged — pinned against the old core's
-//! frozen output by `tests/newcore_golden.rs` + `tests/goldens/`.
+//! traits) lives in [`newcore`]. The emitted HTML is pinned by the
+//! committed goldens in `tests/goldens/` (`tests/newcore_golden.rs`).
 
 use runtime_shared::StyleRules;
 use std::cell::RefCell;
@@ -103,13 +100,12 @@ fn nref(n: HtmlNode) -> NodeRef {
 
 /// Append an author style, deduping an immediate re-application of
 /// value-identical rules. Reactive style delivery re-applies a node's
-/// rules without the node having "changed" — the old core's state
-/// re-fires and the new core's theme-cohort reapply (which re-delivers
-/// every registered node's rules on a token install during mount) both
-/// do this — and email's append-only model would otherwise duplicate
-/// the inline CSS (`background: X; width: Y; background: X; width: Y`).
+/// rules without the node having "changed" — the theme-cohort reapply
+/// re-delivers every registered node's rules on a token install during
+/// mount — and email's append-only model would otherwise duplicate the
+/// inline CSS (`background: X; width: Y; background: X; width: Y`).
 /// Visually harmless (CSS source order last-wins on equal rules) but it
-/// bloats every email and breaks old/new byte parity
+/// bloats every email and breaks the golden
 /// (`tests/newcore_golden.rs::corpus_tokens_and_dropped_overlays`).
 /// A genuinely CHANGED style still appends; later entries keep winning
 /// via source order.
@@ -264,11 +260,11 @@ fn escape_attr(s: &str, out: &mut String) {
 }
 
 // ---------------------------------------------------------------------------
-// Microtask scheduler — identical rationale to backend-ssr: a reactive
-// `when`/`each` (or deferred build) defers work via `schedule_microtask`,
-// which must run AFTER the mount borrow is released, not inline (double
-// borrow). We queue microtasks and drain them post-mount. Frames/timers are
-// dropped: a static email has no animation loop.
+// Microtask scheduler — same rationale as backend-ssr: handlers defer
+// work via `schedule_microtask`, which must run after mount with no
+// backend borrow held, not inline. We queue microtasks and drain them
+// post-mount. Frames/timers are dropped: a static email has no animation
+// loop.
 // ---------------------------------------------------------------------------
 mod scheduler {
     use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
@@ -346,7 +342,8 @@ impl EmailBackend {
     }
 
     /// Serialize the body tree to an HTML fragment (inline styles), rooted at
-    /// the node passed to [`Backend::finish`]. Empty if nothing mounted.
+    /// the node passed to [`runtime_vocabulary::caps::LifecycleOps::finish`].
+    /// Empty if nothing mounted.
     pub fn body_html(&self) -> String {
         let mut out = String::new();
         if let Some(root) = &self.root {
@@ -459,8 +456,8 @@ mod tests {
     use super::*;
     use runtime_shared::accessibility::AccessibilityProps;
     use runtime_shared::{Color, Length, StyleRules, TokenEntry, TokenValue, Tokenized};
-    // The mechanism now lives on the capability traits (the `Backend`
-    // mega-trait is gone), so the unit tests call it through them.
+    // The mechanism lives on the capability traits, so the unit tests
+    // call it through them.
     use runtime_vocabulary::caps::{LifecycleOps, StyleOps, TextOps, ViewOps};
 
     /// `view { text }` realized through the real vocabulary handlers
@@ -558,8 +555,8 @@ mod tests {
     /// A second `install_tokens` (a base theme, then an extension's token
     /// block, delivered in separate flushes) adds to the active set, the
     /// later value winning per name — the web backend's `:root`
-    /// `setProperty` semantics. Email used to REPLACE the set, so a token
-    /// from the first install fell back to its literal default.
+    /// `setProperty` semantics. Replacing the set instead makes a token
+    /// from the first install fall back to its literal default.
     #[test]
     fn regression_second_install_tokens_keeps_the_first_installs_tokens() {
         let mut b = EmailBackend::new();

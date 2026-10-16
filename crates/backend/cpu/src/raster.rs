@@ -116,8 +116,7 @@ pub fn fill_rect_blended<S: Surface>(
 ///
 /// `radii` is `[tl, tr, br, bl]` in pixels. Radii are clamped so the
 /// sum on any side doesn't exceed that side's length (mirrors CSS
-/// behavior + matches the iOS clamp described in
-/// `project_ios_cornerradius_unclamped`).
+/// behavior and the iOS backend's clamp).
 pub fn fill_rounded_rect_blended<S: Surface>(
     surface: &mut S,
     rect: Rect,
@@ -390,8 +389,7 @@ fn rounded_rect_contains(
 }
 
 /// Clamp corner radii so opposing radii don't sum to more than the
-/// side length. Same rule iOS uses in
-/// `project_ios_cornerradius_unclamped`: without this an over-large
+/// side length. Same rule the iOS backend uses: without this an over-large
 /// radius produces a degenerate shape (nothing renders, or the AA
 /// hits the wrong corner first).
 fn clamp_radii(radii: [f32; 4], w: f32, h: f32) -> [f32; 4] {

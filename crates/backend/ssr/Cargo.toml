@@ -11,9 +11,9 @@ license.workspace = true
 serve = ["dep:tiny_http"]
 
 [dependencies]
-# The permanent substrate both cores compiled against (style engine,
-# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
-# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+# The shared substrate (style engine, tokens, prop/handle structs,
+# scheduling, viewport). Backends never depend on `runtime-core` (the
+# author surface).
 runtime-shared = { workspace = true }
 css = { workspace = true }
 # Only with the `serve` feature. Same minimal HTTP lib the static dev
@@ -28,8 +28,8 @@ runtime-vocabulary = { workspace = true }
 # stack-navigator/tests/ssr.rs).
 
 [dev-dependencies]
-# Frozen old-core output for the cross-core parity corpus, so the gate
-# survives the deletion of the old core. See tests/goldens/README.md.
+# Committed golden output the parity tests compare against. See
+# tests/goldens/README.md.
 parity-goldens = { path = "../../dev/parity-goldens" }
 # `resolve_bundle_module` tests build synthetic `pkg/` dirs.
 tempfile = "3"

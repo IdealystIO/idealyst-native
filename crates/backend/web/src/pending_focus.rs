@@ -4,9 +4,8 @@
 //! `HTMLElement.focus()` on an element that is not in the document does
 //! nothing — no error, no deferred effect. Realize builds a subtree before
 //! inserting it, and a modal's content mounts into a portal, so a `focus()`
-//! from `autofocus` or an `on_handle` fill right after mount used to land
-//! on a disconnected node and vanish (CrewForge's command palette worked
-//! around it with a 100 ms timer).
+//! from `autofocus` or an `on_handle` fill right after mount would land
+//! on a disconnected node and vanish.
 //!
 //! A focus on a disconnected field is recorded here instead. The backend's
 //! attach points (`insert`, `insert_many`, `insert_at`, the root mount)

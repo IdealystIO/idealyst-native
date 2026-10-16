@@ -2,11 +2,10 @@
 //
 // Companion to the Rust web-backend's style apply path. Every
 // `apply_style` / `apply_styled_states` call would normally
-// `element.setAttribute("class", className)` from wasm via
-// wasm-bindgen — one wasm→JS boundary crossing per node. At
-// reactive-style scale (one signal fanning out to N nodes), that
-// became N FFI hops per signal write, ~60 ms of pure boundary
-// crossing for N=100k.
+// `element.setAttribute("class", className)` from wasm — one
+// wasm→JS boundary crossing per node. At reactive-style scale (one
+// signal fanning out to N nodes), that is N FFI hops per signal
+// write, ~60 ms of pure boundary crossing for N=100k.
 //
 // This shim moves the fan-out entirely to JS:
 //

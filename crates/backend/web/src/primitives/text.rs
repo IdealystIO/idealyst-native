@@ -1,4 +1,4 @@
-//! `Element::Text` — a `<span>` so style application via `class`
+//! The `text` primitive — a `<span>` so style application via `class`
 //! works uniformly. A raw DOM text node has no `class`/`style`
 //! attributes, so styling would be silently dropped.
 
@@ -88,9 +88,9 @@ pub(crate) fn create_styled(b: &mut WebBackend, runs: &[runtime_shared::TextRun]
         // SSR rendered the identical run structure (same author tree,
         // shared css emitter) — adopt the outer span wholesale,
         // children included. `_skip_subtree` because the run spans are
-        // backend-built internals the walker never visits: a plain
+        // backend-built internals the scene never visits: a plain
         // `hydrate_next` would land the cursor on the first run span
-        // and the next walker step would mismatch against it.
+        // and the next `create_*` would mismatch against it.
         return span.unchecked_into::<Node>();
     }
     let outer = b

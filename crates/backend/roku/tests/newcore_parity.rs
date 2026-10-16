@@ -1,7 +1,7 @@
-//! COMMAND-STREAM byte-parity tests for the Roku backend: the emitted
-//! wire stream must match the stream the OLD core emitted (the strongest
-//! available gate — there is no device/thin-client to render against, so
-//! the serialized wire stream IS the observable output), plus op-level
+//! COMMAND-STREAM golden-snapshot tests for the Roku backend: the emitted
+//! wire stream must match the committed golden byte-for-byte (there is no
+//! device/thin-client to render against, so the serialized wire stream IS
+//! the observable output), plus op-level
 //! coverage of the embedder-driven flush discipline (device event →
 //! HandlerTable dispatch → staged writes → `settle()` → emitted
 //! commands).
@@ -15,16 +15,13 @@
 //! process-global/first-wins, but the queue state is thread-local, so
 //! each test thread drains only its own tasks.
 //!
-//! # The frozen corpus is the contract
+//! # The committed goldens are the contract
 //!
-//! Every gate compares against a **frozen old-core command stream**
-//! committed under `tests/goldens/` (indented JSON), written before the
-//! old walker was deleted. See [`check_new_stream`] for the ONE
-//! sanctioned divergence already baked into those artifacts. A mismatch
-//! is a real behavior change, NOT a stale artifact:
-//! `IDEALYST_FREEZE_GOLDENS=1` can now only RE-BASELINE against the
-//! current renderer, permanently discarding the old core's testimony —
-//! see `tests/goldens/README.md`.
+//! Every gate compares against a command stream committed under
+//! `tests/goldens/` (indented JSON) — a snapshot of the current
+//! renderer's output. A mismatch is a real behavior change; re-freeze
+//! with `IDEALYST_FREEZE_GOLDENS=1` only for an intended change — see
+//! `tests/goldens/README.md`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -100,7 +97,7 @@ fn fresh_backend() -> Rc<RefCell<RokuBackend>> {
     Rc::new(RefCell::new(RokuBackend::new()))
 }
 
-/// Mount on the NEW core (`newcore::start`, vocabulary handlers).
+/// Mount through `newcore::start` (vocabulary handlers).
 fn mount_new(
     build: impl FnOnce() -> runtime_scene::Element,
 ) -> (Rc<RefCell<RokuBackend>>, backend_roku::newcore::NewCoreApp) {
@@ -119,14 +116,14 @@ fn drain_json(backend: &Rc<RefCell<RokuBackend>>) -> (Vec<RokuCommand>, String) 
 }
 
 // ---------------------------------------------------------------------------
-// Frozen-artifact gate
+// Golden gate
 // ---------------------------------------------------------------------------
 
 fn goldens() -> parity_goldens::Goldens {
     parity_goldens::Goldens::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Re-serialize a compact command stream as indented JSON so the frozen
+/// Re-serialize a compact command stream as indented JSON so the golden
 /// artifacts are reviewable in a diff. `serde_json::Value` round-trips
 /// the stream and the key order is canonical (BTreeMap) on both sides,
 /// so the comparison stays exact — with ONE substitution, below.
@@ -135,15 +132,14 @@ fn goldens() -> parity_goldens::Goldens {
 /// `cache_key` the backend derives from the icon's `paths` static
 /// ADDRESS (`crates/backend/roku/src/lib.rs`,
 /// `data.paths.as_ptr() as u64 ^ filled`). That is stable within a
-/// process — which is why the in-process old-vs-new compare above uses
-/// the raw value and pins cross-core identity — but it changes between
-/// processes under ASLR, so a raw value cannot be frozen. Instead each
+/// process but changes between processes under ASLR, so a raw value
+/// cannot be frozen. Instead each
 /// DISTINCT cache_key is replaced by `#0`, `#1`, … in first-appearance
 /// order. That preserves everything the value means to a consumer (icon
 /// identity and aliasing: same path set ⇒ same key, `filled` variants ⇒
 /// different keys, ordering of first use) while being process-stable.
-/// This is an artifact-serialization concern, NOT a widened
-/// sanctioned divergence — no cross-core difference is being hidden.
+/// This is an artifact-serialization concern only — no behavior
+/// difference is being hidden.
 fn pretty_stream(json: &str) -> String {
     let mut v: serde_json::Value = serde_json::from_str(json).expect("stream is valid JSON");
     let mut seen: Vec<u64> = Vec::new();
@@ -183,14 +179,12 @@ fn intern_cache_keys(v: &mut serde_json::Value, seen: &mut Vec<u64>) {
     }
 }
 
-/// The gate: the serialized command stream must match the frozen
-/// old-core stream byte-for-byte. The frozen artifacts already have the
-/// ONE sanctioned old→new divergence stripped — the old walker emitted a
-/// no-op `ClearChildren` on a VIRGIN reactive anchor before the first
-/// population of a `when`/`each` region and the new core deliberately
-/// skips it (divergence class #2 in docs/migrating-to-runtime-v2.md;
-/// invisible to the device, visible in a stream). Nothing else was ever
-/// normalized: every other op is a hard invariant.
+/// The gate: the serialized command stream must match the committed
+/// golden byte-for-byte. Only `cache_key` is normalized (see
+/// [`pretty_stream`]); every other op is a hard invariant. (The runtime
+/// deliberately emits no `ClearChildren` on a VIRGIN reactive anchor
+/// before the first population of a `when`/`each` region, so none
+/// appears in the goldens.)
 fn check_new_stream(name: &str, new_json: &str) {
     goldens().check_text(name, &pretty_stream(new_json));
 }
@@ -206,8 +200,8 @@ fn button_handler(cmds: &[RokuCommand], label: &str) -> HandlerId {
 }
 
 /// Clone a unit handler's closure out of the HandlerTable so it can be
-/// invoked with NO backend borrow held (the old core's synchronous
-/// effects re-borrow the backend to emit follow-up commands).
+/// invoked with NO backend borrow held (effects that run during the
+/// callback may re-borrow the backend to emit follow-up commands).
 fn unit_handler(backend: &Rc<RefCell<RokuBackend>>, id: HandlerId) -> Rc<dyn Fn()> {
     let b = backend.borrow();
     let table = b.handlers();
@@ -241,14 +235,13 @@ fn flex_rules() -> StyleRules {
     }
 }
 
-/// Static-sheet application used on BOTH sides. Roku reports
+/// Static-sheet application for the test scenes. Roku reports
 /// `handles_states_natively() == true`, so the framework routes every
 /// sheet application — overlays or not — through `apply_styled_states`
-/// (one `ApplyStyleStates` wire op). The new side must ride the same
-/// route: a raw-rules `.style(rules)` would take the plain
-/// `apply_style` path and emit a different (equally correct, but
-/// different) op, which is a scene-equivalence mismatch, not a core
-/// divergence.
+/// (one `ApplyStyleStates` wire op). The scenes ride the same route: a
+/// raw-rules `.style(rules)` would take the plain `apply_style` path and
+/// emit a different (equally correct, but different) op than the
+/// goldens record.
 fn static_style(rules: StyleRules) -> StyleApplication {
     StyleApplication::new(Rc::new(StyleSheet::r#static(rules)))
 }
@@ -274,8 +267,8 @@ fn hover_sheet() -> Rc<StyleSheet> {
 /// from the paths slice ADDRESS (stable-identity contract — real icon
 /// sets are `static`s). A `const` re-materializes its value at every
 /// use site, promoting a fresh anonymous array per mention and forking
-/// the cache_key between the two mounts; a `static` has one fixed
-/// initializer, so both cores read the same pointer.
+/// the cache_key between mentions; a `static` has one fixed
+/// initializer, so every use reads the same pointer.
 static TEST_ICON: runtime_shared::primitives::icon::IconData =
     runtime_shared::primitives::icon::IconData {
         view_box: (24, 24),
@@ -285,16 +278,14 @@ static TEST_ICON: runtime_shared::primitives::icon::IconData =
     };
 
 // ===========================================================================
-// 1. Full-scene stream snapshot: same tree, both cores, identical bytes
+// 1. Full-scene stream snapshot
 // ===========================================================================
 
-/// The rule-7 gate for this port: a torture scene (nested flex-styled
-/// views, text, button, toggle, slider, text input, pressable, image,
-/// icon, activity indicator, scroll view, state-overlay styling) built
-/// on the OLD core (walker + `runtime_shared::mount`) and the NEW core
-/// (`newcore::start`, vocabulary handlers) must serialize to
-/// byte-identical command streams — NodeIds, HandlerIds, style
-/// payloads, ordering, everything.
+/// A torture scene (nested flex-styled views, text, button, toggle,
+/// slider, text input, pressable, image, icon, activity indicator,
+/// scroll view, state-overlay styling) must serialize to exactly the
+/// golden command stream — NodeIds, HandlerIds, style payloads,
+/// ordering, everything.
 #[test]
 fn newcore_full_scene_command_stream_parity() {
     let (new_backend, app) = mount_new(|| {
@@ -353,8 +344,8 @@ fn newcore_full_scene_command_stream_parity() {
 // ===========================================================================
 
 /// Portals emit a `CreatePortal` wire op with the placement intent and
-/// an on_dismiss HandlerId; both cores must mint the same ids and
-/// payload bytes.
+/// an on_dismiss HandlerId; the ids and payload bytes must match the
+/// golden.
 #[test]
 fn newcore_portal_command_stream_parity() {
     use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
@@ -420,11 +411,10 @@ fn newcore_dyn_branch_parity_both_initial_states() {
 // 4. Keyed list + reorder — mount stream AND the post-event follow-up
 // ===========================================================================
 
-/// Keyed rows on both cores, then a device-event-driven reorder (a
-/// button handler sets the items signal): the mount streams must match
-/// byte-for-byte AND the follow-up streams after the SAME handler
-/// invocation must match byte-for-byte (old = synchronous walker
-/// reconcile, new = staged writes committed by `settle()`).
+/// Keyed rows, then a device-event-driven reorder (a button handler sets
+/// the items signal): the mount stream AND the follow-up stream after
+/// the handler invocation (staged writes committed by `settle()`) must
+/// match their goldens byte-for-byte.
 #[test]
 fn newcore_keyed_list_reorder_follow_up_stream_parity() {
     let (new_backend, app) = mount_new(|| {
@@ -464,13 +454,12 @@ fn newcore_keyed_list_reorder_follow_up_stream_parity() {
 // 5. Interaction — device event → staged writes → settle() → commands
 // ===========================================================================
 
-/// REGRESSION (embedder flush discipline): on the new core a handler's
+/// REGRESSION (embedder flush discipline): a handler's
 /// `Signal::set` is STAGED — the command queue stays empty until
 /// `settle()` commits. The caps layer wraps every author callback
 /// before registration, so the closure the embedder pulls from the
 /// HandlerTable already carries the flush scheduling; the follow-up
-/// stream after `settle()` must be byte-identical to the old core's
-/// after the same handler invocation.
+/// stream after `settle()` must match its golden.
 #[test]
 fn newcore_button_press_stays_staged_until_settle_then_matches_old() {
     let (new_backend, app) = mount_new(|| {
@@ -551,10 +540,7 @@ fn newcore_stop_makes_late_handler_fire_and_settle_no_ops() {
 /// Roku's structural seam must stay ANCHORED (`false`): the wire's
 /// `Slot`/anchor replay model on the BrightScript side assumes anchor
 /// nodes exist (`CreateReactiveAnchor` + `ClearChildren` rebuilds), and
-/// there are no `RemoveChild`/`InsertAt` wire ops at all. The value used
-/// to arrive from a `Backend` trait DEFAULT (`supports_child_splice`);
-/// `Host` makes it REQUIRED, so `newcore.rs` now carries an explicit body
-/// reproducing it — see docs/runtime-v2-deletion-baseline.md §2.2. A flip
+/// there are no `RemoveChild`/`InsertAt` wire ops at all. A flip
 /// would change anchor placement AND break the device runtime's teardown
 /// walk, so pin the literal.
 #[test]

@@ -1,4 +1,4 @@
-//! `Element::Graphics` — a `<canvas>` element exposed as a
+//! The `graphics` primitive — a `<canvas>` element exposed as a
 //! `raw_window_handle` surface provider.
 //!
 //! No GPU library lives in the backend now. The previous design
@@ -23,7 +23,7 @@
 //! 4. A `webglcontextlost` listener fires `on_lost`. (Web doesn't
 //!    have a true "surface destroyed" concept; context-lost is the
 //!    closest analogue.)
-//! 5. `release` (called from `Backend::release_graphics` when the
+//! 5. `release` (called from `GraphicsOps::release_graphics` when the
 //!    parent scope drops) disconnects the observer, drops the
 //!    closures, and removes the per-canvas instance entry.
 
@@ -62,8 +62,8 @@ use web_glue::dom::Node;
 /// crate holds the canvas as a web-glue handle — a different slab — so a
 /// pointer to it named whatever object sat at the same index in
 /// wasm-bindgen's heap: canvas-vello found no canvas and drew nothing, and
-/// wgpu would have bound a surface to the wrong object (broken since the
-/// web-glue port, phase 2b; found by `hybrid_web_e2e`). The id form,
+/// wgpu would have bound a surface to the wrong object (pinned by
+/// `hybrid_web_e2e`). The id form,
 /// `WebWindowHandle`, is the handle raw-window-handle defines for exactly
 /// this — the canvas carries `data-raw-handle="<id>"` and the consumer looks
 /// it up in the document (wgpu does so itself) — so it needs no value
@@ -486,7 +486,7 @@ struct WebGraphicsOps;
 impl GraphicsOps for WebGraphicsOps {}
 
 // ---------------------------------------------------------------------------
-// release — called from Backend::release_graphics on unmount
+// release — called from GraphicsOps::release_graphics on unmount
 // ---------------------------------------------------------------------------
 
 pub(crate) fn release(b: &mut WebBackend, node: &Node) {

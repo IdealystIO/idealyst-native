@@ -26,20 +26,20 @@ use web_glue::{JsCast, JsValue};
 use web_glue::dom::{MessageEvent, WebSocket};
 
 // ---------------------------------------------------------------------------
-// Core selection — old registry vs the new-core vocabulary registry
+// Verb routing — the vocabulary registry vs the shared bridge
 // ---------------------------------------------------------------------------
 
-/// Dispatch one bridge verb against whichever core is running.
+/// Dispatch one bridge verb.
 ///
-/// A new-core boot (`newcore::start`) leaves the OLD registry empty —
-/// routing verbs there would answer `find_element` with `null` instead
-/// of an error, silently blinding every driver. So when the new-core
-/// app is booted, verbs go to `runtime_vocabulary::robot::bridge`
-/// (wire-identical responses); verbs that registry doesn't own
-/// (`get_logs`, custom commands like the dev-server's) fall back to the
-/// old dispatch, whose log/custom machinery is registry-independent.
-/// The fallback keys on the exact `unknown command:` marker so a REAL
-/// verb error (missing argument, deferred seam) is never masked.
+/// Once an app is booted (`newcore::start`), verbs go to
+/// `runtime_vocabulary::robot::bridge`, which owns the element registry;
+/// routing them to `runtime_shared::robot::bridge` would answer
+/// `find_element` with `null` instead of an error, silently blinding every
+/// driver. Verbs the vocabulary bridge doesn't own (`get_logs`, custom
+/// commands like the dev-server's) fall back to the shared bridge, whose
+/// log/custom machinery is registry-independent. The fallback keys on the
+/// exact `unknown command:` marker so a REAL verb error (missing argument,
+/// deferred seam) is never masked.
 fn dispatch_verb(cmd: &str, args: &serde_json::Value) -> Result<String, String> {
         if crate::newcore::is_booted() {
         return match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
@@ -52,8 +52,8 @@ fn dispatch_verb(cmd: &str, args: &serde_json::Value) -> Result<String, String> 
     runtime_shared::robot::bridge::invoke_command(cmd, args)
 }
 
-/// The live-update revision for the push pump — the new-core registry's
-/// counter when that core is booted, the old one otherwise.
+/// The live-update revision for the push pump — the vocabulary registry's
+/// counter once an app is booted, the shared bridge's otherwise.
 fn robot_revision() -> u64 {
         if crate::newcore::is_booted() {
         return runtime_vocabulary::robot::current_revision();
@@ -64,7 +64,7 @@ fn robot_revision() -> u64 {
 /// Install the vocabulary robot driver env over this host's boot seams:
 /// queries enter the mounted world (label_fn reads world signals),
 /// actions settle via `flush_sync` (staged writes commit before the
-/// verb returns — the old core's synchronous-apply parity). Called by
+/// verb returns, so a follow-up query sees them). Called by
 /// `newcore::start_in` once the flush world exists.
 pub(crate) fn install_newcore_driver_env() {
     runtime_vocabulary::robot::install_driver_env(
@@ -565,7 +565,7 @@ mod candidate_tests {
 }
 
 // ===========================================================================
-// Browser-side regression tests (new-core transport adapter). Run with
+// Browser-side regression tests (transport adapter). Run with
 // plain cargo, not wasm-pack (see the `tests.rs` module docs):
 //   cd crates/backend/web
 //   CHROMEDRIVER=<path> cargo test --target wasm32-unknown-unknown --features robot --lib
@@ -648,13 +648,13 @@ mod tests {
         drop(hook);
     }
 
-    /// Regression (conformance-wave transport adapter): the relay verb
-    /// loop resolves a NEW-core node end-to-end — `find_element` by
+    /// Regression: the relay verb loop resolves a booted app's node
+    /// end-to-end — `find_element` by
     /// test_id against the vocabulary registry, `click` runs the author
     /// callback, the settle commits the staged write, and the follow-up
     /// query reads the post-click reactive label THROUGH the driver
     /// env's `World::enter`. Fails if `dispatch_verb` routes a booted
-    /// new-core app to the (empty) old registry, or if the driver env
+    /// app to the shared bridge's (empty) registry, or if the driver env
     /// isn't installed (label read would panic / stay stale).
     #[wasm_bindgen_test]
     async fn regression_verb_loop_resolves_newcore_node_end_to_end() {
@@ -676,7 +676,7 @@ mod tests {
                 .build()
         });
 
-        // find_element resolves through the NEW registry.
+        // find_element resolves through the vocabulary registry.
         let found = dispatch_verb("find_element", &json!({"test_id": "inc"}))
             .expect("find_element");
         let parsed: serde_json::Value = serde_json::from_str(&found).unwrap();
@@ -701,15 +701,15 @@ mod tests {
             "click settled synchronously and the entered query read the new label"
         );
 
-        // The push pump keys on the NEW registry's revision when booted.
+        // The push pump keys on the vocabulary registry's revision when booted.
         assert!(robot_revision() > 0, "revision tracks new-core registrations");
 
-        // Registry-independent verbs fall back to the old dispatch.
+        // Registry-independent verbs fall back to the shared bridge.
         assert!(dispatch_verb("ping", &json!({})).is_ok());
 
         // Drain the batched-text microtask before stop() so no stale
         // flush lands inside a later test's boot window (test hygiene —
-        // same await the newcore boot tests do).
+        // same await the `newcore.rs` boot tests do).
         let promise = web_glue::js::Promise::resolve(&web_glue::JsValue::UNDEFINED);
         let _ = web_glue::JsFuture::new(&promise).await;
         crate::newcore::stop();
@@ -719,7 +719,7 @@ mod tests {
     /// --web --local`) went to `console.info` only, and the robot's
     /// `get_logs` answered `[]` — nothing fed `robot::logs`, so app
     /// diagnostics were unreadable through the robot. Drives the exact
-    /// web path: the `console`-backed `WebLogger` installed, a new-core
+    /// web path: the `console`-backed `WebLogger` installed, an
     /// app booted (so `dispatch_verb` tries the vocabulary bridge first
     /// and falls back for `get_logs`), a line logged from the app's
     /// build and one after mount, then `get_logs` through `dispatch_verb`.
@@ -786,14 +786,13 @@ mod tests {
         crate::newcore::stop();
     }
 
-    /// The P5-remainder verbs resolve against a booted new-core app
-    /// through the SAME `dispatch_verb` routing (no transport edits):
+    /// The method / watch / navigator verbs resolve against a booted app
+    /// through the SAME `dispatch_verb` routing:
     /// `list_components`/`invoke_method` drive a registered component
     /// method (the invoke settles via the driver env, so the follow-up
     /// label query reads the committed value), `read_signal`/
     /// `list_watched_signals` serve a `watch_signal` entry, and
-    /// `list_navigators` answers (empty here) instead of erroring —
-    /// pre-wave, all five returned named P5 errors.
+    /// `list_navigators` answers (empty here) instead of erroring.
     #[wasm_bindgen_test]
     async fn regression_method_watch_and_nav_verbs_resolve_on_newcore() {
         use std::rc::Rc;
@@ -856,8 +855,8 @@ mod tests {
         let watched = dispatch_verb("list_watched_signals", &json!({})).unwrap();
         assert!(watched.contains("\"name\":\"count\""), "{watched}");
 
-        // Nav verbs answer (no navigator mounted here → empty array),
-        // rather than returning the pre-wave P5 error.
+        // Nav verbs answer (no navigator mounted here → empty array)
+        // rather than erroring.
         assert_eq!(dispatch_verb("list_navigators", &json!({})).unwrap(), "[]");
 
         let promise = web_glue::js::Promise::resolve(&web_glue::JsValue::UNDEFINED);
@@ -865,7 +864,7 @@ mod tests {
         crate::newcore::stop();
         // The keepalive died with the world: the vocabulary registry is
         // empty. (Asserted on the registry directly — post-stop,
-        // dispatch_verb routes to the old core again.)
+        // dispatch_verb routes to the shared bridge again.)
         assert!(
             runtime_vocabulary::robot::list_components().is_empty(),
             "stop() drops the app Owned → keepalive → registration"

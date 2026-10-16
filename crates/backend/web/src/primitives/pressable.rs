@@ -1,6 +1,6 @@
-//! `Element::Pressable` — a `<div>` with a click handler attached.
+//! The `pressable` primitive — a `<div>` with a click handler attached.
 //!
-//! Unlike `Element::Button`, this is a bare container: no
+//! Unlike the `button` primitive, this is a bare container: no
 //! `<button>` element, no UA chrome (no outset border, no system
 //! font, no implicit `type=submit`). Everything visual comes from
 //! the attached stylesheet + children. The framework's state-bit

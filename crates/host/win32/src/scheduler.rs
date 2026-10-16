@@ -312,8 +312,8 @@ mod tests {
                 let _keep = &inner;
             }),
         );
-        // Pre-fix: cancel removed the entry and dropped its closure
-        // (and thus `inner`) inside the queue borrow → panic.
+        // The bug: cancel dropping the entry's closure (and thus `inner`)
+        // inside the queue borrow → re-entrant borrow panic.
         outer.cancel();
     }
 
@@ -337,8 +337,8 @@ mod tests {
         })))));
         // Raf A cancels B mid-tick: B is in the drained `taken` Vec at
         // that point (its own cancel finds `q.rafs` empty), so the
-        // DRAIN's merge step is what drops B's closure. Pre-fix that
-        // drop ran inside the merge borrow → panic.
+        // DRAIN's merge step is what drops B's closure; that drop must
+        // run outside the merge borrow or it panics.
         let raf_b_for_a = raf_b.clone();
         let _raf_a = sched.raf_loop(Box::new(move || {
             if let Some(mut b) = raf_b_for_a.borrow_mut().take() {

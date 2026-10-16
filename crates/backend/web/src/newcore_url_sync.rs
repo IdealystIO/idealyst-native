@@ -1,30 +1,20 @@
-//! Browser URL sync for NEW-core outlet navigators — the web
-//! implementation of `runtime_vocabulary::handlers::nav_url_sync`.
+//! Browser URL sync for outlet navigators — the web implementation of
+//! `runtime_vocabulary::handlers::nav_url_sync`'s [`UrlSyncService`].
 //!
-//! This is the port of the old substrate's
-//! `runtime_shared::primitives::navigator::url_sync` onto the new-core
-//! seam. The *semantics* are carried over invariant-for-invariant
-//! (owned-slice comparison, self-pop echo swallowing, reconciling
-//! echo suppression, per-entry scroll memory, cold-start history seed);
-//! what changed is the wiring:
+//! Installed by [`crate::newcore::start_in`] and registered into by the
+//! swap/stack mount handlers. It provides owned-slice comparison,
+//! self-pop echo swallowing, reconciling echo suppression, per-entry
+//! scroll memory and the cold-start history seed. Wiring notes:
 //!
-//! - The old module keyed off `NavigatorControl` (an old-core type whose
-//!   registration surface is `pub(crate)`; runtime-core is frozen during
-//!   the migration), so the logic is re-homed HERE against the
-//!   vocabulary's [`UrlSyncService`] trait — installed by
-//!   [`crate::newcore::start_in`], registered into by the swap/stack
-//!   mount handlers.
-//! - Old dispatch committed synchronously, so `RECONCILING` could be
-//!   checked at commit time. New-core dispatch STAGES (driver commits on
-//!   the next flush), so the reconciling state is captured at dispatch
-//!   time as [`UrlSyncService::before_command`]'s suppress bit — the
-//!   driver skips `after_commit` for reconciler echoes.
-//! - The old register deferred its history seed a microtask (the old
-//!   handler's initial mount was deferred); the new handlers mount
-//!   synchronously, so the seed runs inline at registration.
+//! - Dispatch STAGES (the driver commits on the next flush), so the
+//!   reconciling state is captured at dispatch time as
+//!   [`UrlSyncService::before_command`]'s suppress bit — the driver
+//!   skips `after_commit` for reconciler echoes.
+//! - The handlers mount synchronously, so the history seed runs inline
+//!   at registration.
 //! - Deep-link boot needs nothing here: `url_provider::install_url_provider`
 //!   seeds `runtime_shared`'s initial-path slot from
-//!   `window.location.pathname`, and the new-core navigator handlers peek
+//!   `window.location.pathname`, and the vocabulary navigator handlers peek
 //!   it during `resolve_initial`. Both installs sit in the same
 //!   `BuiltinSet::nav_services` closure at the boot seam and both run
 //!   before the app builds, so that ordering holds. Deep-link REBUILD
@@ -43,13 +33,12 @@
 //!   navigation and is reconciled, even while our back is pending.
 //! - Popstate dispatch only STAGES commands, so the listener calls
 //!   [`crate::newcore::schedule_flush`] afterwards — popstate is a raw
-//!   DOM event outside every wrapped author callback (the residual the
-//!   newcore module docs called out).
+//!   DOM event outside every wrapped author callback.
 //!
 //! Scroll restore reads/writes the OUTLET node's scroll offset (the
 //! registration's type-erased node, downcast to `web_glue::dom::Node`). Only
 //! meaningful when the outlet is itself a scroll surface — screens that
-//! own their scroll via `scroll_view` are unaffected, same as legacy.
+//! own their scroll via `scroll_view` are unaffected.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -70,12 +59,8 @@ use web_glue::JsCast;
 // Routed through a swappable port so the browser-history CONTRACT is
 // testable: the op sequence (`push:/x`, `replace:/x`, `back`) is the
 // observable, and a real `window.history` cannot report it — nor can a
-// test let a root pop actually leave the page. The old core made the
-// same surface injectable (`UrlProvider` +
-// `runtime_shared::…::install_url_provider`), and its `SimHistory` fake
-// is what the dying `mock-backend/tests/navigator_url_sync.rs` drove;
-// [`HistoryPort`] is that seam re-homed on this module, so the fake and
-// the nine invariants it pinned survive the old core's deletion.
+// test let a root pop actually leave the page. The tests' `SimHistory`
+// fake drives this module through [`HistoryPort`].
 //
 // Production installs nothing: the `None` slot means the real calls
 // below, unchanged (one thread-local read per history op, and history
@@ -132,20 +117,20 @@ fn pathname() -> String {
 // ---------------------------------------------------------------------------
 //
 // WHY (bug: a user Back/Forward racing a programmatic pop was swallowed):
-// `popstate` says nothing about WHICH traversal caused it, and this module
-// used to attribute by counting — the first popstate after our
-// `history.back()` was taken as its echo. Chrome resolves every traversal
+// `popstate` says nothing about WHICH traversal caused it, so it cannot be
+// attributed by counting (taking the first popstate after our
+// `history.back()` as its echo). Chrome resolves every traversal
 // against the entry the previous one is heading to, fixed at call time
 // (probed in headless Chrome, from `/p1` with `/p2`,`/p3` ahead:
 // `forward(); back()` → ONE popstate, on `/p2` — the back resolved to the
 // committed entry and was dropped; `go(2); back()` → `/p3` then `/p2`).
 // So when the user's traversal is ahead of ours (pressed just before an
 // app handler popped), the first popstate is the USER's. Counting
-// swallowed it: the screen showed the popped-to route while the address
-// bar named the user's — and when Chrome dropped our back, nothing ever
-// repaired it.
+// swallows it: the screen shows the popped-to route while the address
+// bar names the user's — and when Chrome drops our back, nothing ever
+// repairs it.
 //
-// Fix: every entry this module creates carries `{ s, i, ps, pi }` under
+// So every entry this module creates carries `{ s, i, ps, pi }` under
 // [`STATE_KEY`] in its `history.state` — its own key (`s` = a random
 // per-document session, `i` = a per-session counter) and its
 // predecessor's key. A self back records the CURRENT entry's predecessor
@@ -448,15 +433,15 @@ fn history_back() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-navigator entry (port of the old `NavEntry`)
+// Per-navigator entry
 // ---------------------------------------------------------------------------
 
 /// One recorded back-history step: the owned URL of the screen a
 /// forward navigation covered, plus the outlet scroll at that moment.
 struct HistoryEntry {
     owned_url: String,
-    /// The query that entry carried, restored alongside the path when a
-    /// browser Back lands here.
+    /// The query that entry carried. Recorded only — nothing reads it (a
+    /// Back takes the query from the URL it lands on).
     query: QueryParams,
     scroll: (f32, f32),
 }
@@ -484,8 +469,7 @@ struct NavEntry {
 
 impl NavEntry {
     /// The portion of `url` THIS navigator owns: the full URL minus the
-    /// unconsumed remainder a nested navigator resolves. Ported from the
-    /// legacy helpers (`NavigatorInstance::owned_of`).
+    /// unconsumed remainder a nested navigator resolves.
     fn owned_of(&self, url: &str) -> String {
         match (self.resolve_entry)(url) {
             Some((_, _, remainder)) if !remainder.is_empty() => url
@@ -541,9 +525,9 @@ fn entry_by_id(id: u64) -> Option<Rc<NavEntry>> {
 // Install
 // ---------------------------------------------------------------------------
 
-/// Install the new-core URL-sync service + popstate wiring. Idempotent;
-/// called from `newcore::start_in` (before the app mounts, so every
-/// navigator registers). Safe headless (no `window` ⇒ listener no-op;
+/// Install the URL-sync service + popstate wiring. Idempotent; called
+/// from `newcore::start_in_with` / `hydrate_in_with` (before the app
+/// mounts, so every navigator registers). Safe headless (no `window` ⇒ listener no-op;
 /// history calls no-op).
 pub(crate) fn install() {
     runtime_vocabulary::handlers::nav_url_sync::install_url_sync_service(Rc::new(WebUrlSync));
@@ -582,7 +566,7 @@ pub(crate) fn reset() {
 }
 
 // ---------------------------------------------------------------------------
-// The service (port of register / before_command / after_command)
+// The service (register / before_command / after_command)
 // ---------------------------------------------------------------------------
 
 struct WebUrlSync;
@@ -614,10 +598,9 @@ impl UrlSyncService for WebUrlSync {
 
         // Cold-start browser-history seed — ROOT navigator only (a
         // nested navigator must not stomp the entry its parent owns).
-        // Synchronous: the new handlers seat their initial screen (and
-        // any deep-link back-stack synthesis) before registering, so
-        // `depth`/`active_path` are already committed. Old semantics,
-        // minus the microtask (module docs).
+        // Synchronous: the handlers seat their initial screen (and any
+        // deep-link back-stack synthesis) before registering, so
+        // `depth`/`active_path` are already committed.
         //
         // `from_launch_url` gates the whole block: the seed exists
         // because a COLD START has exactly one history entry, so an
@@ -758,9 +741,8 @@ impl UrlSyncService for WebUrlSync {
         let Some(entry) = entry_by_id(id) else { return };
         match kind {
             CommittedKind::Forward => {
-                // Fresh screen starts at the top (legacy `mount_internal`
-                // behavior). No-op when the outlet isn't a scroll
-                // surface.
+                // Fresh screen starts at the top. No-op when the outlet
+                // isn't a scroll surface.
                 entry.set_scroll(0.0, 0.0);
             }
             CommittedKind::Pop => {
@@ -777,8 +759,8 @@ impl UrlSyncService for WebUrlSync {
     }
 
     fn deregister(&self, id: u64) {
-        // `try_with`: teardown can run during thread death (the old
-        // module's TLS-destruction abort guard, kept).
+        // `try_with`: teardown can run during thread death, when the
+        // TLS is already destroyed and `with` would abort.
         let _ = REGISTRY.try_with(|r| {
             r.borrow_mut().retain(|e| e.id != id);
         });
@@ -786,12 +768,12 @@ impl UrlSyncService for WebUrlSync {
 }
 
 // ---------------------------------------------------------------------------
-// Popstate reconciliation (port of the old `handle_popstate`)
+// Popstate reconciliation
 // ---------------------------------------------------------------------------
 
 /// Translate a browser-initiated URL change into staged `NavCommand`s on
 /// the navigator(s) whose owned slice changed. Public within the crate
-/// for the wasm-bindgen browser tests, which drive it directly as well
+/// for the browser tests, which drive it directly as well
 /// as through real `history.back()` events.
 pub(crate) fn handle_popstate(new_path: &str) {
     if let Some(pending) = PENDING_BACK.with(|c| c.take()) {
@@ -844,7 +826,7 @@ pub(crate) fn handle_popstate(new_path: &str) {
         let owned = entry.owned_of(new_path);
         // Our slice is unchanged AND the state is unchanged → the change
         // belongs to a NESTED navigator; touching our screen would tear its
-        // subtree down mid-transition (the legacy teardown race). Skip.
+        // subtree down mid-transition. Skip.
         //
         // The query is part of the check: a Back that only alters the query
         // is a real change to THIS navigator's screen state, and skipping it
@@ -935,8 +917,7 @@ pub(crate) fn handle_popstate(new_path: &str) {
     }
 
     // The staged commands commit on a flush; popstate fires outside
-    // every wrapped author callback, so queue one explicitly (the
-    // residual the newcore module docs reserved for this port).
+    // every wrapped author callback, so queue one explicitly.
     if dispatched {
         crate::newcore::schedule_flush();
     }
@@ -956,9 +937,8 @@ pub(crate) fn handle_page_restored() {
 }
 
 // ===========================================================================
-// Browser-side regression tests. Run with:
-//   cd crates/backend/web
-//   wasm-pack test --headless --chrome -- --features new-core
+// Browser-side regression tests. Run as tests.rs's module docs describe
+// (`cargo test --target wasm32-unknown-unknown`, not `wasm-pack test`).
 // ===========================================================================
 
 #[cfg(test)]
@@ -1049,11 +1029,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Simulated browser history (port of the fake in the deleted
-    // `mock-backend/tests/navigator_url_sync.rs`, which was the ONLY
-    // place it existed). Drives this module through [`HistoryPort`], so
-    // the op LOG is observable and a root pop can't navigate the test
-    // page away. Same shape, same assertions.
+    // Simulated browser history. Drives this module through
+    // [`HistoryPort`], so the op LOG is observable and a root pop can't
+    // navigate the test page away.
     // -----------------------------------------------------------------
 
     /// A fake History API: entries (URL + `history.state` tag) + index +
@@ -1300,7 +1278,7 @@ mod tests {
 
     /// Push writes `pushState` at dispatch time and the driver commits
     /// the screen on the flush — `regression`: without the URL service
-    /// the path would stay `/` (the unported seam this module closes).
+    /// the path would stay `/`.
     #[wasm_bindgen_test]
     async fn regression_push_writes_pushstate_and_commits() {
         let mount = setup_mount();
@@ -1519,10 +1497,8 @@ mod tests {
     }
 
     // =================================================================
-    // Ported suite: the nine invariants the deleted
-    // `mock-backend/tests/navigator_url_sync.rs` pinned on the old core,
-    // re-expressed against THIS module through the `SimHistory` fake.
-    // Each test names the invariant it carries over.
+    // Invariant suite, driven through the `SimHistory` fake. Each test
+    // names the invariant it pins.
     // =================================================================
 
     const SETTINGS: Route<()> = Route::<()>::new("settings", "/settings");

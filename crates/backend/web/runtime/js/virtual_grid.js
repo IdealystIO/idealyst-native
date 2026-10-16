@@ -1,7 +1,7 @@
 // VirtualGrid — JS-side scroll handler + visible-rect diff for the web
 // backend's `virtual_grid` primitive. Sibling of `virtualizer.js`, and
 // owned by the same contract: this class owns the scroll listener so
-// the wasm-bindgen boundary is crossed only when cells enter or leave
+// the wasm→JS boundary is crossed only when cells enter or leave
 // the window, never on every scroll tick.
 //
 // # What's different from the 1-D shim

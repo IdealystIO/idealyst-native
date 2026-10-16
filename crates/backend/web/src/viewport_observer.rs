@@ -7,17 +7,10 @@
 //! every `resize` event after that.
 //!
 //! Idempotent — re-calling [`install_viewport_observer`] replaces the
-//! previous listener with a fresh one. The closure is `forget()`-leaked
-//! into the JS heap and lives for the page's lifetime; that matches the
-//! existing dev-transport resize listener at
-//! [`crate::dev_transport`].
+//! previous listener with a fresh one. The listener is held in a
+//! thread-local for the page's lifetime.
 
 
-/// Install a `resize` listener on `window` and push the current viewport
-/// once immediately so subscribers see a non-zero value on first read.
-///
-/// Safe to call without a browser context (worker, SSR) — no-ops if
-/// `web_glue::dom::window()` returns `None`.
 /// True if the mount element already has server-rendered children — the
 /// signal to hydrate (adopt) rather than mount fresh.
 pub fn page_is_prerendered(mount_selector: &str) -> bool {
@@ -55,6 +48,11 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Install a `resize` listener on `window` and push the current viewport
+/// once immediately so subscribers see a non-zero value on first read.
+///
+/// Safe to call without a browser context (worker, SSR) — no-ops if
+/// `web_glue::dom::window()` returns `None`.
 pub fn install_viewport_observer() {
     let Some(win) = web_glue::dom::window() else { return };
 

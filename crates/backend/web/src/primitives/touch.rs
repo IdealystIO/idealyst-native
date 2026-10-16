@@ -1,7 +1,7 @@
 //! Raw touch delivery for the web backend.
 //!
-//! Implements [`runtime_shared::Backend::install_touch_handler`] and
-//! [`runtime_shared::Backend::claim_touch`] using the Pointer Events
+//! Implements `InputOps::install_touch_handler` and
+//! `InputOps::claim_touch` using the Pointer Events
 //! API. One DOM element receives five listeners — `pointerdown`,
 //! `pointermove`, `pointerup`, `pointercancel`, plus `contextmenu`,
 //! which both suppresses the browser's native menu and stands in for
@@ -625,20 +625,18 @@ thread_local! {
     /// Whether the press a `contextmenu` belongs to already reached app code
     /// through `pointerdown` — kept for the PAGE, never per element.
     ///
-    /// It used to be a note on each subscribed element, written by that
-    /// element's `pointerdown` and taken by its own `contextmenu`. That holds
-    /// only while both events hit the same element, and the most common
-    /// thing a secondary press does breaks it: it OPENS something. A context
-    /// menu mounted from the `pointerdown` brings its outside-click catcher —
-    /// a full-screen `on_touch` backdrop — and the browser hit-tests the
-    /// `contextmenu` that follows the same click onto that catcher, not onto
-    /// the row that was pressed. The catcher had heard no `pointerdown`, so
-    /// its note was empty; it concluded the browser had withheld the press
-    /// (the Chrome/macOS shape) and synthesized a second Secondary `Began` —
-    /// which a `Dismiss` backdrop answers by dismissing. Every right-click
-    /// menu on the page opened and closed within one click. The row's own
-    /// note, meanwhile, was left behind to eat that row's next pointerdown-
-    /// less Ctrl-click.
+    /// Not per element: a per-element note (written by that element's
+    /// `pointerdown`, taken by its own `contextmenu`) holds only while both
+    /// events hit the same element, and the most common thing a secondary
+    /// press does breaks it: it OPENS something. A context menu mounted from
+    /// the `pointerdown` brings its outside-click catcher — a full-screen
+    /// `on_touch` backdrop — and the browser hit-tests the `contextmenu` that
+    /// follows the same click onto that catcher, not onto the row that was
+    /// pressed. The catcher heard no `pointerdown`, so it would conclude the
+    /// browser had withheld the press (the Chrome/macOS shape) and
+    /// synthesize a second Secondary `Began` — which a `Dismiss` backdrop
+    /// answers by dismissing, so every right-click menu would open and close
+    /// within one click.
     ///
     /// The lifecycle is bracketed by two CAPTURE listeners on `window`, which
     /// run before any element's bubble-phase listener for the same event:
@@ -753,10 +751,9 @@ pub(crate) fn swallow_ancestor_touch(el: &web_glue::dom::Element) {
     // `pointerdown` above guarantees exactly that "no pointerdown" state at
     // the ancestor. Without this, right-clicking a Button inside an
     // `on_touch` row would deliver the row a secondary press its control
-    // swallowed. `preventDefault` preserves the pre-#95 observable behavior:
-    // the ancestor's listener used to suppress the native menu over the
-    // control via the bubbled event, and stopping propagation here would
-    // otherwise re-enable it.
+    // swallowed. `preventDefault` keeps the native menu suppressed over the
+    // control: stopping propagation means the ancestor's listener no longer
+    // sees the bubbled event to suppress it.
     crate::glue_dom::listen_for_element_lifetime(&el, "contextmenu", Default::default(), move |ev| {
         let ev: web_glue::dom::MouseEvent = web_glue::JsCast::unchecked_into(ev);
         ev.prevent_default();
@@ -764,7 +761,7 @@ pub(crate) fn swallow_ancestor_touch(el: &web_glue::dom::Element) {
     });
 }
 
-/// Implementation of [`runtime_shared::Backend::claim_touch`] —
+/// Implementation of `InputOps::claim_touch` —
 /// external claim invoked when a handler returned `claim: true` via
 /// any route other than the local `pointerdown` / `pointermove`
 /// callback we wired above (today there's no such route on web, but

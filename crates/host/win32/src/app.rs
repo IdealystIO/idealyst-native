@@ -235,8 +235,6 @@ where
     // Mount: `newcore::start` installs the time source, builds the scene
     // `Registry` (builtins, then the app's `register`), realizes the tree
     // and calls `finish(root)`, laying it out against the shown window.
-    // It replaces `runtime_core::mount`, which went away with the old
-    // walker.
     let app = newcore::start(backend.clone(), register, build_ui);
     (*state_ptr).app.borrow_mut().replace(app);
 
@@ -485,8 +483,8 @@ unsafe fn window_size_for(
 /// winit host's POSIX `_exit` — the CRT's `_exit` — is **not**
 /// equivalent here: on Windows `_exit` still routes through
 /// `ExitProcess` → `LdrShutdownProcess`, which runs the loader's
-/// thread-local destructor callbacks. Those tear down `runtime_core`'s
-/// reactive `Arena` thread-local, and dropping an effect that owns a
+/// thread-local destructor callbacks. Those tear down the reactive
+/// kernel's (`runtime_world`) thread-local, and dropping an effect that owns a
 /// scheduler handle then reaches into the scheduler's `MAIN_QUEUE`
 /// thread-local — already destroyed, since inter-TLS destruction order
 /// is undefined — aborting with "cannot access a Thread Local Storage

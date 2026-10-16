@@ -1,4 +1,4 @@
-//! CPU-rasterizer backend for `runtime_shared::Backend`.
+//! CPU-rasterizer backend.
 //!
 //! Renders the framework's primitive tree into a pixel framebuffer
 //! using a pure-Rust software rasterizer. Output is decoupled from
@@ -20,22 +20,19 @@
 //!
 //! ```ignore
 //! let mut backend = CpuBackend::new(320, 240);
-//! // ... mount framework tree into backend via `runtime_shared::mount` ...
+//! // ... mount the app into the backend via `newcore::start` ...
 //! let mut surface = MemSurface::new(320, 240);
 //! backend.render(&mut surface);
 //! // `surface.pixels()` now contains the rendered frame.
 //! ```
 //!
-//! ## New core (`new-core` feature)
+//! ## Boot path
 //!
-//! With the `new-core` feature, [`newcore::start`] mounts a
-//! scene-element tree on a `runtime_world::World` through the
-//! vocabulary's builtin handlers — `CpuBackend` implements
-//! `runtime_scene::Host` plus all 30 capability traits by UFCS
-//! delegation to this same `Backend` impl, so the rasterizer renders
-//! identical pixels on both cores (pinned byte-for-byte by
-//! `tests/newcore_parity.rs`). Additive: the old-core mount path is
-//! untouched with or without the feature.
+//! [`newcore::start`] mounts a scene-element tree on a
+//! `runtime_world::World` through the vocabulary's builtin handlers;
+//! `CpuBackend` implements `runtime_scene::Host` plus the capability
+//! traits in [`newcore`]. The painted pixels are pinned by the golden
+//! framebuffers in `tests/newcore_parity.rs`.
 //!
 //! ## Scope of this MVP
 //!
@@ -45,9 +42,8 @@
 //!
 //! **Unsupported primitives render a visible placeholder text node**
 //! (`"<PrimitiveName> not supported on CPU backend"`), not a silent
-//! no-op. See the README for the full matrix. The deliberate
-//! placeholder posture comes from `feedback_cpu_unsupported_placeholders`:
-//! we want missing support to be SEEN on the device, not masked.
+//! no-op. See the README for the full matrix. The placeholder is
+//! deliberate: missing support must be SEEN on the device, not masked.
 //!
 //! Deferred (still in scope, can be added without breaking the
 //! MCU constraint): gradients are already in, image decode behind a
@@ -59,14 +55,13 @@ mod node;
 mod raster;
 mod surface;
 
-// Post-dispatch hook slot — UNCONDITIONAL (the fire sites live in
-// host crates, which can't see this crate's features); a no-op single
-// Cell read unless `newcore::start` installed the flush driver. See
-// the module docs for the embedder contract (the CPU backend owns no
+// Post-dispatch hook slot (the fire sites live in host crates); a no-op
+// single Cell read unless `newcore::start` installed the flush driver.
+// See the module docs for the embedder contract (the CPU backend owns no
 // scheduler — the host decides cadence).
 pub mod dispatch_hook;
 
-/// `runtime_scene::Host` + the 30 capability traits on [`CpuBackend`],
+/// `runtime_scene::Host` + the capability traits on [`CpuBackend`],
 /// plus the boot entry and flush driver.
 pub mod newcore;
 
