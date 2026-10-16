@@ -11103,6 +11103,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "pollster 0.4.0",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",
@@ -11110,6 +11111,7 @@ dependencies = [
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
 ]
 
 [[package]]

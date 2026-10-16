@@ -96,7 +96,7 @@ differs.
 | macOS | ScreenCaptureKit (`SCStream` + `SCContentFilter`) | separate `NSWindow`/`NSPanel` excluded via `SCContentFilter` |
 | Android | `MediaProjection` + `VirtualDisplay` + `ImageReader` (JNI/Kotlin shim) | separate `WindowManager` window — PixelCopy-excluded |
 | Web (wasm32) | `getDisplayMedia` → hidden `<video>` → `<canvas>` pixel pump | inline no-op (TODO: Element Capture `restrictTo`) |
-| Windows | `Windows.Graphics.Capture` *(planned)* | `WDA_EXCLUDEFROMCAPTURE` *(planned)* |
+| Windows | `Windows.Graphics.Capture`: this app's window / a window by title / the primary monitor / the system capture picker; a free-threaded frame pool copied to the CPU as BGRA, paced to `fps`; video only (an audio request is logged and ignored, as on Linux). Verified on a Windows 11 VM | not yet — the private layer mounts inline and IS captured (needs a separate excluded-from-capture window in the Windows backend) |
 | Linux | xdg-desktop-portal ScreenCast + PipeWire *(planned)* | none available |
 | other desktop | *not implemented* — returns `RecorderError::Unsupported` | — |
 
