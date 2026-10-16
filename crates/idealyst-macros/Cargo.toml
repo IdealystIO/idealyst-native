@@ -3,9 +3,8 @@
 # Separate from `runtime-macros` (the authoring macros: `ui!`, `lazy!`,
 # `recipe!`) because this one exists for a different reason: it is the
 # only part of the app-entry story that MUST run at compile time, since
-# it reads the consuming crate's `Cargo.toml` metadata. Everything else
-# the old generated wrappers did is a plain library function in
-# `idealyst::boot`.
+# it reads the consuming crate's `Cargo.toml` metadata. The rest of app
+# boot is plain library functions in `idealyst::boot`.
 [package]
 name = "idealyst-macros"
 version = "1.5.2"

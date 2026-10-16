@@ -5,10 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# PATH dep with `default-features = false` (cargo ignores that flag on
-# workspace-inherited deps): this crate only reads style TYPES
-# (StyleRules, enums, Breakpoint) — all ungated — and must not force the
-# `prim-*` default set back on for size-conscious apps via unification.
-# Style data model + tokens now live in runtime-shared (the non-walker
-# half of the old runtime-core); this crate never needed the walker.
+# The style data model + tokens. Only style TYPES are read (StyleRules,
+# enums, Breakpoint), all ungated, so no runtime-shared features are
+# needed.
 runtime-shared = { path = "../runtime/shared", default-features = false, version = "1.23.0", registry = "idealyst" }

@@ -3,8 +3,8 @@
 //! The compiled route to an app's catalog is a generated binary that
 //! links every project crate with `runtime-core/catalog` on and prints
 //! its `inventory` registrations — a full host build of the app, which
-//! on a large workspace costs minutes of several cores and which
-//! `idealyst mcp --watch` used to redo on every save. None of that build
+//! on a large workspace costs minutes of several cores — too much to
+//! redo on every save under `idealyst mcp --watch`. None of that build
 //! is needed to know the entries: every one is a struct literal of string
 //! and integer literals plus `module_path!()`, `file!()` and `line!()`.
 //!

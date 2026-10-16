@@ -1,12 +1,9 @@
 # catalog-scan — an app's MCP catalog entries, read from source.
 #
-# The catalog used to come only from a compiled extractor: a generated
-# binary linking every project crate with `runtime-core/catalog` on, run
-# once to print its `inventory` registrations. That is a full host build
-# of the whole app — on a large workspace minutes of several cores, and
-# `idealyst mcp --watch` redid it on every save, alongside the dev build.
-#
-# Every catalog entry is compile-time data (string literals,
+# A compiled extractor (a generated binary linking every project crate
+# with `runtime-core/catalog` on, printing its `inventory` registrations)
+# is a full host build of the app — minutes on a large workspace, on
+# every save under `idealyst mcp --watch`. But every catalog entry is compile-time data (string literals,
 # `module_path!()`, `file!()`, `line!()`), so the build is not needed to
 # know it. This crate walks each crate's module tree, runs the REAL macro
 # expansion (`runtime-macros-expand`) over the items the catalog macros

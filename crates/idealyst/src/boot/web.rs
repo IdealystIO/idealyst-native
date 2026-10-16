@@ -1,4 +1,4 @@
-//! Web boot — what the generated `web/wrapper/src/lib.rs` used to be.
+//! Web boot.
 //!
 //! Two paths, picked by the `runtime-server` feature:
 //!
@@ -13,11 +13,9 @@ use runtime_scene::Element;
 
 use super::{AppConfig, SceneExtensions};
 
-// NOTE: no `#[global_allocator]` here. It used to live in this file
-// (unconditionally, `lol_alloc`'s free list) — but a global allocator is
-// a property of the *binary*, and this crate is linked into every app in
-// a workspace alike. It is now declared in the app's own `main.rs` by
-// `entry!`, from `[package.metadata.idealyst.app].allocator`; the types
+// NOTE: no `#[global_allocator]` here — a global allocator is a property
+// of the *binary*, and this crate is linked into every app in a workspace
+// alike. It is declared in the app's own `main.rs` by `entry!`, from `[package.metadata.idealyst.app].allocator`; the types
 // and the trade-off live in `crate::alloc`. Absent that key an app gets
 // `std`'s wasm32 default, `dlmalloc`.
 
@@ -27,7 +25,7 @@ use super::{AppConfig, SceneExtensions};
 /// target the generated `pkg/<lib>.js`'s `init()` runs `main` — the
 /// web-glue loader calls it directly (own mode), wasm-bindgen's through
 /// `__wbindgen_start` (hybrid mode) — so no `#[wasm_bindgen(start)]` shim
-/// is needed (the old wrapper was a `cdylib` and did need one).
+/// is needed.
 pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     app: impl Fn() -> Element + 'static,
     config: AppConfig,
@@ -46,9 +44,8 @@ pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     // Host services, before anything can reach for them.
     //
     // `start_in_with` installs the scheduler, time source and wall
-    // clock itself, but NOT these three — they were the wrapper's job,
-    // and dropping them cost a boot panic ("no AsyncExecutor installed"
-    // the first time a server fn was called). All are idempotent (first
+    // clock itself, but NOT these three — without them the first server
+    // fn call panics ("no AsyncExecutor installed"). All are idempotent (first
     // install wins), so the overlap with `start_in_with` is free, and
     // installing here also covers the runtime-server path, which never
     // goes through it.
@@ -134,8 +131,8 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     // boot; the transport relays the inset to the sidecar.
     backend_web::install_keyboard_avoidance(&backend);
     // `new_newcore` drives the backend's CAPABILITY surface (the
-    // `runtime_vocabulary::caps` traits) rather than a `Backend` impl:
-    // wire commands in, capability calls out. SDK web modules submit
+    // `runtime_vocabulary::caps` traits): wire commands in, capability
+    // calls out. SDK web modules submit
     // their handlers into backend-web's link-time inventory registrar,
     // so the chrome the replayer drives registers without a call here.
     let wire = Rc::new(RefCell::new(dev_client::WireBackend::new_newcore(

@@ -1,5 +1,4 @@
-//! Terminal boot — what the generated `terminal/wrapper/src/main.rs`
-//! used to be.
+//! Terminal boot.
 //!
 //! The whole crossterm loop lives in `host-terminal`; this is the seam
 //! that hands it the app. Note there is no runtime-server variant here:

@@ -1,29 +1,15 @@
 //! Build and run an idealyst app with plain `cargo build`.
 //!
-//! # What changed
+//! # Why the app crate is the artifact
 //!
-//! Every platform used to be built through an ephemeral *wrapper*
-//! crate the CLI wrote into `target/idealyst/<app>/<platform>/wrapper/`.
-//! The wrapper owned the entry point, the per-platform dependencies,
-//! and the boot sequence; the app crate was a plain `rlib` that could
-//! not be built or run on its own.
-//!
-//! That cost more than it looked like:
-//!
-//! - **Two dependency graphs.** The wrapper resolved `runtime-core`
-//!   independently of the app. Any disagreement — a different git rev,
-//!   a workspace-inherited dep the resolver-by-hand couldn't read —
-//!   produced two `runtime_core` crates and the notorious "expected
-//!   `Element`, found `Element`" at the wrapper→app boundary.
-//! - **Unreadable failures.** Build errors landed inside generated code
-//!   the author had never seen and couldn't grep for.
-//! - **A tool in the loop.** `cargo build` alone couldn't produce a
-//!   runnable app, so every workflow — CI, `cargo test`, an IDE's
-//!   check-on-save — went through the CLI or didn't work.
-//!
-//! Now the app crate *is* the artifact. It declares one dependency
-//! (this crate), writes one line in `src/main.rs`, and builds with
-//! cargo like anything else.
+//! The app crate declares one dependency (this crate), writes one line in
+//! `src/main.rs`, and builds with cargo like anything else — no generated
+//! wrapper crate owning the entry point and boot sequence. A wrapper
+//! resolves the framework in a second dependency graph (any disagreement
+//! yields two `runtime_core` crates and "expected `Element`, found
+//! `Element`"), puts build errors in generated code the author never saw,
+//! and keeps `cargo build` / `cargo test` / check-on-save from producing a
+//! runnable app without the CLI.
 //!
 //! # Layout
 //!
@@ -82,7 +68,7 @@
 //! web-glue pass; the `wasm-bindgen` CLI too, only for an app that still
 //! links wasm-bindgen), plus `index.html` and asset staging (and
 //! `wasm-split` + `wasm-opt` for release); iOS and Android need their bundles
-//! assembled. That work moved to the dev/bundle server, which watches,
+//! assembled. That work is the dev/bundle server's: it watches,
 //! runs `cargo build`, post-processes and serves. It is a *consumer* of
 //! the build rather than a precondition for it — which is the whole
 //! difference.

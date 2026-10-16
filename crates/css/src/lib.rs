@@ -6,9 +6,9 @@
 //! field and produces a CSS declaration body suitable for one class
 //! (or an inline `style="…"` attribute).
 //!
-//! This lives in its own crate — not `runtime-core` (CSS is not a
-//! core primitive; core stays platform-agnostic) and not `backend-web`
-//! (which pulls in `web-sys`/`wasm-bindgen` and cannot build for a
+//! This lives in its own crate — not the runtime (CSS is not a core
+//! primitive; core stays platform-agnostic) and not `backend-web` (which
+//! links the wasm-only `web-glue` JS boundary and cannot build for a
 //! native server). Both the web backend and the SSR backend depend on
 //! it so a node's first-paint CSS is byte-identical across the two.
 
@@ -95,12 +95,10 @@ pub const DEFAULT_TEXT_COLOR_RESET: &str = ":where(html) { color: var(--color-te
 /// surface shows up at all instead of the HTML default 300×150.
 ///
 /// It is a zero-specificity rule, NOT an inline style, so the author's sheet
-/// wins. It used to be written inline on the element (`style="width: 100%;
-/// height: 100%"`), and inline beats every class rule, so a sized canvas
-/// (`.with_style` → a minted class) silently kept 100% × 100%. Under an
-/// auto-height parent that `height: 100%` fell back to the canvas's 2:1
-/// intrinsic ratio: a 180 px square QR code rendered full-width and half as
-/// tall. Scoped by the `data-graphics-id` attribute the web backend sets on
+/// wins: an inline `width/height: 100%` beats every class rule, so a sized
+/// canvas (`.with_style` → a minted class) would keep 100% × 100% — under an
+/// auto-height parent a 180 px square QR code rendered full-width and half
+/// as tall. Scoped by the `data-graphics-id` attribute the web backend sets on
 /// every graphics canvas, so other `<canvas>` elements are untouched.
 ///
 /// Web-only: NOT part of [`base_reset_css`]. Only the live web backend stamps
@@ -119,8 +117,7 @@ pub const GRAPHICS_FILL_RESET: &str =
 /// a block box on web only, and its children's `flex-grow` and percentage
 /// heights did nothing there: the same layout filled on native and
 /// collapsed on web (nav-showcase's navigator outlets). A rule on a marker
-/// attribute, not the old per-node `.ui-default` class, so the style
-/// engine's `className` writes never clear it.
+/// attribute rather than a per-node class, so the style engine's `className` writes never clear it.
 pub const VIEW_FLEX_RESET: &str = ":where([data-iv]) { display: flex; flex-direction: column; }";
 
 /// The marker attribute [`VIEW_FLEX_RESET`] matches.
@@ -133,7 +130,7 @@ pub const VIEW_MARKER_ATTR: &str = "data-iv";
 ///
 /// Host-surface theming (body background, scrollbar) is **not** part of
 /// the reset — it's owned by the theme SDK and routed through
-/// `Backend::set_app_background` / `Backend::set_scrollbar_theme`, which
+/// `AppEnvOps::set_app_background` / `AppEnvOps::set_scrollbar_theme`, which
 /// each backend applies however native (DOM rules on web/SSR, UIWindow
 /// background on iOS, etc.). Keeping the reset theme-agnostic means a
 /// vanilla framework user with no theme SDK still gets a sensible
@@ -156,12 +153,10 @@ pub const BUTTON_CONTENT_STYLE: &str = "display:inline-flex;align-items:center;g
 /// Default inline style for an `Icon`'s `<svg>`.
 ///
 /// `display:block`, so the icon is a box the size of its glyph, as it is on
-/// every native backend. It used to be `inline-block; vertical-align:
-/// middle`, which only worked while every view was a flex box (flex
-/// blockifies its children). Once plain views became CSS blocks, an icon
-/// whose parent view had no flex property sat on a line box: the parent
-/// grew to the inherited line-height and the glyph was pushed down inside
-/// it, about 2px low beside a centred label.
+/// every native backend. Not `inline-block`: an icon whose parent view has
+/// no flex property would sit on a line box, so the parent grows to the
+/// inherited line-height and the glyph lands about 2px low beside a
+/// centred label.
 pub const ICON_STYLE: &str = "display:block;";
 
 /// The old name of [`ICON_STYLE`], kept so a release that renamed it isn't
@@ -235,7 +230,7 @@ fn state_key_tag(state: runtime_shared::StateBits) -> &'static str {
 /// passed in rather than recomputed here). Overlays are appended in a
 /// fixed order: every state overlay (`;<tag>:<overlay-key>`), then every
 /// breakpoint overlay (`;@<axis>:<overlay-key>`). Callers pass overlays
-/// in the walker's stable order, so the key is deterministic.
+/// in the style-attach pass's stable order, so the key is deterministic.
 pub fn variant_class_key(
     base_key: &str,
     overlays: &[(runtime_shared::StateBits, std::rc::Rc<StyleRules>)],
@@ -322,7 +317,7 @@ pub fn state_pseudo(state: runtime_shared::StateBits) -> Option<&'static str> {
 /// bodies whose sheet sets no `font_family` reference it as
 /// `font-family: var(--iy-default-font, inherit)`; the runtime's premint
 /// host driver defines it (web: inline on the document element, SSR: in
-/// the head CSS) via `Backend::apply_default_text_font`. The `inherit`
+/// the head CSS) via `StyleOps::apply_default_text_font`. The `inherit`
 /// fallback makes an unthemed app behave like plain CSS cascade — which
 /// is also what the live engine does when no default font is installed.
 pub const DEFAULT_TEXT_FONT_VAR: &str = "--iy-default-font";
@@ -330,7 +325,7 @@ pub const DEFAULT_TEXT_FONT_VAR: &str = "--iy-default-font";
 /// The CSS `font-family` value for a resolved [`runtime_shared::FontFamily`]
 /// — `System` names pass through raw (they can be full fallback stacks),
 /// `Typeface` family names are quoted. Single source for `rules_to_css`,
-/// the styled-text run emitter, and `Backend::apply_default_text_font`
+/// the styled-text run emitter, and `StyleOps::apply_default_text_font`
 /// impls, so a family formats identically everywhere.
 pub fn font_family_css_value(ff: &runtime_shared::FontFamily) -> String {
     match ff {
@@ -394,7 +389,7 @@ pub fn class_rule_group(
     group_rules.push(class_rule(class_name, &rules_to_css(base)));
     for (bp, overlay) in breakpoint_overlays {
         // `None` only for `Breakpoint::Xs` (the base, no media query) —
-        // which the walker never emits as an overlay.
+        // which style attach never emits as an overlay.
         let Some(query) = breakpoint_media_query(*bp) else { continue };
         group_rules.push(format!("{query} {{ .{class_name} {{ {} }} }}", layer_css(overlay, locked)));
         if layer_needs_column_pin(overlay, locked) {
@@ -495,7 +490,7 @@ pub fn breakpoint_media_rule(class_name: &str, bp: runtime_shared::Breakpoint, b
 /// Shared class name that marks a node as a container-query containment
 /// context (`container-type: inline-size`). Used by both the web backend
 /// (live stylesheet) and SSR (`<head>`) so the rule is byte-identical and
-/// hydration reuses the server's class. Set by `Backend::mark_container`
+/// hydration reuses the server's class. Set by `StyleOps::mark_container`
 /// in response to the `.container()` modifier.
 pub const CONTAINER_TYPE_CLASS: &str = "ui-cq-container";
 
@@ -507,8 +502,8 @@ pub const CONTAINER_TYPE_BODY: &str = "container-type: inline-size";
 /// A full container-query overlay rule:
 /// `@container (min-width: <threshold>px) { .<class_name> { <body> } }`.
 /// The browser resolves it against the nearest ancestor carrying
-/// `container-type: inline-size` (set by [`runtime_core`]'s `.container()`
-/// modifier via `Backend::mark_container`), so the overlay activates on
+/// `container-type: inline-size` (set by the `.container()` modifier via
+/// `StyleOps::mark_container`), so the overlay activates on
 /// the *container's* width, not the viewport's. `body` is the overlay's
 /// [`rules_to_css`] output.
 ///
@@ -949,7 +944,7 @@ pub fn tokenized_color_css(t: &runtime_shared::Tokenized<runtime_shared::Color>)
 /// lives in this crate). Tokenized values emit as `var(--token,
 /// fallback)`, so run colors ride the CSS cascade on theme swaps —
 /// no per-node re-realization needed on web (see
-/// `Backend::update_styled_text`).
+/// `TextOps::update_styled_text`).
 pub fn text_run_style_css(style: &runtime_shared::TextRunStyle) -> String {
     let mut out = String::new();
     if let Some(ff) = &style.font_family {
@@ -1392,10 +1387,8 @@ pub fn easing_css(e: runtime_shared::Easing) -> String {
 /// stay normal blocks — no flex-tracker cost for unstyled rows.
 ///
 /// `shadow` lowers to `box-shadow` and `text_shadow` to `text-shadow` —
-/// one field per CSS property on every node kind. (The old single
-/// `shadow` field lowered per node kind, which forced shadowed text
-/// nodes onto distinct class keys and disqualified every shadowed
-/// sheet from preminting.)
+/// one field per CSS property on every node kind, so shadowed text and
+/// box nodes share one content-keyed class and stay premintable.
 pub fn rules_to_css(rules: &StyleRules) -> String {
     rules_to_css_impl(rules, true, true)
 }
@@ -1764,7 +1757,7 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
 
 /// Compile a `StyleRules` to a CSS declaration body with every
 /// `Tokenized::Token` resolved to a concrete value against `tokens` (the
-/// theme installed via `Backend::install_tokens`), falling back to the token
+/// theme installed via `StyleOps::install_tokens`), falling back to the token
 /// reference's embedded fallback when a name isn't present. Unlike
 /// [`rules_to_css`] this emits NO `var(--…)` — suitable for an inline
 /// `style="…"` in email, where CSS variables and `<head>` `:root` blocks are
@@ -2304,10 +2297,8 @@ mod tests {
     // one keyword. This is what makes "buttons use a pointer + their label
     // can't be drag-selected" real on web.
     /// One field per shadow property, on every node kind: `shadow` is
-    /// always `box-shadow` and `text_shadow` always `text-shadow`. (The
-    /// old single field lowered per node kind, which forced shadowed
-    /// text onto distinct class keys and disqualified every shadowed
-    /// sheet from preminting.)
+    /// always `box-shadow` and `text_shadow` always `text-shadow`, so
+    /// shadowed text never needs a distinct class key.
     #[test]
     fn shadow_and_text_shadow_lower_to_their_own_properties() {
         use runtime_shared::{Shadow, StyleRules};
@@ -2323,7 +2314,7 @@ mod tests {
     // The gap this closes: a dashed border was unexpressible — every
     // width emitted a hard-coded `border-<side>-style: solid`. The pattern
     // has to reach each side that sets a width, and an unset
-    // `border_style` must keep the old `solid` output byte for byte.
+    // `border_style` must still emit `solid` byte for byte.
     #[test]
     fn regression_dashed_border_reaches_every_bordered_side() {
         use runtime_shared::{BorderStyle, StyleRules, Tokenized};
@@ -2564,12 +2555,6 @@ mod tests {
             "breakpoint overlay must use the `;@<axis>:` form, got {with_bp}"
         );
     }
-
-    // (The former `ssr_and_web_mint_identical_text_shadow_class` — pinning
-    // the `@t` text-shadow class-key agreement between SSR and web — is
-    // gone with the `shadow`/`text_shadow` split: shadowed text and box
-    // nodes share one content-keyed class by construction, so there is no
-    // separate key to agree on.)
 
     #[test]
     fn breakpoint_media_rule_wraps_class_in_media_query() {

@@ -85,7 +85,7 @@ pub async fn whoami() -> Result<String, ServerError> {
 }
 
 // -----------------------------------------------------------------------------
-// Typed-domain-error fixture (Phase 0).
+// Typed-domain-error fixture.
 //
 // Proves a `#[server]` fn can return a rich `Result<T, ServerError<E>>`
 // whose error half round-trips across the wire as a *structured* value,
@@ -128,7 +128,7 @@ pub async fn reserve_stock(qty: u32) -> Result<u32, ServerError<StockError>> {
 }
 
 // -----------------------------------------------------------------------------
-// Extractor-param fixtures (Phase 1).
+// Extractor-param fixtures.
 //
 // `State<T>` / `Headers` are injected server-side and dropped from the
 // client stub. Recommended pattern (mirrors a real app): state types +
@@ -310,7 +310,7 @@ pub async fn note_header() -> Result<String, ServerError> {
 }
 
 // -----------------------------------------------------------------------------
-// Versioning fixture (Phase 3): a strict-version endpoint.
+// Versioning fixture: a strict-version endpoint.
 // -----------------------------------------------------------------------------
 
 /// `strict_version` makes the server reject any client whose wire schema
@@ -667,8 +667,8 @@ mod server_side {
     async fn regression_typed_domain_error_round_trips_structured() {
         // The dispatcher serializes the handler's `Result<u32,
         // ServerError<StockError>>` whole. The error half must arrive
-        // as a *structured* `StockError`, not a stringified blob — this
-        // is the Phase 0 typed-error guarantee.
+        // as a *structured* `StockError`, not a stringified blob — the
+        // typed-error guarantee.
         let addr = boot().await;
         let client = net::Client::new();
 
@@ -1650,9 +1650,9 @@ mod client_side {
     /// tasks never enter the world). The settle write stages and only
     /// becomes observable when the world flushes; in an app the host's
     /// post-dispatch hook does that, here the test does it explicitly.
-    /// The old version of this test created the mutation with no world
-    /// at all and panicked with "signal()/effect() called outside
-    /// World::enter" before any network call.
+    /// Creating the mutation with no world at all panics with
+    /// "signal()/effect() called outside World::enter" before any
+    /// network call.
     #[tokio::test]
     async fn regression_mutation_wraps_server_fn_callback() {
         use runtime_core::{mutation, Mutation, NetworkState};
@@ -1692,7 +1692,7 @@ mod client_side {
         // The client stub must decode a *structured* `ServerError<E>`
         // out of the response, reconstructing the exact `StockError`
         // variant + fields — not a `Failed(String)`. This is the
-        // client half of the Phase 0 typed-error guarantee.
+        // client half of the typed-error guarantee.
         let mock = mock_server(Arc::new(|_call| {
             let body = serde_json::to_vec(
                 &Result::<u32, ServerError<StockError>>::Err(ServerError::Failed(
@@ -1799,7 +1799,7 @@ mod client_side {
     async fn regression_credential_provider_attaches_bearer_header() {
         // A configured credential source must attach its header to every
         // outgoing request — the client half of the auth story (the
-        // server half is the Phase 2 guard).
+        // server half is a dispatch-hook auth guard).
         let mock = mock_server(Arc::new(|_call| {
             let body = serde_json::to_vec(&Result::<i32, ServerError>::Ok(1)).unwrap();
             (StatusCode::OK, body)

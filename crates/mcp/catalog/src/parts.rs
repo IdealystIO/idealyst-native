@@ -1,10 +1,8 @@
 //! [`CatalogParts`] — a catalog as plain lists of entries, from any
 //! source, written out by the one serializer.
 //!
-//! [`crate::catalog_json`] used to read this process's inventory slice by
-//! slice and write each one. That stays the common case, but it is no
-//! longer the only one: the CLI's catalog scanner assembles a catalog from
-//! TWO sources — a compiled dependency extractor (its JSON) and entries it
+//! The common case is this process's inventory, slice by slice. But the
+//! CLI's catalog scanner assembles a catalog from TWO sources — a compiled dependency extractor (its JSON) and entries it
 //! read from the workspace's source — and its output has to be
 //! indistinguishable from what one compiled extractor linking everything
 //! would have printed. Same slices, same order, same props-schema join.

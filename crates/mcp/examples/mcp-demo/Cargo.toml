@@ -14,8 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 # The author surface. `runtime-core` is the crate this demo aliases
-# to `runtime_core` at its root (see src/main.rs) — runtime v2 has one
-# core and no feature switch.
+# to `runtime_core` at its root (see src/main.rs).
 #
 # Enabling the `mcp` feature on it flips on the emission gate in
 # `runtime-macros` AND the vocabulary's catalog anchor

@@ -1,13 +1,11 @@
 //! The scroll family's behavioural props are in the table.
 //!
-//! `scroll_view` and the virtualizer used to advertise their children /
-//! items plus the three common fields and nothing else: no `horizontal`,
-//! no `on_scroll`, no `on_end_reached`. An agent working from the MCP
-//! could not learn that a scroller reports its end — and one commit
-//! (47d014a2) exists because an author could not find the setter and
-//! reached for a spelling that did nothing. The drift audit checks that
-//! an ENTRY exists per primitive, not that its props are complete, which
-//! is how this stayed invisible. These pin the props that matter most.
+//! Regression: `scroll_view` and the virtualizer advertised only their
+//! children / items plus the three common fields — no `horizontal`, no
+//! `on_scroll`, no `on_end_reached` — so an agent working from the MCP
+//! could not learn that a scroller reports its end. The drift audit checks
+//! that an ENTRY exists per primitive, not that its props are complete, so
+//! these pin the props that matter most.
 
 use mcp_catalog::lookup_primitive;
 

@@ -43,9 +43,8 @@ async fn main() {
     // Serve that directory as the site root, and its `pkg/` at `/pkg`.
     // `WEB_DIST` is exported by `idealyst dev --web` / `idealyst run
     // server`; the baked path is the fallback for a plain `cargo run`.
-    // Env first, so a future change to the CLI's staging layout can't
-    // silently strand this bin on the old one (which is exactly what
-    // happened to the other full-stack examples).
+    // Env first, so a change to the CLI's staging layout can't silently
+    // strand this bin on a stale path.
     let dist_dir = std::env::var_os("WEB_DIST")
         .map(PathBuf::from)
         .unwrap_or_else(|| project_dir.join("dist").join("web"));

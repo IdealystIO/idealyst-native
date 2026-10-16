@@ -3,13 +3,12 @@
 //! Tokio-flavored so it shares the rmcp server's runtime instead of
 //! standing up a second IO thread. Wire format is the bridge's
 //! newline-delimited JSON `{ id, cmd, args }` ⇄ `{ id, ok/err }`
-//! (see `runtime_core::robot::bridge`).
+//! (see `runtime_shared::robot::bridge`).
 //!
 //! Connection is **lazy and self-healing**: the first tool call
 //! `connect()`s; subsequent calls reuse the socket; if the app
 //! restarts mid-session the next failed write triggers a reconnect.
-//! The MCP server stays up across app restarts — matching the
-//! "doesn't go down" property phase 5 is built around.
+//! The MCP server stays up across app restarts.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

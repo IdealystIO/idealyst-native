@@ -83,17 +83,14 @@ pub use socket::{
 // =============================================================================
 // Client surface: configuration + the `call()` the macro emits.
 //
-// PRESENT ON EVERY BUILD, including `server`. It used to be gated
-// `#[cfg(not(feature = "server"))]`, which made the feature NON-ADDITIVE:
-// turning `server` on REMOVED `configure`/`ClientConfig`/`use_socket`
-// from the crate. Cargo unifies features across a workspace, so any
-// project whose server binary and app crates shared one — a plain
-// `cargo check --workspace`, or rust-analyzer — saw the app's calls to
-// `server::configure` fail to resolve. CrewForge's answer was to exile
-// its server binary into a second workspace with its own lockfile and
-// its own target directory, and the price of THAT was every host
-// dependency compiled twice and 92 of 384 shared crates resolving to
-// different versions, so nothing one build produced warmed the other.
+// PRESENT ON EVERY BUILD, including `server`. Do not gate it
+// `#[cfg(not(feature = "server"))]`: that makes the feature NON-ADDITIVE
+// (turning `server` on would REMOVE `configure`/`ClientConfig`/`use_socket`),
+// and since Cargo unifies features across a workspace, any project whose
+// server binary and app crates share one — a plain `cargo check
+// --workspace`, or rust-analyzer — would see the app's calls to
+// `server::configure` fail to resolve, forcing the server into a second
+// workspace that compiles every host dependency twice.
 //
 // Nothing here needs the gate: these modules depend on `net` and
 // `runtime_core`, both unconditional deps. The server-side machinery
@@ -152,12 +149,12 @@ pub use runtime::{router, schema_for, serve};
 ///
 /// Every args tuple with one or more params is a JSON array (`[a]`,
 /// `[a, b]`), but serde_json encodes the EMPTY tuple `()` as `null` — and
-/// decodes `()` only from `null`. So a zero-arg fn used to reject `[]`
+/// decodes `()` only from `null`. A zero-arg fn would then reject `[]`
 /// (`invalid type: sequence, expected unit`), the spelling any hand-written
-/// client (curl, a test, a non-Rust caller) naturally sends (#15). An empty
-/// array now decodes as `()` too. The framework's own client stub keeps
-/// sending `null` (`serde_json::to_vec(&())`), so a new client still talks
-/// to an older server.
+/// client (curl, a test, a non-Rust caller) naturally sends (#15), so an
+/// empty array decodes as `()` too. The framework's own client stub sends
+/// `null` (`serde_json::to_vec(&())`), so a new client still talks to an
+/// older server.
 ///
 /// The fallback runs only after the direct decode fails AND the body is
 /// exactly an empty array, and it only succeeds for a `T` that accepts

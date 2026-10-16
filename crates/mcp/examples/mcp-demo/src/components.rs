@@ -1,28 +1,21 @@
 //! A handful of `#[component]` definitions that exercise the catalog:
 //!
-//! - `icon_label` / `primary_button` / `spacer` — leaf components, no
+//! - `IconLabel` / `PrimaryButton` / `Spacer` — leaf components, no
 //!   `ui!` body, no composes.
-//! - `card` — composes two leaves; demonstrates a multi-child host.
-//! - `app_shell` — composes `Card` and `PrimaryButton`; deeper graph.
-//! - `spacer` — *no doc comment*; the catalog records `docs: ""`.
-//! - `primary_button` — multi-paragraph doc-comment; verifies that
+//! - `Card` — composes two leaves; demonstrates a multi-child host.
+//! - `AppShell` — composes `Card` and `PrimaryButton`; deeper graph.
+//! - `Spacer` — *no doc comment*; the catalog records `docs: ""`.
+//! - `PrimaryButton` — multi-paragraph doc-comment; verifies that
 //!   newlines + blank-line breaks round-trip into the catalog.
-//! - `forms::submit` / `forms::form_root` — a submodule. `form_root`
+//! - `forms::Submit` / `forms::FormRoot` — a submodule. `FormRoot`
 //!   composes `Submit` (resolves into the `forms` module).
 //!
-//! Fn names are `snake_case` (idiomatic Rust); `ui!` / `jsx!` call
-//! sites use `PascalCase`. The macros convert between them: e.g.
-//! `PrimaryButton()` lowers to `primary_button!()`. Authors may also
-//! write the call site directly in `snake_case` — the conversion is
-//! idempotent on already-snake input.
+//! Component fns are named PascalCase to match their `ui!` / `jsx!`
+//! tag, so a call site's ident is exactly the catalog entry name.
 //!
-//! Note: an earlier draft had `forms::card` collide with the root
-//! `card` to demo proximity resolution at the macro level — but
-//! Rust's `macro_rules!` visibility into child modules makes
-//! `Card()` inside `forms::*` ambiguous at compile time. The
-//! proximity rule is covered exhaustively in
-//! `mcp-catalog/tests/registers_component.rs` instead. The demo
-//! sticks to distinct names.
+//! The demo sticks to distinct names: a `forms::Card` colliding with the
+//! root `Card` would be ambiguous at compile time. The proximity rule is
+//! covered in `mcp-catalog/tests/registers_component.rs` instead.
 //!
 //! These functions are never called directly — the point is the
 //! `inventory::submit!` each `#[component]` emits as a side-effect.
@@ -113,7 +106,7 @@ pub fn darken(_hex: &str, _amount: f32) -> String {
     String::new()
 }
 
-/// Submodule whose `form_root` host references a `Submit` button.
+/// Submodule whose `FormRoot` host references a `Submit` button.
 /// The resolver should resolve `Submit` to `forms::submit` since
 /// only one entry has that short-name.
 pub mod forms {

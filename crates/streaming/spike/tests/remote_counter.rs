@@ -1,4 +1,4 @@
-//! Phase 4: a real `#[component]` + `ui!` component as a REMOTE component.
+//! A real `#[component]` + `ui!` component as a REMOTE component.
 //!
 //! `spike-remoteguest` is `spike-components`' RemoteCounter compiled into a
 //! bundle: its kernel is the bridged one (its signals live in this host's

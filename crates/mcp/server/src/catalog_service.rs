@@ -52,7 +52,7 @@ pub(crate) enum RobotMode {
 }
 
 /// The MCP catalog server. Holds the resolved catalog behind an
-/// `Arc<RwLock<...>>` so the watcher thread (phase 5) can swap in
+/// `Arc<RwLock<...>>` so the file-watch thread (`crate::watch`) can swap in
 /// a fresh `ResolvedCatalog` without taking the server down.
 #[derive(Clone)]
 pub struct CatalogService {
@@ -858,7 +858,7 @@ impl CatalogService {
     }
 
     /// Swap in a freshly-rebuilt catalog. Used by the file-watch
-    /// thread (phase 5). After replacing, the service should send
+    /// thread (`crate::watch`). After replacing, the service should send
     /// `notifications/resources/list_changed` via the rmcp peer.
     pub async fn replace_catalog(&self, new_cat: ResolvedCatalog) {
         {
@@ -1069,7 +1069,7 @@ impl CatalogService {
                 // Provenance: which crate this component came from. One
                 // catalog can span several projects (the extractor links
                 // them all), so this is what tells two apps' components
-                // apart — and it used to be a hardcoded `null`.
+                // apart.
                 let origin = mcp_catalog::origin_crate(e.module_path);
                 if !app_matches(req.app.as_deref(), origin) {
                     continue;
@@ -2051,7 +2051,7 @@ impl CatalogService {
         if let Some(ty) = return_type_inline {
             obj.insert("return_type_entry".into(), ty);
         }
-        // Cross-kind recipes (phase 3): usage examples that target or use
+        // Cross-kind recipes: usage examples that target or use
         // this utility, surfaced the same way `describe_component` does.
         obj.insert(
             "recipes".into(),
@@ -2753,10 +2753,10 @@ impl CatalogService {
         }
         let limit = req.limit.unwrap_or(50).min(200);
         let cat = self.catalog.read().await;
-        // Resolve the pack filter up front. It used to be compared to the
-        // crate name byte-for-byte, so `set = "lucide"` (the name every
-        // caller reaches for) skipped every pack and returned `[]` — which
-        // reads as "no such icon", the wrong conclusion entirely.
+        // Resolve the pack filter up front, by any of its names — not the
+        // crate name byte-for-byte: `set = "lucide"` (the name every caller
+        // reaches for) would skip every pack and return `[]`, which reads
+        // as "no such icon", the wrong conclusion entirely.
         if let Some(want) = &req.set {
             if !cat.icon_sets().iter().any(|s| icon_set_matches(s, want)) {
                 return Err(unknown_icon_set(want, cat.icon_sets()));
@@ -2793,12 +2793,11 @@ impl CatalogService {
         &self,
         Parameters(req): Parameters<SearchRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Tokenize on whitespace and lowercase each term. A whole-phrase
-        // query with no spaces degrades to a single-term search (the old
-        // behavior), so single-word queries are unaffected. Multi-word
-        // queries OR across terms and rank by distinct-term hit count —
-        // the gap the old contiguous-substring `contains(&full_query)`
-        // left, which returned `[]` for any multi-word query.
+        // Tokenize on whitespace and lowercase each term. A query with no
+        // spaces is a single-term search. Multi-word queries OR across
+        // terms and rank by distinct-term hit count — a contiguous-substring
+        // match of the whole query returns `[]` for nearly any multi-word
+        // query.
         let terms: Vec<String> = req
             .query
             .split_whitespace()
@@ -4282,7 +4281,7 @@ mod tests {
         let svc = CatalogService::with_robot_mode(false, None);
 
         // Lightweight: entries carry a `summary`, not full `docs`, and
-        // none of the file/line/module_path noise the old shape had.
+        // no file/line/module_path noise.
         let all = svc
             .list_components(Parameters(FilterRequest::default()))
             .await

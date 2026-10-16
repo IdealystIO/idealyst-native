@@ -1,4 +1,4 @@
-//! Phase 6 — `mcp --check` lint pass.
+//! `mcp --check` lint pass.
 //!
 //! Scans the resolved catalog for integrity issues that would make
 //! it less useful as an authoring surface. Per spec §8 / §13 the
@@ -169,15 +169,11 @@ fn is_first_party(module_path: &str, first_party: &[String]) -> bool {
 /// `#[component]` entry and *should* show as unresolved in the catalog
 /// without that being flagged as a problem.
 ///
-/// **Both spellings count.** This used to match PascalCase only, on the
-/// premise that "a primitive call site is its exact PascalCase name".
-/// That is not what authors write: inside `ui!` the leaf primitives are
-/// snake_case (`view`, `scroll_view`) and only components are PascalCase
-/// — the rule the `component-hygiene` guide states outright. So the
-/// suppression never fired for real code, and every `view` in every
-/// component was reported as a dangling edge. On one two-app workspace
-/// that was 415 of 600 findings, none of them real, which is enough
-/// noise to make the whole lint unreadable.
+/// **Both spellings count.** Inside `ui!` the leaf primitives are
+/// snake_case (`view`, `scroll_view`) and only components are PascalCase,
+/// so a PascalCase-only match never fires for real code and reports every
+/// `view` as a dangling edge (415 of 600 findings on one two-app
+/// workspace, none of them real).
 ///
 /// The catalog's own primitive slice is the source of truth now, so the
 /// list cannot drift from `ui.rs` the way a hand-maintained one does.

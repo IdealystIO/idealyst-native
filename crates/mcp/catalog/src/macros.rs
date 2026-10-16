@@ -3,8 +3,8 @@
 //! Same lock pattern as `primitives.rs` / `utilities.rs`: `MacroEntry`
 //! carries a private `_seal: ()` so only this crate can construct one.
 //! Every entry here documents a macro that actually exists — the
-//! `macro_rules!` set lives in `runtime_core` (`crates/runtime/core/src/lib.rs`)
-//! and the proc-macros in `runtime_macros` (`crates/runtime/macros/src/lib.rs`).
+//! `macro_rules!` set lives in `runtime_vocabulary` (re-exported by
+//! `runtime_core`) and the proc-macros in `runtime_macros` (`crates/runtime/macros/src/lib.rs`).
 //! The drift audit (`.claude/audits/mcp-catalog-drift.md`) checks this
 //! table against those definitions, so adding/removing a macro means
 //! updating this file in the same change.
@@ -19,10 +19,9 @@ use crate::{MacroEntry, MacroKind};
 // ---------------------------------------------------------------------
 // Reactive — state + reactivity (runtime_core macro_rules!)
 //
-// NOTE: signal creation is NOT here — the `signal!` macro was removed
-// (it expanded verbatim to `Signal::new`, no macro-only capability) and
-// replaced by the plain `signal(value)` function, documented as a
-// `UtilityEntry` in `utilities.rs` under `UtilityCategory::Reactive`.
+// NOTE: signal creation is NOT here — there is no `signal!` macro;
+// `signal(value)` is a plain function, documented as a `UtilityEntry` in
+// `utilities.rs` under `UtilityCategory::Reactive`.
 // ---------------------------------------------------------------------
 
 inventory::submit! {

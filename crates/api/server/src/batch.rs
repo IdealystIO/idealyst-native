@@ -15,7 +15,7 @@
 //!
 //! All transparent to the author — `add(2,3).await` looks the same.
 //! On an app-load fan-out (`use_query(get_user)` + `use_query(list_todos)`
-//! + ...), what used to be 10 HTTP requests becomes one.
+//! + ...), ten calls become one HTTP request.
 //!
 //! # Why "inline flusher" rather than `spawn_async`
 //!

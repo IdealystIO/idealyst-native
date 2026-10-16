@@ -40,7 +40,7 @@ base64 = "0.22"
 # the `compare_native_parity` tool.
 native-parity = { workspace = true }
 
-# File-watch (phase 5). Reuses `notify-debouncer-mini` — same crate
+# File-watch. Reuses `notify-debouncer-mini` — same crate
 # the existing `dev-reload` uses, so we don't introduce a second
 # file-watch implementation in the tree.
 notify-debouncer-mini = { version = "0.4", default-features = false }

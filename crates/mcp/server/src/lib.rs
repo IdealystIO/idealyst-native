@@ -5,7 +5,7 @@
 //! `mcp_catalog::inventory` slice at server-start time. For live
 //! catalog updates on source changes see [`run_stdio_with_watch`].
 //!
-//! See `docs/mcp-catalog-spec.md` §5 for the MCP surface this
+//! See `docs/framework-mcp-spec.md` §5 for the MCP surface this
 //! implements.
 
 mod adb;
@@ -221,25 +221,13 @@ pub async fn run_stdio() -> Result<()> {
     run_stdio_with_options(false).await
 }
 
-/// Start the MCP server on stdio AND watch the supplied source
-/// directories for changes. On any change, [`CatalogService`] is
-/// signalled to re-extract the catalog from inventory and push
-/// `notifications/resources/list_changed` to the client.
-///
-/// **Important**: rebuilding the catalog at runtime only picks up
-/// components whose `inventory::submit!` ctors are already linked
-/// into THIS process. Editing source files alone does not magically
-/// surface new components; the recommended deployment pattern is to
-/// spawn a separate "catalog extractor" subprocess on each rebuild,
-/// pipe its catalog JSON back, and replace the in-memory catalog —
-/// see watcher details in `crates/mcp-server/src/watch.rs`.
 /// Start the MCP server on stdio AND on every source change spawn
 /// `subprocess_cmd` as a child, read its stdout as a catalog JSON
 /// document, and replace the live catalog with what the child
 /// produced. Pushes `notifications/resources/list_changed` after
 /// every successful swap.
 ///
-/// This is the deployment shape spec §8.1 / phase 5b describes —
+/// This is the deployment shape spec §8.1 describes —
 /// the server stays up across catalog rebuilds; only the child
 /// process restarts.
 ///
@@ -290,6 +278,18 @@ pub async fn run_stdio_with_subprocess(
     Ok(())
 }
 
+/// Start the MCP server on stdio AND watch the supplied source
+/// directories for changes. On any change, [`CatalogService`] is
+/// signalled to re-extract the catalog from inventory and push
+/// `notifications/resources/list_changed` to the client.
+///
+/// **Important**: rebuilding the catalog at runtime only picks up
+/// components whose `inventory::submit!` ctors are already linked
+/// into THIS process. Editing source files alone does not magically
+/// surface new components; the recommended deployment pattern is to
+/// spawn a separate "catalog extractor" subprocess on each rebuild,
+/// pipe its catalog JSON back, and replace the in-memory catalog —
+/// [`run_stdio_with_subprocess`] (watcher details in `src/watch.rs`).
 pub async fn run_stdio_with_watch(paths: Vec<std::path::PathBuf>) -> Result<()> {
     init_tracing();
     tracing::info!("starting MCP catalog server (live reload watching {:?})", paths);

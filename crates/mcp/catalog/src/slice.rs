@@ -6,11 +6,10 @@
 //! slices additionally implement [`LeakFromJson`] so
 //! [`crate::ResolvedCatalog::build_from_json`] rebuilds them the same way.
 //!
-//! Why this exists: previously every slice was written out by hand in
-//! three places — the struct, the `catalog_json()` writer, and the
-//! `leak_*_from_json()` reader — which silently drift. Funnelling the
-//! writer and reader through one trait per type collapses that to a
-//! single site each.
+//! Why this exists: a slice hand-written in three places — the struct, the
+//! `catalog_json()` writer, and the `leak_*_from_json()` reader — silently
+//! drifts. Funnelling the writer and reader through one trait per type
+//! keeps a single site each.
 //!
 //! `ComponentEntry` deliberately does **not** implement [`LeakFromJson`]:
 //! components carry *required-field* error semantics (a malformed

@@ -1,8 +1,8 @@
 //! Freshness of the served catalog.
 //!
 //! The catalog is produced by a subprocess that compiles the project, so
-//! it is never instantaneous and can fail. Two facts follow, and both
-//! used to be invisible to a client:
+//! it is never instantaneous and can fail. Two facts follow, and this
+//! module makes both visible to a client:
 //!
 //! 1. **A rebuild takes real time.** The first extraction on a cold cache
 //!    is minutes; a warm incremental one is tens of seconds. During that
@@ -17,7 +17,7 @@
 //! empty `list_components` is indistinguishable between "this project has
 //! no components", "the first build is still running", and "the project
 //! root was misconfigured so nothing was ever built" — three very
-//! different situations that used to look identical.
+//! different situations.
 //!
 //! Status is therefore reported two ways. [`CatalogStatus::marker`]
 //! rides on the catalog tools' own responses, so a caller learns the data

@@ -5,7 +5,7 @@
 //! `adb`. `adb` lives on the host, which is exactly where this MCP
 //! server runs. So OS-level taps are issued here: we read the target
 //! element's physical screen-pixel rect over the bridge (the
-//! `get_device_frame` verb, backed by `Backend::device_frame`) and shell
+//! `get_device_frame` verb, backed by `IntrospectionOps::device_frame`) and shell
 //! out to `adb shell input tap`.
 //!
 //! Why this is different from the framework's `click` verb: `click`
@@ -17,7 +17,7 @@
 //!
 //! Coordinate space: `adb input tap` takes physical display pixels with
 //! origin at the screen top-left (status bar included). That is the same
-//! space `Backend::device_frame` (Android `getLocationOnScreen`) reports,
+//! space `IntrospectionOps::device_frame` (Android `getLocationOnScreen`) reports,
 //! so there is **no host-side density conversion** — the dp→px scaling is
 //! applied on-device where the true density is known.
 

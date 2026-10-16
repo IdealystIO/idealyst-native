@@ -1,26 +1,24 @@
 //! Hand-curated registration table for [`PrimitiveEntry`].
 //!
-//! Lives in this crate (not `runtime-core`) because `PrimitiveEntry`'s
+//! Lives in this crate (not the runtime) because `PrimitiveEntry`'s
 //! private `_seal: ()` field can only be constructed inside this crate's
 //! privacy boundary. That's the lock — third-party crates can read every
 //! `pub` field but cannot submit their own entries.
 //!
-//! Most entries correspond 1:1 to an `Element` enum variant in
-//! `runtime-core::primitive`, but the table is keyed by the author-facing
-//! `ui!`/`jsx!` TAG (see `canonical_primitive` in
-//! `crates/runtime/macros-parse/src/primitives.rs`), not by the variant. So it
-//! also carries COMPOSITIONS that are real tags yet have no dedicated
-//! variant — `overlay` / `anchored_overlay` lower to `Element::Portal`.
-//! Conversely, some `Element` variants (`Portal`, `Pressable`) are NOT
-//! author tags; they're catalogued with a caveat steering to the tag that
-//! is (`overlay`, the `idea-ui` wrapper).
+//! Most entries correspond 1:1 to a builtin vocabulary primitive, but the
+//! table is keyed by the author-facing `ui!`/`jsx!` TAG (see
+//! `canonical_primitive` in `crates/runtime/macros-parse/src/primitives.rs`),
+//! not by the primitive. So it also carries COMPOSITIONS that are real tags
+//! yet have no primitive of their own — `overlay` / `anchored_overlay` lower
+//! to a portal item. Conversely, some primitives (`portal`, `pressable`) are
+//! NOT author tags; they're catalogued with a caveat steering to the tag
+//! that is (`overlay`, the `idea-ui` wrapper).
 //!
-//! Drift between this table and the framework is caught by
-//! `.claude/audits/primitive-catalog.md` — a human-readable drift audit.
-//! (There is no `tests/primitive_coverage.rs`; the emission/round-trip
+//! Drift between this table and the framework is caught by the
+//! `.claude/audits/mcp-catalog-drift.md` audit. The emission/round-trip
 //! coverage lives in `tests/registers_component.rs`, which asserts a core
-//! subset is present rather than an exhaustive variant match — precisely so
-//! tag-only compositions like `overlay` can be listed without a variant.)
+//! subset is present rather than an exhaustive match — precisely so
+//! tag-only compositions like `overlay` can be listed.
 
 use crate::{PrimitiveCategory, PrimitiveEntry, PropFieldSpec};
 
@@ -937,11 +935,11 @@ inventory::submit! {
     }
 }
 
-// `overlay` / `anchored_overlay` are COMPOSITIONS, not `Element` enum
-// variants: the `ui!` macro lowers them to `Element::Portal` (adding the
-// backdrop + focus-trap wiring around the caller's children — see
+// `overlay` / `anchored_overlay` are COMPOSITIONS, not primitives of their
+// own: the `ui!` macro lowers them to a portal item (adding the backdrop +
+// focus-trap wiring around the caller's children — see
 // `emit_overlay`/`emit_anchored_overlay` in `crates/runtime/macros-expand/src/ui.rs`
-// and the builders in `crates/runtime/core/src/primitives/overlay.rs`). They
+// and the builders in `crates/runtime/vocabulary/src/builders/portal.rs`). They
 // ARE first-class author `ui!`/`jsx!` tags (in `canonical_primitive`), which
 // is why they're catalogued here even though they have no dedicated variant.
 inventory::submit! {

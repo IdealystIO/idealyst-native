@@ -1,14 +1,14 @@
 //! Walk-through of the mcp-catalog catalog.
 //!
-//! Two run modes:
+//! Run modes:
 //!
 //! ```text
 //! cargo run -p mcp-demo                        # prints catalog (default)
 //! cargo run -p mcp-demo -- --serve             # launches stdio MCP server
 //! cargo run -p mcp-demo -- --watch             # MCP server + in-process reload
-//! cargo run -p mcp-demo -- --watch-subprocess  # MCP server + subprocess reload (phase 5b)
+//! cargo run -p mcp-demo -- --watch-subprocess  # MCP server + subprocess reload
 //! cargo run -p mcp-demo -- --emit-catalog      # print catalog JSON to stdout, exit
-//! cargo run -p mcp-demo -- --check             # lint pass (phase 6)
+//! cargo run -p mcp-demo -- --check             # lint pass
 //! ```
 //!
 //! The print mode (default) shows two views of the same catalog:
@@ -64,7 +64,7 @@ fn emit_catalog() {
     println!("{}", serde_json::to_string_pretty(&json).unwrap());
 }
 
-/// Phase 6: run the lint pass and exit non-zero if anything fired.
+/// Run the lint pass and exit non-zero if anything fired.
 /// Output is one line per finding, sorted by FQN.
 fn run_check() {
     let cat = mcp_catalog::ResolvedCatalog::build();

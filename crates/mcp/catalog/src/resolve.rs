@@ -1,4 +1,4 @@
-//! Phase 2: runtime name-resolution + adjacency.
+//! Runtime name-resolution + adjacency.
 //!
 //! Composes edges emitted by `#[component]` (see `EdgeRef`) carry the
 //! bare ident the author wrote at the `ui!` / `jsx!` call site. The
@@ -157,8 +157,8 @@ impl ResolvedCatalog {
         cat
     }
 
-    /// Build from a JSON document in the shape `catalog_json()`
-    /// produces (see `crates/framework/mcp/src/lib.rs`). Used by
+    /// Build from a JSON document in the shape [`crate::catalog_json`]
+    /// produces. Used by
     /// the MCP server's subprocess-reload pipeline: a child
     /// process prints `catalog_json()` to stdout, the server pipes
     /// it back, and this call leaks-and-builds the owned entries
@@ -257,8 +257,7 @@ impl ResolvedCatalog {
     /// their body ([`uses`](crate::RecipeEntry::uses)). Kind-agnostic:
     /// works for a component, utility, free function, or type name
     /// alike. This is the join every `describe_*` uses to surface
-    /// "here's how to use it" examples — the phase-3 generalization of
-    /// what was previously inlined for components only.
+    /// "here's how to use it" examples.
     pub fn recipes_for(&self, name: &str) -> Vec<&'static RecipeEntry> {
         self.recipes
             .iter()

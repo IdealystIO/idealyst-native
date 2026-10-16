@@ -1,4 +1,4 @@
-//! Phase 5: file-watch driven catalog reload.
+//! File-watch driven catalog reload.
 //!
 //! On any source file change under the watched paths, this thread
 //! re-extracts the catalog from `mcp_catalog::entries()` (the
@@ -10,25 +10,16 @@
 //! inventory only picks up components linked into THIS binary. A
 //! user editing `crates/mcp/examples/mcp-demo/src/components.rs` and saving
 //! does NOT cause new ctors to fire in the running server — the
-//! linker section is fixed at link time. Two practical paths:
+//! linker section is fixed at link time. Two flavors live here:
 //!
-//! 1. **Server-restart model**: a controlling process (typically
-//!    `cargo idealyst mcp --watch`, phase 6) rebuilds + relaunches
-//!    the entire server on source change. The server-side reload
-//!    here is then redundant. Simplest, but the MCP client
-//!    reconnects.
+//! 1. **In-process** ([`spawn`]): re-reads this process's inventory.
+//!    Useful as a building block and for unit-testable reload
+//!    behaviour; it surfaces nothing added since the binary linked.
 //!
-//! 2. **Subprocess catalog model**: the long-running server spawns
-//!    a short-lived catalog-extractor child on each change, parses
-//!    its stdout JSON, replaces the catalog. The server's process
-//!    stays up; the client never reconnects. Matches the user's
-//!    "server doesn't go down" property.
-//!
-//! This module is the **in-process** flavor — useful as a building
-//! block and for unit-testable reload behaviour. The subprocess
-//! flavor is a thin layer on top: replace the `reload_from_inventory`
-//! call below with "spawn child, read stdout, deserialize, build
-//! ResolvedCatalog::build_from(...)". Marked `TODO(phase-5b)` inline.
+//! 2. **Subprocess catalog** ([`spawn_subprocess`]): the long-running
+//!    server spawns a short-lived catalog-extractor child on each
+//!    change, parses its stdout JSON, replaces the catalog. The
+//!    server's process stays up; the client never reconnects.
 
 use std::{
     path::PathBuf,
@@ -129,7 +120,7 @@ fn is_meaningful(events: &[DebouncedEvent]) -> bool {
         .any(|e| !e.path.to_string_lossy().contains("/.git/"))
 }
 
-/// Phase 5b: subprocess-driven reload. Same shape as [`spawn`]
+/// Subprocess-driven reload. Same shape as [`spawn`]
 /// but on every file change the watcher spawns `cmd_factory()`,
 /// reads its stdout, parses as catalog JSON, and swaps the
 /// service's in-memory catalog. The MCP server stays up; only the
@@ -323,20 +314,14 @@ async fn run_subprocess_reload(
     }
 }
 
-/// Atomic "reload + notify" step. Pulled out so phase 5b's
-/// subprocess flavor can replace just the reload half without
-/// rewriting the watch loop.
+/// Atomic "reload + notify" step for the in-process flavor.
 ///
 /// Notification failures are warnings, not errors — the catalog
 /// has already been swapped, and a missed `list_changed` only
 /// means MCP clients see stale data until they ask again.
 async fn reload_and_notify(svc: &Arc<CatalogService>, peer: &Peer<RoleServer>) {
-    // TODO(phase-5b): replace `reload_from_inventory` with a
-    // subprocess spawn-and-parse so newly-added components show up
-    // without relinking the server. The current implementation
-    // re-reads THIS process's inventory, which is fine for
-    // verifying the swap pipeline but won't surface components
-    // added since the binary linked.
+    // Re-reads THIS process's inventory: it won't surface components
+    // added since the binary linked (that's `spawn_subprocess`'s job).
     svc.reload_from_inventory().await;
 
     if let Err(e) = peer.notify_resource_list_changed().await {

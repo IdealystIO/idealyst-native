@@ -1,4 +1,4 @@
-//! Per-platform boot sequences — the bodies the CLI used to generate.
+//! Per-platform boot sequences.
 //!
 //! Each submodule holds one platform's `run`, and `run` is re-exported
 //! from here under whichever `cfg` selects that platform. That keeps

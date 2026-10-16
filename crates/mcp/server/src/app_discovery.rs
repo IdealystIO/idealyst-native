@@ -6,10 +6,9 @@
 //! to populate an in-memory map of currently-live apps keyed by app
 //! name.
 //!
-//! Replaces the old mDNS / `_idealyst-robot._tcp.local.` discovery —
-//! the file-based path avoids multicast firewall headaches on
-//! corporate / VPN networks and produces deterministic results
-//! across rerun cycles.
+//! Files rather than mDNS: no multicast firewall headaches on
+//! corporate / VPN networks, and deterministic results across rerun
+//! cycles.
 //!
 //! Liveness check: each scan does `kill(pid, 0)` (a no-op syscall
 //! that fails with ESRCH when the process is gone) to filter ghost
@@ -48,7 +47,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct DiscoveredApp {
     /// `name` field from the JSON — the
-    /// [`runtime_core::robot::bridge::AppIdentity::name`].
+    /// `runtime_shared::robot::bridge::AppIdentity::name`.
     pub name: String,
     /// `bundle_id` from the JSON, if any.
     pub bundle_id: Option<String>,

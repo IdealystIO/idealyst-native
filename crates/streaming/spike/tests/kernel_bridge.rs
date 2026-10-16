@@ -1,4 +1,4 @@
-//! Phase 3: a bundle's reactive kernel running on the HOST's graph, over
+//! A bundle's reactive kernel running on the HOST's graph, over
 //! wasm. `spike-kernelguest` is plain runtime-world code; built as a bundle,
 //! its engine is the bridged one, so everything below is observed from the
 //! host side: the host's world, the host's flush, the host's scopes.
@@ -113,7 +113,7 @@ fn dropping_the_host_world_tears_the_bundle_state_down() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3b: host-owned props and context crossing into the bundle — the
+// Host-owned props and context crossing into the bundle — the
 // reactive half of RemoteCounter, on the host's graph.
 // ---------------------------------------------------------------------------
 

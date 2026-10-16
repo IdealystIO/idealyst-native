@@ -116,9 +116,9 @@ pub extern "C" fn kg_cleanups() -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// RemoteCounter's reactive half (phase 3b): host-owned props and context.
-// The UI half (the element bridge) is the next phase; here the effect
-// renders into a string the host reads back.
+// RemoteCounter's reactive half: host-owned props and context. No element
+// bridge here (that's `spike-remoteguest`); the effect renders into a
+// string the host reads back.
 // ---------------------------------------------------------------------------
 
 fn wire_encode<T: Wire>(v: &T, out: &mut Vec<u8>) {

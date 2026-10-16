@@ -1,17 +1,16 @@
-//! Framework MCP — phase 1 prototype.
+//! Framework MCP catalog.
 //!
 //! Defines the [`ComponentEntry`] record and the [`inventory`]
-//! distributed slice that `#[component]` populates when the
-//! `runtime-macros/mcp` feature is on. Provides [`entries`] to walk
-//! every registered entry and [`dump_catalog_json`] to emit the catalog
-//! as JSON on stdout — the minimum surface for `cargo idealyst mcp
-//! --json-catalog` to wire up.
+//! distributed slices that `#[component]` (and the other catalog macros)
+//! populate when the `runtime-macros/catalog` feature is on. Provides
+//! [`entries`] to walk every registered entry and [`dump_catalog_json`] to
+//! emit the catalog as JSON on stdout (the CLI's generated catalog wrapper
+//! calls it).
 //!
-//! See `docs/mcp-catalog-spec.md` for the full plan. Phase 1 emits
-//! the flat catalog with `composes` edges as bare idents. Phase 2
-//! resolves those idents into fully-qualified [`EntryRef`]s via the
-//! [`resolve`] module — same-module-first, then closest ancestor, then
-//! workspace-wide (spec §6).
+//! See `docs/framework-mcp-spec.md` for the design. Entries carry
+//! `composes` edges as bare idents; the [`resolve`] module turns those
+//! into fully-qualified [`EntryRef`]s — same-module-first, then closest
+//! ancestor, then workspace-wide (spec §6).
 
 pub use inventory;
 
@@ -39,7 +38,7 @@ mod sdks;
 /// the function body. `name` is the bare ident as written at the call
 /// site — proc-macros run before name resolution, so the runtime is
 /// responsible for resolving these to fully-qualified `ComponentEntry`
-/// references (phase 2, see spec §6).
+/// references (see [`resolve`], spec §6).
 ///
 /// `line` is the source line of the ident *within the same file as
 /// the parent entry* — the parent's `file` field plus this `line` is
@@ -53,14 +52,13 @@ pub struct EdgeRef {
 /// One parameter of a `#[component]` function's signature, as
 /// extracted by the proc-macro at definition time.
 ///
-/// Phase 3a records the surface-level info available directly from
+/// Records the surface-level info available directly from
 /// `syn::Signature`: parameter name and pretty-printed type. Per-field
 /// information about a props struct (when the signature is
-/// `fn foo(props: &FooProps)`) is the job of `#[derive(IdealystSchema)]`
-/// — a future addition in this phase. For now, a single-struct
-/// signature surfaces as one `ParamSpec` whose `type_str` names the
-/// struct; consumers can cross-reference the struct's own catalog
-/// entry once `IdealystSchema` lands.
+/// `fn foo(props: &FooProps)`) comes from `#[derive(IdealystSchema)]`: a
+/// single-struct signature surfaces as one `ParamSpec` whose `type_str`
+/// names the struct, and consumers cross-reference that struct's own
+/// [`PropsSchemaEntry`].
 ///
 /// `type_str` is `quote!`-stringified, so a borrow shows as `"& Foo"`
 /// (space between `&` and the type) — the catalog is for tooling /
@@ -315,9 +313,8 @@ pub enum UtilityCategory {
     Theme,
     Layout,
     Math,
-    /// Reactive-surface functions (`signal`, `memo`). These moved here
-    /// from the macros table when the `signal!` / `memo!` macros were
-    /// replaced by the plain `signal(value)` / `memo(move || …)` fns.
+    /// Reactive-surface functions (`signal(value)`, `memo(move || …)`) —
+    /// plain fns, so they live here rather than in the macros table.
     Reactive,
 }
 
@@ -521,12 +518,13 @@ pub struct StateEntry {
 #[non_exhaustive]
 pub struct GuideEntry {
     /// URL-safe slug; doubles as the lookup key. Mirrors the
-    /// markdown filename in `crates/framework/mcp/guides/<slug>.md`.
+    /// markdown filename in `crates/mcp/catalog/guides/<slug>.md`.
     pub slug: &'static str,
     pub title: &'static str,
     /// Display ordering for table-of-contents — lowest first.
     pub order: u32,
-    /// Free-form classification tags surfaced through `search_guides`.
+    /// Free-form classification tags surfaced through the MCP server's
+    /// `list_guides` and `search` tools.
     pub tags: &'static [&'static str],
     /// Raw markdown body — `include_str!`'d at build time. Cross-
     /// references between guides / catalog entries use the
@@ -595,8 +593,8 @@ pub struct AnimationEntry {
 /// how to use this", proven to still type-check.
 ///
 /// The target is **any** documentable entity — a component, a utility, a
-/// free function, a type — not just a component (phase 3 generalization,
-/// see `docs/catalog-scopes-spec.md` §6). Consumers join a recipe to an
+/// free function, a type — not just a component (see
+/// `docs/catalog-scopes-spec.md` §6). Consumers join a recipe to an
 /// entity by name via [`ResolvedCatalog::recipes_for`].
 ///
 /// Open slice — anyone can write recipes for anything, anywhere (the
@@ -994,10 +992,10 @@ pub fn nearest_schema(short_name: &str, near: &str) -> Option<&'static PropsSche
 /// idents freely — CrewForge has `BlockerRowProps` in two crates, and 151
 /// components whose props struct shares its name with another one. The
 /// struct the code means is the one in scope, which is nearly always the
-/// one declared in, or closest to, the component's own module. The join
-/// used to take the first match in link order, so those components were
-/// documented with another crate's fields; nearest is also independent
-/// of link order, so a compiled catalog and one read from source agree.
+/// one declared in, or closest to, the component's own module — a
+/// first-match-in-link-order join documents those components with another
+/// crate's fields. Nearest is also independent of link order, so a
+/// compiled catalog and one read from source agree.
 pub fn nearest_by_module<T: Copy>(candidates: impl IntoIterator<Item = T>, module_of: impl Fn(T) -> &'static str, near: &str) -> Option<T> {
     let shared = |m: &str| m.split("::").zip(near.split("::")).take_while(|(a, b)| a == b).count();
     candidates.into_iter().max_by(|a, b| {
@@ -1203,8 +1201,8 @@ pub fn catalog_json() -> serde_json::Value {
     CatalogParts::registered().to_json()
 }
 
-/// Print the catalog as pretty-formatted JSON on stdout. The shape
-/// `cargo idealyst mcp --json-catalog` will eventually call.
+/// Print the catalog as pretty-formatted JSON on stdout. The CLI's
+/// generated catalog wrapper binary calls this.
 pub fn dump_catalog_json() {
     let json = catalog_json();
     println!("{}", serde_json::to_string_pretty(&json).unwrap());

@@ -3,8 +3,7 @@
 //! # Why this is a macro at all
 //!
 //! Almost nothing here needs to be. The per-platform boot sequences
-//! that the CLI used to *generate* into wrapper crates are ordinary
-//! functions in `idealyst::boot`, so they can be read, tested and
+//! are ordinary functions in `idealyst::boot`, so they can be read, tested and
 //! stepped through like any other code. Two things resist that:
 //!
 //! 1. **Manifest metadata.** `[package.metadata.idealyst.app]` (app
@@ -30,16 +29,15 @@
 //! static ALLOCATOR: idealyst::alloc::Small = idealyst::alloc::small();
 //!
 //! fn main() {
-//!     idealyst::boot::run::<MyExtensions>(
+//!     idealyst::boot::run::<MyExtensions, idealyst::runtime_vocabulary::AllBuiltins>(
 //!         || my_app::app(),
 //!         idealyst::AppConfig { name: "My App", ..Default::default() },
 //!     );
 //! }
 //! ```
 //!
-//! That matters because a generated wrapper you can't see is exactly
-//! what this refactor exists to delete. Don't replace it with a macro
-//! you can't see either.
+//! Keep it that way: the point of `idealyst::boot` is a boot sequence you
+//! can read, so don't grow this into a macro you can't see.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -77,9 +75,8 @@ pub fn entry(input: TokenStream) -> TokenStream {
         config;
 
     // The builtin-primitive set. A declared list becomes a local
-    // `builtin_set!` type; the default is the full vocabulary. This
-    // replaces the CLI's old `--primitives` flag: the set is a property
-    // of the app, not of one invocation of a build tool, and it has to
+    // `builtin_set!` type; the default is the full vocabulary. The set is
+    // a property of the app, not of one invocation of a build tool, and it has to
     // be a *type* at the boot call site for the dead-code elimination to
     // fire at all.
     let (builtin_decl, builtin_ty) = match primitives {

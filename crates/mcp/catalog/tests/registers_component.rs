@@ -20,16 +20,11 @@
 //! integration test is the *target* name, and the fingerprint compares
 //! module paths — so this file must stay `registers_component.rs`.
 //!
-//! Hosting: the suite body still lives at
-//! `crates/dev/newcore-catalog/tests/shared/catalog_emission.rs`, which
-//! is where it was parked while the pre-v2 core still owned the other
-//! anchor and mcp-catalog could not name the facade (a dev-dep could not
-//! be made optional, and an unconditional one would have flipped the
-//! macro lowering for the dying leg too). With one core that constraint
-//! is gone — mcp-catalog takes the facade as a dev-dep directly, cycle
-//! and all (cargo permits cycles through dev-dependencies). The body
-//! should be folded back in here and `crates/dev/newcore-catalog`
-//! removed; until then this `include!` is the single source.
+//! Hosting: the suite body lives at
+//! `crates/dev/newcore-catalog/tests/shared/catalog_emission.rs` and is
+//! `include!`d here, the single source. mcp-catalog takes the facade as a
+//! dev-dep directly (cargo permits the cycle through dev-dependencies), so
+//! nothing stops the body moving into this file.
 //!
 //! Invocation: `cargo test -p mcp-catalog`.
 
