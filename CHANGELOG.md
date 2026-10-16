@@ -587,6 +587,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `SegmentedControl(block = true)` fills its container and splits it evenly
   between the segments, like Button's `block`.
 
+- **Permissions robot controls** (`permissions`, dev builds only).
+  `permissions::register_robot_controls()` adds `permissions.set
+  {permission, status}` — `status()` reports the fake and `request()`
+  resolves to it with no system prompt — `permissions.clear` and
+  `permissions.requests` (what the app asked for).
+
 - **Native input for the robot: `tap_native` / `drag_native`**
   (`runtime-vocabulary`, `backend-web`, `backend-macos`,
   `backend-ios-mobile`, `backend-android-mobile`, `backend-windows`,

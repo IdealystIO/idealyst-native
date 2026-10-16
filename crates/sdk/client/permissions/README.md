@@ -93,6 +93,29 @@ higher-level SDKs and to the host:
   resolves to the re-read status rather than observing the grant — it never
   hangs, and it never fakes a grant. This is the honest integration seam.
 
+## Robot test controls
+
+A system permission prompt is the OS's, and an E2E test can't tap it. A
+robot (dev) build can fake the answer instead, so a test assumes the grant
+(or the denial) it needs. Register the controls once at boot — a no-op in
+release builds:
+
+```rust
+permissions::register_robot_controls();
+```
+
+| Function | Effect |
+|---|---|
+| `permissions.set {permission, status}` | `status()` reports `status` and `request()` resolves to it, with no prompt. `permission`: `camera`, `microphone`, `notifications`, `location_when_in_use`, `location_always`; `status`: `granted`, `denied`, `restricted`, `undetermined`, `unsupported`. |
+| `permissions.clear {permission?}` | The OS answers again (for every permission when left out). |
+| `permissions.requests {clear?}` | What the app requested, oldest first, faked or not. |
+
+```rust
+app.call_function("permissions.set", json!({ "permission": "camera", "status": "denied" }));
+app.test_id("scan").click();
+app.test_id("camera-denied-banner").assert_visible();
+```
+
 ## Testing checklist
 
 Manual verification per backend — an unchecked **native** box means the code

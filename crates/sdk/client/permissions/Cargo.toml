@@ -67,6 +67,9 @@ pollster = "0.4"
 catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
 
 [dev-dependencies]
+# The robot test controls (`src/robot_controls.rs`) compile only in robot
+# builds; the unit tests turn the vocabulary's `robot` on to reach them.
+runtime-vocabulary = { workspace = true, features = ["robot"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 
 # src/apple.rs: AVCaptureDevice, CLLocationManager, UNUserNotificationCenter.

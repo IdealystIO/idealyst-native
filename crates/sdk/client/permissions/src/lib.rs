@@ -97,6 +97,11 @@ pub enum Permission {
 /// The permission's current grant state, **without** prompting the user.
 /// Cheap to call repeatedly.
 pub async fn status(permission: Permission) -> PermissionStatus {
+    runtime_vocabulary::robot_only! {
+        if let Some(fake) = robot_controls::fake(permission) {
+            return fake;
+        }
+    }
     imp::status(permission).await
 }
 
@@ -106,7 +111,32 @@ pub async fn status(permission: Permission) -> PermissionStatus {
 /// On a platform where the permission needs no grant this resolves to
 /// [`PermissionStatus::Unsupported`] without prompting.
 pub async fn request(permission: Permission) -> PermissionStatus {
+    runtime_vocabulary::robot_only! {
+        robot_controls::record_request(permission);
+        if let Some(fake) = robot_controls::fake(permission) {
+            return fake;
+        }
+    }
     imp::request(permission).await
+}
+
+/// Register this SDK's robot test controls, so an E2E test can assume an
+/// answer instead of meeting a system prompt it can't tap:
+/// `permissions.set {permission, status}` fakes the OS's answer —
+/// [`status`] reports it and [`request`] resolves to it without prompting
+/// — `permissions.clear {permission?}` stops faking, and
+/// `permissions.requests {clear?}` lists what the app asked for. Call once
+/// at boot, on the UI thread; a no-op outside robot (dev) builds.
+pub fn register_robot_controls() {
+    runtime_vocabulary::robot_only! {
+        robot_controls::register();
+    }
+}
+
+// Robot test controls (`permissions.set` / `.clear` / `.requests`): only
+// in robot builds.
+runtime_vocabulary::robot_only! {
+    mod robot_controls;
 }
 
 // ---------------------------------------------------------------------------

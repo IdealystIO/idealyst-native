@@ -176,8 +176,12 @@ function may take longer. Functions run on the UI thread outside any
 | `location` | `location::register_robot_controls()` | `location.set {latitude, longitude, accuracy_m?, …}`, `location.clear` |
 | `connectivity` | `connectivity::register_robot_controls()` | `connectivity.set {online, transport?}`, `connectivity.clear` |
 | `notifications` | `notifications::register_robot_controls()` | `notifications.log`, `notifications.clear_log` |
+| `permissions` | `permissions::register_robot_controls()` | `permissions.set {permission, status}`, `permissions.clear`, `permissions.requests` |
 
-A fake replaces the platform for the SDK's whole surface: `location.set`
+Anything that asks the OS — a permission prompt, a sensor, the network —
+should be fakeable, so a test assumes the answer it needs instead of
+meeting a dialog it can't drive. A fake replaces the platform for the
+SDK's whole surface: `location.set`
 makes `current()` resolve the fix (with no permission prompt) and sends it
 to every live `watch`, and the platform's own updates are dropped until
 `location.clear`. The fakes and their hooks compile only into robot builds
