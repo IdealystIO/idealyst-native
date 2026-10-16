@@ -67,3 +67,28 @@ fn webm_requests_are_recorded_as_mp4() {
     assert_eq!(out, "video.mp4");
     assert_eq!(&bytes[4..8], b"ftyp");
 }
+
+/// Recording over a file another program holds open (the gallery's player
+/// showing the last recording under the same name) failed with Windows'
+/// raw sharing-violation text. It now says the file is open elsewhere.
+#[test]
+fn regression_an_output_file_held_open_elsewhere_is_named_as_such() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let store = files::app_files("media-writer-windows-host-test").expect("store");
+    let rel = "held.mp4";
+    let path = store.local_path(rel).expect("local path");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // No sharing at all: nobody else may open it.
+    let held = std::fs::OpenOptions::new().write(true).create(true).share_mode(0).open(&path).expect("hold the file");
+    let (video, vw) = MediaStream::new();
+    let recording = pollster::block_on(MediaWriter::new().record(MediaInputs::video(&video), RecordConfig::new(store.clone(), rel)))
+        .expect("recording starts");
+    let img = vec![0u8; (W * H * 4) as usize];
+    for i in 0..5u64 {
+        vw.write_rgba8_at(W, H, &img, i * FRAME_US);
+    }
+    let err = pollster::block_on(recording.stop()).expect_err("the file is held");
+    assert!(err.to_string().contains("open in another program"), "{err}");
+    drop(held);
+    let _ = std::fs::remove_file(&path);
+}

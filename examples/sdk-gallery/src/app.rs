@@ -310,8 +310,17 @@ pub fn RecordingPanel() -> Element {
     let clip: Signal<Option<MediaContentSource>> = signal(None);
     let active: Rc<std::cell::RefCell<Option<(camera::MediaStream, media_writer::Recording)>>> = Rc::default();
     let a = active.clone();
+    let takes = Rc::new(std::cell::Cell::new(0u32));
     let start = Rc::new(move || {
+        if a.borrow().is_some() {
+            return; // already recording
+        }
         let a = a.clone();
+        // Let go of the last recording (the player holds the file open) and
+        // write each take to its own file.
+        clip.set(None);
+        takes.set(takes.get() + 1);
+        let name = format!("gallery-recording-{}-{}.mp4", std::process::id(), takes.get());
         status.set("Starting…".to_string());
         spawn_async(async move {
             let stream = match screen_recorder::ScreenRecorder::new().start(screen_recorder::RecordingConfig::new()).await {
@@ -323,7 +332,7 @@ pub fn RecordingPanel() -> Element {
                 Err(e) => return status.set(format!("No file store: {e}")),
             };
             match media_writer::MediaWriter::new()
-                .record(media_writer::MediaInputs::video(&stream), media_writer::RecordConfig::new(store, "gallery-recording.mp4"))
+                .record(media_writer::MediaInputs::video(&stream), media_writer::RecordConfig::new(store, name))
                 .await
             {
                 Ok(rec) => {

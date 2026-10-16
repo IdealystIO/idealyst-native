@@ -173,7 +173,15 @@ struct Writer {
     frame_duration: i64,
 }
 
+/// `HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)`.
+const SHARING_VIOLATION: i32 = 0x8007_0020_u32 as i32;
+
 fn encode(e: windows::core::Error) -> MediaWriterError {
+    if e.code().0 == SHARING_VIOLATION {
+        // Most often the previous recording under the same name, still open
+        // in a player.
+        return MediaWriterError::Backend("the output file is open in another program (a player?)".into());
+    }
     MediaWriterError::Backend(format!("Media Foundation: {e}"))
 }
 
