@@ -258,7 +258,7 @@ pub(crate) struct LoadSlot {
 
 impl LoadSlot {
     /// Start loading `src`, returning the load's generation — or `None` when
-    /// `src` is what the node already shows. The walker writes the same
+    /// `src` is what the node already shows. The vocabulary writes the same
     /// `src` back once right after mount (its first reactive pass); treating
     /// that as a new load re-decoded the image and fired `on_load` twice.
     pub(crate) fn begin(&mut self, src: &str) -> Option<u64> {

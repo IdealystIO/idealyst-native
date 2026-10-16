@@ -1,4 +1,4 @@
-//! `Element::Virtualizer` — a `gtk::ScrolledWindow` over a `gtk::Fixed`
+//! `VirtualizerPrim` — a `gtk::ScrolledWindow` over a `gtk::Fixed`
 //! "document" tall enough for the whole data set, with a scroll handler
 //! that realizes/positions only the cells in the viewport (plus an
 //! overscan margin) and recycles cells that scroll out of view.

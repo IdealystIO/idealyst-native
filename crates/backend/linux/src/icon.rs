@@ -1,4 +1,4 @@
-//! `Element::Icon` — vector icon rendering on GTK4.
+//! `IconPrim` — vector icon rendering on GTK4.
 //!
 //! ## Why a custom `GtkWidget` (not a `GtkImage` / `GtkPicture`)
 //!

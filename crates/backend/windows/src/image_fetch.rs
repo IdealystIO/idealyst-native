@@ -398,7 +398,7 @@ mod tests {
         errors: Rc<Cell<u32>>,
     }
 
-    /// `create_image(src)` then install both handlers — the walker's order.
+    /// `create_image(src)` then install both handlers — the vocabulary's order.
     fn mount(b: &Rc<RefCell<WindowsBackend>>, src: &str) -> (crate::WindowsNode, Counters) {
         let node = b.borrow_mut().create_image(src, None, &Default::default());
         let c = Counters { loads: Default::default(), errors: Default::default() };
@@ -409,7 +409,7 @@ mod tests {
             Rc::new(move |e: &ImageLoadEvent| loads.borrow_mut().push((e.width, e.height))),
         );
         b.borrow_mut().install_image_error_handler(&node, Rc::new(move || errors.set(errors.get() + 1)));
-        // The walker's mount-time src binding repeats create's src.
+        // The vocabulary's mount-time src binding repeats create's src.
         b.borrow_mut().update_image_src(&node, src);
         (node, c)
     }

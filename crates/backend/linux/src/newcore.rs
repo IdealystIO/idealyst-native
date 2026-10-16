@@ -1,19 +1,12 @@
 //! Rendering: the `runtime_scene::Host` + capability-trait surface, the
 //! boot entry, and the flush driver.
 //!
-//! [`LinuxBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration. Every mechanism body in this file was moved here
-//! verbatim from the crate's old `impl runtime_core::Backend for LinuxBackend`
-//! when the 159-method mega-trait was deleted, so the GTK widget mechanism code
-//! is unchanged: the same scene builds the same widget tree.
-//! Capabilities this backend does not implement are simply absent — the
-//! caps-trait DEFAULT bodies serve them, and those defaults were audited
-//! byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 128 of this backend's
-//! 152 caps methods resolve to a default).
-//!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! [`LinuxBackend`] implements [`runtime_scene::Host`] plus every
+//! capability trait (`runtime_vocabulary::caps`). Methods this backend
+//! does not override are served by the caps-trait DEFAULT bodies — and
+//! most of those defaults are silent no-ops, so a forgotten override
+//! compiles, renders, and quietly does nothing (several notes below name
+//! the symptom each override prevents).
 //!
 //! # Two layers in one file: mechanism + flush policy
 //!
@@ -42,13 +35,13 @@
 //!
 //! # Flush driver — dispatch-model analysis
 //!
-//! The new core stages signal writes; nothing observes them until the
+//! The kernel stages signal writes; nothing observes them until the
 //! driver calls [`World::flush`]. GTK dispatches author callbacks
 //! exclusively through signal closures the mechanism bodies connect, and
-//! every one captures the closure handed in at creation. Under new-core
-//! the closures handed in ARE the caps-layer wrapped ones (wrapped
-//! BEFORE the UFCS delegation), so every GTK signal dispatch schedules a
-//! flush with zero host changes.
+//! every one captures the closure handed in at creation. The closures
+//! handed in ARE the caps-layer wrapped ones (wrapped BEFORE delegating
+//! to the inherent body), so every GTK signal dispatch schedules a flush
+//! with zero host changes.
 //!
 //! **Every author callback this backend accepts must be wrapped.** The
 //! full list, because an unwrapped one is invisible — it compiles, the
@@ -72,12 +65,6 @@
 //! - `attach_states` (hover / press / focus → style variants) and
 //!   `install_hover_handler` — hand-written. See `states.rs`.
 //!
-//! Historical note, since it cost real debugging time: `create_link` was
-//! the one cap that delegated its callback RAW. The framework wraps
-//! navigator push/replace dispatch inside `on_activate`, so every in-app
-//! link fired, changed the route signal, and never re-rendered — the
-//! whole app read as "buttons don't do anything".
-//!
 //! **Scheduler contract.** `host-gtk` installs a
 //! `runtime_shared::scheduling::Scheduler` (and a `raf_loop` driver) on
 //! the GLib main loop. Two regimes:
@@ -96,16 +83,15 @@
 //!   scheduler-driven author callback (`after_ms` timers,
 //!   `after_animation_frame` one-shots, `raf_loop` iterations) and
 //!   drain microtasks once per main-loop iteration so the flush
-//!   commits before the next paint — `host_terminal`'s scheduler tick
-//!   is the model. Microtasks themselves never fire the hook (the
+//!   commits before the next paint. Microtasks themselves never fire the hook (the
 //!   flush rides one; see [`crate::dispatch_hook`]).
 //!
 //! # Viewport
 //!
 //! `run_layout` publishes the window size to BOTH sinks whenever it
-//! changes: `runtime_shared::set_viewport_size` (the legacy TLS) and
-//! `forward_viewport`, which feeds the per-world
-//! `runtime_vocabulary::viewport` ctx that v2 breakpoint resolution
+//! changes: `runtime_shared::set_viewport_size` (the process-wide
+//! signal) and `forward_viewport`, which feeds the per-world
+//! `runtime_vocabulary::viewport` ctx that breakpoint resolution
 //! actually reads. The two must never diverge — the terminal backend's
 //! `set_viewport` + `forward_viewport` pairing is the model.
 //! `host-gtk` additionally seeds the viewport from its `RunOptions`
@@ -142,8 +128,7 @@ use runtime_shared::{
 use runtime_scene::{realize, Element, Host, Realized, Registry};
 use runtime_vocabulary::caps;
 use runtime_world::World;
-// The GTK widget mechanism (moved here from the crate's old `impl
-// Backend`) leans on gtk4's trait-based API surface.
+// The GTK widget mechanism leans on gtk4's trait-based API surface.
 use gtk4::prelude::*;
 
 use crate::{LinuxBackend, LinuxNode};
@@ -195,8 +180,7 @@ impl NewCoreApp {
     /// Unmount: drops the `Realized` (cleanups fire), uninstalls the
     /// flush driver, and drops the world. Must run on the GTK main
     /// thread while its TLS is intact — the reactive teardown runs
-    /// scope cleanups (same rationale as the old host's explicit
-    /// `Owner` drop on the terminal).
+    /// scope cleanups.
     pub fn stop(self) {
         // Native observers first: release a held pointer lock / hidden
         // cursor and disconnect the app-situation observers, so nothing
@@ -218,7 +202,7 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend.
+/// Mount a scene element tree into an already-constructed backend.
 ///
 /// The host must have constructed the backend around its realized
 /// window ([`LinuxBackend::new`]) and, if it uses one, installed its
@@ -264,8 +248,7 @@ pub fn start_with<S, R, B>(
     B: FnOnce() -> Element,
 {
     // Monotonic clock (idempotent, first install wins) — animation and
-    // presence timing read it; the old boot relied on the host's lazy
-    // default, the new boot installs it explicitly like macOS/wgpu.
+    // presence timing read it. Installed explicitly like macOS/wgpu.
     let platform = caps::AppEnvOps::platform(&*backend.borrow());
     runtime_shared::time::install_default_time_source(platform);
 
@@ -310,8 +293,8 @@ pub fn start_with<S, R, B>(
     // buffered task may do creation-side work.
     world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
-    // Single-root contract, matching the old-core mount (`find_root`
-    // wants exactly one application root — id 1).
+    // Single-root contract (`find_root` wants exactly one application
+    // root — id 1).
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
         1 => roots.pop().expect("len checked"),
@@ -330,7 +313,7 @@ pub fn start_with<S, R, B>(
     // (b) the host shell's post-dispatch hook fires.
     crate::dispatch_hook::install_dispatch_hook(schedule_flush);
     set_flush_world(Some(world.clone()));
-    // Live viewport source: `LinuxBackend::run_layout` now reaches the
+    // Live viewport source: `LinuxBackend::run_layout` reaches the
     // world's ctx through `forward_viewport`, so breakpoint-dependent
     // author reactivity re-fires on resize instead of freezing at its seed.
     set_viewport_sink(Some(vp_sig));
@@ -375,14 +358,13 @@ pub fn start_with<S, R, B>(
 ///
 /// # Why this is needed, and what its absence looks like
 ///
-/// There are TWO robot registries: the shared substrate's (legacy) and
-/// `runtime_vocabulary`'s, which is the one the v2 walker registers every
+/// There are TWO robot registries: the shared substrate's and
+/// `runtime_vocabulary`'s, which is the one realize registers every
 /// mounted primitive into. `runtime_shared`'s bridge dispatches to its own by
 /// default, so a native app that merely starts the bridge answers every verb
 /// from an EMPTY registry: `find_element` → `null`, `get_snapshot` → `[]`,
 /// `list_navigators` → `[]`, on a perfectly healthy app. Well-formed answers,
 /// all of them wrong — a silently blinded driver, which is worse than an error.
-/// Measured exactly that way on the GTK docs app before this existed.
 ///
 /// `install_verb_router` redirects to the vocabulary dispatch, falling back to
 /// the shared one on the precise `unknown command:` marker so verbs the
@@ -396,10 +378,8 @@ pub fn start_with<S, R, B>(
 /// returns — otherwise `click` reports success and the caller reads the state
 /// from before the click.
 ///
-/// The sidecar does this for runtime-server sessions and `backend-web` does it
-/// for the browser; local-mount native had no equivalent, which is why
-/// `idealyst dev --linux` produced an app the Robot tools could reach and not
-/// see.
+/// The sidecar does the same for runtime-server sessions and `backend-web` for
+/// the browser.
 #[cfg(feature = "robot")]
 fn install_robot_env() {
     runtime_vocabulary::robot::install_driver_env(
@@ -446,12 +426,12 @@ fn set_viewport_sink(sig: Option<runtime_world::Signal<runtime_shared::ViewportS
 /// No-op before [`start`] / after teardown.
 ///
 /// `runtime_shared::set_viewport_size` alone is NOT enough: that writes the
-/// legacy thread-local signal, which a `runtime_world` effect cannot
+/// process-wide thread-local signal, which a `runtime_world` effect cannot
 /// subscribe to. Author reactivity (`current_breakpoint()`, and everything
 /// idea-ui-nav's `AppShell` derives from it) reads the PER-WORLD ctx, so a
 /// backend that only writes the shared TLS value leaves every breakpoint
-/// reader frozen at the ctx's seed — the GTK docs app's sidebar never
-/// re-pinned on resize.
+/// reader frozen at the ctx's seed (e.g. a sidebar that never re-pins on
+/// resize).
 ///
 /// Capture, don't inject: the caller runs outside `World::enter` (a GLib
 /// idle), so the handle is captured at boot and the write stages through
@@ -465,7 +445,7 @@ pub(crate) fn forward_viewport(size: runtime_shared::ViewportSize) {
     schedule_flush();
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 /// Host-integration seam: an embedded renderer mounted INSIDE this app's
 /// tree — the wgpu GPU preview (`host_linux_desktop::mount`) — realizes its
 /// scene into this SAME world, so the app's existing flush driver commits
@@ -543,10 +523,7 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 // ---------------------------------------------------------------------------
 //
 // Each helper wraps an author callback so that, AFTER the author code
-// returns, one deduped flush microtask is queued. Wrapping here (instead
-// of inside the shared Backend code) keeps the old-core path
-// byte-identical: the old core applies writes synchronously and must not
-// pay a flush per event.
+// returns, one deduped flush microtask is queued.
 
 /// Wrap a zero-arg author callback (`on_press`, link `on_activate`, …).
 fn flushing0(f: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
@@ -619,14 +596,12 @@ fn flushing_pointer_sink(
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// backend-terminal/src/newcore.rs / runtime_vocabulary::bridge — keep
-// mechanically in sync; the AllCaps bound on register_builtins is the
-// compile gate)
+// Host + capability-trait impls (the AllCaps bound on register_builtins
+// is the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for LinuxBackend {
@@ -634,19 +609,14 @@ impl Host for LinuxBackend {
 
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         // Our node model tracks children/parent_of for z-order and sticky;
-        // master's body only knew layout_for_id, so delegate to the real one.
+        // the inherent body keeps those tables in sync.
         LinuxBackend::insert(self, parent, child)
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // resulting child order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop gives the right child order.
 
-    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
-    /// ignoring the index. `Host` makes the method REQUIRED, so the default
-    /// that used to supply this body is gone — reproduced verbatim rather
-    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// Append, ignoring the index. Never reached in practice:
     /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
     /// regions rebuild wholesale under their own anchor and no positional
     /// splice is ever emitted.
@@ -654,11 +624,8 @@ impl Host for LinuxBackend {
         self.insert(parent, child)
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
-    /// inherited (deletion-baseline S2.2). Only meaningful for
-    /// splice-capable hosts; this one is anchored, so the framework never
-    /// calls it.
+    /// A no-op. Only meaningful for splice-capable hosts; this one is
+    /// anchored, so the framework never calls it.
     fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
         // default: no-op
     }
@@ -677,9 +644,7 @@ impl Host for LinuxBackend {
         LinuxBackend::release_subtree_impl(self, node)
     }
 
-    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
-    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
-    /// it is stated here rather than inherited (deletion-baseline S2.2).
+    /// A plain `create_view` with default a11y.
     ///
     /// TODO(anchor-display-contents): this is NOT a correct anchor. An
     /// unstyled view draws nothing, but it is still a flex item, and a
@@ -704,14 +669,9 @@ impl Host for LinuxBackend {
         self.create_view(&AccessibilityProps::default())
     }
 
-    /// Explicit `false` — the port of the old
-    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
-    /// `Host` makes it REQUIRED, so the value is stated here instead of
-    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
-    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
-    /// to `true` would move every reactive region out from under its anchor
-    /// and change the output wholesale. Pinned by a literal assertion in the
-    /// crate's parity suite.
+    /// `false` — ANCHORED mode: reactive regions rebuild wholesale under
+    /// their own anchor. Flipping it to `true` needs a real positional
+    /// `insert_at` / `remove_child` (both are stubs above).
     fn supports_splice(&self) -> bool {
         false
     }
@@ -723,14 +683,10 @@ impl Host for LinuxBackend {
 
 impl caps::AppEnvOps for LinuxBackend {
     fn color_scheme(&self) -> ColorScheme {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::color_scheme(self)
     }
 
     fn platform(&self) -> Platform {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::platform(self)
     }
 
@@ -789,8 +745,6 @@ impl caps::LifecycleOps for LinuxBackend {
 
 impl caps::ViewOps for LinuxBackend {
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         LinuxBackend::create_view(self, _a11y)
     }
 
@@ -863,7 +817,7 @@ impl caps::PressableOps for LinuxBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Wrap the author callback so ONE deduped flush microtask is queued
         // after it returns. Without this the handler mutates its signal and
-        // nothing re-renders — the v2 flush is not implicit.
+        // nothing re-renders — the flush is not implicit.
         LinuxBackend::create_pressable(self, flushing0(on_click), _a11y)
     }
 }
@@ -874,8 +828,6 @@ impl caps::PressableOps for LinuxBackend {
 
 impl caps::TextOps for LinuxBackend {
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         LinuxBackend::create_text(self, content, _a11y)
     }
 
@@ -885,8 +837,6 @@ impl caps::TextOps for LinuxBackend {
     }
 
     fn update_text(&mut self, node: &Self::Node, content: &str) {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::update_text(self, node, content)
     }
 }
@@ -908,18 +858,14 @@ impl caps::ButtonOps for LinuxBackend {
         _trailing_icon: Option<&primitives::icon::IconData>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         // Wrap the author callback so ONE deduped flush microtask is queued
         // after it returns. Without this the handler mutates its signal and
-        // nothing re-renders — the v2 flush is not implicit.
+        // nothing re-renders — the flush is not implicit.
         let on_click = Action { fire: flushing0(on_click.fire.clone()), ..on_click.clone() };
         LinuxBackend::create_button(self, label, &on_click, _leading_icon, _trailing_icon, _a11y)
     }
 
     fn update_button_label(&mut self, node: &Self::Node, label: &str) {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::update_button_label(self, node, label)
     }
 }
@@ -944,15 +890,12 @@ impl caps::ImageOps for LinuxBackend {
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::create_image(self, _src, _alt, _a11y)
     }
 
-    // Both of these are DEFAULTED no-ops on the trait, and inheriting them
-    // meant an author's `Image(on_load = …, on_error = …)` never fired on
-    // Linux while it did on web and Apple — so an app's "couldn't load"
-    // fallback silently never rendered. See `crate::image`.
+    // Both of these are DEFAULTED no-ops on the trait; without these
+    // overrides an author's `Image(on_load = …, on_error = …)` never fires
+    // and an app's "couldn't load" fallback never renders. See `crate::image`.
     fn install_image_load_handler(
         &mut self,
         node: &Self::Node,
@@ -995,8 +938,6 @@ impl caps::IconOps for LinuxBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::create_icon(self, _data, _color, _a11y)
     }
 }
@@ -1012,14 +953,11 @@ impl caps::LinkOps for LinuxBackend {
         // gives its callback (pressable, button, text_input, toggle, slider,
         // portal on_dismiss).
         //
-        // This was the ONLY interactive cap that delegated RAW, and it is
-        // the whole "links do nothing" bug: for an in-app link the framework
-        // wraps navigator push/replace dispatch in `on_activate`, so clicking
-        // one STAGED the route write and nothing ever committed it. The click
-        // landed, the gesture fired, the author callback ran, the route
-        // signal changed — and the screen never re-rendered. Nothing warns
-        // about this: a raw delegation compiles and the widget still reacts
-        // to input, so the only symptom is a UI that quietly ignores you.
+        // Bug this prevents ("links do nothing"): for an in-app link the
+        // framework wraps navigator push/replace dispatch in `on_activate`,
+        // so a raw delegation STAGES the route write and nothing commits it
+        // — the click lands, the route signal changes, the screen never
+        // re-renders.
         let config = runtime_shared::primitives::link::LinkConfig {
             on_activate: flushing0(config.on_activate.clone()),
             ..config
@@ -1043,17 +981,12 @@ impl caps::TextInputOps for LinuxBackend {
         secure: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         // Flush after each author callback (see `flushing0`). `on_blur` is a
-        // BlurHandler, not an Rc<dyn Fn()>, so it is left unwrapped — matching
-        // master, which wrapped only on_change + on_key_down here.
+        // BlurHandler, not an Rc<dyn Fn()>, so it is left unwrapped.
         LinuxBackend::create_text_input(self, initial_value, _placeholder, flushing1(on_change), on_key_down.map(flushing_key), on_blur, secure, _a11y)
     }
 
     fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::update_text_input_secure(self, node, secure)
     }
 
@@ -1094,17 +1027,14 @@ impl caps::TextInputOps for LinuxBackend {
         on_key_down: Option<primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         // Flush after each author callback (see `flushing0`). `on_blur` is a
-        // BlurHandler, not an Rc<dyn Fn()>, so it is left unwrapped — matching
-        // master, which wrapped only on_change + on_key_down here.
+        // BlurHandler, not an Rc<dyn Fn()>, so it is left unwrapped.
         LinuxBackend::create_text_area(self, initial_value, _placeholder, _wrap, _min_rows, _max_rows, flushing1(on_change), on_key_down.map(flushing_key), _a11y)
     }
 
-    // Both were missing, i.e. the trait's SILENT no-op defaults (see the
-    // note above `make_text_input_handle`): a `value`-bound text area never
-    // followed its signal, and its handle / `autofocus` did nothing.
+    // Both override the trait's SILENT no-op defaults (see the note above
+    // `make_text_input_handle`): without them a `value`-bound text area
+    // never follows its signal, and its handle / `autofocus` do nothing.
     fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
         LinuxBackend::update_text_area_value(self, node, value)
     }
@@ -1124,16 +1054,14 @@ impl caps::ToggleOps for LinuxBackend {
         on_change: Rc<dyn Fn(bool)>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         // Wrap the author callback so ONE deduped flush microtask is queued
         // after it returns. Without this the handler mutates its signal and
-        // nothing re-renders — the v2 flush is not implicit.
+        // nothing re-renders — the flush is not implicit.
         LinuxBackend::create_toggle(self, initial_value, flushing1(on_change), _a11y)
     }
 
-    /// Was missing (the trait's silent no-op): a `value`-bound switch never
-    /// followed its signal on this backend.
+    /// Overrides the trait's silent no-op: without it a `value`-bound
+    /// switch never follows its signal.
     fn update_toggle_value(&mut self, node: &Self::Node, value: bool) {
         LinuxBackend::update_toggle_value(self, node, value)
     }
@@ -1149,16 +1077,14 @@ impl caps::SliderOps for LinuxBackend {
         on_change: Rc<dyn Fn(f32)>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         // Wrap the author callback so ONE deduped flush microtask is queued
         // after it returns. Without this the handler mutates its signal and
-        // nothing re-renders — the v2 flush is not implicit.
+        // nothing re-renders — the flush is not implicit.
         LinuxBackend::create_slider(self, initial_value, min, max, _step, flushing1(on_change), _a11y)
     }
 
-    /// Was missing (the trait's silent no-op): a `value`-bound slider never
-    /// followed its signal on this backend.
+    /// Overrides the trait's silent no-op: without it a `value`-bound
+    /// slider never follows its signal.
     fn update_slider_value(&mut self, node: &Self::Node, value: f32) {
         LinuxBackend::update_slider_value(self, node, value)
     }
@@ -1171,8 +1097,6 @@ impl caps::ActivityIndicatorOps for LinuxBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         LinuxBackend::create_activity_indicator(self, _size, _color, _a11y)
     }
 }
@@ -1188,8 +1112,6 @@ impl caps::ScrollOps for LinuxBackend {
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body (formerly `impl Backend`),
-        // which builds the richer widget this backend actually ships.
         //
         // `on_scroll` needs the flush wrapper like every other author
         // callback: a scroll-spy (the docs/website table of contents is
@@ -1245,10 +1167,8 @@ impl caps::VirtualizerOps for LinuxBackend {
     ) -> Self::Node {
         // Rows are REALIZED and torn down here, which is creation-side work:
         // it needs the mounted world ambient (`World::enter`), and it must
-        // queue a flush afterwards like any other author callback. master
-        // built this same wrapper and then dropped it on the floor — its
-        // Linux virtualizer was a placeholder. Ours is real, so the wrapped
-        // callbacks are passed through to the GTK body.
+        // queue a flush afterwards like any other author callback. The
+        // wrapped callbacks are what the GTK body receives.
         let VirtualizerCallbacks {
             item_count,
             item_key,
@@ -1316,8 +1236,6 @@ impl caps::GraphicsOps for LinuxBackend {
         on_lost: primitives::graphics::OnLost,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::create_graphics(self, on_ready, on_resize, on_lost, _a11y)
     }
 }
@@ -1339,11 +1257,9 @@ impl caps::PortalOps for LinuxBackend {
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         // Wrap the author callback so ONE deduped flush microtask is queued
         // after it returns. Without this the handler mutates its signal and
-        // nothing re-renders — the v2 flush is not implicit.
+        // nothing re-renders — the flush is not implicit.
         LinuxBackend::create_portal(self, _target, on_dismiss.map(flushing0), _trap_focus, _a11y)
     }
 }
@@ -1367,9 +1283,7 @@ impl caps::ExternalOps for LinuxBackend {
         // Third-party primitives register a scene-`Registry` handler and
         // never reach this method — `create_external` only serves
         // `missing_primitive_placeholder`, so a labeled placeholder is the
-        // whole contract. (The old core routed here through a backend-side
-        // `ExternalRegistry`, which died with `Element::External`; the
-        // placeholder shape is unchanged.)
+        // whole contract.
         self.placeholder(&format!(
             "External \"{type_name}\" not registered on Linux backend"
         ))
@@ -1384,8 +1298,6 @@ impl caps::DocumentOps for LinuxBackend {}
 
 impl caps::StyleOps for LinuxBackend {
     fn apply_style(&mut self, _node: &Self::Node, _style: &Rc<StyleRules>) {
-        // Delegates to the inherent GTK body — master's placeholder
-        // here did not render at full fidelity.
         LinuxBackend::apply_style(self, _node, _style)
     }
 
@@ -1424,8 +1336,8 @@ impl caps::StyleOps for LinuxBackend {
         }
     }
 
-    /// Native inert state for the `disabled` prop. Was the trait's no-op
-    /// default, which left a disabled field focusable and typeable. See
+    /// Native inert state for the `disabled` prop. The trait's no-op
+    /// default would leave a disabled field focusable and typeable. See
     /// the inherent `LinuxBackend::set_disabled`.
     fn set_disabled(&mut self, node: &Self::Node, disabled: bool) {
         LinuxBackend::set_disabled(self, node, disabled)
@@ -1470,10 +1382,10 @@ impl caps::AssetOps for LinuxBackend {
 impl caps::A11yOps for LinuxBackend {}
 
 impl caps::AnimationOps for LinuxBackend {
-    // The trait defaults are no-ops. Leaving this impl empty meant every
-    // per-frame animation write was silently discarded — the welcome
-    // scene's three acts animate opacity/transform in, so the content
-    // stayed at its initial (invisible) state on a correct layout tree.
+    // The trait defaults are no-ops: without these overrides every
+    // per-frame animation write is silently discarded, and content that
+    // animates opacity/transform in stays at its initial (invisible) state
+    // on a correct layout tree.
     fn set_animated_f32(&mut self, node: &Self::Node, prop: AnimProp, value: f32) {
         LinuxBackend::set_animated_f32(self, node, prop, value)
     }
@@ -1483,14 +1395,10 @@ impl caps::AnimationOps for LinuxBackend {
     }
 }
 
-// The trait's bodies all default to `None` / "unsupported", and leaving
-// this impl empty meant the Robot surface was dark on Linux even though
-// the backend already had every number it needed: `get_frame` /
-// `get_absolute_frame` returned nothing (while `ViewHandle` reported the
-// same values correctly to author code), and `screenshot` reported
-// "not supported on this backend" — so an agent could drive a GTK app but
-// never see or measure it. Same silently-degrading-default trap this
-// backend hit before with `create_link` and `make_scroll_view_handle`.
+// The trait's bodies all default to `None` / "unsupported"; without this
+// impl the Robot surface is dark (`get_frame` / `get_absolute_frame` return
+// nothing, `screenshot` reports "not supported") — an agent could drive a
+// GTK app but never see or measure it.
 // EVERY method here is behind `robot`. This whole trait is the DIAGNOSTIC
 // surface — the robot bridge's `get_frame` / `get_absolute_frame` /
 // `introspect_native` / `screenshot` verbs — and a shipped app must not carry

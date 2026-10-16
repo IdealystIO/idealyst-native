@@ -123,18 +123,11 @@ pub(crate) fn apply_rules(
     if rules.width.is_some() || rules.height.is_some() {
         // Resolve up front to avoid mutably borrowing `env` from
         // inside a closure (the JNI calls all take `&mut JNIEnv`).
-        // `Tokenized<Length>` — resolve to underlying via `.resolve()`;
-        // native has no CSS-variable equivalent so the resolved
-        // current value is the value at apply-time, and the
-        // subscription ties this Effect to the token's signal.
-        // `.resolve()` subscribes the apply-style Effect to the per-
-        // token signal for any tokenized width/height — native has no
-        // CSS-variable equivalent, so we always materialize to the
-        // current value.
-        // The non-`Px` arms live in `layout_policy` so they are one
-        // arm-set instead of two, and host-testable: these were the
-        // matches that never learned about `Length::Full`, and the whole
-        // backend stopped compiling for its own target as a result.
+        // `.resolve()` materializes a `Tokenized<Length>` to its current
+        // value (native has no CSS-variable equivalent) and subscribes
+        // the apply-style Effect to the token's signal.
+        // The non-`Px` arms live in `layout_policy` (one host-testable
+        // arm-set for width and height).
         let w_lp = rules.width.as_ref().map(|tok| {
             let l = tok.resolve();
             crate::layout_policy::non_px_layout_param(&l)
@@ -350,7 +343,7 @@ pub(crate) fn apply_rules(
                     Err(e) => {
                         // Leave the cache alone so the next apply retries,
                         // and never leak a pending exception into the next
-                        // JNI call ([[project_android_net_pending_exception_clear]]).
+                        // JNI call.
                         if env.exception_check().unwrap_or(false) {
                             let _ = env.exception_clear();
                         }
@@ -544,13 +537,11 @@ fn apply_transform(
     // `setRotation` are the SAME backing fields the animation system
     // (`set_animated_f32`) writes to, so an unconditional
     // setTranslationX(0) on every `apply_style` clobbers whatever
-    // the running animation has currently set. Visible bug pre-fix:
+    // the running animation has currently set. Bug this prevents:
     // idea-ui's Switch animates its thumb's `TranslateX` via that
-    // path; a theme toggle re-fires `apply_style` from the cohort
-    // for the thumb's stylesheet (which has no `transform:` op),
-    // and the old code wrote setTranslationX(0) \u{2014} snapping the
-    // thumb from "on" position back to 0 while the track color
-    // update still ran. Mirrors the iOS fix in
+    // path; a theme toggle re-fires `apply_style` for the thumb's
+    // stylesheet (which has no `transform:` op), and an unconditional
+    // write snaps the thumb from "on" back to 0. Mirrors iOS's
     // `apply_static_transform`.
     let mut tx_dp: f32 = 0.0;
     let mut ty_dp: f32 = 0.0;
@@ -963,19 +954,17 @@ fn apply_drawable_path(
     //
     // This mirrors the iOS backend's per-side `UIView` subview
     // approach (`install_border_side` in
-    // `backend-ios-core/src/style.rs`). A custom Drawable is cleaner
+    // `crates/backend/ios/core/src/style.rs`). A custom Drawable is cleaner
     // than adding chrome subviews on Android because it doesn't
-    // create extra Views that Taffy / the layout-pass walker /
+    // create extra Views that Taffy / the layout pass /
     // hit-testing need to special-case.
     //
     // Snap-only for now — animating per-side borders would need a
     // ValueAnimator per side. Authors transitioning whole-card
-    // border-color (the only common case) won't notice; the previous
-    // `setStroke` animator path only covered the uniform border
-    // anyway.
+    // border-color (the only common case) won't notice.
     //
-    // Clear any stale `GradientDrawable` stroke from before this fix
-    // landed on a node — otherwise the bottom of a card would show
+    // Clear any stale `GradientDrawable` stroke on the node (e.g. set
+    // by the uniform-border path) — otherwise the bottom of a card would show
     // the per-side bottom border PLUS a uniform 1px stroke from the
     // drawable underneath.
     if state.last_stroke_w.is_some() {
@@ -1603,7 +1592,7 @@ fn push_gradient_colors_to_drawable(
     // API 29 (Android 10) added `setColors(int[], float[])` — the
     // first overload that honors arbitrary stop positions. Older
     // devices fall back to the uniform-distribution overload.
-    // Min SDK in `crates/build/ios/src/source.rs` is 21 (Lollipop),
+    // Min SDK (`MIN_SDK_VERSION` in `crates/tools/run/android`) is 21 (Lollipop),
     // so the fallback is load-bearing.
     if android_sdk_int(env) >= 29 && offsets.len() == colors.len() {
         let off_arr = match env.new_float_array(offsets.len() as i32) {

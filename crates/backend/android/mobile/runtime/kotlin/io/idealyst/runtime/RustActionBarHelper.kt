@@ -301,12 +301,11 @@ object RustActionBarHelper {
     }
 
     /**
-     * Legacy dispatch path retained for any caller that still routes
-     * the home button through the Activity's `onOptionsItemSelected`.
-     * In the new in-tree-Toolbar architecture this is never called —
-     * left here so `MainActivity{,Aas}.java`'s override compiles
-     * without changes. Returns `false` unconditionally so the
-     * Activity's super.onOptionsItemSelected runs.
+     * Home-button hook for the Activity's `onOptionsItemSelected`. The
+     * in-tree Toolbar handles home presses itself, so this always
+     * returns `false` and the Activity's super.onOptionsItemSelected
+     * runs; it exists because the generated `MainActivity*.java`
+     * templates still call it.
      */
     @JvmStatic
     fun dispatchHomePress(): Boolean = false

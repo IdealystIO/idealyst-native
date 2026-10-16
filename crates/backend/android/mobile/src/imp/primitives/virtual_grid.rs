@@ -14,8 +14,7 @@
 //! Metrics are dp (what `StyleRules` and Taffy reason in). Android
 //! view geometry is device pixels, so every frame and content extent
 //! handed across the JNI boundary is converted at the call site —
-//! never the inputs, matching the sticky module's discipline
-//! ([[project_android_setTranslation_device_px]]).
+//! never the inputs, matching the sticky module's discipline.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -113,8 +112,7 @@ pub(crate) fn create(
         // `nativePtr` is a `val` constructor property on the Kotlin
         // side, so the field write above can fail on a runtime that
         // enforces finality. Clear any pending exception so it can't
-        // leak into the next JNI call
-        // ([[project_android_net_pending_exception_clear]]).
+        // leak into the next JNI call.
         let _ = env.exception_clear();
         apply_content_size(env, &state);
     });
@@ -223,10 +221,9 @@ thread_local! {
     /// layout that discovered them and mark the tree dirty on mount, so
     /// the following pass frames them.
     ///
-    /// Proven on iOS 2026-09-14, where wiring `GridOps` up for the first
-    /// time aborted the app with `RefCell already borrowed` inside
-    /// `virtual_grid::mount_cell` the moment a grid mounted. This
-    /// backend had the identical structure and the identical latent bug.
+    /// Without the deferral, `virtual_grid::mount_cell` aborts with
+    /// `RefCell already borrowed` the moment a grid mounts (seen on iOS,
+    /// which shares this structure).
     static PENDING: RefCell<Vec<PendingJob>> = const { RefCell::new(Vec::new()) };
 
     /// Mounted cells' view keys → the box this engine framed them at,
@@ -293,9 +290,9 @@ pub(crate) fn drain_pending() {
     }
 }
 
-/// Drop a torn-down grid's cells, with no backend borrow held — the
-/// two-axis form of the virtualizer teardown bug (FRAMEWORK-NOTES
-/// Wave-19).
+/// Drop a torn-down grid's cells, with no backend borrow held (cell
+/// scope cleanups re-borrow the backend; dropping them under the borrow
+/// panics `RefCell already borrowed`).
 fn teardown_now(job: TeardownJob) {
     for cell in job.cells {
         CELL_BOXES.with(|m| {
@@ -325,7 +322,7 @@ pub(crate) fn sync(backend: &mut AndroidBackend, key: usize) {
     queue_sync(key, state);
 }
 
-/// The body of the old `sync`, with no backend borrow held.
+/// The grid sync itself, run with no backend borrow held.
 fn sync_now(state: &GridState) {
     let viewport = *state.viewport.borrow();
     if viewport.0 <= 0.0 || viewport.1 <= 0.0 {

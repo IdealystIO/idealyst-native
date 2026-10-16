@@ -1,4 +1,4 @@
-//! `Element::Portal` — render a subtree in a window-level overlay above
+//! `PortalPrim` — render a subtree in a window-level overlay above
 //! the app content (modals, sheets, dropdowns, tooltips) rather than in
 //! the normal layout flow.
 //!
@@ -23,8 +23,8 @@
 //! path uses. An author/composition style on the portal element overrides
 //! this default via `apply_style`.
 //!
-//! Because the container is a Taffy orphan (the walker never inserts a
-//! portal node into its logical parent — see `walker/portal.rs`), it runs
+//! Because the container is a Taffy orphan (`LinuxBackend::insert` skips a
+//! portal node realize inserts into its declaration parent), it runs
 //! its own detached layout pass: the container installs the SAME layout
 //! callback the framework root uses, calling
 //! [`super::LinuxBackend::layout_detached_root`] from its `size_allocate`.

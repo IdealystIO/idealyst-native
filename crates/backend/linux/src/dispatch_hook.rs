@@ -5,24 +5,21 @@
 //! `glib::timeout_add` / the GTK frame clock into
 //! `runtime_shared::scheduling`).
 //!
-//! Mirrors `backend_terminal::dispatch_hook` — the SETTLED new-core
-//! flush-driver shape. The new core ([`crate::newcore`]) stages signal
-//! writes; nothing is observable until the flush driver calls
-//! `World::flush`. Author callbacks the backend installs (press,
-//! toggle, slider, scroll, …) get their flush from the dispatch-site
-//! glue in `newcore.rs` — the GTK signal closures the old `Backend`
-//! bodies connect capture the already-wrapped handlers. Author code
+//! Same shape as `backend_terminal::dispatch_hook`. The kernel stages
+//! signal writes; nothing is observable until the flush driver
+//! ([`crate::newcore`]) calls `World::flush`. Author callbacks the
+//! backend installs (press, toggle, slider, scroll, …) get their flush
+//! from the dispatch-site glue in `newcore.rs` — the GTK signal closures
+//! capture the already-wrapped handlers. Author code
 //! that runs from a *host scheduler* (an `after_ms` debounce that sets
 //! a signal, a `raf_loop` animation tick) has no wrapped callback —
 //! without this hook a write staged there would sit uncommitted until
 //! some unrelated event happened to trigger a flush.
 //!
-//! This module is **unconditional** (not `new-core`-gated) because the
-//! fire sites live in the *host shell* (out-of-repo; this crate has no
-//! host crate), which cannot see this crate's features. The slot
+//! The fire sites belong to the *host shell's* scheduler (a separate
+//! crate, e.g. `host-gtk`), so [`fire_dispatch_hook`] is `pub`. The slot
 //! defaults to `None` and every fire is a single thread-local `Cell`
-//! read — a no-op unless `newcore::start` installed the flush driver,
-//! so the old core never pays for it.
+//! read — a no-op unless `newcore::start` installed the flush driver.
 //!
 //! # What deliberately does NOT fire the hook
 //!
@@ -46,7 +43,7 @@ pub fn install_dispatch_hook(f: fn()) {
     HOOK.with(|h| h.set(Some(f)));
 }
 
-/// Remove the hook (used by `NewCoreApp::stop`). Fire sites revert to
+/// Remove the hook (used by [`crate::newcore::NewCoreApp::stop`]). Fire sites revert to
 /// no-ops.
 pub fn clear_dispatch_hook() {
     HOOK.with(|h| h.set(None));

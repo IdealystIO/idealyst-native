@@ -38,11 +38,10 @@
 //! Per CLAUDE.md §8, each `#[test]` below is named after the bug
 //! it prevents, not the function it exercises.
 
-// The pin arithmetic no longer lives here (nor in `imp::sticky`): it
-// is `runtime_shared::sticky`, shared by every backend and tested
-// there. This module keeps the host-runnable ANDROID-specific
-// invariants — the registry's shrink-on-empty discipline and the
-// per-axis write policy — which is what it was always for.
+// The pin arithmetic lives in `runtime_shared::sticky`, shared by every
+// backend and tested there. This module keeps the host-runnable
+// ANDROID-specific invariants — the registry's shrink-on-empty
+// discipline and the per-axis write policy.
 use runtime_shared::sticky::{translate, StickyInsets};
 
 // =========================================================================
@@ -86,9 +85,8 @@ mod tests {
     }
 
     /// A frozen COLUMN on Android: `left` pins off `getScrollX()`
-    /// while the child scrolls freely vertically. Before horizontal
-    /// support the registry carried a single `threshold_top`, so
-    /// `left` wrote nothing at all.
+    /// while the child scrolls freely vertically (a registry carrying
+    /// only a top threshold writes nothing for `left`).
     #[test]
     fn regression_sticky_left_never_pins_horizontally() {
         let horizontal = StickyInsets { left: Some(0.0), ..Default::default() };

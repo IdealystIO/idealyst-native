@@ -1,4 +1,4 @@
-//! `Element::Image` — bitmap rendering on the Win32 backend.
+//! `ImagePrim` — bitmap rendering on the Win32 backend.
 //!
 //! The scene painter (`crate::scene`) calls [`paint_into`] to draw an
 //! image into the node's box honoring the `object_fit` style (`Fill` /

@@ -6,7 +6,7 @@
 //! A gradient brush makes GDI+ shade every covered pixel through its general
 //! brush path. Under Wine that path costs ~24 ns per device pixel: the welcome
 //! scene's four full-height vignette bands took ~21 ms EACH at 2× DPI, ~85 of
-//! a ~90 ms frame (measured 2026-10-15, Wine 11.18). Every other GDI+ route
+//! a ~90 ms frame (measured under Wine 11.18). Every other GDI+ route
 //! that samples per pixel was no better — a texture brush over a 1-px ramp
 //! cost 48 ms, a stretched `DrawImage` of that ramp 17–39 ms. An UNscaled
 //! `DrawImage` of a ready bitmap took ~2.9 ms, and filling that bitmap here

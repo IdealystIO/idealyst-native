@@ -17,7 +17,7 @@ import android.view.animation.Interpolator
  * # Threading
  *
  * Everything here runs on the Android UI thread (the same thread the
- * framework's render walker runs on). `ValueAnimator` posts its
+ * framework realizes and updates views on). `ValueAnimator` posts its
  * frame callbacks to the Choreographer of the calling thread, so
  * keeping all the setup on the UI thread is required.
  */

@@ -1,4 +1,4 @@
-//! `Element::Image` — a `gtk::Picture` whose paintable holds the decoded
+//! `ImagePrim` — a `gtk::Picture` whose paintable holds the decoded
 //! bitmap, scaled by `content-fit`.
 //!
 //! ## Why `gtk::Picture` (not `gtk::Image`)
@@ -34,20 +34,17 @@
 //! ## `on_load` / `on_error`
 //!
 //! `install_image_load_handler` / `install_image_error_handler` are
-//! DEFAULTED no-ops on the capability trait, and this backend used to
-//! inherit both — so an author's `Image(on_error = ...)` fallback simply
-//! never ran on Linux while it did on web and Apple. The docs app's Image
-//! page says "Falls back to a placeholder if the source can't load" and
-//! rendered an empty box instead: the remote fetch failed (no GVfs http
-//! backend on the host) and nothing told the app.
+//! DEFAULTED no-ops on the capability trait; without overriding both an
+//! author's `Image(on_error = ...)` fallback never runs (e.g. a remote fetch
+//! fails for lack of a GVfs http backend and nothing tells the app).
 //!
-//! Both are wired now. `data:` URIs and assets resolve SYNCHRONOUSLY inside
+//! `data:` URIs and assets resolve SYNCHRONOUSLY inside
 //! `create_image` / `update_image_src`; `http(s)` resolves on a later
 //! main-loop turn (`LinuxBackend::finish_remote_image`), guarded by a
 //! per-node load generation so a slow earlier response never replaces a newer
 //! `src`.
 //!
-//! Handlers are installed by the walker AFTER `create_image` returns, so a
+//! Handlers are installed by the vocabulary AFTER `create_image` returns, so a
 //! synchronous outcome has to be REMEMBERED and replayed on install — the
 //! trait requires `on_load` to fire immediately for an already-decoded
 //! image. [`LinuxBackend::image_nodes`](crate::LinuxBackend) holds that

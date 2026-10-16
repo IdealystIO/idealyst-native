@@ -28,15 +28,9 @@ pub struct TextPaint {
     pub letter_spacing_px: f32,
     /// Author `line_height` in px. `None` = use the font's own line spacing.
     ///
-    /// Absent from this struct entirely until the cross-platform parity sweep
-    /// found it: web resolves CSS `line-height` and macOS feeds
-    /// `style.line_height` into its layout policy, while GTK simply dropped the
-    /// property. Every text box was therefore SHORTER on Linux than on web —
-    /// measured on the docs app's Color page, a wrapped paragraph came out
-    /// 39px tall against web's 50, a badge row 23 against 32 — and because a
-    /// column's height is the sum of its children's, the error accumulated all
-    /// the way up (that page's content column: 917px vs 991px). It moved no
-    /// visual prop, so only a geometry diff could see it.
+    /// Must reach both painting and measurement: dropping it makes every text
+    /// box shorter than on web/macOS, and the error accumulates up every
+    /// column — invisible except in a geometry diff.
     pub line_height_px: Option<f32>,
     pub color: [f32; 4],
     pub align: TextAlign,
@@ -85,14 +79,6 @@ pub(crate) fn map_weight(w: FontWeight) -> pango::Weight {
     }
 }
 
-/// Read the text-relevant fields out of a node's [`StyleRules`] into a
-/// fresh paint.
-///
-/// `prev` is carried ONLY for the properties this style says nothing
-/// about at all (see the typography group below) — a `None` field is
-/// otherwise "not set", i.e. the default, never "keep the old value".
-/// Getting that backwards makes every text property one-way: settable
-/// but never unsettable.
 /// The inheritable text properties, resolved from the ancestor chain.
 ///
 /// CSS inherits `color` and the font shorthand independently down the tree;
@@ -120,33 +106,31 @@ impl Default for Inherited {
     }
 }
 
-/// Resolve a text paint, with `inherited_color` standing in for the CSS
-/// cascade's `color`.
+/// Read the text-relevant fields out of a node's [`StyleRules`] into a
+/// paint, with `inherited` standing in for the CSS cascade.
+///
+/// Every text field is re-resolved from `style` + `inherited`: a field the
+/// style does not set is "not set" (inherit or default), never "keep `prev`'s
+/// value" — otherwise every text property becomes one-way, settable but never
+/// unsettable.
 ///
 /// The web backend gets inheritance for free: a `<span>` with no `color` picks
 /// up its ancestor's, and an icon's `currentColor` resolves the same way. Native
-/// backends have no cascade, so an unset colour used to fall back to
-/// `TextPaint::default()`'s opaque black — right-looking under a light theme and
-/// invisible under a dark one. The caller resolves the nearest ancestor that
-/// declares a colour (see `LinuxBackend::ambient_color`) and passes it here.
+/// backends have no cascade — an unset colour falling back to opaque black is
+/// invisible under a dark theme — so the caller resolves the ancestor chain
+/// (see `LinuxBackend::ambient_text`) and passes it here.
 pub fn resolve(style: &StyleRules, prev: &TextPaint, inherited: &Inherited) -> TextPaint {
     let mut tp = prev.clone();
 
     // Typography: start from what this node INHERITS, then overlay what it
     // declares. Each property independently, exactly as CSS cascades them.
     //
-    // This used to layer over `prev` behind a "does the style mention any
-    // typography" gate, rebuilding the whole group from `TextPaint::default()`
-    // when it did. Two problems. The gate's default base meant a style setting
-    // only `font_weight` — which is most labels — silently discarded an
-    // inherited 14px for the hardcoded 16px and blanked the family: 167 wrong
-    // font sizes and 394 missing families across the docs catalogue, and wrong
-    // text metrics feed wrong box heights all the way up the tree. And layering
-    // over `prev` at all made properties one-way: the website's table of
-    // contents bolded its active entry and every visited entry stayed bold,
-    // because the inactive style simply omitted `font_weight`.
+    // Not a "does the style mention typography" gate over `prev` or
+    // `TextPaint::default()`: that discards an inherited size/family for a
+    // style setting only `font_weight` (most labels), and makes properties
+    // one-way (a TOC entry's Bold never reverts).
     //
-    // Inheriting instead fixes both by construction: `apply_style` always
+    // Inheriting is correct by construction: `apply_style` always
     // receives the node's COMPLETE resolved rules (see
     // `runtime_vocabulary::style_attach`), so a property the rules do not
     // mention is genuinely unset and must come from the ancestor chain — never
@@ -175,8 +159,7 @@ pub fn resolve(style: &StyleRules, prev: &TextPaint, inherited: &Inherited) -> T
         .map(|ls| ls.resolve())
         .unwrap_or(0.0);
     // Independent, and absent means "use the font's own spacing" — not "keep
-    // whatever the previous style said" (see the group-vs-independent note
-    // above).
+    // whatever the previous style said".
     tp.line_height_px = style
         .line_height
         .as_ref()
@@ -327,12 +310,9 @@ const NAT_WIDTH_CORRECTION_MAX_PX: i32 = 4;
 /// With no letter-spacing, none of those sizes disagree — the spacing is the
 /// trigger, not the glyph.
 ///
-/// Trusting the short report made Taffy size the docs app's `Tag(label = "✓
-/// Verified")` 67px wide when GTK needed 68, so the label wrapped INSIDE its own
-/// box and the glyph rendered ABOVE the word while web drew one line. Reported by
-/// a user as "Tag with icon positions the icon above the text"; a real
-/// cross-platform layout divergence produced entirely by believing a
-/// one-pixel-short measurement.
+/// Trusting the short report sizes e.g. a `Tag(label = "✓ Verified")` 1px too
+/// narrow, so the label wraps INSIDE its own box and the glyph renders ABOVE
+/// the word while web draws one line.
 ///
 /// The correction asks GTK the question it can answer consistently: the smallest
 /// width (from the reported natural width up) whose height-for-width equals the
@@ -366,10 +346,8 @@ pub fn measure(
     // Padding reaches a leaf as GTK margins (see `apply_style` step 1a),
     // and `gtk_widget_measure` INCLUDES margins in what it reports. Taffy
     // asks for — and adds padding back onto — the CONTENT size, so the
-    // margins have to come back off here. Skipping this double-counted
-    // every padded leaf: Taffy sized the box to content+2×padding, so a
-    // codeblock's padding rendered twice as large on Linux as everywhere
-    // else.
+    // margins have to come back off here, or every padded leaf's padding
+    // is double-counted (content + 2×padding).
     let (mx, my) = crate::widget_margins(label.upcast_ref());
 
     // Minimum (longest unbreakable word — the label's min-content width)
@@ -387,8 +365,7 @@ pub fn measure(
     //   "Trying to measure GtkLabel for width of 0, but it needs at
     //    least 81"
     // Taffy legitimately probes with a 0/near-0 available width while
-    // resolving flex minimums, so this fired constantly and flooded the
-    // log. Clamping to `wmin` asks the question GTK can answer (the
+    // resolving flex minimums, which would flood the log. Clamping to `wmin` asks the question GTK can answer (the
     // height when wrapped as tight as possible) instead of an impossible
     // one; `-1` for a non-positive result keeps "unconstrained" meaning
     // unconstrained rather than "zero".
@@ -446,10 +423,9 @@ mod tests {
     use super::*;
     use runtime_shared::{Color, Tokenized};
 
-    // Reported live: the website's TOC bolds its active entry, and every
-    // entry stayed bold forever after. `resolve` layered each field over
-    // the previous paint, so dropping `font_weight` left the old Bold in
-    // place — a property could be turned on but never off.
+    // Bug: a TOC bolds its active entry, and every entry stayed bold
+    // forever after — dropping `font_weight` must revert the old Bold, not
+    // keep the previous paint's value.
     #[test]
     fn regression_unsetting_a_font_prop_reverts_it_to_default() {
         let bolded = TextPaint {
@@ -486,15 +462,8 @@ mod tests {
     }
 
     /// A colour-only restyle must not wipe the font — the font comes from the
-    /// ancestor chain, which is where it lives on web too.
-    ///
-    /// This used to assert that the font survived from the node's OWN previous
-    /// paint, behind a "does this style mention typography" gate. That gate is
-    /// what made a style setting only `font_weight` discard an inherited size
-    /// and family for `TextPaint::default()`'s 16px system font — 167 wrong
-    /// sizes and 394 missing families across the docs catalogue. Resolving from
-    /// the INHERITED context instead keeps a colour-only restyle harmless
-    /// (below) without ever reading this node's stale state.
+    /// ancestor chain, which is where it lives on web too — never from the
+    /// node's own previous paint.
     #[test]
     fn a_colour_only_restyle_keeps_the_inherited_font() {
         let inherited = Inherited {
@@ -522,9 +491,9 @@ mod tests {
     /// A style that sets ONE font property must not reset the others to
     /// hardcoded defaults — it inherits them.
     ///
-    /// This is the shape most labels have (`font_weight` only), and the reason
-    /// 167 nodes rendered at 16px where web rendered 14px: wrong metrics, and
-    /// every ancestor's box wrong with them.
+    /// This is the shape most labels have (`font_weight` only); resetting
+    /// gives them 16px where web renders the inherited 14px — wrong metrics,
+    /// and every ancestor's box wrong with them.
     #[test]
     fn regression_declaring_one_font_property_inherits_the_rest() {
         let inherited = Inherited {

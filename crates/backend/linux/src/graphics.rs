@@ -1,4 +1,4 @@
-//! `Element::Graphics` on the GTK4 backend — a `GtkGLArea` render surface.
+//! `GraphicsPrim` on the GTK4 backend — a `GtkGLArea` render surface.
 //!
 //! # The GTK4 constraint that shapes this whole module
 //!

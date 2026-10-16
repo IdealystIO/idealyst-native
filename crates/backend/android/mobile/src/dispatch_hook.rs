@@ -6,13 +6,13 @@
 //!
 //! # Why this exists (the bug prevented)
 //!
-//! The new core ([`crate::newcore`]) stages signal writes; nothing is
+//! The kernel stages signal writes; nothing is
 //! observable until the flush driver calls `World::flush`. JNI event
 //! callbacks (click / touch / text-change / toggle / slider / key /
 //! scroll — everything the Kotlin runtime listeners trampoline into)
-//! get their flush from the dispatch-site glue in `newcore.rs`: every
-//! author callback the backend installs is wrapped to schedule a flush
-//! when it returns, so the shared `imp` event closures never change.
+//! get their flush from the dispatch-site glue in [`crate::newcore`]:
+//! every author callback the backend installs is wrapped to schedule a
+//! flush when it returns.
 //! But author code also runs from surfaces that are *not* input
 //! events:
 //!
@@ -26,10 +26,9 @@
 //! Without this hook, a write staged from any of those would sit
 //! uncommitted until some unrelated input event happened to trigger a
 //! flush — i.e. "my `after_ms` callback ran but the UI never updated".
-//! The old-core reactive system applies writes synchronously and never
-//! needs this, so the slot defaults to `None` and every fire site is a
-//! single thread-local read — a no-op unless `newcore::start` installed
-//! the flush driver.
+//! The slot defaults to `None` and every fire site is a single
+//! thread-local read — a no-op unless `newcore::start` installed the
+//! flush driver.
 //!
 //! # What deliberately does NOT fire the hook
 //!
@@ -55,9 +54,8 @@
 //! `Cell<Option<fn()>>` with a `const` initializer has no destructor,
 //! so this `thread_local!` lowers to a plain `#[thread_local]` ELF-TLS
 //! slot — it does NOT consume one of bionic's 128 pthread TLS keys
-//! (only dtor-bearing thread-locals register a key; see
-//! [[project_android_tls_key_limit_stylesheets]]). Old-core builds
-//! therefore pay nothing for this module existing.
+//! (only dtor-bearing thread-locals register a key, and exhausting them
+//! aborts the process).
 
 use std::cell::Cell;
 

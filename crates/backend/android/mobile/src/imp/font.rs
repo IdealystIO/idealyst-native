@@ -67,7 +67,7 @@ impl FontRegistry {
         Self::default()
     }
 
-    /// `Backend::register_asset` entry point for the font branch.
+    /// `caps::AssetOps::register_asset` entry point for the font branch.
     /// Returns `true` if `kind == AssetTag::Font` (handled here, even
     /// on failure); the caller uses that as a signal to skip any
     /// image-cache branch.

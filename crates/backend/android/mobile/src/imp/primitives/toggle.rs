@@ -1,4 +1,4 @@
-//! `Element::Toggle` — `android.widget.Switch` with a Kotlin-side
+//! `TogglePrim` — `android.widget.Switch` with a Kotlin-side
 //! `RustToggleListener` bridge.
 
 use crate::imp::callbacks::{leak, ToggleChangeCallback};
@@ -61,8 +61,8 @@ pub(crate) fn create(
     // from layout — the Theme caption above it still renders because
     // the Text has its own measure_fn, but the Switch contributes
     // zero height to the surrounding column and gets clipped /
-    // hidden. Same hazard the iOS backend documents in
-    // [[project_ios_intrinsic_size_measurer]] for UISwitch/UISlider. The
+    // hidden. Same hazard the iOS backend documents for
+    // UISwitch/UISlider. The
     // generic widget measurer is shared with Button/Slider (see
     // `primitives::measure`).
     super::measure::install_intrinsic_measure(b, &node);

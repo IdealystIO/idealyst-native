@@ -25,8 +25,8 @@ use backend_linux::gtk4;
 use gtk4::prelude::*;
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::{Length, Position, StyleRules, Tokenized};
-// v2: the mega-trait is gone. Drive the backend through the public
-// capability traits — the same surface the scene walker uses.
+// Drive the backend through the public capability traits — the same
+// surface realize uses.
 use runtime_scene::Host;
 use runtime_vocabulary::caps::{LifecycleOps, PressableOps, StyleOps, ViewOps};
 use std::cell::{Cell, RefCell};

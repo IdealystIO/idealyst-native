@@ -423,9 +423,9 @@ mod tests {
         assert_eq!(lines[1].width, 20.0);
     }
 
-    /// The website bug this module exists for: text nodes previously got
-    /// their single-line extent as a Taffy `min_size`, so paragraphs
-    /// could never shrink below one line and ran off the window edge.
+    /// The bug this module exists for: a text node given its single-line
+    /// extent as a Taffy `min_size` can never shrink below one line, so
+    /// paragraphs run off the window edge.
     /// With the measure fn, a definite width caps the box and the
     /// height grows by wrapped line count instead.
     #[test]

@@ -37,9 +37,8 @@
 //! All registry state is stored in `dp` (the dimension Taffy
 //! produces and `StyleRules` reason in). The scroll listener
 //! receives device pixels from Android; we convert at the entry
-//! point. `View.setTranslationX/Y` take device pixels per
-//! `[[project_android_setTranslation_device_px]]` — we convert at the
-//! apply site.
+//! point. `View.setTranslationX/Y` take device pixels — we convert at
+//! the apply site.
 //!
 //! ## Natural-position caching
 //!
@@ -77,7 +76,7 @@ const STICKY_EPSILON: f32 = 0.5;
 /// device px. Any positive value reorders (ViewGroup's Z comparison
 /// is strict); this small it keeps the Z-derived material shadow
 /// imperceptible. Mirrors `layer.zPosition = 1` on iOS/macOS and the
-/// walker's implicit sticky z on wgpu.
+/// implicit sticky z on wgpu.
 const STICKY_RAISE_Z_PX: f32 = 0.01;
 
 /// One sticky child registered against a scroll view.
@@ -110,8 +109,8 @@ pub(crate) struct StickyChild {
 }
 
 /// Per-scroll-view sticky state. Listener lifecycle lives in the
-/// `AndroidBackend::scroll_listeners` map \u{2014} the `Element::
-/// ScrollView` `on_scroll` callback rides the same Android
+/// `AndroidBackend::scroll_listeners` map \u{2014} the
+/// `ScrollViewPrim::on_scroll` callback rides the same Android
 /// `setOnScrollChangeListener` slot, so both subsystems coordinate
 /// install/detach through that shared registry.
 pub(crate) struct StickyScrollEntry {
@@ -133,8 +132,8 @@ pub(crate) type StickyRegistry = HashMap<usize, StickyScrollEntry>;
 // `setTranslationX/Y` writes.
 //
 // NOTE the units: the shared helper is unit-agnostic and everything
-// handed to it here is dp. `setTranslation*` takes device pixels
-// ([[project_android_setTranslation_device_px]]), so the RESULT is
+// handed to it here is dp. `setTranslation*` takes device pixels,
+// so the RESULT is
 // converted back at each write site — never the inputs.
 use runtime_shared::sticky::{translate, StickyInsets};
 
@@ -219,7 +218,7 @@ fn key_of(node: &GlobalRef) -> usize {
 ///
 /// `scroll_listeners` is the backend's shared "what scroll views
 /// already have the Kotlin listener attached" map. We consult it
-/// here and through `Element::ScrollView::on_scroll`'s wiring so
+/// here and through `ScrollViewPrim::on_scroll`'s wiring so
 /// both subsystems use a single `setOnScrollChangeListener` slot.
 pub(crate) fn register(
     env: &mut JNIEnv,
@@ -522,8 +521,7 @@ fn write_translate(
     density: f32,
 ) {
     let (dx, dy) = translate_dp;
-    // `setTranslation*` takes device pixels —
-    // [[project_android_setTranslation_device_px]].
+    // `setTranslation*` takes device pixels.
     if (dx - child.last_translate.0).abs() >= STICKY_EPSILON {
         let _ = env.call_method(
             child.view.as_obj(),
@@ -544,7 +542,7 @@ fn write_translate(
     }
 }
 
-/// Refresh the cached `layout_y` for every sticky child after a
+/// Refresh the cached `layout` position for every sticky child after a
 /// layout pass. Walks Taffy parents from the child up to its
 /// registered scroll view, summing per-node `frame_of(...).y`.
 ///

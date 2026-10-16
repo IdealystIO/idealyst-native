@@ -26,7 +26,7 @@ import androidx.core.view.WindowInsetsCompat
  *    app's layout exactly as before (content between the status and
  *    navigation bars), the system-bar insets are re-applied as margins on
  *    the host root, which is what `decorFitsSystemWindows(true)` did.
- *    Insets are returned CONSUMED, as the fitting decor used to consume them.
+ *    Insets are returned CONSUMED, as the fitting decor would consume them.
  * 2. **IME animation, forwarded.** Every phase of the system keyboard
  *    animation goes to each registered [RustKeyboardAvoider] (the frames
  *    come from the system animation itself), and where the keyboard is

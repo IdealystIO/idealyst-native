@@ -2,12 +2,10 @@
 //! counterpart of macOS's `NSDraggingDestination` and web's
 //! `dragenter`/`dragover`/`dragleave`/`drop`.
 //!
-//! `Backend::install_file_drop_handler` has a **no-op default body**, so a
-//! backend that never implements it still compiles and renders — every
-//! `.on_file_drop()` view just silently receives nothing. That is what left
-//! the `file-picker` SDK's `FileDropZone` inert on Linux: the SDK-side
-//! `picked_from_dropped` was ready, but the raw channel that feeds it never
-//! fired. This module sources that channel.
+//! `caps::InputOps::install_file_drop_handler` has a **no-op default body**,
+//! so a backend that never implements it still compiles and renders — every
+//! `.on_file_drop()` view (e.g. the `file-picker` SDK's `FileDropZone`) just
+//! silently receives nothing. This module sources that channel.
 //!
 //! # Mapping
 //!

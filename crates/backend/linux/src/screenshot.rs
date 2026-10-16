@@ -1,15 +1,10 @@
 //! Native screen capture for the GTK4 backend — the on-device side of
 //! the Robot bridge's `"screenshot"` verb.
 //!
-//! Every other widget backend already answers this verb (iOS/Android via
-//! their layer/canvas snapshot, macOS via `cacheDisplayInRect`, web by
-//! rasterizing the live DOM). GTK answered `supports_screenshot() =
-//! false`, so `idealyst`'s screenshot tooling — the MCP `screenshot`
-//! tool, `robot-test`'s image assertions, parity runs — had no picture of
-//! a Linux app at all. That is a verification hole, not a cosmetic gap:
-//! this backend's own history is a list of layout bugs that built
-//! cleanly, logged nothing, and were only ever caught from a user's
-//! screenshot.
+//! Matches the other widget backends (iOS/Android via their layer/canvas
+//! snapshot, macOS via `cacheDisplayInRect`, web by rasterizing the live
+//! DOM), so `idealyst`'s screenshot tooling — the MCP `screenshot` tool,
+//! `robot-test`'s image assertions, parity runs — can see a Linux app.
 //!
 //! # Mechanism: re-render through GSK, don't grab the screen
 //!
@@ -38,12 +33,10 @@
 //! demand — it serves the render node GTK produced for that widget on its
 //! last drawn frame, and refreshes off the frame clock. Create one and
 //! snapshot it in the same turn and `Snapshot::to_node()` usually returns
-//! `None`. Measured over the `idea-ui-docs` catalog: **21 of 49** page
-//! captures produced an image, and which ones varied between runs.
+//! `None` (measured: 21 of 49 docs-catalog pages, varying between runs).
 //! `gtk_widget_snapshot_child` (the call our own
 //! [`IdealystView`](crate::IdealystView) snapshot uses for its children)
-//! is no better — it hands back the same cached node, and measured **0 of
-//! 3** on the pages probed.
+//! is no better — it hands back the same cached node.
 //!
 //! What works, every time, is to attach the paintable, force a frame
 //! (`queue_draw`), and read it on a later main-loop turn. So capture is
@@ -55,12 +48,11 @@
 //!
 //! # Known gaps
 //!
-//! - Content that does NOT go through GSK is absent: a `graphics` /
-//!   canvas leaf rendering into its own `GtkGLArea` context paints black
-//!   here. Same class of gap the Apple backends document for a separate
-//!   `CAMetalLayer`, and on GTK it is currently moot — the `graphics`
-//!   primitive is contract-blocked on this backend and never fires
-//!   `on_ready` (see `graphics.rs`).
+//! - Content that does NOT go through GSK is absent (the class of gap the
+//!   Apple backends document for a separate `CAMetalLayer`). A `graphics`
+//!   leaf is not in that class: GTK4's `GtkGLArea` hands its framebuffer
+//!   to GSK as a texture node, so the capture shows its last drawn frame
+//!   (see `graphics.rs`).
 //! - A window that has never been mapped has no renderer, so capture
 //!   fails with a clear error rather than returning a blank image.
 

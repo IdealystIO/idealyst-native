@@ -5,29 +5,11 @@
 //! `imp::primitives::overlay`; it only feeds these functions measurements
 //! and applies the result. Same rationale as `layout_policy`.
 //!
-//! # The bug this replaced
-//!
-//! The anchored portal used to be an `android.widget.PopupWindow` placed
-//! ONCE, at creation, by `anchor_top_left(trigger, side, align, offset,
-//! (0, 0))` — content size zero, because nothing had been measured yet. So
-//! on Android, alone among the backends:
-//!
-//! - a `Below` menu opened from a trigger near the bottom of the screen ran
-//!   off the bottom edge instead of flipping above (no collision flip),
-//! - nothing was clamped into the viewport (no `ANCHOR_EDGE_GAP` gutter),
-//! - `Center`/`End` alignment and `Above`/`Start` sides were off by the
-//!   content size (they subtract it),
-//! - the popup never moved again — not when the content resized (a menu
-//!   search filtering rows) and not when the anchor moved (scroll).
-//!
-//! It also passed `dp` values to `PopupWindow.showAtLocation`, which takes
-//! physical pixels.
-//!
-//! # The model now (mirrors iOS / macOS / web)
+//! # The model (mirrors iOS / macOS / web)
 //!
 //! The anchored portal is a full-bleed overlay `FrameLayout` in the Activity
 //! root — the same in-window mechanism the viewport portal uses (no second
-//! window; see `project_android_portal_is_dialog_smell`). Its Taffy root is
+//! window, unlike a `PopupWindow`/`Dialog`). Its Taffy root is
 //! laid out in viewport space with [`anchored_container_rules`] so the
 //! content child sizes to its content. Every layout pass, and every frame
 //! while the portal is open, the content child's top-left is re-resolved
@@ -36,6 +18,13 @@
 //! fitting, clamp with the shared [`ANCHOR_EDGE_GAP`]. The first placement
 //! equals the stateless `resolve_anchored_placement`, exactly like every
 //! other backend (CLAUDE.md §7).
+//!
+//! Placement must be re-resolved, not computed once at creation: content
+//! size is zero before the first measure, and both the content (a menu
+//! search filtering rows) and the anchor (scroll) move afterwards. Without
+//! the re-resolve a `Below` menu near the bottom edge runs off-screen
+//! instead of flipping, and `Center`/`End` / `Above`/`Start` placements
+//! are off by the content size.
 
 use runtime_shared::primitives::portal::{
     AnchoredPlacer, ElementAlign, ElementSide, ViewportRect, ANCHOR_EDGE_GAP,

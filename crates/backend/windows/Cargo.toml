@@ -4,32 +4,24 @@ version = "2.1.0"
 edition.workspace = true
 license.workspace = true
 
-# Native Win32 backend for `runtime_core::Backend`. Uses raw HWND
-# subwindows for every framework primitive — Button HWND, Edit HWND
+# Native Win32 backend (scene `Host` + capability traits). Uses HWND
+# subwindows for the framework primitives — Button HWND, Edit HWND
 # (TextInput), Static HWND (Text/Image), Trackbar (Slider), etc. —
 # mounted under a parent HWND owned by the host shell.
 #
-# Status: scaffold. The crate is structured but most primitives are
-# placeholder text — author code mounts without panicking and a
-# follow-up PR (driven by someone with a Windows test environment)
-# replaces each placeholder with the real Win32 widget. The lib
-# body is gated on `cfg(target_os = "windows")` so workspace builds
-# on macOS / Linux hosts compile this to an empty rlib without
-# pulling the `windows` crate into the dep graph.
-#
-# Test plan (when a VM/native env is available):
-# 1. `cargo check --target x86_64-pc-windows-msvc -p backend-windows`
-# 2. Create a tiny host that calls `WindowsBackend::new(hwnd)` and
-#    drives the framework's render loop.
-# 3. Confirm Text + Button render via real HWNDs (placeholder text
-#    is fine for everything else for now).
+# Primitives without a Win32 implementation (virtualizer, portal, an
+# unregistered third-party payload) render as painted placeholder text
+# rather than panicking. The lib body is gated on
+# `cfg(target_os = "windows")` so workspace builds on macOS / Linux
+# hosts compile this to an empty rlib without pulling the `windows`
+# crate into the dep graph.
 
 [lib]
 crate-type = ["rlib"]
 
 [features]
 # Robot/automation surface. Turns on the vocabulary's element REGISTRY (which
-# the walker registers every mounted primitive into) and the shared bridge
+# every mounted primitive is registered into) and the shared bridge
 # TRANSPORT, compiles `newcore::install_robot_env` into the boot path, and
 # enables the `IntrospectionOps` reader (`src/introspect.rs`). Both halves are
 # needed and neither implies the other — with only the transport the bridge
@@ -38,9 +30,9 @@ crate-type = ["rlib"]
 robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
-# The permanent substrate both cores compiled against (style engine,
-# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
-# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+# The shared substrate (style engine, tokens, prop/handle structs,
+# scheduling, viewport). Backends never depend on `runtime-core` (the
+# author surface).
 runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
 runtime-world = { workspace = true }
@@ -57,9 +49,7 @@ backend-image-source = { workspace = true }
 image-webp = "0.2"
 
 # The `windows` crate ships pre-generated Win32 bindings. Feature
-# flags are per-namespace; we only need the minimum surface to host
-# child controls. More features can be added as primitives go from
-# placeholder → real widget.
+# flags are per-namespace; enable only the namespaces this crate calls.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
@@ -82,7 +72,7 @@ windows = { version = "0.62", features = [
     # GetModuleHandleW for the graphics-surface window class + the
     # Win32WindowHandle hinstance wgpu reads.
     "Win32_System_LibraryLoader",
-    # `Element::Graphics` surfaces are DirectComposition visuals in a
+    # `graphics` surfaces are DirectComposition visuals in a
     # composition tree over the host window (not child HWNDs) — moving
     # them is a property write + Commit, atomic with the compositor's
     # frame, so they stay glued to the painted scene during scrolling.

@@ -2,7 +2,7 @@
 //!
 //! ## What this pins
 //!
-//! In runtime-v2 the flush is NOT implicit. `newcore` wraps every author
+//! The flush is NOT implicit. `newcore` wraps every author
 //! callback in `flushing0` / `flushing1` / `flushing_key` so exactly one
 //! deduped flush microtask is queued after the handler returns. Drop that
 //! wrapping and the handler still runs, the signal still updates, and the

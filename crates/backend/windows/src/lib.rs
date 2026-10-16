@@ -13,10 +13,8 @@
 //!
 //! The per-primitive bodies live in this module as **inherent** methods on
 //! [`WindowsBackend`]; `newcore`'s caps impls delegate to them. That is the
-//! same split the GTK backend uses. They were an `impl Backend` before the
-//! v2 port — that mega-trait, and the per-backend External/Navigator
-//! registries alongside it, are gone (CLAUDE.md §3): third-party leaves
-//! register on the scene `Registry` instead.
+//! same split the GTK backend uses. Third-party leaves register on the
+//! scene `Registry` (CLAUDE.md §3), not on the backend.
 //!
 //! ## Why not HWND-per-view
 //!
@@ -98,9 +96,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_BORDER, WS_CHILD, WS_VISIBLE,
 };
 
-// Post-dispatch flush-hook slot (new-core flush driver). Unconditional
-// — the fire sites live in the out-of-repo host shell, which cannot
-// see this crate's features; no-op default so the old core never pays.
+// Post-dispatch flush-hook slot (the flush driver). `pub` — the fire
+// sites live in the host shell (`host-win32`); no-op default.
 pub mod dispatch_hook;
 
 /// `runtime_scene::Host` + the 30 capability traits on
@@ -585,14 +582,14 @@ pub struct WindowsBackend {
     pub(crate) layout: LayoutTree,
     layout_for_id: HashMap<u64, runtime_layout::LayoutNode>,
     /// Root node id, stashed by `finish` so `relayout` (window resize)
-    /// and the painter can re-enter without the walker.
+    /// and the painter can re-enter without realize.
     pub(crate) root_id: Option<u64>,
     /// Next available Win32 control id (100.. — below is reserved).
     next_control_id: u16,
     command_handlers: HashMap<u16, CommandEntry>,
     /// parent node id → child node ids, in insertion order.
     pub(crate) children: HashMap<u64, Vec<u64>>,
-    /// Live `Element::Graphics` nodes: surface + author callbacks +
+    /// Live `GraphicsPrim` nodes: surface + author callbacks +
     /// last reported size. See `graphics.rs` for the dispatch rules.
     graphics: HashMap<u64, graphics::GraphicsState>,
     /// DirectComposition device/target/root over the host window —
@@ -1936,7 +1933,7 @@ impl WindowsBackend {
     ) {
         self.image_events.entry(node.id).or_default().install_load(handler);
         // Replay: a data:/asset source decoded inside `create_image`,
-        // before the walker installed this.
+        // before the vocabulary installed this.
         if self.image_events[&node.id].outcome().is_some() {
             self.queue_image_delivery(node.id);
         }
@@ -2342,22 +2339,14 @@ pub(crate) fn radial_radius(center: (f32, f32), radius: f32, farthest: bool, w: 
     (reference * radius).max(0.0)
 }
 
-// The pre-v2 `RegisterNavigator` / `RegisterExternal` impls lived here.
-// Both tables are gone in v2: third-party leaves register on the scene
-// `Registry` instead (CLAUDE.md §3), and navigators are an extension
-// rather than a backend table. The inherent `register_external` above
-// is what the scene Registry mount path uses.
-
 // =========================================================================
 // Primitive bodies — inherent, not a trait impl
 // =========================================================================
 //
-// These were `impl Backend for WindowsBackend` before the v2 port. The
-// `Backend` mega-trait is gone; `newcore.rs` implements
-// `runtime_scene::Host` plus the `caps::*Ops` traits and delegates here.
-// Same split the GTK backend uses (`port(linux): make the GTK bodies
-// inherent`) — one body per primitive, reachable from the caps impls
-// without a trait in between.
+// `newcore.rs` implements `runtime_scene::Host` plus the `caps::*Ops`
+// traits and delegates here. Same split the GTK backend uses — one body
+// per primitive, reachable from the caps impls without a trait in
+// between.
 
 impl WindowsBackend {
 

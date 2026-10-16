@@ -4,11 +4,11 @@ import android.view.KeyEvent
 import android.view.View
 
 /**
- * `View.OnKeyListener` for view-overlay portals (modals). Replaces the
+ * `View.OnKeyListener` for view-overlay portals (modals). Provides the
  * hardware/gesture back-button dismissal that an `android.app.Dialog`
- * used to give for free via `setOnCancelListener`.
+ * would give for free via `setOnCancelListener`.
  *
- * The portal is now a plain overlay `View` reparented into the Activity
+ * The portal is a plain overlay `View` reparented into the Activity
  * root (no separate window), so there's no `Dialog` to route back into.
  * We instead make the modal overlay focusable-in-touch-mode and attach
  * this listener; when the overlay (or a descendant) holds focus and the

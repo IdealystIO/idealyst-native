@@ -1,4 +1,4 @@
-//! `Element::Icon` — renders vector paths via Android's Path/Canvas
+//! `IconPrim` — renders vector paths via Android's Path/Canvas
 //! system inside an ImageView with a custom Drawable.
 //!
 //! Strategy:
@@ -349,9 +349,8 @@ fn get_density(env: &mut jni::JNIEnv, context: &GlobalRef) -> f32 {
 
 /// Parse a CSS color string to Android's `0xAARRGGBB` packed int.
 /// Routes through the canonical parser; falls back to opaque black
-/// on unknown input. Previously this had a divergent 8-digit hex
-/// interpretation (read `#rrggbbaa` as `#aarrggbb`) that produced
-/// the wrong color for any icon styled with CSS-spec 8-digit hex.
+/// on unknown input. Not a local parser: 8-digit hex is CSS
+/// `#rrggbbaa`, and reading it as Android's `#aarrggbb` miscolors icons.
 fn parse_color_to_argb(color: &str) -> i32 {
     runtime_shared::color::parse_or(color, runtime_shared::color::Rgba::BLACK).to_argb_u32() as i32
 }

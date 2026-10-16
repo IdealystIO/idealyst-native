@@ -12,9 +12,8 @@
 //! }
 //! ```
 //!
-//! During the runtime-v2 port `newcore.rs` overrode `create_view` /
-//! `create_text` but not the handle builders, so every one fell through to
-//! that default. `AnimatedValue::bind` routes each per-frame write through
+//! A `newcore.rs` that overrides `create_view` / `create_text` but not the
+//! handle builders falls through to that default. `AnimatedValue::bind` routes each per-frame write through
 //! whatever handle these return, and a no-op handle *accepts every write
 //! and discards it* — the exact failure `handles.rs` warns about: "the
 //! value ticks, nothing paints."

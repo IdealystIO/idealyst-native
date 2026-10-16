@@ -134,7 +134,7 @@ pub fn attach_with_url<'l>(
     root: JObject<'l>,
     url: &str,
 ) {
-    // Back-compat entry: no SDK handlers registered. The generated
+    // Entry with no SDK handlers registered. The generated
     // runtime-server wrapper (which links the first-party SDKs) calls
     // `attach_with_url_with_register` instead, passing a closure that
     // runs the SDK `register` calls so native chrome renders over the
@@ -180,25 +180,23 @@ pub fn attach_with_url_with_register<'l>(
         // anything can defer work. Without it,
         // `runtime_shared::schedule_microtask` / `after_ms` run their
         // closure SYNCHRONOUSLY (scheduling.rs: no installed scheduler
-        // → `f()` inline). The SDK drawer handler defers its sidebar
-        // build via `schedule_microtask` so the `backend.borrow_mut()`
-        // held across `create_navigator` is released before the walker
-        // re-enters via `build_node` → `build_detached` →
-        // `walker/view::build` → `backend.borrow_mut()`. Synchronous
-        // fallback re-enters that borrow mid-`create_navigator` →
+        // → `f()` inline). SDK handlers defer builds via
+        // `schedule_microtask` precisely so a `backend.borrow_mut()` held
+        // across a wire command (e.g. `CreateNavigator`) is released
+        // first; the synchronous fallback re-enters that borrow →
         // `RefCell already borrowed` panic → batch aborts → blank.
         // With the AndroidScheduler installed, `schedule_microtask`
         // routes through `Handler.post` on the main looper; since
         // `drain()` / `apply_batch` runs on that same UI thread, the
         // deferred build runs in a LATER looper turn, after the borrow
-        // releases. Mirrors the iOS RS fix in `backend-ios-mobile`.
+        // releases. Same as `backend-ios-mobile`'s runtime-server shell.
         crate::install_scheduler();
 
         let mut backend = AndroidBackend::new(context_global, root_global);
-        // Register the compiled-in SDK handlers (no-op for the
-        // back-compat `attach_with_url`). Must run before the shell
-        // spawns so the first wire `create_navigator` / `create_external`
-        // finds the handler + the wire presentation factory.
+        // Register the compiled-in SDK handlers (no-op for
+        // `attach_with_url`). Must run before the shell spawns so the
+        // first wire command that needs one finds the handler + the wire
+        // presentation factory.
         register(&mut backend);
         let shell = RuntimeServerShell::spawn_with_options(
             backend,
@@ -213,16 +211,12 @@ pub fn attach_with_url_with_register<'l>(
         // the framework's normal call paths can drive a layout pass. The
         // runtime-server `AndroidBackend` is owned by the client (an
         // `Rc<RefCell<AndroidBackend>>`), so a usable weak ref exists.
-        // Without this, `with_backend(...)` (the drawer handler's
-        // deferred `drawer_attach_sidebar` → `b.run_layout()` in
-        // android-navigator-helpers) returns `None` and the freshly-
-        // attached, parentless sidebar Taffy node is never computed → its
-        // View stays 0×0 → the drawer scrim darkens on open but the
-        // sidebar panel is invisible. The sidebar is attached in a
-        // `schedule_microtask`-deferred build that runs in a LATER looper
-        // turn, AFTER the per-batch `run_layout` the shell tick performs —
-        // so only an explicit post-attach layout pass (via this handle)
-        // sizes it. Mirrors the iOS RS fix in `backend-ios-mobile`.
+        // Without this, `with_backend(...)` returns `None`, and a node an
+        // SDK attaches from a `schedule_microtask`-deferred build — which
+        // runs in a LATER looper turn, AFTER the per-batch `run_layout`
+        // the shell tick performs — is never laid out and stays 0×0. Only
+        // an explicit post-attach layout pass (via this handle) sizes it.
+        // Same as `backend-ios-mobile`'s runtime-server shell.
         let backend_rc = shell.client.borrow().backend().clone();
         crate::install_global_self(std::rc::Rc::downgrade(&backend_rc));
         drop(backend_rc);
@@ -313,10 +307,10 @@ pub fn report_viewport(width_px: jni::sys::jint, height_px: jni::sys::jint, dens
         width: width_dp,
         height: height_dp,
     });
-    // New-core mirror — inert today (runtime-server mode drives the
-    // old core), but every seam that writes `set_viewport_size`
-    // forwards so a future new-core shell inherits live breakpoints
-    // for free. See newcore.rs, "Viewport source".
+    // World mirror — inert here (runtime-server mode mounts no world
+    // through `newcore::start`, so no sink is installed), but every seam
+    // that writes `set_viewport_size` forwards so the two never diverge.
+    // See newcore.rs, "Viewport source".
     crate::newcore::forward_viewport(runtime_shared::ViewportSize {
         width: width_dp,
         height: height_dp,

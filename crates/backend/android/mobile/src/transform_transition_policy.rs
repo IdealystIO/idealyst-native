@@ -32,8 +32,7 @@ pub(crate) fn should_animate_static_transform(
 
 /// Which `android.view.animation` interpolator class backs each
 /// framework easing. `Ease` / `CubicBezier` use `PathInterpolator`
-/// (API 21+), constructed with cubic control points — see
-/// [`easing_control_points`]; the named curves map to the classic
+/// (API 21+), constructed with cubic control points; the named curves map to the classic
 /// interpolator classes.
 pub(crate) enum Interp {
     /// Zero-arg interpolator class, by JNI class path.

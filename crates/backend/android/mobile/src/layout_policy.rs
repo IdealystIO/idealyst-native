@@ -21,8 +21,7 @@
 ///   initial `finish()` pass has run, so an insert now is a later dynamic
 ///   mount. A floating, mid-build parent is `false` here, so its inserts defer
 ///   to the upcoming `finish()` pass; scheduling against a partial tree would
-///   compute and cache wrong sizes (the iOS mirror is `parent.window != nil` —
-///   see `project_ios_insert_layout_discriminator`).
+///   compute and cache wrong sizes (the iOS mirror is `parent.window != nil`).
 ///
 /// The coalescing flag in `imp::scheduler` (`LAYOUT_PASS_QUEUED`) collapses a
 /// burst of sibling inserts in one runloop turn into a single pass, so a `true`
@@ -55,11 +54,10 @@ pub(crate) const WRAP_CONTENT: i32 = -2;
 /// (`FwLength::Auto | FwLength::Full => Dimension::Auto`). Android agreeing
 /// is what keeps the same style tree the same size on every backend.
 ///
-/// This exists as a function rather than a `match` at each call site
-/// because it was two hand-rolled matches, and when `Length::Full` was
-/// added they were the sites that did not learn about it — the Android
-/// backend stopped compiling for `aarch64-linux-android` and stayed that
-/// way. One arm-set, host-testable, is the fix that does not rot.
+/// A function rather than a `match` at each call site so a new `Length`
+/// variant is handled once, in host-testable code — per-site matches
+/// only fail to compile on `aarch64-linux-android`, which nothing on a
+/// desktop host builds.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn non_px_layout_param(length: &runtime_shared::Length) -> Option<i32> {
     match length {
@@ -168,11 +166,9 @@ mod tests {
     use super::insert_needs_layout_pass;
 
     /// Regression: a `when`/`Each`/`presence` child mounting into a live
-    /// (window-attached) non-portal parent MUST schedule a layout pass. The
-    /// pre-fix code only scheduled for portals, so this case returned `false`
-    /// and the dynamically-mounted subtree stayed at 0×0 — the camera/record
-    /// widgets in the whiteboard demo never appeared. Fails against the old
-    /// portals-only behavior; passes after the fix.
+    /// (window-attached) non-portal parent MUST schedule a layout pass, not
+    /// only portal inserts — otherwise the dynamically-mounted subtree stays
+    /// at 0×0 (e.g. a `when`-mounted camera widget never appears).
     #[test]
     fn dynamic_mount_into_attached_nonportal_parent_schedules_pass() {
         assert!(insert_needs_layout_pass(false, true));

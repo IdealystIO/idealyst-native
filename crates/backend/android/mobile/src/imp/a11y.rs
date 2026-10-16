@@ -5,20 +5,20 @@
 //! function takes a node + resolved props and writes (or clears) every
 //! relevant accessibility property. `create_*` paths call it after
 //! constructing the view; the dynamic
-//! [`update_accessibility`](runtime_shared::Backend::update_accessibility)
-//! path reuses it identically. Clearing on `None` is intentional —
+//! `update_accessibility` path (`runtime_vocabulary::caps::A11yOps`)
+//! reuses it identically. Clearing on `None` is intentional —
 //! reactive a11y prop changes must not leak stale labels onto a view.
 //!
 //! TalkBack walks the platform `View` tree directly via
 //! `AccessibilityNodeInfo`, so the Android backend doesn't maintain a
 //! parallel semantics tree;
-//! [`dump_accessibility_tree`](runtime_shared::Backend::dump_accessibility_tree)
-//! stays `None` for this backend.
+//! `A11yOps::dump_accessibility_tree` stays at its `None` default for
+//! this backend.
 //!
 //! ### API-level gating
 //!
 //! Several setters here require API levels above the framework's
-//! minSdk floor (24/N). We call them unconditionally and rely on JNI's
+//! minSdk floor (21). We call them unconditionally and rely on JNI's
 //! `NoSuchMethodError` — caught as a Java exception, cleared, ignored
 //! — to no-op on older devices. This keeps the call sites simple and
 //! avoids burning a `Build.VERSION.SDK_INT` check on every node:
@@ -31,23 +31,21 @@
 //!
 //! Most Android first-class state mapping lives on
 //! `AccessibilityNodeInfo`, which is normally only mutated via a
-//! custom `AccessibilityDelegate`. For v1 we use the View-level
+//! custom `AccessibilityDelegate`. We use the View-level
 //! setters that exist (label / hint / hidden / live region / heading
 //! / selected / enabled), and fold remaining state flags
 //! (CHECKED / EXPANDED / COLLAPSED / REQUIRED / READONLY / INVALID /
 //! MIXED / BUSY) into the `contentDescription` tail string so TalkBack
 //! still announces them. A future Kotlin `IdealystA11y` delegate shim
 //! could promote these to `setStateDescription` (API 30+) and
-//! `setRoleDescription` for richer TalkBack output — kept out of v1
-//! to land the cross-platform contract without a Kotlin runtime
-//! change.
+//! `setRoleDescription` for richer TalkBack output.
 //!
 //! ### Live regions
 //!
 //! `View.setAccessibilityLiveRegion(int)` exists at View level (API
 //! 19+). `Polite` → `ACCESSIBILITY_LIVE_REGION_POLITE (1)`,
 //! `Assertive` → `ACCESSIBILITY_LIVE_REGION_ASSERTIVE (2)`. The
-//! framework walker re-applies the label on signal change; the
+//! framework re-applies the label on signal change; the
 //! TalkBack engine observes the mutation and announces with the
 //! configured priority.
 

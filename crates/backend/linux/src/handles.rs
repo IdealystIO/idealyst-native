@@ -2,8 +2,8 @@
 //! back to the backend.
 //!
 //! `AnimatedValue::bind(ref, prop)` fills a `Ref` with a handle built by
-//! `make_view_handle` / `make_text_handle` — mega-trait methods before
-//! runtime-v2, inherent methods on [`LinuxBackend`] since — then drives
+//! `make_view_handle` / `make_text_handle` (the `caps::ViewOps` /
+//! `caps::TextOps` methods `newcore.rs` implements) — then drives
 //! per-frame writes through that handle's [`ViewOps`] / [`TextOps`]. A
 //! backend that doesn't build real handles silently
 //! drops every animation (the value ticks, nothing paints). This module
@@ -433,7 +433,7 @@ pub(crate) fn make_text_area_handle(
 /// Attach-safe `focus()` for the GTK entry / text view (the `TextInputOps::focus`
 /// contract). `grab_focus` does nothing for a widget that isn't in a mapped
 /// toplevel yet, and realize builds a subtree before appending it, so a
-/// `focus()` right after mount used to be lost.
+/// bare `focus()` right after mount would be lost.
 ///
 /// A focus on an unmapped entry is recorded in the shared [`PendingFocus`]
 /// slot and a one-shot `map` handler is connected. `map` can fire inside the

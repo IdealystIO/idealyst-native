@@ -6,7 +6,7 @@
 //! Each `MotionEvent` dispatch trampolines into Rust via
 //! `nativeInvokeTouch`; see `jni_exports::Java_..._nativeInvokeTouch`.
 //!
-//! Claim protocol (`Backend::claim_touch`) calls
+//! Claim protocol (`caps::InputOps::claim_touch`) calls
 //! `requestDisallowInterceptTouchEvent(true)` on the View's parent
 //! — Android's canonical "ancestors keep your hands off this
 //! gesture" flag. See `docs/native-touch-backends-plan.md` for the
@@ -40,7 +40,7 @@ pub(crate) fn install(_b: &AndroidBackend, node: &GlobalRef, handler: runtime_sh
     });
 }
 
-/// Implementation of `Backend::claim_touch` for Android.
+/// Implementation of `caps::InputOps::claim_touch` for Android.
 ///
 /// `requestDisallowInterceptTouchEvent(true)` on the parent
 /// propagates up the entire ancestor chain — every

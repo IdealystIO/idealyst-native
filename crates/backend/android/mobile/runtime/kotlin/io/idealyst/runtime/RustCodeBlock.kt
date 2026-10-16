@@ -43,8 +43,7 @@ class RustCodeBlock(context: Context) : HorizontalScrollView(context) {
         // monospace face (typically Droid Sans Mono / Roboto Mono).
         textView = TextView(context).apply {
             typeface = Typeface.MONOSPACE
-            // Match iOS UILabel's tighter text metrics — see
-            // [[project_android_textview_fontpadding]]. Without this
+            // Match iOS UILabel's tighter text metrics. Without this
             // the line-height visually leaks above and below glyphs
             // and the block looks taller than its web counterpart.
             includeFontPadding = false

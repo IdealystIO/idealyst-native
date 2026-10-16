@@ -1,90 +1,37 @@
-//! New-core adoption for the Android backend (idea-lite migration, P5).
+//! The Android backend's scene front: [`runtime_scene::Host`] plus every
+//! capability trait (`runtime_vocabulary::caps`) implemented on
+//! `AndroidBackend`, the boot path ([`start`] / [`stop`]) and the flush
+//! driver.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on `AndroidBackend` — the
-//! production shape of the migration: no `LegacyBridge` wrapper in the
-//! render path. Every trait method delegates via UFCS
-//! (`<AndroidBackend as Backend>::method(self, …)`) to the existing
-//! `Backend` impl, so the JNI mechanism code (View creation via the
-//! Kotlin runtime, Taffy layout, GradientDrawable styling, animators,
-//! the RecyclerView virtualizer) is REUSED verbatim — this module adds
-//! a second *front* onto the same machinery, exactly like
-//! `backend-web/src/newcore.rs` does for the DOM and
-//! `backend-macos/src/newcore.rs` for AppKit (this file mirrors those
-//! modules mechanically; keep the three in sync).
-//!
-//! # Delegation status — every capability accounted for
-//!
-//! | Trait | Status |
-//! |---|---|
-//! | `runtime_scene::Host` (7 ops) | direct (`create_anchor` → `create_reactive_anchor`, `supports_splice` → `supports_child_splice` — the P1 renames) |
-//! | `AppEnvOps` | direct (+ dispatch-site glue on `set_keyboard_sink` / `set_pointer_sink`) |
-//! | `LifecycleOps` | direct (`is_hydrating` is always `false` on this backend — no hydration on native) |
-//! | `ViewOps` | direct |
-//! | `InputOps` | direct (+ glue on touch/wheel/hover/file-drop handlers) |
-//! | `PressableOps` | direct (+ glue on `on_click`) |
-//! | `TextOps` | direct (the js-binding methods resolve to the trait-default no-ops, same as the old walker: `supports_js_text_bindings` is `false` here) |
-//! | `ButtonOps` | direct (+ glue on the `Action` evaluator) |
-//! | `ImageOps` | direct (+ glue on load/error handlers) |
-//! | `IconOps` | direct |
-//! | `LinkOps` | direct (+ glue on `on_activate`) |
-//! | `TextInputOps` | direct (+ glue on change/key/blur/focus) |
-//! | `ToggleOps` | direct (+ glue on `on_change`) |
-//! | `SliderOps` | direct (+ glue on `on_change`) |
-//! | `ActivityIndicatorOps` | direct |
-//! | `ScrollOps` | direct (+ glue on `on_scroll`) |
-//! | `SafeAreaOps` | direct |
-//! | `VirtualizerOps` | direct (+ glue on mount/release/measured-size) |
-//! | `GraphicsOps` | direct (+ glue on surface lifecycle) |
-//! | `PortalOps` | direct (+ glue on `on_dismiss`) |
-//! | `PresenceOps` | direct |
-//! | `NavigatorOps` | direct |
-//! | `ExternalOps` | direct |
-//! | `DocumentOps` | direct (web-flavored methods — `create_element`, `attach_html_*`, `register_raw_css` — resolve to the same trait-default no-ops the old walker hit on this backend) |
-//! | `StyleOps` | direct (class-minting methods return the trait-default `None` on native; the vocabulary's `attach_style` then takes the `apply_styled_variants` path — identical routing to the old walker. Token updates fan out through the theme cohort, not a cascade, exactly like macOS.) |
-//! | `AssetOps` | direct |
-//! | `A11yOps` | direct |
-//! | `AnimationOps` | direct |
-//! | `IntrospectionOps` | direct |
-//! | `BatchOps` | direct |
-//! | `WireBindingOps` | direct (wire-recorder no-ops on this backend, same as today) |
-//!
-//! **30/30 direct, 0 adapted, 0 stubbed.** Nothing panics, nothing
-//! silently no-ops beyond what the wrapped `Backend` impl already does.
-//! Where the Android backend does not override a `Backend` method (the
-//! DOM-only and wire-only families), the UFCS call resolves to the same
-//! trait-default fallback the old walker would hit — behavior is
-//! identical by construction. The impl bodies below are generated
-//! mechanically from `backend-web/src/newcore.rs` /
-//! `backend-macos/src/newcore.rs` (themselves generated from
-//! `runtime_vocabulary::bridge`, the compile-time proof of the
-//! signature freeze), with the backend type renamed. The delegated old
-//! bodies keep their documented invariants — notably the
-//! clear-children/Taffy sync and "scroll writes route via the
-//! scroll-handle ops, never a held `borrow_mut`" rules
-//! ([[project_ios_clear_children_taffy_sync]],
-//! [[project_codeblock_author_driven_padding]]) — because those bodies
-//! are literally the ones running.
+//! Each trait method delegates to an inherent `*_impl` method on
+//! `AndroidBackend` (the JNI mechanism code in `imp/`: View creation via
+//! the Kotlin runtime, Taffy layout, GradientDrawable styling, animators,
+//! the RecyclerView virtualizer). Callback-taking methods additionally
+//! wrap the author callback in the dispatch-site flush glue (below).
+//! Methods this backend does not override — the DOM-only `DocumentOps`
+//! family, class-minting `StyleOps`, wire-binding no-ops, the JS text
+//! bindings (`supports_js_text_bindings` is `false`) — resolve to the
+//! caps traits' defaults. `is_hydrating` is always `false`: native never
+//! hydrates. The delegated bodies keep their documented invariants,
+//! notably the clear-children/Taffy sync and "scroll writes route via the
+//! scroll-handle ops, never a held `borrow_mut`".
 //!
 //! # Boot path — [`start`]
 //!
 //! Client-render-only mount of a `runtime_scene::Element` tree against
-//! the live Android View hierarchy through the registry. Like macOS,
-//! host duties are split: the CLI-generated JNI wrapper
-//! (`Java_<pkg>_NativeBridge_attach`) owns the Activity handoff —
-//! constructing `AndroidBackend::new(context, root)`, then
-//! `install_global_self` + `install_scheduler` (+ `install_render_loop`
-//! under `async-driver`) + `register_extensions` — and THIS function
-//! owns everything from "backend is wired to a host `ViewGroup`"
-//! onward. See `crates/tools/build/android`'s generated wrapper (its
-//! `new-core` feature) for the canonical caller, and
-//! `crates/dev/newcore-android-smoke` for a full app.
+//! the live Android View hierarchy through the registry. Host duties are
+//! split: the CLI-generated JNI wrapper (`Java_<pkg>_NativeBridge_attach`)
+//! owns the Activity handoff — constructing `AndroidBackend::new(context,
+//! root)`, then `install_global_self` + `install_scheduler` (+
+//! `install_render_loop` under `async-driver`) + `register_extensions` —
+//! and THIS function owns everything from "backend is wired to a host
+//! `ViewGroup`" onward. `crates/tools/build/android`'s generated wrapper
+//! is the canonical caller; `crates/dev/newcore-android-smoke` is a full
+//! app.
 //!
-//! Sequence (mirrors `runtime_shared::mount`'s ordering where they
-//! overlap):
+//! Sequence:
 //!
-//! 1. Install the default monotonic time source (the Android analogue
-//!    of web `start_in`'s `install_time_source` — without it the
+//! 1. Install the default monotonic time source (without it the
 //!    animation clock and `PhaseTimer` read 0), then
 //!    `runtime_vocabulary::backend::install_env_services` for the
 //!    ambient environment reads (current platform, color scheme, URL
@@ -93,112 +40,86 @@
 //! 2. `Registry` (`register_builtins` + the `register` seam) + `World`
 //!    + `world.enter(realize)`.
 //! 3. `runtime_shared::scheduling::drain_buffered_microtasks()` — a
-//!    no-op on this backend today (the Android scheduler posts
-//!    microtasks straight to the main looper and never buffers; only
-//!    web's hydration window and macOS's mount-buffering window do),
-//!    kept so the boot sequence stays line-for-line comparable across
-//!    the three new-core backends. Build-time microtasks run on later
-//!    looper messages, after `attach` returns — same as the old boot.
-//! 4. `Backend::finish(root)` — appends the single root View into the
-//!    host `ViewGroup` and schedules the retrying Taffy layout pass
-//!    (the host reads back 0×0 until Android's first measure; the
-//!    retry loop in `imp::scheduler` handles it — old-boot mechanism,
-//!    reused).
+//!    no-op on this backend (the Android scheduler posts microtasks
+//!    straight to the main looper and never buffers), kept so the boot
+//!    sequence matches web/macOS. Build-time microtasks run on later
+//!    looper messages, after `attach` returns.
+//! 4. `finish(root)` — appends the single root View into the host
+//!    `ViewGroup` and schedules the retrying Taffy layout pass (the host
+//!    reads back 0×0 until Android's first measure; the retry loop in
+//!    `imp::scheduler` handles it).
 //! 5. `world.flush()` — commit anything staged during mount (ref-fill
 //!    callbacks, handler setup) before the first paint.
-//! 6. Install the flush driver (dispatch hook → [`schedule_flush`])
-//!    and retain `{Realized, backend, registry, world}` in the
-//!    module's thread-local `APP` slot (page…process-lifetime, same
-//!    retention convention as `backend-web`'s `APP`). The JNI
-//!    wrapper's `detach` calls [`stop`].
+//! 6. Install the flush driver (dispatch hook → [`schedule_flush`]) and
+//!    retain `{Realized, backend, registry, world}` in the module's
+//!    thread-local `APP` slot (process-lifetime, same retention
+//!    convention as `backend-web`'s `APP`). The JNI wrapper's `detach`
+//!    calls [`stop`].
 //!
-//! **Hydration is NOT in scope** (native never hydrates).
+//! # Flush driver
 //!
-//! # Flush driver (design §3: precise dispatch-site glue, the settled
-//! web shape)
-//!
-//! The new kernel stages writes; nothing is observable until the host
-//! driver calls [`World::flush`]. Android needs **no event-monitor or
-//! per-frame safety net**: unlike AppKit (whose control tracking loops
-//! pull events around `sendEvent:`), every author-visible event on
-//! Android arrives as a JNI callback into a Rust closure the backend
-//! itself installed (`RustClickListener` → `on_click`,
-//! `RustTextWatcher` → `on_change`, `RustTouchListener` → the touch
-//! handler, …). Two hooks cover everything:
+//! The kernel stages writes; nothing is observable until the host driver
+//! calls [`World::flush`]. Android needs **no event-monitor or per-frame
+//! safety net**: unlike AppKit (whose control tracking loops pull events
+//! around `sendEvent:`), every author-visible event on Android arrives as
+//! a JNI callback into a Rust closure the backend itself installed
+//! (`RustClickListener` → `on_click`, `RustTextWatcher` → `on_change`,
+//! `RustTouchListener` → the touch handler, …). Two hooks cover
+//! everything:
 //!
 //! 1. **Author-callback wrapping (this module).** Every callback-taking
-//!    capability impl below wraps the author callback before delegating
-//!    to the `Backend` machinery: press/click, input/change, toggle,
-//!    slider, scroll, hover, wheel, touch, key, blur/focus, file-drop,
-//!    image load/error, link activation, portal dismiss, graphics
-//!    lifecycle, virtualizer row mount/release, state setters, and the
-//!    app-level key handler. The wrapper calls the author fn, then
-//!    [`schedule_flush`] — one deduped
+//!    capability impl below wraps the author callback before delegating:
+//!    press/click, input/change, toggle, slider, scroll, hover, wheel,
+//!    touch, key, blur/focus, file-drop, image load/error, link
+//!    activation, portal dismiss, graphics lifecycle, virtualizer row
+//!    mount/release, state setters, and the app-level key handler. The
+//!    wrapper calls the author fn, then [`schedule_flush`] — one deduped
 //!    `runtime_shared::scheduling::schedule_microtask`, which on this
-//!    platform is `Handler.post` to the main looper: it runs on a
-//!    LATER looper message, strictly after the current JNI event
-//!    dispatch returns to Java. Net effect: stage during dispatch,
-//!    commit at the looper-turn boundary right after — the idea-lite
-//!    contract. Because the wrapping happens in these new-core-only
-//!    impls, the shared `imp` event closures are reused verbatim and
-//!    the old core never pays for it.
-//! 2. **Post-dispatch hook ([`crate::dispatch_hook`]).** Author code
-//!    also runs from non-event surfaces: `after_ms` timers,
+//!    platform is `Handler.post` to the main looper: it runs on a LATER
+//!    looper message, strictly after the current JNI event dispatch
+//!    returns to Java. Net effect: stage during dispatch, commit at the
+//!    looper-turn boundary right after.
+//! 2. **Post-dispatch hook ([`crate::dispatch_hook`]).** Author code also
+//!    runs from non-event surfaces: `after_ms` timers,
 //!    `after_animation_frame` one-shots, `raf_loop` iterations
 //!    (`imp/scheduler.rs`), and async-executor future polls
-//!    (`imp/async_executor.rs`). Those sites fire the thread-local
-//!    hook after each such callback; [`start`] installs
-//!    [`schedule_flush`] into the slot (no-op default, so the old
-//!    core is untouched). Scheduled *microtasks* deliberately do NOT
-//!    fire the hook — the flush itself rides the microtask queue and
-//!    would re-arm itself forever (see `dispatch_hook`'s module docs;
-//!    on Android microtasks and timers share one JNI trampoline, so
-//!    the hook is fired by wrapping at the `Scheduler` impl, never in
-//!    the trampoline).
+//!    (`imp/async_executor.rs`). Those sites fire the thread-local hook
+//!    after each such callback; [`start`] installs [`schedule_flush`]
+//!    into the slot. Scheduled *microtasks* deliberately do NOT fire the
+//!    hook — the flush itself rides the microtask queue and would re-arm
+//!    itself forever (see `dispatch_hook`'s module docs; on Android
+//!    microtasks and timers share one JNI trampoline, so the hook is
+//!    fired by wrapping at the `Scheduler` impl, never in the
+//!    trampoline).
 //!
-//! Residual surfaces NOT covered (documented, not silent):
+//! JNI listeners installed outside these wrappers (SDK-owned Kotlin
+//! callbacks such as `RustActivityResult` dispatch) must call
+//! [`schedule_flush`] themselves after running author code. Viewport
+//! resizes reach the world through [`forward_viewport`] (see the
+//! "Viewport source" section).
 //!
-//! - **`Element::External` SDK glue** (codeblock's `RustCodeBlock`
-//!   scroll callbacks, `RustTextureListener`, drawer-navigator chrome,
-//!   `RustActionBarHelper` header buttons, `RustActivityResult`
-//!   dispatch): these belong to old-core SDK surfaces that predate the
-//!   new core; their ports must call [`schedule_flush`] after author
-//!   callbacks — same residual as web's External note.
-//! - ~~Viewport resize~~ — WIRED: the deferred viewport mirror in
-//!   `imp::viewport_size()` (the seam `RustViewportResizeListener`'s
-//!   layout pass funnels into) now pushes BOTH sinks — the old-core
-//!   TLS signal and, via [`forward_viewport`], the mounted world's
-//!   `ViewportCtx` — so new-core breakpoint re-resolution follows
-//!   rotation/resize live (see the "Viewport source" section).
+//! Everything funnels through [`schedule_flush`]/`flush_now`, which skips
+//! re-entrant flushes (`world.is_flushing()`) — belt and braces; a posted
+//! looper message can't actually preempt a synchronous flush.
 //!
-//! Everything funnels through [`schedule_flush`]/`flush_now`, which
-//! skips re-entrant flushes (`world.is_flushing()`) — belt and braces;
-//! a posted looper message can't actually preempt a synchronous flush.
+//! # TLS budget (bionic's 128 pthread-key limit)
 //!
-//! # TLS audit (bionic's 128 pthread-key budget — the constraint that
-//! crashed idea-ui-docs once, see
-//! [[project_android_tls_key_limit_stylesheets]])
+//! Every dtor-bearing `thread_local!` spends one bionic pthread TLS key,
+//! and running out aborts the process. This module spends:
 //!
-//! The new-core path adds, in this crate:
+//! - [`FLUSH`]: ONE dtor-bearing `thread_local!` (`RefCell<Option<World>>`
+//!   + dedup flag folded into a single slot struct precisely to spend one
+//!   key, not two).
+//! - `APP` (android-gated): ONE dtor-bearing `thread_local!` (kept
+//!   separate from `FLUSH` because a flush may run while the app value is
+//!   mid-construction inside [`start`]).
+//! - `crate::dispatch_hook::HOOK`: `Cell<Option<fn()>>`, const-init, no
+//!   destructor → plain ELF-TLS, **zero** pthread keys.
 //!
-//! - [`FLUSH`] (this module): ONE dtor-bearing `thread_local!`
-//!   (`RefCell<Option<World>>` + dedup flag folded into a single slot
-//!   struct precisely to spend one key, not two).
-//! - `APP` (android-gated, this module): ONE dtor-bearing
-//!   `thread_local!` (kept separate from `FLUSH` because a flush may
-//!   run while the app value is mid-construction inside [`start`] —
-//!   same split as web/macOS, but each of those spends a slot per
-//!   static; here the remaining flag rides inside `FLUSH`).
-//! - `crate::dispatch_hook::HOOK`: `Cell<Option<fn()>>`, const-init,
-//!   no destructor → plain ELF-TLS, **zero** pthread keys.
-//!
-//! Net: **+2 pthread TLS keys** for a new-core boot (the kernel itself
-//! adds one more: `runtime-world`'s single world-registry key — by
-//! design the whole `runtime-world` crate owns exactly one). The
-//! vocabulary's handler statics (`navigator` queue/tick, robot
-//! registry under the `robot` feature) are shared across all new-core
-//! backends and add ≤4 more; nothing here re-introduces a per-sheet or
-//! per-node thread-local.
+//! Net: **+2 pthread TLS keys** (the kernel adds one more: `runtime-world`
+//! owns exactly one world-registry key). The vocabulary's handler statics
+//! (`navigator` queue/tick, robot registry under the `robot` feature) add
+//! ≤4 more; nothing here introduces a per-sheet or per-node thread-local.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -208,7 +129,7 @@ use runtime_world::World;
 
 // ===========================================================================
 // Flush driver (host-compilable half — regression-tested from any
-// platform via `cargo test -p backend-android-mobile --features new-core`)
+// platform via `cargo test -p backend-android-mobile`)
 // ===========================================================================
 
 /// The flush driver's per-thread state. World handle + dedup flag are
@@ -285,8 +206,8 @@ pub fn flush_sync() {
 }
 
 // ===========================================================================
-// Viewport source (the new-core Android resize seam — host-compilable
-// half, regression-tested below)
+// Viewport source (the Android resize seam — host-compilable half,
+// regression-tested below)
 // ===========================================================================
 //
 // The vocabulary's per-world viewport/breakpoint ctx
@@ -295,18 +216,16 @@ pub fn flush_sync() {
 // the deferred viewport mirror inside `viewport_size()` (imp/mod.rs —
 // every layout pass samples the host `ViewGroup`, and a CHANGED size
 // schedules one mirror microtask; configuration changes and rotations
-// route through it because they re-measure the host). The seam keeps
-// writing the shared old-core TLS value
-// (`runtime_shared::set_viewport_size`) — the old core subscribes to it,
-// and the world ctx SEEDS from it — and additionally calls
+// route through it because they re-measure the host). The seam writes
+// the process-wide `runtime_shared::set_viewport_size` signal — the
+// world ctx SEEDS from it — and additionally calls
 // [`forward_viewport`] so breakpoint-dependent author reactivity
 // re-fires on rotation/resize instead of freezing at its seed.
 //
 // Activity recreation: `start` idempotently re-runs (stop → fresh
 // world) and re-installs the sink for the NEW world's ctx, exactly like
 // [`FLUSH`]; a mirror microtask that races teardown either hits a
-// cleared sink (no-op) or a dead world (silent kernel no-op) — the
-// P5 dead-world discipline holds.
+// cleared sink (no-op) or a dead world (silent kernel no-op).
 //
 // Discipline (mirrors `backend_web::newcore`'s resize listener): the
 // seam runs OUTSIDE `World::enter` (a posted looper microtask), so the
@@ -321,8 +240,8 @@ pub fn flush_sync() {
 
 thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
-    /// outside a new-core boot, so the shared old-core seam costs one
-    /// TLS read and nothing else when the old core is driving.
+    /// before [`start`] / after [`stop`], so the resize seam costs one
+    /// TLS read and nothing else when no app is mounted.
     static VIEWPORT_SINK: Cell<Option<runtime_world::Signal<runtime_shared::ViewportSize>>> =
         const { Cell::new(None) };
 }
@@ -398,7 +317,7 @@ pub fn with_world_entered<R>(f: impl FnOnce() -> R) -> Option<R> {
     world.map(|w| w.enter(f))
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 /// Core-selection probe for shared transports (robot relay).
 pub fn is_booted() -> bool {
     FLUSH.with(|f| f.world.borrow().is_some())
@@ -422,8 +341,7 @@ pub fn mounted_world() -> Option<World> {
 /// Run a platform-invoked vocabulary callback with the mounted world
 /// ambient (`World::enter`).
 ///
-/// WHY (bug: flat_list rendered ZERO rows on new-core web — every
-/// backend shared the gap): virtualizer `mount_item` REALIZES a row
+/// WHY (bug: flat_list rendered ZERO rows): virtualizer `mount_item` REALIZES a row
 /// from the backend's own scroll/window machinery, and realization is
 /// creation-side (`signal()`/`effect()`/`inject` for `ThemeCtx`), which
 /// panics outside `World::enter`. Ordinary author callbacks only stage
@@ -454,10 +372,7 @@ fn set_flush_world(world: Option<World>) {
 // Each helper wraps an author callback so that, AFTER the author code
 // returns, one deduped flush microtask is queued. These are used by the
 // callback-taking caps impls below — the precise dispatch-site glue the
-// flush driver is built on (module docs, "Flush driver"). Wrapping here
-// (instead of inside the shared `imp` event closures) keeps the
-// old-core render path byte-identical: the old core applies writes
-// synchronously and must not pay a flush per event. Host-compilable so
+// flush driver is built on (module docs, "Flush driver"). Host-compilable so
 // the wrap-then-flush contract has regression tests that run from any
 // platform (the caps impls that consume them are android-gated).
 
@@ -580,8 +495,7 @@ mod native {
     use crate::imp::{self, AndroidBackend};
 
     // Re-exported so JNI wrappers and app crates can name the boot-path
-    // types without a direct runtime-scene dependency — mirrors how
-    // consumers reach the old core's `Element` through `runtime_shared`.
+    // types without a direct runtime-scene dependency.
     pub use runtime_scene::Element as SceneElement;
     pub use runtime_scene::Registry as SceneRegistry;
 
@@ -590,12 +504,12 @@ mod native {
     // -----------------------------------------------------------------------
 
     thread_local! {
-        /// The mounted new-core app: dropping this tears everything
+        /// The mounted app: dropping this tears everything
         /// down (Realized first — unmount — then the World). Process-
         /// lifetime unless the wrapper's `detach` calls [`stop`]; same
         /// retention convention as `backend-web`'s `APP`. Separate
-        /// from [`super::FLUSH`] (module docs, "TLS audit": this is
-        /// the second — and last — pthread key the adoption spends).
+        /// from [`super::FLUSH`] (module docs, "TLS budget": this is
+        /// the second — and last — pthread key this module spends).
         static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     }
 
@@ -609,7 +523,7 @@ mod native {
         world: World,
     }
 
-    /// Mount a new-core element tree into an already-Activity-wired
+    /// Mount a scene element tree into an already-Activity-wired
     /// backend.
     ///
     /// The JNI wrapper must have: constructed the backend
@@ -617,8 +531,8 @@ mod native {
     /// self-handle (`install_global_self`) and the main-looper
     /// scheduler (`install_scheduler` — the flush driver rides it), and
     /// optionally the render loop. See the module docs for the exact
-    /// sequence and the generated `NativeBridge.attach` (new-core
-    /// branch) for the canonical caller.
+    /// sequence and the generated `NativeBridge.attach` for the
+    /// canonical caller.
     ///
     /// `register` runs after [`runtime_vocabulary::register_builtins`],
     /// so apps/SDKs can register their own payload handlers on the same
@@ -657,14 +571,12 @@ mod native {
         R: FnOnce(&mut Registry<AndroidBackend>),
         B: FnOnce() -> Element,
     {
-        // Idempotent like the old attach's `OWNER.take()`: a re-attach
-        // without an intervening detach tears the previous mount down
+        // Idempotent: a re-attach without an intervening detach tears the previous mount down
         // FIRST — otherwise the prior `Realized`/`World` would only
         // drop on slot overwrite below, after the new tree already
         // realized, and its pending scope cleanups would fire under
         // the new mount's feet. (Activity recreation normally routes
-        // detach → attach, but the old wrapper tolerated bare
-        // re-attach and this path must too.)
+        // detach → attach, but a bare re-attach must work too.)
         stop();
 
         // Monotonic clock (step 1 in the module docs) — the Android
@@ -703,7 +615,7 @@ mod native {
         // web/macOS. Must run with NO backend borrow held.
         runtime_shared::scheduling::drain_buffered_microtasks();
 
-        // Single-root contract, matching the old-core mount: `finish`
+        // Single-root contract: `finish`
         // appends the root view into the host ViewGroup and schedules
         // the retrying first layout pass.
         let mut roots = realized.collect_nodes();
@@ -725,10 +637,10 @@ mod native {
         crate::dispatch_hook::install_dispatch_hook(schedule_flush);
         set_flush_world(Some(world.clone()));
         // Live viewport source: the deferred mirror in
-        // `imp::viewport_size()` now reaches the world's ctx through
+        // `imp::viewport_size()` reaches the world's ctx through
         // `forward_viewport`. The first post-mount layout pass (the
         // retrying pass `finish` scheduled) pushes the REAL host size —
-        // the ctx seeded from the pre-build TLS value, which is stale
+        // the ctx seeded from the pre-build shared value, which is stale
         // on a cold boot because Android measures after `attach`
         // returns. Survives Activity recreation: this install runs
         // again for the new world (see the viewport-source section).
@@ -746,7 +658,7 @@ mod native {
     /// Unmount the app started by [`start`]: drops the `Realized`
     /// (cleanups fire, views detach from the live tree's point of
     /// view), uninstalls the flush hook, and drops the world. Called by
-    /// the JNI wrapper's `detach` (new-core branch).
+    /// the JNI wrapper's `detach`.
     pub fn stop() {
         crate::dispatch_hook::clear_dispatch_hook();
         set_viewport_sink(None);
@@ -820,14 +732,12 @@ mod native {
     }
 
     // =======================================================================
-    // Host + capability-trait delegation (generated from
-    // runtime_vocabulary::bridge — keep mechanically in sync; the
-    // scene-parity goldens + the AllCaps bound on register_builtins are
-    // the compile gates)
+    // Host + capability-trait delegation (the `AllCaps` bound on
+    // `register_builtins` is the compile gate)
     // =======================================================================
 
     // -----------------------------------------------------------------------
-    // Host — the P1 structural seam
+    // Host — the structural seam
     // -----------------------------------------------------------------------
 
     impl Host for AndroidBackend {
@@ -1111,7 +1021,7 @@ mod native {
             a11y: &AccessibilityProps,
         ) -> Self::Node {
             // Dispatch-site glue: link activation dispatches navigation
-            // (stages nav-queue tick signals on the new core).
+            // (stages nav-queue tick signals).
             let mut config = config;
             config.on_activate = flushing0(config.on_activate.clone());
             AndroidBackend::create_link_impl(self, config, a11y)
@@ -1400,8 +1310,7 @@ mod native {
             // creation-side work (`theme_ctx` → `inject::<ThemeCtx>`)
             // that aborts outside `World::enter` (the
             // flat_list-renders-zero-rows bug); `release_item` drops the
-            // row scope, whose cleanups get the same ambient guarantee
-            // the old walker's teardown had.
+            // row scope, whose cleanups get the same ambient guarantee.
             let VirtualizerCallbacks {
                 item_count,
                 item_key,
@@ -1547,17 +1456,11 @@ mod native {
     }
 
     impl caps::NavigatorOps for AndroidBackend {
-    // Every method of this capability is now the caps trait's default.
-    // The old-core `create_navigator` (which registered the per-instance
-    // `NavigatorHandler` these four methods dispatched to) was DELETED
-    // with the old core — it does not fall back to a default
-    // (docs/runtime-v2-deletion-baseline.md §2.3), so no handler is ever
-    // registered and the vocabulary's navigator handler never calls
-    // them — it mounts navigators over `ViewOps`/`LifecycleOps` and
-    // folds screen chrome itself. Native push / header chrome on this
-    // backend is the documented native-nav seam, tracked in the module
-    // docs; it must be re-entered through the scene registry, not
-    // through a resurrected mega-trait cap.
+    // Every method of this capability is the caps trait's default: the
+    // vocabulary's navigator handler mounts navigators over
+    // `ViewOps`/`LifecycleOps` and folds screen chrome itself, so it never
+    // calls these. Native push / header chrome on this backend belongs on
+    // the scene registry, not in this cap.
 }
 
     // -----------------------------------------------------------------------
@@ -1601,8 +1504,7 @@ mod native {
             // via `RustStateListener` and can stage writes when the
             // style path routes states through signals (the
             // static-style divert sends state-overlay nodes through the
-            // reactive path on native — see
-            // [[project_static_style_state_machine_divert]]).
+            // reactive path on native).
             let setter: Rc<dyn Fn(StateBits, bool)> = {
                 let f = setter;
                 Rc::new(move |bits, on| {
@@ -1708,12 +1610,12 @@ pub use native::{
 // ===========================================================================
 // Host tests — the flush driver + dispatch-site glue contract. These
 // run on the cargo-test thread from ANY platform (`cargo test -p
-// backend-android-mobile --features new-core`): they exercise the
+// backend-android-mobile`): they exercise the
 // scheduler-facing glue only. The Host/caps delegation and the boot
 // path are exercised by building + launching `newcore-android-smoke`
 // (real Android Views only exist inside an Android process — same
 // limitation as every `imp/` module; see the smoke crate) and by
-// `cargo check --target aarch64-linux-android --features new-core`,
+// `cargo check --target aarch64-linux-android`,
 // which type-checks the full android-gated half.
 // ===========================================================================
 
@@ -2162,7 +2064,7 @@ mod tests {
         set_flush_world(None);
     }
 
-    /// Regression (native new-core breakpoints frozen at their seed —
+    /// Regression (native breakpoints frozen at their seed —
     /// rotation/configuration change never re-fired breakpoint-
     /// dependent `when`s): the Android resize seam
     /// ([`forward_viewport`], called from `imp::viewport_size()`'s
@@ -2171,8 +2073,7 @@ mod tests {
     /// ctx from OUTSIDE `World::enter` and commit it through the flush
     /// driver, re-firing a breakpoint-reading effect exactly when the
     /// BUCKET changes — and must go inert once the sink is cleared,
-    /// so a mirror racing Activity-recreation teardown is a no-op (the
-    /// P5 dead-world discipline). The JNI layout machinery that fires
+    /// so a mirror racing Activity-recreation teardown is a no-op. The JNI layout machinery that fires
     /// the mirror only exists inside an Android process (module header
     /// above — same limitation as every `imp/` surface); this
     /// host-side test is the reachable unit gate for everything from
@@ -2275,8 +2176,7 @@ mod tests {
         assert!(!is_booted());
     }
 
-    /// Regression (flat_list rendered ZERO rows on new-core — every
-    /// backend shared the gap): `enter_mounted_world`, the virtualizer
+    /// Regression (flat_list rendered ZERO rows): `enter_mounted_world`, the virtualizer
     /// mount/release dispatch-site wrapper, runs its callback with the
     /// boot-stored world ambient so creation-side row work
     /// (`signal()`/`effect()`/`inject`) is legal; without a stored

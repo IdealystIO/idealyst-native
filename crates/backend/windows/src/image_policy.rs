@@ -116,7 +116,7 @@ fn short(src: &str) -> &str {
 /// What `create_image` / `update_image_src` do with a `src`.
 pub(crate) enum Resolution<'a> {
     /// The node already shows (or is fetching) this exact `src`. The
-    /// walker's src binding fires `update_image_src` once at mount with the
+    /// vocabulary's src binding fires `update_image_src` once at mount with the
     /// value `create_image` already loaded; reloading would decode twice and
     /// fire `on_load` twice. Same guard as iOS/Android.
     Unchanged,
@@ -285,7 +285,7 @@ impl Fire {
 ///   ([`Self::begin`]); a fetch that completes for an older generation is
 ///   dropped by [`Self::settle`], so a slow earlier response never
 ///   replaces a newer `src`.
-/// - **Replay**: the walker installs handlers AFTER `create_image`, which
+/// - **Replay**: the vocabulary installs handlers AFTER `create_image`, which
 ///   has already decoded a `data:` / asset source. The outcome is kept, and
 ///   [`Self::take_fire`] delivers it to whichever handler is installed when
 ///   the (deferred) delivery runs.

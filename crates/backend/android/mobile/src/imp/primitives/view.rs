@@ -1,5 +1,5 @@
-//! `Element::View` — `android.widget.FrameLayout`. FrameLayout
-//! is chosen (over LinearLayout) because the backend now drives
+//! `view` — `android.widget.FrameLayout`. FrameLayout
+//! is chosen (over LinearLayout) because the backend drives
 //! layout entirely through Taffy: every child gets its position
 //! and size written directly onto its `FrameLayout.LayoutParams`
 //! (`leftMargin`/`topMargin`/`width`/`height`) by
@@ -28,9 +28,9 @@ pub(crate) fn create(b: &AndroidBackend) -> GlobalRef {
     })
 }
 
-/// Remove a SPECIFIC child from `parent` (Backend::remove_child).
+/// Remove a SPECIFIC child from `parent` (`Host::remove_child`).
 ///
-/// Companion to anchorless reactive regions (`supports_child_splice`): a
+/// Companion to anchorless reactive regions (`Host::supports_splice`): a
 /// `when`/`switch`/`for` region unmounts exactly the nodes it previously
 /// inserted before rebuilding, leaving sibling content in place. Detaches
 /// the native view (`removeView`) AND the parallel Taffy child link, then
@@ -45,13 +45,13 @@ pub(crate) fn remove_child(b: &mut AndroidBackend, parent: &GlobalRef, child: &G
     // that isn't in `parent`'s child list. Their real teardown runs via the
     // scope-tied `release` / `release_private_layer_window`. Skip here.
     //
-    // Regression: dismissing a `Modal` by tapping its backdrop aborted the
-    // app — `if open { Modal }`'s spliced-`when` unmount calls
-    // `remove_child(parent, portal)`, and Taffy's `remove_child`
-    // `position(..).unwrap()` panicked on the non-child portal (the panic
-    // crosses the JNI callback boundary → process abort). `LayoutTree::
-    // remove_child` is now also tolerant, but skipping keeps Android
-    // symmetric with `insert`/`insert_at` and avoids the bogus `removeView`.
+    // Bug this prevents: dismissing a `Modal` by tapping its backdrop
+    // aborted the app — `if open { Modal }`'s spliced-`when` unmount calls
+    // `remove_child(parent, portal)` on the non-child portal, and a panic
+    // there crosses the JNI callback boundary → process abort.
+    // `LayoutTree::remove_child` is tolerant too, but skipping keeps
+    // Android symmetric with `insert`/`insert_at` and avoids the bogus
+    // `removeView`.
     if super::overlay::is_portal_node(b, child)
         || b.detached_window_roots
             .contains_key(&AndroidBackend::node_key_of(child))
@@ -75,7 +75,7 @@ pub(crate) fn remove_child(b: &mut AndroidBackend, parent: &GlobalRef, child: &G
 }
 
 /// Insert `child` into `parent` at `index` among its current children
-/// (Backend::insert_at). Clamped to the end if `index` exceeds the count.
+/// (`Host::insert_at`). Clamped to the end if `index` exceeds the count.
 ///
 /// Anchorless regions splice their rows at a stable `base_index` so a
 /// region with trailing static siblings rebuilds in place. Mirrors
@@ -128,7 +128,7 @@ pub(crate) fn insert_at(
 ///   owns its own content view); attempting
 ///   `parent.addView(portal_child)` would throw
 ///   `IllegalStateException("The specified child already has a parent")`.
-///   The walker calls `insert(presence_placeholder, portal_node)`
+///   Realize calls `insert(presence_placeholder, portal_node)`
 ///   for every portal; we filter here.
 pub(crate) fn insert(b: &mut AndroidBackend, parent: &mut GlobalRef, child: GlobalRef) {
     if super::overlay::is_portal_node(b, &child) {

@@ -17,8 +17,8 @@
 //! long-press touch recognizer trips over this; presence animations
 //! and any other timer-driven feature follow.
 //!
-//! Hosts call [`install_scheduler`] once at startup, before the
-//! first `runtime_shared::render(...)`.
+//! Hosts call [`install_scheduler`] once at startup, before
+//! `newcore::start`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -37,14 +37,9 @@ use super::with_env;
 // (from the JVM Runnable) and `ScheduledHandle::cancel` (from Rust)
 // take ownership via `HashMap::remove`, so whichever runs first
 // fires-or-drops the closure and the other gets a no-op. Safe by
-// construction — no leaked pointers, no double-free.
-//
-// History: the original design leaked `Box<dyn FnOnce>` via
-// `Box::into_raw` and handed the raw pointer to both sides. The
-// JNI invoke and the Rust `cancel` each tried `Box::from_raw` on
-// the same address; cancel-after-fire then double-freed and
-// SIGSEGV'd with `fault addr 0x72702d676e6f6c5b` (ASCII
-// "rp-gnol[" — a string fragment interpreted as a pointer).
+// construction — no leaked pointers, no double-free. (Not a raw
+// `Box::into_raw` pointer handed to both sides: cancel-after-fire then
+// double-frees and SIGSEGVs.)
 thread_local! {
     static CALLBACKS: RefCell<HashMap<i64, Box<dyn FnOnce() + 'static>>> =
         RefCell::new(HashMap::new());
@@ -114,7 +109,7 @@ impl Scheduler for AndroidScheduler {
         // "near enough to vsync."
         //
         // One-shot frame callbacks can run author code that stages
-        // new-core writes (animation ticks) — fire the post-dispatch
+        // writes (animation ticks) — fire the post-dispatch
         // hook AFTER the callback. Wrapped HERE (not in the shared
         // `nativeInvoke` trampoline) because microtasks ride the same
         // trampoline and must NOT fire the hook — the flush itself is
@@ -136,7 +131,7 @@ impl Scheduler for AndroidScheduler {
     ) -> Box<dyn ScheduleHandle> {
         // Timer callbacks are a primary author-code surface
         // (`after_ms` bodies that set signals) — the post-dispatch
-        // hook is what commits those writes on the new core. Same
+        // hook is what commits those writes. Same
         // wrap-at-the-impl rationale as `after_animation_frame`.
         Box::new(schedule_runnable(
             delay_ms.max(0),
@@ -160,7 +155,7 @@ impl Scheduler for AndroidScheduler {
         // cancel — acceptable for a 16ms cadence.
         //
         // raf-loop iterations can run author code that stages
-        // new-core writes (frame-paced drag/scroll state) — fire the
+        // writes (frame-paced drag/scroll state) — fire the
         // post-dispatch hook after every tick (see
         // `crate::dispatch_hook` module docs).
         let mut f = f;
@@ -171,32 +166,26 @@ impl Scheduler for AndroidScheduler {
     }
 }
 
-/// Schedule a Taffy layout pass with retry. The host view's
-/// `getWidth()/getHeight()` read back 0×0 at `finish` time (Android
-/// lays out asynchronously on the next vsync frame). The first
-/// scheduled pass usually sees 0×0; on `retry_count == 0` we then
-/// re-schedule with a longer delay so the SECOND pass runs after
-/// the host has been measured. Two attempts is enough for the
-/// initial mount in practice; further retries land at 32/64/128ms
-/// in case the activity stack still hasn't laid out (rare — e.g.
-/// resuming a backgrounded process). Stops once the host reports a
-/// non-zero size and the layout pass actually applies frames.
 thread_local! {
     /// Coalescing flag: set when a layout pass is queued (via
     /// `Handler.postDelayed`) and cleared at the start of the queued
-    /// pass. Mirrors the iOS `LAYOUT_PASS_QUEUED` pattern — see
-    /// [[project_ios_schedule_layout_coalesce]]. Without coalescing,
+    /// pass. Mirrors the iOS `LAYOUT_PASS_QUEUED` pattern. Without coalescing,
     /// any future code path that calls `schedule_layout_pass_retry`
     /// in a loop (per-insert, per-style-change, per-frame) would
-    /// post N runnables that each fire a full-tree layout. Today the
-    /// callsites are limited (`finish`, `swap_body`,
-    /// `notify_config_changed`) and don't loop, but the flag costs
-    /// ~nothing and prevents the iOS-style regression from sneaking
-    /// in later.
+    /// post N runnables that each fire a full-tree layout.
     static LAYOUT_PASS_QUEUED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 
+/// Schedule a Taffy layout pass, retrying while the host is unmeasured.
+/// The host view's `getWidth()/getHeight()` read back 0×0 at `finish`
+/// time (Android lays out asynchronously on the next vsync frame), so
+/// the first pass usually sees 0×0; a `retry_count == 0` pass then
+/// re-schedules with a longer delay so the SECOND pass runs after the
+/// host has been measured. Further retries land at 32/64/128ms in case
+/// the activity stack still hasn't laid out (rare — e.g. resuming a
+/// backgrounded process). Stops once the host reports a non-zero size
+/// and the layout pass actually applies frames.
 pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
     // Retry attempts deliberately bypass the coalescing flag: the
     // retry exists specifically because the previous pass ran with
@@ -255,8 +244,7 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
         // open signal flips during input dispatch) paints once
         // UNLAID-OUT (the card at the origin / top-left) and visibly
         // snaps into place. Choreographer is the principled fix for that
-        // jank and helps every dynamic mount, not just modals. See
-        // [[project_android_layout_before_paint_choreographer]].
+        // jank and helps every dynamic mount, not just modals.
         schedule_frame_callback(Box::new(run_pass));
     } else {
         // RETRY attempts: the previous pass ran while the host was still
@@ -269,7 +257,7 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
         let delay = 16i32 << retry_count.min(3);
         // `ScheduledHandle::Drop` cancels the runnable (and removes the
         // closure from CALLBACKS), so we must leak the handle for the
-        // post to actually fire. See [[project_android_scheduler_handle_leak]].
+        // post to actually fire.
         std::mem::forget(schedule_runnable(delay, Box::new(run_pass)));
     }
 }
@@ -454,13 +442,11 @@ impl Drop for RafLoopHandle {
 }
 
 /// Post a one-shot runnable and leak its handle so it actually fires
-/// (dropping the handle cancels the post — see
-/// [[project_android_scheduler_handle_leak]]). Use when the caller has no
+/// (dropping the handle cancels the post). Use when the caller has no
 /// reason to cancel. Keeps `ScheduledHandle` private to this module.
 ///
-/// Currently unused — the only caller was the old Dialog-portal
-/// deferred-`show()` band-aid, removed when portals became view
-/// overlays. Kept as generic fire-and-forget scheduling infra.
+/// Currently has no callers; kept as generic fire-and-forget
+/// scheduling infra.
 #[allow(dead_code)]
 pub(crate) fn post_runnable(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) {
     std::mem::forget(schedule_runnable(delay_ms, f));
@@ -511,7 +497,7 @@ fn schedule_runnable(
 /// no-op.
 ///
 /// `id` is the registry key, not a pointer — see the doc on
-/// `CALLBACKS` for why we abandoned the leaked-pointer design.
+/// `CALLBACKS` for why.
 ///
 /// Wrapped in `catch_unwind` because Rust panics across the JNI
 /// boundary are UB. Caught panics log to `idealyst` logcat so they

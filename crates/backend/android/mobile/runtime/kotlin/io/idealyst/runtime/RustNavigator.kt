@@ -16,7 +16,8 @@ import androidx.fragment.app.FragmentTransaction
  * [FragmentManager], and exposes push / pop / replace / reset calls
  * that the Rust side invokes via JNI to commit fragment transactions.
  *
- * One controller per Rust `Primitive::Navigator` instance.
+ * One controller per mounted stack navigator (the Android navigator
+ * helper, `navigators/helpers/android/src/stack.rs`, creates it).
  *
  * Container id: every controller assigns a unique synthetic id to
  * its FrameLayout. `FragmentManager` needs a container id to commit

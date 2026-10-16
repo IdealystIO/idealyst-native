@@ -1,11 +1,9 @@
 //! Raw touch/pointer delivery for `on_touch` views.
 //!
-//! `Backend::install_touch_handler` has a **no-op default body**, so a
-//! backend that never implements it still compiles and still renders —
-//! every `.on_touch()` view just silently receives nothing. On GTK that
-//! meant the whiteboard demo's drawing surface and its tool buttons were
-//! inert with no error anywhere: the app was sending events into a
-//! method that does nothing.
+//! `caps::InputOps::install_touch_handler` has a **no-op default body**, so
+//! a backend that never implements it still compiles and still renders —
+//! every `.on_touch()` view just silently receives nothing, with no error
+//! anywhere.
 //!
 //! # Mapping
 //!

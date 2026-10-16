@@ -174,12 +174,11 @@ pub fn build_gl_area_for_test(
 
 
 
-// Post-dispatch flush-hook slot (new-core flush driver). Unconditional
-// — the fire sites live in the out-of-repo host shell, which cannot
-// see this crate's features; no-op default so the old core never pays.
+// Post-dispatch flush-hook slot (the flush driver). `pub` — the fire
+// sites live in the host shell's scheduler; no-op default.
 pub mod dispatch_hook;
 
-/// `runtime_scene::Host` + the 30 capability traits on [`LinuxBackend`],
+/// `runtime_scene::Host` + the capability traits on [`LinuxBackend`],
 /// plus the boot entry and flush driver.
 pub mod newcore;
 
@@ -207,7 +206,7 @@ impl std::fmt::Debug for LinuxNode {
 }
 
 impl LinuxNode {
-    /// Stable per-node id. SDK `Element::External` leaves that keep an
+    /// Stable per-node id. SDK scene-`Registry` leaves that keep an
     /// imperative-ops table (video play/pause/seek, etc.) key it on this.
     pub fn id(&self) -> u64 {
         self.id
@@ -226,7 +225,7 @@ impl LinuxNode {
 struct ImageNodeState {
     /// Last resolved outcome, replayed when a handler installs late.
     outcome: Option<image::ImageOutcome>,
-    /// The node's current `src` + load generation: skips the walker's
+    /// The node's current `src` + load generation: skips the vocabulary's
     /// redundant same-`src` write and discards superseded remote loads.
     slot: image_load::LoadSlot,
     on_load: Option<runtime_shared::primitives::image::ImageLoadHandler>,
@@ -409,7 +408,7 @@ fn build_border(s: &StyleRules) -> Option<BorderPaint> {
 /// Light/Dark swap; without it a dark app rendered light-on-dark text
 /// over a white page.
 ///
-/// Deliberately NOT keyed to [`Backend::color_scheme`]: that reports the
+/// Deliberately NOT keyed to `caps::AppEnvOps::color_scheme`: that reports the
 /// *system* preference, apps are free to ignore it (the website hard-
 /// codes its light theme), and keying the canvas to the desktop would
 /// reintroduce the very "same app, different machine" divergence this
@@ -487,12 +486,10 @@ pub(crate) fn canvas_css(rgba: [f32; 4]) -> String {
 /// **Not** simply `scrolled.child()`: `GtkScrolledWindow` auto-wraps a
 /// child that doesn't implement `GtkScrollable` (a `GtkFixed` doesn't)
 /// in a `GtkViewport`, so `child()` hands back the viewport and a direct
-/// `downcast::<GtkFixed>()` fails. That failure used to be silent — the
-/// `if let` simply didn't fire — so every child inserted into a
-/// `scroll_view` was **dropped from the widget tree**: laid out
+/// `downcast::<GtkFixed>()` fails silently — every child inserted into a
+/// `scroll_view` would be **dropped from the widget tree**: laid out
 /// correctly by Taffy, never parented, never allocated (0×0), never
-/// mapped. The website's entire page was invisible for exactly this
-/// reason. Handles both shapes so it can't regress if GTK stops
+/// mapped. Handles both shapes so it can't regress if GTK stops
 /// wrapping (or we later use a scrollable document widget).
 fn scroll_document(scrolled: &gtk4::ScrolledWindow) -> Option<gtk4::Fixed> {
     let child = scrolled.child()?;
@@ -525,7 +522,7 @@ pub(crate) fn leaf_alloc_size(
 }
 
 /// Taffy measure function for an arbitrary wrapped GTK widget — the
-/// intrinsic size an `Element::External` leaf reports to layout. Same
+/// intrinsic size a scene-`Registry` leaf reports to layout. Same
 /// shape as [`text::measure`] but for any `gtk::Widget` (Picture, Video,
 /// Label, …): natural width unconstrained, then height for that width.
 /// GDK keyval → the framework's spec key name.
@@ -651,8 +648,8 @@ fn build_paint_model(s: &StyleRules) -> PaintModel {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct StickyEntry {
     /// The enclosing `scroll_view` it pins inside — `None` until
-    /// resolved. Deliberately NOT resolved at registration time: the
-    /// walker applies a node's style BEFORE inserting it into its
+    /// resolved. Deliberately NOT resolved at registration time:
+    /// realize applies a node's style BEFORE inserting it into its
     /// parent, so at `apply_style` the node has no ancestry at all
     /// (observed: `node 247 is Sticky, enclosing_scroll=None
     /// parent=None`). Resolved on the first
@@ -699,16 +696,12 @@ pub struct LinuxBackend {
     /// The last `StyleRules` applied to each natively-painted control
     /// (`text_input`, `text_area`), so `apply_native_widget_css` can be
     /// re-run once the node has ancestors to inherit colour and font from.
-    /// The walker styles a node BEFORE inserting it, so the first pass
+    /// The vocabulary styles a node BEFORE inserting it, so the first pass
     /// always resolves the cascade against an empty ancestor chain.
     native_styles: HashMap<u64, Rc<StyleRules>>,
     /// Per-`text_area` measure state (declared font + content-dirty flag).
     /// See `text_area.rs`.
     text_areas: HashMap<u64, text_area::TextAreaState>,
-    // The per-backend External table and navigator registry are gone in
-    // runtime-v2: SDK payloads mount through `runtime_scene::Registry`
-    // (typed by `TypeId`, installed at the app's boot seam) rather than
-    // registering handlers on the backend itself. See CLAUDE.md §3.
     /// Temp font files kept alive for the process (Pango reads lazily).
     _font_files: Vec<PathBuf>,
     /// The framework root node id, captured on first `finish`. Lets the
@@ -750,7 +743,7 @@ pub struct LinuxBackend {
     /// Per-image-node load state: the last resolved outcome plus the
     /// author's `on_load` / `on_error` handlers.
     ///
-    /// The outcome has to be REMEMBERED, not just dispatched: the walker
+    /// The outcome has to be REMEMBERED, not just dispatched: the vocabulary
     /// installs handlers AFTER `create_image` returns, and the capability
     /// contract says `on_load` MUST fire immediately for an image that has
     /// already decoded. A `data:` URI decodes inside `create_image`, so
@@ -797,15 +790,6 @@ pub struct LinuxBackend {
     /// key / pointer source as it is installed. See `user_activity.rs`.
     pub(crate) user_activity: Option<user_activity::UserActivitySource>,
 }
-
-// The `LinuxExternalRegistrar` / `LinuxNavigatorRegistrar` inventory
-// hooks are gone with the External table they fed. In runtime-v2 an SDK
-// installs its handler on a `runtime_scene::Registry` at the app's boot
-// seam (`start_in(..., my_sdk::register, app)`) instead of submitting a
-// link-time ctor that mutates the backend. That removes the whole class
-// of "SDK compiled in but silently never registered" bug these hooks
-// existed to work around — an unregistered payload now panics at
-// realize by design rather than falling through to a placeholder.
 
 impl LinuxBackend {
     /// Construct a backend rooted at `host_window`. The window must be
@@ -978,7 +962,7 @@ impl LinuxBackend {
     /// code does real geometry with it — the website's table of contents
     /// compares each section's absolute frame against the scroll
     /// viewport's to decide which entry is active. Returning the
-    /// parent-relative frame instead (as this used to) silently yields a
+    /// parent-relative frame instead silently yields a
     /// section's offset *within its column*, so the scroll-spy compared
     /// unrelated numbers and never tracked.
     pub(crate) fn node_absolute_frame(&self, id: u64) -> Option<(f32, f32, f32, f32)> {
@@ -1011,10 +995,10 @@ impl LinuxBackend {
     /// one under a live `RefCell` borrow aborts with `RefCell already
     /// borrowed`. Same rule as `set_viewport_size` and `on_scroll`.
     ///
-    /// When the backend IS borrowed (a GLib callback that ran while the
-    /// walker or a layout pass held it), the settle is re-queued on an idle
-    /// rather than dropped: dropping it lost the outcome for good, so
-    /// `on_load`/`on_error` never fired and a late-installed handler had
+    /// When the backend IS borrowed (a GLib callback that ran while
+    /// realize or a layout pass held it), the settle is re-queued on an idle
+    /// rather than dropped: dropping it loses the outcome for good, so
+    /// `on_load`/`on_error` never fire and a late-installed handler has
     /// nothing to replay. `generation` is the load the outcome belongs to; a
     /// settle for a superseded load is discarded.
     pub(crate) fn settle_image(
@@ -1059,7 +1043,7 @@ impl LinuxBackend {
     }
 
     /// Start loading `src` into image node `id` (see `docs/image-src.md`).
-    /// Returns `None` when `src` is what the node already shows (the walker
+    /// Returns `None` when `src` is what the node already shows (the vocabulary
     /// writes the mount-time `src` back once; reloading it re-fired the
     /// handlers), else the load's generation and its outcome — `Pending`
     /// for a remote fetch, which settles through [`Self::finish_remote_image`].
@@ -1215,36 +1199,32 @@ impl LinuxBackend {
         // MOBILE layout in a 1024px window, sidebar collapsed away.
         //
         // Deferred to an idle, NOT called inline: signal writes run their
-        // dependent effects SYNCHRONOUSLY, and those re-enter the walker
+        // dependent effects SYNCHRONOUSLY, and those re-enter the backend
         // to restyle/rebuild the tree. `run_layout` is called from inside
         // the root's `size_allocate` with the backend already mutably
         // borrowed, so an inline publish panics with "RefCell already
-        // borrowed" (`walker/style.rs`) — verified by crashing the app on
-        // exactly this. At idle the allocation cycle is over and the
+        // borrowed". At idle the allocation cycle is over and the
         // borrow is released. Gated on an actual change so a steady
         // window schedules nothing.
         if self.published_viewport != (width, height) {
             self.published_viewport = (width, height);
             gtk4::glib::source::idle_add_local_once(move || {
                 let size = runtime_shared::ViewportSize { width, height };
-                // Legacy thread-local signal (old-core readers read this
-                // one; it also seeds a new world's viewport ctx)...
+                // Process-wide thread-local signal (seeds a new world's
+                // viewport ctx)...
                 runtime_shared::set_viewport_size(size);
-                // ...AND the mounted world's viewport ctx, which is what v2
+                // ...AND the mounted world's viewport ctx, which is what
                 // author reactivity actually subscribes to. Writing only the
                 // former leaves every `current_breakpoint()` reader frozen at
                 // the ctx's seed. See `newcore::forward_viewport`.
                 crate::newcore::forward_viewport(size);
                 // ...and COMMIT it. `set_viewport_size` only stages a signal
-                // write; in runtime-v2 a staged write reaches its dependent
-                // effects/memos on the next flush, and GTK has no periodic
-                // flush — the only ones come from the dispatch-site wrappers
-                // around author callbacks. Without this the signal held the
-                // right size while every `current_breakpoint()` reader kept
-                // its stale value, so responsive layout froze at the bucket
-                // it booted in: the docs drawer stayed collapsed (and in
-                // overlay mode) in a 1280px window, and RESIZING DID NOT HELP
-                // — each resize re-published and was re-swallowed.
+                // write; a staged write reaches its dependent effects/memos
+                // on the next flush, and GTK has no periodic flush — the only
+                // ones come from the dispatch-site wrappers around author
+                // callbacks. Without this every `current_breakpoint()` reader
+                // keeps its stale value and responsive layout freezes at the
+                // bucket it booted in, resizes included.
                 //
                 // This is the same discipline as `flushing0`/`flushing1`: a
                 // platform-originated write must queue exactly one flush.
@@ -1409,7 +1389,7 @@ impl LinuxBackend {
         let anchor_override = self.anchor_override(id, width, height, trigger);
 
         // Collect `id` + every tracked descendant (self.children is the
-        // parent→children linkage the walker's `insert` populates).
+        // parent→children linkage `insert` populates).
         let mut ids = Vec::new();
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
@@ -1546,7 +1526,7 @@ impl LinuxBackend {
     /// `WindowsBackend::register_external_view`.
     pub fn register_external_view(&mut self, widget: gtk4::Widget) -> LinuxNode {
         let node = self.wrap(widget.clone(), NodeKind::Other);
-        // Give Taffy the widget's intrinsic size so `Element::External`
+        // Give Taffy the widget's intrinsic size so SDK leaf
         // content (svg `Picture`, `Video`, codeblock/markdown `Label`)
         // sizes to its content when the author doesn't pin explicit
         // width/height — the same measure-fn treatment `create_text`
@@ -2255,12 +2235,8 @@ impl LinuxBackend {
 }
 
 // =========================================================================
-// GTK mechanism — formerly `impl Backend for LinuxBackend`.
-//
-// v2 deleted the 159-method mega-trait; these bodies are unchanged and now
-// live as inherent methods. `newcore.rs` implements `runtime_scene::Host` +
-// the caps traits on top by delegating here, so the same scene builds the
-// same widget tree.
+// GTK mechanism, as inherent methods. `newcore.rs` implements
+// `runtime_scene::Host` + the caps traits on top by delegating here.
 // =========================================================================
 
 impl LinuxBackend {
@@ -2388,10 +2364,8 @@ impl LinuxBackend {
         // parent's layout. That pair is the "popover renders inline and is
         // really funky" bug.
         //
-        // Old-core didn't need this guard: the walker never inserted a
-        // portal node into its logical parent. runtime-v2 moved that
-        // responsibility to the backend, and this backend was ported
-        // without it.
+        // Realize inserts a portal node into its declaration parent; keeping
+        // it out of that parent is the backend's job.
         if self.portal_roots.contains(&child.id) {
             return;
         }
@@ -2944,7 +2918,7 @@ impl LinuxBackend {
         let pic = image::build_picture(alt);
         let node = self.register_external_view(pic.clone().upcast::<gtk4::Widget>());
         if let Some((_, outcome)) = self.load_image(node.id, &pic, src) {
-            // A synchronous outcome is recorded for the handlers the walker
+            // A synchronous outcome is recorded for the handlers the vocabulary
             // installs next (they replay it); a `Pending` fetch records its
             // own when it settles.
             if outcome != image::ImageOutcome::Pending {
@@ -2963,7 +2937,7 @@ impl LinuxBackend {
         let Some((generation, outcome)) = self.load_image(id, &pic, src) else { return };
         // A reactive `src` swap must re-fire the handlers. `load_image`
         // cleared the remembered outcome; settle on the new one from an
-        // idle: this runs inside the walker's update pass, and firing an
+        // idle: this runs inside the vocabulary's update pass, and firing an
         // author handler here would re-enter the backend borrow.
         if outcome != image::ImageOutcome::Pending {
             let weak = self.self_ref();
@@ -3519,9 +3493,9 @@ impl LinuxBackend {
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
         // The keyboard step (`step_increment`, what an arrow key moves): the
-        // author's `step`, else 1% of the range. It used to be a hard-coded
-        // `1.0`, so on a `0.0..=1.0` slider one arrow press jumped from end
-        // to end. The vocabulary snaps reported values to `step` itself,
+        // author's `step`, else 1% of the range (a fixed `1.0` would make
+        // one arrow press jump end to end on a `0.0..=1.0` slider). The
+        // vocabulary snaps reported values to `step` itself,
         // identically on every backend.
         let increment = step
             .filter(|s| *s > 0.0)
@@ -3785,8 +3759,8 @@ impl LinuxBackend {
         // Free the container and its whole content subtree — the same
         // teardown `release_subtree` does, and iOS's `release_portal_impl`.
         // The container is never reachable from a released ancestor (insert
-        // skips it), so this is the ONLY point its state can be freed; it
-        // used to drop just the three portal maps, leaving the container's
+        // skips it), so this is the ONLY point its state can be freed —
+        // dropping just the portal maps would leave the container's
         // detached Taffy root and every content node registered forever.
         // `forget_node` also clears `portal_roots` / `portal_anchors` /
         // `portal_anchor_child` for it.
@@ -3976,7 +3950,7 @@ mod layout_tests {
         );
 
         // (d) regression_redundant_same_src_update_does_not_refire: the
-        // walker writes the mount-time src back once; Linux reloaded it and
+        // vocabulary writes the mount-time src back once; Linux reloaded it and
         // fired on_load a second time.
         let node = rc.borrow_mut().create_image(vectors::PNG_1X1_BASE64, None, a11y);
         let ev = watch_image(rc, &node);
@@ -4105,10 +4079,9 @@ mod layout_tests {
         );
 
         // --- 3. `scroll_document` must find the GtkFixed THROUGH the
-        // GtkViewport GTK wraps it in. The old direct downcast failed
-        // silently, so every child inserted into a scroll_view was never
-        // parented: laid out correctly, allocated 0x0, never mapped. The
-        // website's entire page was invisible.
+        // GtkViewport GTK wraps it in. A direct downcast fails silently,
+        // so every child inserted into a scroll_view is never parented:
+        // laid out correctly, allocated 0x0, never mapped.
         let scrolled = gtk4::ScrolledWindow::new();
         let fixed = gtk4::Fixed::new();
         scrolled.set_child(Some(&fixed));
@@ -4211,7 +4184,7 @@ mod layout_tests {
             .copied()
             .expect("a sticky node must register");
         assert_eq!(entry.top, 16.0, "must carry the `top` threshold");
-        // Resolution is deliberately deferred: the walker styles a node
+        // Resolution is deliberately deferred: the vocabulary styles a node
         // BEFORE inserting it, so at apply_style time it has no ancestry
         // (this is why the TOC never pinned — it registered against
         // nothing and was dropped).
@@ -4431,10 +4404,9 @@ mod layout_tests {
         );
 
         // --- 7. `absolute_frame` must be WINDOW-relative, accumulating
-        // ancestor offsets and subtracting scroll offsets. It used to
-        // return the parent-relative frame, so the website's TOC
-        // scroll-spy compared a section's offset-within-its-column
-        // against the viewport and never tracked the scroll position.
+        // ancestor offsets and subtracting scroll offsets — not the
+        // parent-relative frame, or a TOC scroll-spy compares a section's
+        // offset-within-its-column against the viewport and never tracks.
         // (`row` is at y=100 inside `scroll`, `toc` at y=50 inside
         // `row`; the container is scrolled 400.)
         let abs = backend
@@ -4481,11 +4453,11 @@ mod layout_tests {
         );
 
         // --- 9. A portal must NOT become a child of the element that
-        // declared it. runtime-v2 calls `insert(declaration_parent,
+        // declared it. Realize calls `insert(declaration_parent,
         // portal_node)` for portals just like any other node and expects
         // the BACKEND to skip it (macOS/iOS do, via their own
-        // `portal_roots`). This backend was ported without the guard, so
-        // the popover/menu/tooltip content was reparented INLINE into the
+        // `portal_roots`). Without the guard the popover/menu/tooltip
+        // content was reparented INLINE into the
         // declaration site — and because `attach_to_overlay` bails when
         // the container already has a parent, the window overlay never
         // happened at all.
@@ -4527,8 +4499,7 @@ mod layout_tests {
             "release_portal must un-mark the node",
         );
 
-        // --- 9b. REGRESSION (CrewForge kiosk, 2026-10-15): a click-through
-        // overlay's portal style (`pointer_events: None` only, what
+        // --- 9b. REGRESSION: a click-through overlay's portal style (`pointer_events: None` only, what
         // `mount_portal` applies after the children) REPLACED the
         // container's placement layout. `set_style` resets an unset
         // `justify_content` to `FlexStart` and drops the 100% size, so a
@@ -4573,13 +4544,9 @@ mod layout_tests {
         }
 
         // --- 9a. An ANCHORED portal must pin its content beside the
-        // trigger, not at the container's top-left. This backend used to
-        // give anchored targets a neutral flex placement and document it
-        // as a gap ("needs a per-frame scheduler the GTK host does not
-        // install") — but the host installs a raf_loop driver and Linux
-        // handles already measure viewport rects, so the gap was stale.
-        // Placement now comes from the shared `resolve_anchored_placement`
-        // and rides the `pump` beat.
+        // trigger, not at the container's top-left. Placement comes from
+        // the shared `resolve_anchored_placement` and rides the `pump`
+        // beat (the host's raf_loop driver).
         #[derive(Clone)]
         struct FixedAnchor;
         impl runtime_shared::primitives::portal::AnchorableHandle for FixedAnchor {
@@ -5085,12 +5052,11 @@ mod layout_tests {
         // GTK draws widget CSS on the widget, and a text input's widget is
         // smaller than its Taffy frame: its padding becomes GTK margins and the
         // entry then sizes to content (measured 438x30 inside a 480x48 frame).
-        // A border emitted through the widget's CSS therefore landed ~9px
-        // inside the shell's border, and the two read as two concentric rings.
-        // Only the two docs Fields whose input carries its own border showed it
-        // (Email + Validation); the other five have no input border and looked
-        // fine — which is exactly how it was reported. Web draws the input's
-        // box at the input's own border box, so there the two coincide.
+        // A border emitted through the widget's CSS therefore lands ~9px
+        // inside the shell's border, and the two read as two concentric rings
+        // (visible only on inputs that carry their own border). Web draws the
+        // input's box at the input's own border box, so there the two
+        // coincide.
         {
             let mut backend = LinuxBackend::new(gtk4::Window::new());
             let mut shell = backend.create_view(&a11y);

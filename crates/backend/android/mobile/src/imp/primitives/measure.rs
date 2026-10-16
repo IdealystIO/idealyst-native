@@ -10,8 +10,7 @@
 //! shows except the button/toggle/slider."
 //!
 //! This is the Android twin of the iOS intrinsic-content-size measurer
-//! ([[project_ios_intrinsic_size_measurer]], which sizes UISwitch/UISlider/etc
-//! from `intrinsicContentSize`). It carries no widget-specific logic — it just
+//! (which sizes UISwitch/UISlider/etc from `intrinsicContentSize`). It carries no widget-specific logic — it just
 //! asks the view to measure itself at the available width and reports the
 //! result in dp — so every native control routes through this one helper.
 

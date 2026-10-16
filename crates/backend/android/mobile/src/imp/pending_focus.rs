@@ -3,8 +3,8 @@
 //!
 //! `requestFocus()` on an `EditText` that is not attached to a window does not
 //! take, and the IME has no window to show for. Realize builds a subtree before
-//! inserting it, and a modal's content attaches later still, so `focus()` right
-//! after mount used to be lost.
+//! inserting it, and a modal's content attaches later still, so a bare
+//! `focus()` right after mount would be lost.
 //!
 //! A focus on a detached field is recorded in the shared [`PendingFocus`] slot
 //! and a `RustAttachFocus` (`View.OnAttachStateChangeListener`) is installed on

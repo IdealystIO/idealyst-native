@@ -1,4 +1,4 @@
-//! `Element::Slider` — `android.widget.SeekBar` with the user's
+//! `SliderPrim` — `android.widget.SeekBar` with the user's
 //! f32 range mapped to an integer progress.
 
 use crate::imp::callbacks::{leak, SliderChangeCallback};

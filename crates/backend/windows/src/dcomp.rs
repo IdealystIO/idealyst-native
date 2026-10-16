@@ -1,4 +1,4 @@
-//! DirectComposition tree for `Element::Graphics` surfaces.
+//! DirectComposition tree for `GraphicsPrim` surfaces.
 //!
 //! A graphics surface is an `IDCompositionVisual` in a composition
 //! target over the host window — NOT a child HWND. The distinction is
@@ -443,7 +443,7 @@ mod tests {
 
     /// THE user-reported bug this split exists for: a rounded bezel
     /// inside a scroll viewport, phone half scrolled above the
-    /// viewport top. The old single-clip form applied the bezel radius
+    /// viewport top. A single-clip form would apply the bezel radius
     /// to the viewport intersection, putting rounded corners on the
     /// scroll cut line. Correct: the SQUARE clip is the viewport
     /// (straight edge, fixed to the window) and the ROUNDED clip is

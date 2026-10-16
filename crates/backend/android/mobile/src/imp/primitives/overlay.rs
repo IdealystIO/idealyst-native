@@ -1,11 +1,11 @@
-//! `Element::Portal` — a view overlay added to the Activity root, for both
+//! `PortalPrim` — a view overlay added to the Activity root, for both
 //! viewport-anchored and element-anchored portals.
 //!
 //! # Two flavors, one Node shape
 //!
 //! Both code paths return a content holder as the framework `Node`.
-//! The walker calls `insert_children` on it to populate; `view::insert`
-//! checks `is_portal_node` and skips when the walker later tries to
+//! Realize inserts the portal's children into it; `view::insert`
+//! checks `is_portal_node` and skips when realize later tries to
 //! splice the holder into its surrounding parent view (the overlay
 //! container already owns its parenting).
 //!
@@ -38,8 +38,9 @@
 //!
 //! ### Touch modality (one view tree, no window flags)
 //!
-//! Modality emerges from the *content*, not from window flags
-//! ([[project_android_nonmodal_overlay_passthrough]]):
+//! Modality emerges from the *content*, not from window flags (a
+//! non-modal overlay must not steal touches it has no interactive child
+//! for):
 //!   - **Modal** (`trap_focus = true`, e.g. `Modal`): a full-bleed
 //!     pressable backdrop child consumes touches, so the app beneath is
 //!     blocked. The overlay is made focusable so the back key routes to
@@ -217,8 +218,8 @@ fn create_overlay_portal(
         &runtime_shared::primitives::portal::viewport_container_rules(placement),
     );
 
-    // The overlay's subtree is inserted by the walker AFTER this returns;
-    // `Backend::insert` kicks a coalesced layout pass when it sees an
+    // The overlay's subtree is inserted by realize AFTER this returns;
+    // `Host::insert` kicks a coalesced layout pass when it sees an
     // insert into a portal content holder (it checks `portal_instances`),
     // so the overlay's Taffy root gets `compute()`d once its children
     // exist. No deferred `show()` is needed — the overlay is already in
@@ -240,7 +241,7 @@ fn make_overlay_view(
 ) -> GlobalRef {
     with_env(|env| {
         // The overlay container IS the content holder: a FrameLayout the
-        // walker inserts portal children into directly. FrameLayout (vs
+        // realize inserts portal children into directly. FrameLayout (vs
         // LinearLayout) because the backend drives all child placement
         // through Taffy frames written onto FrameLayout.LayoutParams —
         // same shape as every other `view::create`d container.
@@ -566,7 +567,7 @@ pub(crate) fn release(b: &mut AndroidBackend, node: &GlobalRef) {
 /// True if `node` is a registered portal's content holder. Used by
 /// `view::insert` to skip the `addView` call — portal content holders
 /// are already parented (the view overlay was added to the Activity
-/// `root`), and the walker's
+/// `root`), and realize's
 /// parent-side insert would throw
 /// `IllegalStateException("specified child already has a parent")`.
 pub(crate) fn is_portal_node(b: &AndroidBackend, node: &GlobalRef) -> bool {

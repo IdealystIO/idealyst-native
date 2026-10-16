@@ -1,4 +1,4 @@
-//! `Element::Image` — an `android.widget.ImageView` that actually loads its
+//! `ImagePrim` — an `android.widget.ImageView` that actually loads its
 //! `src`, matching the iOS / macOS image views (CLAUDE.md §7).
 //!
 //! # Sources
@@ -91,7 +91,7 @@ pub(crate) enum CachedImage {
 
 /// Live image views, keyed by node key (the `GlobalRef`'s raw pointer —
 /// `AndroidBackend::node_key_of`). The layout pass reads it to re-raster
-/// SVGs; the walker's handler installs read it to find a view's state.
+/// SVGs; the load/error handler installs read it to find a view's state.
 pub(crate) type ImageStates = HashMap<usize, Rc<ImageState>>;
 
 /// Per-view load state. Shared (`Rc`) between the backend's [`ImageStates`]
@@ -344,8 +344,8 @@ fn fail(state: &ImageState) {
 }
 
 /// Install `on_load`, firing at once if the view already holds an image
-/// (an embedded asset / data URI decodes inside `create_image`, before the
-/// walker installs handlers).
+/// (an embedded asset / data URI decodes inside `create_image`, before
+/// realize installs handlers).
 pub(crate) fn install_load_handler(b: &AndroidBackend, node: &GlobalRef, handler: ImageLoadHandler) {
     let Some(state) = b.image_states.get(&AndroidBackend::node_key_of(node)).cloned() else {
         return;
@@ -642,7 +642,7 @@ mod fetch {
             })();
             // Any throwing JNI call leaves its exception PENDING; a worker
             // that returns to its loop (or exits) with one pending crashes
-            // the process — see `project_android_net_pending_exception_clear`.
+            // the process.
             let pending = take_pending_exception(env);
             match result {
                 Ok(f) => f,

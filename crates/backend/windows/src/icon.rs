@@ -1,4 +1,4 @@
-//! `Element::Icon` — vector icon rendering on the Win32 backend.
+//! `IconPrim` — vector icon rendering on the Win32 backend.
 //!
 //! The framework's icon data is a set of SVG path `d` strings in a
 //! view-box coordinate space (Lucide-style, 24×24). The scene painter

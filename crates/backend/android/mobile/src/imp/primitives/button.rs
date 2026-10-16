@@ -1,4 +1,4 @@
-//! `Element::Button` — `android.widget.Button` with an
+//! `ButtonPrim` — `android.widget.Button` with an
 //! `OnClickListener` that trampolines back to Rust via JNI.
 
 use crate::imp::callbacks::{leak, ClickCallback};

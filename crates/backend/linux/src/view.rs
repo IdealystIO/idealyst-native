@@ -101,8 +101,8 @@ impl PaintModel {
 /// Runs on every snapshot with the widget's CURRENT size, which is what lets
 /// `Length::Full` arrive here as infinity (see `radius_px` in `lib.rs`) and
 /// come out as a true pill at whatever size the box happens to be — including
-/// across resizes, and including boxes larger than the old `999px` sentinel
-/// could cover.
+/// across resizes, and including boxes larger than any fixed sentinel
+/// (e.g. `999px`) could cover.
 pub fn clamp_radius(radius: [f32; 4], w: f32, h: f32) -> [f32; 4] {
     let max = (w.min(h) / 2.0).max(0.0);
     [
@@ -878,7 +878,7 @@ pub(crate) mod input_transparency_tests {
         );
     }
 
-    /// REGRESSION (CrewForge kiosk, 2026-10-15): `overlay().click_through(true)`
+    /// REGRESSION: `overlay().click_through(true)`
     /// marks its portal root `pointer_events: None` and the toast cards opt
     /// back in with `Auto`. `set_can_target(false)` removed the root's whole
     /// subtree from picking, cards included. The empty strip (a full-width

@@ -108,8 +108,8 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustClickListener_nativeI
 /// # Safety
 ///
 /// `ptr` must have been produced by `Box::into_raw` on a
-/// `Box<HeaderButtonCallback>` in `tab_drawer::apply_screen_options`
-/// and must still be live.
+/// `Box<HeaderButtonCallback>` by the SDK that built the toolbar, and
+/// must still be live.
 #[no_mangle]
 pub unsafe extern "system" fn Java_io_idealyst_runtime_RustActionBarHelper_nativeInvoke(
     _env: JNIEnv,
@@ -932,9 +932,9 @@ pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeIte
 }
 
 /// `DiffUtil.areContentsTheSame` for a surviving key: has the item the
-/// live row was rendered from changed (FRAMEWORK-NOTES #50)? `false`
-/// when the data has no change detection (`item_changed` is `None`) —
-/// the adapter then keeps every survivor bound, the pre-#50 behavior.
+/// live row was rendered from changed? `false` when the data has no
+/// change detection (`item_changed` is `None`) — the adapter then keeps
+/// every survivor bound.
 #[no_mangle]
 pub unsafe extern "system" fn Java_io_idealyst_runtime_RustListAdapter_nativeItemChanged(
     _env: JNIEnv,

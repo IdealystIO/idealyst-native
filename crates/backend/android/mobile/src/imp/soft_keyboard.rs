@@ -25,9 +25,9 @@ pub(crate) struct Avoider {
 
 /// Install `RustKeyboardInsets` on the host root. Best-effort like
 /// [`AndroidBackend::install_viewport_resize_listener`]: a staged Kotlin
-/// runtime without the class (CLI not reinstalled since this landed) throws
-/// from `find_class`; the pending exception is cleared and the app keeps
-/// the previous behavior.
+/// runtime without the class (e.g. a stale CLI staged an older runtime)
+/// throws from `find_class`; the pending exception is cleared and the app
+/// runs without IME-inset reporting.
 pub(crate) fn install(backend: &AndroidBackend) {
     let root = backend.root.clone();
     let context = backend.context.clone();

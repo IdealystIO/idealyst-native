@@ -19,9 +19,8 @@
 //! Routing is the shared `runtime_shared::image_src::classify`: a relative
 //! path, scheme-relative URL, `file:`/`content:`/… or empty `src` is
 //! rejected (`warn_rejected` + `on_error`) exactly as on every other
-//! backend. `asset!` images — which used to fire `on_error` here because
-//! only embedded bytes were handled — load from the APK's `assets/` through
-//! `AssetManager` ([`plan_asset`]).
+//! backend. `asset!` images load from the APK's `assets/` through
+//! `AssetManager` ([`plan_asset`]), not only from embedded bytes.
 
 use backend_image_source::{
     classify, decode_bytes, parse_data_uri, DecodedSource, ImageSrc, RejectReason, SvgImage,
@@ -36,7 +35,7 @@ use runtime_shared::AssetSource;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoadPlan<'a> {
     /// The view already shows (or is fetching) this exact `src` — the
-    /// walker's reactive-`src` effect fires once at mount with the value
+    /// vocabulary's reactive-`src` effect fires once at mount with the value
     /// `create_image` already loaded; reloading would double-fetch and
     /// double-fire `on_load`. Mirrors iOS's `current_src` guard.
     Unchanged,

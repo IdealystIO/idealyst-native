@@ -47,7 +47,7 @@
 //! # Native sub-hierarchy and its boundary
 //!
 //! `collect_native_tree` walks a primitive's own GTK sub-objects and stops at
-//! any descendant that is itself a framework element. The walker announces
+//! any descendant that is itself a framework element. Realize announces
 //! those through `note_introspection_root`, which tags the widget with the
 //! [`ELEMENT_CSS_CLASS`] CSS class.
 //!

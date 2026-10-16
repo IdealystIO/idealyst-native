@@ -1,34 +1,24 @@
 //! Rendering: the `runtime_scene::Host` + capability-trait surface, the
 //! boot entry, and the flush driver.
 //!
-//! [`WindowsBackend`] implements [`runtime_scene::Host`] plus **all 30**
-//! capability traits (`runtime_vocabulary::caps`) — the production shape
-//! of the migration. Every mechanism body in this file was moved here
-//! verbatim from the crate's old `impl runtime_core::Backend for WindowsBackend`
-//! when the 159-method mega-trait was deleted, so the Win32 control mechanism code
-//! is unchanged: the same scene builds the same HWND tree.
-//! Capabilities this backend does not implement are simply absent — the
-//! caps-trait DEFAULT bodies serve them, and those defaults were audited
-//! byte-for-byte against the `Backend` defaults they replace
-//! (`docs/runtime-v2-deletion-baseline.md` S2.1; 129 of this backend's
-//! 152 caps methods resolve to a default).
+//! [`WindowsBackend`] implements [`runtime_scene::Host`] plus every
+//! capability trait (`runtime_vocabulary::caps`). Each method delegates to
+//! an inherent painted-scene body in `lib.rs`; methods this backend does
+//! not override are served by the caps-trait DEFAULT bodies — most of
+//! which are silent no-ops, so a forgotten override compiles and quietly
+//! does nothing.
 //!
-//! **30/30 traits implemented, 0 adapted, 0 stubbed.**
+//! # Flush policy at the caps layer
 //!
-//! # Two layers in one file: mechanism + flush policy
-//!
-//! Capability methods that take an author callback wrap it before running
-//! the mechanism (`flushing0`/`flushing1`/`flushing_key` + the inline
+//! Capability methods that take an author callback wrap it before
+//! delegating (`flushing0`/`flushing1`/`flushing_key` + the inline
 //! wrappers below) so a staged write commits after the callback returns.
-//! That dispatch-site policy is why the mechanism lives here rather than
-//! in an inherent impl: the wrap and the body are one method.
 //!
 //! # Boot sequence ([`start`])
 //!
-//! The host shell (out-of-repo; see the crate docs' test plan) creates
-//! its top-level window, wraps it in [`WindowsBackend::new`], and — if
-//! it has one — installs its `runtime_shared::scheduling::Scheduler`
-//! BEFORE calling [`start`]:
+//! The host shell (`host-win32`) creates its top-level window, wraps it
+//! in [`WindowsBackend::new`], and installs its
+//! `runtime_shared::scheduling::Scheduler` BEFORE calling [`start`]:
 //!
 //! 1. Monotonic time source (idempotent, first install wins).
 //! 2. Registry: [`runtime_vocabulary::register_builtins`] + the app's
@@ -43,37 +33,25 @@
 //!
 //! # Flush driver — dispatch-model analysis
 //!
-//! The new core stages signal writes; nothing observes them until the
-//! driver calls [`World::flush`]. This scaffold fires author callbacks
-//! from exactly three places, and all three are covered:
+//! The kernel stages signal writes; nothing observes them until the
+//! driver calls [`World::flush`]. Author callbacks reach this backend
+//! two ways:
 //!
-//! 1. **`WindowsBackend::dispatch_command`** (called by the host
-//!    WndProc's `WM_COMMAND` arm): looks up
-//!    `command_handlers[control_id]` and invokes it. Under new-core
-//!    that stored closure IS the wrapped one —
-//!    `caps::ButtonOps::create_button` / `create_pressable` wrap
-//!    `on_click` BEFORE delegating, and the old `Backend` bodies clone
-//!    the (already wrapped) closure into `command_handlers`. Every
-//!    `WM_COMMAND` dispatch therefore schedules a flush with zero
-//!    host changes.
-//! 2. **`scroll_wnd_proc`'s `WM_MOUSEWHEEL` arm**: fires
-//!    `ScrollState::on_scroll` — wrapped at
-//!    `caps::ScrollOps::create_scroll_view` before the old body boxes
-//!    it into `GWLP_USERDATA`.
-//! 3. **SDK seams** (`register_command_handler` /
+//! 1. **Through the caps layer** — button / pressable / link / text
+//!    input / toggle / slider / scroll / image / graphics / portal /
+//!    virtualizer callbacks, and painted-view input handlers (the host
+//!    routes mouse messages along the hit chain, `crate::view_input`).
+//!    Each is wrapped here BEFORE the inherent body stores it, so
+//!    whatever host message arm fires it (`WM_COMMAND`, `WM_HSCROLL`,
+//!    hit-tested `WM_LBUTTONUP`, …) schedules a flush with zero host
+//!    changes.
+//! 2. **SDK seams** (`register_command_handler` /
 //!    `install_command_handler_with_id`): take RAW closures from SDK
-//!    leaf crates, bypassing the caps layer — residual, see below.
+//!    leaf crates, bypassing the caps layer — see the residual seams.
 //!
-//! Toggle / slider / text-input / text-area / graphics / portal /
-//! virtualizer are placeholders that never fire their callbacks today;
-//! they are wrapped uniformly anyway so the flush arrives for free the
-//! day a placeholder becomes a real control.
+//! **Scheduler contract.** Two regimes:
 //!
-//! **Scheduler contract (honest statement).** The scaffold installs no
-//! `runtime_shared::scheduling::Scheduler` and this repo has no Windows
-//! host crate. Two regimes:
-//!
-//! - *No scheduler installed* (the scaffold's world today):
+//! - *No scheduler installed* (a bare embedder, most tests):
 //!   `schedule_microtask` falls back to SYNCHRONOUS execution off-Web
 //!   (the `runtime-shared::scheduling` contract), so the deduped flush
 //!   runs inline before the wrapped author callback returns. That is
@@ -90,9 +68,9 @@
 //!   `after_animation_frame` one-shots, `raf_loop` iterations) and
 //!   after each `dispatch_command` return (which also covers the SDK
 //!   command-handler seam), and drain microtasks once per message-pump
-//!   iteration so the flush commits before the next paint —
-//!   `host_terminal`'s scheduler tick is the model. Microtasks
-//!   themselves never fire the hook (the flush rides one; see
+//!   iteration so the flush commits before the next paint
+//!   (`host-win32`'s scheduler and `WM_COMMAND` arm do all three).
+//!   Microtasks themselves never fire the hook (the flush rides one; see
 //!   [`crate::dispatch_hook`]).
 //!
 //! # Viewport
@@ -110,15 +88,10 @@
 //! - SDK command handlers (`register_command_handler` /
 //!   `install_command_handler_with_id`) bypass the caps wraps; they
 //!   are covered iff the host fires `dispatch_hook` after
-//!   `dispatch_command` (above). SDK glue ported to new-core should
-//!   call [`schedule_flush`] itself to be host-independent.
-//! - `register_external_view` externals: author callbacks an External
-//!   leaf wires natively must call [`schedule_flush`] when those SDKs
-//!   are ported.
-//! - The old-core `NavigatorRegistry`/inventory registrars keep
-//!   serving the old path only; new-core navigators are vocabulary
-//!   built-ins (swap/stack), so `Element::Navigator` routes through
-//!   `Backend::create_navigator` exactly as before.
+//!   `dispatch_command` (above). SDK glue should call [`schedule_flush`]
+//!   itself to be host-independent.
+//! - `register_external_view` child HWNDs: author callbacks such a leaf
+//!   wires natively must call [`schedule_flush`] themselves.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -189,8 +162,7 @@ impl NewCoreApp {
     /// Unmount: drops the `Realized` (cleanups fire), uninstalls the
     /// flush driver, and drops the world. Must run on the UI thread
     /// while its TLS is intact — the reactive teardown runs scope
-    /// cleanups (same rationale as the old host's explicit `Owner`
-    /// drop on the terminal).
+    /// cleanups.
     pub fn stop(self) {
         // Release a held pointer lock (the clip rectangle is desktop-wide)
         // and show the cursor before the tree goes away.
@@ -204,7 +176,7 @@ impl NewCoreApp {
     }
 }
 
-/// Mount a new-core element tree into an already-constructed backend.
+/// Mount a scene element tree into an already-constructed backend.
 ///
 /// The host must have constructed the backend around its parent HWND
 /// ([`WindowsBackend::new`]) and, if it uses one, installed its
@@ -250,8 +222,7 @@ pub fn start_with<S, R, B>(
     B: FnOnce() -> Element,
 {
     // Monotonic clock (idempotent, first install wins) — animation and
-    // presence timing read it; the old boot relied on the host's lazy
-    // default, the new boot installs it explicitly like macOS/wgpu.
+    // presence timing read it. Installed explicitly like macOS/wgpu.
     let platform = caps::AppEnvOps::platform(&*backend.borrow());
     runtime_shared::time::install_default_time_source(platform);
 
@@ -279,8 +250,8 @@ pub fn start_with<S, R, B>(
     // buffered task may do creation-side work.
     world.enter(runtime_shared::scheduling::drain_buffered_microtasks);
 
-    // Single-root contract, matching the old-core mount (`find_root`
-    // wants exactly one application root — id 1).
+    // Single-root contract (`find_root` wants exactly one application
+    // root — id 1).
     let mut roots = realized.collect_nodes();
     let root = match roots.len() {
         1 => roots.pop().expect("len checked"),
@@ -334,14 +305,13 @@ pub fn start_with<S, R, B>(
 
 /// Point the Robot bridge at the vocabulary registry and give it a way to
 /// enter the mounted world — the same wiring, for the same reason, as
-/// `backend_linux::newcore::install_robot_env` (read its doc for the full
-/// story).
+/// `backend_linux::newcore::install_robot_env` (read its doc for details).
 ///
-/// In short: the shared bridge dispatches to the substrate's own (legacy,
-/// EMPTY) registry by default, so an app that merely starts the bridge answers
+/// In short: the shared bridge dispatches to the substrate's own (EMPTY)
+/// registry by default, so an app that merely starts the bridge answers
 /// `get_snapshot` with `[]` and `find_element` with `null` on a perfectly
 /// healthy tree — a silently blinded driver. `install_verb_router` routes to
-/// the vocabulary registry the v2 walker fills, falling back on the exact
+/// the vocabulary registry realize fills, falling back on the exact
 /// `unknown command:` marker so substrate-owned verbs (`get_logs`, host
 /// commands) still resolve. `install_driver_env` runs queries inside the
 /// mounted world (a reactive `label_fn` reads world signals) and settles
@@ -374,7 +344,7 @@ fn set_flush_world(world: Option<World>) {
     FLUSH_WORLD.with(|w| *w.borrow_mut() = world);
 }
 
-/// True while a new-core app is mounted (`start` ran, `stop` hasn't).
+/// True while an app is mounted (`start` ran, `stop` hasn't).
 pub fn is_booted() -> bool {
     FLUSH_WORLD.with(|w| w.borrow().is_some())
 }
@@ -442,10 +412,7 @@ fn enter_mounted_world<R>(f: impl FnOnce() -> R) -> R {
 // ---------------------------------------------------------------------------
 //
 // Each helper wraps an author callback so that, AFTER the author code
-// returns, one deduped flush microtask is queued. Wrapping here (instead
-// of inside the shared Backend code) keeps the old-core path
-// byte-identical: the old core applies writes synchronously and must not
-// pay a flush per event.
+// returns, one deduped flush microtask is queued.
 
 /// Wrap a zero-arg author callback (`on_press`, link `on_activate`, …).
 fn flushing0(f: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
@@ -526,14 +493,12 @@ fn flushing_sink(sink: primitives::key::KeyboardSink) -> primitives::key::Keyboa
 }
 
 // ===========================================================================
-// Host + capability-trait delegation (generated from
-// backend-terminal/src/newcore.rs / runtime_vocabulary::bridge — keep
-// mechanically in sync; the AllCaps bound on register_builtins is the
-// compile gate)
+// Host + capability-trait delegation (the AllCaps bound on
+// register_builtins is the compile gate)
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Host — the P1 structural seam
+// Host — the structural seam
 // ---------------------------------------------------------------------------
 
 impl Host for WindowsBackend {
@@ -542,21 +507,15 @@ impl Host for WindowsBackend {
     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
         // Delegates to the inherent painted-scene body, which links the
         // Taffy child AND records the parent→children edge the painter and
-        // hit tester walk. The scaffold this replaced only did the Taffy
-        // link plus a `SetParent`, which is meaningless for painted nodes
-        // (they have no HWND) and left the paint tree empty.
+        // hit tester walk (painted nodes have no HWND, so a bare
+        // `SetParent` would leave the paint tree empty).
         WindowsBackend::insert(self, parent, child)
     }
 
-    // `insert_many` is deliberately NOT implemented: `Host`'s default is
-    // the same N-x-`insert` loop the old `Backend` default ran, so the
-    // resulting child order is unchanged (deletion-baseline S2.2 —
-    // "byte-identical on `Host`, safe").
+    // `insert_many` is deliberately NOT implemented: `Host`'s default
+    // N-x-`insert` loop gives the right child order.
 
-    /// Explicit port of the old `Backend::insert_at` DEFAULT body: append,
-    /// ignoring the index. `Host` makes the method REQUIRED, so the default
-    /// that used to supply this body is gone — reproduced verbatim rather
-    /// than inherited (deletion-baseline S2.2). Never reached in practice:
+    /// Append, ignoring the index. Never reached in practice:
     /// [`supports_splice`](Self::supports_splice) is `false`, so reactive
     /// regions rebuild wholesale under their own anchor and no positional
     /// splice is ever emitted.
@@ -564,11 +523,8 @@ impl Host for WindowsBackend {
         self.insert(parent, child)
     }
 
-    /// Explicit port of the old `Backend::remove_child` DEFAULT body (a
-    /// no-op). `Host` makes it REQUIRED, so it is stated here rather than
-    /// inherited (deletion-baseline S2.2). Only meaningful for
-    /// splice-capable hosts; this one is anchored, so the framework never
-    /// calls it.
+    /// A no-op. Only meaningful for splice-capable hosts; this one is
+    /// anchored, so the framework never calls it.
     fn remove_child(&mut self, _parent: &Self::Node, _child: &Self::Node) {
         // default: no-op
     }
@@ -576,53 +532,25 @@ impl Host for WindowsBackend {
     fn clear_children(&mut self, node: &Self::Node) {
         // Delegates to the inherent body, which drops each child subtree
         // (`remove_subtree`: node meta, Taffy node, and any real control
-        // HWND). The scaffold this replaced was a no-op, so every reactive
-        // rebuild leaked the old subtree and painted it under the new one.
+        // HWND). Without it every reactive rebuild would leak the old
+        // subtree and paint it under the new one.
         WindowsBackend::clear_children(self, node)
     }
 
-    /// Explicit port of the old `Backend::create_reactive_anchor` DEFAULT
-    /// body (`create_view` with default a11y). `Host` makes it REQUIRED, so
-    /// it is stated here rather than inherited (deletion-baseline S2.2).
-    ///
-    /// TODO(anchor-display-contents): this is NOT a correct anchor. An
-    /// unstyled view draws nothing, but it is still a flex item, and a
-    /// default flex item is not layout-neutral: it hugs a `flex_grow`
-    /// child to 0, stacks a row parent's children vertically and swallows
-    /// its `gap` (pinned by `runtime_layout`'s contents-node tests — and
-    /// with `supports_splice == false` it sits under EVERY `if`/`for`
-    /// here, not only at subtree roots). The fix is the one iOS / macOS /
-    /// Android already carry: register the anchor's layout node with
-    /// `runtime_layout::LayoutTree::new_contents_node()` instead of
-    /// `new_node()` (its children then link into the real ancestor; its
-    /// own `frame_of` is that ancestor's box at the origin, so children's
-    /// frames apply unchanged under it), make sure this backend's frame
-    /// pass reaches the anchor (walk `logical_children_of`, not
-    /// `children_of` — the flat walk never sees a contents node), and keep
-    /// the anchor out of this backend's own hit-testing (try its children,
-    /// never answer with the anchor). See `Host::create_anchor`'s doc and
-    /// the iOS/macOS `create_anchor_impl`. Left as-is until an agent can
-    /// build and exercise this backend's rendering + input on the real
-    /// target to verify the frame-pass and hit-test halves.
     /// A layout- and hit-transparent node: this backend's
     /// `display: contents`, as on web, iOS, macOS and Android. This backend
     /// anchors EVERY reactive region (`supports_splice` is false), and a
-    /// plain view here was a flex item the author never wrote: a
-    /// `height: 100%` / `flex_grow` child under an `if` laid out at 0 (the
-    /// charts demo's plot), a row's children under a `for` stacked into a
-    /// column, and `gap` stopped separating them.
+    /// plain view here would be a flex item the author never wrote: a
+    /// `height: 100%` / `flex_grow` child under an `if` lays out at 0, a
+    /// row's children under a `for` stack into a column, and `gap` stops
+    /// separating them.
     fn create_anchor(&mut self) -> Self::Node {
         WindowsBackend::create_anchor(self)
     }
 
-    /// Explicit `false` — the port of the old
-    /// `Backend::supports_child_splice` DEFAULT this backend relied on.
-    /// `Host` makes it REQUIRED, so the value is stated here instead of
-    /// inherited (deletion-baseline S2.2). ANCHORED mode is what the frozen
-    /// artifacts in `tests/goldens/` recorded from the old core: flipping it
-    /// to `true` would move every reactive region out from under its anchor
-    /// and change the output wholesale. Pinned by a literal assertion in the
-    /// crate's parity suite.
+    /// `false` — ANCHORED mode: reactive regions rebuild wholesale under
+    /// their own anchor. Flipping it to `true` needs a real positional
+    /// `insert_at` / `remove_child` (both are stubs above).
     fn supports_splice(&self) -> bool {
         false
     }
@@ -635,11 +563,11 @@ impl Host for WindowsBackend {
 impl caps::AppEnvOps for WindowsBackend {
     fn color_scheme(&self) -> ColorScheme {
         // Win32 doesn't expose a single "dark mode" toggle until very
-        // recent builds (UISettings::Background via WinRT). For the
-        // scaffold we return Auto and let the framework's theme APIs
-        // own the decision. A future revision can read
+        // recent builds (UISettings::Background via WinRT). Return Auto
+        // and let the framework's theme APIs own the decision. Reading
         // `AppsUseLightTheme` from the registry under
-        // `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`.
+        // `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
+        // would answer it.
         ColorScheme::Auto
     }
 
@@ -679,12 +607,8 @@ impl caps::AppEnvOps for WindowsBackend {
 impl caps::LifecycleOps for WindowsBackend {
     fn finish(&mut self, root: Self::Node) {
         // Delegates to the inherent painted-scene body: record the root,
-        // run the Taffy layout pass, invalidate for repaint.
-        //
-        // The scaffold this replaced walked `self.nodes` and issued a
-        // `SetWindowPos` per node, which only works when every node is a
-        // child HWND. In the painted model most nodes have no window at
-        // all — `layout_pass` computes frames for painting and
+        // run the Taffy layout pass, invalidate for repaint. Most nodes
+        // have no window — `layout_pass` computes frames for painting and
         // `position_native_children` moves the few real controls.
         WindowsBackend::finish(self, root)
     }
@@ -696,10 +620,9 @@ impl caps::LifecycleOps for WindowsBackend {
 
 impl caps::ViewOps for WindowsBackend {
     fn create_view(&mut self, _a11y: &AccessibilityProps) -> Self::Node {
-        // Delegates to the inherent painted-scene body (formerly
-        // `impl Backend`). The scaffold this replaced made every view a
-        // STATIC child HWND, which cannot carry background/border/radius
-        // or clip its children — the painter does all of that.
+        // Delegates to the inherent painted-scene body: a painted view
+        // carries background/border/radius and clips its children (a
+        // STATIC child HWND can do none of that).
         WindowsBackend::create_view(self, _a11y)
     }
 
@@ -754,13 +677,12 @@ impl caps::InputOps for WindowsBackend {
 impl caps::PressableOps for WindowsBackend {
     fn create_pressable(&mut self, on_click: Rc<dyn Fn()>, _a11y: &AccessibilityProps) -> Self::Node {
         // Wrap the author callback so ONE deduped flush microtask is queued
-        // after it returns — the v2 flush is not implicit.
+        // after it returns — the flush is not implicit.
         //
         // Delegates to the inherent painted body: a Pressable is a styleable
         // painted container carrying an on_click, fired by the host's
-        // hit-tested WM_LBUTTONUP. The scaffold this replaced tried to drive
-        // it through a STATIC control id + WM_COMMAND, which STATIC controls
-        // do not emit without subclassing — so presses never fired at all.
+        // hit-tested WM_LBUTTONUP (not a STATIC control + WM_COMMAND, which
+        // STATIC controls do not emit without subclassing).
         WindowsBackend::create_pressable(self, flushing0(on_click), _a11y)
     }
 }
@@ -828,8 +750,6 @@ impl caps::ImageOps for WindowsBackend {
         _alt: Option<&str>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_image(self, _src, _alt, _a11y)
     }
 
@@ -855,8 +775,6 @@ impl caps::IconOps for WindowsBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_icon(self, _data, _color, _a11y)
     }
 
@@ -880,8 +798,8 @@ impl caps::LinkOps for WindowsBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         // The trait DEFAULT collapses to `create_view` and drops
-        // `on_activate` — every link renders as inert text and nothing can
-        // be navigated to. Same bug the Linux and terminal backends fixed.
+        // `on_activate` — every link would render as inert text and nothing
+        // could be navigated to.
         //
         // Wrap the activation so the navigation's signal writes are flushed.
         let config = primitives::link::LinkConfig {
@@ -917,8 +835,7 @@ impl caps::TextInputOps for WindowsBackend {
                 })
             });
         // Delegates to the inherent body, which creates a real EDIT
-        // control and wires its EN_CHANGE notification. The scaffold this
-        // replaced made a read-only STATIC, so typing did nothing.
+        // control and wires its EN_CHANGE notification.
         WindowsBackend::create_text_input(
             self,
             initial_value,
@@ -966,8 +883,6 @@ impl caps::ToggleOps for WindowsBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_change = flushing1(on_change);
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_toggle(self, _initial_value, on_change, _a11y)
     }
 
@@ -987,8 +902,6 @@ impl caps::SliderOps for WindowsBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_change = flushing1(on_change);
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_slider(
             self,
             _initial_value,
@@ -1008,8 +921,6 @@ impl caps::ActivityIndicatorOps for WindowsBackend {
         _color: Option<&Color>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_activity_indicator(self, _size, _color, _a11y)
     }
 }
@@ -1036,12 +947,9 @@ impl caps::ScrollOps for WindowsBackend {
         // Delegates to the inherent painted body: a scroll view is a painted
         // View carrying `ScrollInfo`, and the body also marks the Taffy node
         // `overflow: scroll` on the axis — without that the viewport sizes to
-        // its content and there is nothing to scroll.
-        //
-        // The scaffold this replaced registered an `IdealystScroll` WNDCLASS
-        // and stashed state in `GWLP_USERDATA`; the painted model scrolls by
-        // offsetting the painter and `position_native_children`, so no
-        // per-scroller window class is needed.
+        // its content and there is nothing to scroll. The painted model
+        // scrolls by offsetting the painter and `position_native_children`,
+        // so no per-scroller window class is needed.
         WindowsBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
     }
 
@@ -1067,8 +975,8 @@ impl caps::VirtualizerOps for WindowsBackend {
     ) -> Self::Node {
         // Dispatch-site glue + world entry: mount/release run author
         // render closures and scope cleanups; mount_item REALIZES the
-        // row (creation-side work that needs the ambient world — the
-        // flat_list-renders-zero-rows bug every backend shared).
+        // row (creation-side work that needs the ambient world — without
+        // it flat_list renders zero rows).
         // item_count/item_key/item_size are pure reads, unwrapped.
         let VirtualizerCallbacks {
             item_count,
@@ -1121,8 +1029,6 @@ impl caps::VirtualizerOps for WindowsBackend {
             // Pure read (like `item_key`): no world entry, no flush.
             item_changed,
         };
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
     }
 }
@@ -1162,8 +1068,6 @@ impl caps::GraphicsOps for WindowsBackend {
                 schedule_flush();
             })
         };
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_graphics(self, on_ready, on_resize, on_lost, _a11y)
     }
 }
@@ -1177,8 +1081,6 @@ impl caps::PortalOps for WindowsBackend {
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
         let on_dismiss = on_dismiss.map(flushing0);
-        // Delegates to the inherent painted-scene body — the branch's
-        // Win32 implementation, which master's seam stubbed out.
         WindowsBackend::create_portal(self, _target, on_dismiss, _trap_focus, _a11y)
     }
 
@@ -1206,9 +1108,7 @@ impl caps::ExternalOps for WindowsBackend {
         // Third-party primitives register a scene-`Registry` handler and
         // never reach this method — `create_external` only serves
         // `missing_primitive_placeholder`, so the labeled placeholder is
-        // the whole contract. (The old core routed here through a
-        // backend-side `ExternalRegistry`, which died with
-        // `Element::External`; the placeholder shape is unchanged.)
+        // the whole contract.
         self.placeholder(&format!(
             "External \"{type_name}\" not registered on Windows backend"
         ))
@@ -1231,9 +1131,7 @@ impl caps::StyleOps for WindowsBackend {
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
         // Delegates to the inherent body, which translates the rules into
         // the Taffy style AND the painted visual (background, border,
-        // radius, gradient, opacity, transform, overflow). The scaffold
-        // this replaced dropped every style silently — the whole app
-        // rendered unstyled.
+        // radius, gradient, opacity, transform, overflow).
         WindowsBackend::apply_style(self, node, style)
     }
 }

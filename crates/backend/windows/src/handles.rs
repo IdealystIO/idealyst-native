@@ -2,8 +2,8 @@
 //! back to the backend.
 //!
 //! `AnimatedValue::bind(ref, prop)` fills a `Ref` with a handle built by
-//! [`Backend::make_view_handle`](runtime_shared::Backend::make_view_handle)
-//! / `make_text_handle`, then drives per-frame writes through that
+//! `caps::ViewOps::make_view_handle` / `caps::TextOps::make_text_handle`,
+//! then drives per-frame writes through that
 //! handle's [`ViewOps`] / [`TextOps`]. The default trait impls return a
 //! **no-op** handle, so a backend that doesn't build real ones silently
 //! drops every animation (the value ticks, nothing paints). This module

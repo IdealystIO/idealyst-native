@@ -20,8 +20,8 @@ import androidx.core.view.WindowInsetsControllerCompat
  *
  * Static, additive surface — there's no critical path through here, so
  * an embedded runtime older than the app's native lib simply lacks the
- * class/method and the Rust caller soft-fails (see
- * [[project_back_lock_navigator]] for the JNI-skew lesson this follows).
+ * class/method and the Rust caller soft-fails instead of aborting on a
+ * missing JNI method.
  */
 object RustSystemUi {
     /** Layout listener kept so we can re-assert the gesture-exclusion

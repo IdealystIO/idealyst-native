@@ -55,13 +55,13 @@ use runtime_shared::StateBits;
 ///
 /// ## Why this bookkeeping exists
 ///
-/// The first cut of this file asserted "the controllers are owned by the
-/// widget, so they die with it — no teardown needed". That is wrong: a
-/// GTK widget outlives the node's reactive scope, and GTK emits
+/// The controllers are owned by the widget, but that does NOT make
+/// teardown unnecessary: a GTK widget outlives the node's reactive scope,
+/// and GTK emits
 /// `focus-leave` *during* teardown, when the framework unparents a
 /// focused widget and GTK moves focus off it.
 ///
-/// Writing through the freed signal slot no longer aborts — the framework
+/// Writing through the freed signal slot does not abort — the framework
 /// hands every backend a setter that is already inert past its scope
 /// (`runtime_vocabulary::callback_guard`), so liveness is NOT this file's
 /// job and there is deliberately no flag here duplicating it.

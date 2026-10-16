@@ -76,8 +76,8 @@ pub(crate) fn moved_views<K: Copy + PartialEq>(
 /// (`(y * density).round()` into `RustLayoutApply`), so each equals what
 /// `View.getTop()` reports once that layout is in effect. The Kotlin avoider
 /// positions views by `desired − getTop()`, so a rounding mismatch here
-/// would leave a view off by a pixel — or, with the old "assume the layout
-/// already landed" approach, by a whole move (the close-animation jump).
+/// would leave a view off by a pixel (and assuming the new layout has
+/// already landed would be off by a whole move — the close-animation jump).
 pub(crate) fn tops_px(new_y: f32, dy: f32, density: f32) -> (i32, i32) {
     let px = |dp: f32| (dp * density).round() as i32;
     (px(new_y - dy), px(new_y))

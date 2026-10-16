@@ -1,9 +1,8 @@
-//! `Element::Graphics` — a DirectComposition visual handed to wgpu.
+//! `GraphicsPrim` — a DirectComposition visual handed to wgpu.
 //!
-//! Formerly a child HWND; now a visual in the backend's
-//! [`crate::dcomp::CompositionTree`] (see that module's header for the
-//! why — scroll-atomic movement, antialiased rounded clips, no
-//! `SetWindowPos`/`SetWindowRgn`). What survives from the HWND era:
+//! A visual in the backend's [`crate::dcomp::CompositionTree`] (see that
+//! module's header for why not a child HWND — scroll-atomic movement,
+//! antialiased rounded clips, no `SetWindowPos`/`SetWindowRgn`). Contract:
 //!
 //! - `on_ready` fires DEFERRED, from the layout pass, once the node
 //!   has a real laid-out size (the `OnReadyEvent` contract: "the
@@ -111,9 +110,8 @@ pub(crate) fn layout_event(
 ///
 /// wgpu requires the provider bounds. The COM pointers are only ever
 /// dereferenced on the UI thread — the backend, the host's render
-/// loop, and every author callback run there (same single-thread
-/// argument the old HWND provider documented; the values are freely
-/// copyable, the safety contract is lifetime + thread-of-use).
+/// loop, and every author callback run there (the values are freely
+/// copyable; the safety contract is lifetime + thread-of-use).
 struct WinCompProvider {
     visual: IDCompositionVisual,
     device: IDCompositionDevice,

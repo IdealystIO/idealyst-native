@@ -1,13 +1,12 @@
-//! `Element::Link` — clickable container that fires `on_activate`
+//! `LinkPrim` — clickable container that fires `on_activate`
 //! when tapped (the framework wraps push/replace/reset dispatch in
 //! there, so the backend doesn't have to care about the nav shape).
 //!
 //! Implementation: a `FrameLayout` with `setClickable(true)` and a
 //! `setOnClickListener` wired to a `RustClickListener` whose
-//! `nativePtr` is a leaked `ClickCallback`. The framework's
-//! `Backend::insert` then attaches the link's child views via the
-//! normal view-tree path — no special-casing needed since `Link` is
-//! just a container as far as the walker is concerned.
+//! `nativePtr` is a leaked `ClickCallback`. `Host::insert` then
+//! attaches the link's child views via the normal view-tree path — no
+//! special-casing needed since a link is just a container to realize.
 
 use crate::imp::callbacks::{leak, ClickCallback};
 use crate::imp::{with_env, AndroidBackend};

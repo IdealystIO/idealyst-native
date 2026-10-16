@@ -1,4 +1,4 @@
-//! `Element::Graphics` — `android.view.SurfaceView` exposed as a
+//! `GraphicsPrim` — `android.view.SurfaceView` exposed as a
 //! `raw_window_handle` surface provider.
 //!
 //! Lifecycle:
@@ -13,7 +13,7 @@
 //!    to an `ANativeWindow*` via `ANativeWindow_fromSurface` and
 //!    fire the corresponding user callback (`on_ready` /
 //!    `on_resize` / `on_lost`).
-//! 3. `release` (called from `Backend::release_graphics` when the
+//! 3. `release` (called from `caps::GraphicsOps::release_graphics` when the
 //!    parent scope drops) frees the leaked `GraphicsCallback` box.
 //!    Existing surfaces are torn down through the normal Android
 //!    path: detaching the SurfaceView fires `surfaceDestroyed`,
@@ -108,7 +108,7 @@ impl HasDisplayHandle for AndroidSurfaceProvider {
 /// reports the size that just got reported on `surfaceChanged`).
 ///
 /// Lives as a leaked `Box<GraphicsCallback>` whose raw pointer is
-/// passed to the Kotlin callback as a `jlong`. `Backend::release_graphics`
+/// passed to the Kotlin callback as a `jlong`. `release_graphics`
 /// calls `nativeDrop` to free it.
 ///
 /// `RefCell`-wrapped because the JNI callbacks need to mutate the
@@ -231,7 +231,7 @@ struct AndroidGraphicsOps;
 impl GraphicsOps for AndroidGraphicsOps {}
 
 // ---------------------------------------------------------------------------
-// release — Backend::release_graphics calls this
+// release — caps::GraphicsOps::release_graphics calls this
 // ---------------------------------------------------------------------------
 
 pub(crate) fn release(_b: &mut AndroidBackend, _node: &GlobalRef) {

@@ -113,7 +113,7 @@ fn regression_image_failures_fire_on_error() {
         assert_eq!(sync_outcome(src, &assets), Some(Outcome::Failed), "{src:?}");
     }
 
-    // Installed AFTER the outcome (the walker's order for a sync failure).
+    // Installed AFTER the outcome (the vocabulary's order for a sync failure).
     let errors = Rc::new(Cell::new(0));
     let mut ev = ImageEvents::default();
     let gen = ev.begin();
@@ -176,7 +176,7 @@ fn regression_percent_encoded_data_uri_loads() {
 
 #[test]
 fn unchanged_src_does_not_reload() {
-    // The walker's mount-time `update_image_src` repeats create's src.
+    // The vocabulary's mount-time `update_image_src` repeats create's src.
     assert!(matches!(
         resolve(Some("https://a.io/x.png"), "https://a.io/x.png", &no_assets(), no_bundle),
         Resolution::Unchanged

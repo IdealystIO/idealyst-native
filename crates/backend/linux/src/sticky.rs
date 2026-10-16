@@ -24,11 +24,11 @@
 //!
 //! ## Scope
 //!
-//! Vertical leading (`top`) only. This is now the ONLY backend without
+//! Vertical leading (`top`) only. This is the ONLY backend without
 //! horizontal or trailing-edge pinning: iOS, macOS, wgpu and Android
 //! all read per-edge thresholds via
 //! `runtime_shared::sticky::StickyInsets` and pin on `left`, `right`
-//! and `bottom` as well, and web has always had all four from the
+//! and `bottom` as well, and web gets all four from the
 //! browser. A `left`- or `right`-inset element here silently falls
 //! back to relative on the horizontal axis — so a frozen COLUMN does
 //! not work on GTK.
@@ -39,10 +39,8 @@
 //! extent + each child's frame extent into the tick (trailing edges
 //! measure the far edge), and driving the pin from the scrolled
 //! window's `hadjustment` alongside its `vadjustment` — the same
-//! change the other four already took. It is deliberately NOT done
-//! blind: the GTK toolchain isn't available in the environment this
-//! landed from, and CLAUDE.md §5 rules out shipping unverified
-//! low-level backend code.
+//! change the other four already took. Not done blind: it must be
+//! verified against a real GTK build (CLAUDE.md §5).
 //!
 //! With no enclosing scroll container the node falls back to
 //! `Relative`, which is what CSS does.

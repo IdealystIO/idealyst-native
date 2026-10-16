@@ -37,9 +37,8 @@ use crate::phase_timer;
 use runtime_shared::primitives::navigator::NavigatorOps;
 use runtime_shared::{ButtonHandle, StyleRules};
 
-/// No-op `NavigatorOps` returned by `make_navigator_handle` when no
-/// SDK handler is stored for the requested node. Keeps the fallback
-/// handle inert without panicking on misuse.
+/// No-op `NavigatorOps`. Unused — nothing on this backend builds a
+/// navigator handle.
 struct NoopNavOps;
 impl NavigatorOps for NoopNavOps {}
 static NOOP_NAV_OPS: NoopNavOps = NoopNavOps;
@@ -374,9 +373,9 @@ pub struct AndroidBackend {
     pub(crate) view_to_layout:
         HashMap<usize, (GlobalRef, runtime_layout::LayoutNode)>,
     /// Per-`Typeface` registry of custom fonts. Filled by
-    /// [`Backend::register_asset`] for `AssetTag::Font`
+    /// `register_asset_impl` for `AssetTag::Font`
     /// (bytes → Android `Typeface.createFromFile`) and
-    /// [`Backend::register_typeface`] (records the (weight, style) →
+    /// `register_typeface_impl` (records the (weight, style) →
     /// Typeface map per family). Consulted by the style applier to
     /// drive `TextView.setTypeface`.
     pub(crate) font_registry: font::FontRegistry,
@@ -387,7 +386,7 @@ pub struct AndroidBackend {
     /// [`sticky::on_scroll_event`]. See [`sticky`] for the rationale
     /// (side registry over ScrollView subclass).
     pub(crate) sticky_registry: sticky::StickyRegistry,
-    /// User-supplied `on_scroll` callbacks for `Element::ScrollView`.
+    /// User-supplied `on_scroll` callbacks for `scroll_view` nodes.
     /// Keyed by the scroll view's JObject pointer. Lives parallel to
     /// `sticky_registry` so both subsystems can ride the single
     /// `setOnScrollChangeListener` slot Android allows per view \u{2014}
@@ -402,10 +401,9 @@ pub struct AndroidBackend {
     pub(crate) scroll_listeners: std::collections::HashMap<usize, jni::objects::GlobalRef>,
     /// Sticky views whose `apply_style` ran BEFORE their first
     /// `insert`, so the parent walk couldn't yet find an enclosing
-    /// scroll view. The walker calls `apply_style` (via
-    /// `attach_style`) inside the per-primitive `build`, then the
-    /// parent's `insert_children` does `backend.insert_impl(...)`
-    /// afterwards — so at apply-style time the child is still a
+    /// scroll view. Realize calls `apply_style` (via
+    /// `attach_style`) while building the primitive, then inserts it
+    /// into its parent (`insert_impl`) afterwards — so at apply-style time the child is still a
     /// detached floating view. We stash `(view_ptr, threshold)`
     /// here and complete the registration in `insert` once the
     /// view is actually in a parent chain. Mirrors iOS's
@@ -428,8 +426,8 @@ pub struct AndroidBackend {
     /// Activity `root`. Two consult sites:
     ///
     /// - `view::insert` SKIPS the `parent.addView` reparent for these,
-    ///   exactly like a portal content holder. The External walker's
-    ///   `insert(parent, external_node)` would otherwise try to splice
+    ///   exactly like a portal content holder. Realize's
+    ///   `insert(parent, private_layer_node)` would otherwise try to splice
     ///   the window-root into the main (captured) tree — Android would
     ///   throw `IllegalStateException("child already has a parent")`
     ///   because it's already added via `WindowManager.addView`, and
@@ -776,12 +774,12 @@ fn cached_layout_apply_class(env: &mut JNIEnv) -> Option<GlobalRef> {
 /// `[leftMargin, topMargin, width, height]`. We hand the parallel arrays
 /// to `RustLayoutApply.applyFrames`, which performs all the
 /// `MarginLayoutParams` writes JVM-side (cheap virtual calls, no JNI
-/// transition). This replaces the old per-view `apply_frame_to_layout_params`
-/// that paid ~9 JNI crossings per view — for a 200-view tree, ~1800
-/// crossings a pass collapse to the array marshalling plus one call.
+/// transition). Per-view JNI writes cost ~9 crossings per view — for a
+/// 200-view tree, ~1800 crossings a pass collapse to the array
+/// marshalling plus one call.
 ///
 /// The drawer-panel skip and the "wrap non-`MarginLayoutParams`" fallback
-/// moved into the Kotlin loop verbatim; the caller pre-filters zero-size
+/// live in the Kotlin loop; the caller pre-filters zero-size
 /// views and detached window roots. Best-effort: a JNI failure here drops
 /// the whole pass's frame write, which the next pass retries.
 ///
@@ -935,8 +933,8 @@ impl AndroidBackend {
     /// height is never re-read and the layout stays stuck shrunk. The
     /// listener makes open and close symmetric.
     ///
-    /// Best-effort: if the staged Kotlin runtime lacks the class (e.g. the
-    /// CLI wasn't reinstalled after this feature landed), `find_class`
+    /// Best-effort: if the staged Kotlin runtime lacks the class (e.g. a
+    /// stale CLI staged an older runtime), `find_class`
     /// throws — we clear the pending JNI exception and no-op so boot never
     /// breaks, mirroring [`keyboard::set_keyboard_sink`]. The view holds a
     /// strong ref to the listener, so there's nothing to retain or free on
@@ -996,7 +994,7 @@ impl AndroidBackend {
     /// Create a capture-excluded overlay surface for the
     /// `screen_recorder` private layer and return its content view's
     /// `GlobalRef`. The `screen_recorder` SDK calls this from its
-    /// `PrivateLayer` external handler; the walker then parents the
+    /// `PrivateLayer` registry handler; realize then parents the
     /// layer's children into the returned content view and tries to
     /// `insert` it into the surrounding tree — which `view::insert`
     /// skips because we register the content view as a detached window
@@ -1023,10 +1021,9 @@ impl AndroidBackend {
     /// doesn't consume a touch returns `false` from
     /// `dispatchTouchEvent`, and combined with `NOT_FOCUSABLE` the touch
     /// falls through to the app window. Touches that DO land on an
-    /// interactive private-layer child are consumed by that child.
-    /// (`project_android_nonmodal_overlay_passthrough`: a non-modal
-    /// overlay must not steal touches it has no interactive child for,
-    /// or the app's hamburger/buttons go dead.)
+    /// interactive private-layer child are consumed by that child. (A
+    /// non-modal overlay must not steal touches it has no interactive
+    /// child for, or the app's hamburger/buttons go dead.)
     ///
     /// ## Layout
     ///
@@ -1108,7 +1105,7 @@ impl AndroidBackend {
     /// to the WindowManager** — a frame or two after `onCreate`. Since this
     /// handler runs during the initial mount (inside `attach` → `mount`),
     /// `addView` would throw `BadTokenException` and the overlay would never
-    /// show (the bug this fixes). So if the token isn't live yet — or
+    /// show. So if the token isn't live yet — or
     /// `addView` throws — we re-post on the main looper with a short backoff
     /// and try again, up to a bounded number of attempts.
     fn try_attach_private_layer_window(&mut self, content: &GlobalRef, retry: u32) {
@@ -1371,12 +1368,12 @@ impl AndroidBackend {
                         width: w,
                         height: h,
                     });
-                    // New-core mirror (see newcore.rs, "Viewport
+                    // World mirror (see newcore.rs, "Viewport
                     // source"): the same deferred push also lands in
                     // the mounted world's viewport ctx so breakpoint-
                     // dependent author reactivity re-fires on
-                    // rotation/resize (no-op TLS read when no
-                    // new-core app is booted).
+                    // rotation/resize (no-op TLS read when no app is
+                    // booted).
                     crate::newcore::forward_viewport(runtime_shared::ViewportSize {
                         width: w,
                         height: h,
@@ -1446,7 +1443,7 @@ impl AndroidBackend {
     /// `schedule_layout_pass_retry` path bails on the missing
     /// `ANDROID_BACKEND_SELF.upgrade()`. The shell calls this
     /// synchronously after each `apply_batch` instead. Mirrors the
-    /// iOS shell's `backend_mut().run_layout()` shape.
+    /// iOS runtime-server shell's synchronous `run_layout()` shape.
     pub fn run_layout(&mut self) {
         self.run_layout_pass();
     }
@@ -1643,10 +1640,9 @@ impl AndroidBackend {
         primitives::overlay::place_anchored_contents(self, (vw, vh), &mut frames);
         with_env(|env| {
             // Build the batch: a parallel `View[]` + packed px quads,
-            // applying the same filters the old per-view path used (skip
-            // zero-size views and detached window roots). The drawer-panel
-            // skip + non-`MarginLayoutParams` wrap moved into the Kotlin
-            // `applyFrames` loop. Density is a per-display constant — read
+            // skipping zero-size views and detached window roots. The
+            // drawer-panel skip + non-`MarginLayoutParams` wrap live in the
+            // Kotlin `applyFrames` loop. Density is a per-display constant — read
             // once off the first view and reuse for every conversion.
             let _t_apply = phase_timer::PhaseTimer::start("apply_frames_batch");
             let density = frames
@@ -1683,8 +1679,8 @@ impl AndroidBackend {
             // `anim_state` and does percent/radius resolution that doesn't
             // batch cleanly. Independent of the `LayoutParams` write above
             // (both read the frame dims passed directly, not the applied
-            // LP), so running it after the batch is equivalent to the old
-            // interleaved order.
+            // LP), so running it after the batch is equivalent to
+            // interleaving it per view.
             for (view, frame) in &frames {
                 if frame.width <= 0.0 && frame.height <= 0.0 {
                     continue;
@@ -1735,10 +1731,10 @@ impl AndroidBackend {
                     );
                 }
             }
-            // Refresh `layout_y` for every Position::Sticky child
+            // Refresh the cached layout position for every Position::Sticky child
             // now that Taffy has re-laid out the tree. Without
             // this, a tree rebuild (route switch, branch swap)
-            // leaves stale layout-y values and the sticky child
+            // leaves stale layout positions and the sticky child
             // pins to the wrong place — most visibly when the
             // user scrolls a freshly-mounted screen for the first
             // time. Cheap walk; the registry is tiny by
@@ -1816,8 +1812,8 @@ impl AndroidBackend {
 /// Fire every `on_layout` callback registered for `view_key` with the
 /// view's resolved inline-size (`w`) and block-size (`h`) in dp — the
 /// Android analog of the web `ResizeObserver`. The registry lives in the
-/// host-testable `crate::layout_subs`, which also schedules the new-core
-/// flush after the callbacks run (FRAMEWORK-NOTES #103).
+/// host-testable `crate::layout_subs`, which also schedules the world
+/// flush after the callbacks run.
 pub(crate) fn fire_layout_for_view(view_key: usize, w: f32, h: f32) {
     crate::layout_subs::fire(view_key, w, h);
 }
@@ -2173,8 +2169,8 @@ fn read_system_bar_dimens(
 /// drop them after the walk (avoids borrowing `pending_sticky`
 /// mutably across the recursion).
 ///
-/// Subtree walk (not just the root view): a `Element::View`
-/// containing a `View { position: Sticky }` child will see the
+/// Subtree walk (not just the root view): a `view`
+/// containing a `view { position: Sticky }` child will see the
 /// outer View as `child_view` in `insert`, with the sticky child
 /// nested inside. Both flagged in `pending_sticky` until this walk
 /// promotes them. Mirrors iOS's `promote_pending_sticky_recursive`.
@@ -2424,16 +2420,13 @@ pub fn set_animated_color(
     };
 }
 
-// Backend trait impl. Each method delegates to the matching primitive
-// module (or to one of the style/helpers helpers). Keep this thin —
-// anything substantial belongs in the primitive's file.
+// The backend mechanism, as inherent methods. `newcore.rs` adapts them
+// onto `runtime_scene::Host` + the `runtime_vocabulary::caps::*Ops`
+// capability traits, one delegation per method. Each delegates to the
+// matching primitive module (or to the style helpers); keep these thin —
+// anything substantial belongs in the primitive's file. `_impl` suffix
+// keeps the adapter's call sites unambiguous.
 // ---------------------------------------------------------------------------
-
-// The backend mechanism, as inherent methods (runtime v2: the `Backend`
-// mega-trait is gone). Bodies are verbatim what the trait impl carried;
-// `newcore.rs` adapts them onto `runtime_scene::Host` + the
-// `runtime_vocabulary::caps::*Ops` capability traits, one delegation per
-// method. `_impl` suffix keeps the adapter's call sites unambiguous.
 impl AndroidBackend {
 
     /// Navigator abstraction calls this after every command (see the trait doc).
@@ -2722,7 +2715,7 @@ impl AndroidBackend {
         // after any backdrop) against the anchor.
         primitives::overlay::note_inserted_child(self, parent, &child_for_sticky);
         // Retry pending sticky registrations now that this subtree
-        // is wired into the parent chain. The walker fires
+        // is wired into the parent chain. Realize fires
         // `apply_style` before `insert`, so any `Position::Sticky`
         // child created in this build cycle deferred its
         // registration to `pending_sticky`. Walk the just-inserted
@@ -2762,7 +2755,7 @@ impl AndroidBackend {
         // "the `when`-mounted camera widget never appears" bug.
         //
         // Discriminate mid-build vs. post-mount the same way iOS does
-        // (`parent.window != nil` — see project_ios_insert_layout_discriminator):
+        // (`parent.window != nil`):
         // if the parent is already attached to the window, this is a
         // post-`finish()` dynamic insert → kick a pass. If it's a floating
         // parent still being built, defer to the upcoming `finish()` pass;
@@ -3129,7 +3122,7 @@ impl AndroidBackend {
     ) {
         // For a ScrollView we apply the safe-area inset via Android's
         // native `setPadding(...)` + `setClipToPadding(false)` —
-        // matches the documented behavior in `Backend::apply_scroll_view_safe_area_inset`
+        // matches the documented behavior of `caps::SafeAreaOps::apply_scroll_view_safe_area_inset`
         // ("scroll surface bleeds edge-to-edge while content origin
         // is inset"). Going through `setPadding` rather than Taffy
         // padding here is intentional: the inner FrameLayout that
@@ -3397,10 +3390,9 @@ impl AndroidBackend {
     /// `scroll_view().bind(r)` → `scroll_to` path and the robot
     /// `set_scroll` action. The robot action routes through this handle
     /// so no backend borrow is held across the native write (Android's
-    /// `scrollTo` fires `onScrollChanged` synchronously — the same
-    /// reentrancy hazard the walker's scroll-action comment describes
-    /// for AppKit). Without this override both paths were silent no-ops
-    /// on Android (the trait-default `NoopScrollViewOps`).
+    /// `scrollTo` fires `onScrollChanged` synchronously, a reentrancy
+    /// hazard). Without this override both paths would be silent no-ops
+    /// (the trait-default `NoopScrollViewOps`).
     pub(crate) fn make_scroll_view_handle_impl(
         &self,
         node: &GlobalRef,
@@ -3616,7 +3608,7 @@ impl AndroidBackend {
         // registry entry + clears the carried translationY. See
         // `sticky.rs`.
         //
-        // The walker fires `apply_style` (via `attach_style`)
+        // Realize fires `apply_style` (via `attach_style`)
         // BEFORE the parent's `insert(parent, child)` call. At that
         // moment the child is still a floating View with no parent
         // chain, so `sticky::register`'s `getParent` walk can't
@@ -3649,7 +3641,7 @@ impl AndroidBackend {
                 // A non-scrolling View also accepts this call, so no
                 // class check is needed — but a pending exception from
                 // an exotic subclass must not leak into the next JNI
-                // call ([[project_android_net_pending_exception_clear]]).
+                // call.
                 let _ = env.exception_clear();
             });
         }
@@ -3887,12 +3879,12 @@ impl AndroidBackend {
         }
     }
 
-    /// `Backend::apply_presence` for Android.
+    /// `caps::PresenceOps::apply_presence` for Android.
     ///
     /// Maps a [`PresenceState`] (opacity + 2D translate + uniform
     /// scale) onto the node's `View`. Missing fields resolve to the
     /// resting identity (opacity 1.0, translate 0, scale 1.0) — the
-    /// presence walker only ever supplies the enter/exit/rest states,
+    /// presence handler only ever supplies the enter/exit/rest states,
     /// so writing every property each call keeps the view consistent
     /// (a partial state leaves the unwritten props at identity, never
     /// at a stale value).
@@ -3900,8 +3892,7 @@ impl AndroidBackend {
     /// Translates arrive in dp (the same unit as Taffy frames);
     /// Android's `setTranslationX/Y` and the ViewPropertyAnimator's
     /// `translationX/Y` take DEVICE PIXELS, so we convert via the
-    /// view's density — see project memory
-    /// `project_android_setTranslation_device_px`. Opacity and scale
+    /// view's density. Opacity and scale
     /// are unitless.
     ///
     /// `transition`:
@@ -3925,8 +3916,7 @@ impl AndroidBackend {
 
         with_env(|env| {
             let obj = node.as_obj();
-            // dp → device px for the two translate axes (memory:
-            // project_android_setTranslation_device_px).
+            // dp → device px for the two translate axes.
             let tx_px = backend_android_core::helpers::dp_to_px(env, obj, tx_dp) as f32;
             let ty_px = backend_android_core::helpers::dp_to_px(env, obj, ty_dp) as f32;
 
@@ -3999,8 +3989,7 @@ impl AndroidBackend {
     }
 
     pub(crate) fn frame_impl(&self, node: &GlobalRef) -> Option<runtime_shared::primitives::portal::ViewportRect> {
-        // Parent-relative rect in dp — matches iOS's `Backend::frame`
-        // impl. Framework portal / anchoring code consults this; the
+        // Parent-relative rect in dp — matches iOS's `frame_impl`. Framework portal / anchoring code consults this; the
         // ViewHandle-side analog used by author code lives on
         // `AndroidViewOps::frame` (same body, different trait).
         <AndroidViewOps as runtime_shared::ViewOps>::frame(
@@ -4225,9 +4214,8 @@ impl AndroidBackend {
         // commands, so `root` here is the SAME native `UIView`-/
         // `View`-equivalent as the previous snapshot. Calling
         // `addView` on a child whose `getParent()` is non-null
-        // throws `IllegalStateException`, which used to surface as
-        // a JNI panic and (before the panic hook + exception clear
-        // in the runtime-server shell) crashed the process outright.
+        // throws `IllegalStateException`, which surfaces as a JNI
+        // panic and crashes the process.
         //
         // The fix: check the current parent. If it's already
         // `self.root`, we're done. If it's some OTHER ViewGroup
@@ -4307,7 +4295,7 @@ impl AndroidBackend {
         crate::imp::scheduler::schedule_layout_pass_retry(0);
     }
 
-    /// Backend-trait entry point the runtime-server shell uses to drive layout
+    /// `caps::LifecycleOps::run_layout` entry point the runtime-server shell uses to drive layout
     /// when the deferred `schedule_layout_pass_retry` path's
     /// `ANDROID_BACKEND_SELF.upgrade()` returns `None` (runtime-server mode
     /// owns the backend by-value inside `RuntimeServerClient`, so the global
@@ -4321,8 +4309,6 @@ impl AndroidBackend {
 
 /// Build a placeholder TextView for an unregistered external primitive
 /// — visible in dev so missing SDK bindings on Android are obvious.
-/// User-space `has_external::<T>()` discovery is the supported way to
-/// render custom degradation instead of relying on this fallback.
 fn external_placeholder_view(b: &mut AndroidBackend, type_name: &'static str) -> GlobalRef {
     use backend_android_core::helpers::{apply_default_layout_params, set_text};
     with_env(|env| {
@@ -4353,11 +4339,3 @@ fn external_placeholder_view(b: &mut AndroidBackend, type_name: &'static str) ->
         env.new_global_ref(local).unwrap()
     })
 }
-
-// Legacy nav helpers removed — every kind-specific navigator
-// implementation lives in `android-navigator-helpers` as of the
-// substrate refactor. The Backend trait's `create_navigator` /
-// `navigator_attach_initial` / `release_navigator` /
-// `make_navigator_handle` / `apply_navigator_slot_style` methods route
-// through SDK handlers (see `nav_handler_instances`) which in turn
-// call into `android-navigator-helpers`.

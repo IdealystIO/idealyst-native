@@ -4,7 +4,7 @@
 //! ## Why
 //!
 //! The GDI+ painter (`scene.rs`) rasterizes every node on the CPU on every
-//! frame. Measured on the idea-ui docs app (2026-10-15, Wine 11.18 at 2×):
+//! frame. Measured on the idea-ui docs app (Wine 11.18 at 2×):
 //! ~140 ms per scroll frame, ~90 ms of it `GdipDrawString` and ~45 ms view
 //! fills, with every node drawn whether visible or not. Direct2D draws the
 //! same primitives on the GPU and DirectWrite is the platform's text stack

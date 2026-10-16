@@ -6,9 +6,8 @@
 //! failure (logs via `log::error!`, returns / no-ops). These functions
 //! are reachable from `extern "system"` JNI exports in
 //! `backend-android-mobile`; unwinding across that boundary is
-//! undefined behavior. Pre-fix the helpers used `.unwrap()` liberally,
-//! which would have aborted the JVM process on any pending JNI
-//! exception or class-load failure.
+//! undefined behavior — an `.unwrap()` here would abort the JVM process
+//! on any pending JNI exception or class-load failure.
 
 use jni::objects::{JObject, JValue};
 use jni::JNIEnv;

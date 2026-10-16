@@ -476,7 +476,7 @@ mod tests {
     }
 
     /// Installs through the backend's `InputOps`, the path the `view`
-    /// handler takes (the old empty impl dropped every handler here).
+    /// handler takes (an empty `InputOps` impl drops every handler here).
     fn install_touch(cell: &RefCell<WindowsBackend>, id: u64, h: TouchHandler) {
         let node = crate::WindowsNode { id, hwnd: HWND(std::ptr::null_mut()) };
         runtime_vocabulary::caps::InputOps::install_touch_handler(&mut *cell.borrow_mut(), &node, h);

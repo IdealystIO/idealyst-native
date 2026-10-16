@@ -6,23 +6,21 @@
 //! view's JObject pointer (the same `node_key` `view_to_layout` uses);
 //! `run_layout_pass` calls [`fire`] with the view's resolved size in dp.
 //!
-//! # Why [`fire`] fires the dispatch hook (FRAMEWORK-NOTES #103)
+//! # Why [`fire`] fires the dispatch hook
 //!
 //! The layout pass is an author-code entry point: `on_layout` bodies
-//! write signals (`natural_height.set(h)`), and the new core only
+//! write signals (`natural_height.set(h)`), and the kernel only
 //! STAGES writes until the flush driver commits them. The pass runs
 //! from surfaces nothing else hooks — a posted layout pass, a
 //! configuration change / rotation, a navigator's synchronous pass —
-//! so without a flush here
-//! the measured value sat uncommitted until some unrelated event
-//! flushed. Web had the identical omission in its ResizeObserver
-//! closure; all three now schedule the flush the same way.
+//! so without a flush here the measured value sits uncommitted until
+//! some unrelated event flushes. Web's ResizeObserver closure and Apple's
+//! registry schedule the flush the same way.
 //!
 //! Un-gated (no `target_os = "android"`) — pure `std` state, so the
 //! fire-then-flush contract has a host-run regression test, like
 //! `sticky_compute` / `layout_policy`. The registry is a const-init
-//! thread-local that already existed in `imp` (moved, not added), so
-//! it costs no extra bionic TLS key. UI-thread only.
+//! thread-local, so it costs no bionic pthread TLS key. UI-thread only.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -91,12 +89,10 @@ mod tests {
         FLUSHES.with(|f| f.set(f.get() + 1));
     }
 
-    /// Regression (FRAMEWORK-NOTES #103): an `on_layout` callback fired
-    /// by the frame-apply pass must be followed by the post-dispatch
-    /// hook (the new-core flush driver), or the signal it wrote stays
-    /// staged until an unrelated event flushes. Fails on the old
-    /// per-backend `fire_layout_for_view`, which ran the callbacks and
-    /// returned.
+    /// Regression: an `on_layout` callback fired by the frame-apply pass
+    /// must be followed by the post-dispatch hook (the flush driver), or
+    /// the signal it wrote stays staged until an unrelated event flushes
+    /// (fails if `fire` only runs the callbacks and returns).
     #[test]
     fn regression_on_layout_fire_schedules_flush() {
         clear_dispatch_hook();

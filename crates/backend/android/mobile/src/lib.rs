@@ -1,31 +1,31 @@
-//! Android backend: drives the framework's `View` tree by calling
-//! into the Android Java View hierarchy via JNI.
+//! Android backend: realizes the framework's scene tree into the
+//! Android Java View hierarchy via JNI.
 //!
 //! # File layout
 //!
 //! - [`imp`] — full Android implementation, gated on
 //!   `target_os = "android"`. Split into:
-//!   - `imp/mod.rs` — `JNI_OnLoad`, `with_env`, `AndroidBackend`
-//!     struct, the `Backend` impl block (delegates to per-primitive
-//!     modules).
+//!   - `imp/mod.rs` — `JNI_OnLoad`, `with_env`, the `AndroidBackend`
+//!     struct and its inherent `*_impl` methods (delegating to
+//!     per-primitive modules); [`newcore`] adapts them onto
+//!     `runtime_scene::Host` + the caps traits.
 //!   - `imp/callbacks.rs` — leaked-box wrappers for Click / State /
 //!     TextChange / ToggleChange / SliderChange callbacks.
 //!   - `imp/jni_exports.rs` — every `Java_io_idealyst_runtime_*`
 //!     trampoline the Kotlin runtime calls back into.
-//!   - `imp/helpers.rs` — small shared utilities (`with_env` callers,
-//!     `set_text`, `dp_to_px`, `parse_color`, default LayoutParams).
 //!   - `imp/style.rs` — `apply_rules` plus the GradientDrawable path.
 //!   - `imp/animation.rs` — animator builders + the
 //!     `Easing → Interpolator` mapping.
-//!   - `imp/primitives/*.rs` — one module per `Element` kind.
+//!   - `imp/primitives/*.rs` — one module per primitive kind.
+//! - Small shared JNI utilities (`set_text`, `dp_to_px`, `parse_color`,
+//!   default LayoutParams) live in `backend_android_core::helpers`.
 //! - [`stub`] — non-Android `unreachable!()` stub so the workspace
 //!   `cargo check`s on host platforms without an NDK.
 //!
 //! # Threading
 //!
-//! The framework's reactive arena is thread-local (see
-//! `runtime-core/src/reactive.rs`). All `Backend` calls happen on
-//! the Android UI thread (where the app started `render`), so
+//! The framework's reactive world is thread-local. All backend calls
+//! happen on the Android UI thread (where `newcore::start` ran), so
 //! `AndroidBackend` is `!Send`/`!Sync` and assumes single-threaded
 //! access.
 //!
@@ -45,15 +45,14 @@ mod logger;
 
 /// Post-dispatch hook: thread-local `fn()` slot the scheduler /
 /// async-executor fire after invoking a callback that may run author
-/// code. No-op default; `newcore::start` installs the new-core flush
-/// driver here. Compiled unconditionally (mirrors
-/// `backend-web/src/dispatch_hook.rs`) — the slot is a const-init
-/// no-dtor `Cell`, so old-core builds pay one thread-local read per
-/// fire site and zero bionic pthread TLS keys.
+/// code. No-op default; `newcore::start` installs the flush driver
+/// here. Mirrors `backend-web/src/dispatch_hook.rs` — the slot is a
+/// const-init no-dtor `Cell`: one thread-local read per fire site and
+/// zero bionic pthread TLS keys.
 pub mod dispatch_hook;
 
-/// idea-lite new core (P5): `runtime_scene::Host` + the 30
-/// `runtime_vocabulary::caps` traits on `AndroidBackend`, the
+/// `runtime_scene::Host` + the `runtime_vocabulary::caps` traits on
+/// `AndroidBackend`, the
 /// `newcore::start` boot path, and the dispatch-site flush driver.
 /// The caps/boot half is android-gated inside the module; the flush
 /// driver + its regression tests compile on the host.
@@ -82,8 +81,8 @@ mod phase_timer;
 /// types, so there's no reason to make them target-gated.
 mod sticky_compute;
 
-/// Per-view `on_layout` subscriber registry (fire → post-dispatch hook,
-/// FRAMEWORK-NOTES #103). Un-gated so its regression test runs on the
+/// Per-view `on_layout` subscriber registry (fire → post-dispatch hook).
+/// Un-gated so its regression test runs on the
 /// host; `imp`'s `subscribe_layout` / `run_layout_pass` consume it.
 #[allow(dead_code)]
 mod layout_subs;
@@ -160,14 +159,13 @@ pub use imp::{
 };
 
 /// SDK extension point: leaked-box callback wrapper for header bar
-/// buttons. Constructed by the navigator helpers crate when building
-/// per-screen Toolbars from `attach_initial` options; the pointer
-/// flows through `RustActionBarHelper.buildToolbar` and is invoked by
-/// the JNI export
+/// buttons. An SDK building a native Toolbar leaks one per button; the
+/// pointer flows through `RustActionBarHelper.buildToolbar` and is
+/// invoked by the JNI export
 /// `Java_io_idealyst_runtime_RustActionBarHelper_nativeInvoke`.
 ///
-/// Exposed `pub` so `android-navigator-helpers` can hand the same
-/// concrete type to the JNI export — the export dereferences the
+/// Exposed `pub` so an SDK can hand the same concrete type to the JNI
+/// export — the export dereferences the
 /// pointer as `*const HeaderButtonCallback`, so the box layout must
 /// match exactly.
 #[cfg(target_os = "android")]
@@ -206,8 +204,8 @@ pub use jni::objects::GlobalRef as AndroidNode;
 pub use backend_android_core::render_loop::install_render_loop;
 
 /// Install the Android scheduler (Handler.postDelayed on the main
-/// Looper). Must be called once before `runtime_shared::render(...)`
-/// so timer-driven features (long-press recognizer, presence
+/// Looper). Must be called once before `newcore::start` so
+/// timer-driven features (long-press recognizer, presence
 /// animations, anything calling `after_ms` / `schedule_microtask`)
 /// delay correctly instead of firing synchronously.
 #[cfg(target_os = "android")]

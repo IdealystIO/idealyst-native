@@ -4,7 +4,7 @@ version = "1.14.0"
 edition.workspace = true
 license.workspace = true
 
-# Native GTK4 backend for `runtime_core::Backend`. Uses `gtk4-rs` to
+# Native GTK4 backend (scene `Host` + capability traits). Uses `gtk4-rs` to
 # create real GTK widgets — a custom `IdealystView` (GtkFixed subclass
 # that paints background/gradient/border/clip via GSK) for `view` /
 # `pressable`, `gtk::Label` (Text, styled via Pango), `gtk::Button`,
@@ -34,20 +34,20 @@ crate-type = ["rlib"]
 
 [features]
 # Robot/automation surface. Turns on the vocabulary's element REGISTRY (which
-# the walker registers every mounted primitive into) and the shared bridge
+# every mounted primitive is registered into) and the shared bridge
 # TRANSPORT, and compiles `newcore::install_robot_env` into the boot path.
 #
 # Both halves are needed and neither implies the other: with only the transport
-# the bridge binds and answers every verb from the OLD (empty) registry, so
+# the bridge binds and answers every verb from an empty registry, so
 # `find_element` returns `null` and `get_snapshot` returns `[]` for a perfectly
 # healthy app — a silently blinded driver rather than an error. See
 # `newcore::install_robot_env`.
 robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
-# The permanent substrate both cores compiled against (style engine,
-# tokens, prop/handle structs, scheduling, viewport). `runtime-core` is
-# NOT a dependency: this backend has no `Element`/`Backend` surface left.
+# The shared substrate (style engine, tokens, prop/handle structs,
+# scheduling, viewport). Backends never depend on `runtime-core` (the
+# author surface).
 runtime-shared = { workspace = true }
 runtime-layout = { workspace = true }
 runtime-world = { workspace = true }
@@ -87,9 +87,8 @@ libc = "0.2"
 backend-image-source = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
-# Link-time self-registration of SDK `Element::External` handlers
-# (`LinuxExternalRegistrar`), matching the macOS/iOS/Android backends. An
-# SDK submits a registrar; `LinuxBackend::new` drains them.
+# Not referenced by this crate's source: SDK handlers register on a
+# `runtime_scene::Registry` at boot, not through a link-time registrar.
 inventory = "0.3"
 
 # Proof that the `GlTarget` this backend hands out is actually adoptable by a

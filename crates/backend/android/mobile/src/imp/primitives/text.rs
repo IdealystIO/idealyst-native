@@ -1,4 +1,4 @@
-//! `Element::Text` — `android.widget.TextView`.
+//! `TextPrim` — `android.widget.TextView`.
 
 use backend_android_core::helpers::{apply_default_layout_params, set_text};
 use crate::imp::{with_env, AndroidBackend};
@@ -103,7 +103,7 @@ pub(crate) fn create(b: &mut AndroidBackend, content: &str) -> GlobalRef {
 // own font/color properties into unspanned ranges, so only the DELTAS
 // need spans and `apply_style`'s property writes never disturb them
 // (spans live in the CharSequence, not on the view). Theme swaps
-// re-realize through `Backend::update_styled_text` (walker cohort) so
+// re-realize through `caps::TextOps::update_styled_text` so
 // run token colors resolve against the new theme.
 // =============================================================================
 
@@ -268,8 +268,7 @@ pub(crate) fn set_styled(view: &GlobalRef, runs: &[runtime_shared::TextRun]) {
                             Ok(span) => set_span(env, &sp, span, start, end),
                             Err(e) => {
                                 // Clear the pending exception before any
-                                // further JNI call — see
-                                // [[project_android_net_pending_exception_clear]].
+                                // further JNI call.
                                 if env.exception_check().unwrap_or(false) {
                                     let _ = env.exception_clear();
                                 }
