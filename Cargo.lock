@@ -736,7 +736,7 @@ checksum = "21e4227379beff4205943696e6c3e0cd809bacdf3f0edd6e3dd153e2269571a4"
 
 [[package]]
 name = "audio"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "async-channel",
  "gio",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "build-windows"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "1.7.2"
+version = "1.8.0"
 dependencies = [
  "async-channel",
  "futures-channel",
@@ -5913,7 +5913,7 @@ dependencies = [
 
 [[package]]
 name = "host-win32"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "backend-windows",
  "runtime-core",
@@ -7445,7 +7445,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "location"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "async-io",
  "futures-channel",
@@ -7753,7 +7753,7 @@ dependencies = [
 
 [[package]]
 name = "media-writer"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -8314,7 +8314,7 @@ dependencies = [
 
 [[package]]
 name = "notifications"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "backend-windows",
  "jni 0.21.1",
@@ -9260,7 +9260,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissions"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "backend-windows",
  "block2 0.5.1",
@@ -10668,7 +10668,7 @@ dependencies = [
 
 [[package]]
 name = "run-windows"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -11089,7 +11089,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screen-recorder"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -11532,7 +11532,7 @@ dependencies = [
 
 [[package]]
 name = "share"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "ashpd",
  "async-channel",
@@ -13996,7 +13996,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "1.7.1"
+version = "1.8.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -14058,7 +14058,7 @@ dependencies = [
 
 [[package]]
 name = "video-decode"
-version = "1.6.1"
+version = "1.7.0"
 dependencies = [
  "async-channel",
  "block2 0.5.1",
@@ -14672,7 +14672,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "1.6.2"
+version = "1.7.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
