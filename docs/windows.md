@@ -93,7 +93,7 @@ the details and what was verified.
 | permissions | notification setting; location / camera / microphone privacy settings (`AppCapability`) |
 | webview | WebView2 in a child window; `WebView2Loader.dll` ships beside the `.exe` |
 | video | Media Foundation Media Engine → composition swapchain; painted controls |
-| video-decode | Media Engine frame server; frames copied to the CPU (no PCM tap) |
+| video-decode | Media Engine frame server; frames copied to the CPU; PCM from a second (source-reader) decoder of the audio track, delivered in step with the engine's clock |
 | audio | Media Engine, audio-only |
 | microphone | WASAPI via `cpal` |
 | camera | Media Foundation capture (source reader → RGB32) |

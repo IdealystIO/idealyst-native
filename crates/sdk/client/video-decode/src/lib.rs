@@ -48,7 +48,8 @@
 //!   appsink`) pulling `RGBA8` frames; play/pause/seek/rate via the pipeline.
 //! - **Windows** — Media Foundation's Media Engine in frame-server mode: the
 //!   engine plays the clip and drives the transport; a decode thread copies
-//!   each new frame to the CPU as `BGRA`. No PCM tap — `audio()` is `None`.
+//!   each new frame to the CPU as `BGRA`; PCM from a source reader over the
+//!   same file that follows the engine's clock.
 //! - **other** — not implemented; returns [`VideoDecodeError::Unsupported`].
 
 #![deny(missing_docs)]
@@ -90,7 +91,7 @@ mod imp;
 #[doc(hidden)]
 pub use imp::debug_pull_first_frame;
 
-// Windows: Media Foundation's Media Engine in frame-server mode (no PCM tap).
+// Windows: Media Foundation's Media Engine in frame-server mode + a source-reader PCM tap.
 #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
 #[path = "windows.rs"]
 mod imp;

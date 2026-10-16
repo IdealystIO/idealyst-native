@@ -12,10 +12,24 @@
 //! then) or `ERROR` (→ [`VideoDecodeError::Backend`]); those events arrive on
 //! Media Foundation's threads and reach the awaiting task over a channel.
 //!
-//! **No PCM tap**: the Media Engine plays the clip's audio but exposes no
-//! samples, so `DecodedVideo::audio()` is `None` on Windows (the clip is
-//! still heard). A recording that needs the clip's sound has no source for it
-//! here yet.
+//! **PCM tap**: the Media Engine plays the clip's audio but exposes no
+//! samples, so a second decoder — a Media Foundation source reader over the
+//! same file, audio stream only, decoding to interleaved `f32` — feeds
+//! `DecodedVideo::audio()`. Its thread follows the engine's clock: each tick
+//! it delivers the samples between what it last delivered and the engine's
+//! current position, so the stream carries what is being played, in real
+//! time, as the AVPlayer tap and the web `MediaElementSource` tap do. Paused
+//! or ended, nothing is delivered; a seek or a loop (the position jumping by
+//! more than [`RESYNC`]) repositions the reader. The player's mute doesn't
+//! touch the tap. At a playback rate other than 1 the samples are the clip's
+//! own, unstretched (about `rate` seconds of audio per second).
+//!
+//! Why a second decoder rather than one pipeline: the Media Engine owns
+//! decode, clock, audio output and transport, and has no sample hook;
+//! replacing it with a source reader for both streams would mean writing the
+//! clock, the audio output and A/V sync ourselves. Two decoders of one file
+//! cost a second audio decode — small next to video — and the tap stays
+//! within a tick of the engine's position.
 //!
 //! The engine is free-threaded, so the UI thread's transport calls and the
 //! decode thread's frame pulls share it; the Direct3D immediate context is
@@ -28,7 +42,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use media_stream::{AudioWriter, FrameWriter};
-use windows::core::{implement, Interface, Result as WinResult, BSTR, HRESULT};
+use windows::core::{implement, Interface, Result as WinResult, BSTR, GUID, HRESULT, HSTRING};
+use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
+use windows::Win32::System::Variant::VT_I8;
 use windows::Win32::Foundation::{E_FAIL, HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
@@ -40,7 +56,10 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFDXGIDeviceManager, IMFMediaEngine, IMFMediaEngineClassFactory, IMFMediaEngineNotify,
-    IMFMediaEngineNotify_Impl, MFCreateAttributes, MFCreateDXGIDeviceManager, MFStartup, MFVideoNormalizedRect,
+    IMFMediaEngineNotify_Impl, IMFSample, IMFSourceReader, MFAudioFormat_Float, MFCreateAttributes,
+    MFCreateDXGIDeviceManager, MFCreateMediaType, MFCreateSourceReaderFromURL, MFMediaType_Audio, MFStartup,
+    MFVideoNormalizedRect, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
     CLSID_MFMediaEngineClassFactory, MFSTARTUP_FULL, MF_MEDIA_ENGINE_CALLBACK, MF_MEDIA_ENGINE_DXGI_MANAGER,
     MF_MEDIA_ENGINE_EVENT_ERROR, MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT,
     MF_VERSION, MFARGB,
@@ -51,6 +70,17 @@ use crate::{DecodeConfig, DecodeSource, Opened, TransportControl, VideoDecodeErr
 
 /// How often the decode thread asks the engine for a new frame.
 const TICK: Duration = Duration::from_millis(8);
+
+/// How often the audio thread delivers the samples played since its last
+/// delivery — the tap's chunk length.
+const AUDIO_TICK: Duration = Duration::from_millis(10);
+
+/// A gap between the tap's position and the engine's larger than this is a
+/// seek or a loop, not tick jitter: the reader jumps to the engine.
+const RESYNC: f64 = 0.25;
+
+/// Media Foundation time unit: 100 ns.
+const HNS_PER_SEC: f64 = 10_000_000.0;
 
 type Verdict = std::result::Result<(), HRESULT>;
 
@@ -83,13 +113,14 @@ fn backend(e: windows::core::Error) -> VideoDecodeError {
 struct Handle {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    audio_thread: Option<JoinHandle<()>>,
     engine: IMFMediaEngine,
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(t) = self.thread.take() {
+        for t in [self.thread.take(), self.audio_thread.take()].into_iter().flatten() {
             let _ = t.join();
         }
         let _ = unsafe { self.engine.Shutdown() };
@@ -122,7 +153,7 @@ pub(crate) async fn open(
     source: DecodeSource,
     config: DecodeConfig,
     frames: FrameWriter,
-    _audio: AudioWriter,
+    audio: AudioWriter,
 ) -> Result<Opened, VideoDecodeError> {
     let DecodeSource::Url(url) = source else {
         return Err(VideoDecodeError::Backend("an in-memory clip reaches the backend as a file URL".into()));
@@ -159,11 +190,20 @@ pub(crate) async fn open(
         // An audio-only clip: nothing to pull.
         None => None,
     };
+    // The tap's reader opens on its own thread; it says whether the clip has
+    // an audio track before it starts delivering.
+    let (has_tx, has_rx) = async_channel::bounded(1);
+    let (stop_a, engine_a, path) = (stop.clone(), AgileEngine(engine.clone()), location(&url));
+    let audio_thread = std::thread::Builder::new()
+        .name("video-decode-audio".into())
+        .spawn(move || tap(engine_a, &path, audio, has_tx, stop_a))
+        .map_err(|e| VideoDecodeError::Backend(format!("audio thread: {e}")))?;
+    let has_audio = has_rx.recv().await.unwrap_or(false);
     let control: Rc<dyn TransportControl> = Rc::new(Control { engine: engine.clone() });
     Ok(Opened {
-        handle: Box::new(Handle { stop, thread, engine }),
+        handle: Box::new(Handle { stop, thread, audio_thread: Some(audio_thread), engine }),
         control,
-        has_audio: false,
+        has_audio,
         natural_size: natural,
     })
 }
@@ -207,6 +247,152 @@ fn pump(engine: AgileEngine, device: ID3D11Device, size: (u32, u32), frames: Fra
                 ctx.Unmap(&staging, 0);
                 frames.write_bgra8(size.0, size.1, &bgra);
             }
+        }
+    }
+}
+
+/// The clip's audio as interleaved `f32`, decoded by a source reader.
+struct AudioReader {
+    reader: IMFSourceReader,
+    sample_rate: u32,
+    channels: u16,
+}
+
+impl AudioReader {
+    /// `None` when the clip has no audio track (or it can't be decoded).
+    unsafe fn open(path: &str) -> Option<AudioReader> {
+        let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path), None).ok()?;
+        let all = MF_SOURCE_READER_ALL_STREAMS.0 as u32;
+        let audio = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
+        let _ = reader.SetStreamSelection(all, false);
+        reader.SetStreamSelection(audio, true).ok()?;
+        let wanted = MFCreateMediaType().ok()?;
+        wanted.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).ok()?;
+        wanted.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float).ok()?;
+        reader.SetCurrentMediaType(audio, None, &wanted).ok()?;
+        let got = reader.GetCurrentMediaType(audio).ok()?;
+        let sample_rate = got.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND).ok()?;
+        let channels = got.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS).ok()? as u16;
+        (sample_rate > 0 && channels > 0).then_some(AudioReader { reader, sample_rate, channels })
+    }
+
+    /// The next decoded chunk: `(start in seconds, interleaved samples)`;
+    /// `None` at the end of the stream.
+    unsafe fn read(&self) -> Option<(f64, Vec<f32>)> {
+        loop {
+            let mut flags = 0u32;
+            let mut ts = 0i64;
+            let mut sample: Option<IMFSample> = None;
+            self.reader
+                .ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32, 0, None, Some(&mut flags), Some(&mut ts), Some(&mut sample))
+                .ok()?;
+            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                return None;
+            }
+            // A gap or format notice carries no sample; read on.
+            let Some(sample) = sample else { continue };
+            let buffer = sample.ConvertToContiguousBuffer().ok()?;
+            let mut data: *mut u8 = std::ptr::null_mut();
+            let mut len = 0u32;
+            buffer.Lock(&mut data, None, Some(&mut len)).ok()?;
+            let floats = std::slice::from_raw_parts(data as *const f32, len as usize / 4).to_vec();
+            let _ = buffer.Unlock();
+            return Some((ts as f64 / HNS_PER_SEC, floats));
+        }
+    }
+
+    unsafe fn seek(&self, seconds: f64) {
+        // A VT_I8 of 100 ns units; GUID_NULL = that time format.
+        let at = PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_I8,
+                    Anonymous: PROPVARIANT_0_0_0 { hVal: (seconds.max(0.0) * HNS_PER_SEC) as i64 },
+                    ..Default::default()
+                }),
+            },
+        };
+        let _ = self.reader.SetCurrentPosition(&GUID::zeroed(), &at);
+    }
+}
+
+/// What the tap has decoded but not yet delivered: interleaved samples
+/// starting at `start` seconds of the clip.
+struct Pending {
+    start: f64,
+    samples: std::collections::VecDeque<f32>,
+}
+
+impl Pending {
+    fn clear(&mut self, at: f64) {
+        self.start = at;
+        self.samples.clear();
+    }
+
+    /// Append a chunk decoded at `at`, dropping whatever falls before what
+    /// is pending (a seek lands on the packet before the target).
+    fn push(&mut self, at: f64, chunk: &[f32], rate: u32, channels: u16) {
+        let end = self.start + (self.samples.len() / channels as usize) as f64 / rate as f64;
+        let skip_frames = ((end - at) * rate as f64).round().max(0.0) as usize;
+        let skip = (skip_frames * channels as usize).min(chunk.len());
+        self.samples.extend(&chunk[skip..]);
+    }
+
+    /// Take the frames up to `until` seconds (fewer if not decoded yet).
+    fn take_until(&mut self, until: f64, rate: u32, channels: u16) -> Vec<f32> {
+        // The epsilon keeps a position that is a whole frame count in
+        // decimal (0.05 s × 100 Hz) from flooring a frame short in binary.
+        let frames = ((until - self.start) * rate as f64 + 1e-6).floor().max(0.0) as usize;
+        let n = (frames * channels as usize).min(self.samples.len());
+        let n = n - n % channels as usize;
+        self.start += (n / channels as usize) as f64 / rate as f64;
+        self.samples.drain(..n).collect()
+    }
+
+    fn available_until(&self, rate: u32, channels: u16) -> f64 {
+        self.start + (self.samples.len() / channels as usize) as f64 / rate as f64
+    }
+}
+
+/// The audio thread: say whether there is audio, then deliver what the
+/// engine plays as it plays it (see the module docs).
+fn tap(engine: AgileEngine, path: &str, out: AudioWriter, has: async_channel::Sender<bool>, stop: Arc<AtomicBool>) {
+    let engine = engine.0;
+    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let Some(reader) = (unsafe { AudioReader::open(path) }) else {
+        let _ = has.try_send(false);
+        return;
+    };
+    let _ = has.try_send(true);
+    let (rate, channels) = (reader.sample_rate, reader.channels);
+    let mut pending = Pending { start: 0.0, samples: Default::default() };
+    let mut ended = false;
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(AUDIO_TICK);
+        let (position, idle) = unsafe {
+            let idle = engine.IsPaused().as_bool() || engine.IsEnded().as_bool() || engine.IsSeeking().as_bool();
+            (engine.GetCurrentTime(), idle)
+        };
+        // (Past the end of an audio track shorter than the video there is
+        // nothing to jump to: only a jump back restarts the reader.)
+        let jumped = (position - pending.start).abs() > RESYNC;
+        if jumped && !(ended && position > pending.start) {
+            unsafe { reader.seek(position) };
+            pending.clear(position);
+            ended = false;
+        }
+        if idle {
+            continue;
+        }
+        while !ended && pending.available_until(rate, channels) < position {
+            match unsafe { reader.read() } {
+                Some((at, chunk)) => pending.push(at, &chunk, rate, channels),
+                None => ended = true,
+            }
+        }
+        let chunk = pending.take_until(position, rate, channels);
+        if !chunk.is_empty() {
+            out.write_pcm_f32(rate, channels, &chunk);
         }
     }
 }
@@ -340,6 +526,39 @@ mod tests {
         assert_eq!(location(r"file://C:\Temp\clip.mp4"), r"C:\Temp\clip.mp4");
         assert_eq!(location("file:///C:/Temp/clip.mp4"), r"C:\Temp\clip.mp4");
         assert_eq!(location("https://x/clip.mp4"), "https://x/clip.mp4");
+    }
+
+    fn pending() -> Pending {
+        Pending { start: 0.0, samples: Default::default() }
+    }
+
+    /// Chunks append in order; delivery takes exactly the frames up to the
+    /// engine's position and moves the start with them.
+    #[test]
+    fn the_tap_delivers_up_to_the_engines_position() {
+        let mut p = pending();
+        p.push(0.0, &[1.0; 200], 100, 2); // 1 s of stereo at 100 Hz
+        assert_eq!(p.available_until(100, 2), 1.0);
+        assert_eq!(p.take_until(0.25, 100, 2).len(), 50, "25 frames × 2 channels");
+        assert!((p.start - 0.25).abs() < 1e-9);
+        assert!(p.take_until(0.25, 100, 2).is_empty(), "nothing new at the same position");
+        assert_eq!(p.take_until(5.0, 100, 2).len(), 150, "never more than is decoded");
+    }
+
+    /// After a seek the reader lands on the packet before the target: the
+    /// part before the target is dropped, not played late.
+    #[test]
+    fn a_chunk_starting_before_the_seek_target_is_trimmed() {
+        let mut p = pending();
+        p.clear(2.0);
+        let chunk: Vec<f32> = (0..100).map(|i| i as f32).collect(); // 1.9 s .. 2.9 s, mono 100 Hz
+        p.push(1.9, &chunk, 100, 1);
+        let got = p.take_until(2.05, 100, 1);
+        assert_eq!(got, vec![10.0, 11.0, 12.0, 13.0, 14.0], "starts at 2.0 s");
+        let mut p = pending();
+        p.clear(2.0);
+        p.push(0.5, &[0.0; 50], 100, 1);
+        assert!(p.samples.is_empty(), "a chunk wholly before the target is dropped");
     }
 
     #[test]
