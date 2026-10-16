@@ -2,8 +2,8 @@
 //!
 //! Wraps [`taffy`] (a pure-Rust flex engine matching CSS semantics)
 //! and translates `runtime_shared::StyleRules` into Taffy styles.
-//! Backends that don't have a native layout system (iOS, Android)
-//! build a parallel layout tree as they create native nodes, run
+//! Backends that don't have a native layout system (iOS, Android,
+//! macOS, Linux, Windows, terminal, CPU, GPU) build a parallel layout tree as they create native nodes, run
 //! Taffy when the tree is complete, and apply the resulting frames
 //! to their native views.
 //!
@@ -19,21 +19,33 @@
 //!     // alongside the native view in an enum variant.
 //! }
 //!
-//! impl Backend for MyBackend {
-//!     fn create_view(&mut self) -> Self::Node {
-//!         let layout = self.layout.new_node();
-//!         let native = make_native_view();
-//!         MyNode::View { view: native, layout }
-//!     }
-//!     fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) {
+//! impl runtime_scene::Host for MyBackend {
+//!     type Node = MyNode;
+//!     fn insert(&mut self, parent: &mut MyNode, child: MyNode) {
 //!         self.layout.add_child(parent.layout(), child.layout());
 //!         attach_native(parent.view(), child.view());
 //!     }
-//!     fn apply_style(&mut self, node: &Self::Node, rules: &Rc<StyleRules>) {
+//!     // ... the rest of the structural seam
+//! }
+//!
+//! impl runtime_vocabulary::caps::ViewOps for MyBackend {
+//!     fn create_view(&mut self, a11y: &AccessibilityProps) -> MyNode {
+//!         let layout = self.layout.new_node();
+//!         let native = make_native_view(a11y);
+//!         MyNode::View { view: native, layout }
+//!     }
+//! }
+//!
+//! impl runtime_vocabulary::caps::StyleOps for MyBackend {
+//!     fn apply_style(&mut self, node: &MyNode, rules: &Rc<StyleRules>) {
 //!         self.layout.set_style(node.layout(), rules);
 //!         paint_native(node.view(), rules);
 //!     }
-//!     fn finish(&mut self, root: Self::Node) {
+//! }
+//!
+//! impl MyBackend {
+//!     // The backend's own layout pass, scheduled after a batch of mutations.
+//!     fn run_layout(&mut self, root: &MyNode) {
 //!         let (w, h) = self.viewport_size();
 //!         self.layout.compute(root.layout(), w, h);
 //!         // walk and apply frames via my own (LayoutNode → view) map
@@ -149,7 +161,7 @@ pub struct Frame {
 // =============================================================================
 
 /// A flex layout tree. Owned by the backend; one instance per
-/// `Backend` typically suffices (or one per render root for
+/// backend typically suffices (or one per render root for
 /// multi-window backends).
 pub struct LayoutTree {
     tree: TaffyTree<()>,
@@ -490,8 +502,8 @@ impl LayoutTree {
     /// MOVED, with DOM `insertBefore` semantics (the reference sibling is
     /// the one at `index` before the move); Taffy's own
     /// `insert_child_at_index` never unlinks the old parent, so without
-    /// this a keyed reorder left the row in the old position AND the new
-    /// one, laid out twice.
+    /// this a keyed reorder would leave the row in the old position AND
+    /// the new one, laid out twice.
     pub fn add_child_at_index(
         &mut self,
         parent: LayoutNode,
@@ -683,7 +695,7 @@ impl LayoutTree {
     /// panic becomes a whole-process abort. A portal / detached-window-root
     /// node is an orphan Taffy ROOT that was never wired as a child of
     /// `parent`, so the anchorless spliced-`when` unmount path
-    /// (`Backend::remove_child(parent, portal)`) would hit exactly this.
+    /// (`Host::remove_child(parent, portal)`) would hit exactly this.
     /// Guard by membership; removing a non-child is a no-op.
     ///
     /// Regression: tapping a `Modal`'s backdrop to dismiss it crashed here on
@@ -1890,10 +1902,7 @@ impl LayoutTree {
 
     /// Whether `node`'s current Taffy style is `position: absolute` —
     /// i.e. it's taken out of normal flow and contributes no in-flow
-    /// size to its parent. (The macOS presence placeholder used to read
-    /// this to upgrade itself to `absolute; inset: 0` around an absolute
-    /// child; presence placeholders are now contents nodes, which need no
-    /// such adaptation.)
+    /// size to its parent.
     pub fn is_absolute(&self, node: LayoutNode) -> bool {
         self.tree
             .style(node.0)
@@ -2805,13 +2814,13 @@ mod tests {
     /// cards must STACK, which requires each presence placeholder to be
     /// IN-FLOW (size to its child), not `position: absolute; inset: 0`.
     ///
-    /// Presence placeholders are now `new_contents_node`s (no box at all —
+    /// Presence placeholders are `new_contents_node`s (no box at all —
     /// see `PresenceOps::create_presence_placeholder` and
     /// `runtime-vocabulary/tests/presence_layout.rs`); this test still pins
     /// the underlying flex shapes that made the absolute-fill wrapper wrong,
     /// plus the `is_absolute` getter. With in-flow wrappers the two
     /// cards lay out one below the other and the stack's height is their sum;
-    /// with absolute inset:0 wrappers (the old, buggy placeholder) both
+    /// with absolute inset:0 wrappers (the buggy placeholder shape) both
     /// collapse onto y=0 and overlap — exactly the "toasts don't stack, no
     /// bottom gap" symptom.
     #[test]
@@ -3024,11 +3033,10 @@ mod tests {
     /// cells in that column differ row to row.
     ///
     /// This is the layout-engine guarantee the `table` SDK relies on for
-    /// cross-platform parity. The old native table laid each row out as
-    /// an independent flex container, so a wide cell in row 0 widened
-    /// only row 0's copy of that column and columns drifted between rows.
-    /// The first half of this test reproduces that drift with two flex
-    /// rows; the second half shows the grid fixes it with the SAME cell
+    /// cross-platform parity. Laying each row out as an independent flex
+    /// container lets a wide cell in row 0 widen only row 0's copy of that
+    /// column, so columns drift between rows. The first half of this test
+    /// reproduces that drift with two flex rows; the second half shows the grid fixes it with the SAME cell
     /// content. Cell widths are seeded as intrinsic sizes so the tracks
     /// have something to size to (a real cell's text measures similarly).
     #[test]
@@ -3191,10 +3199,10 @@ mod tests {
     /// `remove_node` actually retires it.
     ///
     /// This is the invariant `backend-ios`'s `unregister_subtree` rests
-    /// on. Its `clear_children` used to call `remove_child` alone, which
-    /// grew the app's root set by one per discarded child — measured at
-    /// 478 roots and 10,425 registered views on a project screen, still
-    /// climbing with every tab switch.
+    /// on. A `clear_children` that calls `remove_child` alone grows the
+    /// app's root set by one per discarded child — measured at 478 roots
+    /// and 10,425 registered views on a project screen, still climbing
+    /// with every tab switch.
     #[test]
     fn unparenting_a_node_makes_it_a_root_until_it_is_removed() {
         let mut t = LayoutTree::new();
@@ -3653,8 +3661,8 @@ mod tests {
             sr.min_width = Some(Tokenized::Literal(FwLength::Percent(100.0)));
             // Without shrink 0 the flex line squeezes the surface back
             // to the scroller's width and nothing ever overflows —
-            // the same trap as [[project_min_height_pct_scroll_shrink]]
-            // on the vertical axis.
+            // the same trap as a percent `min_height` scroll surface
+            // without shrink 0 on the vertical axis.
             sr.flex_shrink = Some(Tokenized::Literal(0.0));
             t.set_style(surface, &sr);
             t.add_child(scroller, surface);
@@ -4368,26 +4376,25 @@ mod tests {
     /// Regression: `remove_child` must NOT panic when `child` isn't
     /// actually a child of `parent`.
     ///
-    /// The Modal-dismiss crash (iOS + Android): a `Modal` lowers to an
-    /// `Element::Portal`, which the backends register as an orphan Taffy
+    /// The Modal-dismiss crash (iOS + Android): a `Modal` lowers to a
+    /// `PortalPrim` item, which the backends register as an orphan Taffy
     /// ROOT (`insert`/`insert_at` deliberately skip wiring a portal as a
     /// child of its surrounding parent). When `if open { Modal }` flips
     /// false, the anchorless spliced-`when` unmount calls
-    /// `Backend::remove_child(parent, portal)` → `LayoutTree::remove_child`.
+    /// `Host::remove_child(parent, portal)` → `LayoutTree::remove_child`.
     /// Taffy's `remove_child` does `children.position(..).unwrap()` and
     /// panics because the portal isn't in `parent`'s child list; on the
     /// backend's non-unwinding FFI boundary that panic aborts the process
-    /// ("panic in a function that cannot unwind" → SIGABRT). The fix makes a
-    /// non-child removal a no-op. This test panics before the fix and passes
-    /// after.
+    /// ("panic in a function that cannot unwind" → SIGABRT). A non-child
+    /// removal must be a no-op.
     #[test]
     fn regression_remove_child_ignores_non_child_no_panic() {
         let mut t = LayoutTree::new();
         let parent = t.new_node();
         let orphan = t.new_node(); // never added as a child of `parent`
 
-        // Before the fix this aborts inside taffy's `remove_child`
-        // (`called Option::unwrap() on a None value`).
+        // Without the membership guard this aborts inside taffy's
+        // `remove_child` (`called Option::unwrap() on a None value`).
         t.remove_child(parent, orphan);
         assert_eq!(
             t.children_of(parent).len(),
@@ -4468,10 +4475,10 @@ mod tests {
     /// sidebar "holder" as a standalone Taffy root (auto_width); the
     /// first layout pass computes it at viewport width and bakes
     /// `Length(viewport)` into its style; then the drawer handler adopts
-    /// the holder as a child of a 280pt sidebar wrapper. Before the fix
-    /// the holder kept its 393pt root width and rendered full-bleed past
-    /// the panel; after the fix `add_child` reverts the baked viewport
-    /// width to `Auto` so the holder stretches to the 280pt wrapper.
+    /// the holder as a child of a 280pt sidebar wrapper. The holder kept
+    /// its 393pt root width and rendered full-bleed past the panel;
+    /// `add_child` must revert the baked viewport width to `Auto` so the
+    /// holder stretches to the 280pt wrapper.
     #[test]
     fn regression_reparented_root_drops_baked_viewport_width() {
         let mut t = LayoutTree::new();
@@ -4489,7 +4496,7 @@ mod tests {
         );
 
         // Wrapper: explicit 280pt width, column flow, stretch children
-        // (the iOS drawer's `sized_sidebar`). Adopt the holder as its
+        // (the iOS drawer's sidebar wrapper). Adopt the holder as its
         // child — this is the reparent that must drop the baked 393.
         let wrapper = t.new_node();
         let mut wrapper_rules = StyleRules::default();
@@ -4516,17 +4523,14 @@ mod tests {
         );
     }
 
-    /// Regression for the Android portal view-overlay rewrite
-    /// ([[project_android_portal_is_dialog_smell]]): a viewport portal is
-    /// now a full-bleed overlay registered as a fresh Taffy ROOT (both
+    /// Regression for the Android portal view-overlay: a viewport portal
+    /// is a full-bleed overlay registered as a fresh Taffy ROOT (both
     /// axes `Auto` → viewport-filled by `compute`), and the idea-ui
     /// `Modal` centers its card with a `width:100% height:100%`
     /// flex-center wrapper (`justify/align center`) holding the card.
     ///
-    /// The old Dialog path needed `set_root_axes_wrap(overlay, true,
-    /// true)` so a `WRAP_CONTENT` Dialog window's gravity could center
-    /// the card; with a full-bleed overlay there is NO gravity and NO
-    /// wrap — centering must be pure flex inside the viewport-filled
+    /// With a full-bleed overlay there is NO window gravity and NO
+    /// root-wrap — centering must be pure flex inside the viewport-filled
     /// overlay. This test asserts that without any `set_root_axes_wrap`
     /// the overlay fills the viewport AND a fixed-size card centers
     /// inside it. If a future change reintroduces root-wrap for portals,
@@ -5064,8 +5068,8 @@ mod tests {
     //
     // A reactive hole's anchor is a node the author never wrote, held by
     // the scene as the stable handle it swaps subtrees under. Web gives
-    // it `display: contents`; native backends used to give it a plain
-    // view, and a plain view is a flex item: it hugs a fill-me child,
+    // it `display: contents`; native backends use a contents node because
+    // a plain view is a flex item: it hugs a fill-me child,
     // stacks a row parent's children in a column, swallows the parent's
     // gap, and resolves a child's percent against nothing. Every shape
     // below is measured against the FLAT tree — what web computes — and
@@ -5424,8 +5428,8 @@ mod tests {
 
     /// `insert_at` on a node that is already a child MOVES it (DOM
     /// `insertBefore`). Taffy's `insert_child_at_index` does not unlink the
-    /// old parent, so a keyed reorder used to leave the row in both
-    /// places — laid out twice, the second location winning and the
+    /// old parent, so without the unlink a keyed reorder leaves the row in
+    /// both places — laid out twice, the second location winning and the
     /// parent's main-axis budget counting it twice.
     #[test]
     fn regression_insert_at_of_a_mounted_child_moves_it_instead_of_duplicating() {

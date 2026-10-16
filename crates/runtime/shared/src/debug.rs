@@ -1,11 +1,10 @@
 //! Compile-time gated render telemetry.
 //!
 //! This module exists only when the `debug-stats` Cargo feature is
-//! enabled on `runtime-core`. When off, the module is `#[cfg]`'d
+//! enabled on `runtime-shared`. When off, the module is `#[cfg]`'d
 //! out of the crate entirely — no atomic, no event log, no symbol
-//! pollution. Same goes for the walker-side instrumentation in
-//! `lib.rs` and the macro-emitted component enter/exit calls in
-//! `runtime-macros`.
+//! pollution — and `lib.rs` swaps in a no-op shim so the
+//! macro-emitted component enter/exit calls still resolve.
 //!
 //! ## What gets recorded
 //!
@@ -15,9 +14,10 @@
 //! `Instant::now()` on native).
 //!
 //! Component events come from `#[component]`'s macro-emitted
-//! enter/exit calls. Build / backend / effect events come from
-//! runtime-core's walker — backends themselves are never touched,
-//! the instrumentation wraps the walker's calls into the backend.
+//! enter/exit calls; transaction, effect, commit and style-cache events
+//! from the framework's own call sites. Backends themselves are never
+//! touched. The build / backend-create / apply-style / virtualizer
+//! event kinds currently have no emitter.
 //!
 //! ## Reading the log
 //!
@@ -76,14 +76,14 @@ pub enum DebugEvent {
     /// A `#[component]` function returned. Emitted by the macro.
     ComponentExit { name: &'static str, at_us: u64 },
 
-    /// The framework's build walker started processing a primitive.
+    /// The framework started processing a primitive.
     BuildEnter { kind: PrimitiveKind, at_us: u64 },
-    /// The build walker finished processing a primitive (after the
+    /// The framework finished processing a primitive (after the
     /// backend create call and any subtree builds).
     BuildExit { kind: PrimitiveKind, at_us: u64 },
 
     /// Framework called the backend's `create_*` for a primitive.
-    /// Wraps the backend call site in the walker; the backend
+    /// Wraps the framework's backend call site; the backend
     /// itself doesn't know about the timing.
     BackendCreateEnter { kind: PrimitiveKind, at_us: u64 },
     BackendCreateExit { kind: PrimitiveKind, at_us: u64 },
@@ -226,11 +226,11 @@ pub fn component_summary(events: &[DebugEvent]) -> HashMap<&'static str, Compone
 }
 
 // ---------------------------------------------------------------------------
-// Recording — called by walker instrumentation + macro-emitted code
+// Recording — called by framework instrumentation + macro-emitted code
 // ---------------------------------------------------------------------------
 
 /// Current monotonic microseconds. Used by every record_* function
-/// AND by the walker's two-sided instrumentation (caller reads
+/// AND by two-sided instrumentation (caller reads
 /// `now_micros()` before/after the wrapped call).
 ///
 /// Anchored to the first call so deltas are "since debug-stats was
@@ -380,7 +380,7 @@ pub fn clear_phase_counters() {
 // source location (via `#[track_caller]`, resolved at compile time — the
 // `&'static Location` costs nothing to *capture*, only to store here) plus,
 // for effects, the innermost `#[component]` that was building at the time and
-// an optional binding label the walker attaches ("text#<id>" / "style#<id>").
+// an optional binding label a node binding attaches ("text#<id>" / "style#<id>").
 //
 // Keyed by raw `u32` id in this module's own thread-locals rather than as
 // parallel `Arena` vectors: keeps the identity concern out of the reactive
@@ -399,7 +399,7 @@ pub struct EffectDebug {
     /// if any. `None` for effects made outside a component build (app init,
     /// an event handler, a service install).
     pub component: Option<&'static str>,
-    /// Binding label the walker attaches for node-mutating effects
+    /// Binding label attached for node-mutating effects
     /// ("text#<id>", "style#<id>"), naming the *node* the effect drives.
     pub label: Option<String>,
 }
@@ -437,7 +437,7 @@ pub fn record_effect_created(
     });
 }
 
-/// Attach a binding label to an already-created effect (e.g. the walker
+/// Attach a binding label to an already-created effect (e.g. a binding
 /// naming the node a text/style effect drives). No-op if the effect id was
 /// never recorded.
 pub fn label_effect(id: u32, label: &str) {

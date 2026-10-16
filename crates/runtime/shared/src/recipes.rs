@@ -1,37 +1,22 @@
-//! Core-primitive usage **recipes** for the MCP catalog — static-data
-//! registrations that survive both cores (idea-lite migration, wave 2b).
+//! Core-primitive usage **recipes** for the MCP catalog, as static data.
 //!
 //! ## Why these live here as text, not as compiled `recipe!` fns
 //!
-//! They used to be `recipe!(...)` invocations in `runtime_core::recipes`.
-//! That anchoring had two fatal properties for the migration:
-//!
-//! 1. `recipe!` compiles its fn body, and the bodies use `ui!` — whose
-//!    emission is decided **graph-wide** by `runtime-macros/new-core`
-//!    (proc-macro feature unification). In a new-core graph the emission
-//!    targets `runtime_vocabulary::glue`, which runtime-core doesn't
-//!    (and must not) depend on — so `runtime-core/catalog` could not be
-//!    enabled in `--new-core` dev sessions and the whole catalog
-//!    inventory vanished from them.
-//! 2. runtime-core is scheduled for deletion (P7); the recipe *data*
-//!    must not die with it.
-//!
-//! So the recipe **descriptions** are static data here (runtime-shared
-//! is the permanent substrate both cores link), with each `source`
-//! pulled via `include_str!` from `crates/runtime/shared/recipes/*.rs`.
-//! Those files are real Rust: they stay compile-checked against the
-//! live author surface — on BOTH cores — by
+//! A `recipe!` fn compiles its body, and the bodies use `ui!`, whose
+//! expansion targets `runtime_vocabulary::glue` — a crate this substrate
+//! cannot depend on. So the recipe **descriptions** are static data here,
+//! with each `source` pulled via `include_str!` from
+//! `crates/runtime/shared/recipes/*.rs`. Those files are real Rust: they
+//! stay compile-checked against the live author surface by
 //! `crates/dev/newcore-app/tests/recipes_compile.rs`, which `include!`s
-//! them under the old core (default) and under the facade alias
-//! (`--features new-core`). A prop change that breaks a recipe still
-//! fails a test; it just fails in the dual-core gate crate instead of
-//! inside runtime-core.
+//! them and mounts each against the scene-parity mock host. A prop change
+//! that breaks a recipe still fails a test.
 //!
 //! The `docs` literals below mirror each file's leading `///` block
 //! (the file keeps the comment so the served `source` reads complete).
 //! Entries register into the same `mcp_catalog::RecipeEntry` inventory
 //! slice `recipe!` uses, so `list_recipes` / `describe_recipe` /
-//! `get_catalog` are unchanged.
+//! `get_catalog` serve them like any other recipe.
 
 // One `inventory::submit!` per recipe. `module_path!()` names this
 // module (recipe resolution is proximity-based and these target core
@@ -105,25 +90,12 @@ core_recipe!(
 // ---------------------------------------------------------------------------
 // Navigation recipes.
 //
-// These used to be `recipe!(…)` invocations inside the navigator SDKs
-// (`swap-navigator/src/recipes.rs`, `stack-navigator/src/recipes.rs`),
-// gated `#[cfg(all(feature = "catalog", not(feature = "new-core")))]` —
-// so on the new core the framework served NO navigation recipe at all,
-// which is a product-surface regression, not just a test gap (the arena
-// nav-notes feedback, run-0, is exactly an agent reconstructing this
-// skeleton by grepping source because `list_recipes` had none).
-//
-// They move here for the same two reasons the core-primitive recipes did
-// (see the module docs): a `recipe!` body's `ui!` lowering is decided
-// build-graph-wide, and the SDK crates carry an unconditional
-// `runtime_core` dependency, so `::runtime_core::Element` inside an
-// SDK-hosted recipe means the OLD Element even in a new-core graph — the
-// body could not compile on both cores from in there. As static data
-// with the source `include_str!`d, the served text is core-neutral
-// (`::runtime_core::…` is whatever root the reader's app aliases) and the
-// compile check happens where a core CAN be selected:
-// `crates/dev/newcore-app/tests/recipes_compile.rs`, which builds both
-// files on both legs against the real navigator SDKs.
+// These register here rather than in the navigator SDKs for the same
+// reason as the core-primitive recipes (see the module docs): as static
+// data with the source `include_str!`d, the served text needs no
+// compiled `ui!` body, and the compile check happens in
+// `crates/dev/newcore-app/tests/recipes_compile.rs`, against the real
+// navigator SDKs.
 //
 // `uses` lists the primitives each body reaches for, matching the
 // core-primitive entries' convention (the navigator itself is the
@@ -149,9 +121,9 @@ core_recipe!(
 #[cfg(test)]
 mod tests {
     /// The four core recipes register into the catalog's recipe slice
-    /// with source text and docs intact. Regression for the wave-2b
-    /// re-anchoring: the catalog data must exist WITHOUT runtime-core
-    /// (this crate's `catalog` feature alone links + populates it).
+    /// with source text and docs intact. The catalog data must exist
+    /// with no author-surface crate linked (this crate's `catalog`
+    /// feature alone links + populates it).
     #[test]
     fn core_recipes_register_into_the_catalog_slice() {
         let names: Vec<&str> = mcp_catalog::recipes().map(|r| r.name).collect();
@@ -186,12 +158,9 @@ mod tests {
     }
 
     /// The two navigation recipes register here rather than in the
-    /// navigator SDKs, so they exist on BOTH cores (they used to be
-    /// `cfg(not(new-core))` inside the SDKs — a served-content regression
-    /// on the new core, not merely a test gap).
+    /// navigator SDKs, so `list_recipes` always serves them.
     ///
-    /// The assertions on the served source are ported verbatim from the
-    /// deleted `stack-navigator/tests/recipes.rs`: the load-bearing pieces
+    /// The assertions on the served source pin the load-bearing pieces
     /// an agent copy-pastes. Both extension-trait import lines are
     /// load-bearing — omitting `StackBuilder` breaks `.screen(...)`
     /// resolution, which is precisely what the arena feedback caught.

@@ -1,14 +1,12 @@
 //! # Per-world viewport / breakpoint state — the reactive viewport source
 //!
-//! The old engine keeps ONE thread-local viewport signal
+//! runtime-shared keeps a thread-local viewport signal
 //! (`runtime_shared::viewport_size`) plus a thread-local memoized bucket
-//! (`runtime_shared::current_breakpoint`); backends push window resizes
-//! into it and author code subscribes from effects. On the new kernel a
-//! world effect cannot subscribe to an old-core signal, so until this
-//! module existed the glue re-exported the old free fns VALUE-only and
-//! every breakpoint-dependent `when` was frozen at its seed (found
-//! live: the idea-ui-docs hamburger stayed visible at desktop width —
-//! `when(!sidebar_pinned(Lg))` never re-fired).
+//! (`runtime_shared::current_breakpoint`) on the legacy arena, which a
+//! world effect cannot subscribe to: read value-only, every
+//! breakpoint-dependent `when` froze at its seed (the idea-ui-docs
+//! hamburger stayed visible at desktop width — `when(!sidebar_pinned(Lg))`
+//! never re-fired). This module is the world-side source.
 //!
 //! Shape mirrors [`crate::theme`]'s `ThemeCtx` exactly:
 //!
@@ -17,8 +15,7 @@
 //!   SSR per-request worlds don't share a viewport).
 //! - The signal + derived-bucket memo are created via
 //!   [`runtime_world::unscoped`] so they are world-root-owned, not
-//!   adopted by whichever transient subtree first reads a breakpoint
-//!   (the old `unscope` contract, same regression class).
+//!   adopted by whichever transient subtree first reads a breakpoint.
 //! - The bucket derivation is a **memo** (Derivation class), not a
 //!   plain effect: a reaction that reads `current_breakpoint()` in the
 //!   same flush as a viewport commit must see the settled bucket
@@ -37,8 +34,8 @@
 //!
 //! ## Seeding + platform sources
 //!
-//! A world's ctx seeds from the SHARED old-core viewport value at first
-//! use (`runtime_shared::viewport_size().get()`), because every existing
+//! A world's ctx seeds from the SHARED thread-local viewport value at
+//! first use (`runtime_shared::viewport_size().get()`), because every
 //! platform seam writes there: SSR seeds `SSR_VIEWPORT` before render,
 //! the web hydrate boot seeds the `data-ssr-viewport` attribute, and
 //! the native backends sample their window into `set_viewport_size`.
@@ -47,8 +44,8 @@
 //!
 //! - **web** (`backend-web/src/newcore.rs`): wired — seeds from
 //!   `window.inner{Width,Height}` at boot and installs a `resize`
-//!   listener that pushes both sinks (old-core TLS for value parity +
-//!   this ctx) and schedules a flush.
+//!   listener that pushes both sinks (the shared TLS + this ctx) and
+//!   schedules a flush.
 //! - **macOS** (`backend-macos/src/newcore.rs`, "Viewport source"):
 //!   wired — the AppKit seams (`LayoutObserverView::setFrameSize:` +
 //!   `finish`'s deferred first mirror) push both sinks; the boot
@@ -63,30 +60,22 @@
 //!   configuration changes route through it) pushes both sinks; the
 //!   sink reinstalls on Activity-recreation re-`start` and dead-world
 //!   writes no-op, so a mirror racing teardown is inert.
-//! - **GPU** (`render-wgpu/src/newcore.rs`, "Viewport source"): wired
+//! - **GPU** (`crates/gpu-backend/engine/src/newcore.rs` in `render-wgpu`,
+//!   "Viewport source"): wired
 //!   at its one source of truth — `Host::set_viewport`, the LOGICAL
 //!   viewport report. Window resizes deliberately never change the
 //!   logical size on the winit host (fixed `DeviceProfile::
 //!   logical_size`, letterboxed), so bucket flips only follow logical
-//!   reports; the windowed boot seeds the old TLS pre-mount
-//!   (`host_winit::newcore::run_with`), while embedded sim boots
+//!   reports; the windowed boot seeds the shared TLS pre-mount
+//!   (`host-winit`'s `run_with`), while embedded sim boots
 //!   (`start_in_world`) install NO sink so the sim profile can't
 //!   clobber the embedding page's ctx.
 //!
 //! Wiring rule for future seams: every platform site that writes the
-//! old TLS (`runtime_shared::set_viewport_size`) must forward the SAME
-//! value to its backend's new-core `forward_viewport` — the two sinks
+//! shared TLS (`runtime_shared::set_viewport_size`) must forward the SAME
+//! value to its backend's `forward_viewport` — the two sinks
 //! never diverge, and the push always stages outside `World::enter`
 //! then rides the backend's deduped flush.
-//!
-//! ## What still reads the OLD signal
-//!
-//! `style_attach`'s native breakpoint-overlay merge reads the old-core
-//! bucket value at apply time (correct values — every live source above
-//! pushes both sinks with the same size, so the old bucket tracks the
-//! ctx — but no re-fire of the merge itself) — moving the native
-//! breakpoint-overlay re-application onto this ctx is the remaining
-//! native gap, also noted in `theme.rs`.
 
 use std::cell::RefCell;
 
@@ -129,16 +118,15 @@ pub fn viewport_ctx() -> ViewportCtx {
         return ctx;
     }
     let ctx = unscoped(|| {
-        // Seed from the shared old-core viewport value: every platform
-        // seam (SSR seed, hydrate attribute, native samples) writes it
-        // before the first build. A plain value read — no old-core
-        // subscription is possible from world effects, which is the
-        // whole reason this ctx exists.
+        // Seed from the shared thread-local viewport value: every
+        // platform seam (SSR seed, hydrate attribute, native samples)
+        // writes it before the first build. A plain value read — a world
+        // effect can't subscribe to it, which is the whole reason this
+        // ctx exists.
         let seed = runtime_shared::viewport_size().get();
         let size = signal(seed);
-        // Capture the table once, like the old thread-local memo did
-        // (`install_breakpoints` is documented first-wins-before-first-
-        // read on both cores).
+        // Capture the table once (`install_breakpoints` is documented
+        // first-wins-before-first-read).
         let table = runtime_shared::breakpoints();
         let breakpoint = memo(move || table.classify(size.get().width));
         ViewportCtx { size, breakpoint }
@@ -154,8 +142,8 @@ impl ViewportCtx {
     /// Push a new viewport size. **Handler-safe** — stages through the
     /// signal handle (routes to its own world), commits on that world's
     /// next flush, equality-guarded so per-pixel no-change events don't
-    /// wake subscribers. Negative components clamp to zero (the old
-    /// `set_viewport_size` contract).
+    /// wake subscribers. Negative components clamp to zero (same as
+    /// `runtime_shared::set_viewport_size`).
     pub fn set(&self, size: ViewportSize) {
         let clamped = ViewportSize {
             width: size.width.max(0.0),
@@ -165,15 +153,14 @@ impl ViewportCtx {
     }
 
     /// The reactive size signal (Copy handle) — what glue's
-    /// `viewport_size()` mirror hands to author code.
+    /// `viewport_size()` hands to author code.
     pub fn size_signal(&self) -> Signal<ViewportSize> {
         self.size
     }
 
     /// The derived bucket as a `ReadSignal` — what glue's
-    /// `current_breakpoint()` mirror returns (old-core signature
-    /// parity). Re-fires only when the BUCKET changes (memo equality
-    /// cut), not per pixel.
+    /// `current_breakpoint()` returns. Re-fires only when the BUCKET
+    /// changes (memo equality cut), not per pixel.
     pub fn breakpoint(&self) -> ReadSignal<Breakpoint> {
         self.breakpoint.read_only()
     }

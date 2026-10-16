@@ -1,20 +1,15 @@
-//! The two documented **hard-abort** regressions from the old core
-//! (deletion baseline §4.1 #10), re-homed on their surviving subjects.
+//! Two **hard-abort** regressions — process aborts, not test failures:
+//! the class of bug that is invisible until a user's app dies.
 //!
-//! Both were process aborts, not test failures — the class of bug that
-//! is invisible until a user's app dies. Neither had a successor before
-//! this file:
-//!
-//! 1. `runtime-core/src/walker/theme_cohort.rs::reset_theme_cohort_state`
-//!    had to be panic-safe when a cohort thread-local could not be
-//!    accessed. The production crash was a terminal app aborting at exit
-//!    with "thread local panicked on drop": the driver guard's `Drop`
-//!    ran during thread teardown and touched a destroyed TLS with a
-//!    plain `with`/`borrow_mut`; a panic inside a destructor is escalated
-//!    to `abort` by std. The surviving analogue is
+//! 1. Theme-cohort teardown must be panic-safe when a thread-local can
+//!    no longer be accessed. The production crash was a terminal app
+//!    aborting at exit with "thread local panicked on drop": a driver
+//!    guard's `Drop` ran during thread teardown and touched a destroyed
+//!    TLS with a plain `with`/`borrow_mut`; a panic inside a destructor
+//!    is escalated to `abort` by std. The subject here is
 //!    `runtime_vocabulary::theme`'s module-level `LAST_CTX` — the one TLS
-//!    in the new theme engine whose lifetime spans worlds, and the one
-//!    the handler-safe fallback reads.
+//!    in the theme engine whose lifetime spans worlds, and the one the
+//!    handler-safe fallback reads.
 //! 2. `Robot::set_scroll` had to reach the backend through its
 //!    `ScrollViewHandle`, NOT `set_node_scroll` under a held
 //!    `backend.borrow_mut()`. Native scroll writes fire scroll
@@ -92,7 +87,7 @@ fn regression_theme_ctx_survives_an_inaccessible_last_ctx_tls() {
 /// ambient world (whose absence panics in a plain drop) — and it must
 /// stay safe when the world it was captured from is already gone.
 ///
-/// This is the structural half of the same abort class: the old bug was
+/// This is the structural half of the same abort class: the bug is
 /// "teardown touched thread-local state it could not reach"; here the
 /// guarantee is "teardown touches only the captured `Rc`, never the
 /// ambient world".
@@ -326,9 +321,8 @@ mod reentrant_host {
 /// across the call.
 ///
 /// Two things are asserted, and the second is the abort:
-/// - the values reach the backend (the old test's assertion), and
-/// - the write can re-enter `backend.borrow_mut()` (the invariant the
-///   old test could only state in prose).
+/// - the values reach the backend, and
+/// - the write can re-enter `backend.borrow_mut()`.
 #[test]
 fn regression_robot_set_scroll_routes_via_the_scroll_handle_with_no_held_backend_borrow() {
     use reentrant_host::ReentrantHost;

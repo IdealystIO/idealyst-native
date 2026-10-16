@@ -1,17 +1,12 @@
-//! # runtime-shared — the permanent shared runtime substrate
+//! # runtime-shared — the shared runtime substrate
 //!
-//! The non-walker half of what was historically `runtime-core`,
-//! extracted in the final phase of the idea-lite core migration so the
-//! new core (`runtime-world` / `runtime-scene` / `runtime-vocabulary` /
-//! `runtime-core`) and the style pipeline (`css`, `runtime-layout`)
-//! can share these modules WITHOUT depending on the old walker,
-//! `Element` wire tree, or `Backend` mega-trait.
+//! The modules the kernel's consumers (`runtime-scene` /
+//! `runtime-vocabulary` / `runtime-core`) and the style pipeline (`css`,
+//! `runtime-layout`) all share, with no dependency on any of them.
 //!
-//! `runtime-core` depends on this crate and re-exports everything at
-//! its old paths (`runtime_core::style`, `runtime_core::Signal`,
-//! `runtime_core::primitives::icon::IconData`, …), so old-core
-//! consumers compile unchanged. When the old core is deleted, this
-//! crate remains as the substrate under the new core.
+//! Authors reach these through `runtime_core::…` (`runtime_core::style`,
+//! `runtime_core::primitives::icon::IconData`, …), re-exported via
+//! `runtime_vocabulary::glue`.
 //!
 //! ## What lives here
 //!
@@ -23,16 +18,14 @@
 //!   `__face_source!`),
 //! - the animation system, touch/hover/wheel/file-drop event types and
 //!   gesture recognizers,
-//! - the LEGACY reactive arena (`Signal` / `Effect` / `Ref` /
-//!   `Reactive`). It lives here — not in the old core — because the
-//!   shared substrate is *built on it*: the viewport/breakpoint/
-//!   safe-area signals, the style engine's reactive sources, the
-//!   animation bindings, session timers, and the robot watch registry
-//!   all create and own arena slots. Moving the modules without their
-//!   arena would have required forking every one of those TLS
-//!   authorities (the state-split hazard). The arena is transitional
-//!   here: when the old core dies and the last arena consumer migrates
-//!   to `runtime-world`, it can be dropped from this crate.
+//! - the substrate's own reactive arena (`Signal` / `Effect` / `Ref` /
+//!   `Reactive`), separate from the `runtime-world` kernel. The shared
+//!   substrate is *built on it*: the viewport/breakpoint/safe-area
+//!   signals, the style engine's reactive sources, the animation
+//!   bindings, session timers, and the robot watch registry all create
+//!   and own arena slots, so these modules cannot move without it (a
+//!   second copy would fork every one of those TLS authorities). It can
+//!   be dropped once its last consumer moves to `runtime-world`.
 //! - scheduling / time / session, viewport + breakpoint + safe-area
 //!   TLS state, logging, debug phase counters,
 //! - the host-registry surface (`host`): `Platform`, `ColorScheme`,
@@ -41,24 +34,23 @@
 //! - the robot automation registry + bridge, native introspection,
 //! - the per-primitive prop/handle STRUCTS (`primitives::*`,
 //!   `handles`): handles, Ops traits, payload/data types — NOT the
-//!   `Element`/`Bound` builder fns, which stay with the walker.
+//!   builder fns, which live in `runtime-vocabulary`.
 //!
 //! ## What deliberately does NOT live here
 //!
-//! The old-core walker, `Element`, the `Backend` trait, the
-//! `Bound`/builder authoring layer, `external`, and the compile-checked
-//! `recipes` (they exercise the old author surface by name). Those stay
-//! in `runtime-core` until it is deleted.
+//! `Element` and realization (`runtime-scene`), the `Host` seam and the
+//! capability traits, builtin handlers and builder authoring layer
+//! (`runtime-scene` / `runtime-vocabulary`).
 //!
 //! ## TLS-authority rule
 //!
 //! Every thread-local in this crate has exactly ONE definition — this
-//! crate's. `runtime-core` re-exports, never duplicates: a second copy
-//! of (say) the viewport signal or the touch-claim slot would silently
-//! split state between the two cores.
+//! crate's. Crates above re-export, never duplicate: a second copy of
+//! (say) the viewport signal or the touch-claim slot would silently
+//! split state.
 
 /// Panic with an actionable diagnostic in dev builds and a terse stable
-/// code in release builds. (Same-shaped sibling of runtime-core's
+/// code in release builds. (Same-shaped sibling of runtime-world's
 /// `diag_panic!` — each crate carries its own copy because the macro is
 /// crate-internal by design; it expands to a plain `panic!`, so there
 /// is no shared-state hazard in the duplication.)
@@ -139,7 +131,7 @@ pub mod driver;
 
 // `resource()` / `mutation()` / `async_reducer()` / `NetworkState` —
 // async data as reactive primitives, gated with the driver they spawn
-// through (same gates as the old core).
+// through.
 #[cfg(feature = "async-driver")]
 #[doc(hidden)]
 pub mod resource;
@@ -157,10 +149,9 @@ pub mod network_state;
 pub mod debug;
 
 // No-op `debug` shim when `debug-stats` is off — the reactive arena
-// calls these unconditionally, and runtime-core / macro-emitted code
-// resolves them through its re-export. Mirrors the real fns in
-// `debug.rs`; each inlines to nothing. (See runtime-core's Cargo.toml
-// for the cross-graph feature-unification rationale.)
+// calls these unconditionally, and macro-emitted code resolves them
+// through `runtime_core::debug` (glue's re-export). Mirrors the real fns
+// in `debug.rs`; each inlines to nothing.
 #[cfg(not(feature = "debug-stats"))]
 pub mod debug {
     /// No-op: component enter instrumentation is compiled out when
@@ -186,18 +177,17 @@ pub mod debug {
 
 // Core-primitive usage recipes as static catalog data (see the module
 // docs for why they are text + `include_str!` here rather than
-// compiled `recipe!` fns in runtime-core). The compile gate for the
-// snippet sources lives in `crates/dev/newcore-app` (dual-core).
+// compiled `recipe!` fns). The compile gate for the snippet sources
+// lives in `crates/dev/newcore-app`.
 #[cfg(feature = "catalog")]
 pub mod recipes;
 
 #[cfg(feature = "robot")]
 pub mod robot;
 
-/// Stub `robot` surface compiled when the `robot` feature is OFF.
-/// Same contract as the old runtime-core stub (which now re-exports
-/// this one): the names macro-emitted registrations reference must
-/// exist in every build, as zero-work no-ops.
+/// Stub `robot` surface compiled when the `robot` feature is OFF: the
+/// names macro-emitted registrations reference must exist in every
+/// build, as zero-work no-ops.
 #[cfg(not(feature = "robot"))]
 pub mod robot {
     use std::rc::Rc;
@@ -236,17 +226,15 @@ pub mod robot {
 }
 
 /// Re-export of `serde_json` for macro codegen (the `#[component]`
-/// `#[method]` registration paths) — moved here with the substrate;
-/// runtime-core re-exports it at the old `runtime_core::__serde_json`
-/// path.
+/// `#[method]` registration paths); reached as
+/// `runtime_core::__serde_json`.
 #[doc(hidden)]
 pub use serde_json as __serde_json;
 
 /// Re-export of `wasm-split` (published as `wasm-splitter`, aliased
 /// back via `package =`) so the `#[component(lazy)]` glue can reach the
 /// `#[wasm_split]` attribute without every author crate declaring the
-/// dep. Moved here with the anchor set; runtime-core re-exports it at
-/// the old `runtime_core::__wasm_split` path.
+/// dep; reached as `runtime_core::__wasm_split`.
 #[doc(hidden)]
 pub use wasm_split as __wasm_split;
 
@@ -258,8 +246,16 @@ pub use reactive::{__component_build_probe, ComponentBuildProbe};
 #[doc(hidden)]
 pub use reactive::__take_untracked_build_read_warnings;
 
-/// SipHash-free `HashMap`/`HashSet` for framework-internal collections
-/// (see runtime-core's original rationale — moved verbatim).
+/// SipHash-free `HashMap`/`HashSet` for framework-internal collections,
+/// re-exported so backends share one hasher choice without their own
+/// `rustc-hash` dep line. std's default `RandomState` costs ~11 KB of
+/// SipHash machinery in every wasm bundle for DoS resistance these maps
+/// don't need: they're keyed by framework-minted ids, node pointers, and
+/// author-authored strings — never attacker-controlled input — and on
+/// `wasm32-unknown-unknown` the "random" seed has no OS entropy source
+/// anyway. Maps in **public API signatures** (route params, debug-stats
+/// summaries) deliberately stay `std::collections::HashMap` so author
+/// code sees the ordinary type.
 pub use rustc_hash::{FxHashMap, FxHashSet};
 
 pub use assets::{
@@ -351,15 +347,16 @@ pub use reactive::{
 #[doc(hidden)]
 pub use reactive::__component_keepalive_effect;
 
-/// Run `f` with the reactive scope-ownership stack emptied — see the
-/// original runtime-core docs (moved verbatim): use for global caches
-/// whose first access might land in a transient scope.
+/// Run `f` with the reactive scope-ownership stack emptied: signals and
+/// effects created inside live until the thread exits instead of being
+/// adopted by the surrounding scope. Use for global caches whose first
+/// access might land in a transient scope.
 pub fn unscope<R>(f: impl FnOnce() -> R) -> R {
     reactive::unscope(f)
 }
 
-/// Creates a signal — the canonical creation form. (Legacy-arena
-/// `Signal`; the new core's `signal()` lives in `runtime-world`.)
+/// Creates a signal in this crate's arena. (The author-facing
+/// `signal()` is `runtime-world`'s.)
 #[track_caller]
 pub fn signal<T: Clone + 'static>(value: T) -> Signal<T> {
     Signal::new(value)
@@ -390,8 +387,8 @@ pub use container_query::{
     container_axis_name, container_axis_threshold, CONTAINER_MIN_WIDTH_PREFIX,
 };
 // NOTE: `after_ms_scoped` / `raf_loop_scoped` are deliberately absent —
-// the old-arena scoped helpers are crate-internal (see their docs); the
-// author-facing versions are the vocabulary's newcore-anchored shadows.
+// this crate's arena-scoped helpers are crate-internal (see their docs);
+// the author-facing versions are the vocabulary's World-anchored ones.
 pub use scheduling::{
     after_animation_frame, after_ms, after_ms_detached, drain_buffered_microtasks,
     is_frame_active, raf_loop, schedule_microtask, set_frame_active, RafLoop, ScheduledTask,
@@ -431,8 +428,8 @@ pub use styled_text::{RunUnderline, TextRun, TextRunStyle, UnderlineStyle};
 pub use page_meta::{set_page_metadata, take_page_metadata, PageMetadata};
 
 /// Wraps an expression as a reactive prop value
-/// ([`Reactive::Dynamic`](crate::Reactive)) — see the original
-/// runtime-core docs (moved with the `Reactive` type it constructs).
+/// ([`Reactive::Dynamic`](crate::Reactive)) in this crate's arena. (The
+/// author-facing `runtime_core::rx!` is runtime-vocabulary's.)
 #[macro_export]
 macro_rules! rx {
     ($e:expr) => {
@@ -440,9 +437,9 @@ macro_rules! rx {
     };
 }
 
-/// Creates a **scope-owned** reactive effect (legacy arena) — expands
-/// to [`Effect::scoped`]. Moved with the arena; `runtime_core::effect!`
-/// re-exports it. See the original runtime-core docs.
+/// Creates a **scope-owned** reactive effect in this crate's arena —
+/// expands to [`Effect::scoped`]. (The author-facing
+/// `runtime_core::effect!` is runtime-vocabulary's.)
 #[macro_export]
 macro_rules! effect {
     ($body:expr) => {

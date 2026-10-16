@@ -5,7 +5,7 @@
 //! send than most work done with it: measured on 200k `u32`s sent to a host
 //! function that sorts them, per-element encoding took 339 ms where sorting
 //! in the bundle's own interpreted wasm took 182 ms, and one byte run took
-//! 17.8 ms (`showcase/app/src/bench.rs`, `sort_host*`). So a list of a
+//! 17.8 ms (`crates/streaming/showcase/app/src/bench.rs`, `sort_host*`). So a list of a
 //! [`Bulk`] type is its elements' little-endian bytes, back to back — a
 //! memcpy on both sides (wasm is little-endian, and so is every host the
 //! framework ships on; a big-endian one swaps per element).

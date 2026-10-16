@@ -11,11 +11,9 @@
 //! What lives here:
 //!
 //! - `Route<P>` + `RouteParams` — typed route declaration + URL ⇄ params.
-//! - `ScreenBuilder` / `RouteEntry` / `ParamsFromSegments` — type-erased
-//!   per-route registry the framework walks.
-//! - `Screen` + `MountResult` — what a screen builder returns, what
-//!   `mount_screen` hands back. SDK-defined options ride as
-//!   `Box<dyn Any>`.
+//! - `MountResult` — what mounting a screen hands back. SDK-defined
+//!   options ride as `Box<dyn Any>`. (The route registry and `Screen`
+//!   itself live in `runtime_vocabulary::prims::navigator`.)
 //! - `NavCommand` — the command channel. Built-in verbs cover the
 //!   common shapes (Push / Pop / Replace / Reset / Select); SDKs add
 //!   their own via `NavCommand::Custom(Rc<dyn Any>)`.
@@ -32,9 +30,6 @@
 //!   per-screen navigation state (query params) the screen render
 //!   closure reads to seed its signals. See the `query` module for the
 //!   `ScreenState` trait and why state is encoded as query params.
-//! - `NavigatorConfig` — the framework-owned routing config (initial
-//!   route, screen registry, defer flag). Kind-specific config lives
-//!   on the SDK's presentation payload.
 //! - `match_pattern` — pure-Rust URL-against-pattern matcher.
 
 use std::any::Any;
@@ -75,7 +70,10 @@ impl Drop for AmbientNavGuard {
 }
 
 /// Read the top of the ambient-navigator stack. `None` when called
-/// outside any navigator's `mount_screen`.
+/// outside any navigator's screen build. (The vocabulary's navigator
+/// handlers keep their own world contexts and push nothing here, so in a
+/// live app this — and `use_focus` / `use_can_go_back`, which read it —
+/// sees an empty stack.)
 pub fn ambient_navigator() -> Option<Rc<NavigatorControl>> {
     AMBIENT_NAV.with(|s| s.borrow().last().cloned())
 }
@@ -90,8 +88,8 @@ pub fn ambient_navigator() -> Option<Rc<NavigatorControl>> {
 // Entries hold a `Weak<NavigatorControl>` (the control is owned by the backend
 // instance + SDK handler; the registry must not keep it alive) and are removed
 // when the navigator's build scope drops (`deregister_navigator`, wired as an
-// `on_cleanup` in the walker — same lifetime as the navigator's robot element
-// entry). Robot-feature-gated: dead code in production builds.
+// `on_cleanup` by the navigator handler — same lifetime as the navigator's
+// robot element entry). Robot-feature-gated: dead code in production builds.
 
 /// Stable id for a navigator in the global registry. Cheap to copy.
 /// `pub` regardless of feature so `NavigatorControl`'s `nav_id` field type
@@ -116,7 +114,7 @@ struct NavRegEntry {
     /// the honest, kind-agnostic kind carrier (the framework can't know
     /// Stack vs Tab vs Drawer; the dashboard classifies from this string).
     type_name: &'static str,
-    /// Raw robot `ElementId` of this navigator's `Element::Navigator` entry,
+    /// Raw robot `ElementId` of this navigator's robot entry,
     /// so the inspector can `get_children` to read the current screen's
     /// elements. `None` if the robot element wasn't registered.
     element_id: Option<u32>,
@@ -148,7 +146,7 @@ pub struct NavSnapshot {
 }
 
 /// Register a freshly-built navigator. Returns its stable [`NavId`]; the
-/// walker stores it on the control via [`NavigatorControl::set_nav_id`] and
+/// caller stores it on the control via [`NavigatorControl::set_nav_id`] and
 /// arranges [`deregister_navigator`] on scope drop. If no navigator is yet
 /// marked current, this one becomes current (cold-start root).
 #[cfg(feature = "robot")]
@@ -287,8 +285,8 @@ fn build_nav_snapshot(
 
 /// Test-support: clear the registry between cases (it's thread-local, so
 /// this is just belt-and-suspenders for same-thread test ordering).
-/// Compiled under `robot` (not `cfg(test)`) because runtime-core's own
-/// tests also call it across the crate boundary during the transition.
+/// Compiled under `robot` (not `cfg(test)`) because tests in other crates
+/// call it across the crate boundary.
 #[cfg(feature = "robot")]
 #[doc(hidden)]
 pub fn nav_registry_reset() {
@@ -297,12 +295,11 @@ pub fn nav_registry_reset() {
 
 #[cfg(all(test, feature = "robot"))]
 mod nav_registry_tests {
-    //! Registry-level coverage. The SDK navigator *handlers* (stack/tab/
-    //! drawer) live in separate crates, so a full walker-driven mount isn't
-    //! reachable from runtime-core; these drive the registry API with a
-    //! hand-built `NavigatorControl` (the part this change owns) plus a
-    //! scope-drop test mirroring the walker's `on_cleanup` deregister wiring.
-    //! End-to-end walker registration is exercised by the inspector app.
+    //! Registry-level coverage. The navigator handlers live in
+    //! runtime-vocabulary, so a full mount isn't reachable from here; these
+    //! drive the registry API with a hand-built `NavigatorControl` plus a
+    //! scope-drop test mirroring the handler's `on_cleanup` deregister
+    //! wiring.
 
     use super::*;
     use crate::reactive::{with_scope, Scope, Signal};
@@ -419,7 +416,7 @@ mod nav_registry_tests {
         nav_registry_reset();
     }
 
-    /// Mirrors the walker's wiring: registration paired with an
+    /// Mirrors the navigator handler's wiring: registration paired with an
     /// `on_cleanup(deregister)` anchored to the navigator's build scope.
     /// When that scope drops (navigator unmounts / `when`-branch flips), the
     /// registry entry must be gone — no phantom navigator in the inspector.
@@ -429,7 +426,7 @@ mod nav_registry_tests {
         let (control, _ns_scope) = control_with_state("home", "/", 1, "");
 
         // The navigator's build scope (separate from the nav_state scope the
-        // control retains, exactly as in the walker).
+        // control retains).
         let mut build_scope = Box::new(Scope::new());
         let id = with_scope(&mut build_scope, || {
             let id = register_navigator(&control, "stack", None);
@@ -455,7 +452,7 @@ mod nav_registry_tests {
 // Navigators form a tree; each owns a URL PREFIX (its "base"). The root's
 // base is empty. When a navigator mounts a screen, it pushes `base +
 // route.path()` here for the duration of building that screen's body, so a
-// child `Element::Navigator` nested in that screen reads its own base. Route
+// child navigator nested in that screen reads its own base. Route
 // patterns are therefore RELATIVE to the navigator they're registered on; the
 // framework composes the full URL up the tree (`join_path`) and peels prefixes
 // down it (`match_prefix`). A single root navigator (base "") is unaffected:
@@ -695,20 +692,6 @@ impl<P: RouteParams> Route<P> {
         self.path
     }
 }
-
-// ---------------------------------------------------------------------------
-// ScreenBuilder + RouteEntry — type-erased per-route registry
-// ---------------------------------------------------------------------------
-
-
-
-
-// ---------------------------------------------------------------------------
-// Screen — what a route's render closure returns
-// ---------------------------------------------------------------------------
-
-
-
 
 /// Result of mounting a screen. `mount_screen` returns this so the
 /// SDK handler has the body node, the framework-owned scope id (used
@@ -970,9 +953,6 @@ pub trait NavigatorOps {}
 /// handler. Wraps the command dispatcher closure the SDK installs at
 /// `init` time, a depth cache the handle reads, and the reactive
 /// `NavState` mirror chrome subscribes to.
-// (was: cfg_attr(not(prim-navigator), allow(dead_code)) — the prim-*
-// gates live in runtime-core; in the shared crate the reachability
-// anchor is always the old walker or the new-core vocabulary.)
 #[allow(dead_code)]
 pub struct NavigatorControl {
     dispatch: RefCell<Option<Box<dyn Fn(NavCommand)>>>,
@@ -992,24 +972,24 @@ pub struct NavigatorControl {
     link_activator: RefCell<
         Option<Rc<dyn Fn(&'static str, String, Box<dyn Any>) -> NavCommand>>,
     >,
-    /// Backend-provided "schedule a layout pass" hook, registered ONCE by the
-    /// navigator walker (`|| B::schedule_layout_pass()`). `dispatch` calls it
-    /// after every command so a freshly-mounted screen is always laid out — the
-    /// guarantee lives here in the abstraction, not duplicated (and forgettable)
-    /// in each navigator×backend handler. `None` until the walker registers it.
+    /// Backend-provided "schedule a layout pass" hook, registered ONCE at
+    /// build (`|| B::schedule_layout_pass()`). `dispatch` calls it after
+    /// every command so a freshly-mounted screen is always laid out — the
+    /// guarantee lives here in the abstraction, not duplicated (and
+    /// forgettable) in each navigator×backend handler. `None` until registered.
     request_layout: RefCell<Option<Box<dyn Fn()>>>,
     /// Reactive scope owning this navigator's `nav_state` signals (and any
     /// other framework-owned per-navigator reactive state). The control is
     /// the navigator's true lifetime anchor — it's an `Rc` held by the
     /// backend instance and the SDK handler, so it outlives the *transient*
-    /// build scope that ran `build_navigator`.
+    /// build scope that built the navigator.
     ///
     /// `nav_state` MUST be anchored here, not to the ambient build scope: a
     /// nested navigator (e.g. a stack hung under a drawer screen) is often
     /// built inside a short-lived dispatch/microtask scope. If `nav_state`
     /// were owned by that scope, its signals would be freed when the scope
-    /// drops, and a later `active_route.set(...)` from `mount_internal` /
-    /// `on_popstate` would hit a recycled arena slot — "signal used after
+    /// drops, and a later `active_route.set(...)` from a screen mount or a
+    /// popstate would hit a recycled arena slot — "signal used after
     /// its scope was dropped" / type-mismatch. Owning the scope here ties
     /// the signals to the navigator's real lifetime: freed when the control
     /// drops on navigator teardown (leak-free), never sooner.
@@ -1030,11 +1010,11 @@ pub struct NavigatorControl {
     /// across backends (root-first, current last); only the mechanism
     /// differs (CLAUDE.md §7).
     stack_snapshot: RefCell<Option<Box<dyn Fn() -> Vec<(String, String)>>>>,
-    /// URL-sync context parked here by the walker (kind-agnostically) so a
+    /// URL-sync context parked here at build (kind-agnostically) so a
     /// handler can OPT IN to substrate URL synchronization via
     /// [`enable_url_sync`](Self::enable_url_sync). `None` after opt-in
-    /// (the context moves into the url_sync registry) or when the walker
-    /// never provided one (hand-built controls in tests).
+    /// (the context moves into the url_sync registry) or when none was
+    /// provided (hand-built controls in tests).
     url_sync_ctx: RefCell<Option<super::url_sync::UrlSyncContext>>,
     /// The url_sync registry id once [`enable_url_sync`](Self::enable_url_sync)
     /// activated; `dispatch` routes its before/after hooks through it.
@@ -1043,9 +1023,6 @@ pub struct NavigatorControl {
     url_sync_id: std::cell::Cell<Option<u64>>,
 }
 
-// (was: cfg_attr(not(prim-navigator), allow(dead_code)) — the prim-*
-// gates live in runtime-core; in the shared crate the reachability
-// anchor is always the old walker or the new-core vocabulary.)
 #[allow(dead_code)]
 impl NavigatorControl {
     pub fn new() -> Self {
@@ -1065,7 +1042,7 @@ impl NavigatorControl {
     }
 
     /// Park the URL-sync context for a possible handler opt-in. Called
-    /// once by the navigator walker at build; kind-agnostic and inert
+    /// once at build; kind-agnostic and inert
     /// until [`enable_url_sync`](Self::enable_url_sync).
     #[doc(hidden)]
     pub fn set_url_sync_context(&self, ctx: super::url_sync::UrlSyncContext) {
@@ -1076,7 +1053,7 @@ impl NavigatorControl {
     /// pushState/popstate mirroring, deep links, scroll restore). Called
     /// by outlet-model handlers (`swap-navigator`, `stack-navigator`)
     /// in `init`. No-op on platforms without an installed URL provider,
-    /// and for controls the walker gave no context (tests). Legacy
+    /// and for controls given no context (tests). Legacy
     /// class-based handlers must NOT call this — they do their own URL
     /// work and would double-write history.
     pub fn enable_url_sync(self: &Rc<Self>) {
@@ -1103,16 +1080,16 @@ impl NavigatorControl {
 
     /// Retain the reactive scope that owns this navigator's `nav_state`
     /// signals so they live for the control's lifetime, not the transient
-    /// build scope's. Called once from `walker::navigator::build` right
-    /// after the scope-anchored `nav_state` is constructed. See the
+    /// build scope's. Call once at build, right after the scope-anchored
+    /// `nav_state` is constructed. See the
     /// `owning_scope` field doc for why this anchoring is required.
     #[doc(hidden)]
     pub fn retain_scope(&self, scope: Box<crate::reactive::Scope>) {
         *self.owning_scope.borrow_mut() = Some(scope);
     }
 
-    /// Set this navigator's hierarchy base prefix. Called once at build
-    /// from the navigator walker with [`current_nav_base`]. Empty for the
+    /// Set this navigator's hierarchy base prefix. Call once at build
+    /// with [`current_nav_base`]. Empty for the
     /// root; e.g. `/encounters` for a stack nested under that drawer screen.
     pub fn set_base(&self, base: String) {
         *self.base.borrow_mut() = base;
@@ -1123,8 +1100,8 @@ impl NavigatorControl {
         self.base.borrow().clone()
     }
 
-    /// Wire the framework's reactive nav-state mirror. Called once
-    /// from `walker::navigator::build` before `install`.
+    /// Wire the framework's reactive nav-state mirror. Call once at
+    /// build, before `install`.
     pub fn attach_nav_state(&self, nav_state: NavState) {
         *self.nav_state.borrow_mut() = Some(nav_state);
     }
@@ -1135,8 +1112,8 @@ impl NavigatorControl {
         *self.dispatch.borrow_mut() = Some(dispatch);
     }
 
-    /// Register the backend's "schedule a layout pass" hook. Called once by the
-    /// navigator walker with `|| B::schedule_layout_pass()`. After this, every
+    /// Register the backend's "schedule a layout pass" hook. Call once at
+    /// build with `|| B::schedule_layout_pass()`. After this, every
     /// [`dispatch`](Self::dispatch) guarantees a layout pass — so no
     /// navigator×backend handler has to (and none can forget to).
     pub fn install_request_layout(&self, f: Box<dyn Fn()>) {
@@ -1184,8 +1161,8 @@ impl NavigatorControl {
         *self.depth.borrow()
     }
 
-    /// Record this navigator's global-registry id. Called once at build
-    /// from `walker::navigator::build` after [`register_navigator`].
+    /// Record this navigator's global-registry id. Call once at build,
+    /// after [`register_navigator`].
     pub fn set_nav_id(&self, id: NavId) {
         *self.nav_id.borrow_mut() = Some(id);
     }
@@ -1409,9 +1386,7 @@ pub enum NavCommand {
     /// SDK-specific command. The payload is downcast by the SDK
     /// handler's dispatcher to its expected type. Used for verbs the
     /// built-in variants don't cover (drawer Open/Close/Toggle, a
-    /// multi-pane SDK's SplitFocus, etc.). Wire-protocol-aware SDKs
-    /// register a serde pair via `register_navigator_command_serde`
-    /// so `Custom` payloads round-trip across dev-mode wire frames.
+    /// multi-pane SDK's SplitFocus, etc.).
     Custom(Rc<dyn Any>),
 }
 
@@ -1477,7 +1452,7 @@ pub fn screen_state<S: ScreenState>() -> Option<S> {
 }
 
 // ---------------------------------------------------------------------------
-// Per-screen route name stack — pushed by the walker at mount time
+// Per-screen route name stack — pushed by the navigator handler at mount time
 // so author code inside a screen build can ask "what route am I?"
 // without plumbing the name through every component.
 // ---------------------------------------------------------------------------
@@ -1489,7 +1464,7 @@ thread_local! {
 
 /// RAII guard pushed around each screen build alongside
 /// [`ScreenStateGuard`]. SDK handlers don't construct these directly;
-/// the framework's `mount_screen` does.
+/// the framework's navigator handler does.
 pub struct ScreenRouteGuard;
 
 impl ScreenRouteGuard {
@@ -1526,7 +1501,7 @@ pub fn current_screen_route() -> Option<&'static str> {
 /// focus changes:
 ///
 /// ```ignore
-/// use runtime_core::primitives::navigator::use_focus;
+/// use runtime_shared::primitives::navigator::use_focus;
 ///
 /// let is_focused = use_focus();
 /// effect!(move || {
@@ -1564,7 +1539,7 @@ pub fn use_focus() -> impl Fn() -> bool + 'static {
 /// pop, or a native back gesture).
 ///
 /// ```ignore
-/// use runtime_core::primitives::navigator::use_can_go_back;
+/// use runtime_shared::primitives::navigator::use_can_go_back;
 ///
 /// let can_go_back = use_can_go_back();
 /// // e.g. show a root-only FAB while at the stack root:
@@ -1596,7 +1571,7 @@ pub fn use_can_go_back() -> impl Fn() -> bool + 'static {
 // Headless initial-path override (server-side rendering).
 //
 // A backend rendering headlessly at a specific URL (the SSR backend
-// emitting "/about") sets this before `mount`. The navigator walker's
+// emitting "/about") sets this before `mount`. The navigator handler's
 // initial mount consults it once: if the path resolves to a registered
 // route, that screen is mounted instead of the hardcoded `initial`, and
 // the nav-state is synced so any chrome reads the right route. `take`
@@ -1618,8 +1593,8 @@ pub fn set_initial_path(path: Option<String>) {
     INITIAL_PATH.with(|p| *p.borrow_mut() = path);
 }
 
-/// Consume the headless initial-path override, if any. Called by the
-/// navigator walker at initial mount.
+/// Consume the headless initial-path override, if any. (The navigator
+/// handler reads it non-consumingly via [`peek_initial_path`].)
 pub fn take_initial_path() -> Option<String> {
     INITIAL_PATH.with(|p| p.borrow_mut().take())
 }
@@ -1640,14 +1615,13 @@ pub fn peek_initial_path() -> Option<String> {
 // ---------------------------------------------------------------------------
 //
 // The SSG driver (in `backend-ssr`) enables this before each
-// `render_path` call. Every `Element::Navigator` the walker dispatches
-// publishes its `RouteEntry.path` set to the collector. After mount,
+// `render_path` call. Every navigator the vocabulary mounts publishes its
+// route paths to the collector (`record_route_paths`). After mount,
 // the driver drains discovered paths, queues unrendered literals, and
 // loops — so nested navigators (a drawer with a stack inside) get their
 // routes harvested when the parent screen mounts.
 //
-// Live backends never enable this. The hook is a single `with_collector`
-// check in `dispatch_navigator`; when no collector is set the call is a
+// Live backends never enable this; when no collector is set the hook is a
 // thread-local borrow + branch, no allocation.
 
 thread_local! {
@@ -1673,11 +1647,10 @@ pub fn take_route_collector() -> Option<Vec<&'static str>> {
 }
 
 
-/// Path-iterator form of [`record_routes`] — the hook the NEW core's
-/// vocabulary navigator handlers fire at mount (their `NavConfig` is a
-/// vocabulary type this old-core module can't name, but the collector
-/// and the crawl driver are shared across both cores, so both publish
-/// through this one thread-local). A no-op when the collector is off.
+/// Publish a navigator's route paths to the route collector — the hook
+/// the vocabulary navigator handlers fire at mount (their `NavConfig` is
+/// a vocabulary type this crate can't name, so they pass the paths). A
+/// no-op when the collector is off.
 pub fn record_route_paths<I: IntoIterator<Item = &'static str>>(paths: I) {
     ROUTE_COLLECTOR.with(|c| {
         if let Some(buf) = c.borrow_mut().as_mut() {
@@ -1716,8 +1689,8 @@ pub struct NavState {
 /// below) by absorbing the remaining space.
 ///
 /// Authors override by styling the navigator element itself
-/// (`.with_style(...)` on the SDK builder) — the walker applies that style
-/// AFTER `init`, onto the same root node, so it wins.
+/// (`.with_style(...)` on the SDK builder) — the navigator handler applies
+/// that style AFTER `init`, onto the same root node, so it wins.
 ///
 /// The explicit `flex_direction: Column` is **load-bearing on web**: the CSS
 /// emitter only promotes a class to `display: flex` when the rules carry a
@@ -1752,7 +1725,8 @@ pub fn navigator_fill_rules() -> Rc<crate::style::StyleRules> {
 /// direction makes the contract visible rather than inherited.
 ///
 /// Opt out by styling the outlet itself: `ctx.outlet.with_style(...)` (the
-/// walker uses the author style INSTEAD of this default when one is set).
+/// navigator handler uses the author style INSTEAD of this default when one
+/// is set).
 pub fn outlet_fill_rules() -> crate::style::StyleRules {
     use crate::style::Length;
     crate::style::StyleRules {
@@ -1777,13 +1751,11 @@ pub fn outlet_fill_rules() -> crate::style::StyleRules {
 /// matters where unset position lowers to CSS `static`.
 ///
 /// This is the single source of the container's styling: the stack SDK
-/// installs it as the `Element::Navigator` default style (when the
-/// author sets none), the walker applies it through the normal style
-/// pipeline, and web + SSR therefore resolve the identical
-/// content-hashed class — the replacement for the previously injected
-/// `.ui-nav-root { … }` class rule. An author `.with_style(...)` on the
-/// navigator element replaces it wholesale (same contract as before);
-/// a restyled container should re-declare its size and position.
+/// installs it as the navigator's default style (when the author sets
+/// none), it applies through the normal style pipeline, and web + SSR
+/// therefore resolve the identical content-hashed class. An author
+/// `.with_style(...)` on the navigator element replaces it wholesale; a
+/// restyled container should re-declare its size and position.
 pub fn stack_container_rules() -> Rc<crate::style::StyleRules> {
     use crate::style::Length;
     Rc::new(crate::style::StyleRules {
@@ -1797,20 +1769,14 @@ pub fn stack_container_rules() -> Rc<crate::style::StyleRules> {
 
 /// Full-bleed placement for a screen mounted directly into the stack
 /// container (no author layout): absolute, pinned to all four edges of
-/// the [`stack_container_rules`] box. Handlers request it via
-/// [`NavigatorHost::set_screen_style_overlay`](super::host::NavigatorHost::set_screen_style_overlay),
-/// which layers it onto each screen root's style **override** layer —
-/// the style-system replacement for the injected
-/// `.ui-nav-screen { position:absolute!important; inset:0!important }`
-/// class: the override layer resolves last, so the pin wins over the
-/// screen's own position rules deterministically instead of via CSS
-/// `!important` against stylesheet source order.
+/// the [`stack_container_rules`] box, layered onto each screen root's
+/// style **override** layer: the override layer resolves last, so the
+/// pin wins over the screen's own position rules deterministically
+/// instead of via CSS `!important` against stylesheet source order.
 ///
 /// No width/height on purpose: with all four edges pinned and auto
 /// size, the box stretches to the container — and a screen that sets
-/// its own width/height keeps it (matching the legacy rule, whose
-/// `width/height:100%` was NOT `!important` precisely so authors could
-/// override it).
+/// its own width/height keeps it.
 pub fn stack_screen_fill_rules() -> Rc<crate::style::StyleRules> {
     use crate::style::Length;
     Rc::new(crate::style::StyleRules {
@@ -1824,17 +1790,15 @@ pub fn stack_screen_fill_rules() -> Rc<crate::style::StyleRules> {
 }
 
 /// Flow-fill placement for a screen mounted as the outlet's sole child (the
-/// outlet-model handlers' `clear_children` + `insert_node` swap): stretch to
+/// outlet-model handlers' `clear_children` + insert swap): stretch to
 /// exactly the outlet's box — `flex: 1 1 0` fills when the content is
 /// smaller AND pins the screen to the outlet height when it's taller (its
 /// own scroll surfaces then scroll), `min-height: 0` keeps tall content from
-/// blowing the column open, `width: 100%` covers the cross axis. This is the
-/// outlet-model successor of the legacy `.ui-nav-screen { width/height:100% }`
-/// class: without it a screen that sizes itself with `flex_grow` (a canvas
+/// blowing the column open, `width: 100%` covers the cross axis. Without it a
+/// screen that sizes itself with `flex_grow` (a canvas
 /// board, a fill-the-viewport editor) collapses to content height inside the
-/// outlet. Applied through the screen root's style OVERRIDE layer
-/// ([`NavigatorHost::set_screen_style_overlay`](super::host::NavigatorHost::set_screen_style_overlay)),
-/// so it composes with the screen's own styles and wins deterministically.
+/// outlet. Applied through the screen root's style OVERRIDE layer, so it
+/// composes with the screen's own styles and wins deterministically.
 pub fn screen_flow_fill_rules() -> Rc<crate::style::StyleRules> {
     use crate::style::Length;
     Rc::new(crate::style::StyleRules {
@@ -1854,7 +1818,7 @@ pub fn screen_flow_fill_rules() -> Rc<crate::style::StyleRules> {
 /// hydrating web client can locate the server-rendered container node
 /// (`WebBackend::hydrate_adopt_container`) regardless of what styled
 /// class the container resolved to. The SSR stack chrome handler stamps
-/// it via `Backend::attach_html_class`; the live client never renders
+/// it via `DocumentOps::attach_html_class`; the live client never renders
 /// it into fresh DOM.
 pub const NAV_ROOT_HYDRATION_CLASS: &str = "idealyst-nav-root";
 
@@ -1914,9 +1878,8 @@ impl HeaderButton {
     }
 }
 
-/// The ACTIVE screen's header slots — the payload the stack navigator stores in
-/// [`NavigatorHost::screen_chrome`](super::host::NavigatorHost::screen_chrome)
-/// on every navigation. The native bar (mobile) or an author `StackHeader`
+/// The ACTIVE screen's header slots — the payload the stack navigator stores
+/// as its screen chrome on every navigation. The native bar (mobile) or an author `StackHeader`
 /// (web/desktop) renders from it.
 #[derive(Clone, Default)]
 pub struct StackHeaderState {
@@ -1934,8 +1897,8 @@ pub struct StackHeaderState {
     pub native: bool,
 }
 
-/// Per-screen navigation context, `provide`d into each screen's scope by
-/// `mount_screen` and `inject`ed by the portal build path (`walker::portal`).
+/// Per-screen navigation context, `provide`d into each screen's scope at
+/// screen mount and `inject`ed by the portal build path.
 ///
 /// A portal (modal / popover / tooltip / its click-away catcher) escapes its
 /// screen's view tree to mount on the window, so it doesn't get detached when
@@ -1954,12 +1917,6 @@ pub struct ScreenNav {
     pub route: &'static str,
 }
 
-// ---------------------------------------------------------------------------
-// NavigatorConfig — shared, kind-agnostic routing config
-// ---------------------------------------------------------------------------
-
-
-
 #[cfg(test)]
 mod nav_state_lifetime_tests {
     //! Regression: a navigator's `nav_state` signals must outlive the
@@ -1967,13 +1924,12 @@ mod nav_state_lifetime_tests {
     //!
     //! A nested navigator (e.g. a stack hung under a drawer screen, reached
     //! via a sidebar `on_select`) is built inside a short-lived
-    //! dispatch/microtask scope. The walker creates `nav_state` in a DEDICATED
+    //! dispatch/microtask scope. `nav_state` must live in a DEDICATED
     //! scope retained on the long-lived `NavigatorControl` (an `Rc`) rather
-    //! than letting the ambient build scope own it. Before that fix, the
-    //! ambient scope owned the signals; when it dropped, a later
-    //! `active_route.set(...)` from `mount_internal` / `on_popstate` hit a
-    //! freed arena slot and panicked — the QuillEMR forward/back nested-stack
-    //! crash ("signal used after its scope was dropped" / type mismatch).
+    //! than in the ambient build scope: if the ambient scope owns the
+    //! signals, then once it drops a later `active_route.set(...)` from a
+    //! screen mount or popstate hits a freed arena slot and panics — the
+    //! forward/back nested-stack crash ("signal used after its scope was dropped" / type mismatch).
 
     use super::*;
     use crate::reactive::{with_scope, Scope, Signal};
@@ -1993,8 +1949,7 @@ mod nav_state_lifetime_tests {
     fn nav_state_survives_transient_build_scope() {
         let control = NavigatorControl::new();
 
-        // Build INSIDE a transient ambient scope, mirroring the walker: the
-        // nav_state lives in its own scope handed to the control, never the
+        // Build INSIDE a transient ambient scope: the nav_state lives in its own scope handed to the control, never the
         // ambient one.
         let mut ambient = Box::new(Scope::new());
         let nav_state = with_scope(&mut ambient, || {
@@ -2009,7 +1964,8 @@ mod nav_state_lifetime_tests {
         // dispatch/microtask that triggered the nested-nav build returns.
         drop(ambient);
 
-        // Pre-fix this panicked "signal used after its scope was dropped".
+        // With the ambient scope as owner this panicked "signal used after
+        // its scope was dropped".
         nav_state.active_route.set("detail");
         nav_state.active_path.set("/detail".to_string());
         assert_eq!(nav_state.active_route.get(), "detail");
@@ -2020,22 +1976,20 @@ mod nav_state_lifetime_tests {
         drop(control);
     }
 
-    /// COUNTER-TEST pinning the bug shape: the OLD layout (nav_state owned
-    /// by the ambient build scope) is still wrong once that scope drops —
-    /// the write is lost. But generational signal handles have downgraded
-    /// it from a process-aborting panic ("signal used after its scope was
-    /// dropped" / "type mismatch" → SIGABRT across the JNI boundary) to a
-    /// SILENT NO-OP. The real fix is still the dedicated retained scope,
-    /// proven by `nav_state_survives_transient_build_scope`; this pins the
-    /// new, crash-free behavior so a regression can't reintroduce the
-    /// abort.
+    /// COUNTER-TEST pinning the bug shape: nav_state owned by the ambient
+    /// build scope is still wrong once that scope drops — the write is
+    /// lost — but generational signal handles make it a SILENT NO-OP
+    /// rather than a process-aborting panic ("signal used after its scope
+    /// was dropped" / "type mismatch" → SIGABRT across the JNI boundary).
+    /// The real fix is the dedicated retained scope, proven by
+    /// `nav_state_survives_transient_build_scope`; this pins the
+    /// crash-free behavior so a regression can't reintroduce the abort.
     #[test]
     fn nav_state_owned_by_build_scope_stale_write_is_noop_not_panic() {
         let mut ambient = Box::new(Scope::new());
         let nav_state = with_scope(&mut ambient, fresh_nav_state);
         drop(ambient); // frees the signals — the old bug
-        // Pre-generational-handles this aborted the whole app. Now the
-        // stale write is a safe no-op.
+        // The stale write is a safe no-op, not an abort.
         nav_state.active_route.set("detail"); // must NOT panic
         nav_state.depth.set(2); // must NOT panic
     }
@@ -2046,7 +2000,7 @@ mod layout_pass_contract_tests {
     //! The navigator abstraction must schedule a layout pass after EVERY
     //! command, in ONE place — so no navigator×backend handler has to remember
     //! to (the recurring "navigated, but the new screen renders at 0×0" bug;
-    //! the Android stack handler forgot it). The walker registers
+    //! the Android stack handler forgot it). The build registers
     //! `|| B::schedule_layout_pass()` as the request-layout hook; this proves
     //! `dispatch` invokes it for every command shape, and that a backend which
     //! opts out (default no-op) is safe.

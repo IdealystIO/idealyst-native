@@ -214,15 +214,14 @@ impl Window {
     /// [`cancel_animation_frame`](Self::cancel_animation_frame).
     ///
     /// Frame and timer handles are opaque JS numbers carried as `f64` and
-    /// handed back verbatim. They used to be `i32` (web-sys's type, after
-    /// the spec's `long`), but a host may issue ids outside that range:
-    /// Playwright's `page.clock` — installed by `clock.install()` AND by
-    /// `clock.setFixedTime()` — numbers its fake timers from `1e12`. The
-    /// wasm boundary ToInt32-truncated that id, the cancel named a timer the
-    /// clock never issued, and the callback fired into its dropped
-    /// `Closure` ("called after its Rust owner dropped it" — the camera
-    /// pump's teardown in the CrewForge kiosk e2e). An `f64` holds every
-    /// integer a JS host can return exactly.
+    /// handed back verbatim. Not `i32` (web-sys's type, after the spec's
+    /// `long`): a host may issue ids outside that range — Playwright's
+    /// `page.clock` (`clock.install()` AND `clock.setFixedTime()`) numbers
+    /// its fake timers from `1e12`. An `i32` boundary ToInt32-truncates
+    /// that id, the cancel names a timer the clock never issued, and the
+    /// callback fires into its dropped `Closure` ("called after its Rust
+    /// owner dropped it"). An `f64` holds every integer a JS host can
+    /// return exactly.
     pub fn request_animation_frame(&self, f: &Closure) -> f64 {
         unsafe { js_raf(self.0.raw(), f.as_js().raw()) }
     }

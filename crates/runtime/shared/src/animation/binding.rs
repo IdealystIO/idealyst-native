@@ -2,13 +2,9 @@
 //! mounted primitive without any per-platform glue code in author
 //! land.
 //!
-//! Before this module existed, authors had to write a `drive_av`
-//! helper that subscribed to the value, downcast the type-erased
-//! `Ref<H>` node to each backend's concrete node type via
-//! `#[cfg(target_arch = "wasm32")]` / `#[cfg(target_os = "ios")]` /
-//! `#[cfg(target_os = "android")]` blocks, and dispatched to that
-//! backend's `set_animated_*` free function. That's plumbing the
-//! framework should own — and now does. The flow:
+//! The framework owns the per-backend plumbing (subscribe, downcast the
+//! type-erased node, call the backend's `set_animated_*` writer), so
+//! author code needs no per-platform `cfg` blocks. The flow:
 //!
 //! 1. Author: `av.bind(view_ref, AnimProp::Opacity)`.
 //! 2. Framework subscribes to `av`. On each fire it calls
@@ -62,8 +58,8 @@ impl AnimatedValue<f32> {
     /// `prop` (one of `AnimProp::Opacity`, `Scale`, `ScaleX/Y`,
     /// `TranslateX/Y`, `RotateZ`) on whichever backend is active.
     ///
-    /// Until the ref is filled (the build walker hasn't mounted the
-    /// view yet), writes silently skip; once mounted, every frame
+    /// Until the ref is filled (realize hasn't mounted the view yet),
+    /// writes silently skip; once mounted, every frame
     /// applies. The subscription + a strong AV handle are anchored
     /// to the active reactive scope — see the module docs for
     /// lifetime semantics.
@@ -78,7 +74,7 @@ impl AnimatedValue<f32> {
             drop(av_clone);
         });
         // Re-apply the current value once, just after mount. See
-        // [`reapply_after_mount_note`].
+        // `_REAPPLY_AFTER_MOUNT_NOTE`.
         let av = self.clone();
         crate::scheduling::after_ms_scoped(0, move || {
             target.with(|handle| handle.set_animated_f32(prop, av.get()));
@@ -86,7 +82,7 @@ impl AnimatedValue<f32> {
     }
 }
 
-/// ## `reapply_after_mount_note`
+/// Why every `bind*` re-applies after mount.
 ///
 /// Each `bind*` schedules a 0-delay scoped re-apply of its CURRENT value after
 /// `subscribe_and_apply`. Why: `subscribe_and_apply` writes the starting value
@@ -98,7 +94,7 @@ impl AnimatedValue<f32> {
 /// macOS leaves a transform-positioned view stuck at frame (0,0) until something
 /// else moves it; web/iOS happen to land it but the gap is the same.
 ///
-/// The deferred task runs once the build walker has filled the ref (a 0-delay
+/// The deferred task runs once realize has filled the ref (a 0-delay
 /// task fires on the next loop turn). It WRITES the value via `set_animated_*`
 /// WITHOUT going through `AnimatedValue::set`, so an in-flight animation's
 /// animator is untouched, and it's idempotent where the first apply already
@@ -123,7 +119,7 @@ impl AnimatedValue<(f32, f32, f32, f32)> {
             drop(sub);
             drop(av_clone);
         });
-        // Re-apply the current value after mount — see `reapply_after_mount_note`.
+        // Re-apply the current value after mount — see `_REAPPLY_AFTER_MOUNT_NOTE`.
         let av = self.clone();
         crate::scheduling::after_ms_scoped(0, move || {
             let (r, g, b, a) = av.get();
@@ -160,7 +156,7 @@ impl AnimatedValue<(f32, f32, f32, f32)> {
             drop(sub);
             drop(av_clone);
         });
-        // Re-apply the current value after mount — see `reapply_after_mount_note`.
+        // Re-apply the current value after mount — see `_REAPPLY_AFTER_MOUNT_NOTE`.
         let av = self.clone();
         crate::scheduling::after_ms_scoped(0, move || {
             let (r, g, b, a) = av.get();
@@ -172,20 +168,17 @@ impl AnimatedValue<(f32, f32, f32, f32)> {
 #[cfg(test)]
 mod tests {
     //! Regression coverage for hot-patch rerender + `Ref` slot
-    //! recycling. Pre-fix, `bind()` `mem::forget`'d its
-    //! `Subscription` so the AV's listener list grew by one per
-    //! rerender. Slot recycling is LIFO, so on the second mount
-    //! the slot that used to back a `Ref<TextHandle>` ends up
-    //! holding a `Ref<ViewHandle>` (or vice versa). The
-    //! still-leaked subscription captured the old `Ref<H>`, so its
-    //! per-frame `target.with(|h: &H| ...)` would panic with
-    //! `internal: ref handle type mismatch` on the first animator
-    //! tick after rerender — aborting the entire animation tick
-    //! and silently halting every raf-driven animation in the
-    //! scene. The fix anchors the `Subscription` (and the AV's
-    //! strong handle) to the active scope via [`on_cleanup`] so
-    //! old subscriptions are gone before the new mount's bind()
-    //! runs.
+    //! recycling. A `Subscription` that outlives its scope grows the
+    //! AV's listener list by one per rerender. Slot recycling is LIFO,
+    //! so on the second mount the slot that backed a `Ref<TextHandle>`
+    //! ends up holding a `Ref<ViewHandle>` (or vice versa); a leaked
+    //! subscription holding the previous `Ref<H>` panics with
+    //! `internal: ref handle type mismatch` on the first animator tick
+    //! after rerender — aborting the entire animation tick and silently
+    //! halting every raf-driven animation in the scene. `bind()` anchors
+    //! the `Subscription` (and the AV's strong handle) to the active
+    //! scope via [`on_cleanup`] so the previous mount's subscriptions are
+    //! gone before the new mount's bind() runs.
     use super::*;
     use crate::animation::AnimatedValue;
     use crate::reactive::{with_scope, Scope};
@@ -360,7 +353,7 @@ mod tests {
         // never reached the backend, because `subscribe_and_apply`'s one-time
         // write happens at bind() time when the ref is still empty. On macOS that
         // left transform-positioned views stuck at (0,0) until an interaction.
-        // The fix schedules a re-apply after mount (see `reapply_after_mount_note`);
+        // `bind` schedules a re-apply after mount (see `_REAPPLY_AFTER_MOUNT_NOTE`);
         // it writes a SECOND time so the value lands even with no change.
         //
         // We observe it inline via the no-scheduler SYNCHRONOUS fallback

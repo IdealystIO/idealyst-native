@@ -232,17 +232,12 @@ fn emit_component(
         }
     }
 
-    // `new-core` deferrals: primitives whose subsystems haven't migrated
-    // fail loudly with their migration phase (repo rule: no silent scope
-    // cuts). Everything else lowers through the vocabulary glue —
-    // including `overlay` / `anchored_overlay` / `presence` / `graphics`
-    // / `flat_list`, whose glue wrappers
-    // (`glue::primitives::{overlay,presence,graphics,flat_list}`) landed
-    // with the P3-set handlers; their emissions below retarget unchanged.
-    // (`web_view` left the deferral list with the P6 External-SDK wave:
-    // it was never a first-party primitive — the WebView SDK now ships
-    // the `WebView` tag contract itself, so both cores emit ordinary
-    // component dispatch. See `canonical_primitive`'s note.)
+    // Every primitive lowers through the vocabulary glue — including
+    // `overlay` / `anchored_overlay` / `presence` / `graphics` /
+    // `flat_list` (`glue::primitives::{overlay,presence,graphics,
+    // flat_list}`). `web_view` is not a first-party primitive: the WebView
+    // SDK ships the `WebView` tag contract itself, so it is ordinary
+    // component dispatch (see `canonical_primitive`'s note).
     let (style_prop, disabled_prop, test_id_prop, a11y_props, other_props): (
         Vec<&Prop>,
         Vec<&Prop>,
@@ -262,9 +257,9 @@ fn emit_component(
                 disabled = Some(p);
             } else if p.name == "test_id" && test_id.is_none() {
                 // Robot/automation anchor. Lowers to the always-present
-                // `.test_id(…)` builder on both cores (never depends on the
-                // `robot` feature being on at macro-expansion time). Without
-                // this, `view(test_id = …)` silently dropped the id.
+                // `.test_id(…)` builder (never depends on the `robot`
+                // feature being on at macro-expansion time). Without this,
+                // `view(test_id = …)` would silently drop the id.
                 test_id = Some(p);
             } else if is_a11y_attr(&p.name.to_string()) {
                 // `accessibility`, `a11y_label`, `a11y_role`, … attach as
@@ -332,13 +327,10 @@ fn emit_component(
     };
 
     // Robot/automation `test_id`. The `.test_id` builder is always
-    // present on BOTH cores (it just stores the id; only the registry
-    // that reads it is `robot`-gated), so one emission serves both
-    // lowerings: old core = `Bound::test_id` → `Element::with_test_id`;
-    // new core = the same tokens land on the glue wrapper's `.test_id`
-    // forwarding into the vocabulary prim's identity slot, which the
-    // mount handlers register into `runtime_vocabulary::robot` (the P5
-    // identity seam, un-deferred).
+    // present (it just stores the id; only the registry that reads it is
+    // `robot`-gated): the glue wrapper's `.test_id` forwards into the
+    // vocabulary prim's identity slot, which the mount handlers register
+    // into `runtime_vocabulary::robot`.
     let with_test_id = if let Some(p) = test_id_prop.first() {
         let v = &p.value;
         quote! { (#with_disabled).test_id(#v) }
@@ -649,23 +641,15 @@ pub(crate) fn text_lowering(props: &[Prop], children: Option<&[UiNode]>) -> Text
     // Text takes its content from either a `content` prop or a
     // children block. Children win when both are present.
     //
-    // Three emission modes, in priority order:
+    // Emission modes, in priority order:
     //
-    //   1. **Structured `Derived<String>`** when the body is a
-    //      function-call expression whose args look like bare
-    //      signal references (e.g. `text { count_label(count) }`).
-    //      Emits a `TextSource::Bound(Derived<String> { method,
-    //      inputs, initial, compute })` — generator backends
-    //      (Roku) read the structure; runtime backends use
-    //      `compute`. This is the path that used to require
-    //      a structured-binding wrapper around the call.
+    //   1. **Reactive call** when the body is a function-call expression
+    //      whose args look like bare signal references (e.g.
+    //      `text { count_label(count) }`): a `move ||` closure that reads
+    //      each signal arg via `.get()`.
     //
-    //   2. **Reactive closure** when the body doesn't match (1)
-    //      but contains `.get()` somewhere — the body is wrapped
-    //      in a `move ||` closure so `IntoTextSource` routes it
-    //      through an opaque `Derived<String>` and the framework
-    //      sets up an Effect-driven update. Roku won't ship this
-    //      shape to the device (no method name to dispatch).
+    //   2. **Reactive closure** when the child is a closure; (2b) an
+    //      **f-string** literal with `{name}` placeholders.
     //
     //   3. **Static** for everything else — literal strings,
     //      build-time `format!()` calls, bare variables.
@@ -674,24 +658,19 @@ pub(crate) fn text_lowering(props: &[Prop], children: Option<&[UiNode]>) -> Text
     if let Some(kids) = children {
         if kids.len() == 1 {
             if let UiNode::Expr(expr) = &kids[0] {
-                // Path (1) under `new-core`: the SAME author shape
-                // (`text { label(sig) }`) lowers to the equivalent
-                // reactive closure — `Derived`'s wire metadata (method
-                // name + signal ids) is generator-backend (Roku) data
-                // with no runtime behavior on event-driven backends,
-                // deferred with the rest of that surface (see
-                // runtime-vocabulary's deferred list). Observable
-                // reactivity is identical: the closure reads each
-                // signal arg via `.get()`, exactly what `Derived`'s
-                // `compute` did.
+                // Path (1): `text { label(sig) }` lowers to a reactive
+                // closure that reads each signal arg via `.get()`. No
+                // structured `Derived` wire metadata (method name +
+                // signal ids) is emitted — see runtime-vocabulary's crate
+                // docs.
                 if let Some(call) = reactive_call_with_gets(expr) {
                     return TextLowering::Expr(quote! {
                         move || ::std::format!("{}", #call)
                     });
                 }
                 // Path (2): a CLOSURE child is reactive — the 0.1.0 type-driven
-                // boundary. `text { move || … }` re-evaluates on each fire; the
-                // walker installs an Effect via `IntoTextSource for Fn() -> String`.
+                // boundary. `text { move || … }` re-evaluates on each fire (a
+                // `Value::Dyn` binding effect).
                 // We unwrap the author's closure body and re-wrap it with
                 // `ToString::to_string` so the content may be any `Display` type
                 // (`move || count.get()` where `count: Signal<i32>`), not just
@@ -821,8 +800,7 @@ fn text_content_reads_signal_bare(children: Option<&[UiNode]>, props: &[Prop]) -
 }
 
 
-/// `new-core` counterpart of the structured lowerings: for the same
-/// "reactive call" shape (`method(sig_a, sig_b)` — single-segment fn,
+/// The "reactive call" lowering: for the (`method(sig_a, sig_b)` — single-segment fn,
 /// every arg a bare signal path), return the call rewritten to read each
 /// arg (`method((sig_a).get(), (sig_b).get())`). The caller wraps it in
 /// whatever closure form the construct needs. Returns `None` for any
@@ -872,13 +850,10 @@ pub(crate) fn button_on_click(props: &[Prop]) -> TokenStream2 {
     //   3. `on_click = closure_expression` — opaque coercion via IntoAction
     match props.iter().find(|p| p.name == "on_click") {
         Some(p) => {
-            // The structured `Action` (wire metadata: method name,
-            // signal ids) was generator-backend surface and died with
-            // the old core. The same author shape
-            // (`on_click = method(sig)` / `… => out`) lowers to the
-            // equivalent fire closure: args read at press time, result
-            // written to the output signal — exactly what
-            // `Action::fire` did.
+            // No structured `Action` wire metadata (method name, signal
+            // ids) is emitted: `on_click = method(sig)` / `… => out`
+            // lowers to a fire closure — args read at press time, result
+            // written to the output signal.
             if let Some(call) = reactive_call_with_gets(&p.value) {
                 match p.arrow_target.as_ref() {
                     Some(out) => quote! { move || { (#out).set(#call); } },
@@ -895,9 +870,9 @@ pub(crate) fn button_on_click(props: &[Prop]) -> TokenStream2 {
 fn emit_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
     let kids = children.unwrap_or(&[]);
     let parts = kids.iter().map(|n| emit_node(n, Ctx::Child));
-    // `view` used to take `_props` and read none of them: `on_touch`,
-    // `on_hover`, `on_wheel`, `safe_area`, `bind`, … all compiled and
-    // reached nothing.
+    // Every view prop goes through the builder table: a view that read
+    // none of its props let `on_touch`, `on_hover`, `on_wheel`,
+    // `safe_area`, `bind`, … compile and reach nothing.
     let setters = builder_calls(props, VIEW_BUILDER_PROPS);
     quote! {
         ::runtime_core::view({
@@ -946,13 +921,14 @@ fn emit_icon(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
     let setters = builder_calls(props, ICON_BUILDER_PROPS);
     // `draw_in` is shorthand for a `(duration, easing)` tuple.
     // `check_primitive_props` rejects it alongside `animate` (both set
-    // the stroke animation; `animate` used to win in silence).
+    // the stroke animation; one would win in silence).
     //
     // The tuple is bound to a local FIRST, and that is a fix, not a
-    // style choice: the emission used to splice the author's expression
-    // TWICE (`.draw_in((#v).0, (#v).1)`), so `draw_in = next_anim()` ran
-    // the call once per element — the duration and the easing came from
-    // two different evaluations, and any side effect happened twice.
+    // style choice: splicing the author's expression TWICE
+    // (`.draw_in((#v).0, (#v).1)`) makes `draw_in = next_anim()` run
+    // the call once per element — the duration and the easing would come
+    // from two different evaluations, and any side effect would happen
+    // twice.
     let (anim_prelude, anim_call) = if let Some(p) = props.iter().find(|p| p.name == "draw_in") {
         let v = &p.value;
         (
@@ -1066,13 +1042,11 @@ fn emit_toggle(props: &[Prop], _children: Option<&[UiNode]>) -> TokenStream2 {
 /// Lower each named inline prop to the builder call of the same name,
 /// `name = v` → `.name(v)`, skipping any the author did not write.
 ///
-/// The primitive emitters used to hand-roll one `if let Some(p) =
-/// props.iter().find(..)` per prop, and every prop that was NOT
-/// hand-rolled was dropped in silence. That is how `scroll_view(
-/// on_end_reached = cb)` compiled and reached nothing, and cost an
-/// instrumented device build to diagnose (47d014a2) — and how
-/// `view(on_touch = …)` / `image(on_load = …)` did the same later. A
-/// table is harder to leave a setter out of than a chain of `if let`s,
+/// Not one hand-rolled `if let Some(p) = props.iter().find(..)` per prop:
+/// every prop that was NOT hand-rolled would be dropped in silence (how
+/// `scroll_view(on_end_reached = cb)`, `view(on_touch = …)` and
+/// `image(on_load = …)` each compiled and reached nothing). A table is
+/// harder to leave a setter out of than a chain of `if let`s,
 /// and [`check_primitive_props`] now turns any prop that is in no table
 /// into a compile error, so "dropped in silence" is no longer a state a
 /// prop can be in.
@@ -1207,9 +1181,8 @@ const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
     "bounces",
     "always_bounce",
     "safe_area",
-    // `bind` used to be builder-only here ("spelled `.bind(r)` after the
-    // call"), while `view(bind = r)` compiled and was dropped. One rule
-    // for every primitive now: `bind = r` lowers inline.
+    // One rule for every primitive: `bind = r` lowers inline (not
+    // builder-only, which let `view(bind = r)` compile and be dropped).
     "bind",
 ];
 
@@ -1334,7 +1307,7 @@ pub(crate) fn prim_surface(canonical: &str) -> PrimSurface {
 
 /// Pairs of props where writing BOTH meant one was dropped in silence.
 /// `(primitive, a, b, why)`: a prop named in `a` together with one in `b`
-/// is an error. Each row is a drop the emitter used to perform.
+/// is an error. Each row is a drop the emitter would otherwise perform.
 const CONFLICTING_PROPS: &[(&str, &[&str], &[&str], &str)] = &[
     ("image", &["src"], &["asset"], "`asset` won and `src` was ignored — give one source"),
     (
@@ -1601,13 +1574,12 @@ fn emit_link(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
         };
     }
 
-    // In-app links: SAME emission on both cores (P6 un-deferral). The
-    // retarget pass maps `::runtime_core::primitives::link::link` onto
-    // `glue::primitives::link::link`, which lowers to the vocabulary
-    // link builder's `.route(...)` — the mount handler resolves the
-    // ambient `LinkActivator` the P6 navigators now provide
-    // (push-vs-select decided by the enclosing navigator, the old
-    // `NavigatorControl` link-activator contract).
+    // In-app links. The retarget pass maps
+    // `::runtime_core::primitives::link::link` onto
+    // `glue::primitives::link::link`, which lowers to the vocabulary link
+    // builder's `.route(...)` — the mount handler resolves the ambient
+    // `LinkActivator` the navigators provide (push-vs-select decided by
+    // the enclosing navigator).
     let route = props
         .iter()
         .find(|p| p.name == "route")
@@ -1835,9 +1807,9 @@ const FLAT_LIST_BUILDER_PROPS: &[&str] = &[
 /// `gap` IS reachable from `ui!`, just not from the table: it is one of
 /// `flat_list`'s OWN props (see `prim_surface`), lowered by
 /// `emit_flat_list`'s `spacing_call` as the one-value spelling of the
-/// `main_spacing`/`cross_spacing` pair. It used to be in the table AND
-/// the spacing call, which emitted `.gap(v).gap(v)` and evaluated the
-/// author's expression twice.
+/// `main_spacing`/`cross_spacing` pair. Keep it out of the table: in the
+/// table AND the spacing call it emits `.gap(v).gap(v)` and evaluates
+/// the author's expression twice.
 const FLAT_LIST_BUILDER_ONLY: &[(&str, &str)] = &[
     (
         "on_handle",
@@ -1868,14 +1840,14 @@ fn emit_user(
     // The tag is used *as the type name* (not `FooProps`): `#[component]`
     // and idea-ui emit a `pub type Foo = FooProps` alias, so existing
     // `use …::Foo` imports keep working unchanged (they resolve to the
-    // alias instead of the old macro). The tag carries its own span, so
+    // alias). The tag carries its own span, so
     // go-to-def on `Foo` lands on that alias.
     let props_ty = name;
 
     // Each provided prop becomes a struct field, coerced via `.into()`.
     // The field's declared type pins the `.into()` target, so this is
-    // the same uniform coercion the old invocation macros performed —
-    // `"x"` → `String`/`Reactive<String>`, identity for matching types.
+    // a uniform coercion — `"x"` → `String`/`Reactive<String>`, identity
+    // for matching types.
     let field_assignments = props.iter().map(|p| {
         let n = &p.name;
         let v = &p.value;
@@ -1974,8 +1946,7 @@ fn emit_if(
     //   - Move the non-`Copy` use into a flat `match` over a discriminant
     //     (`match pick(a, b) { 0 => …, 1 => …, _ => foo(app.clone()) }`).
     //     A flat `match` is a single `switch` dispatcher, so an in-arm
-    //     `.clone()` works (verified in
-    //     `tests/match_reactive_call_regression.rs::b5_*`).
+    //     `.clone()` works.
     //   - Wrap the value in `Rc`/`Arc` and clone a handle per arm, or hoist
     //     it into an owner the arm borrows rather than moves.
     // 0. `if let PAT = EXPR { … }` — the condition is a refutable `let`, not a
@@ -1988,9 +1959,8 @@ fn emit_if(
     if matches!(cond, Expr::Let(_)) {
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
-    // The structured `Derived<bool>` was generator-backend metadata and
-    // died with the old core; the same shape lowers to the equivalent
-    // reactive closure (see the note in `emit_text`).
+    // No structured `Derived<bool>` wire metadata: the reactive-call
+    // shape lowers to a reactive closure (see the note in `emit_text`).
     if let Some(call) = reactive_call_with_gets(cond) {
         let then_expr = emit_block_as_primitive(then_body);
         let else_expr =
@@ -2149,7 +2119,8 @@ fn condition_is_reactive(cond: &Expr) -> bool {
     // `ReactiveCond` dispatch in `emit_if` — a bare `fn() -> bool` is static
     // and free, while a reactive `Signal<bool>` (e.g. `memo(...)`) is reactive
     // by type. (Same philosophy as the for-loop's `StaticForEach` /
-    // `ReactiveForEach`, which replaced the old `.get()`-iterable heuristic.)
+    // `ReactiveForEach`, which decide by type rather than by a `.get()`
+    // heuristic.)
     let raw = cond.to_token_stream().to_string();
     let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
     compact.contains(".get()")
@@ -2259,10 +2230,9 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
     //      `if key(state)`). Lower to `runtime_core::switch(..)` — one
     //      Element per arm.
     //   3. Plain Rust `match` — no reactivity. Flattens in children-slot.
-    // The structured `Element::Switch` (literal-armed Roku metadata)
-    // died with the old core: the reactive-call fallback below claims
-    // the same shape and rewrites `key(state)` → `key((state).get())`,
-    // so observable reactivity is identical.
+    // No structured literal-armed switch metadata is emitted: the
+    // reactive-call fallback below claims the shape and rewrites
+    // `key(state)` → `key((state).get())`.
 
     // Reactive scrutinee — two shapes funnel into the closure-`switch`:
     //   (a) `.get()` appears literally in the scrutinee
@@ -2423,19 +2393,13 @@ fn emit_for_children(
     body: &[UiNode],
     chain: &[TokenStream2],
 ) -> (TokenStream2, bool) {
-    // Reactive-list path: `for IDENT in count_method(sig) { body }` —
-    // lower to a `Element::Virtualizer` carrying a structured
-    // `Derived<usize>` for the count plus a row template. This is
-    // what `bind_repeat!` used to do explicitly. Try this BEFORE
-    // the static range path so a method-call iterator wins over
-    // any static-range matching.
-    // The virtualizer `for i in count_method(sig)` sugar lowered to
-    // `Element::Virtualizer` carrying a structured `Derived<usize>`
-    // COUNT binding — generator-backend wire metadata that died with the
-    // old core and is deferred until generator backends re-land. The
-    // closure-form `flat_list(...)` tag DOES lower; rather than silently
-    // building a static loop here, fail with the status (repo rule: no
-    // silent scope cuts).
+    // The virtualizer for-sugar `for IDENT in count_method(sig) { body }`
+    // would need a structured `Derived<usize>` COUNT binding
+    // (generator-backend wire metadata no current backend consumes), so
+    // it is not supported. The closure-form `flat_list(...)` tag DOES
+    // lower; rather than silently building a static loop here, fail with
+    // a pointer to it. Checked BEFORE the static range path so a
+    // method-call iterator never falls into static-range matching.
     if is_virtualizer_for_shape(pat, iter) {
         return (
             quote! {
@@ -2461,8 +2425,8 @@ fn emit_for_children(
     // re-evaluates on change.
     //
     // This `.get()` check is deliberately scoped to RANGE BOUNDS only —
-    // it is NOT the old general iterable heuristic (that's gone; the
-    // type-driven path decides reactivity for every other iterable).
+    // not a general iterable heuristic (the type-driven path decides
+    // reactivity for every other iterable).
     // A `.get()` somewhere in a non-range iterable can no longer make a
     // loop accidentally reactive.
     if matches!(iter, Expr::Range(_)) && condition_is_reactive(iter) {
@@ -2503,21 +2467,15 @@ fn emit_for_children(
         return (form, true);
     }
 
-    // Static range fast path: `for i in 0..n { single_node }` → batched
-    // `Element::Repeat`, expanded by the walker into the parent's
-    // children via `insert_many` (DocumentFragment batching on web).
-    // Single-node bodies only: `Repeat` is one-node-per-index, so a
-    // multi-node body would need a wrapper View — refused, since
-    // children are a flat vector. Multi-node / non-range loops fall
-    // through to the type-driven path below.
-    //
-    // Under `new-core` the SAME author shape (same recognition
-    // conditions — `try_emit_for_repeat` is shared) lowers to
+    // Static range fast path: `for i in 0..n { single_node }` →
     // `glue::__static_repeat` → `Element::Many(RepeatPrim)`, mounted by
     // the vocabulary's `repeat` multi-node handler: the one-FFI
     // `execute_batch_with_attach` fast path on batching backends (web),
-    // per-row mounts + one `insert_many` elsewhere. Both cores make the
-    // SAME batching decision for the same tree (scene-parity contract).
+    // per-row mounts + one `insert_many` elsewhere. Single-node bodies
+    // only: a repeat is one-node-per-index, so a multi-node body would
+    // need a wrapper view — refused, since children are a flat vector.
+    // Multi-node / non-range loops fall through to the type-driven path
+    // below.
     if body.len() == 1 {
         let body_expr = emit_block_as_primitive(body);
         if let Some(repeat) = try_emit_for_repeat(pat, iter, &body_expr) {
@@ -2579,14 +2537,14 @@ fn emit_for_children(
 
 /// Shape predicate for the virtualizer for-sugar (`for IDENT in
 /// method(sig, …)`) — the recognition half of `try_emit_for_virtualizer`,
-/// used by the `new-core` deferral gate.
+/// used by the unsupported-sugar gate.
 fn is_virtualizer_for_shape(pat: &syn::Pat, iter: &Expr) -> bool {
     matches!(pat, syn::Pat::Ident(p) if p.subpat.is_none() && p.by_ref.is_none())
         && is_reactive_call_shape(iter)
 }
 
-/// Try to lower `for PAT in RANGE { body }` to a single
-/// `Element::Repeat`. Returns `Some(tokens)` only when the
+/// Try to lower `for PAT in RANGE { body }` to a single static repeat
+/// (`__static_repeat`). Returns `Some(tokens)` only when the
 /// shape is one we can statically recognize:
 ///
 /// - `iter` is a syntactic range expression with both bounds.
@@ -2676,14 +2634,13 @@ pub(crate) fn emit_block_as_primitive(nodes: &[UiNode]) -> TokenStream2 {
     quote! { ::runtime_core::IntoElement::into_element(#with_prelude_body) }
 }
 
-/// `DrawerNavigator` `ui!` sugar — retired. This branch used to emit
-/// `::runtime_core::DrawerNavigator::new(...)`, but no such author-facing
-/// type exists (nor is one re-exported from `runtime_core`): the navigator
-/// system converged on the SDK-crate builders `stack-navigator`
-/// (`StackNavigator`) and `swap-navigator` (`SwapNavigator`), which are NOT
-/// used through `ui!` sugar. The old sugar therefore couldn't compile — an
-/// author reaching for it got an inscrutable "cannot find `DrawerNavigator`
-/// in `runtime_core`". We now fail with a pointed message instead.
+/// `DrawerNavigator` `ui!` sugar — retired. There is no author-facing
+/// `runtime_core::DrawerNavigator` type: navigation uses the SDK-crate
+/// builders `stack-navigator` (`StackNavigator`) and `swap-navigator`
+/// (`SwapNavigator`), which are NOT used through `ui!` sugar. Emitting a
+/// constructor call would fail with an inscrutable "cannot find
+/// `DrawerNavigator` in `runtime_core`", so this fails with a pointed
+/// message instead.
 ///
 /// (Backend-side `NodeKind::DrawerNavigator` plumbing in the GPU engine is
 /// left in place — whether a drawer navigator returns via the SDK-crate
@@ -3067,13 +3024,11 @@ mod tests {
 
     /// Every setter on every primitive's glue builder is either reachable
     /// inline (common, the emitter's own, or the by-name table) or
-    /// declared builder-only with what to write instead. Three times in
-    /// one week a new `scroll_view` / `flat_list` setter landed without
-    /// an entry in the lowering table — `on_end_reached`, `always_bounce`,
-    /// `safe_area` — and each time `name = v` inside `ui!` compiled and
-    /// reached nothing. Then `view` and `image` turned out never to have
-    /// had a table at all (`on_touch`, `on_hover`, `on_load`, …). This
-    /// covers every primitive, not the four that had already bitten.
+    /// declared builder-only with what to write instead. A setter missing
+    /// from the lowering table makes `name = v` inside `ui!` compile and
+    /// reach nothing (it happened to `on_end_reached`, `always_bounce`,
+    /// `safe_area`, `on_touch`, `on_hover`, `on_load`, …). This covers
+    /// every primitive.
     ///
     /// Reads `glue.rs` as text. That is deliberate: the macro crate
     /// cannot depend on the vocabulary, and a setter is a `pub fn …(self
@@ -3316,7 +3271,7 @@ mod tests {
         assert!(out.contains("Vec :: new"));
     }
 
-    /// The runtime-v2 lowering deltas. The path RETARGET
+    /// The lowering decisions made at emission sites. The path RETARGET
     /// (`::runtime_core` → `::runtime_vocabulary::glue`) happens in the
     /// lib.rs entry points and is unit-tested in `new_core.rs`; these
     /// pin the EMISSION decisions at the sites themselves.
@@ -3339,9 +3294,9 @@ mod tests {
             assert!(!out.contains("Derived"), "no wire metadata: {out}");
         }
 
-        /// A braced child (`{ hero() }`, required for `{ Hero() }`) used to
-        /// have its braces emitted verbatim as a function argument, so every
-        /// such child tripped rustc's `unused_braces` on the author's code.
+        /// Regression: a braced child (`{ hero() }`, required for
+        /// `{ Hero() }`) with its braces emitted verbatim as a function
+        /// argument tripped rustc's `unused_braces` on the author's code.
         /// A single-tail-expression block emits the bare expression; a
         /// block with statements keeps its braces.
         #[test]
@@ -3380,10 +3335,7 @@ mod tests {
         }
 
         /// A static range loop lowers to the glue's `__static_repeat`
-        /// (→ `Element::Many(RepeatPrim)`, the batched-Repeat port) —
-        /// same recognition conditions as the old core's
-        /// `Element::Repeat`, so both cores make the same batching
-        /// decision for the same author shape.
+        /// (→ `Element::Many(RepeatPrim)`, the batched repeat).
         #[test]
         fn static_range_for_lowers_to_static_repeat() {
             let out = squash(parse_and_emit(quote! {
@@ -3396,9 +3348,9 @@ mod tests {
             assert!(out.contains("__static_repeat((3-0)asusize"), "{out}");
         }
 
-        /// The repeat recognition is EXACTLY the old core's: inclusive
-        /// ranges, non-ident patterns, and non-range iterables fall
-        /// through to the type-driven static path.
+        /// The repeat recognition is narrow: inclusive ranges, non-ident
+        /// patterns, and non-range iterables fall through to the
+        /// type-driven static path.
         #[test]
         fn non_repeat_static_loops_fall_through_to_type_driven() {
             for body in [
@@ -3454,14 +3406,8 @@ mod tests {
             assert!(!out.contains("Element::Switch"), "{out}");
         }
 
-        /// Deferred surfaces fail loudly, naming their migration phase.
-        /// (The P3-set tags — overlay/anchored_overlay/presence/graphics/
-        /// flat_list — are no longer in this list; their un-deferred
-        /// lowerings are pinned below. `test_id = …` left with the P5
-        /// identity seam, `link(route = …)` with the P6 nav-SDK
-        /// retarget — see `link_route_lowers_to_link_constructor`;
-        /// `web_view` with the P6 External-SDK wave — see
-        /// `web_view_tag_is_plain_component_dispatch_both_cores`.)
+        /// Unsupported surfaces fail loudly and name the replacement (the
+        /// virtualizer for-sugar → `flat_list`).
         #[test]
         fn deferred_primitives_error_with_migration_status() {
             for (body, needle) in [
@@ -3473,13 +3419,11 @@ mod tests {
             }
         }
 
-        /// `web_view` is UN-deferred (P6 External-SDK wave) by ceasing to
-        /// be macro-special at all: the tag routes through ordinary
-        /// component (`BuildElement`) dispatch on BOTH cores — the
-        /// WebView SDK ships the `WebView = WebViewProps` tag contract.
-        /// Regression: the snake_case spelling previously hit a
-        /// new-core-only compile_error while never resolving anywhere on
-        /// the old core either (no `web_view` constructor existed).
+        /// `web_view` is not macro-special at all: the tag routes through
+        /// ordinary component (`BuildElement`) dispatch — the WebView SDK
+        /// ships the `WebView = WebViewProps` tag contract. Regression: a
+        /// snake_case-spelling compile_error for a constructor that never
+        /// existed.
         #[test]
         fn web_view_tag_is_plain_component_dispatch_both_cores() {
             let out = squash(parse_and_emit(quote! {
@@ -3489,13 +3433,10 @@ mod tests {
             assert!(out.contains("BuildElement"), "{out}");
         }
 
-        /// `link(route = …)` is UN-deferred (P6 nav wave): both cores
-        /// emit the same three-positional constructor call; the
-        /// retarget maps it onto `glue::primitives::link::link`, whose
+        /// `link(route = …)` emits the three-positional constructor call;
+        /// the retarget maps it onto `glue::primitives::link::link`, whose
         /// mount resolves the ambient `LinkActivator` the vocabulary
-        /// navigators provide. Regression: this was a loud
-        /// compile_error while the vocabulary had no ambient
-        /// link-activator seam.
+        /// navigators provide.
         #[test]
         fn link_route_lowers_to_link_constructor() {
             let out = squash(parse_and_emit(quote! {
@@ -3519,12 +3460,10 @@ mod tests {
             );
         }
 
-        /// `test_id = …` is UN-deferred (P5 identity seam): it lowers to
-        /// the same `.test_id(…)` chain as the old core — the retarget
+        /// `test_id = …` lowers to a `.test_id(…)` chain — the retarget
         /// lands it on the glue wrapper's setter, which stores the id on
         /// the vocabulary prim's identity slot for handler-side robot
-        /// registration. Regression: this was a loud compile_error while
-        /// the prims had no identity slot.
+        /// registration.
         #[test]
         fn test_id_lowers_to_builder_setter() {
             for body in [
@@ -3541,8 +3480,8 @@ mod tests {
         }
 
         /// `overlay(...) { … }` lowers to the primitives-path chain the
-        /// retarget maps onto `glue::primitives::overlay::overlay` —
-        /// same attr → method mapping as the old core.
+        /// retarget maps onto `glue::primitives::overlay::overlay` (attr →
+        /// method mapping).
         #[test]
         fn overlay_tag_lowers_to_overlay_chain() {
             let out = squash(parse_and_emit(quote! {
@@ -3635,8 +3574,8 @@ mod tests {
             }
         }
 
-        /// `flat_list(...)` lowers to the typed adapter path (the glue
-        /// ports the old type-erasure onto the closure-form virtualizer)
+        /// `flat_list(...)` lowers to the typed adapter path (the glue's
+        /// type-erasure over the closure-form virtualizer)
         /// with the same `::<_, _, (), _>` turbofish, and layout attrs
         /// chain through.
         #[test]
@@ -3680,7 +3619,7 @@ mod tests {
         }
 
         /// The empty `if` branch stays layout-neutral via the glue
-        /// constructor (no old-core StyleSheet construction).
+        /// constructor (no inline StyleSheet construction).
         #[test]
         fn empty_else_uses_glue_absolute_view() {
             let out = squash(parse_and_emit(quote! {
@@ -3853,8 +3792,7 @@ mod tests {
         // through the type-driven `__idealyst_if` dispatch, and reactivity
         // is decided by the condition's TYPE (`bool` → StaticCond → plain
         // branch; a signal type → ReactiveCond → reactive `when` at
-        // runtime). This test predates the dispatch and used to assert a
-        // literal `if some_bool` — stale since path-4 landed.
+        // runtime).
         assert!(!out.contains(":: runtime_core :: when"));
         assert!(out.contains("(some_bool) . __idealyst_if"));
     }
@@ -4069,9 +4007,9 @@ mod tests {
     #[test]
     fn regression_salvage_reactive_if_else_types_via_dispatch() {
         // User-hit (idealyst-test app): `if is_high { … } else { … }`
-        // where `is_high: ReadSignal<bool>` — valid DSL, but the salvage
-        // shell used to re-emit it as a plain Rust `if`, and
-        // rust-analyzer's pull-model diagnostics squiggled the user's
+        // where `is_high: ReadSignal<bool>` — valid DSL, but a salvage
+        // shell that re-emits it as a plain Rust `if` makes
+        // rust-analyzer's pull-model diagnostics squiggle the user's
         // valid code with `E0308: expected bool, found ReadSignal<bool>`.
         // The salvage must route the condition through `__idealyst_if`
         // (StaticCond for bool / ReactiveCond for signal types) so it

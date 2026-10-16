@@ -7,15 +7,11 @@ use runtime_scene::{item, Element};
 use crate::prims::{GraphicsPrim, PrimCell};
 use crate::style_attach::IntoStyleProp;
 
-/// Start a `graphics` surface — port of the old
-/// `primitives::graphics::graphics(on_ready)` constructor. `on_ready`
-/// is required (positionally, like the old entry point); `on_resize` /
-/// `on_lost` default to no-ops.
+/// Start a `graphics` surface. `on_ready` is required (positionally);
+/// `on_resize` / `on_lost` default to no-ops.
 ///
-/// The old builder wrapped `on_resize`/`on_lost` in `cycle()` ("born
-/// batched"); under the staged-commit kernel every signal write stages
-/// until the host driver flushes, so no wrapper is needed — see
-/// [`GraphicsPrim`]'s docs.
+/// No `cycle()` wrapper around the callbacks: every signal write stages
+/// until the host driver flushes — see [`GraphicsPrim`]'s docs.
 pub fn graphics(on_ready: impl FnMut(OnReadyEvent) + 'static) -> GraphicsBuilder {
     GraphicsBuilder {
         prim: GraphicsPrim {

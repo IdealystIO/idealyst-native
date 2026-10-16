@@ -512,10 +512,9 @@ fn emit_component_fn(
         bind_to_injected || !method_infos.is_empty(),
     );
 
-    // NEW-core body semantics: a component runs ONCE, untracked, with
-    // every signal/effect it creates collected into an `Owned` scope
-    // attached to the returned element (idea-lite's `component_scope`;
-    // handbook §6/§9). The wrap targets `::runtime_core::component_scope`
+    // Body semantics: a component runs ONCE, untracked, with every
+    // signal/effect it creates collected into an `Owned` scope attached to
+    // the returned element (`component_scope`). The wrap targets `::runtime_core::component_scope`
     // and the retarget pass maps it to
     // `runtime_vocabulary::glue::component_scope`. Only bodies returning
     // bare `Element` are wrapped — richer return types (`Bindable<H>`,
@@ -542,8 +541,8 @@ fn emit_component_fn(
         item_fn.block.stmts.insert(0, probe);
     }
 
-    // When the `debug-stats` feature is on (forwarded from
-    // `runtime-core/debug-stats`), wrap the rewritten body with
+    // When this crate's `debug-stats` feature is on (forwarded from
+    // `runtime-macros/debug-stats`), wrap the rewritten body with
     // component enter/exit recording. The wrap happens at the macro
     // level so it covers every `#[component]` automatically — no
     // per-component decorator needed.

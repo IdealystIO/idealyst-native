@@ -1,7 +1,6 @@
 //! Navigator builders: `swap_navigator()`, `stack_navigator()`,
-//! `navigator_outlet()` — the new-core counterparts of the SDK
-//! `SwapNavigator`/`StackNavigator` fluent builders and the old
-//! `navigator_outlet()` free fn.
+//! `navigator_outlet()` (the SDK `SwapNavigator`/`StackNavigator` fluent
+//! builders wrap the first two).
 //!
 //! Screens register with a typed [`Route<P>`] + a render closure
 //! returning a scene `Element`; the author layout is a plain closure
@@ -95,8 +94,8 @@ impl SwapNavigatorBuilder {
     }
 
     /// Presentation label for introspection (`NavSnapshot::type_name`);
-    /// defaults to the builder name `"swap_navigator"`. The SDK sets
-    /// its old presentation type name for wire parity.
+    /// defaults to the builder name `"swap_navigator"`. The SDK sets its
+    /// presentation type name.
     pub fn nav_label(mut self, label: &'static str) -> Self {
         self.prim.nav_label = Some(label);
         self
@@ -224,7 +223,7 @@ impl NavigatorOutletBuilder {
 /// carries per-screen options), the segment→params reconstructor, and
 /// the bare-name select recipe (url from the route pattern + params
 /// from an empty segment map — `Some` only when `P` is constructible
-/// without path segments; the old select-args fix).
+/// without path segments).
 fn screen_entry<P, R, F>(
     route: &Route<P>,
     render: F,

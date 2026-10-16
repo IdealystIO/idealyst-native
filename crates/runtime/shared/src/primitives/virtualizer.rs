@@ -7,7 +7,7 @@
 //!
 //! # Per-backend strategy
 //!
-//! - **Web**: a JS-side scroll handler (`backend-web/runtime/ts/virtualizer.ts`)
+//! - **Web**: a JS-side scroll handler (`backend-web/runtime/js/virtualizer.js`)
 //!   owns the scroll listener + visible-range diff. It calls back
 //!   into Rust only when items enter/leave the window. Per-item
 //!   scopes are dropped on exit, so signals/effects for unmounted
@@ -325,21 +325,10 @@ mod tests {
     //! algebra, narrow-container degradation, and the always-report-grid
     //! rule.
     //!
-    //! RELOCATED from `runtime-core/src/primitives/virtualizer.rs`
-    //! (deletion baseline §4.2, SV-R — flagged there as the
-    //! highest-value relocate in the group). The 4 lane-math cases below
-    //! are byte-for-byte the old assertions against the same
-    //! `Lanes::resolve` / `VirtualLayout::is_grid`, which live HERE.
-    //!
-    //! The old file also held 3 cases driving the dead
-    //! `Bound<VirtualizerHandle>` builder (`.axis` / `.lanes` /
-    //! `.spacing` / `.gap` writing into `Element::Virtualizer`). Those
-    //! are NOT relocated as-is — the builder they exercise is being
-    //! deleted. Their successor on the surviving core is
-    //! `runtime-vocabulary/tests/virtualizer_graphics.rs`, which drives
-    //! the vocabulary's `VirtualizerPrim` builder and asserts the same
-    //! resulting `VirtualLayout`. What DOES belong here is the default
-    //! the builder starts from, so it is pinned as data below.
+    //! The builder itself (`.axis` / `.lanes` / `.spacing` / `.gap`) is
+    //! covered by `runtime-vocabulary/tests/virtualizer_graphics.rs`;
+    //! what belongs here is the default the builder starts from, pinned
+    //! as data below.
 
     use super::*;
 

@@ -1,7 +1,7 @@
 //! `strict-docs` — compile-time documentation enforcement.
 //!
 //! When the `strict-docs` feature is on (forwarded from
-//! `runtime-core/strict-docs`), `#[component]` requires a doc comment on
+//! `runtime-macros/strict-docs`), `#[component]` requires a doc comment on
 //! the component fn, and `#[derive(IdealystSchema)]` requires one on
 //! every prop field / enum variant. A missing doc becomes a
 //! `compile_error!` spanned at the offending item, so the *compiler*

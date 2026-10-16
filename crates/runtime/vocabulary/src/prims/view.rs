@@ -12,13 +12,11 @@ use runtime_world::Value;
 
 use crate::style_attach::StyleProp;
 
-/// The `view` primitive — plain container. Fields mirror what
-/// `walker/view.rs::build` receives/forwards.
+/// The `view` primitive — plain container.
 ///
 /// `is_container` marks a container-query containment context
-/// (`StyleOps::mark_container`); the native inline-size feedback loop the
-/// old walker wires on top is deferred with the style-engine port (see
-/// crate docs' deferred set).
+/// (`StyleOps::mark_container`); there is no native inline-size feedback
+/// loop on top yet (see the crate docs' known gaps).
 pub struct ViewPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
     /// builder setter compiles in every build; read only by the
@@ -39,11 +37,10 @@ pub struct ViewPrim {
     pub ref_fill: Option<Box<dyn FnOnce(ViewHandle)>>,
 }
 
-/// The `pressable` primitive — tappable container
-/// (`walker/pressable.rs`). `disabled` drives both the backend's
-/// `set_disabled` and the handler-level press-block flag (a bare
-/// pressable is not a native form control, so the callback must be
-/// blocked uniformly — the walker's rationale, ported).
+/// The `pressable` primitive — tappable container. `disabled` drives
+/// both the backend's `set_disabled` and the handler-level press-block
+/// flag (a bare pressable is not a native form control, so the callback
+/// must be blocked uniformly).
 pub struct PressablePrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
     /// builder setter compiles in every build; read only by the
@@ -57,7 +54,7 @@ pub struct PressablePrim {
     pub ref_fill: Option<Box<dyn FnOnce(PressableHandle)>>,
 }
 
-/// The `scroll_view` primitive (`walker/scroll_view.rs`). Safe-area
+/// The `scroll_view` primitive. Safe-area
 /// opt-in routes through the *contentInset* path
 /// (`apply_scroll_view_safe_area_inset`), the one place it diverges from
 /// `view`.

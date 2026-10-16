@@ -1,6 +1,6 @@
-//! runtime-world — the reactive kernel for the idea-lite core migration (P0).
+//! runtime-world — the reactive kernel.
 //!
-//! Core model (idea-lite's three axioms, on arena storage):
+//! Core model (three axioms, on arena storage):
 //! - **Signals stage writes** (`set`/`update`) and commit them in batches at
 //!   [`World::flush`]; reads (`get`/`with`) always see the committed snapshot.
 //! - **Effects auto-track** the signals they read and re-run when those
@@ -17,8 +17,7 @@
 //! - ONE `thread_local!` total holds the registry `world id → arena` plus all
 //!   transient stacks (ambient enter stack, running-effect stack, ownership
 //!   collectors). A single TLS key matters on Android, where bionic caps
-//!   pthread TLS keys at 128 (see the runtime-core stylesheet-registry
-//!   incident).
+//!   pthread TLS keys at 128.
 //! - Handles route to their OWN world through the registry at use time, not
 //!   the ambient world: writing an A-world signal from inside a B-world
 //!   effect stages into A's queue; A and B flush independently.
@@ -27,7 +26,7 @@
 //!   slot's next occupant — it panics with a diagnostic instead. Generations
 //!   are `u32` and wrap; ABA after 2^32 reuses of one slot is accepted.
 //!
-//! Flush model — derivation-class, glitch-free (the P0 centerpiece): see
+//! Flush model — derivation-class, glitch-free: see
 //! [`World::flush`] for the algorithm and its glitch-freedom argument.
 //!
 //! Engine seam: this file is the TYPED layer (handles, `SignalData<T>`, memo,
@@ -674,7 +673,7 @@ thread_local! {
 /// Route this kernel's dev diagnostics through a host log channel.
 ///
 /// runtime-world sits below runtime-shared's `Logger` (it is the bottom of
-/// the new core's dependency chain and stays dependency-minimal), so it
+/// the runtime's dependency chain and stays dependency-minimal), so it
 /// cannot call `log_warn!` directly. Hosts bridge instead: runtime-vocabulary
 /// installs a forwarder to `runtime_shared::logging` from
 /// `register_builtins`, the one seam every backend's boot passes through.
@@ -864,10 +863,9 @@ impl World {
     /// memos a Reaction reads, all of them reflect the same settled
     /// generation of the graph — the diamond `S → memo(S)` read together
     /// with `S` can never show (fresh S, stale memo), and the Reaction runs
-    /// once per flush, not once per round. (idea-lite's naive round loop ran
-    /// both classes together, letting a reaction observe the stale pair and
-    /// run twice; the current sync core is depth-first-consistent, so
-    /// authors implicitly rely on consistency — this preserves it.)
+    /// once per flush, not once per round. (A naive round loop running both
+    /// classes together lets a reaction observe the stale pair and run
+    /// twice.)
     ///
     /// A round limit (100) turns cyclic updates (reaction A stages what
     /// reaction B reads and vice versa) into a panic instead of a hang.
@@ -1006,7 +1004,7 @@ impl<T: PartialEq + 'static> AnySignal for SignalData<T> {
                 // The equality cut: a staged value that nets to the committed
                 // one notifies nobody (A→B→A within one window is a no-op —
                 // window-initial comparison for free, matching the guarded
-                // `set` semantics runtime-core just landed). `forced` (a
+                // `set` semantics). `forced` (a
                 // set_always/touch in the window) taints the window and
                 // notifies regardless.
                 if forced || next != self.value {
@@ -1556,11 +1554,9 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
 /// publishes itself with `provide` must wrap the `provide` too, not just
 /// the signal: a world-root signal announced through a scope-owned entry
 /// stops being *findable* on that scope's unmount, and the service is
-/// silently rebuilt. This is the
-/// direct analogue of the old core's `reactive::unscope`, added for the
-/// exact same regression class (runtime-core `style.rs`'s token-registry
-/// "signal used after its scope was dropped" incident; the new-core style
-/// engine hit the same shape with its per-world theme state).
+/// silently rebuilt. Without it the per-world theme state panics with
+/// "signal used after its scope was dropped" once the subtree that first
+/// needed it unmounts.
 ///
 /// Suspension is a swap of the whole collector stack (panic-safe restore),
 /// mirroring [`untrack`]'s global posture: "this creation is
@@ -1664,15 +1660,15 @@ pub fn on_scope_drop(f: impl FnOnce() + 'static) {
 /// A keyed list's structural driver is one effect that re-runs on every
 /// edit to the list, while keyed reconcile deliberately PRESERVES the
 /// surviving rows' subtrees. Teardown registered from inside a row's mount
-/// via `on_scope_drop` used to fire on the first unrelated edit — tearing
-/// down state for a row that is still on screen. Anchoring to the ownership
-/// scope instead ties the teardown to the row's own `Owned`, which keyed
-/// reconcile drops if and only if that row really goes away.
+/// via an effect-anchored `on_scope_drop` would fire on the first unrelated
+/// edit — tearing down state for a row that is still on screen.
+/// Anchoring to the ownership scope instead ties the teardown to the
+/// row's own `Owned`, which keyed reconcile drops if and only if that row
+/// really goes away.
 ///
-/// That MOUNT-TIME case is no longer a live hazard: a row renders
-/// [`unanchored`], so `on_scope_drop` there sees no running effect and lands
-/// on the row's `Owned` by itself. What remains — and what this fn is still
-/// the only way to express — is registering from inside a genuine effect
+/// The MOUNT-TIME case is already handled: a row renders [`unanchored`],
+/// so `on_scope_drop` there sees no running effect and lands on the row's
+/// `Owned` by itself. What this fn is the only way to express is registering from inside a genuine effect
 /// body while wanting the SUBTREE's lifetime rather than the run's.
 ///
 /// Outside any world this is inert, exactly like [`on_scope_drop`]: nothing
@@ -1782,7 +1778,7 @@ pub fn inject<T: Clone + 'static>() -> Option<T> {
 // owners: collect_owned() gathers every signal/effect created during a
 // closure into an Owned; dropping the Owned frees them (effect cleanups
 // first). Creations outside any collector are world-root-owned and freed on
-// world drop. Phase 1's Realized holds exactly this.
+// world drop. runtime-scene's `Realized` holds exactly this.
 // ============================================================================
 
 /// The owner of a batch of signal/effect slots (possibly spanning several
@@ -1814,7 +1810,7 @@ impl Owned {
     }
 
     /// Absorb another scope's slots into this one: `other`'s signals and
-    /// effects now live — and die — with `self`. The scene layer (P1) uses
+    /// effects now live — and die — with `self`. The scene layer uses
     /// this to fold a component body's `Owned` (an `Element::Owned` wrapper,
     /// collected at build time) into the enclosing `Realized`'s scope, so
     /// one drop still tears down the whole subtree.
@@ -1944,8 +1940,8 @@ pub fn unanchored<R>(f: impl FnOnce() -> R) -> R {
 /// to be mounting the component), [`unanchored`] (for the same reason, its
 /// teardowns belong to the body's own scope and not to that effect's next
 /// re-run), with every signal/effect it creates collected into the returned
-/// [`Owned`]. This is what `#[component]` will wrap function bodies in
-/// (P1/P6); the Owned rides in the `Realized`.
+/// [`Owned`]. This is what `#[component]` wraps function bodies in (via
+/// `runtime_scene::component_scope`); the Owned rides in the `Realized`.
 pub fn component_scope<R>(f: impl FnOnce() -> R) -> (R, Owned) {
     collect_owned(|| untrack(|| unanchored(f)))
 }
@@ -1959,8 +1955,8 @@ pub fn component_scope<R>(f: impl FnOnce() -> R) -> (R, Owned) {
 
 /// A cached derivation. `Copy`, like every handle: the cache signal and the
 /// recomputation effect are OWNED by the collector active at `memo()` time
-/// (or the world root), so the handle co-owns nothing — unlike idea-lite's
-/// Rc-based `Memo`, whose handle kept the effect alive. Dropping the
+/// (or the world root), so the handle co-owns nothing (it does not keep
+/// the effect alive the way an `Rc`-based memo handle would). Dropping the
 /// enclosing `Owned` retires the memo; stale handles panic like any other.
 pub struct Memo<T> {
     value: ReadSignal<T>,
@@ -2047,8 +2043,8 @@ impl<T: PartialEq + 'static> Memo<T> {
 
     /// The memo's cached value as a plain [`ReadSignal`] — the observe
     /// half, mirroring [`Signal::read_only`]. Lets a derived value flow
-    /// into `ReadSignal<T>`-typed surfaces (a component prop, an
-    /// old-core-signature mirror like the glue's `current_breakpoint`)
+    /// into `ReadSignal<T>`-typed surfaces (a component prop, a glue
+    /// accessor like `current_breakpoint`)
     /// without exposing the recompute effect. The effect handle stays
     /// with whoever owns the memo; the returned handle only reads.
     pub fn read_only(&self) -> ReadSignal<T> {

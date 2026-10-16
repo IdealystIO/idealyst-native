@@ -921,7 +921,7 @@ fn length_coerces_into_tokenized_f32_for_border_widths() {
 // -----------------------------------------------------------------
 
 // `face!` embeds via `include_bytes!`, so its src paths must
-// point at real files. We use sibling `runtime-core` sources
+// point at real files. We use sibling `runtime-shared` sources
 // as test-only embed targets — the bytes are irrelevant; the
 // tests only exercise `Typeface`/`FontFamily` identity + struct
 // shape.
@@ -1520,11 +1520,11 @@ fn content_key_differentiates_some_aspect_ratio_from_none() {
 
 // --- cached_stylesheet (shared per-sheet registry) ---------------
 //
-// These exercise the registry that replaced the per-sheet
-// `thread_local!` the `stylesheet!` macro used to emit. The bug
+// These exercise the one shared registry the `stylesheet!` macro
+// caches into, instead of a `thread_local!` per sheet. The bug
 // being prevented is Android bionic exhausting its 128 pthread TLS
-// keys when a binary links 70+ stylesheets (each old `thread_local!`
-// burned a key → abort in `LazyKey::lazy_init` at mount). Key
+// keys when a binary links 70+ stylesheets (each per-sheet
+// `thread_local!` burns a key → abort in `LazyKey::lazy_init` at mount). Key
 // exhaustion isn't reproducible on a host with a large key table, so
 // the closest reachable coverage is the registry's behavioral
 // contract: same key → same `Rc` (caching identity preserved),

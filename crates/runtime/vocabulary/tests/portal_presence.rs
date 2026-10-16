@@ -1,13 +1,12 @@
-//! Handler-level tests for the P3-set `portal` (+ overlay compositions)
-//! and `presence` primitives — driven through the `host-mock` recording
-//! host (the caps surface implemented natively, no `Backend`, no
-//! `LegacyBridge`), plus the manually pumped [`host_mock::pump`]
+//! Handler-level tests for the `portal` (+ overlay compositions) and
+//! `presence` primitives — driven through the `host-mock` recording host
+//! (the caps surface implemented natively), plus the manually pumped [`host_mock::pump`]
 //! scheduler so the presence timing windows (pre-paint snap →
 //! next-frame rest; exit animation → deferred detach-and-drop) are
 //! observable instead of collapsing synchronously.
 //!
-//! Backend-call-stream parity with the old walker is pinned separately
-//! by `scene-parity`'s `full_portal_*` / `full_presence_*` goldens;
+//! Backend call streams are pinned separately by `scene-parity`'s
+//! `full_portal_*` / `full_presence_*` goldens;
 //! these tests pin vocabulary-local behavior in isolation.
 
 use std::cell::Cell;
@@ -214,8 +213,8 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
     );
     // Backdrop pressable mounts FIRST (paints behind), then the content
     // wrapper view hosting the caller's children. A wired `Dismiss`
-    // backdrop carries its secondary-press layer (a styled fill view,
-    // FRAMEWORK-NOTES #61) as its only child.
+    // backdrop carries its secondary-press layer (a styled fill view
+    // that dismisses on right-click) as its only child.
     assert_eq!(
         h.take_log(),
         [
@@ -381,8 +380,8 @@ fn presence_without_exit_unmounts_immediately() {
 #[test]
 fn presence_quick_exit_cancels_pending_enter() {
     // Show then hide BEFORE the enter's animation frame fires: the
-    // pending rest-apply must be cancelled (old walker guard — the
-    // child must not animate toward rest while exiting).
+    // pending rest-apply must be cancelled (the child must not animate
+    // toward rest while exiting).
     let h = harness();
     let open = h.world.enter(|| signal(false));
     let _root = h.mount(

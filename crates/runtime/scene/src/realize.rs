@@ -5,11 +5,8 @@
 //!
 //! # Structural drivers
 //!
-//! The Dyn and Keyed drivers are direct ports of the old walker
-//! (`runtime-core/src/walker/{when_switch,dynamic,each}.rs`), invariant
-//! for invariant. Each invariant names the `scene-parity` golden that pins
-//! it — those goldens are the P1 exit gate, and any change to the
-//! orderings below must survive that suite.
+//! Each Dyn/Keyed driver invariant names the `scene-parity` golden that
+//! pins it; any change to the orderings below must survive that suite.
 //!
 //! **The two OPPOSITE dispose orderings** (both deliberate, both pinned):
 //!
@@ -46,17 +43,17 @@ use crate::registry::Registry;
 ///
 /// # The bug this prevents
 ///
-/// A spliced region used to capture its start as a plain `usize` at
-/// mount: the number of nodes before it AT THAT MOMENT. When a region
-/// earlier in the same parent later changed how many nodes it holds — an
-/// `if` turning on, a sibling keyed list growing or shrinking, a `match`
-/// arm with a different node count — every later region kept splicing at
-/// the stale index. A keyed row whose key changed in place (removed, then
-/// re-inserted at `base + i`) landed one slot too high per node the
-/// earlier region had gained; a sibling list's remounted head landed
-/// after the items list when an earlier region shrank. Counting the live
-/// totals of the earlier regions at splice time keeps the index exact
-/// without touching the host contract (`insert_at` stays index-based).
+/// A region must not capture its start as a plain `usize` at mount (the
+/// number of nodes before it AT THAT MOMENT). When a region earlier in
+/// the same parent later changes how many nodes it holds — an `if`
+/// turning on, a sibling keyed list growing or shrinking, a `match` arm
+/// with a different node count — a cached index goes stale: a keyed row
+/// whose key changed in place (removed, then re-inserted at `base + i`)
+/// lands one slot too high per node the earlier region gained, and a
+/// sibling list's remounted head lands after the items list when an
+/// earlier region shrinks. Counting the live totals of the earlier
+/// regions at splice time keeps the index exact without touching the
+/// host contract (`insert_at` stays index-based).
 #[derive(Default)]
 struct SpliceLedger {
     counts: RefCell<Vec<usize>>,
@@ -153,8 +150,7 @@ impl SpliceCursor {
 /// bindings, absorbed component scopes). **Dropping this IS unmount** —
 /// cleanups fire, subscriptions unlink, slots free. Structural detachment
 /// of the root nodes is the caller's business (the enclosing region or
-/// host does it), matching the old walker's split between scope teardown
-/// and node removal.
+/// host does it).
 pub struct Realized<N> {
     /// The live structure. Public so hosts (navigators, tests) can walk it.
     pub root: LiveNode<N>,
@@ -499,8 +495,7 @@ impl<'a, H: Host> MountCx<'a, H> {
         self.registry
     }
 
-    /// Realize `children` into `parent`: the child-splice loop, port of
-    /// the old walker's `view.rs::splice_children`. Static items append
+    /// Realize `children` into `parent`: the child-splice loop. Static items append
     /// with plain `insert`; fragments splice flat; reactive regions take
     /// the spliced path (when [`Host::supports_splice`]) or nest under an
     /// anchor. A single threaded [`SpliceCursor`] runs THROUGH fragments
@@ -726,8 +721,8 @@ impl<'a, H: Host> MountCx<'a, H> {
     /// realize with their top nodes dangling (the caller attaches them);
     /// Dyn/Keyed take the ANCHORED path even on splice-capable hosts —
     /// a hole needs a stable parent to swap under, and with no parent the
-    /// anchor provides it (matches the old walker, where a `when` at a
-    /// subtree root always anchors — only children-list positions splice).
+    /// anchor provides it (a `when` at a subtree root always anchors —
+    /// only children-list positions splice).
     fn realize_element_detached(&mut self, element: Element) -> LiveNode<H::Node> {
         let (element, exits) = self.unwrap_owned(element);
         let live = self.realize_unwrapped_detached(element);
@@ -758,8 +753,7 @@ impl<'a, H: Host> MountCx<'a, H> {
                     drive_keyed_anchored(self.backend, self.registry, items, render);
                 LiveNode::Keyed(KeyedLive::Anchored { anchor, slot })
             }
-            // Mirrors the old walker's `Element::Repeat` standalone-root
-            // panic (walker.rs): a Many stands for N sibling nodes, so it
+            // A Many stands for N sibling nodes, so it
             // can only appear inside a children list, never as the root
             // of a subtree.
             Element::Many { .. } => panic!(
@@ -914,25 +908,17 @@ impl<'a, H: Host> MountCx<'a, H> {
 /// `mount_item`. A deep enough tree exhausts the thread stack. On native
 /// that is an abort; on **wasm** it is
 /// `RuntimeError: memory access out of bounds` raised inside whatever
-/// leaf call happened to need the last few bytes — historically
+/// leaf call happened to need the last few bytes (e.g.
 /// `RefCell::borrow_mut` inside `__externref_table_alloc`, which reads
-/// exactly like a wasm-bindgen externref-reentrance bug and is nothing of
-/// the sort. The old walker shipped that failure mode for real: the
-/// website's `/demo` page died at ~13 levels of nesting because
-/// `walker::build_inner` compiled to a 77 KB stack frame
-/// (`runtime-core/tests/walker/stack_depth.rs` is the post-fix pin, and
-/// `mock-backend`'s `deep_tree_overflow_multi_site` the `#[ignore]`d
-/// reproducer).
+/// like an externref-reentrance bug and is nothing of the sort).
+/// `mock-backend`'s `deep_tree_overflow_multi_site` is the `#[ignore]`d
+/// reproducer.
 ///
-/// The old core's guarantee against this was **a frame-size budget and
-/// nothing else** — no cap, no guard, no diagnostic. It bought headroom
-/// by shrinking `build_inner` to ~2.3 KB and pinned that with a test on a
-/// stack constrained to wasm-ld's 1 MiB default.
-///
-/// This core inherits the budget test
-/// (`tests::deep_nested_items_realize_within_wasm_stack_budget`) and adds
-/// what the old core lacked: an explicit cap, so the failure is a NAMED
-/// panic pointing at the author's tree instead of an inscrutable trap.
+/// Two guards: a frame-size budget, pinned by
+/// `tests::deep_nested_items_realize_within_wasm_stack_budget` on a stack
+/// constrained to wasm-ld's 1 MiB default, and an explicit cap, so
+/// exceeding it is a NAMED panic pointing at the author's tree instead of
+/// an inscrutable trap.
 ///
 /// # Why the cap sits where it does
 ///
@@ -1054,10 +1040,9 @@ pub fn realize<H: Host>(
 /// - EVERY realization — mount, driver rebuild, keyed row — goes through
 ///   this collector: driver effects re-run from `World::flush` with no
 ///   active collector, and signals/effects created there would otherwise
-///   be world-root-owned and leak until world drop (P0 handoff invariant).
+///   be world-root-owned and leak until world drop.
 /// - The PRODUCER (a branch builder, a row `render`) runs INSIDE the
-///   collector too — element construction belongs to the subtree's scope,
-///   exactly like the old walker's `with_scope(|| ...builder()...)`.
+///   collector too — element construction belongs to the subtree's scope.
 ///   An effect a builder creates (probe cleanup, component effect) must
 ///   die with the subtree, not with the world.
 /// - The walk (and an untracked producer) runs
@@ -1069,8 +1054,8 @@ pub fn realize<H: Host>(
 ///   next re-run — for a subtree the driver does not own and may not be
 ///   tearing down at all (a navigator screen, a surviving keyed row).
 ///
-/// `produce_tracked` selects the old walker's tracking split: a Plain Dyn
-/// closure runs tracked (its reads ARE the deps — `dynamic.rs`), while
+/// `produce_tracked` selects the tracking split: a Plain Dyn
+/// closure runs tracked (its reads ARE the deps), while
 /// guarded builds and keyed row renders run untracked (only the
 /// select/enumeration reads are deps). The mount walk itself is always
 /// untracked; nested reactive constructs subscribe through their own
@@ -1179,17 +1164,15 @@ pub struct Retired<N> {
     pub nodes: Vec<N>,
 }
 
-/// The anchored Dyn driver — port of `when_switch.rs::build_when_closure`
-/// / `dynamic.rs::build_dynamic`. Creates the anchor, then an effect that
+/// The anchored Dyn driver. Creates the anchor, then an effect that
 /// on every (non-deduped) fire: drops the old subtree's scope FIRST, then
 /// `clear_children(anchor)`, then builds + inserts the new subtree under
 /// the anchor.
 ///
-/// A VIRGIN anchor is not cleared: the old walker unconditionally cleared
-/// the freshly created, still-empty anchor on the first fire (a harmless
-/// no-op it never special-cased). Skipping it is sanctioned divergence #2
-/// in scene-parity's README; the parity harness normalizes exactly this
-/// pattern out of the anchored goldens for the new-core comparison.
+/// A VIRGIN anchor is not cleared: clearing the freshly created,
+/// still-empty anchor on the first fire would be a pure no-op op.
+/// (scene-parity's README lists this as divergence #2; its harness
+/// normalizes the pattern out of the anchored goldens.)
 fn drive_dyn_anchored<H: Host>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
@@ -1227,8 +1210,8 @@ fn drive_dyn_anchored<H: Host>(
         // ANCHORED DISPOSE ORDER (dispose_order_when.anchored.golden):
         // scope drop FIRST — cleanup markers land BEFORE clear_children.
         // The Realized is taken OUT of the slot before dropping so the old
-        // subtree's cleanups can never observe a held slot borrow (P0
-        // handoff: assignment-into-borrowed-slot hazard).
+        // subtree's cleanups can never observe a held slot borrow (the
+        // assignment-into-borrowed-slot hazard).
         let old = slot_e.borrow_mut().realized.take();
         if let Some(old) = old {
             // Collected BEFORE the branch: the `None` arm needs them to
@@ -1257,10 +1240,10 @@ fn drive_dyn_anchored<H: Host>(
         }
         let realized = region.enter(|| match &kind {
             // Plain: the closure runs TRACKED inside the fresh scope —
-            // its reads are the rebuild deps (dynamic.rs).
+            // its reads are the rebuild deps.
             DynKind::Plain(f) => build_into_anchor(&backend, &registry, &anchor_e, || f(), true),
             // Guarded: the build runs UNTRACKED inside the fresh scope —
-            // only the select's reads are deps (when_switch.rs).
+            // only the select's reads are deps.
             DynKind::Guarded { build, .. } => {
                 build_into_anchor(&backend, &registry, &anchor_e, || build(), false)
             }
@@ -1303,8 +1286,7 @@ fn release_discarded<H: Host>(backend: &Rc<RefCell<H>>, nodes: &[H::Node]) {
     }
 }
 
-/// The spliced Dyn driver — port of `when_switch.rs::build_when_spliced` /
-/// `build_switch_spliced`. No anchor: the subtree's top nodes splice
+/// The spliced Dyn driver. No anchor: the subtree's top nodes splice
 /// directly into the real parent at `base`, resolved on every swap (see
 /// [`SpliceLedger`]), and the region publishes its live node count
 /// through `count` so later regions in the parent resolve theirs.
@@ -1419,8 +1401,7 @@ fn drive_dyn_spliced<H: Host>(
 type KeyedItems = Box<dyn Fn() -> Vec<(Key, Box<dyn Any>)>>;
 type KeyedRender = Box<dyn Fn(Box<dyn Any>) -> Element>;
 
-/// The spliced Keyed driver — port of `each.rs::build_spliced` +
-/// `reconcile`, the 4-pass keyed reconciler. Rows splice at `base`,
+/// The spliced Keyed driver — the 4-pass keyed reconciler. Rows splice at `base`,
 /// resolved on every pass, and the list publishes its live node count
 /// through `count` (see [`SpliceLedger`]).
 fn drive_keyed_spliced<H: Host>(
@@ -1453,7 +1434,7 @@ fn drive_keyed_spliced<H: Host>(
     state
 }
 
-/// One keyed reconcile pass — `each.rs::reconcile`, pass for pass.
+/// One keyed reconcile pass.
 fn reconcile<H: Host>(
     backend: &Rc<RefCell<H>>,
     registry: &Rc<Registry<H>>,
@@ -1587,8 +1568,7 @@ fn reconcile<H: Host>(
     }
 }
 
-/// The anchored Keyed fallback — port of `each.rs::build`'s no-splice
-/// branch: a FULL rebuild on every items change. Drop the entire previous
+/// The anchored Keyed fallback for hosts without splice support: a FULL rebuild on every items change. Drop the entire previous
 /// list scope first, clear the anchor, rebuild every row fresh (per-row
 /// state is lost — pinned as the fallback's contract by
 /// `each_append.anchored.golden`; preserving it requires splice support).
@@ -1622,10 +1602,9 @@ fn drive_keyed_anchored<H: Host>(
         }
         // Rebuild every row into the anchor through the child-splice loop
         // (plain inserts, fragments flattened, nested regions recurse) —
-        // ONE scope for the whole list, like the old fallback's single
-        // rebuilt Scope. Renders run untracked inside that scope; the
-        // fragment wrapper splices flat, so op order matches the old
-        // "build all elements, then insert_children" sequence.
+        // ONE scope for the whole list. Renders run untracked inside that
+        // scope; the fragment wrapper splices flat, so the op order is
+        // "build all elements, then insert them".
         let realized = region.enter(|| {
             build_into_anchor(
                 &backend,

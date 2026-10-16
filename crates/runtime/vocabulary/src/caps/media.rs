@@ -10,7 +10,7 @@ use runtime_shared::{Color, Easing, ImageErrorHandler, ImageLoadHandler};
 use super::noop;
 use super::{ExternalOps, ViewOps};
 
-/// The `image` primitive. Serves `walker/image.rs`.
+/// The `image` primitive. Mounted by `handlers/media.rs`.
 pub trait ImageOps: ExternalOps {
     /// Create an image node with the initial URL.
     #[allow(unused_variables)]
@@ -56,8 +56,8 @@ pub trait ImageOps: ExternalOps {
     }
 }
 
-/// The `icon` primitive (vector path data + stroke animation). Serves
-/// `walker/icon.rs`.
+/// The `icon` primitive (vector path data + stroke animation). Mounted
+/// by `handlers/media.rs`.
 pub trait IconOps: ExternalOps {
     /// Create an icon node from static vector path data.
     #[allow(unused_variables)]
@@ -110,9 +110,9 @@ pub trait IconOps: ExternalOps {
     }
 }
 
-/// The `link` primitive (in-app navigation container). Serves
-/// `walker/link.rs`. `: ViewOps` because the frozen default degrades to
-/// a non-tappable container (children still mount).
+/// The `link` primitive (in-app navigation container). `: ViewOps`
+/// because the default degrades to a non-tappable container (children
+/// still mount).
 pub trait LinkOps: ViewOps {
     /// Create a navigable container; the backend fires
     /// `config.on_activate()` on activation.

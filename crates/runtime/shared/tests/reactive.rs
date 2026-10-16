@@ -1,22 +1,8 @@
-//! The legacy reactive arena suite — `runtime_shared::reactive`.
-//!
-//! RELOCATED wholesale from `runtime-core/tests/reactive{.rs,/**}`
-//! (deletion baseline §4.2, SV-R). The subject — the arena, its
-//! generational handles, `Scope`, `batch`, `memo`, context injection,
-//! `on`/`on_defer`, `on_cleanup`, `reducer`, `resource`, `split` — all
-//! lives in `runtime-shared` and SURVIVES the walker's deletion. It is
-//! still load-bearing: `shared/src/style.rs`'s token registry drives it,
-//! and every `runtime_shared::*` reactive export is public author API
-//! through the facade.
-//!
-//! Nothing here referenced the old core except by import path, with two
-//! exceptions (both flagged in-place with a `RELOCATION NOTE`):
-//! `dispose::scope_owned_signal_freed_by_scope_after_early_dispose_is_safe`
-//! and `split::regression_stale_write_half_is_a_safe_noop_after_scope_drop`
-//! opened their owning scope by RENDERING through the walker's
-//! `TestRuntime`. The scope was scenery; both now drive
-//! `reactive::Scope` / `reactive::with_scope` directly, which exercises
-//! the same batched-free path with the walker out of the picture.
+//! The substrate reactive arena suite — `runtime_shared::reactive`: the
+//! arena, its generational handles, `Scope`, `batch`, `memo`, context
+//! injection, `on`/`on_defer`, `on_cleanup`, `reducer`, `resource`,
+//! `split`. It is load-bearing: `shared/src/style.rs`'s token registry
+//! drives it, and the `runtime_shared::*` reactive exports are public API.
 //!
 //! `runtime-world`'s own inline suite duplicates much of this by
 //! coincidence, but NOT these: `Signal::dispose()` plus the

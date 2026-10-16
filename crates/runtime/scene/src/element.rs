@@ -70,16 +70,14 @@ pub enum Element {
     Owned { element: Box<Element>, owned: Owned },
     /// A **multi-node** primitive: one payload that mounts N sibling
     /// nodes directly into the enclosing parent through a
-    /// [`register_many`](crate::Registry::register_many) handler. This is
-    /// the scene seam for the old core's `Element::Repeat` (the static
-    /// `for i in 0..n` lowering): the handler gets parent access, so a
-    /// batching backend can collapse the whole expansion into one FFI
-    /// round-trip instead of N per-node mounts.
+    /// [`register_many`](crate::Registry::register_many) handler. This
+    /// carries the static `for i in 0..n` lowering: the handler gets
+    /// parent access, so a batching backend can collapse the whole
+    /// expansion into one FFI round-trip instead of N per-node mounts.
     ///
-    /// Children-list ONLY, exactly like the old `Repeat`: it stands for
-    /// N sibling nodes, never a single subtree root, so realizing one as
-    /// a detached root (navigator screen, keyed row root, spliced hole
-    /// root) panics — the same contract the old walker enforced.
+    /// Children-list ONLY: it stands for N sibling nodes, never a single
+    /// subtree root, so realizing one as a detached root (navigator
+    /// screen, keyed row root, spliced hole root) panics.
     Many { data: Box<dyn Any> },
 }
 
@@ -369,9 +367,8 @@ fn is_region_rooted(element: &Element) -> bool {
 
 /// Run a component body — untracked, with every signal/effect it creates
 /// collected — and attach the collected scope to the returned element.
-/// This is what `#[component]` will wrap function bodies in (P6). Port of
-/// idea-lite's `component_scope`, on the kernel's
-/// [`component_scope`](runtime_world::component_scope) collector.
+/// This is what `#[component]` wraps function bodies in, built on the
+/// kernel's [`component_scope`](runtime_world::component_scope) collector.
 pub fn component_scope(f: impl FnOnce() -> Element) -> Element {
     let (element, owned) = runtime_world::component_scope(f);
     if owned.is_empty() {
@@ -407,18 +404,17 @@ pub type RetireHook = Box<dyn FnMut(Box<dyn Any>)>;
 
 /// How a Dyn hole decides and builds. The build closure is invoked by the
 /// driver INSIDE the fresh subtree's collector (`collect_owned`) — element
-/// construction runs in the new scope, exactly like the old walker's
-/// `with_scope(|| ...builder()...)`, so effects a builder creates (probe
-/// cleanups, component effects) die with the subtree they belong to.
+/// construction runs in the new scope, so effects a builder creates
+/// (probe cleanups, component effects) die with the subtree they belong
+/// to.
 pub enum DynKind {
     /// Rebuild on EVERY fire; the closure runs TRACKED (inside the fresh
-    /// scope) — its eager signal reads are the rebuild dependencies
-    /// (`dynamic.rs` semantics).
+    /// scope) — its eager signal reads are the rebuild dependencies.
     Plain(Box<dyn Fn() -> Element>),
     /// Guarded: `changed` runs TRACKED, BEFORE any teardown, and reports
     /// whether the guard value moved; on `false` the driver does nothing
     /// structurally. `build` then runs UNTRACKED inside the fresh scope
-    /// (`when_switch.rs` semantics: only the predicate's reads are deps).
+    /// (only the predicate's reads are deps).
     Guarded {
         changed: Box<dyn Fn() -> bool>,
         build: Box<dyn Fn() -> Element>,
@@ -455,8 +451,8 @@ impl DynSpec {
 
 /// A structural hole that rebuilds on EVERY dependency change. The closure
 /// runs tracked (its eager signal reads are the rebuild deps) — there is no
-/// output dedup, matching the old `Element::Dynamic` ("the closure IS the
-/// dependency source"; pinned by `dynamic_swap.anchored.golden`).
+/// output dedup: the closure IS the dependency source (pinned by
+/// `dynamic_swap.anchored.golden`).
 ///
 /// Deliberately explicit: swapping a subtree is heavier than rebinding a
 /// value prop, so it should be visible at the call site.
@@ -472,7 +468,7 @@ pub fn dyn_element(f: impl Fn() -> Element + 'static) -> Element {
 /// UNTRACKED) only when that value actually changes. A re-fire whose guard
 /// value is unchanged does nothing structurally.
 ///
-/// This is the old walker's `last_active` dedup (`when_switch.rs`): a
+/// The dedup matters because a
 /// `when` predicate that reads extra signals beyond its boolean (a
 /// `version` tick, say) must not recreate the branch's gesture nodes
 /// mid-press when only the tick changed. `when(cond, then, else)` lowers

@@ -4,7 +4,7 @@
 //! handles (`AnimatedValue<f32>`, `AnimatedValue<[f32; 4]>`, etc.)
 //! and the platform-specific backend that ultimately writes to a
 //! native widget. Each backend implements the
-//! `Backend::set_animated_*` family for whichever properties it
+//! `AnimationOps::set_animated_*` family for whichever properties it
 //! supports natively; everything else is a documented no-op
 //! (default trait impl) so author code remains portable.
 //!
@@ -13,7 +13,7 @@
 //! [`AnimProp`] is partitioned into scalar (`f32`) and color
 //! (`[f32; 4]` sRGB) variants, mirroring the way most platforms
 //! split their property-animator APIs. The variant determines
-//! which `Backend::set_animated_*` method receives the value —
+//! which `AnimationOps::set_animated_*` method receives the value —
 //! sending a `BackgroundColor` to `set_animated_f32` is a
 //! compile-time non-issue (it's an enum) and a runtime no-op
 //! (backends ignore unrecognized variants).

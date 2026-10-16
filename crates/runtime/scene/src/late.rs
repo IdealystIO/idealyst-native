@@ -32,9 +32,8 @@
 //! the release data-prune evicts its statics from main.
 //! `tests/lazy-payload-split` measures exactly this.
 //!
-//! Keying by host type (rather than a single global queue) is inherited
-//! from the old core's `defer_external_registration` and for the same
-//! reason: a process that hosts more than one backend at once (the dev
+//! The queue is keyed by host type (rather than one global queue) because
+//! a process that hosts more than one backend at once (the dev
 //! recorder alongside a web boot in one test binary) must never apply one
 //! host's registration to another's registry.
 

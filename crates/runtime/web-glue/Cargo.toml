@@ -1,16 +1,17 @@
-# web-glue — the framework-owned wasm ⇄ JS boundary (phase 1 proof of
-# concept of docs/proposals/own-web-bindings.md).
+# web-glue — the framework-owned wasm ⇄ JS boundary
+# (docs/proposals/own-web-bindings.md).
 #
-# Replaces what wasm-bindgen / web-sys / js-sys give the framework today:
+# Provides what wasm-bindgen / web-sys / js-sys would otherwise give the
+# framework:
 # JS object handles, strings, callbacks, promises-as-futures, exceptions —
 # with the JS for every binding carried INSIDE the linked wasm (import
 # names + one custom section) and turned into `pkg/<lib>.js` by a streaming
 # build pass (`wasm_carve::glue` + `build_web::own_glue`) that never walks a
 # function body.
 #
-# Zero dependencies on purpose (the one optional dep is the temporary
-# hybrid bridge): it sits under every web crate that will be ported onto
-# it, and it must not drag wasm-bindgen back in.
+# Zero dependencies on purpose (the one optional dep is the hybrid
+# bridge below): it sits under every framework web crate, and it must
+# not drag wasm-bindgen in.
 
 [package]
 name = "web-glue"
@@ -21,8 +22,8 @@ description = "Framework-owned wasm <-> JS bindings: handles, strings, callbacks
 
 [features]
 # HYBRID-BRIDGE: `web_glue::bridge`, the crossing between web-glue handles
-# and wasm-bindgen values for a page that links both. After phase 3 it
-# carries only wgpu's crossings (phase 5's hybrid mode): canvas-native's
+# and wasm-bindgen values for a page that links both. It carries only
+# wgpu's crossings: canvas-native's
 # web-sys-typed entry points for canvas-vello, and canvas-vello's
 # texture-layer stream into its web-sys `<video>`. See `src/bridge.rs`.
 # Own-mode builds never enable it, so their graph stays free of wasm-bindgen.

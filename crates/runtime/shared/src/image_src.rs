@@ -1,12 +1,8 @@
 //! The `image()` `src` contract — one set of rules every backend applies.
 //!
-//! An `image()` used to mean something different on almost every backend:
-//! web resolved a relative path against the page, Linux/Windows/wgpu read it
-//! as a file relative to the working directory, Apple and Android rejected
-//! it; `http(s)` was silently blank on Windows and wgpu; percent-encoded
-//! `data:` URIs failed on three backends. CrewForge's kiosk found it the hard
-//! way: a relative `/attachments/<id>` rendered on web and drew a blank tile
-//! on iOS with no error. The full contract is `docs/image-src.md`; this module
+//! Without one contract an `image()` src means something different per
+//! backend (a relative `/attachments/<id>` rendering on web and drawing a
+//! blank tile on iOS with no error). The full contract is `docs/image-src.md`; this module
 //! is its parser, shared by every backend (web included — it is pure Rust and
 //! tiny, unlike the decoders in `backend-image-source`).
 //!

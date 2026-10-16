@@ -16,7 +16,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
-/// Decision returned from an [`on_blur`](Bound::on_blur) handler when an input
+/// Decision returned from a text input's `on_blur` handler when an input
 /// is about to lose focus via the dismiss path (an outside tap / click, or a
 /// programmatic blur). Lets the author veto the blur — e.g. keep focus while a
 /// field is mid-validation.

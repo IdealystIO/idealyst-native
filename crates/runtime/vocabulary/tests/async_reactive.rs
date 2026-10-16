@@ -1,5 +1,5 @@
-//! `glue::{resource, mutation}` — the new-core async-reactive mirrors
-//! (`src/async_reactive.rs`).
+//! `glue::{resource, mutation}` — the world-kernel async-reactive
+//! primitives (`src/async_reactive.rs`).
 //!
 //! Own integration test (own process) because it installs a buffering
 //! test executor through the global first-install-wins
@@ -151,7 +151,7 @@ fn resource_completion_stages_until_flush_then_commits() {
 
 /// Dep change cancels the in-flight fetch (token + on_cancel callback)
 /// and the superseded fetch's late completion is discarded by the
-/// sequence guard — old-core parity for the core race.
+/// sequence guard.
 #[test]
 fn resource_dep_change_cancels_and_discards_stale_result() {
     ensure_test_executor();
@@ -198,7 +198,7 @@ fn resource_dep_change_cancels_and_discards_stale_result() {
 }
 
 /// A failed refetch keeps the previous data (no empty-flash) and
-/// surfaces the error — the old-core stale-data-retention contract.
+/// surfaces the error (stale-data retention).
 #[test]
 fn resource_error_keeps_data_from_prior_success() {
     ensure_test_executor();
@@ -239,9 +239,8 @@ fn resource_error_keeps_data_from_prior_success() {
 }
 
 /// `refetch()` re-runs the fetcher without a dep change; multiple
-/// refetches in one turn COALESCE into one fetch (the documented
-/// staged-counter divergence — the old core issued N fetches whose
-/// first N−1 results the stale guard discarded anyway).
+/// refetches in one turn COALESCE into one fetch (staged counter writes
+/// compose; module docs).
 #[test]
 fn resource_refetch_reruns_fetcher_and_coalesces_per_flush() {
     ensure_test_executor();
@@ -306,7 +305,7 @@ fn resource_reads_subscribe_reactive_consumers() {
     });
 }
 
-/// THE new-core hazard this module exists to guard (module docs): the
+/// THE hazard this module exists to guard (module docs): the
 /// owning scope unmounts while a fetch is in flight; the completion
 /// lands afterwards. The kernel panics on stale-handle writes, so the
 /// completion must consult the cancel token and drop itself silently.
@@ -369,8 +368,8 @@ fn regression_dead_world_after_async_completion_is_noop() {
 
 /// A resource created inside an EFFECT body anchors to that effect: the
 /// re-run tears the previous instance down (its fetch cancels, its
-/// slots free) before a fresh one is built — the old-core "scope
-/// adopts, disposes on re-run" contract via `anchor_to_scope`.
+/// slots free) before a fresh one is built — "disposed on re-run" via
+/// `anchor_to_scope`.
 #[test]
 fn resource_created_inside_effect_dies_with_the_rerun() {
     ensure_test_executor();
@@ -411,9 +410,8 @@ fn resource_created_inside_effect_dies_with_the_rerun() {
 }
 
 /// Creation outside any `World::enter` panics — the glue-wide posture
-/// (worlds are transient; there is no thread-lifetime home). Divergence
-/// from the old core's `persist()` documented in the module/migration
-/// docs.
+/// (worlds are transient; there is no thread-lifetime home — module
+/// docs).
 #[test]
 #[should_panic(expected = "outside World::enter")]
 fn resource_outside_world_panics() {

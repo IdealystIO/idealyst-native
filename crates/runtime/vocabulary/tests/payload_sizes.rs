@@ -1,7 +1,7 @@
 //! Size pins for the hot-path primitive payloads.
 //!
-//! The create-rows benchmark residual (+23% vs the old core at 10k
-//! rows) was pure payload copying: `StyleProp::Sheet` carried a
+//! The create-rows benchmark regression (+23% at 10k rows) was pure
+//! payload copying: `StyleProp::Sheet` carried a
 //! `StyleApplication` INLINE (~2.3 KB — the `overrides: StyleRules`
 //! field), which set every prim payload's size to ~2.5 KB, and each
 //! builder-chain move / `PrimCell` box / `take()` memcpy'd the whole

@@ -1,11 +1,9 @@
-//! Lazy chunk-boundary behavior (`handlers/lazy.rs`) — the new-core
-//! port of the old walker's `Element::Lazy` driver, exercised against
+//! Lazy chunk-boundary behavior (`handlers/lazy.rs`), exercised against
 //! the recording `host-mock` harness with its manually-pumped executor
 //! (`host_mock::pump`) so deferred chunk loads are deterministic:
 //! placeholder-first paint, body swap on load, SSR loading-UI freeze,
 //! error → retry, teardown-mid-load abandonment, and chunk-scope
-//! ownership of construction-time state (the `ScopedLoad` regression,
-//! re-expressed at the mount site).
+//! ownership of construction-time state.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -207,9 +205,8 @@ fn placeholder_renders_then_body_mounts_on_chunk_load() {
 }
 
 /// SSR gate (`renders_lazy_chunks() == false`): the untouched loading
-/// UI is the final output — no load is ever spawned, mirroring the old
-/// walker's server contract (the client hydrates the placeholder and
-/// then loads the real chunk).
+/// UI is the final output — no load is ever spawned (the client
+/// hydrates the placeholder and then loads the real chunk).
 #[test]
 fn ssr_keeps_loading_ui_and_never_spawns() {
     let h = harness(false);
@@ -242,9 +239,9 @@ fn ssr_keeps_loading_ui_and_never_spawns() {
 
 /// Teardown mid-load: dropping the enclosing subtree before the chunk
 /// resolves must abandon the load — the body thunk is never invoked,
-/// nothing touches the (detached) container. On the new core this falls
-/// out of ownership (the swap effect died with the subtree; the late
-/// tick bump notifies nobody) rather than an explicit cancelled flag.
+/// nothing touches the (detached) container (the swap effect died with
+/// the subtree, and the teardown-flipped `cancelled` flag stops the late
+/// continuation).
 #[test]
 fn regression_teardown_mid_load_abandons_chunk() {
     let h = harness(true);
@@ -282,8 +279,7 @@ fn regression_teardown_mid_load_abandons_chunk() {
 
 /// Load failure paints the error UI (with a live retry handle);
 /// retrying re-mounts the loading UI and re-runs the loader; a
-/// successful second attempt mounts the body. Ports the old walker's
-/// weak-retry-holder contract.
+/// successful second attempt mounts the body (the weak retry holder).
 #[test]
 fn error_ui_mounts_and_retry_reloads() {
     let h = harness(true);
@@ -351,9 +347,9 @@ fn error_ui_mounts_and_retry_reloads() {
     drop(realized);
 }
 
-/// The `ScopedLoad` regression, at its new-core seam: reactive state the
-/// chunk creates eagerly during CONSTRUCTION (an `Element::External`
-/// extension allocating signals in its constructor — the whiteboard
+/// Regression: reactive state the chunk creates eagerly during
+/// CONSTRUCTION (a third-party extension allocating signals in its
+/// constructor — the whiteboard
 /// `CoreCanvas::new()` shape) must be owned by the chunk subtree and
 /// freed at teardown. The mount handler invokes the body thunk inside
 /// `component_scope`, so construction-time signals fold into the
@@ -545,9 +541,9 @@ mod container_sizing {
     //! showing, and that wrapper is what the parent's flex chain sees.
     //! Unstyled it was a plain block box: every `flex: 1 1 0; min-height:
     //! 0` route body inside collapsed to 0 px and its toolbar overflowed
-    //! into an ancestor that intercepted every click — CrewForge
-    //! FRAMEWORK-NOTES #116, 69 of 308 specs, every one that clicks inside
-    //! a lazily-loaded area body.
+    //! into an ancestor that intercepted every click — in CrewForge, 69 of
+    //! 308 specs failed, every one that clicks inside a lazily-loaded area
+    //! body.
 
     use super::*;
     use runtime_shared::primitives::lazy::lazy_boundary_fill_rules;

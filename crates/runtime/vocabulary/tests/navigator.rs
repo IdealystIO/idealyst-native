@@ -1,10 +1,8 @@
-//! Navigator handler unit tests (P3/P6 port of `walker/navigator.rs` +
-//! the swap/stack SDK handlers): screen lifecycle via `Realized`
+//! Navigator handler unit tests: screen lifecycle via `Realized`
 //! retention, the dispatch-on-flush command channel, world-context
 //! navigation state, and the screen style-overlay fold — against the
 //! recording `host-mock` harness, which implements the caps surface
-//! natively (the op *sequence* parity lives in `scene-parity`'s nav
-//! goldens).
+//! natively (the op *sequence* lives in `scene-parity`'s nav goldens).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -26,7 +24,7 @@ use runtime_world::inject;
 /// installed: width + height + flex_grow ("none" when absent) — enough
 /// to prove the overlay fold merged handler rules over the screen's
 /// own. Captured `create_link` activations land on
-/// `h.shared.link_activations` (the P6 route-link tests fire them like
+/// `h.shared.link_activations` (the route-link tests fire them like
 /// platform clicks).
 fn harness() -> Harness {
     let h = Harness::new();
@@ -475,8 +473,8 @@ fn stack_screen_root_gets_the_flow_fill_overlay() {
         // The initial screen's root gets ONE apply_style carrying the
         // flow-fill overlay FOLDED over its own rules — the
         // `set_screen_style_overlay` override-layer contract: the
-        // overlay wins on conflicts (width → 100%, exactly like the old
-        // override layer which resolves last), while fields the overlay
+        // overlay wins on conflicts (width → 100%; the override layer
+        // resolves last), while fields the overlay
         // doesn't set survive from the screen's own style (height 20px).
         let log = h.ops();
         assert!(
@@ -815,7 +813,7 @@ fn dropping_the_navigator_drops_every_cached_screen() {
 }
 
 // ===========================================================================
-// Robot nav registry (P5 remainder) — the handler-side wiring:
+// Robot nav registry — the handler-side wiring:
 // registration at mount, live back-stack snapshots, dispatch marks
 // "current", teardown deregisters. The verb JSON shape is pinned in
 // `robot.rs`'s bridge tests; this exercises the registry against REAL
@@ -1019,13 +1017,12 @@ fn regression_navigator_context_dies_with_the_navigator() {
 }
 
 // ===========================================================================
-// P6: header-options carrier (Screen + ScreenChrome) + link activator
+// Header-options carrier (Screen + ScreenChrome) + link activator
 // ===========================================================================
 
 /// The stack republishes `screen_chrome` on EVERY navigation, even when
 /// the two screens carry IDENTICAL (absent) options — the screen
-/// underneath swapped, and the old handler used `set_always` for
-/// exactly this. The rev stamp is what makes the guarded new-core `set`
+/// underneath swapped. The rev stamp is what makes the guarded `set`
 /// notify; a plain options payload would compare equal and freeze the
 /// author header.
 #[test]
@@ -1128,7 +1125,7 @@ fn stack_screen_options_follow_the_active_screen() {
 
 /// A route link mounted in a NESTED navigator's screen targets the
 /// INNER navigator (the innermost `LinkActivator` shadows the outer,
-/// save/restore) — the old ambient-navigator stack invariant. The
+/// save/restore). The
 /// outer link (in the outer screen but outside the inner navigator)
 /// keeps targeting the outer.
 #[test]
@@ -1207,8 +1204,7 @@ fn link_activator_targets_the_innermost_navigator() {
 }
 
 /// A route link mounted OUTSIDE any navigator silently no-ops on
-/// activation — the old `link()` posture (never a panic; chrome taps
-/// must not crash).
+/// activation (never a panic; chrome taps must not crash).
 #[test]
 fn link_route_outside_a_navigator_noops() {
     use runtime_vocabulary::builders::link;
@@ -1228,8 +1224,7 @@ fn link_route_outside_a_navigator_noops() {
 }
 
 /// The SDK's presentation label rides `.nav_label(...)` into the robot
-/// nav registry's `type_name` (wire parity with the old bridge, which
-/// served `std::any::type_name::<SwapPresentation>()`); bare vocabulary
+/// nav registry's `type_name`; bare vocabulary
 /// mounts keep the builder-name fallback (pinned by the two
 /// registry tests above).
 #[cfg(feature = "robot")]
@@ -1256,14 +1251,13 @@ fn robot_nav_snapshot_carries_the_sdk_presentation_label() {
 }
 
 // ===========================================================================
-// SSG route discovery (the new-core leg of `backend_ssr::render_all`)
+// SSG route discovery (`backend_ssr::newcore::render_all`)
 // ===========================================================================
 
 /// Both navigator mounts publish their screen path patterns to the
-/// shared (old-core, thread-local) route collector — the hook the SSG
-/// crawl drains after each page render to discover the next literal
-/// paths. Without this, `backend_ssr::newcore::render_all` would only
-/// ever emit `/` for a new-core app.
+/// shared (thread-local) route collector — the hook the SSG crawl drains
+/// after each page render to discover the next literal paths. Without
+/// this, `backend_ssr::newcore::render_all` would only ever emit `/`.
 #[test]
 fn navigator_mounts_publish_routes_to_the_ssg_collector() {
     use runtime_shared::primitives::navigator::{enable_route_collector, take_route_collector};
@@ -1325,7 +1319,7 @@ fn navigator_mounts_publish_routes_to_the_ssg_collector() {
 /// the same app hand out structurally identical handles, and if those
 /// compared equal, re-targeting a control from one navigator to the other
 /// would be swallowed by the guarded `set` and the UI would keep driving
-/// the old navigator.
+/// the previous navigator.
 #[test]
 fn nav_handles_compare_by_navigator_identity() {
     let h = harness();
@@ -1454,7 +1448,7 @@ fn nested_navigator_base_is_the_concrete_parent_path() {
 }
 
 // ===========================================================================
-// Route specificity (FRAMEWORK-NOTES #72)
+// Route specificity
 // ===========================================================================
 
 const NEW_ITEM: Route<()> = Route::new("new-item", "/new");

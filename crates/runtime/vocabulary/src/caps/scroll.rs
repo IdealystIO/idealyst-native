@@ -11,10 +11,9 @@ use super::noop;
 use super::ExternalOps;
 
 /// The `scroll_view` primitive plus generic node scroll-offset access
-/// (the navigator substrate's URL-sync scroll snapshot/restore reads
-/// any node's offset, so `node_scroll`/`set_node_scroll` live here with
-/// the scrolling capability rather than on the navigator). Serves
-/// `walker/scroll_view.rs` and `walker/navigator.rs`.
+/// (the navigator's URL-sync scroll snapshot/restore reads any node's
+/// offset, so `node_scroll`/`set_node_scroll` live here with the
+/// scrolling capability rather than on the navigator).
 pub trait ScrollOps: Host {
     /// Create a scrolling container (`horizontal` selects the axis;
     /// `on_scroll` fires per offset change in CSS px / native points).
@@ -109,8 +108,8 @@ pub trait ScrollOps: Host {
 }
 
 /// Safe-area treatment for opted-in containers (`.safe_area(...)`).
-/// Serves the safe-area effect in `walker/style.rs`; the walker picks
-/// padding for views and content insets for scroll views.
+/// The style service's safe-area effect picks padding for views and
+/// content insets for scroll views.
 pub trait SafeAreaOps: Host {
     /// Add the platform's safe-area insets to the flagged sides'
     /// padding (combining with author padding, not clobbering).
@@ -140,8 +139,8 @@ pub trait SafeAreaOps: Host {
 }
 
 /// The `flat_list` / `virtualizer` primitive — backend-owned windowed
-/// rendering over framework-mounted rows. Serves
-/// `walker/virtualizer.rs` + `walker/cleanup.rs`.
+/// rendering over framework-mounted rows. Mounted by
+/// `handlers/virtualizer.rs`.
 pub trait VirtualizerOps: ExternalOps {
     /// Create a virtualized list; the backend owns the visible-window
     /// math and calls the callback bundle to mount/release rows.

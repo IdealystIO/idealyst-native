@@ -224,8 +224,7 @@ fn regression_a_gc_owned_closure_keeps_running_then_is_released_when_js_collects
 
 #[test]
 fn regression_an_fn_closure_may_be_reentered_where_fn_mut_is_refused() {
-    // A `scroll` handler whose body re-fires `scroll` synchronously: the
-    // backend used `Closure<dyn Fn>` on wasm-bindgen for exactly this.
+    // A `scroll` handler whose body re-fires `scroll` synchronously.
     let depth = Rc::new(Cell::new(0));
     let max = Rc::new(Cell::new(0));
     let slot: Rc<std::cell::RefCell<Option<V>>> = Rc::new(std::cell::RefCell::new(None));

@@ -10,9 +10,9 @@ use runtime_scene::Host;
 
 use super::noop;
 
-/// The `view` primitive — the container every other default lowers to.
-/// Serves `walker/view.rs` (and, via supertrait bounds, every default
-/// that degrades to a plain container).
+/// The `view` primitive — the container every other default lowers to
+/// (via supertrait bounds, every default that degrades to a plain
+/// container). Mounted by `handlers/view.rs`.
 pub trait ViewOps: Host {
     /// Create a plain container node.
     fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node;
@@ -26,10 +26,8 @@ pub trait ViewOps: Host {
 
 /// Raw input channels installed on already-created nodes: touch, wheel,
 /// hover, OS file drag-and-drop, and the focus-preservation mark.
-/// Serves `walker/view.rs`, `walker/pressable.rs`
-/// (`mark_preserves_focus`), and `walker/external.rs` (externals get
-/// `on_touch`/`on_hover` too — which is why these live apart from
-/// [`ViewOps`]).
+/// Third-party nodes get `on_touch`/`on_hover` too — which is why these
+/// live apart from [`ViewOps`].
 pub trait InputOps: Host {
     /// Wire `handler` to the platform's raw touch delivery for `node`.
     #[allow(unused_variables)]
@@ -70,9 +68,8 @@ pub trait InputOps: Host {
     }
 }
 
-/// The `pressable` primitive — a tappable container. Serves
-/// `walker/pressable.rs`. `: ViewOps` because the frozen default
-/// degrades to a plain (non-tappable) view.
+/// The `pressable` primitive — a tappable container. `: ViewOps` because
+/// the default degrades to a plain (non-tappable) view.
 pub trait PressableOps: ViewOps {
     /// Tappable container with a click handler attached.
     #[allow(unused_variables)]

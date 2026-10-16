@@ -1,6 +1,5 @@
-//! Event-plumbing installs — the **new-core successor** of the old
-//! walker's `key_events.rs` (6), `file_drop.rs` (2) and
-//! `scroll_view_on_scroll.rs` (2).
+//! Event-plumbing installs: key events, file drop, and scroll-view
+//! `on_scroll`.
 //!
 //! What these pin that nothing else does: `caps_conformance.rs` proves
 //! each capability is *callable*, and the scene-parity goldens pin the op
@@ -11,7 +10,7 @@
 //! `shouldChangeCharactersIn`, the DOM `dragover`/`drop` pair, macOS
 //! `NSDraggingDestination`, native scroll observers) are not reachable
 //! from a host test, but they ALL consult exactly the handler these tests
-//! fire — which is why the old suites were written this way, and why
+//! fire — which is why these tests fire the handler directly, and why
 //! their absence would be silent.
 
 use std::cell::{Cell, RefCell};

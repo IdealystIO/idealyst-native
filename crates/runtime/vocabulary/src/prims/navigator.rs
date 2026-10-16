@@ -1,30 +1,20 @@
 //! Navigator payloads: `swap_navigator`, `stack_navigator`, and the
-//! `navigator_outlet` — the outlet-model navigation primitives, ported
-//! from the old `Element::Navigator` substrate + the backend-neutral
-//! `swap-navigator` / `stack-navigator` SDK handlers.
+//! `navigator_outlet` — the outlet-model navigation primitives.
 //!
-//! # What moved where (vs the old core)
-//!
-//! - The old split — framework substrate (`walker/navigator.rs` +
-//!   `primitives::navigator::shared`) vs SDK handler crates — collapses:
-//!   swap and stack are ordinary vocabulary primitives mounted through
+//! - Swap and stack are ordinary vocabulary primitives mounted through
 //!   the registry, exactly like `view`. The routing *data* types that are
 //!   Element-free and pure (`Route`, `RouteParams`, `NavCommand`,
 //!   `join_path`/`match_prefix`/`match_pattern`, the nav-base and
 //!   screen-state/route thread-local guards, the fill-rule constructors)
-//!   are REUSED from `runtime_shared::primitives::navigator` — the
-//!   sanctioned transitional dependency; they migrate here at P7.
-//! - `SwapContext`/`StackContext` become world-context values
-//!   ([`SwapNav`] / [`StackNav`], `provide`d by the handler around the
-//!   author layout build and read back with `inject`), and the one-shot
-//!   `ctx.outlet` element is replaced by the plain
+//!   are reused from `runtime_shared::primitives::navigator`.
+//! - Navigator context is a world-context value ([`SwapNav`] /
+//!   [`StackNav`], `provide`d by the handler around the author layout
+//!   build and read back with `inject`); the author layout places the
+//!   screens by splatting the plain
 //!   [`navigator_outlet`](crate::builders::navigator_outlet) builder.
-//! - `NavigatorControl` / `NavigatorHost` / `retain_scope` / the
-//!   keepalive+release_navigator cycle-break machinery all disappear:
-//!   nav-state signals and the dispatch driver effect are created inside
+//! - Nav-state signals and the dispatch driver effect are created inside
 //!   the mount handler, so the enclosing `Realized` owns them — one drop
-//!   tears the whole navigator down (design §4: "the retain_scope
-//!   machinery simplifies").
+//!   tears the whole navigator down.
 //!
 //! Screens are held as retained [`runtime_scene::Realized`] subtrees:
 //! cached (persistent-policy) screens keep their nodes + reactive scope
@@ -46,17 +36,15 @@ use runtime_world::Signal;
 use crate::style_attach::StyleProp;
 
 // ===========================================================================
-// Routing config (the new-core `NavigatorConfig` / `RouteEntry`)
+// Routing config
 // ===========================================================================
 
-/// Build typed params back from `:segment` captures — same alias as the
-/// old `ParamsFromSegments`, re-declared here because it pairs with the
-/// new-core screen builder.
+/// Build typed params back from `:segment` captures.
 pub type ParamsFromSegments = Rc<dyn Fn(&HashMap<String, String>) -> Option<Box<dyn Any>>>;
 
 /// One registered route: its (navigator-relative) URL pattern, the
 /// type-erased screen builder, and the segment→params reconstructor.
-/// The old `RouteEntry`, with the builder returning a [`Screen`] (a
+/// The builder returns a [`Screen`] (a
 /// scene `Element` plus opaque per-screen options — `Into<Screen>`
 /// keeps plain-`Element` builders source-compatible).
 pub struct NavScreenEntry {
@@ -73,9 +61,8 @@ pub struct NavScreenEntry {
 }
 
 // ===========================================================================
-// Screen — what a route's render closure returns (P6 header-options
-// carrier: the new-core port of `runtime_shared::primitives::navigator::
-// Screen`, with the body as a scene `Element`)
+// Screen — what a route's render closure returns (body + header-options
+// carrier)
 // ===========================================================================
 
 /// A renderable screen: the body `Element` plus SDK-defined options.
@@ -87,10 +74,9 @@ pub struct NavScreenEntry {
 /// [`with`](Self::with). The stack handler carries the ACTIVE screen's
 /// options through [`ScreenChrome`] / [`StackNav::screen_chrome`]; the
 /// SDK downcasts at read time. `impl From<Element> for Screen` keeps
-/// the no-options form ergonomic — every pre-existing
-/// `.screen(R, |_| element)` call site compiles unchanged.
+/// the no-options form ergonomic (`.screen(R, |_| element)`).
 ///
-/// `Rc` (not the old `Box`): the stack keeps the options on the
+/// `Rc`, not `Box`: the stack keeps the options on the
 /// back-stack entry AND republishes them into the chrome signal on
 /// every reveal — two owners.
 pub struct Screen {
@@ -128,9 +114,8 @@ impl From<Element> for Screen {
 /// The ACTIVE stack screen's chrome payload, published into
 /// [`StackNav::screen_chrome`] on every navigation. `rev`-stamped so a
 /// push/pop between screens with IDENTICAL options still notifies (the
-/// screen underneath swapped — the old handler used `set_always` for
-/// exactly this; the new kernel's guarded `set` needs an inequality,
-/// which the stamp provides).
+/// screen underneath swapped; the kernel's guarded `set` needs an
+/// inequality, which the stamp provides).
 #[derive(Clone)]
 pub struct ScreenChrome {
     /// Publish counter (monotonic per navigator; equality key).
@@ -146,26 +131,22 @@ impl PartialEq for ScreenChrome {
 }
 
 // ===========================================================================
-// LinkActivator — the ambient route-link seam (P6 link(route=…) port)
+// LinkActivator — the ambient route-link seam (`link(route = …)`)
 // ===========================================================================
 
 /// The ambient link activator: how a declarative `link(route = …)`
 /// resolves to the ENCLOSING navigator's dispatch. Each navigator
-/// `provide`s one while building its screens and its author layout
-/// (save/restore around the build window, like [`SwapNav`]): the swap
-/// stages `Select`, the stack stages `Push` — the same
-/// push-vs-select-by-navigator-kind contract the old
-/// `NavigatorControl::install_link_activator` carried.
+/// `provide`s one while building its screens (owned by each screen's
+/// scope) and its author layout: the swap stages `Select`, the stack
+/// stages `Push`.
 ///
-/// The vocabulary link handler captures it AT MOUNT (the new-core
-/// counterpart of the old construction-time ambient capture — builders
-/// are pure data here, and construction + mount are the same
-/// synchronous pass). A link mounted outside any navigator captures
-/// `None` and silently no-ops on activation (old contract). Same
-/// documented limitation as [`ScreenNav`](crate::prims::ScreenNav):
-/// a `Dyn` region rebuilt later re-captures whatever context was
-/// provided last (world context has no scoping); the recapture rides
-/// the P3 driver work.
+/// The vocabulary link handler captures it AT MOUNT (builders are pure
+/// data, and construction + mount are the same synchronous pass). A link
+/// mounted outside any navigator captures `None` and silently no-ops on
+/// activation. Same documented limitation as
+/// [`ScreenNav`](crate::prims::ScreenNav): a `Dyn` region rebuilt later
+/// re-captures whatever context was provided last (world context has no
+/// scoping).
 #[derive(Clone)]
 pub struct LinkActivator {
     activate: Rc<dyn Fn(&'static str, String, Box<dyn Any>)>,
@@ -185,9 +166,9 @@ impl LinkActivator {
     }
 }
 
-/// The kind-agnostic routing config (old `NavigatorConfig`, minus
-/// `defer_initial_mount` — web's deferred URL-driven initial mount is
-/// P3-web work and rides the url_sync port, not this handler).
+/// The kind-agnostic routing config. There is no deferred initial
+/// mount: the launch URL is seeded before the synchronous mount (see the
+/// handler's "URL sync" docs).
 pub struct NavConfig {
     pub initial: &'static str,
     pub initial_path: &'static str,
@@ -212,19 +193,17 @@ impl NavConfig {
 }
 
 // ===========================================================================
-// Value types (ported from the SDK crates — the vocabulary cannot depend
-// on swap-navigator/stack-navigator, so the enums are re-declared)
+// Value types (re-declared here: the vocabulary cannot depend on the
+// swap-navigator/stack-navigator SDK crates, which depend on it)
 // ===========================================================================
 
 /// When a swap screen's subtree is materialized and whether it survives
-/// a switch away (old `swap_navigator::MountPolicy`). NOTE the old
-/// handler never implemented eager mounting — `EagerPersistent` behaves
-/// exactly like `LazyPersistent` there, and this port preserves that
-/// behavior rather than inventing it.
+/// a switch away. NOTE eager mounting is not implemented —
+/// `EagerPersistent` behaves exactly like `LazyPersistent`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "remote", derive(serde::Serialize, serde::Deserialize))]
 pub enum MountPolicy {
-    /// Reserved: behaves like `LazyPersistent` (old-handler parity).
+    /// Reserved: behaves like `LazyPersistent`.
     EagerPersistent,
     /// Mount on first activation; keep mounted (detached `Realized`)
     /// across switches — the default.
@@ -235,8 +214,7 @@ pub enum MountPolicy {
     LazyDisposing,
 }
 
-/// What happens to a stack screen when a `push` covers it (old
-/// `stack_navigator::StackRetention`).
+/// What happens to a stack screen when a `push` covers it.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "remote", derive(serde::Serialize, serde::Deserialize))]
 pub enum StackRetention {
@@ -254,14 +232,13 @@ pub enum StackRetention {
 
 /// Builds a route's `(url, typed_params)` for a bare-name selection
 /// (`SwapNav::on_select`). `None` when the route needs path params a
-/// bare name can't supply — the old select-args fix: dispatching
-/// placeholder `""`/`()` values corrupted the path mirror and panicked
-/// on non-unit-params routes.
+/// bare name can't supply: dispatching placeholder `""`/`()` values
+/// would corrupt the path mirror and panic on non-unit-params routes.
 pub type SelectArgs = Rc<dyn Fn() -> Option<(String, Box<dyn Any>)>>;
 
 // ===========================================================================
-// World-context values (the old SwapContext/StackContext, minus the
-// one-shot outlet element — authors splat `navigator_outlet()` instead)
+// World-context values (authors splat `navigator_outlet()` for the
+// screens)
 // ===========================================================================
 
 /// Swap-navigator context, `provide`d into the world context for the
@@ -304,8 +281,7 @@ pub struct StackNav {
     /// Pop the top screen (no-op at the root). Handler-safe.
     pub pop: Rc<dyn Fn()>,
     /// The active screen's chrome payload (its [`Screen`] options),
-    /// republished on EVERY navigation — the old
-    /// `NavigatorHost::screen_chrome` slot. The stack SDK's
+    /// republished on EVERY navigation. The stack SDK's
     /// `header_state` downcasts it to `StackScreenOptions` and derives
     /// the `StackHeaderState` an author `StackHeader` renders.
     pub screen_chrome: Signal<ScreenChrome>,
@@ -315,10 +291,10 @@ pub struct StackNav {
 // NavHandle — the imperative handle (`.on_handle(...)` on the builders)
 // ===========================================================================
 
-/// Typed imperative handle to a live navigator — the new-core
-/// counterpart of the SDK `SwapHandle`/`StackHandle` pair, unified
-/// (the command vocabulary distinguishes the kinds; a swap ignores
-/// stack verbs and vice versa, same as the old dispatchers). Cheap to
+/// Typed imperative handle to a live navigator, for both kinds (the SDK
+/// `SwapHandle`/`StackHandle` wrap it; the command vocabulary
+/// distinguishes the kinds; a swap ignores stack verbs and vice versa).
+/// Cheap to
 /// clone; safe to call from event handlers (dispatch only stages).
 #[derive(Clone)]
 pub struct NavHandle {
@@ -535,7 +511,7 @@ pub struct SwapNavigatorPrim {
     pub on_handle: Option<Box<dyn FnOnce(NavHandle)>>,
     /// Presentation label for introspection (`NavSnapshot::type_name`).
     /// `None` ⇒ the builder name (`"swap_navigator"`). The SDK sets its
-    /// old presentation type name for wire parity with the old bridge.
+    /// presentation type name.
     pub nav_label: Option<&'static str>,
 }
 
@@ -557,7 +533,7 @@ pub struct StackNavigatorPrim {
 /// The `navigator_outlet` primitive — the single hole an author layout
 /// splats to mark where the active screen renders. Style-less outlets
 /// get the fill default (`outlet_fill_rules`); an author style replaces
-/// it entirely (old `dispatch_navigator_outlet` contract).
+/// it entirely.
 pub struct NavigatorOutletPrim {
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,

@@ -1,12 +1,12 @@
-//! `scoped_scheduling` — the new-core anchors behind glue's
+//! `scoped_scheduling` — the world anchors behind glue's
 //! `after_ms_scoped` / `raf_loop_scoped` / `session::after_ms` and the
-//! vocabulary `timeline!` mirror.
+//! vocabulary `timeline!`.
 //!
 //! Own integration test (own process) because it installs a buffering
 //! test scheduler through the global first-install-wins
 //! `runtime_shared::scheduling::install_scheduler` slot — the same
-//! isolation rationale as the gpu backend's newcore suite, which this
-//! harness mirrors.
+//! isolation rationale as `render-wgpu`'s `tests/newcore.rs`, whose
+//! harness shape this follows.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -17,8 +17,8 @@ use runtime_vocabulary::glue;
 use runtime_world::{collect_owned, effect, signal, World};
 
 // ===========================================================================
-// Test scheduler — buffering, thread-local, manually pumped (the gpu
-// newcore suite's shape; raf_loop additionally retained + cancellable
+// Test scheduler — buffering, thread-local, manually pumped (the
+// render-wgpu suite's shape; raf_loop additionally retained + cancellable
 // because raf_loop_scoped is under test here).
 // ===========================================================================
 
@@ -154,8 +154,8 @@ fn steal_one_raf() -> Box<dyn FnMut() + 'static> {
 // ===========================================================================
 
 /// The effect-run anchor: a scoped timer registered inside an effect
-/// body dies when that effect RE-RUNS (the old core's "timers die when
-/// the surrounding `effect!` re-runs" contract) — and a queued dispatch
+/// body dies when that effect RE-RUNS ("timers die when the surrounding
+/// `effect!` re-runs") — and a queued dispatch
 /// from before the re-run is inert (dead-flag, not just cancel).
 #[test]
 fn effect_anchored_timer_cancels_on_rerun() {
@@ -237,8 +237,8 @@ fn nested_raf_loop_inherits_the_registering_anchor() {
 }
 
 /// Outside any scope (no effect, no entered world, no deferred body)
-/// the scoped variants are inert — old-core parity ("the captured task
-/// is dropped immediately").
+/// the scoped variants are inert (the captured task is dropped
+/// immediately).
 #[test]
 fn outside_any_scope_scoped_variants_are_inert() {
     ensure_test_scheduler();
@@ -252,9 +252,8 @@ fn outside_any_scope_scoped_variants_are_inert() {
     assert!(!fired.get(), "no scope → no dispatch, mirroring the old core");
 }
 
-/// The `timeline!` mirror rides `glue::session::after_ms`: acts
-/// registered from an effect body dispatch through the scheduler under
-/// the new anchors, and acts whose owner died first stay inert. The
+/// `timeline!` rides `glue::session::after_ms`: acts registered from an
+/// effect body dispatch through the scheduler under the world anchors, and acts whose owner died first stay inert. The
 /// animate target is a duck-typed probe (the macro only needs
 /// `.clone()` + `.animate(animator)`), keeping the assertion on the
 /// SCHEDULING path — AV delivery is glue::animation's own concern.
@@ -316,16 +315,12 @@ fn session_animated_returns_the_shared_registry_instance() {
 // ===========================================================================
 // Teardown safety: the "browser already dispatched it" window.
 //
-// Ports of the old core's two documented CRASH regressions
-// (`runtime-core/tests/scheduling_scoped.rs::
-// {raf_loop_scoped,after_ms_scoped}_does_not_fire_after_scope_drop_even_if_
-// browser_already_dispatched`). A host can dispatch a callback that was
+// Two CRASH regressions. A host can dispatch a callback that was
 // already queued for the current tick even after the handle was
 // cancelled, so cancellation ALONE is not enough — hence the anchor's
 // `dead` flag. Both bodies read a scope-owned signal, which is what
-// turns "the body ran" into a hard abort rather than a wrong pixel: on
-// the new kernel a read through a freed slot PANICS ("stale handle"),
-// mirroring the old arena's "signal used after its scope was dropped".
+// turns "the body ran" into a hard abort rather than a wrong pixel: a
+// read through a freed slot PANICS ("stale handle").
 // ===========================================================================
 
 #[test]

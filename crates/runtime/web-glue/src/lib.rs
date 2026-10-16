@@ -1,8 +1,8 @@
 //! The framework-owned wasm ⇄ JS boundary.
 //!
-//! Phase 1 (proof of concept) of `docs/proposals/own-web-bindings.md`:
-//! everything the framework takes from wasm-bindgen / web-sys / js-sys,
-//! without them.
+//! Everything the framework would otherwise take from wasm-bindgen /
+//! web-sys / js-sys, without them (design:
+//! `docs/proposals/own-web-bindings.md`).
 //!
 //! | need                     | here                                   |
 //! |--------------------------|----------------------------------------|

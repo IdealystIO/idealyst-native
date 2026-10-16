@@ -369,10 +369,10 @@ mod tests {
         );
     }
 
-    /// `collect_arg_idents` used to SKIP a non-ident parameter, which
-    /// built a shorter argument tuple than the inner fn's arity —
-    /// a wrong-arity call the author saw as a baffling type error
-    /// inside macro-generated code. Refuse the whole split instead.
+    /// Regression: skipping a non-ident parameter in `collect_arg_idents`
+    /// builds a shorter argument tuple than the inner fn's arity — a
+    /// wrong-arity call the author sees as a baffling type error inside
+    /// macro-generated code. Refuse the whole split instead.
     #[test]
     fn destructuring_parameter_is_refused_not_silently_dropped() {
         assert_eq!(

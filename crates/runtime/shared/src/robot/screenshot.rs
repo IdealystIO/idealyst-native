@@ -9,9 +9,9 @@
 //! this one snapshots native widgets / fonts / the live view hierarchy
 //! instead of re-rendering the scene model through wgpu.
 //!
-//! [`crate::mount`] registers this automatically when the backend reports
-//! [`Backend::supports_screenshot`](crate::Backend::supports_screenshot)
-//! — so a backend that can't capture natively (or a `MockBackend`) leaves
+//! A backend's boot registers this when it reports
+//! `IntrospectionOps::supports_screenshot` — so a backend that can't
+//! capture natively (or a mock backend) leaves
 //! the replay verb untouched rather than shadowing it with an
 //! "unsupported" handler.
 
@@ -19,8 +19,8 @@ use crate::host::Screenshot;
 
 /// The capture entry point the bridge handler drives. Boxed callback so
 /// async backends share the signature; native backends fire it inline.
-/// Mirrors [`Backend::capture_screenshot`](crate::Backend::capture_screenshot)
-/// minus the `&self`, so [`crate::mount`] can hand us a closure that
+/// Mirrors `IntrospectionOps::capture_screenshot` minus the `&self`, so
+/// the backend's boot can hand us a closure that
 /// borrows the backend without leaking the backend's generic type into
 /// the bridge registry.
 pub type CaptureFn = dyn Fn(Box<dyn FnOnce(Result<Screenshot, String>)>);

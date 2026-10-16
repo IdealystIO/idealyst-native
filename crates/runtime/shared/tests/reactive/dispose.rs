@@ -2,11 +2,10 @@
 //! signals (per-item state in dynamic collections, created in handlers /
 //! async where no reactive scope is active).
 //!
-//! Regression context: the arena's adversarial review of todo-app run-3
-//! (2026-07-21) found per-item `done` signals created in add-handlers
-//! leaking permanently on every add/delete cycle, with no framework-provided
-//! way to free them and no diagnostic that it was happening. `dispose()` is
-//! the fix's API half; the once-per-site dev warning is the diagnostic half
+//! Regression context: per-item `done` signals created in add-handlers
+//! leak permanently on every add/delete cycle without a way to free them.
+//! `dispose()` is the API half; the once-per-site dev warning is the
+//! diagnostic half
 //! (exercised implicitly here — these tests create unowned signals, and the
 //! suite must not spam: one line per creation site).
 
@@ -61,12 +60,7 @@ fn scope_owned_signal_freed_by_scope_after_early_dispose_is_safe() {
     // An early dispose of a scope-owned signal must not double-free when the
     // scope later drops: the scope's batched free hits a stale generation
     // and skips, same guard as everything else.
-    //
-    // RELOCATION NOTE: the old body opened the owning scope by RENDERING a
-    // `ui! { view {} }` through the walker's `TestRuntime`. The scope was
-    // incidental scenery — the subject is `reactive::Scope`'s batched free,
-    // which lives here. Driving `Scope` directly exercises the SAME free
-    // path with the walker removed from the picture.
+
     let mut scope = reactive::Scope::new();
     reactive::with_scope(&mut scope, || {
         let s = signal(10_u32);

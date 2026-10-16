@@ -33,7 +33,7 @@
 //!
 //! `#[component(lazy)]` (alias `#[lazy_component]`) compiles the component's
 //! body into a `#[wasm_split]`-annotated async function and emits a
-//! [`Element::Lazy`] that drives the load+mount lifecycle; the props cross
+//! lazy item (`runtime_vocabulary::prims::LazyPrim`) that drives the load+mount lifecycle; the props cross
 //! the boundary as the loader's argument. (The deprecated `lazy! { … }`
 //! block macro emits the same shape without props.)
 //!
@@ -92,9 +92,9 @@ pub fn lazy_boundary_fill_rules() -> Rc<crate::style::StyleRules> {
 // LazyState — lifecycle observable to author code via on_state.
 // ---------------------------------------------------------------------------
 
-/// Lifecycle phases of a `Element::Lazy`. Author code subscribes
-/// via [`LazyBuilder::on_state`] to render its own loading / error
-/// UI; the framework also mounts the [placeholder](LazyBuilder::placeholder)
+/// Lifecycle phases of a lazy boundary. Author code subscribes
+/// via `LazyBuilder::on_state` to render its own loading / error
+/// UI; the framework also mounts the `LazyBuilder::placeholder`
 /// during `Loading` / `Loaded` as an immediate fallback.
 ///
 /// On native targets the chunk is compiled in and rendered inline —
@@ -128,12 +128,7 @@ impl LazyState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LazyLoader — the load closure carried by Element::Lazy.
-// ---------------------------------------------------------------------------
-
-
-/// Failure handed to a lazy component's [`.error(..)`](LazyBuilder::on_error)
+/// Failure handed to a lazy component's `.error(..)` (`LazyBuilder::on_error`)
 /// UI when its chunk can't load. Carries the failure `message` and a `retry`
 /// handle that re-drives the load (re-running the loader under the chunk's
 /// reactive scope). Cheap to clone — both fields are `Rc`.
@@ -154,7 +149,7 @@ pub struct LazyError {
 }
 
 impl LazyError {
-    /// Construct a `LazyError`. Framework-internal — the walker builds these
+    /// Construct a `LazyError`. Framework-internal — the lazy handler builds these
     /// from a loader's `Err(message)` plus the retry closure it owns. Author
     /// code receives them, never constructs them.
     #[doc(hidden)]
@@ -195,19 +190,6 @@ impl std::fmt::Debug for LazyError {
 // `ui!`-returning closure and the slot wraps + `IntoElement`-coerces it. The
 // `#[component(lazy)]` macro generates these fields; author code never names
 // the types directly.
-
-
-
-
-
-
-
-// ---------------------------------------------------------------------------
-// LazyBuilder + lazy_split() constructor — author surface (via macro).
-// ---------------------------------------------------------------------------
-
-
-
 
 
 // ---------------------------------------------------------------------------

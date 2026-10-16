@@ -11,27 +11,21 @@ use runtime_scene::Element;
 
 use crate::style_attach::StyleProp;
 
-/// The `virtualizer` / `flat_list` primitive (`walker/virtualizer.rs`).
-///
-/// Carries the CLOSURE form of the old `Element::Virtualizer` payload.
-/// The old variant's structured metadata — `item_count` as a
-/// `Derived<usize>`, the pre-built `row_template`, `row_index_signal_id`
-/// — existed only for generator backends (Roku wire replay); per the
-/// crate docs' sanctioned lowering, generator-backend bindings are
-/// deferred and every author shape lowers to the equivalent closures
-/// (same observable reactivity on event-driven backends). What remains
-/// is exactly what runtime backends consume:
+/// The `virtualizer` / `flat_list` primitive, in CLOSURE form: no
+/// structured generator-backend metadata (`Derived<usize>` count, a
+/// pre-built `row_template`, a row-index signal id) — every author shape
+/// lowers to closures (crate docs). The fields are what runtime backends
+/// consume:
 ///
 /// - `item_count` is a plain closure; the handler's data effect calls it
 ///   so any signal reads inside subscribe, and re-fires
-///   `virtualizer_data_changed` on change — the old core's opaque
-///   (`is_opaque()`) `Derived` path.
+///   `virtualizer_data_changed` on change.
 /// - `render_item` produces a **single-root** scene [`Element`] per
 ///   index. The handler realizes each row DETACHED, in its own
 ///   ownership scope, when the platform asks for it (lazy inversion of
 ///   control: the backend owns the visible-window math).
-/// - `item_size` keeps the old `Known`/`Measured` split; the handler
-///   owns the measured-size cache exactly as the walker did.
+/// - `item_size` is the `Known`/`Measured` split; the handler owns the
+///   measured-size cache.
 /// - `layout` is the lane model (`VirtualLayout { axis, lanes,
 ///   spacing }`) that replaced `horizontal: bool` across all backends —
 ///   inert config passed to `create_virtualizer` once.

@@ -1,23 +1,18 @@
-//! `glue::primitives::lazy` — the `#[component(lazy)]` emission surface
-//! on the new core (idea-lite migration).
+//! `glue::primitives::lazy` — the `#[component(lazy)]` emission surface.
 //!
-//! Mirrors `runtime_shared::primitives::lazy`'s names and call shapes
-//! (`lazy_split`, `LazyBuilder::{placeholder,loading,on_error,
-//! on_state,with_style}`, the `LazyLoadingUi`/`LazyErrorUi` prop slots,
-//! `__into_handler`) so the retargeted macro output lands here
-//! unchanged, with ONE deliberate shape change: the loader future
-//! resolves to a **body thunk** ([`LazyBodyThunk`]), not a constructed
-//! `Element` — see `prims::lazy`'s module docs for why (construction
-//! must run under the world, inside the mount handler's swap effect,
-//! not in a naked executor poll). The `#[component(lazy)]` macro's
-//! new-core emission branch generates the thunk-returning
-//! `__lazy_body`; both shapes ride the SAME `#[wasm_split]` boundary,
-//! so the post-link splitter's chunk classification (the
-//! `__wasm_split_00___<module>___00_…` export/import naming) is
-//! identical across cores.
+//! The names and call shapes the macro output uses (`lazy_split`,
+//! `LazyBuilder::{placeholder,loading,on_error,on_state,with_style}`, the
+//! `LazyLoadingUi`/`LazyErrorUi` prop slots, `__into_handler`). The
+//! loader future resolves to a **body thunk** ([`LazyBodyThunk`]), not a
+//! constructed `Element` — see `prims::lazy`'s module docs for why
+//! (construction must run under the world, inside the mount handler's
+//! swap effect, not in a naked executor poll). The `#[component(lazy)]`
+//! emission generates the thunk-returning `__lazy_body` behind a
+//! `#[wasm_split]` boundary, which the post-link splitter classifies by
+//! the `__wasm_split_00___<module>___00_…` export/import naming.
 //!
-//! `LazyState` / `LazyError` are the shared runtime-core types (inert
-//! data + callbacks, core-agnostic by construction).
+//! `LazyState` / `LazyError` are the runtime-shared types (inert data +
+//! callbacks).
 
 use std::rc::Rc;
 
@@ -31,7 +26,7 @@ use crate::style_attach::IntoStyleProp;
 
 use crate::glue::IntoElement;
 
-/// The loading-UI slot on a lazy component's props (new-core mirror).
+/// The loading-UI slot on a lazy component's props.
 /// Wraps a `Fn() -> impl IntoElement` closure. Default: empty.
 #[derive(Default, Clone)]
 pub struct LazyLoadingUi(Option<Rc<dyn Fn() -> Element>>);
@@ -48,8 +43,7 @@ where
 
 impl LazyLoadingUi {
     /// Framework-internal: unwrap the placeholder builder for the
-    /// emission (mirror of the runtime-core signature — `Box` there,
-    /// `Box` here; the builder re-wraps in `Rc` for retry re-mounts).
+    /// emission (the builder re-wraps in `Rc` for retry re-mounts).
     #[doc(hidden)]
     pub fn __into_handler(self) -> Option<Box<dyn Fn() -> Element>> {
         self.0.map(|rc| {
@@ -59,7 +53,7 @@ impl LazyLoadingUi {
     }
 }
 
-/// The error-UI slot on a lazy component's props (new-core mirror).
+/// The error-UI slot on a lazy component's props.
 /// Wraps a `Fn(&LazyError) -> impl IntoElement` closure. Default: the
 /// load failure is logged and the loading UI stays visible.
 #[derive(Default, Clone)]
@@ -115,8 +109,7 @@ impl LazyBoundaryStyle {
     }
 }
 
-/// Builder produced by [`lazy_split`] — the new-core mirror of
-/// `runtime_shared::primitives::lazy::LazyBuilder`. Constructed by the
+/// Builder produced by [`lazy_split`]. Constructed by the
 /// `#[component(lazy)]` emission; public so the expansion (in user
 /// crates) can reach it.
 #[must_use]
@@ -126,7 +119,7 @@ pub struct LazyBuilder {
 
 impl LazyBuilder {
     /// Subscribe to lifecycle transitions (`Loading` → `Rendered` /
-    /// `Error`; `Loaded` is skipped, as on the old core).
+    /// `Error`; `Loaded` is never reported).
     pub fn on_state<F>(mut self, f: F) -> Self
     where
         F: Fn(LazyState) + 'static,
@@ -144,7 +137,7 @@ impl LazyBuilder {
         self
     }
 
-    /// Alias of [`placeholder`](Self::placeholder) (old-core parity).
+    /// Alias of [`placeholder`](Self::placeholder).
     pub fn loading<F>(self, build: F) -> Self
     where
         F: Fn() -> Element + 'static,
@@ -176,7 +169,7 @@ impl LazyBuilder {
         self
     }
 
-    /// Robot/automation anchor on the container (builder parity).
+    /// Robot/automation anchor on the container.
     pub fn test_id(mut self, id: &'static str) -> Self {
         self.prim.test_id = Some(id);
         self
@@ -190,9 +183,8 @@ impl IntoElement for LazyBuilder {
 }
 
 /// Construct a lazy boundary from a load closure — called by the
-/// `#[component(lazy)]` emission. The one-shot / retryable loader
-/// shapes are identical to the old core's; only the future's payload
-/// (the body thunk) differs.
+/// `#[component(lazy)]` emission, with a one-shot or retryable loader
+/// whose future yields the body thunk.
 pub fn lazy_split<F>(load: F) -> LazyBuilder
 where
     F: Fn() -> LazyFuture + 'static,

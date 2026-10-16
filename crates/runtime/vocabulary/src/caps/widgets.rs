@@ -10,8 +10,7 @@ use super::noop;
 use super::ExternalOps;
 
 /// The `text_input` + `text_area` primitives (single- and multi-line
-/// editors share a walker and a controlled-value pattern). Serves
-/// `walker/text_input.rs`.
+/// editors share a handler and a controlled-value pattern).
 pub trait TextInputOps: ExternalOps {
     /// Create a single-line text input (controlled `value` pattern).
     #[allow(unused_variables)]
@@ -99,8 +98,7 @@ pub trait TextInputOps: ExternalOps {
     }
 }
 
-/// The `toggle` primitive (switch / checkbox). Serves
-/// `walker/toggle.rs`.
+/// The `toggle` primitive (switch / checkbox).
 pub trait ToggleOps: ExternalOps {
     /// Create a toggle with initial value + change callback.
     #[allow(unused_variables)]
@@ -124,7 +122,7 @@ pub trait ToggleOps: ExternalOps {
     }
 }
 
-/// The `slider` primitive. Serves `walker/slider.rs`.
+/// The `slider` primitive.
 pub trait SliderOps: ExternalOps {
     /// Create a slider (min/max/step static after creation).
     #[allow(unused_variables)]
@@ -151,8 +149,7 @@ pub trait SliderOps: ExternalOps {
     }
 }
 
-/// The `activity_indicator` primitive (loading spinner). Serves
-/// `walker/activity_indicator.rs`.
+/// The `activity_indicator` primitive (loading spinner).
 pub trait ActivityIndicatorOps: ExternalOps {
     /// Create a loading spinner (size/color static at construction).
     #[allow(unused_variables)]

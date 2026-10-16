@@ -54,7 +54,7 @@ pub struct NativeNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     /// Geometry in **logical px**, relative to the window/viewport (matches
-    /// `Backend::absolute_frame` semantics so web `getBoundingClientRect` and
+    /// `IntrospectionOps::absolute_frame` semantics so web `getBoundingClientRect` and
     /// macOS window-relative frames are directly comparable).
     pub frame: NativeRect,
     /// Resolved visual properties, normalized to canonical keys + units (see

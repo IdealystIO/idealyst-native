@@ -59,7 +59,7 @@ use crate::reactive::Signal;
 use crate::sources::{IntoTextSource, TextSource};
 
 /// A prop value that is either a fixed snapshot (`Static`) or a live
-/// reactive computation (`Dynamic`). Construct via `From`/`into_prop`
+/// reactive computation (`Dynamic`). Construct via `From`/`.into()`
 /// (static + signals) or the [`rx!`](crate::rx) macro (computed).
 pub enum Reactive<T> {
     /// A one-time value. No subscription, no reactivity.
@@ -126,10 +126,9 @@ impl<T: Clone> Reactive<T> {
     /// no effect (zero overhead); `Dynamic` installs a scope-owned effect
     /// that re-runs `sink` whenever the signals the source reads change.
     ///
-    /// Must be called inside a reactive scope (a component body or the
-    /// render walker): the dynamic arm's effect is owned by that scope and
-    /// freed on teardown, exactly like the controlled-`value` effect in
-    /// `walker/text_input.rs`. Outside a scope the effect would have no
+    /// Must be called inside a reactive scope (a component body or a
+    /// mount): the dynamic arm's effect is owned by that scope and freed
+    /// on teardown. Outside a scope the effect would have no
     /// owner — [`Effect::scoped`](crate::reactive::Effect::scoped)
     /// debug-asserts against that.
     pub fn bind(self, mut sink: impl FnMut(T) + 'static)

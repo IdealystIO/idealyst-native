@@ -1,11 +1,8 @@
-//! # Per-world theme / token / cohort state (P3c — the style-engine port)
+//! # Per-world theme / token / cohort state
 //!
-//! The old engine keeps its theme state in `runtime-core` thread-locals
-//! (`TOKEN_REGISTRY`, `PENDING_TOKENS`, the cohort slab, the tokens
-//! VERSION signal) and re-applies static-styled nodes through one
-//! walker-installed driver Effect. This module is that machinery as
-//! **vocabulary policy on the new kernel**, with one deliberate
-//! re-homing decision:
+//! The installed token table, the pending backend-delivery queues, the
+//! theme VERSION signal, and the static-style cohort that a theme swap
+//! re-applies — as vocabulary policy on the world kernel.
 //!
 //! ## Where the state lives — per world, via world context
 //!
@@ -14,33 +11,25 @@
 //! default text font, the host-surface slots — lives in a [`ThemeCtx`]
 //! stored in the **owning world's context** (`runtime_world::provide`
 //! keyed by type). Two worlds on one thread (app world + SSR
-//! per-request worlds, the migration's flagship payoff) therefore have
-//! fully independent themes; nothing here is a thread-local.
+//! per-request worlds) therefore have fully independent themes; nothing
+//! here is a thread-local.
 //!
 //! The version signal and the driver effect are created via
 //! [`runtime_world::unscoped`] so they are **world-root-owned**: the
 //! first styled node to mount lives in some subtree's `collect_owned`
 //! scope, and a collected driver would die with that subtree while the
-//! rest of the cohort lives on — the exact regression class the old
-//! core's `reactive::unscope` guard documents (runtime-core
-//! `style.rs`, token-registry lifetime comment).
+//! rest of the cohort lives on.
 //!
 //! Sheet **registration** (dedup + pregen + typeface registration +
-//! dead-sheet sweep — the old `ensure_registered_with`) is ALSO
-//! per-world here: the old function lives in runtime-core's private
-//! `style` module, so the port reimplements it on public APIs
-//! ([`ensure_sheet_registered`]), which happens to be the more coherent
-//! home anyway — registration is backend-facing state and a world owns
-//! its backend. What deliberately REMAINS thread-level (inside
-//! runtime-core, which this phase does not modify): the **resolution
-//! cache** behind `runtime_shared::resolve_style`. It is world-agnostic
-//! by construction — keyed by token *names* (token-stable content
-//! keys) — and [`update_tokens`] wipes it per swap exactly as the old
-//! engine did (so `ComputedLayer` closures re-run against the new
-//! theme). It migrates into a per-world home when the types leave
-//! runtime-core (P7).
+//! dead-sheet sweep, [`ensure_sheet_registered`]) is ALSO per-world:
+//! registration is backend-facing state and a world owns its backend.
+//! What deliberately REMAINS thread-level is the **resolution cache**
+//! behind `runtime_shared::resolve_style`. It is world-agnostic by
+//! construction — keyed by token *names* (token-stable content keys) —
+//! and [`update_tokens`] wipes it per swap (so `ComputedLayer` closures
+//! re-run against the new theme).
 //!
-//! ## Delivery model (mirrors the old cohort driver, `walker/theme_cohort.rs`)
+//! ## Delivery model
 //!
 //! - [`install_tokens`] / [`update_tokens`] record into the world's
 //!   `ThemeCtx` and bump the world VERSION signal. Nothing touches the
@@ -53,28 +42,16 @@
 //!   `body { background: var(--x) }`; the var must exist first).
 //! - On a version bump the driver re-fires: drain updates → if the
 //!   backend cascades token updates (web `var()`), stop — the browser
-//!   re-tints (the old driver's `BACKEND_CASCADE_TOKENS` fast path) —
-//!   otherwise fan out every registered cohort entry's reapply closure
-//!   (the old `THEME_COHORT` slab semantics, O(1) Effects for N static
-//!   nodes).
+//!   re-tints — otherwise fan out every registered cohort entry's
+//!   reapply closure (O(1) effects for N static nodes).
 //!
-//! ## Known gaps, loud (see also `style_attach`)
+//! ## `Tokenized::resolve()`
 //!
-//! - **Old-core `Tokenized::resolve()` freshness on native**: native
-//!   backends read token VALUES through runtime-core's thread-local
-//!   registry, which this path does not write. Web is unaffected
-//!   (values ship as CSS vars via `update_tokens`); the native value
-//!   plumbing is re-pointed when the first native backend adopts the
-//!   new core (P4).
-//! - **Native breakpoint re-application**: the old driver subscribes to
-//!   `current_breakpoint()` (an old-core signal); a world effect cannot
-//!   subscribe to it. Values are still honored at apply time. The
-//!   per-world reactive viewport/breakpoint source now exists
-//!   ([`crate::viewport`], author-surface re-fire wired + web-sourced);
-//!   re-pointing the native style-overlay MERGE onto it lands with the
-//!   first native backend that wires a live viewport push (viewport
-//!   module docs list the per-platform status). Web needs neither
-//!   (`@media` CSS).
+//! `Tokenized::resolve()` reads runtime-shared's thread-local token
+//! registry, not this ctx. The glue's `install_tokens` / `update_tokens`
+//! seed that registry, and `ensure_token_read_hook` makes a resolve
+//! inside a world effect subscribe to the version signal, so it re-runs
+//! on a swap.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -107,16 +84,14 @@ struct ThemeState {
     /// app can switch between, so an older one is never interesting.
     pending_palettes: Option<Vec<runtime_shared::ThemePalette>>,
     /// Token-update batches pending backend delivery. Accumulate — every
-    /// batch reaches the backend (old `PENDING_TOKEN_UPDATES`).
+    /// batch reaches the backend.
     pending_updates: Vec<Vec<TokenEntry>>,
     /// The authoritative per-world token VALUE table (`install` seeds,
-    /// `update` overwrites). The new-core analogue of the old
-    /// `TOKEN_REGISTRY`'s values, minus the per-token signals — the
-    /// version signal + cohort fan-out carry re-application instead.
+    /// `update` overwrites). No per-token signals — the version signal
+    /// + cohort fan-out carry re-application instead.
     values: HashMap<&'static str, TokenValue>,
     /// The theme's default text font — filled into a resolved rule's
-    /// absent `font_family` at apply time (old `DEFAULT_TEXT_FONT`,
-    /// per-world now).
+    /// absent `font_family` at apply time.
     default_text_font: Option<FontFamily>,
     /// Set by `set_default_text_font`, drained by
     /// `flush_pending_host_state`. The font needs a PENDING slot like
@@ -125,9 +100,9 @@ struct ThemeState {
     /// paths — a purely static live app never installs one, so a
     /// driver-only publish never reached the backend at all.
     pending_default_font: Option<Option<FontFamily>>,
-    /// Host-surface background pending delivery (old `PENDING_APP_BG`).
+    /// Host-surface background pending delivery.
     pending_app_background: Option<Tokenized<Color>>,
-    /// Scrollbar theme pending delivery (old `PENDING_SCROLLBAR`).
+    /// Scrollbar theme pending delivery.
     pending_scrollbar: Option<(Tokenized<Color>, Tokenized<Color>)>,
     /// The static-style cohort: one reapply closure per registered node
     /// (or node batch). `Rc` so the fan-out can clone the list out of
@@ -136,24 +111,24 @@ struct ThemeState {
     cohort: Vec<Option<Rc<dyn Fn()>>>,
     cohort_free: Vec<u32>,
     /// One driver per world (cleared by the driver effect's cleanup on
-    /// world teardown, mirroring the old `DriverGuard`).
+    /// world teardown).
     driver_installed: bool,
     /// Set when a `StyleProp::Preminted` attach happened in this world:
     /// the driver then also (re)publishes the default text font at the
-    /// document level on every version bump — the old premint host
-    /// driver's `apply_default_text_font` contract (preminted classes
-    /// reference `var(--iy-default-font)`).
+    /// document level on every version bump via
+    /// `apply_default_text_font` (preminted classes reference
+    /// `var(--iy-default-font)`).
     premint_used: bool,
-    /// Per-world sheet registrations (old `REGISTRATIONS`): sheet
+    /// Per-world sheet registrations: sheet
     /// pointer → (liveness Weak, the pregenerated rules the backend was
     /// handed — kept so `unregister_stylesheet` can free them).
     registrations: HashMap<usize, (Weak<StyleSheet>, Rc<Vec<Rc<StyleRules>>>)>,
-    /// Rule sets queued for `unregister_stylesheet` (old
-    /// `PENDING_UNREGISTER`) — populated by the dead-Weak sweep,
+    /// Rule sets queued for `unregister_stylesheet` — populated by the
+    /// dead-Weak sweep,
     /// drained on the next [`ensure_sheet_registered`].
     pending_unregister: Vec<Rc<Vec<Rc<StyleRules>>>>,
-    /// Typefaces already registered with this world's backend (old
-    /// `REGISTERED_TYPEFACES`): `register_asset` + `register_typeface`
+    /// Typefaces already registered with this world's backend:
+    /// `register_asset` + `register_typeface`
     /// fire once per `TypefaceId` no matter how many sheets reference
     /// it.
     registered_typefaces: HashSet<TypefaceId>,
@@ -188,10 +163,9 @@ impl Default for ThemeState {
 pub struct ThemeCtx {
     state: Rc<RefCell<ThemeState>>,
     /// Bumped once per install/update batch. World-root-owned. Style
-    /// effects and the theme driver subscribe to it — the new-kernel
-    /// analogue of the old `tokens_version_signal()` (which exists
-    /// precisely because per-token subscriptions go deaf behind the
-    /// resolution cache; the version signal never does).
+    /// effects and the theme driver subscribe to it: per-token
+    /// subscriptions go deaf behind the resolution cache; the version
+    /// signal never does.
     version: Signal<u64>,
 }
 
@@ -340,13 +314,12 @@ impl ThemeCtx {
             }
             s.pending_updates.push(tokens.to_vec());
         }
-        // Wipe runtime-core's memoized resolution so subsequent resolves
-        // re-run `ComputedLayer` closures against the new theme — the old
-        // `update_tokens` contract. `reset_for_ssg_render` is the one
-        // PUBLIC entry that clears that cache; its other clears are inert
-        // on the new path (core's REGISTRATIONS / pending queues / typeface
-        // dedup are unused here — the per-world tables in this module own
-        // those roles).
+        // Wipe runtime-shared's memoized resolution so subsequent resolves
+        // re-run `ComputedLayer` closures against the new theme.
+        // `reset_for_ssg_render` is the one PUBLIC entry that clears that
+        // cache; its other clears are inert here (runtime-shared's
+        // registrations / pending queues / typeface dedup are unused —
+        // the per-world tables in this module own those roles).
         runtime_shared::reset_for_ssg_render();
         self.version.update(|v| v + 1);
     }
@@ -413,8 +386,7 @@ impl ThemeCtx {
 /// or driver run delivers them (`StyleOps::install_tokens`). Several
 /// installs before that delivery accumulate — the backend receives one
 /// batch holding every installed token, a re-installed name carrying its
-/// latest value. Re-install counts as a theme change (version bump) —
-/// same as the old core.
+/// latest value. Re-install counts as a theme change (version bump).
 /// Ambient convenience — from an event handler, capture [`theme_ctx`]
 /// at build time and use [`ThemeCtx::install_tokens`].
 pub fn install_tokens(tokens: &[TokenEntry]) {
@@ -452,8 +424,8 @@ pub fn install_theme_palettes(palettes: &[runtime_shared::ThemePalette]) {
 
 /// Install the theme's default text [`FontFamily`] for the ambient
 /// world (`None` clears). Filled into a resolved rule's absent
-/// `font_family` at apply time — the cross-platform theme-font default
-/// (old `set_default_text_font`, per-world now). Bumps the version so
+/// `font_family` at apply time — the cross-platform theme-font default.
+/// Bumps the version so
 /// already-applied nodes re-fill.
 pub fn set_default_text_font(font: Option<FontFamily>) {
     theme_ctx_handler_safe().set_default_text_font(font);
@@ -464,22 +436,19 @@ pub fn default_text_font() -> Option<FontFamily> {
     theme_ctx_handler_safe().state.borrow().default_text_font.clone()
 }
 
-/// Theme the host surface behind the rendered tree (old
-/// `set_app_background`): single pending slot, delivered on the next
+/// Theme the host surface behind the rendered tree: single pending slot, delivered on the next
 /// sheet attach / driver run, after tokens.
 pub fn set_app_background(color: Tokenized<Color>) {
     theme_ctx_handler_safe().set_app_background(color);
 }
 
-/// Theme the platform scrollbar (old `set_scrollbar_theme`): single
-/// pending slot, same delivery as [`set_app_background`].
+/// Theme the platform scrollbar: single pending slot, same delivery as [`set_app_background`].
 pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
     theme_ctx_handler_safe().set_scrollbar_theme(thumb, track);
 }
 
-/// The ambient world's current value for a token name, if installed.
-/// (The per-world table; native `Tokenized::resolve` re-pointing lands
-/// at P4 — module docs.)
+/// The ambient world's current value for a token name, if installed
+/// (the per-world table — see the module docs on `Tokenized::resolve`).
 pub fn token_value(name: &str) -> Option<TokenValue> {
     theme_ctx_handler_safe().token_value(name)
 }
@@ -507,9 +476,8 @@ pub fn token_names() -> Vec<&'static str> {
 /// (install, then update batches), host-surface settings (default font,
 /// app background, scrollbar, app key handler) after. Shared
 /// by every sheet attach (so the first styled mount delivers the
-/// pre-mount `install_tokens`, in the same relative position the old
-/// `ensure_registered_with` prologue produced: install_tokens BEFORE
-/// the first `register_stylesheet`) and by the driver (so swaps reach
+/// pre-mount `install_tokens` BEFORE the first `register_stylesheet`)
+/// and by the driver (so swaps reach
 /// backends even when no new sheet registers).
 pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
     backend: &Rc<RefCell<H>>,
@@ -552,8 +520,7 @@ pub(crate) fn flush_pending_host_state<H: StyleOps + crate::caps::AppEnvOps>(
 }
 
 /// Register a static-styled node's reapply closure with the ambient
-/// world's cohort. Slab + freelist, same shape (and same O(1)-Effects
-/// rationale) as the old `theme_cohort_register`.
+/// world's cohort. Slab + freelist: O(1) effects for N static nodes.
 pub(crate) fn cohort_register(reapply: Rc<dyn Fn()>) -> CohortId {
     let ctx = theme_ctx();
     let mut s = ctx.state.borrow_mut();
@@ -585,13 +552,12 @@ impl ThemeCtx {
 }
 
 /// Mark that a preminted style was attached in this world — the driver
-/// then also publishes the default text font at the document level
-/// (old premint host driver contract).
+/// then also publishes the default text font at the document level.
 pub(crate) fn mark_premint_used() {
     theme_ctx().state.borrow_mut().premint_used = true;
 }
 
-/// Pointer-keyed fast path (old `is_registered`): `true` iff this exact
+/// Pointer-keyed fast path: `true` iff this exact
 /// `StyleSheet` instance is live-registered in the ambient world.
 /// Steady-state style-effect re-fires use it to skip
 /// [`ensure_sheet_registered`]'s sweep/flush prologue.
@@ -601,9 +567,8 @@ pub(crate) fn sheet_is_registered(sheet: &Rc<StyleSheet>) -> bool {
     s.registrations.contains_key(&(Rc::as_ptr(sheet) as usize))
 }
 
-/// Ensure the backend has pre-generated state for `sheet` — the
-/// per-world port of the old `ensure_registered_with` prologue + body,
-/// on public runtime-core APIs:
+/// Ensure the backend has pre-generated state for `sheet`, on public
+/// runtime-shared APIs:
 ///
 /// 1. Drain the pending host state (tokens FIRST — web rules reference
 ///    `var(--…)`; the variable must exist before the rule parses).
@@ -658,9 +623,8 @@ pub(crate) fn ensure_sheet_registered<H: StyleOps + AssetOps + AppEnvOps>(
     // pointer-keyed class caches (the create_10k bench-gate residual).
     let rules: Rc<Vec<Rc<StyleRules>>> = Rc::new(runtime_shared::pregenerate_and_seed(sheet));
 
-    // Typeface registration BEFORE the sheet ships (old
-    // `ensure_typefaces_registered_with` contract: every `apply_style`
-    // referencing a typeface finds the family registered).
+    // Typeface registration BEFORE the sheet ships: every `apply_style`
+    // referencing a typeface finds the family registered.
     for r in rules.iter() {
         if let Some(FontFamily::Typeface(tf)) = &r.font_family {
             let fresh = ctx.state.borrow_mut().registered_typefaces.insert(tf.id);
@@ -685,10 +649,9 @@ pub(crate) fn ensure_sheet_registered<H: StyleOps + AssetOps + AppEnvOps>(
 /// effect that subscribes to the version signal and, on each theme
 /// change, drains pending token/host state into the backend and — on
 /// backends whose token updates don't cascade — fans out every cohort
-/// entry's reapply closure. Port of `install_theme_cohort_driver` +
-/// `install_premint_host_driver` (they were split in the old core only
-/// because premint apps register no sheets; here both drains share the
-/// driver).
+/// entry's reapply closure. The preminted-host drain shares this
+/// driver: premint apps register no sheets, so it can't ride sheet
+/// registration.
 pub(crate) fn ensure_theme_driver<H: StyleOps + crate::caps::AppEnvOps>(
     backend: &Rc<RefCell<H>>,
 ) {
@@ -706,9 +669,9 @@ pub(crate) fn ensure_theme_driver<H: StyleOps + crate::caps::AppEnvOps>(
     let state = Rc::downgrade(&ctx.state);
     // World-root-owned: the driver must outlive the mounting subtree
     // (module docs). Its cleanup clears the installed flag so a
-    // hypothetical re-init after teardown reinstalls — mirroring the
-    // old DriverGuard; with per-world state this only matters if the
-    // ctx outlives the effect, which the Weak makes safe either way.
+    // hypothetical re-init after teardown reinstalls; with per-world
+    // state this only matters if the ctx outlives the effect, which the
+    // Weak makes safe either way.
     let _driver = unscoped(|| {
         effect(move || {
             // Subscribe: every install/update/font/host-surface change
@@ -722,15 +685,15 @@ pub(crate) fn ensure_theme_driver<H: StyleOps + crate::caps::AppEnvOps>(
             // document level on every theme change — not just preminted
             // ones.
             //
-            // This used to be gated on `premint_used`, on the reasoning
-            // that only preminted rule bodies read the
-            // `--iy-default-font` variable. That reasoning covered the
-            // VARIABLE but not the font itself: only a STATIC style
+            // Don't gate this on `premint_used` on the reasoning that only
+            // preminted rule bodies read the `--iy-default-font`
+            // variable. That covers the VARIABLE but not the font
+            // itself: only a STATIC style
             // application gets the theme font folded into its own rules
             // (`style_attach::fill_default_text_font`). A reactive one
             // deliberately does not, and body / plain containers are
-            // never styled by the framework at all — so on a live build
-            // nothing published a document font and all of them fell back
+            // never styled by the framework at all — so gated, a live
+            // build publishes no document font and all of them fall back
             // to the browser's serif (measured: `<body>` and every
             // top-level container rendering in Times on a live docs
             // build, while the preminted build rendered the theme sans).
@@ -742,7 +705,7 @@ pub(crate) fn ensure_theme_driver<H: StyleOps + crate::caps::AppEnvOps>(
             // `regression_live_world_publishes_the_default_text_font`.
             let font = state.borrow().default_text_font.clone();
             backend.borrow_mut().apply_default_text_font(font.as_ref());
-            // Cascade fast path (old BACKEND_CASCADE_TOKENS): web's
+            // Cascade fast path: web's
             // `var()` cascade re-tints without per-node fan-out.
             if backend.borrow().token_updates_propagate_via_cascade() {
                 return;
@@ -792,7 +755,7 @@ mod tests {
         assert_eq!(vb, Some(TokenValue::Color(Color("#fff".into()))));
     }
 
-    /// FRAMEWORK-NOTES #112, the merge rule: installs pending in one
+    /// The merge rule: installs pending in one
     /// window accumulate by name — a re-installed token takes the LATER
     /// value but keeps its first position; new names append.
     #[test]
@@ -832,7 +795,7 @@ mod tests {
 
     /// The idea-ui-docs dark-theme-button crash: `set_theme` →
     /// `update_tokens` runs from a platform event handler, OUTSIDE
-    /// `World::enter` — the ambient `inject` used to panic "outside
+    /// `World::enter`, where an ambient `inject` panics "outside
     /// World::enter". The swap must instead stage into the last ambient
     /// world's ctx (capture, don't inject), notify the version
     /// subscribers on that world's next flush, and keep per-world

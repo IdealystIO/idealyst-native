@@ -2,18 +2,16 @@
 //! remote renderers): binding metadata notes + lazy slot capture.
 //!
 //! Effect-driven backends leave every default no-op in place; the
-//! walker still builds its Rust Effects regardless. Only backends that
-//! ship bindings to a remote runtime consume these. Expected to retire
-//! with the adopt-sentinel once the wire client mounts through the
-//! scene Registry (design §8) — kept frozen until then.
+//! handlers build their Rust effects regardless. Only backends that ship
+//! bindings to a remote runtime implement these. No vocabulary handler
+//! calls the `note_*_binding` hooks: the macro lowers the structured
+//! binding shapes to closures (see the crate docs).
 
 use runtime_shared::__serde_json::Value;
 use runtime_scene::Host;
 
-/// Serves `walker/text.rs` (`note_text_binding`, `note_signal_initial`),
-/// `walker/when_switch.rs` (`note_when_binding`, `note_switch_binding`,
-/// slot capture), and `walker/virtualizer.rs` (`note_repeat_binding`,
-/// `note_virtualizer_binding`, slot capture).
+/// Binding-metadata notes (text, when/switch, repeat, virtualizer) and
+/// lazy slot capture for generator backends.
 pub trait WireBindingOps: Host {
     /// Record a `TextSource::Bound`'s signal ids + transformer method.
     #[allow(unused_variables)]

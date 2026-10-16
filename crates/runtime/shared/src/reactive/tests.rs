@@ -39,8 +39,8 @@ fn idle_hook_coalesces_fanout_to_one_window() {
     sel.set(1);
 
     let fired = fires.get();
-    // Value-write window + fan-out window = 2. The old per-effect path
-    // fired N+1 (one per subscriber), which is the bug.
+    // Value-write window + fan-out window = 2. A per-effect path fires
+    // N+1 (one per subscriber), which is the bug.
     assert!(
         fired <= 2,
         "fan-out of {N} subscribers must coalesce to a single reactive \
@@ -118,12 +118,11 @@ fn dropped_effect_outside_scope_does_not_refire() {
 
 /// Regression test for the "self-writing effect breaks after first
 /// flip" bug. An effect that bridges two signals — reads from
-/// `value`, writes to `shadow` — used to corrupt its own
-/// subscription set on the recursive re-fire from `shadow.set`,
-/// since `run_effect` calls `clear_effect_dependencies` at the
-/// start of every (re-)entry. After fix: re-entrant invocations
-/// of the same effect are short-circuited so the outer run's
-/// dep recording isn't wiped.
+/// `value`, writes to `shadow` — can corrupt its own subscription
+/// set on the recursive re-fire from `shadow.set`, since `run_effect`
+/// calls `clear_effect_dependencies` at the start of every (re-)entry.
+/// Re-entrant invocations of the same effect are short-circuited so
+/// the outer run's dep recording isn't wiped.
 #[test]
 fn effect_with_self_write_keeps_firing() {
     use std::cell::Cell;
@@ -134,8 +133,8 @@ fn effect_with_self_write_keeps_firing() {
     let r = mirror_runs.clone();
     let _e = Effect::new(move || {
         let v = value.get();
-        // Reads `shadow` AND writes it. Pre-fix, the second
-        // value.set below leaves the effect dead because the
+        // Reads `shadow` AND writes it. Without the re-entry guard the
+        // second value.set below leaves the effect dead because the
         // recursive shadow.set wiped its `value` subscription.
         if shadow.get() != v {
             shadow.set(v);

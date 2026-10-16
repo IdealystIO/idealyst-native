@@ -1,16 +1,14 @@
-//! Per-primitive capability traits — the split of the `Backend`
-//! mega-trait (design §5), signatures frozen to today's.
+//! Per-primitive capability traits: one Ops trait per primitive family,
+//! grouped by which handler calls the method.
 //!
-//! Grouping is derived mechanically from which walker module calls which
-//! Backend method (each trait's doc names its walker module / caller).
 //! Every trait is a subtrait of [`runtime_scene::Host`], which supplies
-//! the shared `Node` associated type and the seven structural operations
-//! extracted in P1 (`insert`, `insert_many`, `insert_at`, `remove_child`,
-//! `clear_children`, `create_anchor`, `supports_splice`) — those seven
-//! Backend methods are therefore NOT redeclared here; see `COVERAGE.md`.
+//! the shared `Node` associated type and the structural operations
+//! (`insert`, `insert_many`, `insert_at`, `remove_child`,
+//! `clear_children`, `create_anchor`, `supports_splice`) — those are
+//! therefore NOT redeclared here.
 //!
 //! Naming note: several traits intentionally share a name with a
-//! runtime-core *handle-ops* trait (`TextOps`, `ButtonOps`, `ViewOps`,
+//! runtime-shared *handle-ops* trait (`TextOps`, `ButtonOps`, `ViewOps`,
 //! `primitives::toggle::ToggleOps`, …). Those are the per-handle
 //! imperative-ref surfaces (`.bind()` handles); these are the backend
 //! capability traits the design names. Different crates, different jobs —

@@ -1,14 +1,14 @@
-# runtime-world — the reactive kernel of the idea-lite core migration (P0).
+# runtime-world — the reactive kernel.
 #
 # Worlds are discrete reactive runtimes: each owns an arena of signal/effect
 # slots, a staged-write queue, and a typed context map. Many worlds coexist on
 # one thread (app world + per-request SSR worlds + test worlds) and flush /
-# tear down independently. Semantics are idea-lite's staged-commit model with
+# tear down independently. Semantics are a staged-commit model with
 # a derivation-class (glitch-free) flush; storage is per-world arenas with
 # generational Copy handles.
 #
-# This crate is deliberately dependency-minimal: it is the bottom of the new
-# core's dependency chain (world ← scene ← vocabulary ← backends) and must
+# This crate is deliberately dependency-minimal: it is the bottom of the
+# runtime's dependency chain (world ← scene ← vocabulary ← backends) and must
 # stay wasm-lean.
 
 [package]

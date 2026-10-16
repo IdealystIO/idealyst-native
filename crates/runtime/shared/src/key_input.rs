@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn regression_listener_added_after_boot_installs_without_a_flush() {
-        // The old single-slot handler sat in a queue until a style flush.
+        // A listener must install now, not wait in a queue for a style flush.
         let host = wire();
         let _l = add_listener(|_| KeyOutcome::Default);
         assert_eq!(host.installs.get(), 1);

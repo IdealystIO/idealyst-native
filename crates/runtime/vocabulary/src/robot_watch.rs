@@ -1,24 +1,22 @@
-//! Live signal-watch registry for the NEW core — the vocabulary port of
-//! `runtime_shared::robot::watch` (P5 `watch_signal` seam). Whole module
-//! compiles only under the vocabulary `robot` feature.
+//! Live signal-watch registry for world signals (the `watch_signal`
+//! seam). Whole module compiles only under the vocabulary `robot`
+//! feature.
 //!
-//! # Author surface (unchanged from the old core)
+//! # Author surface
 //!
 //! An author explicitly marks a signal with
 //! [`watch_signal`]`("name", sig)` (value type must be `Debug`); the
 //! bridge verbs `list_watched_signals` / `read_signal` then expose the
 //! live value, and `robot-test`'s `app.signal("name").assert_eq(…)`
-//! rides those verbs unchanged. Auto-watching every signal is as
-//! impossible here as it was on the old core (rendering needs `Debug`,
-//! which not every signal type has); the old `signal!` macro is gone,
-//! so the explicit fn IS the whole surface.
+//! rides those verbs. Auto-watching every signal is impossible
+//! (rendering needs `Debug`, which not every signal type has), so the
+//! explicit fn IS the whole surface.
 //!
 //! # Staleness model: scope-tied entries, not generation checks
 //!
-//! The old registry guarded recycled arena slots with a generation
-//! check (`signal_is_live`) because its reads tolerated dead handles.
-//! `runtime_world` reads PANIC on a stale handle and exposes no public
-//! liveness probe — so entries must never outlive their signal instead.
+//! `runtime_world` reads PANIC on a stale handle and expose no public
+//! liveness probe, so a generation check at read time is not an option —
+//! entries must never outlive their signal instead.
 //! [`watch_signal`] arms an [`on_teardown`](crate::style_attach::on_teardown)
 //! probe in the ambient collector: called from a component body (the
 //! normal place), the entry dies with the component's `Owned` — i.e.
@@ -27,7 +25,7 @@
 //! entry dies at world drop (`newcore::stop`), same as the signal.
 //! Consequence, documented on purpose: `watch_signal` must run where
 //! effect creation is legal (a component body, an effect, or any
-//! world-entered build scope) — the same contract every other new-core
+//! world-entered build scope) — the same contract every other world
 //! registration has.
 //!
 //! The teardown probe removes the entry only if it still carries the
@@ -39,7 +37,7 @@
 //! # Wire ids
 //!
 //! Entries key by the signal's 32-bit slot id on the wire (`raw_id`'s
-//! low half) — the old registry's exact id shape, and safe through
+//! low half) — safe through
 //! JS-side JSON relays (a full `raw_id` packs the world id above bit
 //! 53, where JSON number precision dies).
 

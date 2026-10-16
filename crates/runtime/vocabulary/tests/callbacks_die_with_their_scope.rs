@@ -257,13 +257,12 @@ fn regression_scroll_toggle_and_input_callbacks_go_inert_after_unmount() {
 /// edit to the list, while keyed reconcile deliberately preserves the
 /// surviving rows' subtrees. The token is anchored with
 /// `runtime_world::on_owned_drop`, which binds to the row's own `Owned` —
-/// dropped by reconcile if and only if the row really goes. It was written
-/// that way because `on_scope_drop` used to see the driver effect from
-/// inside a row's mount and defer to `on_cleanup`, so the first unrelated
-/// edit silently made every live row's buttons inert. A row now renders
-/// `unanchored` (no effect visible during a build), so both hooks would
-/// behave here; `on_owned_drop` states the intent without depending on
-/// that.
+/// dropped by reconcile if and only if the row really goes. Not
+/// `on_scope_drop`: if it saw the driver effect from inside a row's mount
+/// it would defer to `on_cleanup`, and the first unrelated edit would
+/// silently make every live row's buttons inert. A row renders
+/// `unanchored` (no effect visible during a build), so both hooks behave
+/// here; `on_owned_drop` states the intent without depending on that.
 ///
 /// Both directions are asserted on purpose — deleting the guard outright
 /// would satisfy the survival half while breaking the inert half.

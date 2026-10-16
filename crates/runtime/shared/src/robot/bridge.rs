@@ -86,19 +86,18 @@ fn try_custom_command(cmd: &str, args: &serde_json::Value) -> Option<Result<Stri
 }
 
 /// A verb ROUTER — a pre-dispatch hook consulted before the built-in
-/// (old-registry) dispatch. `Some(result)` answers the verb; `None`
+/// dispatch against this module's registry. `Some(result)` answers the verb; `None`
 /// falls through to the normal dispatch (built-ins + customs).
 ///
-/// This exists for hosts whose element registry is NOT the old-core
-/// one this module dispatches against: a new-core session (vocabulary
-/// robot registry) installs a router that forwards element verbs to
+/// This exists for hosts whose element registry is NOT the one this
+/// module dispatches against: a vocabulary-registry host installs a
+/// router that forwards element verbs to
 /// `runtime_vocabulary::robot::bridge::invoke_command` and returns
 /// `None` for the verbs that registry doesn't own (`get_catalog`,
 /// `get_logs`, custom commands like `screenshot`) so the
 /// registry-independent machinery HERE still serves them — the same
-/// old/new coexistence contract backend-web's relay transport
-/// implements in `robot_transport::dispatch_verb`. The dev sidecar's
-/// `--new-core` session is the first TCP-bridge consumer.
+/// contract backend-web's relay transport implements in
+/// `robot_transport::dispatch_verb`.
 pub type VerbRouter = Rc<dyn Fn(&str, &serde_json::Value) -> Option<Result<String, String>>>;
 
 thread_local! {
@@ -263,7 +262,7 @@ fn current_identity() -> AppIdentity {
 }
 
 /// JSON shape the bridge writes on bind. Kept inline (rather than via
-/// `serde_derive`) so `runtime-core` doesn't pull `serde_derive` into
+/// `serde_derive`) so `runtime-shared` doesn't pull `serde_derive` into
 /// every host build; the document is tiny and stable.
 #[cfg(not(target_arch = "wasm32"))]
 fn bridge_registration_json(port: u16, identity: &AppIdentity) -> String {
@@ -301,10 +300,10 @@ fn platform_label() -> &'static str {
         AndroidTv => "androidtv",
         Roku => "roku",
         // A backend that declared its own identity gets that name verbatim:
-        // `Custom("linux")` → "linux", `Custom("windows")` → "windows". Every
-        // custom backend used to fall through to "unknown", so a GTK app could
-        // not be told apart from any other in `list_apps` and a
-        // `name:platform` parity selector (`docs:linux`) could never resolve.
+        // `Custom("linux")` → "linux", `Custom("windows")` → "windows".
+        // Mapping every custom backend to "unknown" would make a GTK app
+        // indistinguishable in `list_apps`, and a `name:platform` parity
+        // selector (`docs:linux`) could never resolve.
         // The empty string is the trait default — no identity declared — and
         // stays "unknown", which is the truth.
         Custom("") => "unknown",
@@ -629,7 +628,7 @@ pub fn start_relay_client(url: String) {
 /// real one (`macos`, `ios`, …): the relay lists the app under it (the dev
 /// panel's robot column) and patches it into the `~/.idealyst/apps`
 /// registration, where the MCP server's `name:platform` parity selector
-/// reads it. It used to say `"native"` for every one of them.
+/// reads it, so it must not be a generic `"native"`.
 #[cfg(not(target_arch = "wasm32"))]
 fn relay_hello(identity: &AppIdentity, platform: &str) -> String {
     serde_json::json!({
@@ -992,8 +991,8 @@ fn handle_connection(stream: TcpStream, tx: mpsc::Sender<BridgeCommand>) {
 // =============================================================================
 
 fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String, String> {
-    // Installed router first (new-core hosts route element verbs to
-    // their own registry — see [`VerbRouter`]); `None` falls through to
+    // Installed router first (vocabulary-registry hosts route element
+    // verbs to their own registry — see [`VerbRouter`]); `None` falls through to
     // the built-in dispatch below.
     if let Some(result) = try_verb_router(cmd, args) {
         return result;
@@ -1201,7 +1200,7 @@ fn dispatch(robot: &Robot, cmd: &str, args: &serde_json::Value) -> Result<String
         "get_device_frame" => {
             // Physical device-screen pixels (origin = display top-left).
             // This is what an OS-level input injector (`adb shell input
-            // tap`, XCUITest, CGEvent) taps at — see `Backend::device_frame`.
+            // tap`, XCUITest, CGEvent) taps at — see `IntrospectionOps::device_frame`.
             let el = resolve_element(args)?;
             match robot.device_frame(&el).map_err(|e| e.to_string())? {
                 Some(r) => Ok(format!(
@@ -1778,17 +1777,17 @@ mod tests {
         unregister_command("ping");
     }
 
-    /// Wave 2b: a [`VerbRouter`] answers the verbs it owns BEFORE the
+    /// A [`VerbRouter`] answers the verbs it owns BEFORE the
     /// built-in dispatch and falls through (`None`) for everything
-    /// else — the coexistence contract that lets a new-core session
-    /// serve element verbs from the vocabulary registry while
+    /// else — the contract that lets a host serve element verbs from
+    /// the vocabulary registry while
     /// `get_catalog` / customs keep riding this module's dispatch.
     #[test]
     fn verb_router_routes_and_falls_through() {
         clear_verb_router();
         // Router owns "routed_verb" (and overrides built-in "ping" —
-        // routers run FIRST, unlike customs, because a new-core host
-        // must be able to shadow registry-backed built-ins).
+        // routers run FIRST, unlike customs, because a vocabulary-registry
+        // host must be able to shadow registry-backed built-ins).
         install_verb_router(|cmd, _args| match cmd {
             "routed_verb" => Some(Ok("\"routed\"".into())),
             "ping" => Some(Ok("\"routed-pong\"".into())),
@@ -1820,7 +1819,7 @@ mod tests {
     }
 
     /// Regression: the `get_device_frame` verb routes through the
-    /// `ElementActions.device_frame` closure the walker attaches and
+    /// `ElementActions.device_frame` closure attached at mount and
     /// serializes the physical-pixel rect for the OS-injection driver.
     /// Before `device_frame` existed there was no path from an element
     /// id to its on-screen pixel coordinates over the bridge.
@@ -1828,8 +1827,8 @@ mod tests {
     fn get_device_frame_returns_registered_device_rect() {
         use crate::primitives::portal::ViewportRect;
 
-        // Mirror what `walker.rs` does at mount: register the element,
-        // then attach frame closures. The `device_frame` closure reports
+        // Mirror a mount: register the element, then attach frame
+        // closures. The `device_frame` closure reports
         // a known physical-pixel rect; the others are inert.
         let id = crate::robot::register(crate::robot::RegistryEntry {
             kind: ElementKind::Button,

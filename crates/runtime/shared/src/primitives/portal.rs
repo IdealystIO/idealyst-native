@@ -11,8 +11,8 @@
 //!
 //! # Cross-platform mapping
 //!
-//! Each backend implements `Backend::create_portal` against its
-//! native window-level mount API:
+//! Each backend implements `runtime_vocabulary::caps::PortalOps::create_portal`
+//! against its native window-level mount API:
 //!
 //! - **Web**: a `<div>` appended to `document.body` (escapes
 //!   `overflow:hidden` and stacking contexts). The div's
@@ -65,14 +65,14 @@
 //! `pressable()`) whose `on_click` flips the open-state signal.
 //! The framework never auto-tears-down — the host's reactive state
 //! is the source of truth; flipping it drops the surrounding scope
-//! and triggers [`Backend::release_portal`].
+//! and triggers `PortalOps::release_portal`.
 
 use crate::Ref;
 use std::any::Any;
 use std::rc::Rc;
 
 // =============================================================================
-// AnchorTarget + AnchorableHandle (formerly in primitives/overlay)
+// AnchorTarget + AnchorableHandle
 // =============================================================================
 
 /// Type-erased handle to an anchor target. Constructed via
@@ -281,10 +281,9 @@ pub struct AnchorPlacement {
 
 /// Resolve where an anchored overlay's top-left should sit, given the
 /// measured sizes. This is the ONE placement algorithm every backend
-/// shares — web, iOS, and Android each used to carry their own copy of
-/// this geometry, and they had drifted (the same author intent producing
-/// subtly different placement per platform, violating CLAUDE.md §7). The
-/// pure math lives here; backends supply the measured rects and apply the
+/// shares, so the same author intent places identically on every
+/// platform (CLAUDE.md §7) — per-backend copies of this geometry drift.
+/// The pure math lives here; backends supply the measured rects and apply the
 /// result with their native positioning API.
 ///
 /// Inputs are all in viewport pixels (origin = top-left of the viewport):
@@ -704,9 +703,5 @@ impl PortalHandle {
 }
 
 pub trait PortalOps {}
-
-// =============================================================================
-// Constructor + builder
-// =============================================================================
 
 

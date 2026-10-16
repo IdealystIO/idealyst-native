@@ -12,15 +12,14 @@ use runtime_world::Value;
 
 use crate::style_attach::StyleProp;
 
-/// The `image` primitive (`walker/image.rs`).
+/// The `image` primitive.
 ///
 /// - `src`: `Const` and `Dyn` both emit one `update_image_src` at mount
-///   after handler installation (the old walker installs the src effect
+///   after handler installation (the src effect is installed
 ///   unconditionally — its first fire is that update), then `Dyn`
 ///   re-fires on dependency changes.
 /// - `alt`: `Const` rides `create_image`; `Dyn` creates with `None` and
-///   updates in place (`update_image_alt`), first fire at mount — the
-///   walker's `alt`/`alt_fn` split, expressed as one `Value`.
+///   updates in place (`update_image_alt`), first fire at mount.
 /// - `asset`: registered with the backend BEFORE `create_image` so the
 ///   `asset://{id}` sentinel resolves.
 pub struct ImagePrim {
@@ -38,9 +37,8 @@ pub struct ImagePrim {
     pub ref_fill: Option<Box<dyn FnOnce(ImageHandle)>>,
 }
 
-/// The `icon` primitive (`walker/icon.rs`). `data` is required (the
-/// builder panics at `build()` without it, matching the old constructor's
-/// mandatory argument). `Dyn` color/data create at the closure's initial
+/// The `icon` primitive. `data` is required (the builder panics at
+/// `build()` without it). `Dyn` color/data create at the closure's initial
 /// value and update in place; `stroke` applies inline at mount and (when
 /// `Dyn`) re-applies per fire; `draw_in` snaps to `from` then schedules
 /// the stroke animation on the next microtask.
@@ -59,12 +57,11 @@ pub struct IconPrim {
 }
 
 /// An in-app route destination riding on [`LinkPrim`] (`link(route =
-/// …)`, P6). The mount handler composes the activation: it captures the
+/// …)`). The mount handler composes the activation: it captures the
 /// ambient [`LinkActivator`](crate::prims::LinkActivator) at mount and
 /// dispatches `(name, url, make_params())` through it — push-vs-select
-/// decided by the enclosing navigator, the old ambient-navigator
-/// contract. No activator ambient ⇒ activation silently no-ops (old
-/// `link()` posture).
+/// decided by the enclosing navigator. No activator ambient ⇒ activation
+/// silently no-ops.
 pub struct RouteLink {
     /// `Route::name()` — also surfaced as `LinkConfig::route`.
     pub name: &'static str,
@@ -72,22 +69,20 @@ pub struct RouteLink {
     pub make_params: Rc<dyn Fn() -> Box<dyn std::any::Any>>,
 }
 
-/// The `link` primitive (`walker/link.rs`). P2 carries the activation
-/// callback directly: `external` links default `on_activate` to the
-/// platform URL opener (the walker's port); in-app route links carry a
-/// [`RouteLink`] the mount handler resolves against the ambient
-/// `LinkActivator` (P6); links with NONE of callback/external/route
+/// The `link` primitive. Carries the activation callback directly:
+/// `external` links default `on_activate` to the platform URL opener;
+/// in-app route links carry a [`RouteLink`] the mount handler resolves
+/// against the ambient `LinkActivator`; links with NONE of callback/external/route
 /// panic at mount — a link that silently does nothing is a footgun.
 pub struct LinkPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the builder
     /// setter compiles in every build; read only by the `robot`-feature
     /// registration in the mount handler.
     ///
-    /// A link USED to have no slot here, so `test_id = …` on a `link` parsed,
-    /// compiled, and was then silently discarded — which made in-app navigation
-    /// unaddressable: a route-based app's only navigation affordance could not
-    /// be found by `find_element`, so nothing could drive it to a screen. That
-    /// is the shape of hole the parity sweep needs closed to visit 49 routes.
+    /// Don't drop it: a silently discarded `test_id = …` makes in-app
+    /// navigation unaddressable — a route-based app's only navigation
+    /// affordance could not be found by `find_element`, so nothing could
+    /// drive it to a screen.
     pub test_id: Option<&'static str>,
     pub url: Value<String>,
     pub external: bool,

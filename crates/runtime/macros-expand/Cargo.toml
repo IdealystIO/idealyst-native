@@ -23,16 +23,12 @@ description = "Expansion of the idealyst proc macros (#[component], ui!, …) as
 rust-version = "1.88"
 
 [features]
-# NOTE: the `new-core` lowering switch is GONE. `ui!` / `jsx!` /
-# `#[component]` / `#[props]` now always emit at `runtime_scene::Element`
-# + `runtime_vocabulary` builders + `runtime_world` reactivity, and
-# `finish()` always runs the `::runtime_core` -> `::runtime_vocabulary::glue`
-# retarget (src/new_core.rs). Consumer crates must depend on
-# `runtime-vocabulary` — that is where the emitted absolute paths land.
-# It was a feature only while two cores existed, and it carried a real
-# unification hazard (a proc-macro crate is compiled once per build
-# graph, so one crate enabling it flipped the lowering for every crate
-# in the same cargo invocation). One core, one lowering, no switch.
+# No lowering switch: `ui!` / `jsx!` / `#[component]` / `#[props]` always
+# emit at `runtime_scene::Element` + `runtime_vocabulary` builders +
+# `runtime_world` reactivity, and `finish()` always runs the
+# `::runtime_core` -> `::runtime_vocabulary::glue` retarget
+# (src/new_core.rs). Consumer crates must depend on `runtime-vocabulary`
+# — that is where the emitted absolute paths land.
 
 # `ui-overlay`: emit a per-node origin tag — a site key and a node index,
 # both integer literals — so a dev-time overlay can address what a `ui!`
@@ -50,9 +46,9 @@ rust-version = "1.88"
 #
 # Yes, a proc-macro crate compiles once per build graph, so this flips
 # for every crate in one cargo invocation — that is WANTED here (a
-# half-tagged tree is a half-patchable app), and unlike the retired
-# lowering switch it is a cargo FEATURE, which cargo fingerprints. No
-# invisible-env hazard, no target-dir keying needed.
+# half-tagged tree is a half-patchable app), and as a cargo FEATURE it
+# is fingerprinted by cargo — no invisible-env hazard, no target-dir
+# keying needed.
 ui-overlay = ["dep:runtime-template"]
 
 # Forwarded from the app crate's debug-stats. Toggles whether
@@ -92,7 +88,7 @@ mcp = ["catalog"]
 # `#[derive(IdealystSchema)]` errors on any undocumented prop field / enum
 # variant. Independent of `mcp` (you can enforce docs without building a
 # catalog), though the two pair naturally. Forwarded from
-# `runtime-core/strict-docs`. Off by default; opt in per build.
+# `runtime-macros/strict-docs`. Off by default; opt in per build.
 strict-docs = []
 
 # Compile-time naming enforcement. When on, `#[component]` errors if the
@@ -100,7 +96,7 @@ strict-docs = []
 # to tell a component tag (`Button`) from a primitive (`view`). This is the
 # hard-stop sibling of the `component-pascal-case` lint rule (`idealyst
 # lint`): the lint warns during editing, the feature fails the build.
-# Forwarded from `runtime-core/strict-naming`. Off by default.
+# Forwarded from `runtime-macros/strict-naming`. Off by default.
 strict-naming = []
 
 [dependencies]

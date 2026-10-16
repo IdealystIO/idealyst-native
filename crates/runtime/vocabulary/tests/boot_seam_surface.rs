@@ -224,8 +224,8 @@ fn nav_services_body(src: &str) -> Option<&str> {
 
 /// Regression: a nav-less bundle still paid for the navigator.
 ///
-/// `install_scheduler()` used to install the browser URL provider as a
-/// convenience ("every web host calls it anyway"). That made it
+/// Installing the browser URL provider from `install_scheduler()` as a
+/// convenience ("every web host calls it anyway") makes it
 /// unconditional, and its popstate listener calls `nav::handle_popstate` —
 /// so `NavigatorControl::dispatch` plus the `Rc` drop glue for it stayed
 /// reachable from boot in bundles that had dropped the navigator primitives
@@ -308,9 +308,9 @@ fn url_provider_install_is_gated_on_nav_services() {
 ///
 /// `platform()`, `color_scheme()`, `open_url()`, `set_fullscreen()` and
 /// `announce()` read thread-local slots so author code can call them
-/// without a backend reference. The pre-v2 `mount()` filled those slots
-/// from the backend; `mount()` was deleted with the walker and nothing
-/// replaced it. Every backend still *implemented* `AppEnvOps` and
+/// without a backend reference, so each boot entry must fill those slots
+/// from the backend (`install_env_services`). With no boot entry doing
+/// it, every backend still *implemented* `AppEnvOps` and
 /// `A11yOps::announce_for_accessibility`, so the caps-conformance suite
 /// stayed green — but no boot entry forwarded them, so on every shipped
 /// backend `platform()` returned `Custom("")` and the three routed
@@ -319,8 +319,6 @@ fn url_provider_install_is_gated_on_nav_services() {
 /// That is a hole in *absent* code, which no unit test can see: the
 /// behavior tests in `backend_env_seam.rs` pass against a backend that
 /// calls `install_env_services`, and say nothing about one that forgets.
-/// `backend_macos::newcore` even documented the gap in a comment instead
-/// of a test, which is exactly why it survived the migration.
 ///
 /// So this scans the source. A new backend that copies an old one's boot
 /// fn now fails here rather than shipping five quietly broken APIs.

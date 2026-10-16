@@ -1,11 +1,10 @@
 //! Render-elsewhere builders: `portal()`, plus the `overlay()` /
 //! `anchored_overlay()` compositions.
 //!
-//! Ports `runtime_shared::primitives::{portal,overlay}`'s authoring
-//! surface: `portal()` is the raw primitive; the two overlay builders
-//! are build-time compositions that lower to a portal item with the
+//! `portal()` is the raw primitive; the two overlay builders are
+//! build-time compositions that lower to a portal item with the
 //! backdrop / content wiring added around the caller's children — they
-//! have no payload or handler of their own, exactly like the old core.
+//! have no payload or handler of their own.
 
 use std::rc::Rc;
 
@@ -84,7 +83,7 @@ impl PortalBuilder {
         self
     }
 
-    /// Receive the imperative-ref handle at mount (P2 form of `.bind`).
+    /// Receive the imperative-ref handle at mount.
     pub fn on_handle(mut self, fill: impl FnOnce(PortalHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self
@@ -99,9 +98,8 @@ impl PortalBuilder {
 // overlay() — viewport-anchored composition
 // ===========================================================================
 
-/// Start a viewport-anchored overlay (modal, drawer, sheet). Defaults
-/// mirror the old core: `Center` placement, `Dismiss` backdrop,
-/// focus-trap ON.
+/// Start a viewport-anchored overlay (modal, drawer, sheet). Defaults:
+/// `Center` placement, `Dismiss` backdrop, focus-trap ON.
 pub fn overlay() -> OverlayBuilder {
     OverlayBuilder {
         children: Vec::new(),
@@ -162,8 +160,8 @@ impl OverlayBuilder {
 
     pub fn on_dismiss(mut self, f: impl Fn() + 'static) -> Self {
         // Covers the backdrop-tap path too (the lowering clones this
-        // into the backdrop's on_press). No `cycle` wrap needed on the
-        // new core — writes stage until the driver flush by design.
+        // into the backdrop's on_press). No `cycle` wrap needed —
+        // writes stage until the driver flush by design.
         self.on_dismiss = Some(Rc::new(f));
         self
     }
@@ -175,7 +173,7 @@ impl OverlayBuilder {
 
     /// Make the overlay's own layer transparent to pointer events so
     /// clicks in the empty area pass through to the page beneath (the
-    /// ToastHost strip case — see the old core's `click_through` docs).
+    /// ToastHost strip case).
     /// Orthogonal to `backdrop(None)`: that controls whether a scrim
     /// CHILD renders; this controls whether the portal ROOT hit-tests.
     pub fn click_through(mut self, t: bool) -> Self {
@@ -215,7 +213,7 @@ impl OverlayBuilder {
 // ===========================================================================
 
 /// Start an element-anchored overlay (popover, tooltip, dropdown,
-/// context menu). Defaults mirror the old core: side `Below`, align
+/// context menu). Defaults: side `Below`, align
 /// `Start`, offset `0`, backdrop `None` (page stays interactive),
 /// focus-trap OFF.
 pub fn anchored_overlay(target: AnchorTarget) -> AnchoredOverlayBuilder {
@@ -234,7 +232,7 @@ pub fn anchored_overlay(target: AnchorTarget) -> AnchoredOverlayBuilder {
     }
 }
 
-// NOTE (ported): `anchored_overlay` has no `click_through` — popovers /
+// NOTE: `anchored_overlay` has no `click_through` — popovers /
 // tooltips / menus are content-sized, so their root only covers what
 // they render; the shared lowering always receives `false` for it.
 
@@ -358,12 +356,12 @@ fn lower_overlay_portal(
             BackdropMode::Opaque => Some(Rc::new(|| {}) as Rc<dyn Fn()>),
             BackdropMode::None => None,
         };
-        // A `Dismiss` backdrop dismisses on a press of ANY button
-        // (FRAMEWORK-NOTES #61). The pressable's own activation is the
-        // platform "click", which is primary-only on every backend (DOM
-        // `click`, AppKit/UIKit tap, Android `OnClickListener`), so a
-        // right-click on the backdrop used to fall through: the popover
-        // stayed open. The secondary layer carries that half.
+        // A `Dismiss` backdrop dismisses on a press of ANY button. The
+        // pressable's own activation is the platform "click", which is
+        // primary-only on every backend (DOM `click`, AppKit/UIKit tap,
+        // Android `OnClickListener`), so without the secondary layer a
+        // right-click on the backdrop falls through and the popover stays
+        // open.
         let secondary_layer = match (&backdrop, &on_dismiss) {
             (BackdropMode::Dismiss, Some(d)) => vec![secondary_press_dismiss_layer(d.clone())],
             _ => Vec::new(),
@@ -371,7 +369,7 @@ fn lower_overlay_portal(
         let on_press: Rc<dyn Fn()> = dismiss_for_backdrop.unwrap_or_else(|| Rc::new(|| {}));
         // PressablePrim constructed directly (not via `pressable()`)
         // so the already-built `Rc<dyn Fn>` and `StyleProp` install
-        // without a wrapper closure — same move as the old lowering.
+        // without a wrapper closure.
         portal_children.push(item(
             PrimCell::new(PressablePrim {
                 test_id: None,
@@ -524,8 +522,8 @@ mod tests {
     }
 
     // Composition shape: Dismiss backdrop → [pressable, view]; None →
-    // [view] only (the old lowering's child order, which the portal
-    // handler mounts in order → backdrop paints behind content).
+    // [view] only (the portal handler mounts in order → backdrop paints
+    // behind content).
     #[test]
     fn backdrop_mode_controls_child_layers() {
         let with_backdrop = overlay().build();
@@ -568,14 +566,14 @@ mod tests {
         }
     }
 
-    /// Regression (FRAMEWORK-NOTES #61): a right-click on a `Dismiss`
+    /// Regression: a right-click on a `Dismiss`
     /// backdrop did nothing — the backdrop's only activation was the
     /// pressable's primary-only click, so the popover/menu stayed open.
     /// The lowering now puts a secondary-press layer inside the backdrop
     /// whose `on_touch` dismisses on ANY non-primary `Began` (consuming
     /// it, which is what suppresses the native context menu) and ignores
-    /// primary so the pressable's click path is untouched. Fails on the
-    /// old lowering: the backdrop pressable had no children at all.
+    /// primary so the pressable's click path is untouched. Fails if the
+    /// backdrop pressable has no secondary-press child.
     #[test]
     fn regression_dismiss_backdrop_right_click_dismisses() {
         let fired = Rc::new(std::cell::Cell::new(0u32));

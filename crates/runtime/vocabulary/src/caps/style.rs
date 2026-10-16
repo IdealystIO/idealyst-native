@@ -11,8 +11,8 @@ use runtime_scene::Host;
 /// The style engine's backend surface: applying resolved rules, class
 /// minting for the batched/signal-class paths, declarative state +
 /// breakpoint + container overlays, token variables, interaction-state
-/// wiring, and per-node style teardown. Serves `walker/style.rs` (plus
-/// the style bits of `walker/view.rs` and `walker/theme_cohort.rs`).
+/// wiring, and per-node style teardown. Driven by `style_attach` and the
+/// theme cohort (`theme.rs`).
 pub trait StyleOps: Host {
     /// Apply resolved, concrete `StyleRules` to a node.
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>);
@@ -46,7 +46,7 @@ pub trait StyleOps: Host {
 
     /// Mint (or look up) a backend-side class for a resolved style
     /// without touching any node (batched-Repeat path). `None` = no
-    /// named-class model; the walker falls back to per-call applies.
+    /// named-class model; the caller falls back to per-call applies.
     #[allow(unused_variables)]
     fn mint_style_class(&mut self, style: &Rc<StyleRules>) -> Option<String> {
         None
@@ -261,12 +261,9 @@ pub trait StyleOps: Host {
     /// [`register_reactive_class_binding`](Self::register_reactive_class_binding).
     fn release_reactive_class_binding(&mut self, _binding_id: u32) {}
 
-    /// NEW-CORE-ONLY channel (not part of the frozen 159-method
-    /// `Backend` mirror — no old-core counterpart exists): ship a
-    /// `(signal_id, new_value)` change to the backend's JS-side
-    /// binding dispatcher. On the old core the arena's `Signal::set`
-    /// fires the registered JS notifier itself; world signals have no
-    /// write hook, so the vocabulary's per-signal notifier effect
+    /// Ship a `(signal_id, new_value)` change to the backend's JS-side
+    /// binding dispatcher. World signals have no write hook, so the
+    /// vocabulary's per-signal notifier effect
     /// (see `style_attach::ensure_signal_notifier`) delivers commits
     /// through this method instead. Default no-op — only backends
     /// returning `true` from
@@ -275,9 +272,8 @@ pub trait StyleOps: Host {
     fn notify_signal_value_js(&mut self, _signal_id: u64, _value: u32) {}
 }
 
-/// Static assets (fonts, images) and typeface families. Serves the
-/// asset-registration effects in `walker/style.rs`, `walker/view.rs`,
-/// and `walker/image.rs`.
+/// Static assets (fonts, images) and typeface families, registered as
+/// the style and image paths reference them.
 pub trait AssetOps: Host {
     /// Make a static asset available to the renderer (deduped by id).
     #[allow(unused_variables)]

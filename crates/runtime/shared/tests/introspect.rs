@@ -1,10 +1,8 @@
 //! `runtime_shared::introspect` — the platform-native introspection
 //! data model and the boundary-pruning tree walk.
 //!
-//! RELOCATED from `runtime-core/tests/native_introspect.rs` (deletion
-//! baseline §4.2, SV-R). `shared/src/introspect.rs` had **zero** tests of
-//! its own, so these four were the module's ONLY coverage and would have
-//! been deleted along with their host crate.
+//! `shared/src/introspect.rs` has no inline tests, so this file is the
+//! module's only coverage.
 //!
 //! Two layers, matching the two risk areas:
 //! 1. The serialized data model is stable and round-trips (the external
@@ -12,15 +10,9 @@
 //! 2. The boundary-pruning tree walk — the one piece of non-trivial logic
 //!    every real backend shares — is correct in isolation.
 //!
-//! **Deliberately NOT relocated** (they are DIES-legit, not SV-R): the
-//! old file's third layer, `robot_introspect_native_routes_through_backend_closure`
-//! and `ui_macro_view_test_id_registers`. Both drove the OLD walker's
-//! registry wiring (`TestRuntime` + the walker-attached introspection
-//! closure + old-core `ui!` emission), none of which survives. Their
-//! successor on this core is the vocabulary robot registry — the
-//! closure-over-`IntrospectionOps` wiring in
-//! `runtime-vocabulary/src/robot.rs`, exercised by that crate's
-//! `--features robot` suite — not this module.
+//! The robot-registry wiring (closures over `IntrospectionOps`) lives in
+//! `runtime-vocabulary/src/robot.rs` and is exercised by that crate's
+//! `--features robot` suite, not here.
 
 use runtime_shared::introspect::{
     collect_native_tree, keys, NativeNode, NativeRect, NativeValue,

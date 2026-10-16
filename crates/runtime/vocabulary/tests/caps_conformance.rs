@@ -1,13 +1,8 @@
-//! Per-caps conformance battery for `host_mock::HostMock` — the direct
-//! successor of `tests/bridge.rs`'s role: every one of the 30
-//! `caps::*Ops` traits (plus the seven `Host` structural ops) is
-//! exercised at least once THROUGH the trait (UFCS or a generic bound)
-//! against the native mock, so the "all 30 caps implemented directly,
-//! no `Backend`, no `LegacyBridge`" claim stays compile-and-run-proven
-//! after the old trait's deletion wave. (`bridge.rs` remains the
-//! LegacyBridge-specific delegation proof and dies with the bridge.)
-//!
-//! Ordered like `bridge.rs` so coverage is auditable side by side.
+//! Per-caps conformance battery for `host_mock::HostMock`: every
+//! `caps::*Ops` trait (plus the seven `Host` structural ops) is exercised
+//! at least once THROUGH the trait (UFCS or a generic bound) against the
+//! native mock, so "every caps trait is implemented directly" stays
+//! compile-and-run-proven.
 
 use std::cell::RefCell;
 use std::rc::Rc;

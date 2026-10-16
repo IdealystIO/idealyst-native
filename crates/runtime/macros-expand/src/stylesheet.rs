@@ -251,9 +251,8 @@ const FORWARDED_ATTRS: &[&str] = &["cfg", "cfg_attr", "allow", "expect", "warn",
 impl Parse for StyleSheetDecl {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // Outer attributes first: `/// docs` and `#[cfg]`/lint attrs on
-        // the declared sheet. The parser used to read a visibility and
-        // then demand an identifier, so a doc comment on a sheet was
-        // "expected identifier" (Wave-42 / #2).
+        // the declared sheet — before the visibility, or a doc comment on
+        // a sheet fails with "expected identifier".
         let mut docs = Vec::new();
         let mut item_attrs = Vec::new();
         for attr in input.call(Attribute::parse_outer)? {
@@ -662,10 +661,10 @@ pub fn emit(decl: StyleSheetDecl, content_hash: u64) -> TokenStream2 {
     //   `FontFamily::System` (plain family names, no registration), so it
     //   stays eligible.
     //
-    // (`shadow` used to disqualify too — the old single field lowered
-    // per node kind, `text-shadow` on text vs `box-shadow` on boxes, and
-    // a class name carries no kind. Since the `shadow`/`text_shadow`
-    // split each field lowers to exactly one property, so shadowed
+    // (`shadow` does not disqualify: with the `shadow`/`text_shadow`
+    // split each field lowers to exactly one property — a single field
+    // lowering per node kind could not be carried by a class name — so
+    // shadowed
     // sheets premint like any other.)
     let premintable = !sheet_has_dynamic_font(&decl);
     let base_class = format!("iy-{:012x}", content_hash & 0xffff_ffff_ffff);
@@ -867,8 +866,8 @@ fn snake_case(ident: &Ident) -> Ident {
 /// block can name a token as `t.spacing.md()`. The namespace is a ZST
 /// carrying names only — the theme's *values* still arrive at resolve
 /// time through the token registry, which is what keeps a theme swap a
-/// per-token write. Authors who relied on the old `theme.colors.fg`
-/// field reads get a type error naming the vocabulary's namespace.
+/// per-token write. A `theme.colors.fg`-style field read gets a type
+/// error naming the vocabulary's namespace.
 fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> TokenStream2 {
     let fn_name = format_ident!("{}_style", snake_case(&decl.name));
     let vis = &decl.vis;
@@ -1500,12 +1499,8 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     // Emitted only for premint-eligible sheets (see `sheet_has_shadow`);
     // ineligible sheets compile to the live path with no cfg block at all.
     //
-    // Two variants of the preminted return: the old core's
-    // `StyleSource::Preminted` vs the new core's `StyleProp::Preminted`
-    // (same class-string assembly either way). Selected by this CRATE's
-    // `new-core` feature — the same switch that retargets the whole
-    // expansion (`finish`), so the `::runtime_core::…` path below lands
-    // on `::runtime_vocabulary::glue::StyleProp` post-retarget.
+    // The preminted return: the `::runtime_core::…` path below lands on
+    // `::runtime_vocabulary::glue::StyleProp` after the `finish` retarget.
     let premint_return = quote! {
         return ::runtime_core::StyleProp::Preminted {
             // The generated builder has no inline-layer surface yet; an
@@ -1575,21 +1570,18 @@ fn emit_builder(decl: &StyleSheetDecl, base_class: &str, premintable: bool) -> T
     // static-vs-reactive split (`__reactive` gates it), lowered onto the
     // vocabulary's sheet paths (static → cohort enrollment, reactive →
     // per-node binding effect). Paths are spelled `::runtime_core::…`
-    // in BOTH arms on purpose: the shared `finish()` retarget rewrites
-    // them to `::runtime_vocabulary::glue::…` under `new-core`, where
-    // the glue re-exports resolve them (`IntoStyleProp`/`StyleProp` are
-    // glue-only names — they do not exist in runtime-core, which is
-    // fine: this arm is only emitted when the retarget runs).
+    // on purpose: the shared `finish()` retarget rewrites them to
+    // `::runtime_vocabulary::glue::…`, where the glue re-exports
+    // (`IntoStyleProp`/`StyleProp`) resolve them.
     let conversion_impl = quote! {
         #[allow(unexpected_cfgs)]
         impl ::runtime_core::IntoStyleProp for #name {
             fn into_style_prop(self) -> ::runtime_core::StyleProp {
                 #premint_branch
-                // Same static-vs-reactive routing as the old core's
-                // `IntoStyleSource` (see the sibling emission): constant
-                // builders take the cohort path (`Sheet`), any reactive
-                // input (`Signal<E>` isn't available under new-core —
-                // use `derived(move || sig.get())`, whose closure reads
+                // Static-vs-reactive routing: constant builders take the
+                // cohort path (`Sheet`), any reactive input (there is no
+                // `Signal<E>` input — use `derived(move || sig.get())`,
+                // whose closure reads
                 // subscribe the binding effect) takes the per-node
                 // effect path (`SheetDynamic`).
                 let __reactive = self.__reactive;

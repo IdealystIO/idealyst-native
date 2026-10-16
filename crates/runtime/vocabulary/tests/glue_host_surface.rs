@@ -20,7 +20,7 @@ use runtime_vocabulary::glue;
 
 /// `runtime_shared::announce(msg, priority)` — the a11y live-region author
 /// surface. Routes to the host-installed announcer; with none installed
-/// it is a silent no-op (old-core behavior, unchanged).
+/// it is a silent no-op.
 #[test]
 fn glue_reexports_announce_and_it_routes_to_the_installed_announcer() {
     use std::cell::RefCell;
@@ -47,8 +47,7 @@ fn glue_reexports_announce_and_it_routes_to_the_installed_announcer() {
 }
 
 /// `runtime_shared::color_scheme()` and `runtime_shared::host::color_scheme()`
-/// — the root re-export and the module path. Both existed on the old
-/// root (root export + glob-visible module); only the type was mirrored.
+/// — the root re-export and the module path. Both must resolve.
 #[test]
 fn glue_reexports_color_scheme_at_the_root_and_under_host() {
     runtime_shared::host::install_current_color_scheme(glue::ColorScheme::Dark);
@@ -75,7 +74,7 @@ fn glue_reexports_open_url_and_it_routes_to_the_installed_opener() {
     runtime_shared::host::install_url_opener(None);
 
     assert_eq!(seen.borrow().as_slice(), ["https://example.test/a"]);
-    // No opener installed ⇒ silent no-op, not a panic (old-core posture).
+    // No opener installed ⇒ silent no-op, not a panic.
     glue::open_url("https://example.test/b");
 }
 

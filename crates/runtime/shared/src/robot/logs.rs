@@ -148,8 +148,8 @@ pub fn start_stdio_capture() {
 /// wasm32 reads the core wall clock (`js Date`, installed by the web
 /// backend's bootstrap before the robot relay dials out):
 /// `SystemTime::now()` panics on `wasm32-unknown-unknown`, so the
-/// first `push` / `robot_log!` in a web robot build used to abort the
-/// app (regression: `tests/robot_logs_web.rs`). Native keeps
+/// first `push` / `robot_log!` in a web robot build would abort the app
+/// (regression: `tests/robot_logs_web.rs`). Native keeps
 /// `SystemTime`, which is real there and — unlike the core wall clock,
 /// which reads 0 until `mount` installs a source — already correct for
 /// lines captured before mount.

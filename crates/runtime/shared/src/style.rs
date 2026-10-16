@@ -81,10 +81,9 @@ pub enum Length {
     /// whatever that turns out to be, resolved by the consumer at the
     /// moment it paints.
     ///
-    /// This exists because the pill used to be a magic number. The
-    /// `radius-pill` token was `Px(999.0)`, which works only while 999 is
-    /// still ≥ half the shorter side: a box taller than 1998px quietly
-    /// stopped being a pill and rendered as a 999px-radius rectangle
+    /// Not a large px value: a `Px(999.0)` pill works only while 999 is
+    /// still ≥ half the shorter side — a box taller than 1998px quietly
+    /// stops being a pill and renders as a 999px-radius rectangle
     /// instead. Resolution-dependent, invisible in the style (999 *looks*
     /// like "very round"), and the failure only shows on large surfaces.
     ///
@@ -316,13 +315,13 @@ impl TokenVocabulary for () {
 // the per-token signal in `TOKEN_REGISTRY` — only nodes that read a
 // token re-fire on that token's update.
 //
-// That subscription is to the LEGACY arena's signal, which an effect of
-// the new kernel (`runtime-world`) never hears. So every token read also
+// That subscription is to runtime-shared's own reactive arena, which an
+// effect of the kernel (`runtime-world`) never hears. So every token read also
 // calls the token-read hook, which the vocabulary installs to subscribe
 // the running world effect to its theme version signal
-// ([`install_token_read_hook`]). Without it `resolve()` was reactive in
-// name only on the new core: an idea-ui icon's tint (`.color(move ||
-// tok.resolve())`) kept the first theme's color through every swap.
+// ([`install_token_read_hook`]). Without it `resolve()` is reactive in
+// name only: an idea-ui icon's tint (`.color(move || tok.resolve())`)
+// keeps the first theme's color through every swap.
 
 thread_local! {
     static TOKEN_READ_HOOK: RefCell<Option<std::rc::Rc<dyn Fn()>>> = const { RefCell::new(None) };
@@ -787,10 +786,9 @@ pub enum FontFamily {
     System(String),
     /// A declarative typeface registered with the backend on first
     /// observation. The framework calls
-    /// [`Backend::register_asset`](crate::Backend::register_asset)
-    /// for each face plus
-    /// [`Backend::register_typeface`](crate::Backend::register_typeface)
-    /// before any `apply_style` that references it; backends then
+    /// `runtime_vocabulary::caps::AssetOps::register_asset` for each face
+    /// plus `AssetOps::register_typeface` before any `apply_style` that
+    /// references it; backends then
     /// resolve fonts via the typeface's `family_name`.
     Typeface(crate::assets::Typeface),
 }
@@ -1078,9 +1076,9 @@ pub enum ObjectFit {
 /// The framework imposes **no** default cursor on any primitive — a bare
 /// `Pressable`/`Button` shows the platform default. Component libraries
 /// (e.g. idea-ui) opt their clickables into [`Cursor::Pointer`] via this
-/// property; that is the single source of truth (the old hardcoded inline
-/// `cursor: pointer` on the web pressable is gone, so an author setting
-/// `cursor` here is never overridden by an un-overridable inline style).
+/// property; that is the single source of truth (the web pressable sets
+/// no inline `cursor`, so an author setting `cursor` here is never
+/// overridden by an un-overridable inline style).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Cursor {
@@ -1666,8 +1664,8 @@ pub struct StyleRules {
 
 // `Clone` is written by hand ONLY to carry `#[inline(never)]`: the derived
 // impl compiles to ~6 KB of wasm (104 per-field `Option` clones), and LTO
-// inlined a second full copy of it into the walker's
-// `with_default_text_font`, shipping the struct-clone twice. Outlining pins
+// inlines a second full copy of it into the default-text-font fill path,
+// shipping the struct-clone twice. Outlining pins
 // exactly one copy; the call overhead is irrelevant next to the clone
 // itself. The struct-literal body is compiler-checked for completeness — a
 // new field fails compilation here until it's added. Correctness (no
@@ -3009,10 +3007,10 @@ impl StyleSheet {
     /// empty slice for the common case of sheets with no `state` blocks.
     /// Used by `resolve_state_overlays` to skip per-call iteration of the
     /// full variants map.
-    /// Pub (was crate-private) for the new-core vocabulary's overlay
-    /// resolution: scanning `variant_keys()` per call allocates the full
-    /// key list per styled node per fire — the cached slice is the
-    /// empty-slice fast path the old walker used.
+    /// Pub for the vocabulary's overlay resolution (`style_attach`):
+    /// scanning `variant_keys()` per call allocates the full key list per
+    /// styled node per fire — the cached slice is the empty-slice fast
+    /// path.
     pub fn state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         &self.state_axes
     }
@@ -3110,13 +3108,12 @@ impl StyleSheet {
     /// `stylesheet!` macro plays the identical trick with a hash of its
     /// own source tokens).
     ///
-    /// This exists because premint was previously reachable only from
-    /// the macro, whose whole variant space is known at expansion. A
-    /// sheet assembled at RUNTIME — idea-theme's `TypographySheetBuilder`
+    /// The `stylesheet!` macro premints at expansion, where its whole
+    /// variant space is known. A sheet assembled at RUNTIME — idea-theme's `TypographySheetBuilder`
     /// and friends, whose kinds/tones an app extends before
-    /// `install_idea_theme` — has no such expansion site, so every one
-    /// of those components fell through to the live engine and kept it
-    /// linked. The dump build already runs `app()`, so by the time it
+    /// `install_idea_theme` — has no such expansion site, so without this
+    /// every one of those components falls through to the live engine and
+    /// keeps it linked. The dump build already runs `app()`, so by the time it
     /// asks for CSS the assembled sheets exist; registering here is what
     /// lets it see them.
     /// # The sheet MUST be constructed during the dump's build pass
@@ -3191,12 +3188,10 @@ impl StyleSheet {
     /// it lands at specificity (0,2,0), above the (0,1,0) single-axis arms,
     /// which reproduces `resolve`'s "compounds merge after every axis".
     ///
-    /// This used to bail out (`if self.compounds.is_empty()`) and silently
-    /// leave the sheet classless, which sent every application of it to the
-    /// live engine. That silently disqualified Button and IconButton — the
+    /// Compounds must not disqualify a sheet: a classless sheet sends every
+    /// application of it to the live engine, invisibly — and the
     /// state-overlay helpers attach a hover and a press compound per
-    /// appearance arm — and the failure was invisible: `premint_as` returned
-    /// a sheet that simply had no class.
+    /// appearance arm, so Button and IconButton would be disqualified.
     pub fn premint_as(mut self, identity: &str) -> Rc<StyleSheet> {
         self.retract_auto_premint();
         self.premint_class = Some(crate::premint_class_name(identity).into());
@@ -3306,16 +3301,14 @@ impl StyleSheet {
         //
         // Responsive overlays (`__bp_*` / `__cq_*`) get their own pass,
         // FIRST, in mobile-first order: breakpoints by rank, then
-        // containers by threshold. They used to ride the alphabetical pass
-        // with the author axes, which put them below every author axis
-        // (right) but stacked them alphabetically among themselves
-        // (`__bp_md` < `__bp_sm`, so `sm` would beat `md` with both on).
-        // That never showed while the native path resolved one overlay at
-        // a time and merged the FULL results (the old `merge_active_breakpoints`),
-        // but that merge re-stated base values: an `md` block that set only
-        // `padding` reset an `sm` block's `min_height` to the base. The
-        // native path now turns every active layer on and resolves once,
-        // which needs this order.
+        // containers by threshold. Riding the alphabetical pass with the
+        // author axes would put them below every author axis (right) but
+        // stack them alphabetically among themselves (`__bp_md` <
+        // `__bp_sm`, so `sm` would beat `md` with both on). The native
+        // path turns every active layer on and resolves once, which needs
+        // this order. (Resolving one overlay at a time and merging the
+        // FULL results instead re-states base values: an `md` block that
+        // set only `padding` would reset an `sm` block's `min_height`.)
         //
         // The precedence this function defines is THE layering contract
         // for every backend and the premint dump:
@@ -3520,12 +3513,12 @@ impl StyleSheet {
     }
 
     /// Style-dump-visible re-exports of the overlay-axis lists (the
-    /// crate-internal accessors the walker uses). Orders are
+    /// accessors the live style-attach engine uses). Orders are
     /// load-bearing: states in `StateBits::PRECEDENCE` order (matches
     /// `resolve`'s state pass and `resolve_state_overlays` → live web's
     /// rule order); breakpoints /
     /// containers get sorted by the dump (rank / threshold ascending,
-    /// matching the walker's resolvers).
+    /// matching the live engine's resolvers).
     #[cfg(feature = "style-dump")]
     pub fn premint_state_axes(&self) -> &[(crate::StateBits, VariantAxis)] {
         self.state_axes()
@@ -4145,8 +4138,8 @@ thread_local! {
 
     /// Each currently-registered stylesheet, with the rules that were
     /// pre-generated for it and a `Weak<StyleSheet>` used to detect
-    /// when the stylesheet has been dropped by all holders. The
-    /// framework calls `Backend::register_stylesheet` exactly once per
+    /// when the stylesheet has been dropped by all holders.
+    /// [`ensure_registered_with`] calls `register` exactly once per
     /// sheet and tracks the rules so we can later call
     /// `unregister_stylesheet` to free backend-side state.
     static REGISTRATIONS: RefCell<FxHashMap<RegKey, Registration>> =
@@ -4159,8 +4152,8 @@ thread_local! {
         RefCell::new(Vec::new());
 
     /// Tokens queued for the next backend interaction. `install_tokens`
-    /// pushes here; `ensure_registered_with` flushes via
-    /// `Backend::install_tokens`. We can't call the backend directly
+    /// pushes here; `ensure_registered_with` flushes via its
+    /// `install_tokens` closure. We can't call the backend directly
     /// from `install_tokens` because the backend doesn't exist yet at
     /// app boot.
     static PENDING_TOKENS: RefCell<Option<Vec<TokenEntry>>> =
@@ -4168,28 +4161,29 @@ thread_local! {
 
     /// Token updates queued for the next backend interaction. Each
     /// `update_tokens` call appends here; `ensure_registered_with`
-    /// drains and dispatches via `Backend::update_tokens`. Unlike
+    /// drains and dispatches via its `update_tokens` closure. Unlike
     /// `PENDING_TOKENS`, updates accumulate — multiple updates in a
     /// frame all reach the backend.
     static PENDING_TOKEN_UPDATES: RefCell<Vec<Vec<TokenEntry>>> =
         RefCell::new(Vec::new());
 
-    /// Latest host-surface background queued for `Backend::set_app_background`.
+    /// Latest host-surface background queued for the backend's
+    /// `set_app_background`.
     /// `set_app_background` pushes; `ensure_registered_with` flushes.
     /// Single slot (latest wins) because the host has exactly one
     /// background and re-applying intermediate values would just churn.
     static PENDING_APP_BG: RefCell<Option<Tokenized<Color>>> =
         const { RefCell::new(None) };
 
-    /// Latest scrollbar theme (thumb, track) queued for
-    /// `Backend::set_scrollbar_theme`. Same single-slot rule as
+    /// Latest scrollbar theme (thumb, track) queued for the backend's
+    /// `set_scrollbar_theme`. Same single-slot rule as
     /// [`PENDING_APP_BG`].
     static PENDING_SCROLLBAR: RefCell<Option<(Tokenized<Color>, Tokenized<Color>)>> =
         const { RefCell::new(None) };
 
     /// The installed theme's default text [`FontFamily`], if any. A text
     /// node whose resolved style sets no `font_family` inherits this at
-    /// apply time (see `walker::style::apply_one`) so the theme's font is
+    /// apply time so the theme's font is
     /// the true global default on EVERY platform — not just where a sheet
     /// opted in. Crucially this keeps web text out of the browser's serif
     /// fallback without relying on CSS inheritance (which native lacks).
@@ -4376,8 +4370,8 @@ struct ResolutionKey {
 /// touch so subscriptions are consistent regardless of install order)
 /// and by `install_tokens` / `update_tokens` (eager create on install).
 /// Read every currently-registered token signal so the calling
-/// `Effect` subscribes to all of them. Used by the theme-cohort
-/// driver in `walker.rs` to ensure the driver re-fires on *any*
+/// `Effect` subscribes to all of them, so a theme-cohort driver re-fires
+/// on *any*
 /// `update_tokens` call — even before any cohort entries have
 /// registered (the driver's first iteration runs against an empty
 /// slab, so it'd otherwise touch no signals and subscribe to
@@ -4489,9 +4483,9 @@ fn debug_warn_token_type_mismatch(
 /// Push the initial token set. Call once at app startup before
 /// rendering. Creates a `Signal<TokenValue>` in the registry for each
 /// token so subsequent `Tokenized::<T>::resolve()` reads can subscribe.
-/// Tokens are also queued and flushed to the backend via
-/// `Backend::install_tokens` on the first `ensure_registered_with`
-/// call (which has the backend in scope).
+/// Tokens are also queued and flushed to the backend via the
+/// `install_tokens` closure of the first `ensure_registered_with` call
+/// (which has the backend in scope).
 pub fn install_tokens(tokens: &[TokenEntry]) {
     // Tripwire for the debug-only "resolve on unthemed thread" check.
     // Set unconditionally — the cost is a single thread-local store
@@ -4593,17 +4587,17 @@ pub fn update_tokens(tokens: &[TokenEntry]) {
     });
 }
 
-/// Drain the queue of pending token-update batches. Used by the
-/// theme-cohort driver when fan-out is short-circuited (cascade
-/// backends) so the queue gets flushed even when no `apply_one`
-/// runs.
+/// Drain the queue of pending token-update batches.
+/// `runtime_vocabulary`'s token-registry seed calls it after every
+/// install/update to discard the batches, since nothing else drains
+/// this queue there.
 pub fn take_pending_token_updates() -> Vec<Vec<TokenEntry>> {
     PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()))
 }
 
 /// Theme the host surface behind the framework's rendered tree
-/// (`<body>` on web, `UIWindow` on iOS, etc.). Routes through
-/// [`Backend::set_app_background`] on the next walker pass. The
+/// (`<body>` on web, `UIWindow` on iOS, etc.). Queued until the next
+/// [`flush_pending_host_state`], which hands it to the backend. The
 /// argument is a [`Tokenized<Color>`] so backends with a CSS-variable
 /// surface can wire the host to `var(--<name>)` and stay reactive
 /// across `update_tokens` calls without a second invocation here.
@@ -4626,9 +4620,9 @@ pub fn set_default_text_font(font: Option<FontFamily>) {
     DEFAULT_TEXT_FONT.with(|f| *f.borrow_mut() = font);
 }
 
-/// The installed theme's default text [`FontFamily`], if one is set. Read by
-/// [`apply_one`](crate::walker::style) to fill a text node's absent
-/// `font_family`. See [`set_default_text_font`].
+/// The installed theme's default text [`FontFamily`], if one is set — the
+/// fill for a text node's absent `font_family`. See
+/// [`set_default_text_font`].
 pub fn default_text_font() -> Option<FontFamily> {
     DEFAULT_TEXT_FONT.with(|f| f.borrow().clone())
 }
@@ -4642,16 +4636,6 @@ pub fn set_scrollbar_theme(thumb: Tokenized<Color>, track: Tokenized<Color>) {
 
 
 
-/// Ensures the backend has been asked to pre-generate state for this
-/// stylesheet against the active theme. Calls `register` with the
-/// resolved rules exactly once per `(sheet, theme)` pair.
-///
-/// Also opportunistically:
-/// - Flushes the pending-unregister queue, calling `unregister` for
-///   each rule set queued by `set_theme` or a dead-stylesheet sweep.
-/// - Flushes the pending-tokens queue, calling `install_tokens` with
-///   the most recent theme's token list (if any was queued by
-///   `install_theme` / `set_theme`).
 /// Walk `rules` for `FontFamily::Typeface` references and, for any
 /// typeface not yet observed this session, emit `register_asset` for
 /// each face's asset followed by `register_typeface` for the family.
@@ -4855,7 +4839,7 @@ pub fn maybe_warn_unregistered_system_font(name: &str) {
 ///   `register_asset` + `register_typeface` fire on the next backend
 ///   (otherwise the new backend's `head_css` has no `@font-face`).
 /// - `RESOLUTION_CACHE` (memoized `Rc<StyleRules>`) — the cache holds
-///   `Rc`s the OLD backend was supposed to dedup against; the next
+///   `Rc`s the previous backend was supposed to dedup against; the next
 ///   `ensure_registered_with` will repopulate with fresh `Rc`s.
 /// - `PENDING_UNREGISTER` + `PENDING_TOKEN_UPDATES` — stale queues
 ///   from the previous render that the fresh backend should not see.
@@ -4883,15 +4867,15 @@ pub fn reset_for_ssg_render() {
 /// registration exists for this exact `StyleSheet` instance (compared
 /// by `Rc` pointer, not content).
 ///
-/// This is the cheap fast-path the batched-Repeat walker uses to skip
-/// the full [`ensure_registered_with`] call after the sheet's first
-/// row in a build. The full function ALWAYS flushes pending-token
+/// The cheap fast-path a batched repeat uses to skip the full
+/// [`ensure_registered_with`] call after the sheet's first row in a
+/// build. The full function ALWAYS flushes pending-token
 /// queues + sweeps dead `Weak<StyleSheet>` registrations before its
 /// own `already-registered` early-return; that's correct but
-/// per-row-expensive when N rows share one sheet. The walker can
-/// safely skip when this returns `true` because:
+/// per-row-expensive when N rows share one sheet. Skipping is safe
+/// when this returns `true` because:
 ///   - registrations don't change mid-build (no one writes
-///     `register_stylesheet` from inside `enqueue_primitive`), and
+///     `register_stylesheet` mid-build), and
 ///   - any pending-token flushing the first call did is still in
 ///     effect for the remaining rows.
 pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
@@ -4903,10 +4887,9 @@ pub fn is_registered(sheet: &Rc<StyleSheet>) -> bool {
 /// app background, scrollbar theme, app key handler — into the backend
 /// via the given closures.
 ///
-/// Historically this ran only as the prologue of
-/// [`ensure_registered_with`], i.e. it rode *sheet registration*. A
-/// fully-preminted app registers no sheets (its rules ship as a static
-/// `.css` asset), so the walker's premint host driver calls this
+/// Separate from [`ensure_registered_with`] (whose prologue also runs
+/// it) because a fully-preminted app registers no sheets (its rules ship
+/// as a static `.css` asset), so its host driver must call this
 /// directly — otherwise `install_tokens` / `set_theme` state queued by
 /// the theme SDK would never reach the backend and every `var(--…)`
 /// in the preminted CSS would fall back. Both callers share this one
@@ -4933,7 +4916,7 @@ pub fn flush_pending_host_state<I, UPD, SAB, SST>(
     }
 
     // Flush any pending token updates. These accumulate across all
-    // `update_tokens` calls between walker passes.
+    // `update_tokens` calls between flushes.
     let pending_updates: Vec<Vec<TokenEntry>> =
         PENDING_TOKEN_UPDATES.with(|p| std::mem::take(&mut *p.borrow_mut()));
     let mut update_tokens = update_tokens;
@@ -4954,8 +4937,22 @@ pub fn flush_pending_host_state<I, UPD, SAB, SST>(
     }
 }
 
+/// Ensures the backend has been asked to pre-generate state for this
+/// stylesheet against the active theme. Calls `register` with the
+/// resolved rules exactly once per `(sheet, theme)` pair.
+///
+/// Also opportunistically:
+/// - Flushes the pending-unregister queue, calling `unregister` for
+///   each rule set queued by `set_theme` or a dead-stylesheet sweep.
+/// - Flushes the pending-tokens queue, calling `install_tokens` with
+///   the most recent theme's token list (if any was queued by
+///   `install_theme` / `set_theme`).
 /// - Sweeps registrations whose `Weak<StyleSheet>` no longer upgrades
 ///   into the pending-unregister queue.
+///
+/// The framework's own registration path is per-world and does not call
+/// this: `runtime_vocabulary::theme::ensure_sheet_registered`
+/// reimplements the same prologue + body against a world's backend.
 pub fn ensure_registered_with<R, U, I, UPD, RA, RT, SAB, SST>(
     sheet: &Rc<StyleSheet>,
     register: R,
@@ -5100,8 +5097,8 @@ pub fn pregenerate(sheet: &StyleSheet) -> Vec<Rc<StyleRules>> {
 
 /// [`pregenerate`] + SEED the sheet's pointer-keyed resolution fast
 /// path — the same `insert_variant` population `ensure_registered_with`
-/// performs. For EXTERNAL registration tables (the new core's per-world
-/// sheet registry in `runtime-vocabulary`) that re-implement the
+/// performs. For EXTERNAL registration tables (the per-world sheet
+/// registry in `runtime-vocabulary`) that re-implement the
 /// registration prologue outside this module: without the seed, every
 /// `resolve()` for a registered sheet takes the slow `ResolutionKey`
 /// path (variant-map clone + hash per call) AND returns content-equal
@@ -5431,17 +5428,14 @@ mod premint_identity_tests {
 
     /// A sheet with compound variants DOES premint.
     ///
-    /// This test previously asserted the opposite — that a compound sheet
-    /// declines, on the reasoning that "a compound cannot be expressed as
-    /// per-axis classes." That reasoning was wrong. The runtime stamps one
-    /// class per axis, so "these axes coincide" is precisely a CSS compound
+    /// The runtime stamps one class per axis, so "these axes coincide" is precisely a CSS compound
     /// selector over those classes (`.iy-x-appearance-filled:hover`), which
     /// needs no extra stamped class and lands at (0,2,0) — above the (0,1,0)
     /// arms, reproducing `resolve`'s base → axes → compounds order.
     ///
-    /// The old behavior was also silent: `premint_as` returned a sheet with
-    /// no class, so idea-theme's Button and IconButton — whose hover/press
-    /// feedback is keyed on `(appearance, __state_*)` — sent every
+    /// Declining would be silent: `premint_as` would return a sheet with no
+    /// class, so idea-theme's Button and IconButton — whose hover/press
+    /// feedback is keyed on `(appearance, __state_*)` — would send every
     /// application to the live engine with nothing to indicate why.
     /// `premint-dump`'s `compound_*` tests cover the lowering; this pins that
     /// the sheet is not disqualified up front.
@@ -5485,9 +5479,9 @@ mod premint_identity_tests {
 mod full_radius_tests {
     use super::Length;
 
-    /// `Full` is round at ANY size; the old `999` sentinel was not.
+    /// `Full` is round at ANY size; a `999` sentinel is not.
     ///
-    /// Regression: the pill was `Length::Px(999.0)`. Every renderer clamps a
+    /// Regression: a pill as `Length::Px(999.0)`. Every renderer clamps a
     /// corner radius to half the shorter side, so 999 reads as "fully round"
     /// only while 999 >= min(w, h) / 2 — i.e. up to a 1998px box. Above that
     /// the clamp stops binding and the corner renders as a literal 999px

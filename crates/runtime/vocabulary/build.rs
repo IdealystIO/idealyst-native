@@ -5,8 +5,7 @@
 //! build-web's `cargo_build_wasm`) rather than cargo features, because a
 //! feature would have to be forwarded through every crate between the app
 //! and here — `runtime-core`, `backend-web`, `idea-ui`, … — and unified
-//! across all of them. That forwarding fragility is what sank the old
-//! `prim-*` / `style-dynamic` gating model. A `RUSTFLAGS` cfg applies
+//! across all of them, which is fragile. A `RUSTFLAGS` cfg applies
 //! uniformly to the whole build with nothing to forward.
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");

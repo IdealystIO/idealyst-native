@@ -158,18 +158,15 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                      A `Fn(&LazyError) -> impl IntoElement` closure; the error \
                      carries `.message()` and `.retry()`. Default: log + keep loading.";
 
-    // The chunk body fn. OLD core: constructs the component's `Element`
-    // inside the loader future (the walker's `ScopedLoad` re-enters the
-    // chunk scope per poll so construction-time reactive state has an
-    // owner). NEW core: a future poll runs on the executor with NO world
-    // entered — constructing there would panic in `component_scope` — so
-    // `__lazy_body` returns a **body thunk** (`LazyBodyThunk`) and the
-    // vocabulary's mount handler invokes it inside its swap effect
-    // (world entered, `component_scope`-collected). Same `#[wasm_split]`
-    // module + fn naming either way, so the post-link splitter's chunk
-    // classification is identical across cores. The `::runtime_core::…`
-    // paths below are retargeted to `runtime_vocabulary::glue::…` under
-    // `new-core` (glue::primitives::lazy defines the thunk types).
+    // The chunk body fn. A future poll runs on the executor with NO world
+    // entered — constructing the component's `Element` there would panic
+    // in `component_scope` — so `__lazy_body` returns a **body thunk**
+    // (`LazyBodyThunk`) and the vocabulary's mount handler invokes it
+    // inside its swap effect (world entered, `component_scope`-collected,
+    // so construction-time reactive state has an owner). The
+    // `::runtime_core::…` paths below are retargeted to
+    // `runtime_vocabulary::glue::…` (glue::primitives::lazy defines the
+    // thunk types).
     let lazy_body_fn = quote! {
         #[::runtime_core::__wasm_split::wasm_split(#split_name)]
         async fn __lazy_body(
@@ -231,9 +228,8 @@ pub(crate) fn emit_inline_lazy_glue(g: LazyGlue<'_>) -> TokenStream2 {
                 use ::runtime_core::__wasm_split as wasm_split;
 
                 // The component's body — hoisted into a chunk. Receives the
-                // props (config fields ride along, unused) and calls the fn
-                // (old core: builds the Element; new core: returns the body
-                // thunk — see `lazy_body_fn` above).
+                // props (config fields ride along, unused) and calls the fn,
+                // which returns the body thunk (see `lazy_body_fn` above).
                 #lazy_body_fn
 
                 // Pull the loading/error config out (cheap `Rc` clones) before

@@ -1,25 +1,20 @@
-//! `new-core` retargeting (idea-lite core migration, P3a).
+//! Path retargeting for every macro's output.
 //!
-//! When the `new-core` feature is on, every proc-macro entry point that
-//! emits core paths pipes its OUTPUT through [`retarget`], which rewrites
+//! Every proc-macro entry point that emits core paths pipes its OUTPUT
+//! through [`retarget`] (via `finish()` in lib.rs), which rewrites
 //! absolute `::runtime_core::…` path heads to
 //! `::runtime_vocabulary::glue::…`. The glue module
-//! (`crates/runtime/vocabulary/src/glue.rs`) mirrors the names and call
+//! (`crates/runtime/vocabulary/src/glue.rs`) provides the names and call
 //! shapes the emission relies on (`view(children)`, `ChildList`,
 //! `IntoElement`, `BuildElement`, `when`/`switch`, the dispatch traits,
-//! the f-string slot machinery), implemented on the new core.
+//! the f-string slot machinery). Landing on the vocabulary means a
+//! component library needs no `runtime-core` dependency.
 //!
 //! ## Why output rewriting instead of editing ~300 emission sites
 //!
-//! The alternative — threading a switchable path root through every
-//! `quote!` in ui.rs/jsx.rs/inline_props.rs/… — touches every emission
-//! site and risks drift between the two lowerings during the migration
-//! window. Rewriting the assembled output keeps the OLD lowering
-//! byte-identical when the feature is off (the rewriter isn't even
-//! compiled) and makes the retarget a single reviewable seam. The
-//! emission DIFFERENCES that are more than a path change (structured
-//! generator-backend bindings, deferred primitives) are explicit
-//! decision points at the emission sites themselves.
+//! Threading a different path root through every `quote!` in
+//! ui.rs/jsx.rs/inline_props.rs/… touches every emission site; rewriting
+//! the assembled output keeps the retarget a single reviewable seam.
 //!
 //! ## Scope of the rewrite — and its documented edge
 //!
@@ -28,10 +23,9 @@
 //! the ident `runtime_core`), recursively inside groups. Macro-emitted
 //! core references are always absolute, so this catches all of them. A
 //! USER expression inside a `ui!` body or `#[component]` fn that spells
-//! an absolute `::runtime_core::…` path is rewritten too — transitional
-//! behavior, documented here on purpose: inside a new-core crate a
-//! direct old-core reference is wrong either way, and the remap either
-//! lands on the glue equivalent or fails loudly with a
+//! an absolute `::runtime_core::…` path is rewritten too, documented
+//! here on purpose: `runtime_core`'s root is `glue::*`, so the remap
+//! either lands on the same item or fails loudly with a
 //! `runtime_vocabulary::glue` path in the error. Unqualified
 //! `runtime_core::…` user paths are NOT touched.
 //!
@@ -209,7 +203,7 @@ mod tests {
         assert_eq!(squash(out), "my_crate::runtime_core::thing");
     }
 
-    /// Regression (first live compile of newcore-app): keywords are
+    /// Regression: keywords are
     /// `Ident` tokens, and `as ::runtime_core::X` / `impl
     /// ::runtime_core::T for` / `use ::runtime_core::…` were wrongly
     /// treated as mid-path separators and left untouched, so every

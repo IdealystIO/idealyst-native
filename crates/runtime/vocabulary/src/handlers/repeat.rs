@@ -1,22 +1,20 @@
-//! The `repeat` multi-node handler — port of the old walker's
-//! batched-Repeat expansion (`walker/view.rs::splice_children`'s
-//! `Element::Repeat` arm + `try_build_repeat_batched` + `enqueue_primitive`).
+//! The `repeat` multi-node handler — the batched static-range expansion
+//! (`for i in 0..n` → `Element::Many(RepeatPrim)`).
 //!
-//! Two paths, decided per expansion (all-or-nothing, like the old core):
+//! Two paths, decided per expansion (all-or-nothing):
 //!
 //! - **Batched** (`BatchOps::supports_batched_repeat`): every row matches
 //!   the batchable shape (View + Text + static-sheet style, no other
 //!   primitives, no events/refs/reactive bindings) → the whole expansion
 //!   is enqueued as `BatchOp`s and submitted in ONE
 //!   `execute_batch_with_attach` round-trip; styled rows share ONE bulk
-//!   theme-cohort entry + ONE teardown probe (the old
-//!   `register_static_cohort_batch`). No per-row `LiveNode` machinery
+//!   theme-cohort entry + ONE teardown probe
+//!   (`register_static_cohort_batch`). No per-row `LiveNode` machinery
 //!   beyond a flat node list — mount AND teardown are O(1) in reactive
 //!   bookkeeping.
 //! - **Fallback**: rows realize per-node through the normal registry
 //!   handlers (full per-row work: style attach, effects, cleanups), then
-//!   attach with one `Host::insert_many` — the old walker's fallback,
-//!   op-for-op.
+//!   attach with one `Host::insert_many`.
 //!
 //! ## Batchable shape
 //!
@@ -29,14 +27,12 @@
 //!   see "Event handlers on batched rows" below.
 //!
 //! Anything else fails the check and the WHOLE expansion takes the
-//! fallback ("no mixed batched/per-call within one expansion" — the old
-//! rule).
+//! fallback (no mixed batched/per-call within one expansion).
 //!
-//! The rest of the condition set matches the old walker's exactly, and
-//! deliberately: it is what the scene-parity goldens were frozen against.
-//! Note that the goldens never reach this path at all — both recorders
-//! leave `BatchOps::supports_batched_repeat` at its `false` default — so
-//! the batching decision itself is not what those goldens pin.
+//! Note that the scene-parity goldens never reach the batched path — both
+//! recorders leave `BatchOps::supports_batched_repeat` at its `false`
+//! default — so the batching decision itself is not what those goldens
+//! pin.
 //!
 //! ## Event handlers on batched rows
 //!
@@ -49,10 +45,9 @@
 //! the fallback path pays too; batching still removes the per-row
 //! create/insert/style traffic around it.
 //!
-//! This is why an interactive grid can use the fast path at all. Before,
-//! ANY `on_touch` in the expansion pushed every row onto the per-call path
-//! — the one case that most needs bulk mounting was structurally excluded
-//! from it.
+//! This is why an interactive grid can use the fast path at all: if ANY
+//! `on_touch` pushed every row onto the per-call path, the one case that
+//! most needs bulk mounting would be structurally excluded from it.
 //!
 //! Handlers need no per-row teardown, which is what makes them safe here
 //! (batched rows get no `on_node_unstyled` — see `BatchOps`' contract).
@@ -64,7 +59,7 @@
 //! also the right granularity: batched rows have no individual scope, and
 //! the expansion lives and dies as a unit.
 //!
-//! Like the old core, batched rows skip robot registration and a11y
+//! Batched rows skip robot registration and a11y
 //! props (the batch ops don't carry them) — the batchable shape is
 //! static text rows, where both are inert in practice.
 
@@ -133,7 +128,7 @@ where
     H: BatchOps + InputOps + StyleServices,
 {
     let RepeatPrim { count, row_builder } = prim;
-    // Empty repeat: nothing to do, no FFI (old walker's early-out).
+    // Empty repeat: nothing to do, no FFI.
     if count == 0 {
         return (LiveNode::Fragment(Vec::new()), 0);
     }
@@ -162,7 +157,7 @@ where
 
 /// The batched path. `None` = some row failed the batchable-shape check;
 /// the caller falls back (the partial batch is discarded — no partial
-/// batches, the old rule).
+/// batches).
 fn try_mount_batched<H>(
     backend: &Rc<RefCell<H>>,
     parent: &mut H::Node,
@@ -174,9 +169,9 @@ where
 {
     let mut batch = BackendBatch::with_capacity(count * 3, 0);
     // Per-row style attachments, resolved to real nodes after the batch
-    // returns and bulk-registered as ONE cohort entry (the dominant
-    // old-core mount cost before bulk registration — see
-    // `register_static_cohort_batch`'s rationale in walker/style.rs).
+    // returns and bulk-registered as ONE cohort entry (per-row cohort
+    // registration dominates mount cost at 10k rows — see
+    // `register_static_cohort_batch`).
     // Kept BOXED end-to-end (`StyleProp::Sheet` carries the box): an
     // unboxed `StyleApplication` is ~2.3 KB, and moving it into this
     // vec / the members vec re-copies it per styled row.
@@ -286,19 +281,18 @@ where
     // The live tree is an EMPTY fragment on purpose: batched rows carry
     // no per-node live structure, and retaining a per-row
     // `LiveNode::Item` would cost 10k `Node` handle clones at mount +
-    // 10k drops at teardown (measured ~2× old-core teardown on the
-    // bench gate) for nodes that can never be individually detached —
-    // a Many is children-list-only (detached-root mount panics), so
-    // structural teardown ALWAYS removes an ancestor node, exactly the
-    // old `Element::Repeat` contract. Only the COUNT feeds the splice
-    // accounting.
+    // 10k drops at teardown (measured ~2× slower teardown on the bench
+    // gate) for nodes that can never be individually detached — a Many is
+    // children-list-only (detached-root mount panics), so structural
+    // teardown ALWAYS removes an ancestor node. Only the COUNT feeds the
+    // splice accounting.
     Some((LiveNode::Fragment(Vec::new()), row_top_ids.len()))
 }
 
 /// Walk one row subtree and push `BatchOp`s. Returns the row top's
 /// `local_id`, or `None` on any non-batchable shape (whole batch is then
-/// discarded by the caller). Mirrors `walker/view.rs::enqueue_primitive`
-/// condition-for-condition.
+/// discarded by the caller). The conditions are the module docs'
+/// "Batchable shape".
 fn enqueue_element<H>(
     backend: &Rc<RefCell<H>>,
     batch: &mut BackendBatch,
@@ -313,7 +307,7 @@ where
 {
     let Element::Item { data, children, .. } = element else {
         // Fragments, holes, keyed lists, nested repeats, component
-        // scopes: all break out (the old walker's `_ => None`).
+        // scopes: all break out.
         return None;
     };
     // Try `text` first (the common leaf), then `view`.
@@ -362,8 +356,8 @@ where
     };
 
     // For a styled view, resolve & mint the class up front so the batch
-    // ships a class-name string. Only the static-sheet arm batches; the
-    // old walker's exact set (reactive/signal-class/preminted bail).
+    // ships a class-name string. Only the static-sheet arm batches
+    // (reactive/signal-class/preminted bail).
     let resolved_class: Option<(String, Rc<runtime_shared::StyleRules>, Box<StyleApplication>)> =
         match prim.style {
             None => None,
@@ -383,7 +377,7 @@ where
                     theme::ensure_sheet_registered(backend, &app.sheet);
                 }
                 // State overlays force per-node dynamic classes — bail
-                // to per-call (old walker's overlay check).
+                // to per-call.
                 if !resolve_state_overlays(&app).is_empty() {
                     return None;
                 }
@@ -404,8 +398,7 @@ where
                 Some((class, resolved, app))
             }
             // Raw rules / dynamic closures / signal-class / preminted:
-            // per-call path (the old walker batched only
-            // `StyleSource::Static` sheet applications).
+            // per-call path.
             Some(_) => return None,
         };
 
@@ -442,11 +435,10 @@ where
     Some(view_id)
 }
 
-/// Bulk theme-cohort registration for a batch's styled rows — port of
-/// `walker/style.rs::register_static_cohort_batch`: ONE cohort entry
-/// re-applying every member on theme change, ONE teardown probe
-/// (cohort unregister FIRST, then `on_node_unstyled` per member — the
-/// `BulkStyleHandle::drop` order).
+/// Bulk theme-cohort registration for a batch's styled rows: ONE cohort
+/// entry re-applying every member on theme change, ONE teardown probe
+/// (synchronous cohort unregister; no per-member `on_node_unstyled` —
+/// see the probe).
 fn register_static_cohort_batch<H: StyleServices>(
     backend: &Rc<RefCell<H>>,
     members: Vec<(H::Node, Box<StyleApplication>)>,
@@ -459,8 +451,8 @@ fn register_static_cohort_batch<H: StyleServices>(
     let ctx = theme::theme_ctx();
 
     // Single Rc-wrapped Vec shared between the cohort reapply closure
-    // and the teardown probe (the old code's rationale: no per-row Rc
-    // wrapping, `apply_sheet` takes `&StyleApplication`).
+    // and the teardown probe (no per-row Rc wrapping; `apply_sheet` takes
+    // `&StyleApplication`).
     let members: Rc<Vec<(H::Node, Box<StyleApplication>)>> = Rc::new(members);
     let members_for_cohort = members.clone();
     let backend_for_cohort = backend.clone();
@@ -468,8 +460,7 @@ fn register_static_cohort_batch<H: StyleServices>(
     let cohort_id = theme::cohort_register(Rc::new(move || {
         for (node, app) in members_for_cohort.iter() {
             // Batched rows carry no container ancestor (flat, simple
-            // rows) — container overlays resolve at width 0 (inert),
-            // same as the old bulk reapply.
+            // rows) — container overlays resolve at width 0 (inert).
             apply_sheet(
                 &backend_for_cohort,
                 node,
@@ -483,29 +474,26 @@ fn register_static_cohort_batch<H: StyleServices>(
     on_teardown(move || {
         // Cohort unregister must be SYNCHRONOUS (a theme swap after
         // teardown must not reapply to dead nodes). Per-row
-        // `on_node_unstyled` is deliberately NOT emitted here, diverging
-        // from the old `BulkStyleHandle::drop` "for symmetry" loop:
-        // batched rows never acquire per-node backend style state — the
+        // `on_node_unstyled` is deliberately NOT emitted here: batched
+        // rows never acquire per-node backend style state — the
         // `mint_style_class` cap contract is "without touching any
         // node", and `ApplyStyleStatic` only stamps the shared minted
-        // class — so the loop was N guaranteed no-ops costing one
-        // `node_id` FFI each (~4 ms at 10k rows, the whole
-        // teardown-gate residual). The old core only got it "free"
-        // because `install_drop_deferral` pushed the scope drop into
-        // rAF slices outside the measured window. A backend that DOES
+        // class — so a per-member loop would be N guaranteed no-ops
+        // costing one `node_id` FFI each (~4 ms at 10k rows, the whole
+        // teardown-gate residual). A backend that DOES
         // allocate per-node state for batch-applied classes must free
         // it from its own node-release path, not from this hook (see
         // `BatchOps` docs).
         ctx.cohort_unregister(cohort_id);
         // Release the members OFF the synchronous teardown path: the Vec
         // holds N node handles + N StyleApplications, and freeing them
-        // (JS handle-table releases + map drops) is the old core's
-        // deferred-drop territory (`install_drop_deferral` sliced scope
-        // drops into rAF). `after_ms_detached(0, …)` = deferred where a
+        // (JS handle-table releases + map drops) is bulk work best kept
+        // out of the teardown frame. `after_ms_detached(0, …)` = deferred
+        // where a
         // scheduler is installed (web), synchronous fallback elsewhere
         // (unit tests, native without scheduler). Sheet pinning holds
         // until the timer fires — the nodes are gone by then, so the
-        // registration Weak may die with them, exactly as before.
+        // registration Weak may die with them.
         runtime_shared::scheduling::after_ms_detached(0, move || drop(members));
     });
 }

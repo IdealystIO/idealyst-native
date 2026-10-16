@@ -278,8 +278,7 @@ impl TextInputBuilder {
 
     /// Blur notifier; the returned
     /// [`BlurOutcome`](runtime_shared::primitives::text_input::BlurOutcome)
-    /// lets the handler veto/redirect the blur (same contract as the old
-    /// element's `on_blur`).
+    /// lets the handler veto/redirect the blur.
     pub fn on_blur(
         mut self,
         f: impl Fn() -> runtime_shared::primitives::text_input::BlurOutcome + 'static,

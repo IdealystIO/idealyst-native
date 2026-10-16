@@ -28,13 +28,13 @@ pub enum TextSource {
     /// (web backend: JS-side reactive layer; future native backends:
     /// possibly platform-specific binding primitives). Carries the
     /// signal ids + template static parts + initial values directly,
-    /// so the walker can hand the structured data straight to the
+    /// so the text handler can hand the structured data straight to the
     /// backend without running a Rust closure per fire.
     ///
     /// `compute_fallback` is the same closure the `Bound` variant
-    /// would carry — it gets invoked through the legacy Effect path
+    /// would carry — it gets invoked through the per-node Effect path
     /// on backends that DON'T support JS bindings (default-impl
-    /// `Backend::supports_js_text_bindings` returns `false`). The
+    /// `TextOps::supports_js_text_bindings` returns `false`). The
     /// variant author writes the binding once via a text f-string
     /// (`text { "count: {count}" }`) or by constructing
     /// `JsBindingSpec` directly, and the
@@ -45,11 +45,11 @@ pub enum TextSource {
     /// deltas (inline code chips, emphasis) realized through the
     /// backend's own attributed-text mechanism so mixed-style text
     /// wraps as a single paragraph. See [`crate::styled_text`] for
-    /// the model and scope. `Rc` because the walker hands the runs to
+    /// the model and scope. `Rc` because the text handler hands the runs to
     /// the backend at create time AND captures them in a theme-cohort
     /// closure for native re-realization on theme swaps.
     ///
-    /// Only `Element::Text` realizes runs richly. Other `TextSource`
+    /// Only the `text` primitive realizes runs richly. Other `TextSource`
     /// consumers (button labels, the batched view path, robot labels)
     /// lower to the concatenated plain text via
     /// [`crate::styled_text::plain_text_of`].
@@ -373,16 +373,20 @@ impl<T: std::fmt::Display + Clone + 'static> ReactiveTextSlot for crate::Reactiv
 /// re-fire the apply path. Most styles are `Static`; the `Reactive`
 /// path exists for cases that need per-node reactive overrides.
 ///
-/// The split matters at scale: 10 000 styled rows used to allocate
+/// The split matters at scale: 10 000 reactive styled rows allocate
 /// 10 000 `Effect`s + 10 000 `Box<dyn Fn>` closures + 10 000 entries
 /// in the active-theme signal's subscriber set. With `Static`, those
 /// per-node allocations vanish — the cohort holds a single entry per
 /// node and a single `Effect` subscribes to the theme on behalf of
 /// the whole set.
+///
+/// The live style-attach engine (`runtime_vocabulary::style_attach`)
+/// applies its own `StyleProp`, not this enum; `StyleSource` is
+/// re-exported as data.
 pub enum StyleSource {
     Static(StyleApplication),
     Reactive(Box<dyn Fn() -> StyleApplication>),
-    /// Pre-resolved signal→class binding. The walker resolves each
+    /// Pre-resolved signal→class binding. The applier resolves each
     /// declared `(value, app)` to a minted class name at mount, then
     /// hands the (signal_id, values, classes) table to the backend.
     /// Backends that support JS-side bindings (web today) install a
@@ -399,7 +403,7 @@ pub enum StyleSource {
     /// A class whose rules were emitted into a `.css` asset at build
     /// time (the "preminted" path — see the styling guide's build-time
     /// CSS section). The runtime does no `StyleRules` work at all:
-    /// the walker stamps `class` via [`crate::Backend::attach_html_class`]
+    /// the applier stamps `class` via `DocumentOps::attach_html_class`
     /// and returns a no-op state setter (hover/press/focus overlays for
     /// preminted sheets ship as CSS pseudo-class rules in the same
     /// asset).
@@ -407,12 +411,12 @@ pub enum StyleSource {
     /// Only constructed on document-backed targets (web, SSR) — the
     /// `stylesheet!` macro keeps the full rules closure on native
     /// targets, where there is no CSS engine to premint into. The
-    /// walker debug-asserts that invariant via
-    /// [`crate::Backend::supports_preminted_styles`].
+    /// applier debug-asserts that invariant via
+    /// `StyleOps::supports_preminted_styles`.
     ///
     /// `overrides` carries runtime-supplied override rules (the
-    /// `with_style_overrides` slot-override path). `None` for the
-    /// common case; when `Some`, the walker layers a normal static
+    /// slot-override path). `None` for the common case; when `Some`, the
+    /// applier layers a normal static
     /// application on top of the preminted class — so only apps that
     /// actually use runtime overrides link the style engine.
     Preminted {
@@ -430,7 +434,7 @@ pub enum StyleSource {
 /// Spec for a `StyleSource::SignalClass` binding. Built via the
 /// [`crate::signal_class`] helper.
 ///
-/// `signal_id` is the arena id of a `Signal<u32>`. The walker
+/// `signal_id` is the arena id of a `Signal<u32>`. The applier
 /// resolves each `(values[i], apps[i])` pair to a minted class name
 /// and ships the resulting table to the backend. On a signal write
 /// the backend updates the node's class to `classes[values.index_of(new_value)]`.

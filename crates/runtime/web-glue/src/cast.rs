@@ -3,9 +3,9 @@
 //! A typed handle (`dom::Element`, `dom::PointerEvent`, …) is a
 //! `#[repr(transparent)]` wrapper over one [`JsValue`]. It owns the same
 //! single slab slot; the type only says what the value is known to be.
-//! This mirrors how the framework uses web-sys today (`Node` / `Element` /
-//! `HtmlElement` / `HtmlInputElement`, each derefing to the one it
-//! extends), so phase 3's SDK ports keep their shape.
+//! This mirrors web-sys's shape (`Node` / `Element` / `HtmlElement` /
+//! `HtmlInputElement`, each derefing to the one it extends), so code
+//! ported from web-sys keeps its shape.
 //!
 //! Casts:
 //!
@@ -128,12 +128,12 @@ pub fn instance_of(v: &JsValue, class: &str) -> bool {
 ///
 /// [`JsCast::is_type_of`] is generated as its own glue import whose JS
 /// names the constructor (`globalThis.HTMLElement`), the way wasm-bindgen
-/// emits `__wbg_instanceof_<Class>`. It used to call [`instance_of`] with
-/// the class name, which made every checked cast decode that name with a
-/// `TextDecoder` in JS before the `instanceof`: ~110 ns per cast against
-/// ~13 ns (measured in Chrome 154), and `dyn_into::<Node>()` runs once per
-/// mounted node — it took backend-web's batch decode from 7 ms to 31 ms
-/// over the benchmark's 67 k-row rebuild. The constructor is read from
+/// emits `__wbg_instanceof_<Class>`. Not [`instance_of`] with the class
+/// name: that decodes the name with a `TextDecoder` in JS before every
+/// `instanceof` — ~110 ns per cast against ~13 ns (measured in Chrome 154),
+/// and `dyn_into::<Node>()` runs once per mounted node, which took
+/// backend-web's batch decode from 7 ms to 31 ms over the benchmark's
+/// 67 k-row rebuild. The constructor is read from
 /// `globalThis` on each call rather than captured: a global the engine
 /// lacks stays a clean `false`, and the load is an inline-cached property
 /// read. Only classes something actually casts to keep their import —

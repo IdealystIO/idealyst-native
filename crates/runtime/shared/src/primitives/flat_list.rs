@@ -1,7 +1,7 @@
 //! `flat_list<T>` — typed wrapper around `Virtualizer`.
 //!
 //! Author-facing API. Captures their `Signal<Vec<T>>` + closures and
-//! produces a `Element::Virtualizer` whose callbacks read the
+//! produces a virtualizer item (`VirtualizerPrim`) whose callbacks read the
 //! current `Vec<T>` snapshot at call time. Reactive: if `data`
 //! changes (insertions, deletions, reorders), the framework's
 //! backend re-runs its diff and updates the mounted set.
@@ -34,12 +34,8 @@ pub fn fixed_size<T: 'static>(size: f32) -> FlatListItemSize<T> {
 #[cfg(test)]
 mod tests {
     //! `fixed_size` / `FlatListItemSize` coverage.
-    //!
-    //! RELOCATED from `runtime-core/src/primitives/flat_list.rs`
-    //! (deletion baseline §4.2, SV-R). These only ever exercised the
-    //! free-function helpers that compose the constructor's arguments —
-    //! the `Bound<VirtualizerHandle>` constructor they were filed next to
-    //! is the part that dies. Same three assertions, same code.
+    //! These exercise the free-function helpers that compose the
+    //! constructor's arguments.
     use super::*;
 
     #[test]

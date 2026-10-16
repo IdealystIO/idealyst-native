@@ -17,7 +17,7 @@ use crate::style_attach::IntoStyleProp;
 use super::SceneChild;
 
 /// Start an `image`. `.src(...)` is required (`build()` panics without
-/// it, matching the old constructor's mandatory argument).
+/// it).
 pub fn image() -> ImageBuilder {
     ImageBuilder {
         src: None,
@@ -112,7 +112,7 @@ impl ImageBuilder {
 }
 
 /// Start an `icon`. `.data(...)` is required (`build()` panics without
-/// it, matching the old `icon(data)` constructor).
+/// it).
 pub fn icon() -> IconBuilder {
     IconBuilder {
         data: None,
@@ -222,7 +222,7 @@ impl IconBuilder {
 /// Start a `link`. External links (`.external(true)`) default their
 /// activation to the platform URL opener; in-app links declare a
 /// destination via `.route(...)` (resolved against the enclosing
-/// navigator's ambient `LinkActivator` at mount — P6) or a raw
+/// navigator's ambient `LinkActivator` at mount) or a raw
 /// `.on_activate(...)`; a link with none of the three panics at mount —
 /// a link that silently does nothing is a footgun.
 pub fn link() -> LinkBuilder {
@@ -293,8 +293,7 @@ impl LinkBuilder {
     /// affordances) and the [`RouteLink`](crate::prims::RouteLink)
     /// payload the mount handler resolves against the enclosing
     /// navigator's ambient `LinkActivator`. `P: Clone` reproduces a
-    /// fresh boxed params payload per activation (the old `link()`
-    /// contract).
+    /// fresh boxed params payload per activation.
     pub fn route<P>(
         mut self,
         route: &runtime_shared::primitives::navigator::Route<P>,

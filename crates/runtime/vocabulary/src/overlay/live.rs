@@ -39,7 +39,7 @@
 //! inside the region's anchor, which belongs to the region's own driver,
 //! so `runtime_scene::with_rebuild` deliberately stops at a region and
 //! the prop falls through to the next render. Reached and refused is the
-//! useful answer; unreachable and silent was the old one.
+//! useful answer; an unreachable, silent drop would not be.
 //!
 //! Before either, a component's literal prop is tried as a LIVE CELL
 //! (`super::cells`): under the overlay a call site's literal props of a

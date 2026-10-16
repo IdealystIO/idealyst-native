@@ -153,12 +153,12 @@ mod end_reach_tests {
     /// first page shorter than its own prefetch threshold must still ask
     /// for the second one.
     ///
-    /// The empty mount used to DISARM (`content <= viewport`), and the
-    /// only way back to armed is leaving the zone. When the threshold is
+    /// If the empty mount DISARMS (`content <= viewport`), the only way
+    /// back to armed is leaving the zone. When the threshold is
     /// wider than the travel — 500pt of prefetch over 300pt of
     /// scrollable content, which is what "a screenful" means on a short
-    /// page — there is nowhere to leave to, so it stayed disarmed
-    /// forever and the list stopped at page 1. `end_reached_threshold`'s
+    /// page — there is nowhere to leave to, so it stays disarmed forever
+    /// and the list stops at page 1. `end_reached_threshold`'s
     /// own docs recommend the configuration that triggered it.
     #[test]
     fn regression_a_short_first_page_after_an_empty_mount_still_fires() {

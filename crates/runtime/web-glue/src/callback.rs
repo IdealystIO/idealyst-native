@@ -38,7 +38,7 @@
 //!   `wasm_bindgen::Closure::into_js_value`'s contract, and it is what an
 //!   element-lifetime listener needs — the element is the keepalive, and a
 //!   discarded element must not pin its listeners' closures for the life of
-//!   the page (see `backend_web::primitives::own_listener`).
+//!   the page (see backend-web's `glue_dom::listen_for_element_lifetime`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;

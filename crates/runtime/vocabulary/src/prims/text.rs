@@ -10,16 +10,15 @@ use runtime_world::Value;
 
 use crate::style_attach::StyleProp;
 
-/// A pre-decomposed reactive text binding — the new-core carrier of
-/// `runtime_shared::JsBindingSpec` (the f-string fast path: signal ids +
-/// template parts, so a JS-binding-capable backend fans out per fire
-/// WITHOUT running a Rust effect per leaf).
+/// A pre-decomposed reactive text binding — the f-string fast path:
+/// signal ids + template parts, so a JS-binding-capable backend fans out
+/// per fire WITHOUT running a Rust effect per leaf.
 ///
-/// Field contract mirrors the old spec (`template_parts` has exactly
-/// `signal_ids.len() + 1` entries; captured non-signal values are
-/// pre-formatted into the adjacent parts), plus one new-core-only
-/// column: `tracked_reads`. Old-core web hooked delivery into
-/// `Signal::set` itself; world signals have no write hook, so the text
+/// Field contract follows `runtime_shared::JsBindingSpec`
+/// (`template_parts` has exactly `signal_ids.len() + 1` entries; captured
+/// non-signal values are pre-formatted into the adjacent parts), plus
+/// one more column: `tracked_reads`. World signals have no write hook to
+/// hang delivery on, so the text
 /// handler leases ONE notifier effect per signal, shared by every binding
 /// and freed with the last of them (the signal-class pattern — see
 /// `style_attach::SignalNotifiers`), and that effect needs a TRACKED
@@ -39,7 +38,7 @@ pub struct JsTextBinding {
     pub tracked_reads: Vec<Rc<dyn Fn() -> String>>,
 }
 
-/// A text node's content source (`walker/text.rs`):
+/// A text node's content source:
 ///
 /// - `Value(Const)` — static content, one `create_text`, no effects;
 /// - `Value(Dyn)` — reactive content: `create_text_with_id("")` when the
@@ -50,9 +49,9 @@ pub struct JsTextBinding {
 ///   `register_reactive_text_binding` on JS-binding backends (one
 ///   per-signal notifier effect, zero per-leaf effects), Bound-shape
 ///   fallback (via `compute_fallback`) elsewhere;
-/// - `Runs` — basic inline-styled runs via `create_styled_text` (the
-///   theme-cohort re-realization the old walker layers on native is
-///   deferred — see the crate docs' deferred set).
+/// - `Runs` — basic inline-styled runs via `create_styled_text`, created
+///   once (not re-realized on a theme swap — see the crate docs' known
+///   gaps).
 pub enum TextSourceProp {
     Value(Value<String>),
     /// Boxed: the binding spec carries six Vec/Rc columns (~136 bytes),
@@ -75,11 +74,11 @@ pub struct TextPrim {
     pub ref_fill: Option<Box<dyn FnOnce(TextHandle)>>,
 }
 
-/// The `button` primitive (`walker/button.rs`). A `Dyn` label creates
+/// The `button` primitive. A `Dyn` label creates
 /// the button at the closure's initial value and installs an
 /// `update_button_label` binding effect; a `Const` label installs no
 /// effect. `on_press` is a full [`Action`] so generator backends keep
-/// the structured metadata, exactly as the old walker passes it.
+/// the structured metadata.
 pub struct ButtonPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
     /// builder setter compiles in every build; read only by the

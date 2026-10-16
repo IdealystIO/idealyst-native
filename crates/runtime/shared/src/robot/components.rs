@@ -13,8 +13,7 @@
 //! Lifecycle: `register_component` hands back a `ComponentRegistration`
 //! whose `Drop` removes the entry. The macro keeps the guard alive for
 //! the component's mounted lifetime by capturing it in a reactive
-//! `Effect` attached to the surrounding scope — same trick the walker
-//! uses for navigator scope keepalives.
+//! `Effect` attached to the surrounding scope.
 
 use std::cell::RefCell;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -53,18 +52,17 @@ thread_local! {
     static NEXT_ID: RefCell<u32> = const { RefCell::new(1) };
 
     /// `ComponentInstanceId → ElementId`: the robot element a component
-    /// instance renders as (its root primitive). Populated during the walk:
-    /// the `#[component]` macro wraps a methods-bearing component's root in
-    /// `Element::Component { instance, .. }`, the walker unwraps it and arms
-    /// [`set_pending_component_link`], and the next element registered (the
-    /// root primitive) consumes it via [`take_pending_component_link`] +
+    /// instance renders as (its root primitive). Populated at mount: the
+    /// mount path arms [`set_pending_component_link`] for a methods-bearing
+    /// component, and the next element registered (the root primitive)
+    /// consumes it via [`take_pending_component_link`] +
     /// [`link_component_element`]. Lets the inspector map a selected element
     /// to the component whose methods it can invoke.
     static ELEMENT_LINKS: RefCell<FxHashMap<ComponentInstanceId, super::ElementId>> =
         RefCell::new(FxHashMap::default());
 
-    /// Set by the walker when it unwraps an `Element::Component`; consumed by
-    /// the very next robot registration (the component's root primitive).
+    /// Armed at a methods-bearing component's mount; consumed by the very
+    /// next robot registration (the component's root primitive).
     static PENDING_LINK: std::cell::Cell<Option<ComponentInstanceId>> =
         const { std::cell::Cell::new(None) };
 }
@@ -180,8 +178,8 @@ pub fn invoke_method(
     args: &serde_json::Value,
 ) -> Result<(), String> {
     // Clone the Rc out under a short borrow so the invoker can run
-    // without holding the registry lock — invokers may re-enter the
-    // walker (e.g. a method that flips a signal triggers rebuilds
+    // without holding the registry lock — invokers may re-enter realize
+    // (e.g. a method that flips a signal triggers rebuilds
     // that register new components).
     let invoker = COMPONENTS.with(|c| {
         let c = c.borrow();
@@ -215,7 +213,7 @@ mod tests {
     use super::*;
 
     /// The element↔component link the inspector relies on: arm a pending
-    /// link (walker unwrap of `Element::Component`), have the next
+    /// link (a methods-bearing component's mount), have the next
     /// registration consume it (the root primitive), then resolve both
     /// directions + surface it via `list_components`. Dropping the
     /// registration must drop the link in lockstep so a recycled element id
@@ -226,7 +224,7 @@ mod tests {
         let id = reg.id();
         let element = super::super::ElementId(4242);
 
-        // Walker sequence: arm, then the root primitive's registration takes
+        // Mount sequence: arm, then the root primitive's registration takes
         // it (and clears it, so only the root links — not descendants).
         set_pending_component_link(id);
         assert_eq!(take_pending_component_link(), Some(id));

@@ -24,20 +24,13 @@
 //! - `typeface!` / `face!` / `node_ref!` — the same, anchored at
 //!   `runtime-shared`.
 //!
-//! ## History
+//! ## Where things live
 //!
-//! Until the runtime-v2 deletion this package held the pre-v2 walker:
-//! the `Element` enum, the 159-method `Backend` mega-trait, the render
-//! walker, `Bound`/builders, the `External` table and the legacy
-//! reactive arena. All of it is gone; the surviving substrate lives in
-//! `runtime-shared` (style engine, assets, animation, scheduling,
-//! robot, prop/handle types), the reactive kernel in `runtime-world`,
-//! the scene model in `runtime-scene`, and the capability traits +
-//! builtin handlers in `runtime-vocabulary`. During the migration this
-//! root lived in a separate `runtime-facade` package reached through an
-//! `extern crate runtime_facade as runtime_core;` alias in every
-//! consumer; that package and all 105 alias lines are gone —
-//! `runtime_core` is the real crate again.
+//! Nothing is implemented here. The substrate lives in `runtime-shared`
+//! (style engine, assets, animation, scheduling, robot, prop/handle
+//! types), the reactive kernel in `runtime-world`, the scene model in
+//! `runtime-scene`, and the capability traits + builtin handlers in
+//! `runtime-vocabulary`.
 //!
 //! Backends do NOT depend on this crate. They consume `runtime-shared`
 //! (substrate types), `runtime-scene` (`Host`/`Registry`) and
@@ -68,10 +61,7 @@ pub use runtime_macros::lazy;
 // vocabulary (their `$crate` expansions target
 // `runtime_vocabulary::glue`), re-exported under the historical names.
 // (`effect` the MACRO coexists with glue's `effect` FN — the imports
-// occupy different namespaces.) `timeline!` and `animated!` must be the
-// vocabulary's mirrors: the pre-v2 expansions anchored their scope and
-// cleanup in the deleted arena, which made them inert here (the frozen
-// Switch-thumb bug).
+// occupy different namespaces.)
 pub use runtime_vocabulary::{animated, effect, register_style_token, rx, timeline};
 
 // Shared-substrate `#[macro_export]` decl macros whose `$crate::…`
@@ -84,10 +74,8 @@ pub use runtime_shared::{face, node_ref, typeface};
 // The per-level logging macros, same story. `#[macro_export]` puts them at
 // their defining crate's ROOT, so `pub use runtime_shared::logging` (in
 // glue) re-exports the module's FUNCTIONS but not these — and authors have
-// spelled `runtime_core::log_info!(…)` since 0.5.x, when `logging` was a
-// module of this crate and the macros landed at this root for free. Keeping
-// them here preserves that surface; without it the break is silent in the
-// migration guide's inventory (they are not among its removed 19 names).
+// spelled `runtime_core::log_info!(…)` since 0.5.x; dropping this line
+// would break them with nothing else in the build noticing.
 pub use runtime_shared::{log_debug, log_error, log_info, log_warn};
 
 #[cfg(test)]

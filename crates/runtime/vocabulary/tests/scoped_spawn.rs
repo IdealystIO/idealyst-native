@@ -311,8 +311,8 @@ fn outside_a_world_the_callback_still_runs() {
 // ---------------------------------------------------------------------
 
 /// Mount a pressable whose handler body runs `on_press`. The handler is
-/// invoked by the backend later, with no collector on the stack — which is
-/// where `ScopeAlive::current()` used to anchor to nothing.
+/// invoked by the backend later, with no collector on the stack — where a
+/// naive `ScopeAlive::current()` would anchor to nothing.
 fn mount_button(h: &Harness, on_press: impl Fn(Signal<i32>) + 'static) -> Screen {
     let hole: Rc<RefCell<Option<Signal<bool>>>> = Rc::new(RefCell::new(None));
     let scoped: Rc<RefCell<Option<Signal<i32>>>> = Rc::new(RefCell::new(None));

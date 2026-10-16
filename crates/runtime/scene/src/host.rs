@@ -1,13 +1,10 @@
 //! The [`Host`] trait — the entire structural seam between the scene and a
 //! platform.
 //!
-//! Extracted from the old `Backend` mega-trait's structural subset with
-//! signatures unchanged (design §4), so backends implement it by
-//! delegating to methods they already have. Everything else a platform
-//! does (creating primitives, props, styling, events) goes through
-//! [`Registry`](crate::Registry) handlers, which receive the full backend
-//! via [`MountCx`](crate::MountCx) — the scene itself only ever needs
-//! these seven operations.
+//! Everything else a platform does (creating primitives, props, styling,
+//! events) goes through [`Registry`](crate::Registry) handlers, which
+//! receive the full backend via [`MountCx`](crate::MountCx) — the scene
+//! itself only ever needs these structural operations.
 
 /// The structural operations the scene's drivers emit. One impl per
 /// backend; the parity recorder in `scene-parity` is the reference for the
@@ -23,8 +20,8 @@ pub trait Host: 'static {
 
     /// Append many children at once (batched insertion — a
     /// `DocumentFragment` on web). Default: per-child [`insert`](Self::insert).
-    /// Unused by the P1 drivers (it serves the static `Repeat` fast path,
-    /// which lands with the vocabulary in P2) but part of the frozen seam.
+    /// The scene's own drivers never call it; many-handlers (the static
+    /// list fast path) attach their rows with it.
     fn insert_many(&mut self, parent: &mut Self::Node, children: Vec<Self::Node>) {
         for child in children {
             self.insert(parent, child);

@@ -11,7 +11,7 @@
 //! Author code reads via [`ambient_scroll_context`]:
 //!
 //! ```ignore
-//! use runtime_core::primitives::navigator::ambient_scroll_context;
+//! use runtime_shared::primitives::navigator::ambient_scroll_context;
 //!
 //! effect!({
 //!     let Some(ctx) = ambient_scroll_context() else { return };
@@ -22,10 +22,10 @@
 //!
 //! ## Why ambient
 //!
-//! Slot closures (sidebar, top/bottom/trailing chrome) receive a
-//! `SlotProps` that can carry the scroll context directly; nothing
-//! more is needed there. But **screens** mount inside the
-//! navigator's outlet without `SlotProps` access — and screens are
+//! Slot closures (sidebar, top/bottom/trailing chrome) can be handed
+//! the scroll context directly by the SDK that builds them. But
+//! **screens** mount inside the navigator's outlet with no such
+//! parameter — and screens are
 //! exactly where things like a docs-page TOC scroll-spy live. The
 //! ambient lookup hands those screens the same `ScrollContext` the
 //! navigator's chrome sees, without plumbing it through every

@@ -13,8 +13,7 @@ use super::noop;
 
 /// The `text` primitive: plain and styled-run creation/update, the
 /// batched `*_by_id` FFI fast path, and backend-side reactive text
-/// bindings. Serves `walker/text.rs` (and the theme-cohort re-realize
-/// path for styled runs).
+/// bindings. Mounted by `handlers/text.rs`.
 pub trait TextOps: Host {
     /// Create a text node with static content.
     fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node;
@@ -88,12 +87,9 @@ pub trait TextOps: Host {
     /// [`register_reactive_text_binding`](Self::register_reactive_text_binding).
     fn release_reactive_text_binding(&mut self, _text_id: u32) {}
 
-    /// NEW-CORE-ONLY channel (the string sibling of
-    /// `StyleOps::notify_signal_value_js` — no old-core counterpart in
-    /// the frozen `Backend` mirror): ship a `(signal_id, formatted
-    /// value)` change to the backend's JS-side binding dispatcher. On
-    /// the old core the arena's `Signal::set` fired the registered JS
-    /// notifier itself; world signals have no write hook, so the text
+    /// The string sibling of `StyleOps::notify_signal_value_js`: ship a
+    /// `(signal_id, formatted value)` change to the backend's JS-side
+    /// binding dispatcher. World signals have no write hook, so the text
     /// handler's per-signal notifier effect (see
     /// `style_attach::acquire_signal_notifier`) delivers
     /// commits through this method instead. Default no-op — only
@@ -109,8 +105,8 @@ pub trait TextOps: Host {
     }
 }
 
-/// The `button` primitive. Serves `walker/button.rs`. `: TextOps`
-/// because the frozen `update_button_label` default lowers to
+/// The `button` primitive. `: TextOps` because the
+/// `update_button_label` default lowers to
 /// `update_text` (most platforms share the underlying set-text API).
 pub trait ButtonOps: TextOps {
     /// Create a button with label, action, and optional icons.

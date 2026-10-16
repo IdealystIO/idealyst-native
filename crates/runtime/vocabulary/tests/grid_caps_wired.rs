@@ -10,14 +10,11 @@
 //! The engine behind it can be finished, tested and documented and
 //! nobody finds out.
 //!
-//! That is not hypothetical. Both mobile backends carried a complete
-//! `virtual_grid` implementation — the iOS `UIScrollView` engine, the
-//! Android `RustVirtualGrid` with its JNI exports and Kotlin view, each
-//! with its `create_virtual_grid_impl` / `data_changed` / `release` /
-//! `make_handle` quartet on the backend struct — behind an EMPTY
-//! `GridOps` impl carrying the comment "no two-axis grid engine on this
-//! backend yet". A CrewForge schedule grid on an iPhone rendered the
-//! placeholder and nothing else.
+//! The regression: both mobile backends shipped a complete
+//! `virtual_grid` engine (`create_virtual_grid_impl` / `data_changed` /
+//! `release` / `make_handle` on the backend struct) behind an EMPTY
+//! `GridOps` impl, so a CrewForge schedule grid on an iPhone rendered
+//! only the placeholder.
 //!
 //! Whether a trait method is defaulted or overridden is not observable
 //! at runtime — a defaulted method is simply the one that runs — so this

@@ -10,8 +10,8 @@
 //!
 //! # Why the number lives in the node and not in a counter
 //!
-//! The macro used to count `emit_component` calls. That is the same
-//! thing only while emission order equals source order, and it is not:
+//! Counting `emit_component` calls would be the same thing only while
+//! emission order equals source order, and it is not:
 //! `anchored_overlay` splits its children into an anchor and an overlay,
 //! `presence` builds a child thunk, a `for` may take the virtualizer
 //! path. A counter would number those trees differently from a walk of

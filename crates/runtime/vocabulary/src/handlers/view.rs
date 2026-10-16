@@ -11,18 +11,17 @@ use crate::style_attach::{attach_style, StyleServices};
 
 use super::bind_value;
 
-/// Mount a `view` — port of `walker/view.rs::build`.
+/// Mount a `view`.
 ///
 /// Sequence: `create_view` → (`mark_container`) → children →
 /// attach_style → safe-area → touch/wheel/hover/file-drop →
 /// `mark_preserves_focus` → ref-fill.
 ///
-/// Deviations from the walker, per the P2 scope (crate docs):
 /// - safe-area applies at mount and re-applies whenever the platform
 ///   insets change (`super::follow_safe_area`).
-/// - `mark_container` is emitted, but the native inline-size feedback
-///   signal the old walker builds on non-cascade backends is deferred
-///   with the style engine.
+/// - `mark_container` is emitted, but there is no native inline-size
+///   feedback signal on non-cascade backends yet (crate docs' known
+///   gaps).
 pub fn mount_view<H>(cx: &mut MountCx<'_, H>, prim: ViewPrim, children: Vec<Element>) -> H::Node
 where
     H: ViewOps + InputOps + StyleServices + SafeAreaOps + IntrospectionOps,
@@ -43,7 +42,7 @@ where
     );
     if prim.is_container {
         // Before children, so descendants build inside the containment
-        // context (walker `build_view` ordering).
+        // context.
         backend.borrow_mut().mark_container(&node);
     }
     // Offer this view as the debugging highlight's host — before the
@@ -111,12 +110,12 @@ where
     node
 }
 
-/// Mount a `pressable` — port of `walker/pressable.rs::build`.
+/// Mount a `pressable`.
 ///
 /// Sequence: (press-block wrap) → `create_pressable` → children →
 /// attach_style → ref-fill → disabled binding → `mark_preserves_focus`.
 ///
-/// The press-block wrap is the walker's uniform-disable mechanism: a
+/// The press-block wrap is the uniform-disable mechanism: a
 /// bare pressable is not a native form control, so `set_disabled` alone
 /// can't make it inert — the shared flag blocks the callback across
 /// mouse/keyboard/programmatic activation on every backend.
@@ -188,8 +187,8 @@ where
     if let Some(disabled) = prim.disabled {
         let b = backend.clone();
         let n = node.clone();
-        // Old `attach_disabled` ordering: press-block flag, native
-        // set_disabled, then the DISABLED state-bit flip so a
+        // Ordering: press-block flag, native set_disabled, then the
+        // DISABLED state-bit flip so a
         // `state disabled { … }` overlay applies via the state machinery.
         bind_value(disabled, move |&d| {
             if let Some(flag) = press_block.as_ref() {
@@ -207,11 +206,11 @@ where
     node
 }
 
-/// Mount a `scroll_view` — port of `walker/scroll_view.rs::build`.
+/// Mount a `scroll_view`.
 ///
 /// Sequence: `create_scroll_view` → children → attach_style →
-/// safe-area (contentInset path, once — reactive insets deferred like
-/// `view`) → ref-fill.
+/// safe-area (contentInset path, re-applied on inset changes like
+/// `view`) → bounce settings → ref-fill.
 pub fn mount_scroll_view<H>(
     cx: &mut MountCx<'_, H>,
     prim: ScrollViewPrim,
@@ -243,7 +242,7 @@ where
     // `borrow_mut`: native scroll writes fire scroll notifications
     // synchronously (AppKit `reflectScrolledClipView:`), whose reactive
     // effects re-borrow the backend to re-style — a held borrow aborts
-    // with "RefCell already borrowed" (the old walker's exact rule).
+    // with "RefCell already borrowed".
     #[cfg(feature = "robot")]
     let _robot = {
         let handle = backend.borrow().make_scroll_view_handle(&node);

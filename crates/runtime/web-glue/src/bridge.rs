@@ -6,11 +6,10 @@
 //! sanctioned crossing — grep for `HYBRID-BRIDGE` / `bridge::` to find
 //! every use.
 //!
-//! Phase 3 of `docs/proposals/own-web-bindings.md` ported the DOM-mounting
-//! and the media / file SDKs; the media streams (`native_source`) and the
-//! dropped file now cross between crates as web-glue handles
-//! (`web_glue::dom::MediaStream`, `web_glue::dom::File`). What still crosses
-//! here is wgpu's (phase 5's hybrid mode), each site marked
+//! DOM mounting and the media / file SDKs are on web-glue: media streams
+//! (`native_source`) and dropped files cross between crates as web-glue
+//! handles (`web_glue::dom::MediaStream`, `web_glue::dom::File`). What
+//! crosses here is wgpu's (hybrid mode), each site marked
 //! `HYBRID-BRIDGE: wgpu`:
 //!
 //! * canvas-native's public `make_2d_rasterizer` / `publish_capture_stream`

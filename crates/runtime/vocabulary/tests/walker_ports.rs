@@ -1,61 +1,9 @@
-//! New-core ports of the old walker's behavioral coverage — the
-//! CORE-LEVEL semantics pinned by `crates/dev/mock-backend/tests/`
-//! (the old-core walker integration suite), re-expressed against the
-//! new core (runtime-world + runtime-scene + runtime-vocabulary) on the
-//! `host-mock` substrate.
-//!
-//! Each test names the mock-backend test it derives from:
-//!
-//! - `navigator_control_keepalive.rs::reactive_nav_state_survives_handler_dropping_host`
-//!   → `port_nav_state_survives_without_external_retention`
-//! - `nested_dual_layout.rs::nested_swap_in_swap_renders_both_sidebars_simultaneously`
-//!   → `port_nested_swap_in_swap_renders_both_sidebars_simultaneously`
-//! - `nested_dual_layout.rs::nested_stack_in_swap_renders_both_chromes_and_pushes_independently`
-//!   → `port_nested_stack_in_swap_renders_both_chromes_and_pushes_independently`
-//! - `nested_teardown_repro.rs::nested_stack_in_swap_teardown_without_url_sync`
-//!   → `port_nested_navigator_teardown_releases_inner_screens`
-//! - `swap_navigator_local.rs::regression_deep_link_initial_cached_under_resolved_route`
-//!   → `port_cold_start_deep_link_mounts_url_screen_and_caches_under_resolved_route`
-//! - `swap_navigator_local.rs::regression_deep_link_active_path_is_concrete_url_not_pattern`
-//!   → `port_deep_link_active_path_is_concrete_url_not_pattern`
-//! - `navigator_url_sync.rs::regression_cold_start_nested_deep_link_preserves_full_url`
-//!   (the handler leg: nested resolution + synthesized back stack + the
-//!   root clearing the launch-path slot)
-//!   → `port_cold_start_nested_deep_link_resolves_through_both_navigators`
-//! - `navigator_url_sync.rs::regression_swap_parameterized_route_selects_by_url_not_name`
-//!   (the structural leg; history dedupe is service policy)
-//!   → `port_swap_parameterized_route_selects_by_url_not_name`
-//! - `swap_navigator_local.rs::regression_on_select_params_route_is_refused_not_panic`
-//!   → `port_on_select_with_params_route_is_refused_not_panic`
-//! - `swap_navigator_local.rs::{regression_navigator_root_fills_container_by_default,
-//!   navigator_root_author_style_overrides_default_fill}`
-//!   → `port_navigator_root_fills_container_by_default_and_author_style_wins`
-//! - `swap_navigator_local.rs::{regression_outlet_fills_by_default,
-//!   outlet_author_style_replaces_default_fill}`
-//!   → `port_outlet_fills_by_default_and_author_style_replaces_it`
-//! - `swap_navigator_local.rs::regression_author_layout_effect_has_reactive_scope`
-//!   → `port_author_layout_effect_has_reactive_scope_and_dies_with_navigator`
-//! - `swap_navigator_local.rs::regression_lazy_disposing_cleanup_navigation_does_not_double_borrow`
-//!   → `port_lazy_disposing_cleanup_navigation_commits_without_panic`
-//! - `theme_chrome_cohort.rs::regression_chrome_static_token_style_reapplies_on_theme_swap`
-//!   → `port_chrome_static_token_style_reapplies_on_theme_swap`
-//! - `theme_chrome_cohort.rs::regression_chrome_retints_after_lazy_disposing_navigation`
-//!   → `port_chrome_retints_after_lazy_disposing_navigation`
-//! - `theme_chrome_cohort.rs::regression_shared_resolution_key_effects_survive_repeated_theme_swaps`
-//!   → `port_shared_sheet_nodes_all_reapply_on_repeated_theme_swaps`
-//! - `navigator_url_sync.rs::stack_push_pushes_url_and_browser_back_pops` +
-//!   `stack_scroll_snapshot_restores_on_browser_back` (the seam legs:
-//!   registration data, dispatch/commit hooks, the outlet node handed
-//!   to the service for scroll bookkeeping)
-//!   → `port_stack_url_sync_registers_hooks_push_pop_and_hands_the_real_outlet`
-//! - `navigator_url_sync.rs::regression_programmatic_pop_swallows_its_popstate_echo`
-//!   (the seam mechanism: the suppress bit captured at dispatch skips
-//!   `after_commit` for the service's own echo)
-//!   → `port_url_sync_suppress_bit_skips_after_commit`
-//! - `navigator_url_sync.rs::regression_nested_stack_popstate_does_not_remount_parent_swap_screen`
-//!   (the seam legs: per-navigator base slices, prefix resolvers, and
-//!   base-composed dispatch through the registration)
-//!   → `port_nested_navigator_url_sync_registers_composed_base_and_resolver`
+//! Navigator and theme-cohort behavioral coverage on the `host-mock`
+//! substrate (runtime-world + runtime-scene + runtime-vocabulary): nav
+//! state lifetime, nested navigators (layouts, teardown, deep links),
+//! fill defaults, author-layout reactive scope, `LazyDisposing` cleanup
+//! navigation, theme re-application on navigator chrome, and the URL-sync
+//! seam. Each `port_*` test's name states the behavior it pins.
 //!
 //! Browser-history behavior itself (pushState/replaceState writes,
 //! popstate reconciliation, scroll snapshot/restore) lives in the
@@ -131,13 +79,12 @@ fn probe_screen(
 }
 
 // ===========================================================================
-// Keepalive: nav-state signals live exactly as long as the navigator
-// (from navigator_control_keepalive.rs). The old bug was the SDK handler
-// dropping the only strong ref to the control scope that owned
-// `active_route`; on the new core ownership is structural (the signals
-// are created inside the mount handler and collected into the
-// navigator's `Realized`) — this pins that nothing else needs to retain
-// anything for nav state to stay readable and live.
+// Keepalive: nav-state signals live exactly as long as the navigator.
+// Ownership is structural (the signals are created inside the mount
+// handler and collected into the navigator's `Realized`) — this pins that
+// nothing else needs to retain anything for nav state to stay readable
+// and live (the bug: a handler dropping the only strong ref to the scope
+// that owned `active_route`).
 // ===========================================================================
 
 #[test]
@@ -179,7 +126,7 @@ fn port_nav_state_survives_without_external_retention() {
 
 // ===========================================================================
 // Nested navigators with two simultaneous author layouts
-// (from nested_dual_layout.rs)
+// (nested dual layout)
 // ===========================================================================
 
 #[test]
@@ -366,7 +313,7 @@ fn port_nested_stack_in_swap_renders_both_chromes_and_pushes_independently() {
 }
 
 // ===========================================================================
-// Nested teardown (from nested_teardown_repro.rs): dropping the outer
+// Nested teardown: dropping the outer
 // navigator releases every nested screen's scope — cleanups fire, no
 // panic/abort at teardown.
 // ===========================================================================
@@ -433,8 +380,7 @@ fn port_nested_navigator_teardown_releases_inner_screens() {
 }
 
 // ===========================================================================
-// Deep links / URL-keyed selection (from swap_navigator_local.rs +
-// navigator_url_sync.rs)
+// Deep links / URL-keyed selection
 // ===========================================================================
 
 #[test]
@@ -467,8 +413,8 @@ fn port_cold_start_deep_link_mounts_url_screen_and_caches_under_resolved_route()
     assert_eq!(builds_home.get(), 0);
     assert_eq!(builds_settings.get(), 1);
 
-    // Selecting the configured initial must actually navigate — the old
-    // bug marked "home" active at mount, making this a no-op.
+    // Selecting the configured initial must actually navigate — marking
+    // "home" active at mount would make this a no-op.
     let handle = handle_slot.borrow().clone().expect("bound");
     handle.select(&HOME, ());
     h.flush();
@@ -572,7 +518,7 @@ fn port_cold_start_nested_deep_link_resolves_through_both_navigators() {
     };
     let realized = h.mount(element);
     // publish_depth writes are staged; the boot flush commits them (same
-    // contract the stack SDK newcore suite pins) — flush before reading ctx.
+    // contract the stack SDK suite pins) — flush before reading ctx.
     h.flush();
     let root = one_root(&realized);
 
@@ -690,8 +636,8 @@ fn port_swap_parameterized_route_selects_by_url_not_name() {
 }
 
 /// A bare-name chrome selection of a route that REQUIRES path params
-/// must be refused, not panic — the old `on_select` boxed `()` for every
-/// route and aborted in the params downcast.
+/// must be refused, not panic (boxing `()` for every route aborts in the
+/// params downcast).
 #[test]
 fn port_on_select_with_params_route_is_refused_not_panic() {
     let h = Harness::new();
@@ -735,7 +681,7 @@ fn port_on_select_with_params_route_is_refused_not_panic() {
 }
 
 // ===========================================================================
-// Fill defaults (from swap_navigator_local.rs): the navigator root and a
+// Fill defaults: the navigator root and a
 // style-less outlet default to fill sizing; author styles win.
 // ===========================================================================
 
@@ -884,7 +830,7 @@ fn port_outlet_fills_by_default_and_author_style_replaces_it() {
 }
 
 // ===========================================================================
-// Author-layout reactive scope (from swap_navigator_local.rs): an effect
+// Author-layout reactive scope: an effect
 // created directly in the layout closure is legal, owned by the
 // navigator, re-fires on navigation, and dies silently at teardown.
 // ===========================================================================
@@ -944,13 +890,10 @@ fn port_author_layout_effect_has_reactive_scope_and_dies_with_navigator() {
 }
 
 // ===========================================================================
-// LazyDisposing cleanup navigation (from swap_navigator_local.rs): an
-// author `on_cleanup`/`on_teardown` in a disposed screen that NAVIGATES
-// must not abort. NOTE the committed order differs from the old core by
-// design: the old walker ran the re-entrant redirect synchronously
-// inside the outer selection (outer landed last); the new core stages
-// commands in dispatch order, so the redirect staged DURING the outer
-// selection's disposal commits after it — the redirect wins. The pinned
+// LazyDisposing cleanup navigation: an author `on_cleanup`/`on_teardown`
+// in a disposed screen that NAVIGATES must not abort. Commands stage in
+// dispatch order, so the redirect staged DURING the outer selection's
+// disposal commits after it — the redirect wins. The pinned
 // invariant is no-abort + a coherent final state (visible screen ==
 // route mirror).
 // ===========================================================================
@@ -992,7 +935,7 @@ fn port_lazy_disposing_cleanup_navigation_commits_without_panic() {
     assert!(shows(&h, root, "HOME"), "{}", h.tree(root));
 
     // Switching away disposes Home; its cleanup re-enters the navigator.
-    // Must not abort ("RefCell already borrowed" was the old failure),
+    // Must not abort ("RefCell already borrowed" is the failure mode),
     // and must end coherent: the visible screen matches the mirror.
     let handle = handle_slot.borrow().clone().expect("bound");
     handle.select(&SETTINGS, ());
@@ -1012,7 +955,7 @@ fn port_lazy_disposing_cleanup_navigation_commits_without_panic() {
 }
 
 // ===========================================================================
-// Theme cohort × navigator chrome (from theme_chrome_cohort.rs)
+// Theme cohort × navigator chrome
 // ===========================================================================
 
 fn chrome_sheet() -> Rc<StyleSheet> {
@@ -1162,9 +1105,9 @@ fn port_chrome_retints_after_lazy_disposing_navigation() {
 }
 
 /// N reactive-styled nodes SHARING one sheet (one resolution key) must
-/// ALL keep re-applying across REPEATED theme swaps — the old bug had
-/// only the first (cache-miss) resolver subscribed to token signals, so
-/// each successive toggle repainted fewer nodes.
+/// ALL keep re-applying across REPEATED theme swaps — the bug: only the
+/// first (cache-miss) resolver subscribed to token signals, so each
+/// successive toggle repainted fewer nodes.
 #[test]
 fn port_shared_sheet_nodes_all_reapply_on_repeated_theme_swaps() {
     let h = Harness::new();
@@ -1234,9 +1177,9 @@ fn port_shared_sheet_nodes_all_reapply_on_repeated_theme_swaps() {
 }
 
 // ===========================================================================
-// URL-sync seam (from navigator_url_sync.rs): the vocabulary's half of
-// the platform-URL contract. The swap registration leg is pinned in the
-// SDK suite (swap/tests/newcore.rs); these cover the stack, the
+// URL-sync seam: the vocabulary's half of the platform-URL contract. The
+// swap registration leg is pinned in the SDK suite (swap/tests/
+// navigator.rs); these cover the stack, the
 // suppress bit, and the nested base partition.
 // ===========================================================================
 
@@ -1331,8 +1274,7 @@ fn port_stack_url_sync_registers_hooks_push_pop_and_hands_the_real_outlet() {
     assert_eq!(depth, 1);
 
     // The registered outlet is the REAL swapped node — the handle the
-    // service uses for scroll snapshot/restore (the old
-    // `stack_scroll_snapshot_restores_on_browser_back` seam).
+    // service uses for scroll snapshot/restore.
     let outlet = *probe.outlets.borrow()[&id]
         .downcast_ref::<host_mock::Node>()
         .expect("outlet downcasts to the backend node");

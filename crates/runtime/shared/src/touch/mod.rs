@@ -7,8 +7,8 @@
 //! recognizers (`UIGestureRecognizer`, Android `GestureDetector`, etc.).
 //! See `docs/native-touch-plan.md` for the design rationale.
 //!
-//! Platform-specific delivery lives entirely behind the [`Backend`]
-//! trait (`install_touch_handler` / `claim_touch`). Core knows nothing
+//! Platform-specific delivery lives entirely behind the backend's
+//! `InputOps` capability (`install_touch_handler` / `claim_touch`). Core knows nothing
 //! about UIView subclassing, `MotionEvent` action codes, Pointer Events,
 //! or winit — those are backend implementation details.
 //!
@@ -54,7 +54,6 @@
 //!    inspects the point and dispatches itself, rather than relying on
 //!    fall-through between siblings.
 //!
-//! [`Backend`]: crate::Backend
 //! [`IGNORED`]: TouchResponse::IGNORED
 //! [`CONSUMED`]: TouchResponse::CONSUMED
 //! [`CLAIMED`]: TouchResponse::CLAIMED
@@ -347,7 +346,7 @@ thread_local! {
 /// **Backend-facing** — a backend that implements the claim protocol calls this
 /// right before invoking the [`TouchHandler`] (and clears it with `None` right
 /// after), passing a closure that performs its native claim for *this* node
-/// (cancel ancestor scrollers, etc. — the same thing [`Backend::claim_touch`]
+/// (cancel ancestor scrollers, etc. — the same thing `InputOps::claim_touch`
 /// would do).
 ///
 /// Why this exists: the synchronous claim path ([`TouchResponse::claim`] read off
@@ -360,7 +359,6 @@ thread_local! {
 /// at the async commit lets the recognizer claim at exactly the right moment,
 /// before any movement. Claiming is idempotent, so an extra call is harmless.
 ///
-/// [`Backend::claim_touch`]: crate::Backend::claim_touch
 pub fn set_active_touch_claim(claim: Option<Rc<dyn Fn()>>) {
     ACTIVE_TOUCH_CLAIM.with(|c| *c.borrow_mut() = claim);
 }

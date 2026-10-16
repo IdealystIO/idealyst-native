@@ -1,12 +1,7 @@
-//! No-op handle-ops ZSTs backing the `make_*_handle` defaults.
-//!
-//! Copied from the private set at the bottom of
-//! `runtime-core/src/backend.rs` (they are not exported there) so the
-//! frozen `make_*_handle` defaults keep their "type-correct no-op
-//! handle" behavior for direct implementors. `&'static` references to
-//! these ZSTs come from rvalue static promotion at the call sites, same
-//! as the originals. Deleted with the runtime-core dependency at P7 when
-//! the handle layer migrates.
+//! No-op handle-ops ZSTs backing the `make_*_handle` defaults, so a
+//! backend that doesn't override one still returns a type-correct no-op
+//! handle. `&'static` references to these ZSTs come from rvalue static
+//! promotion at the call sites.
 
 use std::any::Any;
 

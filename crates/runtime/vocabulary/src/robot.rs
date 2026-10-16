@@ -1,25 +1,19 @@
-//! The NEW core's element identity / robot registry (P5 seam, brought
-//! forward for the conformance-app gate).
+//! Element identity / robot registry for vocabulary mounts.
 //!
-//! # Design: a vocabulary-owned registry, not a re-export of the old one
+//! # Design: a vocabulary-owned registry
 //!
-//! The old core's registry (`runtime_shared::robot`) is walker-internal:
-//! its registration surface (`register`, `deregister`, the parent
-//! stack, the `attach_*` action wiring) is `pub(crate)` and driven from
-//! `walker.rs::build_inner` — there is no public write path a foreign
-//! crate could feed, runtime-core is frozen during the migration, and
-//! the whole module is deleted with the walker at P7. So the new core
-//! gets its own registry HERE — but the *model* is a faithful mirror of
-//! the old one (same entry shape, same query semantics, same
-//! duplicate-id policy, same register-at-mount / deregister-at-teardown
-//! lifecycle), so the robot bridge's verbs (`find_element`,
-//! `get_snapshot`, `tap`, `type_text`, `set_toggle`, `set_slider`,
-//! `focus`/`blur`, `set_scroll`, `get_frame`/`get_absolute_frame`,
-//! `introspect_native`, …) adapt 1:1.
+//! `runtime_shared::robot`'s element registration surface is
+//! `pub(crate)`, so there is no public write path a mount handler could
+//! feed; the registry lives HERE, with the same entry shape, query
+//! semantics, duplicate-id policy and register-at-mount /
+//! deregister-at-teardown lifecycle, so the robot bridge's verbs
+//! (`find_element`, `get_snapshot`, `tap`, `type_text`, `set_toggle`,
+//! `set_slider`, `focus`/`blur`, `set_scroll`,
+//! `get_frame`/`get_absolute_frame`, `introspect_native`, …) map 1:1.
 //!
-//! # The backend seam (conformance-wave contract)
+//! # The backend seam
 //!
-//! No new Backend/caps methods are required. Every node-resolving
+//! No robot-specific caps methods are required. Every node-resolving
 //! action is a closure captured at mount over capabilities the traits
 //! already expose:
 //!
@@ -29,8 +23,8 @@
 //!   plus `note_introspection_root` at registration);
 //! - `focus`/`blur` go through `make_text_input_handle(..).focus()`,
 //!   `set_scroll` through `make_scroll_view_handle(..).scroll_to(..)`
-//!   — the handle routes, exactly like the old walker (see the
-//!   borrow-safety note on the scroll action below);
+//!   — the handle routes (see the borrow-safety note on the scroll
+//!   action below);
 //! - `click`/`set_text`/`set_toggle`/`set_slider` are the author
 //!   callbacks the mount handler already holds.
 //!
@@ -41,9 +35,9 @@
 //! the [`install_driver_env`] seam lets the host supply `World::enter`
 //! (label-resolving queries need the ambient world) plus a synchronous
 //! settle (actions commit staged writes before returning). The web
-//! relay client routes to all three when the new-core boot installed
-//! the env (`backend_web::newcore` ↔ `robot_transport`); the in-process
-//! `robot-e2e` harness rides the same seam via its `new-core` feature.
+//! relay client routes to all three when the boot installed the env
+//! (`backend_web::newcore` ↔ `robot_transport`); the in-process
+//! `robot-e2e` harness rides the same seam.
 //!
 //! # Lifecycle
 //!
@@ -70,7 +64,7 @@
 //! - Text inputs report their accessible name (a11y label, else
 //!   placeholder) as `label`.
 //!
-//! # Duplicate `test_id` policy (mirrors the old core exactly)
+//! # Duplicate `test_id` policy
 //!
 //! The `by_test_id` index is LAST-WINS: `find(Query::TestId)` resolves
 //! the most recently registered holder. `find_all(Query::TestId)` scans
@@ -81,7 +75,7 @@
 //! # Feature gate
 //!
 //! The whole module is compiled only under the vocabulary's `robot`
-//! Cargo feature (mirroring runtime-core's `robot` gate): the identity
+//! Cargo feature (`runtime-core/robot` forwards to it): the identity
 //! SLOTS (`test_id` prim fields + builder/glue setters) are always
 //! present so `ui! { view(test_id = …) }` compiles in every build, but
 //! the per-mount registration overhead exists only in robot builds.
@@ -94,11 +88,9 @@ use runtime_shared::primitives::portal::ViewportRect;
 
 use crate::caps::IntrospectionOps;
 
-// The P5 remainder seams, re-exported at the old core's `robot::…`
-// paths so suites/apps swap only the crate root
-// (`runtime_shared::robot::X` ↔ `runtime_vocabulary::robot::X`):
-// component `#[method]` registry + element link, and the signal watch
-// registry.
+// The component `#[method]` registry + element link, and the signal
+// watch registry, re-exported under `robot::…` (the same paths
+// `runtime_shared::robot` uses, so suites swap only the crate root).
 pub use crate::robot_methods::{
     component_for_element, component_props, components_for_element, invoke_method,
     list_components, register_component, ComponentInstanceId, ComponentRegistration,
@@ -115,8 +107,8 @@ pub use crate::robot_watch::{
 // =============================================================================
 
 /// Identifies what kind of primitive an element was built from. Same
-/// variant set as the old core's, so bridge verb payloads (`kind`
-/// strings) stay wire-identical.
+/// variant set as `runtime_shared::robot::ElementKind`, so bridge verb
+/// payloads (`kind` strings) match.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ElementKind {
     View,
@@ -213,8 +205,7 @@ impl ElementState {
 // Control handles
 // =============================================================================
 
-/// Type-erased action dispatch table for a mounted element (the old
-/// registry's shape, verbatim).
+/// Type-erased action dispatch table for a mounted element.
 #[derive(Clone, Default)]
 pub(crate) struct ElementActions {
     pub click: Option<Rc<dyn Fn()>>,
@@ -272,8 +263,8 @@ pub(crate) struct RegistryEntry {
     pub label: Option<String>,
     /// Live-label recompute for reactive text/labels. The registry
     /// entry is built once at mount and never re-registered when a
-    /// bound signal changes, so a cached string would go stale — the
-    /// old core's exact rationale. The closure reads UNTRACKED so a
+    /// bound signal changes, so a cached string would go stale. The
+    /// closure reads UNTRACKED so a
     /// robot query never subscribes anything.
     pub label_fn: Option<Rc<dyn Fn() -> Option<String>>>,
     pub actions: ElementActions,
@@ -317,7 +308,7 @@ impl RegistryEntry {
 pub(crate) struct Registry {
     entries: Vec<Option<RegistryEntry>>,
     free: Vec<u32>,
-    /// test_id → element id. LAST-WINS on duplicates (old-core policy);
+    /// test_id → element id. LAST-WINS on duplicates (module docs);
     /// `find_all` scans entries instead of reading this 1:1 index.
     by_test_id: HashMap<&'static str, ElementId>,
 }
@@ -359,8 +350,8 @@ impl Registry {
                 }
             }
             // Unlink from a still-live parent so a recycled slot can't
-            // later be walked as this parent's child (the old registry's
-            // stale-child-id guard).
+            // later be walked as this parent's child (stale-child-id
+            // guard).
             if let Some(pid) = entry.parent {
                 if let Some(Some(parent)) = self.entries.get_mut(pid.0 as usize) {
                     parent.children.retain(|c| *c != id);
@@ -629,8 +620,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
         state,
     } = actions;
     // Geometry / introspection closures: borrow the backend at QUERY
-    // time (never held across the query's own callback), mirroring the
-    // old walker's post-dispatch attach closures.
+    // time (never held across the query's own callback).
     let frame = {
         let b = backend.clone();
         let n = node.clone();
@@ -731,9 +721,8 @@ pub(crate) fn attach_touch_action(prim: &RegisteredPrim, handler: runtime_shared
 }
 
 // =============================================================================
-// Navigator registry — the NEW core's `list_navigators` / back-stack
-// snapshot surface (mirrors `runtime_shared::primitives::navigator`'s
-// robot registry: slab + free list + "current" marker + prune-on-read)
+// Navigator registry — the `list_navigators` / back-stack snapshot
+// surface (slab + free list + "current" marker + prune-on-read)
 // =============================================================================
 
 /// Stable id for a navigator in the registry. Cheap to copy.
@@ -742,7 +731,7 @@ pub struct NavId(pub u32);
 
 /// The per-snapshot payload a navigator's mount handler computes on
 /// demand (`None` ⇒ the navigator's shared state is gone — dead `Weak`,
-/// pruned like the old registry's dead controls). Signal reads inside
+/// pruned). Signal reads inside
 /// the closure are untracked; the bridge runs them world-entered.
 pub struct NavSnapshotData {
     pub active_route: String,
@@ -755,17 +744,14 @@ pub struct NavSnapshotData {
     pub stack: Vec<(String, String)>,
 }
 
-/// A read-only snapshot of one registered navigator — wire-identical
-/// field set to the old core's `NavSnapshot` (`nav_snapshot_json`).
+/// A read-only snapshot of one registered navigator — the field set
+/// `nav_snapshot_json` serializes.
 pub struct NavSnapshot {
     pub nav_id: u32,
     pub element_id: Option<u32>,
-    /// Kind carrier. On the new core this is the VOCABULARY builder
-    /// name (`"swap_navigator"` / `"stack_navigator"`) — honest and
-    /// kind-agnostic like the old SDK `Presentation` type_name, but a
-    /// different string: the SDK presentation labels (Tab/Drawer/…)
-    /// only exist after the P6 SDK retarget. Field-level gap, not a
-    /// verb gap.
+    /// Kind carrier: the builder's `.nav_label(...)` (the SDK's
+    /// presentation label), else the vocabulary builder name
+    /// (`"swap_navigator"` / `"stack_navigator"`).
     pub type_name: &'static str,
     pub active_route: String,
     pub active_path: String,
@@ -822,7 +808,7 @@ thread_local! {
 /// kind carrier, its element-registry id, and an on-demand snapshot
 /// closure (typically over a `Weak` of the navigator's shared state).
 /// If no navigator is yet current, this one becomes current (cold-start
-/// root — old registry contract).
+/// root).
 pub(crate) fn register_navigator(
     type_name: &'static str,
     element_id: Option<u32>,
@@ -901,7 +887,7 @@ pub(crate) fn deregister_navigator(id: NavId) {
 
 /// Mark a navigator as the current one (last dispatched-against).
 /// Called from the handlers' dispatch closures; bumps the live-update
-/// revision like the old registry did.
+/// revision.
 pub(crate) fn mark_active_navigator(id: NavId) {
     NAV_REGISTRY.with(|r| {
         let mut reg = r.borrow_mut();
@@ -918,8 +904,8 @@ pub(crate) fn mark_active_navigator(id: NavId) {
 }
 
 /// Snapshot every live navigator. Entries whose snapshot closure
-/// reports dead shared state are skipped and pruned (old registry's
-/// dead-`Weak` prune). Closures run AFTER the registry borrow drops —
+/// reports dead shared state are skipped and pruned (dead-`Weak`
+/// prune). Closures run AFTER the registry borrow drops —
 /// they read signals and could re-enter. Callers wanting label-accurate
 /// signal reads run this entered (the bridge does).
 pub fn all_navigators() -> Vec<NavSnapshot> {
@@ -999,7 +985,7 @@ impl Element {
     }
 }
 
-/// Criteria for finding elements (old-core mirror).
+/// Criteria for finding elements.
 #[derive(Clone, Debug)]
 pub enum Query {
     /// Match by author-assigned test ID (exact).
@@ -1097,7 +1083,7 @@ fn query_matches(query: &Query, entry: &RegistryEntry) -> bool {
     }
 }
 
-/// The programmatic controller for a running new-core UI. Thread-local
+/// The programmatic controller for a running UI. Thread-local
 /// (same thread as the mount); a ZST indexing the thread-local
 /// registry, cheap to construct.
 ///
@@ -1175,7 +1161,8 @@ impl Robot {
     ///
     /// The second case is what makes tap recognizers reachable: an idea-ui
     /// Table row, for one, is a `tap_with_press` on each cell's `on_touch`,
-    /// and `click` used to report "not available" for everything in it.
+    /// so without it `click` would report "not available" for everything
+    /// in it.
     pub fn click(&self, element: &Element) -> Result<(), RobotError> {
         for (id, actions) in self.press_chain(element.id)? {
             if let Some(f) = actions.click.clone() {
@@ -1449,7 +1436,7 @@ impl Robot {
 
     /// Recursive snapshot. An entry whose parent is no longer live (a
     /// dead/recycled slot) surfaces as a ROOT rather than vanishing —
-    /// the old registry's orphan rule (content mounted late inside
+    /// the orphan rule (content mounted late inside
     /// driver effects registers with a dead or absent parent and must
     /// stay reachable). Runs entered (labels resolve — driver env).
     pub fn snapshot(&self) -> Vec<TreeNode> {
@@ -1547,7 +1534,7 @@ impl Robot {
     /// Clone the actions out, DROP the registry borrow, then invoke —
     /// an action (e.g. a click handler) may mount/unmount subtrees,
     /// which re-enters the registry; a held borrow would abort with
-    /// "RefCell already borrowed" (the old registry's exact guard).
+    /// "RefCell already borrowed".
     ///
     /// The author callback runs OUTSIDE the world (its handle-routed
     /// writes stage, exactly like a real platform event), then
@@ -1664,7 +1651,7 @@ impl SyntheticTouch {
 ///
 /// - `enter`: run a closure with the app's [`runtime_world::World`]
 ///   entered. Label-resolving queries ([`RegistryEntry::label_fn`]) read
-///   world signals, and new-core signal reads need the ambient world —
+///   world signals, and world signal reads need the ambient world —
 ///   drivers run outside it (relay `onmessage`, scheduled harness
 ///   steps). `World::enter` nests, so wrapping an already-entered caller
 ///   is harmless.
@@ -1672,8 +1659,7 @@ impl SyntheticTouch {
 ///   host's `flush_sync`). Robot actions invoke the RAW author callback
 ///   (pre dispatch-site flush glue), so without an explicit settle the
 ///   staged writes would only commit on the next flush microtask —
-///   breaking the harness's synchronous `act → assert` contract that
-///   the old core satisfied by applying writes synchronously.
+///   breaking the harness's synchronous `act → assert` contract.
 ///
 /// [`Robot`] consults the installed env itself (queries run entered,
 /// actions settle after dispatch), so callers stay core-agnostic.
@@ -1689,7 +1675,7 @@ thread_local! {
 }
 
 /// Install the driver environment (see [`DriverEnv`] docs above).
-/// Called once by the new-core host boot (e.g.
+/// Called once by the host boot (e.g.
 /// `backend_web::newcore::start`). Re-installing replaces the prior env.
 pub fn install_driver_env(
     enter: impl Fn(&mut dyn FnMut()) + 'static,
@@ -1742,31 +1728,29 @@ pub fn settle() {
 }
 
 // =============================================================================
-// Bridge verb dispatch — the transport half of the old
-// `runtime_shared::robot::bridge::dispatch`, adapted 1:1 to THIS registry
+// Bridge verb dispatch — the transport half, against THIS registry (same
+// verbs and response JSON as `runtime_shared::robot::bridge::dispatch`)
 // =============================================================================
 
 /// JSON verb dispatch for bridge/relay transports. Mirrors the element
 /// surface of `runtime_shared::robot::bridge::dispatch` verb-for-verb and
 /// byte-for-byte on the wire (same `cmd` names, same argument shapes,
 /// same response JSON), so the MCP server / relay / `robot-test` client
-/// drive a new-core app unchanged.
+/// drive an app unchanged.
 ///
-/// The P5 remainder verbs are LIVE (this wave): `list_components` /
-/// `invoke_method` (the `#[method]` registry), `list_watched_signals` /
-/// `read_signal` (the watch registry), and `list_navigators` /
-/// `get_navigator_state` (the nav registry) — all wire-identical to
-/// the old `runtime_shared::robot::bridge` responses. Verbs the registry
-/// doesn't own at all (`get_logs`, `screenshot`, custom commands)
-/// return `unknown command: …` — the transport falls back to its
-/// platform path for those (the web relay client routes them to the
-/// old bridge dispatch, whose log/custom machinery is
-/// registry-independent).
+/// Also served here: `list_components` / `invoke_method` (the
+/// `#[method]` registry), `list_watched_signals` / `read_signal` (the
+/// watch registry), and `list_navigators` / `get_navigator_state` (the
+/// nav registry). Verbs the registry doesn't own at all (`get_logs`,
+/// `screenshot`, custom commands) return `unknown command: …` — the
+/// transport falls back to its platform path for those (the web relay
+/// client routes them to `runtime_shared::robot::bridge::dispatch`,
+/// whose log/custom machinery is registry-independent).
 pub mod bridge {
     use super::*;
     use runtime_shared::__serde_json as serde_json;
 
-    /// Invoke one bridge verb against the new-core registry. Must run on
+    /// Invoke one bridge verb against the vocabulary registry. Must run on
     /// the UI thread (registry + driver env are thread-local). Queries
     /// run inside the installed driver env's `enter`; actions settle.
     pub fn invoke_command(cmd: &str, args: &serde_json::Value) -> Result<String, String> {
@@ -1939,7 +1923,7 @@ pub mod bridge {
                 Ok(format!("{{{}}}", out.join(",")))
             }
             "list_components" => {
-                // Same JSON shape as the old bridge's `list_components`
+                // Same JSON shape as runtime-shared's `list_components`
                 // (instance_id / name / element_id / methods[{name,args}]).
                 let snaps = crate::robot_methods::list_components();
                 let entries: Vec<String> = snaps
@@ -2132,7 +2116,7 @@ pub mod bridge {
         }
     }
 
-    /// Byte-for-byte mirror of the old bridge's `nav_snapshot_json`.
+    /// Same bytes as runtime-shared's bridge `nav_snapshot_json`.
     fn nav_snapshot_json(s: &NavSnapshot) -> String {
         let stack: Vec<String> = s
             .stack
@@ -2256,8 +2240,8 @@ pub mod bridge {
 
     /// One tree node. `components` lists the component instances this
     /// element is the root of, outermost first — omitted for an element
-    /// no component links to, so a component-free tree is byte-identical
-    /// to the old shape.
+    /// no component links to, so a component-free tree keeps the plain
+    /// shape.
     fn tree_node_json(
         node: &TreeNode,
         index: &std::collections::HashMap<u32, Vec<(crate::robot_methods::ComponentInstanceId, &'static str)>>,
@@ -2315,7 +2299,7 @@ mod tests {
         }
     }
 
-    /// Duplicate policy pin (old-core mirror): `find` is last-wins via
+    /// Duplicate policy pin: `find` is last-wins via
     /// the index; `find_all` returns every holder.
     #[test]
     fn duplicate_test_id_last_wins_for_find_all_for_find_all() {
@@ -2400,7 +2384,7 @@ mod tests {
         // Unknown verbs surface as the fallback marker the transport
         // keys on; owned verbs with bad args fail with the argument
         // name (never the fallback marker — the transport must not
-        // route them to the old core).
+        // route them to its platform fallback).
         let unknown = bridge::invoke_command("get_logs", &json!({})).unwrap_err();
         assert!(unknown.starts_with("unknown command:"), "{unknown}");
         let bad_args = bridge::invoke_command("invoke_method", &json!({})).unwrap_err();
@@ -2409,8 +2393,7 @@ mod tests {
     }
 
     /// `list_components` + `invoke_method` over the bridge — the exact
-    /// verb path the MCP server / Inspector use, wire shapes mirroring
-    /// the old `runtime_shared::robot::bridge` responses.
+    /// verb path the MCP server / Inspector use.
     #[test]
     fn bridge_method_verbs_round_trip() {
         use runtime_shared::__serde_json::json;
@@ -2463,8 +2446,7 @@ mod tests {
     }
 
     /// `list_watched_signals` / `read_signal` expose a
-    /// `watch_signal`-registered signal's live value over the bridge —
-    /// mirror of the old `watch_verbs_read_live_signal_value_over_bridge`.
+    /// `watch_signal`-registered signal's live value over the bridge.
     #[test]
     fn bridge_watch_verbs_read_live_signal_value() {
         use runtime_shared::__serde_json::json;

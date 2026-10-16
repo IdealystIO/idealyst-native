@@ -63,10 +63,6 @@ fn inject_returns_none_for_unprovided_type() {
 // closest-provider lookup, shadowing, scope-drop-removes-provision,
 // and multiple-types-coexist scenarios using `pub(crate)` `with_scope`
 // + `Scope::new()`. Those APIs aren't exposed publicly because they're
-// invariant-internal — the public way to open a scope is through the
-// render walker (`render(...)` opens one; primitives like `when`,
-// `switch`, `Presence`, `#[component]` open child scopes).
-//
-// Once the walker test suite lands (`tests/walker/`), it'll re-cover
-// these semantics through full render trees. Until then, the inline
-// tests are the source of truth.
+// invariant-internal — the public way to open a scope is a mount
+// (`#[component]` and the structural primitives open child scopes).
+// The inline tests are the source of truth for these semantics.

@@ -1,4 +1,4 @@
-//! Graphics handler — port of `walker/graphics.rs::build`.
+//! Graphics handler: `graphics` (a raw GPU-drawable surface).
 
 use runtime_scene::{Element, MountCx, Registry};
 
@@ -16,16 +16,15 @@ where
     });
 }
 
-/// Mount a `graphics` surface — port of `walker/graphics.rs::build`.
+/// Mount a `graphics` surface.
 ///
 /// Sequence: `create_graphics(on_ready, on_resize, on_lost)` (the
 /// lifecycle closures move into the backend whole) → attach_style →
 /// unconditional teardown probe (`release_graphics`) → ref-fill.
 ///
 /// The release probe is registered independently of (and after) the
-/// style attach, mirroring the old `GraphicsHandleCleanup` empty-Effect:
-/// an UNSTYLED graphics still gets torn down, and a styled one releases
-/// after `on_node_unstyled` (both cores free effects in creation
+/// style attach: an UNSTYLED graphics still gets torn down, and a styled
+/// one releases after `on_node_unstyled` (effects free in creation
 /// order). Without the release, the backend's surface state (device,
 /// queue, user render callbacks) outlives the subtree and the platform
 /// keeps delivering resize/lost events into freed author state — the

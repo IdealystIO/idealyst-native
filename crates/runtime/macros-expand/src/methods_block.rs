@@ -466,8 +466,8 @@ fn rewrite_body(
         // the spaces that hug punctuation, so `Vec < String >` collapses
         // to `Vec<String>` and `& 'a str` to `&'a str`, while a real gap
         // between two word tokens (`dyn Fn`) is preserved. Crucially we
-        // must NOT split a single ident: the old code stripped every space
-        // then re-inserted one between adjacent alphanumerics, turning the
+        // must NOT split a single ident: stripping every space then
+        // re-inserting one between adjacent alphanumerics turns the
         // one-token type `i32` into `i 3 2`. Token-level formatting isn't
         // worth a `prettyplease` dep for one-line type renderings.
         let arg_types_str: Vec<String> =
@@ -674,7 +674,7 @@ mod tests {
         }
     }
 
-    /// The NEW-core emission surface (P5 robot remainder): piping the
+    /// The `#[method]` emission surface: piping the
     /// rewritten body through the retarget must land every `#[method]`
     /// reference on a name `runtime_vocabulary::glue` provides —
     /// `glue::robot::{Method, __attach_component_methods}`,

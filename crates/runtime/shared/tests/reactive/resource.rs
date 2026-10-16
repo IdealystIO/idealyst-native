@@ -10,7 +10,7 @@
 //!
 //! Race-condition tests (where an OLD fetch resolves AFTER a NEWER
 //! one was issued) require a custom executor that lets us defer
-//! resolution — those live in runtime-core's inline tests, not
+//! resolution — those live in `src/resource.rs`'s inline tests, not
 //! here, because driving them requires `pub(crate)` knobs.
 
 #![cfg(feature = "async-driver")]

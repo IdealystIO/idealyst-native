@@ -5,15 +5,15 @@
 //! > A user-provided closure is queued with the browser (microtask,
 //! > `requestAnimationFrame`, `setTimeout`). The closure's owner is
 //! > dropped before the browser fires it. The browser still
-//! > dispatches. wasm-bindgen sees a destroyed `Closure` and panics
-//! > "closure invoked recursively or after being dropped".
+//! > dispatches into a destroyed `web_glue::Closure` ("callback #N called
+//! > after its Rust owner dropped it").
 //!
 //! The helpers own both the closure handle AND the browser handle,
 //! and on `Drop`:
 //!
 //! 1. Cancel the browser-side scheduling (via `cancelAnimationFrame`
 //!    / `clearTimeout`). The browser drops its queued reference.
-//! 2. Drop the wasm-bindgen `Closure`. No spurious invocations.
+//! 2. Drop the `web_glue::Closure`. No spurious invocations.
 //!
 //! The web platform implementation lives in `backend-web`. Hosts
 //! register it via `backend_web::install_scheduler()` during init.
@@ -22,7 +22,7 @@
 //! so this module carries no compile-target switch:
 //! - On `Web`, the helpers panic with a configuration error. The
 //!   deferral is mandatory there; a synchronous fallback would trip
-//!   the wasm-bindgen re-entry hazard described above.
+//!   the JS-closure re-entry hazard described above.
 //! - On every other platform, the helpers run their bodies
 //!   synchronously (or inert, for [`raf_loop`]) — there's no
 //!   equivalent trap off the web.
@@ -102,8 +102,8 @@ pub fn is_scheduler_installed() -> bool {
 
 /// Panic when no [`Scheduler`] is installed *and* we're rendering to
 /// `Web`. On Web the deferral these helpers provide is mandatory — a
-/// synchronous fallback would re-enter wasm-bindgen `FnMut` closures
-/// and trip "closure invoked recursively or after being dropped" — so
+/// synchronous fallback would re-enter a running `FnMut` JS closure
+/// (web-glue refuses it as `invoked recursively`) — so
 /// a missing install is a configuration error surfaced loudly. Off the
 /// web there's no such trap, so callers fall through to their
 /// synchronous (or inert) fallback.
@@ -130,8 +130,8 @@ fn panic_if_web_without_scheduler(api: &str) {
 
 /// Schedule `f` to run after the current synchronous stack unwinds —
 /// a "microtask" in browser terms. Used by the framework to break
-/// synchronous chains that would otherwise re-enter wasm-bindgen
-/// `FnMut` closures (e.g. a click handler that triggers a screen
+/// synchronous chains that would otherwise re-enter `FnMut` JS
+/// closures (e.g. a click handler that triggers a screen
 /// swap which drops the click's own button tree, then continues to
 /// execute inside the now-destroyed closure).
 ///
@@ -237,14 +237,14 @@ struct DetachedSlot {
 ///
 /// This is the right tool for **imperative, off-scope** call sites —
 /// global queues, app singletons, event handlers that run outside any
-/// component body — where [`after_ms_scoped`] can't apply because there
+/// component body — where `runtime_core::after_ms_scoped` can't apply because there
 /// is no surrounding reactive scope to anchor to. It is the named,
 /// self-documenting replacement for the `mem::forget(after_ms(..))`
 /// idiom: same observable behaviour, but bounded (the registry sweeps
 /// fired tasks) and impossible to mistake for a bug. Library and app code
 /// should reach for this rather than `mem::forget`.
 ///
-/// If a reactive scope *is* active, prefer [`after_ms_scoped`] so the
+/// If a reactive scope *is* active, prefer `runtime_core::after_ms_scoped` so the
 /// timer dies with the scope instead of outliving it.
 pub fn after_ms_detached<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     // Sweep tasks that already fired. We're outside any task closure here,
@@ -395,15 +395,14 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
 //
 // The scoped variants below absorb that boilerplate: they install
 // the same cleanup automatically against the current reactive scope.
-// Use them inside `effect!` / inside a component body / under a
-// mounted `Owner` when the animation's natural lifetime is the
-// scope's. Outside any scope they degrade to the plain helpers
+// Use them inside `effect!` / inside a component body when the
+// animation's natural lifetime is the scope's. Outside any scope they degrade to the plain helpers
 // (the on_cleanup no-ops, the handle is leaked) — which matches
 // `on_cleanup`'s standard behavior.
 
 /// Schedule `f` to fire after `delay_ms`, with the underlying timer
 /// anchored to the current reactive scope. When the scope cleans up
-/// (the surrounding `effect!` re-runs, or the `Owner` drops) the
+/// (the surrounding `effect!` re-runs, or the scope drops) the
 /// timer is cancelled — if the callback hasn't fired yet, it never
 /// will.
 ///
@@ -425,19 +424,17 @@ pub fn raf_loop<F: FnMut() + 'static>(f: F) -> RafLoop {
 /// silently drops its callback outside a scope. If you need a
 /// timer that fires regardless of whether you're in a scope, use
 /// [`after_ms_detached`].
-/// CRATE-INTERNAL — author-facing code must use the newcore-anchored
-/// shadow (`runtime_vocabulary::scoped_scheduling`, re-exported as
-/// `runtime_core::after_ms_scoped`). This pre-World version re-enters
-/// only the OLD arena's scope/effect ctx, never the World session, so
-/// it is only safe for substrate callbacks that touch no world state
-/// (e.g. `animation::binding`'s post-mount backend re-applies). It was
-/// demoted from `pub` after an idea-ui component grabbed it through the
-/// `runtime_core::scheduling` module re-export and its world-signal
-/// timer chain silently died.
+/// CRATE-INTERNAL — author-facing code must use the World-anchored
+/// version (`runtime_vocabulary::scoped_scheduling`, re-exported as
+/// `runtime_core::after_ms_scoped`). This one re-enters only
+/// runtime-shared's own `reactive` scope/effect ctx, never the World,
+/// so it is only safe for substrate callbacks that touch no world state
+/// (e.g. `animation::binding`'s post-mount backend re-applies). Keep it
+/// `pub(crate)`: reachable through the `runtime_core::scheduling`
+/// re-export, a world-signal timer chain built on it silently dies.
 pub(crate) fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
-    // Teardown-safety flag (see module doc above `after_ms_scoped` and
-    // the `scheduling_scoped` regression). `cancelAnimationFrame` /
+    // Teardown-safety flag. `cancelAnimationFrame` /
     // `clearTimeout` do NOT reliably remove a callback the browser has
     // already dispatched for the current tick, so dropping the handle on
     // scope cleanup is not enough — a queued shot can still fire after
@@ -479,26 +476,22 @@ pub(crate) fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
 /// between `mem::forget`'ing the handle (silent page-lifetime leak)
 /// and manually wiring `on_cleanup(move || drop(handle))`.
 ///
-/// Per-frame invocations re-enter the registering scope so nested
-/// `*_scoped` calls keep their cleanup attachment (see
-/// [`after_ms_scoped`] for the rationale).
+/// Per-frame invocations re-enter the registering scope and the loop
+/// is a no-op outside any reactive scope, both exactly as in
+/// [`after_ms_scoped`], which carries the rationale.
 ///
-/// **Outside any reactive scope this is a no-op** — see
-/// [`after_ms_scoped`] for the rationale.
-/// CRATE-INTERNAL — same demotion rationale as [`after_ms_scoped`]:
-/// authors use the newcore-anchored `runtime_core::raf_loop_scoped`.
+/// CRATE-INTERNAL for the same reason as [`after_ms_scoped`]: authors
+/// use the World-anchored `runtime_core::raf_loop_scoped`.
 pub(crate) fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     let ctx = crate::reactive::capture_reactive_ctx();
-    // Teardown-safety flag — see `after_ms_scoped` for the full
-    // rationale. This is the case the QuillEMR notetaker teardown-race
-    // exercised: a persistent per-frame loop reading a screen-scoped
-    // signal, where the navigator releases the screen scope while a rAF
-    // for THIS frame is already queued. Without the flag the queued
-    // frame fires after the scope's signals were dropped (panics #2/#3:
-    // "signal used after its scope was dropped" / "signal type
-    // mismatch"); without the busy-skip it can re-enter the arena while
-    // the navigator mount holds it mid-mutation (panic #1: "RefCell
-    // already mutably borrowed" / taken-slot None).
+    // Teardown-safety flag, as in `after_ms_scoped`. The case: a
+    // persistent per-frame loop reading a screen-scoped signal, where the
+    // navigator releases the screen scope while a rAF for THIS frame is
+    // already queued. Without the flag the queued frame fires after the
+    // scope's signals were dropped ("signal used after its scope was
+    // dropped" / "signal type mismatch"); without the busy-skip it can
+    // re-enter the arena while the navigator mount holds it mid-mutation
+    // ("RefCell already mutably borrowed").
     let cancelled = std::rc::Rc::new(std::cell::Cell::new(false));
     let cancelled_for_cb = cancelled.clone();
     let loop_handle = raf_loop(move || {

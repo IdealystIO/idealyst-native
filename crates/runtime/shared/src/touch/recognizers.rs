@@ -857,7 +857,7 @@ pub fn long_press<F: Fn() + 'static>(
 ) -> TouchHandler {
     let rec = Rc::new(RefCell::new(LongPress::new(config, on_long_press)));
     // Weak so the notifier closure → recognizer → notifier cycle can't
-    // leak (see [[feedback_no_forget_in_library_code]]).
+    // leak.
     let weak = Rc::downgrade(&rec);
     rec.borrow_mut()
         .set_async_notifier(Rc::new(move || {
@@ -1814,7 +1814,7 @@ mod tests {
     // exercising any recognizer that schedules a future callback (the
     // long-press recognizer being the current one).
     //
-    // Why custom: runtime-core's default no-scheduler behavior on
+    // Why custom: the default no-scheduler behavior on
     // native is to invoke `after_ms` callbacks *synchronously at call
     // time*, which fires the long-press timer before the recognizer
     // has even finished setting up its `Tracking` state. We need to
@@ -2075,9 +2075,9 @@ mod tests {
     /// tracking the finger.
     ///
     /// This is the regression test for the oscillation described on
-    /// `PanEvent::Moved`. `delta` used to be measured from the
-    /// VIEW-LOCAL position, and the view-local origin travels with the
-    /// view — so a handler that applies `delta` as a translate measures
+    /// `PanEvent::Moved`. Measured from the VIEW-LOCAL position, `delta`
+    /// is wrong because the view-local origin travels with the view — so
+    /// a handler that applies `delta` as a translate measures
     /// the next delta against a frame its own last write displaced.
     /// The offsets then follow `t(n) = u(n) - t(n-1)`, which for a
     /// steady 1px-per-event finger is 9, 1, 10, 2, 11, 3 … — two
@@ -2131,7 +2131,7 @@ mod tests {
         assert!(!deltas.is_empty(), "the drag must cross slop and report");
 
         // The finger only ever moved down, so every delta must be at
-        // least the one before it. The old code failed here on the
+        // least the one before it. View-local deltas fail here on the
         // SECOND report (9 then 1).
         for pair in deltas.windows(2) {
             assert!(

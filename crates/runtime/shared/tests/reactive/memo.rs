@@ -208,8 +208,7 @@ fn memo_dynamic_deps() {
 }
 
 /// The plain `memo(move || …)` fn is the canonical (and only) call-site
-/// form — the `memo!` macro was removed. Pins the fn-form ergonomics the
-/// macro used to demonstrate: `Copy` signal handles capture by value in
+/// form. Pins its ergonomics: `Copy` signal handles capture by value in
 /// the `move` closure, single- and multi-dep bodies recompute on change.
 #[test]
 fn memo_fn_form_captures_copy_handles_and_recomputes() {

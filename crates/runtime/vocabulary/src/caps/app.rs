@@ -11,9 +11,9 @@ use runtime_scene::Host;
 /// (`open_url` / `set_fullscreen`), and app-level chrome (page metadata,
 /// host-surface background, scrollbar theme, app keyboard sink).
 ///
-/// Serves `mount(...)` plus the app-level drains in `walker/style.rs`
-/// and `walker/view.rs` (`set_app_background`, `set_scrollbar_theme`)
-/// and `walker.rs` (`set_page_metadata`); `set_keyboard_sink` is driven by
+/// `set_app_background` / `set_scrollbar_theme` / `set_page_metadata` are
+/// app-level drains of the theme and page-metadata channels;
+/// `set_keyboard_sink` is driven by
 /// `runtime_shared::key_input` through the host wired in
 /// `install_env_services`.
 pub trait AppEnvOps: Host {
@@ -129,13 +129,9 @@ pub trait AppEnvOps: Host {
 }
 
 /// Build/flush lifecycle: the end-of-build commit, layout scheduling,
-/// and the hydration / lazy-chunk policy flags the structural walkers
-/// consult.
-///
-/// Serves `walker.rs` (`finish`), `walker/navigator.rs` (layout
-/// scheduling via `NavigatorControl`), `walker/dynamic.rs` +
-/// `walker/when_switch.rs` (`is_hydrating` anchored-mode gate), and
-/// `walker/lazy.rs` (`renders_lazy_chunks`).
+/// and the hydration / lazy-chunk policy flags the structural handlers
+/// consult (`schedule_layout_pass` after navigation, `is_hydrating`,
+/// `renders_lazy_chunks` in the lazy handler).
 pub trait LifecycleOps: Host {
     /// Commit the build: the framework hands over the root node once
     /// the tree is fully constructed.
@@ -145,8 +141,8 @@ pub trait LifecycleOps: Host {
     fn run_layout(&mut self) {}
 
     /// Schedule a coalesced layout pass for the next main-loop turn.
-    /// No `self` — registered as `|| B::schedule_layout_pass()` by the
-    /// navigator walker, so the hook holds no backend reference.
+    /// No `self` — the navigator handlers call `H::schedule_layout_pass()`
+    /// from their driver effect, which holds no backend reference.
     fn schedule_layout_pass() {}
 
     /// Whether the backend is mid SSR-hydration adoption.
@@ -154,7 +150,7 @@ pub trait LifecycleOps: Host {
         false
     }
 
-    /// Whether `Element::Lazy` should resolve its chunk (`true`) or
+    /// Whether a `lazy` boundary should resolve its chunk (`true`) or
     /// stop at the placeholder (SSR returns `false`).
     fn renders_lazy_chunks(&self) -> bool {
         true

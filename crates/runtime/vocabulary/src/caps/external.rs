@@ -9,17 +9,14 @@ use runtime_scene::Host;
 
 use super::ViewOps;
 
-/// Registry-dispatched third-party primitives (`Element::External`
-/// today; the universal mount path once the scene Registry replaces the
-/// walker). Serves `walker/external.rs` + `walker/cleanup.rs`. Kept
-/// through the transition — at P7 this dissolves into the Registry
-/// handler contract itself.
+/// A backend-built node for a type-erased third-party payload, keyed by
+/// `TypeId`: what a scene `Registry` mount handler can ask the backend
+/// for when it has no backend-specific construction of its own.
 ///
 /// Also home of [`missing_primitive_placeholder`](Self::missing_primitive_placeholder):
 /// every `create_*` default that renders the "backend compiled without
-/// `prim-*`" box declares `: ExternalOps` for it, preserving the frozen
-/// degradation path (a missing primitive renders as an External
-/// placeholder, uniformly, instead of panicking).
+/// `prim-*`" box declares `: ExternalOps` for it (a missing primitive
+/// renders as a labeled placeholder, uniformly, instead of panicking).
 pub trait ExternalOps: Host {
     /// Create a third-party node. `type_id` drives registry dispatch;
     /// `type_name` is for diagnostics only.
@@ -46,9 +43,9 @@ pub trait ExternalOps: Host {
     /// Fallback node for a primitive family this backend was compiled
     /// without (`prim-*` feature mismatch): a visible, labeled
     /// "unsupported" box via [`create_external`](Self::create_external).
-    /// Not meant to be overridden. The local `MissingPrimitive` TypeId
-    /// differs from runtime-core's private one, but both are unknown to
-    /// every registry, so dispatch behavior is identical.
+    /// Not meant to be overridden. The local `MissingPrimitive` TypeId is
+    /// unknown to every registry, so the backend renders its generic
+    /// unsupported box.
     #[doc(hidden)]
     fn missing_primitive_placeholder(&mut self, label: &'static str) -> Self::Node {
         struct MissingPrimitive;
@@ -64,11 +61,9 @@ pub trait ExternalOps: Host {
 
 /// Document-backed structural affordances: real HTML tags, id/class/
 /// inline-declaration stamping, and raw CSS registration. Web/SSR
-/// implement these; native backends keep the no-ops. Serves
-/// `walker/navigator.rs` (structural hydration classes), the lazy
-/// chunk loader (`attach_html_id`), and third-party External handlers
-/// that build cross-backend DOM structure. `: ViewOps` because the
-/// frozen `create_element` default falls back to a plain container.
+/// implement these; native backends keep the no-ops. For third-party
+/// handlers that build cross-backend DOM structure. `: ViewOps` because
+/// the `create_element` default falls back to a plain container.
 pub trait DocumentOps: ViewOps {
     /// Create a structural element with an explicit HTML-ish tag.
     /// Backends with no tag concept fall back to a plain view.

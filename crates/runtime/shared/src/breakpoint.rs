@@ -7,10 +7,10 @@
 //! *bucket* changes — dragging a window edge from 1200 to 1000 doesn't
 //! trigger the layout switch until it actually crosses the threshold.
 //!
-//! # Why this lives in `runtime-core`
+//! # Why this lives in the runtime substrate
 //!
 //! Breakpoints are not a UI-kit convenience — they're a primitive of
-//! the style system. The `Backend` trait, the build walker, and the
+//! the style system. The backend caps, the style-attach engine, and the
 //! `css` crate all need to reason about breakpoints (to emit
 //! `@media (min-width: …)` rules on web, to merge the active bucket's
 //! overlay reactively on native). None of those layers can depend on

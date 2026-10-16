@@ -1,14 +1,12 @@
-//! Animated-lifecycle handler: `presence` — the old `walker/presence.rs`
-//! state machine re-expressed on the scene's structural contract (design
-//! §4): the mount/unmount swap is a guarded [`dyn_keyed`] hole keyed on
-//! `present()`, and the exit-animation window is the Dyn driver's
+//! Animated-lifecycle handler: `presence`, on the scene's structural
+//! contract: the mount/unmount swap is a guarded [`dyn_keyed`] hole keyed
+//! on `present()`, and the exit-animation window is the Dyn driver's
 //! **retire hook** — the handler holds the outgoing [`Retired`] subtree
 //! (nodes still attached), plays the exit transform, and detaches + drops
-//! it in the `after_ms` task. "Hold the value" replaces the old "defer
+//! it in the `after_ms` task. Teardown is "hold the value", not "defer
 //! the scope drop".
 //!
-//! # State machine (per the old walker's doc, with the one sanctioned
-//! semantic change at the bottom)
+//! # State machine
 //!
 //! - **Initially absent** (`present()` false): the hole holds an empty
 //!   fragment; the placeholder sits empty.
@@ -24,12 +22,10 @@
 //!   it drops the scope and detaches immediately.
 //! - **Re-present during exit**: the driver builds a FRESH child (enter
 //!   animation applies) while the retired one finishes its exit and is
-//!   removed by its own timer — a crossfade. This is the retire-hook
-//!   model's deliberate semantic change from the old walker, which
-//!   cancelled the exit and reused the outgoing scope; the design doc
-//!   (§4) chose "hold the value" precisely so teardown stays
-//!   drop-as-teardown with no deferred-scope machinery. Child-local
-//!   state does NOT survive a mid-exit flicker on the new core.
+//!   removed by its own timer — a crossfade. The outgoing scope is never
+//!   reused: "hold the value" keeps teardown drop-as-teardown with no
+//!   deferred-scope machinery, so child-local state does NOT survive a
+//!   mid-exit flicker.
 //!
 //! The exit timer is deliberately NOT cancelled on re-present: the
 //! `ScheduledTask` closure owns the retired subtree AND its pending
@@ -76,12 +72,12 @@ where
         backend.borrow_mut().update_accessibility(&placeholder, &prim.a11y, None);
     }
 
-    // Identity/robot registration on the PLACEHOLDER (the old core
-    // registered `Element::Presence` itself): registered before the
-    // hole realizes so the initially-present child links as its child.
+    // Identity/robot registration on the PLACEHOLDER: registered before
+    // the hole realizes so the initially-present child links as its
+    // child.
     // Children built on later `present` flips run inside the driver
     // effect (empty parent stack) and surface via the snapshot orphan
-    // rule, same as the old core.
+    // rule.
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
@@ -106,8 +102,7 @@ where
     // The structural hole: guarded on the presence boolean (the
     // `last_active`-style dedup — a predicate reading extra signals must
     // not remount the child when only those extras changed), building
-    // the child untracked in its own scope (the old walker's
-    // `untrack_for_build` + fresh `Scope`).
+    // the child untracked in its own scope.
     let child_fn = prim.child;
     let present_for_guard = present.clone();
     let hole = dyn_keyed(
@@ -134,7 +129,7 @@ where
             return;
         }
         // Cancel a pending enter — the child must not animate toward
-        // rest while we're exiting it (old walker's exact guard).
+        // rest while we're exiting it.
         *pending_enter_for_retire.borrow_mut() = None;
 
         match exit {
@@ -164,8 +159,8 @@ where
                 *pending_exit_for_retire.borrow_mut() = Some(task);
             }
             None => {
-                // No exit animation — old walker order: drop the scope
-                // immediately, then clear the placeholder.
+                // No exit animation: drop the scope immediately, then
+                // clear the placeholder.
                 drop(realized);
                 let mut b = backend_for_retire.borrow_mut();
                 for n in &nodes {

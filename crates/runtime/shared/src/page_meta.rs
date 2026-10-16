@@ -5,7 +5,7 @@
 //!
 //! Author code calls [`set_page_metadata`] during a screen's render.
 //! [`mount`](crate::mount) drains the value after the build and hands it
-//! to [`Backend::set_page_metadata`](crate::Backend::set_page_metadata):
+//! to `AppEnvOps::set_page_metadata`:
 //! the SSR backend emits `<head>` tags; the web backend (future) sets
 //! `document.title` + meta on the client; platforms with no document
 //! concept no-op via the trait default. `title` maps naturally to the

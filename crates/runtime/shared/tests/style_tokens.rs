@@ -1,11 +1,9 @@
 //! The token registry — `Tokenized<T>`, `install_tokens` /
 //! `update_tokens`, and per-token reactive subscription.
 //!
-//! RELOCATED from `runtime-core/tests/style.rs` (deletion baseline §4.2,
-//! SV-R). `shared/src/style.rs` has **zero** inline tests, and this is
-//! the registry the whole theming surface runs on — it is driven by
-//! `runtime-vocabulary`'s `ThemeCtx` on the surviving core exactly as it
-//! was by the walker's theme driver before.
+//! This is the registry the whole theming surface runs on — driven by
+//! `runtime-vocabulary`'s `ThemeCtx` (the inline `style/tests.rs` covers
+//! the engine's private items).
 //!
 //! Scope:
 //! - `Tokenized::Literal` vs `Tokenized::Token` constructors + `.value()`
@@ -18,17 +16,11 @@
 //!   new value BEFORE firing any subscriber, so a subscriber reading a
 //!   sibling token in the same batch never sees a half-applied theme)
 //!
-//! **What stayed behind**, and why it is not a loss here: the other 13
-//! cases in the old file drove the WALKER (`TestRuntime` + backend
-//! `Event` assertions) or the `stylesheet!` macro, neither of which
-//! runtime-shared can reach. Their homes on the surviving core are
-//! `runtime-vocabulary/tests/vocab.rs` (sheet registration, sweep,
-//! signal-class fallback, state overlays) and
+//! Behavior that needs a mount or the `stylesheet!` macro is covered
+//! where those exist: `runtime-vocabulary/tests/vocab.rs` (sheet
+//! registration, sweep, signal-class fallback, state overlays) and
 //! `runtime-vocabulary/src/style_attach.rs::overlay_merge_tests`
-//! (breakpoint/container overlay merge, ported in an earlier wave). The
-//! two the deletion baseline flagged as genuinely thin —  the native
-//! container-query feedback loop and typeface asset emission — are
-//! called out in the baseline doc's §4.1 #17 row, not silently dropped.
+//! (breakpoint/container overlay merge).
 
 use runtime_shared::{
     install_tokens, signal, update_tokens, watch, Color, Length, Signal, TokenEntry, TokenValue,

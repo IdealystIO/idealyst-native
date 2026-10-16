@@ -5,7 +5,7 @@ use runtime_shared::primitives::graphics::{GraphicsHandle, OnLost, OnReady, OnRe
 
 use crate::style_attach::StyleProp;
 
-/// The `graphics` primitive (`walker/graphics.rs`).
+/// The `graphics` primitive.
 ///
 /// A backend-provided platform surface (canvas / SurfaceView / Metal
 /// layer) the author renders to with their own GPU library. The
@@ -16,11 +16,10 @@ use crate::style_attach::StyleProp;
 /// `on_ready` (see `runtime_shared::primitives::graphics` for the
 /// lifecycle contract: ready → resize* → lost → ready …).
 ///
-/// All three callbacks move into `create_graphics` whole — the old
-/// enum-variant fields, verbatim. Unlike the old builder, `on_resize` /
-/// `on_lost` are NOT wrapped in `cycle()` ("born batched"): under the
-/// staged-commit kernel every write stages until the host driver
-/// flushes, so event batching is structural, not opt-in.
+/// All three callbacks move into `create_graphics` whole. `on_resize` /
+/// `on_lost` are NOT wrapped in `cycle()`: under the staged-commit
+/// kernel every write stages until the host driver flushes, so event
+/// batching is structural, not opt-in.
 pub struct GraphicsPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
     /// builder setter compiles in every build; read only by the

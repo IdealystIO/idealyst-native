@@ -65,13 +65,9 @@ fn write_half_inside_effect_does_not_subscribe() {
 
 #[test]
 fn regression_stale_write_half_is_a_safe_noop_after_scope_drop() {
-    // Same generational-no-op contract as Signal::set (see
-    // [[project_generational_signal_handles]] — the deferred-set crash
-    // fix). The wrapper must not bypass it.
-    // RELOCATION NOTE: the old body opened the owning scope by rendering a
-    // `view` through the walker's `TestRuntime`. The subject is the
-    // WriteSignal half's generational guard against a freed slot, so the
-    // scope is driven directly here — same teardown, no walker.
+    // Same generational-no-op contract as Signal::set (a stale handle's
+    // deferred set must not touch a recycled slot). The wrapper must not
+    // bypass it.
     let escaped: Rc<Cell<Option<WriteSignal<i32>>>> = Rc::new(Cell::new(None));
     let slot = escaped.clone();
     let mut scope = reactive::Scope::new();
@@ -88,9 +84,9 @@ fn regression_stale_write_half_is_a_safe_noop_after_scope_drop() {
 #[test]
 fn memo_output_is_read_only_and_live() {
     let s = signal(2);
-    // Compile-time pin: memo returns the READ half. (The old return type
-    // was a writable Signal<T> — an author `.set()` on it "worked" until
-    // the next dependency change silently clobbered it.)
+    // Compile-time pin: memo returns the READ half. (A writable Signal<T>
+    // would let an author `.set()` on it "work" until the next dependency
+    // change silently clobbered it.)
     let doubled: ReadSignal<i32> = memo(move || s.get() * 2);
     assert_eq!(doubled.get(), 4);
     s.set(10);

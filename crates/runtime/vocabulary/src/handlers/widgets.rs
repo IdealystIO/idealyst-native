@@ -13,7 +13,7 @@ use crate::style_attach::{attach_style, StyleServices};
 
 use super::{bind_dyn, bind_value, initial_of};
 
-/// Mount a `toggle` — port of `walker/toggle.rs::build`.
+/// Mount a `toggle`.
 ///
 /// Sequence: `create_toggle(initial, on_change)` → attach_style →
 /// controlled-value write-back binding (one `update_toggle_value` at
@@ -98,8 +98,7 @@ where
     node
 }
 
-/// Mount a `slider` — port of `walker/slider.rs::build`, including the
-/// step-snap wrapper: the user's `on_change` receives values snapped to
+/// Mount a `slider`, including the step-snap wrapper: the user's `on_change` receives values snapped to
 /// `step` before dispatch, so every backend produces identical values
 /// regardless of native step handling. `disabled` binds after the value
 /// write-back, same contract as `mount_toggle`.
@@ -223,8 +222,7 @@ where
     node
 }
 
-/// Mount an `activity_indicator` — port of
-/// `walker/activity_indicator.rs::build`. A `Dyn` size creates at the
+/// Mount an `activity_indicator`. A `Dyn` size creates at the
 /// closure's initial value and installs the resize binding (first fire
 /// at mount).
 pub fn mount_activity_indicator<H>(
@@ -245,8 +243,8 @@ where
             .borrow_mut()
             .create_activity_indicator(initial_size, prim.color.as_ref(), &prim.a11y);
     // Passive/visual primitive: no actions, but findable by test_id +
-    // kind so an E2E suite can assert "this rendered" (the old
-    // conformance `static primitives render` regression).
+    // kind so an E2E suite can assert "this rendered" (the conformance
+    // app's `static primitives render` check).
     #[cfg(feature = "robot")]
     let _robot = crate::robot::register_mount(
         &backend,
@@ -374,8 +372,7 @@ fn bind_disabled<H: StyleServices + 'static>(
 /// `label: null`, and a form's fields could only be told apart from a
 /// screenshot.
 ///
-/// Mount a `text_input` — port of
-/// `walker/text_input.rs::build_text_input`.
+/// Mount a `text_input`.
 ///
 /// Sequence: `create_text_input(initial value/placeholder/secure,
 /// callbacks)` → keyboard hint (`update_text_input_keyboard`: one call
@@ -582,8 +579,7 @@ where
     node
 }
 
-/// Mount a `text_area` — port of
-/// `walker/text_input.rs::build_text_area`. Placeholder/wrap/rows are
+/// Mount a `text_area`. Placeholder/wrap/rows are
 /// create-time config; the controlled `value` write-back binding fires
 /// once at mount then per change, then the `disabled` binding (same
 /// contract as `mount_text_input`).

@@ -11,8 +11,7 @@ use super::noop;
 use super::{ExternalOps, ViewOps};
 
 /// The `overlay` / portal primitive — render children at a window-level
-/// target, escaping layout and clipping. Serves `walker/portal.rs` +
-/// `walker/cleanup.rs`.
+/// target, escaping layout and clipping. Mounted by `handlers/portal.rs`.
 pub trait PortalOps: ExternalOps {
     /// Stand up the platform's render-elsewhere mount at `target`.
     #[allow(unused_variables)]
@@ -101,14 +100,13 @@ pub trait PresenceOps: ViewOps {
     }
 }
 
-/// Navigator extensions — the unified registry-dispatched entry for
-/// stack/swap/drawer/tab navigator kinds. Serves `walker/navigator.rs`.
+/// Backend-side navigator extension hooks. The vocabulary navigators
+/// (`handlers::navigator`) mount through the Lifecycle/View caps and
+/// don't call these.
 pub trait NavigatorOps: ExternalOps {
-    // `create_navigator` was DELETED with the old core, not re-defaulted.
-    // Its `NavigatorHost` closed over the pre-v2 `Element` (build_node /
-    // build_layout_with_outlet), so it only ever served old-`Backend`
-    // interop. Navigators mount through `handlers::navigator`
-    // (SwapNav/StackNav over the Lifecycle/View caps); nothing calls it.
+    // There is deliberately no `create_navigator`: navigators mount
+    // through `handlers::navigator` (SwapNav/StackNav over the
+    // Lifecycle/View caps), so nothing would call it.
 
     /// Tear down a navigator extension.
     #[allow(unused_variables)]
@@ -133,9 +131,8 @@ pub trait NavigatorOps: ExternalOps {
         primitives::navigator::NavigatorHandle::new(Rc::new(()), &noop::NoopNavigatorOps)
     }
 
-    /// Attach the framework-realized initial screen outside the
-    /// `create_navigator` borrow window. Placeholder backends drop the
-    /// screen instead of panicking.
+    /// Attach a framework-realized initial screen to a backend navigator
+    /// node. Placeholder backends drop the screen instead of panicking.
     #[allow(unused_variables)]
     fn navigator_attach_initial(
         &mut self,
@@ -151,8 +148,8 @@ pub trait NavigatorOps: ExternalOps {
     }
 }
 
-/// The `graphics` primitive — a raw GPU-drawable surface. Serves
-/// `walker/graphics.rs` + `walker/cleanup.rs`.
+/// The `graphics` primitive — a raw GPU-drawable surface. Mounted by
+/// `handlers/graphics.rs`.
 pub trait GraphicsOps: ExternalOps {
     /// Stand up the native drawable widget and wire its surface
     /// lifecycle to `on_ready` / `on_resize` / `on_lost`.

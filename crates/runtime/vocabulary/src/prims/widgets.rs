@@ -17,7 +17,7 @@ use runtime_world::Value;
 
 use crate::style_attach::StyleProp;
 
-/// The `toggle` primitive (`walker/toggle.rs`) — controlled pattern:
+/// The `toggle` primitive — controlled pattern:
 /// `value` is the source of truth, written back into the widget by the
 /// binding (one `update_toggle_value` at mount, then per change);
 /// `on_change` reports native flips upward.
@@ -44,9 +44,8 @@ pub struct TogglePrim {
     pub ref_fill: Option<Box<dyn FnOnce(ToggleHandle)>>,
 }
 
-/// The `slider` primitive (`walker/slider.rs`). The handler wraps
-/// `on_change` to snap to `step` before dispatch so every backend
-/// produces identical values (the walker's snap, ported).
+/// The `slider` primitive. The handler wraps `on_change` to snap to
+/// `step` before dispatch so every backend produces identical values.
 pub struct SliderPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
     /// builder setter compiles in every build; read only by the
@@ -67,7 +66,7 @@ pub struct SliderPrim {
     pub ref_fill: Option<Box<dyn FnOnce(SliderHandle)>>,
 }
 
-/// The `activity_indicator` primitive (`walker/activity_indicator.rs`).
+/// The `activity_indicator` primitive.
 /// A `Dyn` size creates at the closure's initial value and resizes in
 /// place (`update_activity_indicator_size`).
 pub struct ActivityIndicatorPrim {
@@ -82,10 +81,9 @@ pub struct ActivityIndicatorPrim {
     pub ref_fill: Option<Box<dyn FnOnce(ActivityIndicatorHandle)>>,
 }
 
-/// The `text_input` primitive (`walker/text_input.rs::build_text_input`)
-/// — controlled `value` (written back per change, first write at mount),
-/// in-place `secure`/`placeholder` updates for `Dyn` sources only (the
-/// walker's `Reactive::Dynamic` gate), and the focus notifier installed
+/// The `text_input` primitive — controlled `value` (written back per
+/// change, first write at mount), in-place `secure`/`placeholder`
+/// updates for `Dyn` sources only, and the focus notifier installed
 /// after style.
 pub struct TextInputPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
@@ -130,9 +128,8 @@ pub struct TextInputPrim {
     pub ref_fill: Option<Box<dyn FnOnce(TextInputHandle)>>,
 }
 
-/// The `text_area` primitive (`walker/text_input.rs::build_text_area`).
-/// Placeholder/wrap/rows are create-time config (the old element carries
-/// them statically); `value` is the controlled signal.
+/// The `text_area` primitive. Placeholder/wrap/rows are create-time
+/// config; `value` is the controlled signal.
 pub struct TextAreaPrim {
     /// Robot/automation anchor (`test_id = …`). Always present so the
     /// builder setter compiles in every build; read only by the

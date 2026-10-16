@@ -1,41 +1,37 @@
-//! New-core mirrors of the old root's async-reactive primitives —
-//! `resource()` / `mutation()` (`crates/runtime/core/src/{resource,mutation}.rs`).
+//! `resource()` / `mutation()` / `async_reducer()` on the world kernel.
 //!
 //! # Why these are reimplementations, not re-exports
 //!
-//! The old primitives are built ON old-core reactivity: their state
-//! lives in old-arena `Signal`s, their lifetime anchoring rides
-//! old-core `Effect::new` + scope adoption (`persist`), and their async
-//! completions re-enter the graph through `cycle()`. None of that
-//! machinery is live on a new-core mount — an aliased crate calling the
-//! old `resource()` would create state no world effect can subscribe
-//! to (the same class of silent inertness as the old `AnimatedValue::bind`
-//! and `after_ms_scoped`; see `glue::animation` / `scoped_scheduling`).
-//! So the glue grows semantics-faithful mirrors on the world kernel.
+//! `runtime_shared::{resource, mutation, async_reducer}` are built on the
+//! legacy `runtime_shared::reactive` arena: their state lives in
+//! legacy-arena `Signal`s, their lifetime anchoring rides that arena's
+//! `Effect::new` + scope adoption (`persist`), and their async
+//! completions re-enter the graph through `cycle()`. A crate calling them
+//! under a world would create state no world effect can subscribe to (the
+//! same silent inertness as `runtime_shared`'s `AnimatedValue::bind` and
+//! scoped timers; see `glue::animation` / `scoped_scheduling`). These are
+//! semantics-faithful counterparts on the world kernel.
 //!
-//! # New-core anchoring (the part that differs by necessity)
+//! # Anchoring
 //!
 //! - **Creation requires a reactive context.** State slots live in a
 //!   [`World`](runtime_world::World); `resource()`/`mutation()` panic
 //!   outside `World::enter` — the same posture as every other glue
-//!   creation API (the old core allowed thread-lifetime creation
-//!   anywhere; worlds are transient, so "anywhere" has no home).
+//!   creation API (worlds are transient, so there is no thread-lifetime
+//!   home for the state).
 //! - **Lifetime = the registering scope.** Inside a component build the
 //!   ambient collector (`component_scope` / boot `collect_owned`) owns
-//!   the slots — the resource dies when the subtree unrealizes, the old
-//!   "active scope adopts the effect" contract. That holds even when a
-//!   driver effect is what triggered the build: a build runs
-//!   `runtime_world::unanchored`, so a resource created by a navigator
-//!   screen's body belongs to the screen, not to the navigator's command
-//!   effect (which would have freed its slots on the next navigation and
-//!   left the still-mounted screen writing through stale handles).
-//!   Inside an effect BODY (`runtime_world::in_effect()`) the slots are
-//!   collected into a private `Owned` dropped by that effect's
-//!   `on_cleanup` — the old "disposed on the surrounding effect's
-//!   re-run" contract (the `scoped_scheduling` anchoring precedent).
-//!   With no collector the
-//!   slots are world-root-owned: they persist for the world's lifetime,
-//!   the closest analogue of the old `persist()`-outside-a-scope.
+//!   the slots — the resource dies when the subtree unrealizes. That
+//!   holds even when a driver effect is what triggered the build: a
+//!   build runs `runtime_world::unanchored`, so a resource created by a
+//!   navigator screen's body belongs to the screen, not to the
+//!   navigator's command effect (which would free its slots on the next
+//!   navigation and leave the still-mounted screen writing through stale
+//!   handles). Inside an effect BODY (`runtime_world::in_effect()`) the
+//!   slots are collected into a private `Owned` dropped by that effect's
+//!   `on_cleanup` — disposed on the surrounding effect's re-run (the
+//!   `scoped_scheduling` anchoring precedent). With no collector the
+//!   slots are world-root-owned: they persist for the world's lifetime.
 //! - **Async completion is event-boundary work.** The spawned future's
 //!   continuation runs OUTSIDE `World::enter`; its `state.update(..)`
 //!   *stages* into the signal's own world (handles route by world id)
@@ -48,37 +44,36 @@
 //!   use-after-unmount diagnostic — so a completion that lands after
 //!   the owning scope dropped MUST NOT touch the state signal. The
 //!   resource guards with its cancel token (fired by the inner effect's
-//!   cleanup at re-run/teardown, exactly like the old core, where the
-//!   check was belt-and-suspenders and here is load-bearing); the
-//!   mutation carries a liveness sentinel (a dependency-free effect
-//!   whose cleanup flips the flag at scope teardown). Completions after
-//!   the whole `World` died are additionally covered by the kernel's
-//!   "writes to a dead world are silent no-ops" rule.
+//!   cleanup at re-run/teardown — load-bearing here, not just an
+//!   optimization); the mutation carries a liveness sentinel (a
+//!   dependency-free effect whose cleanup flips the flag at scope
+//!   teardown). Completions after the whole `World` died are
+//!   additionally covered by the kernel's "writes to a dead world are
+//!   silent no-ops" rule.
 //!
-//! # Documented semantic divergences (kernel policy, not accidents)
+//! # Semantics to know (kernel policy, not accidents)
 //!
 //! - `refetch()` / `trigger()` / `reset()` **through an unmounted
-//!   handle** panic with the kernel's stale-handle diagnostic (the old
-//!   core's stale-set was a silent no-op). The kernel deliberately
-//!   surfaces use-after-unmount; only *in-flight completions* get the
-//!   silent-drop treatment, because they are not a logic error.
+//!   handle** panic with the kernel's stale-handle diagnostic. The
+//!   kernel deliberately surfaces use-after-unmount; only *in-flight
+//!   completions* get the silent-drop treatment, because they are not a
+//!   logic error.
 //! - **N `refetch()` calls in one event turn coalesce into one fetch**
-//!   (staged counter writes compose; the effect re-runs once per
-//!   flush). The old core issued N fetches whose first N−1 results the
-//!   stale-guard discarded anyway — observable state is identical.
+//!   (staged counter writes compose; the effect re-runs once per flush).
+//!   Observable state is the same as N fetches whose first N−1 results
+//!   the stale-guard discards.
 //! - `ResourceState`/`MutationState` implement `PartialEq` as
 //!   **always-`false`** (see the impl comment) — value comparison of
-//!   state snapshots is not part of the old surface, and the kernel's
-//!   guarded `set` needs the bound.
-//! - The old `From<&ResourceState<T,E>> for NetworkState<T,E>` ad-hoc
-//!   conversions cannot be mirrored (`NetworkState` stays the shared
-//!   runtime-core enum; the impl would be an orphan here). Use
-//!   [`Resource::network_state`] / [`Mutation::network_state`] — the
-//!   projection rules are reproduced there verbatim.
+//!   state snapshots is not supported, and the kernel's guarded `set`
+//!   needs the bound.
+//! - There is no `From<&ResourceState<T,E>> for NetworkState<T,E>`
+//!   (`NetworkState` is the runtime-shared enum; the impl would be an
+//!   orphan here). Use [`Resource::network_state`] /
+//!   [`Mutation::network_state`].
 //!
 //! Gated behind the crate's `async-driver` feature (forwards
-//! `runtime-core/async-driver`) because both primitives depend on
-//! `runtime_shared::driver::spawn_async`, exactly like the old root.
+//! `runtime-shared/async-driver`) because both primitives depend on
+//! `runtime_shared::driver::spawn_async`.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -87,8 +82,8 @@ use std::rc::Rc;
 
 use runtime_shared::driver::spawn_async;
 use runtime_shared::NetworkState;
-// `AsyncStatus<E>` is pure DATA (a 3-variant enum) and is reused verbatim
-// — only the reducer's machinery around it needed a world-kernel mirror.
+// `AsyncStatus<E>` is pure DATA (a 3-variant enum) and is reused as-is
+// — only the reducer's machinery around it is world-kernel specific.
 pub use runtime_shared::AsyncStatus;
 use runtime_world::{collect_owned, in_effect, on_cleanup, signal, Signal};
 
@@ -101,7 +96,7 @@ use crate::glue::Trackable;
 /// Run `make` so the slots it creates die with the registering scope,
 /// per the module-doc rules. Inside an effect run the creations are
 /// collected into a private `Owned` dropped by that effect's cleanup
-/// (old-core "scope adopts, disposes on re-run"); everywhere else the
+/// (disposed on re-run); everywhere else the
 /// ambient collector (or the world root) owns them naturally.
 fn anchor_to_scope<R>(make: impl FnOnce() -> R) -> R {
     if in_effect() {
@@ -176,12 +171,11 @@ impl<T, E> Default for MutationState<T, E> {
 }
 
 // The world kernel requires `T: PartialEq` on every signal (guarded
-// `set`). The old state structs carry unbounded `T`/`E` (a GraphQL
-// `ResponseData` is `Clone` but rarely `PartialEq`), and the old core
-// notified on EVERY state transition (its `update` has no equality
-// guard for unbounded payloads). An always-`false` eq preserves both
-// at once: no bounds leak onto `T`/`E`, and every committed transition
-// notifies — the old contract. This is a notification identity, NOT
+// `set`). The state structs carry unbounded `T`/`E` (a GraphQL
+// `ResponseData` is `Clone` but rarely `PartialEq`), and every state
+// transition must notify. An always-`false` eq gives both at once: no
+// bounds leak onto `T`/`E`, and every committed transition notifies.
+// This is a notification identity, NOT
 // value equality; do not compare state snapshots with `==`.
 impl<T, E> PartialEq for ResourceState<T, E> {
     fn eq(&self, _other: &Self) -> bool {
@@ -195,7 +189,7 @@ impl<T, E> PartialEq for MutationState<T, E> {
 }
 
 /// Shared projection rules for [`Resource::network_state`] /
-/// [`Mutation::network_state`] — verbatim `runtime_shared::network_state`
+/// [`Mutation::network_state`] — the same `runtime_shared::network_state`
 /// precedence: `Loading > Error > Success > `(fallback). The fallback
 /// (`data`/`error` both `None`, not loading) is the caller's
 /// never-settled/never-triggered state.
@@ -225,9 +219,8 @@ fn project<T: Clone, E: Clone>(
 /// `runtime_shared::ResourceCancel` (same fire conditions: dep change /
 /// refetch starting a fresh fetch, or the owning scope tearing down).
 ///
-/// On the old core the completion-side `is_cancelled` check was an
-/// optimization (the sequence guard already discarded stale results).
-/// On the new core it is **load-bearing**: the token is what stops a
+/// The completion-side `is_cancelled` check is **load-bearing**, not an
+/// optimization: the token is what stops a
 /// post-teardown completion from writing through a freed signal slot,
 /// which the kernel treats as a panic-worthy use-after-unmount. Pure
 /// `Rc` machinery — safe to poll from any continuation.
@@ -258,7 +251,7 @@ impl ResourceCancel {
 
     /// Register a callback that runs once on cancellation (already-
     /// cancelled tokens fire it immediately). Bridge to platform abort
-    /// APIs (`AbortController` on wasm) exactly as on the old core.
+    /// APIs (`AbortController` on wasm).
     pub fn on_cancel<F: FnOnce() + 'static>(&self, f: F) {
         if self.inner.cancelled.get() {
             f();
@@ -337,8 +330,8 @@ impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
     }
 
     /// Collapsed [`NetworkState`] view (`Loading > Error > Success`;
-    /// the never-settled fallback is `Loading`, matching the old
-    /// projection — a resource is never `Idle`).
+    /// the never-settled fallback is `Loading` — a resource is never
+    /// `Idle`).
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn network_state(&self) -> NetworkState<T, E> {
         let s = self.state.get();
@@ -347,14 +340,13 @@ impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
 
     /// Re-run the fetcher with the current deps (pull-to-refresh /
     /// retry-after-error). Same cancel-previous + spawn-fresh path as a
-    /// dep change. Divergence note: multiple `refetch()` calls in one
+    /// dep change. Note: multiple `refetch()` calls in one
     /// event turn coalesce into ONE fetch (staged writes compose);
     /// calling through an unmounted handle panics with the kernel's
     /// stale-handle diagnostic (module docs).
     pub fn refetch(&self) {
-        // `update` composes on the staged value — the new-core
-        // equivalent of the old `untrack(get) + set` (update never
-        // tracks, so this is effect-body-safe too).
+        // `update` composes on the staged value (update never tracks, so
+        // this is effect-body-safe too).
         self.refetch_counter.update(|n| n.wrapping_add(1));
     }
 }
@@ -362,7 +354,7 @@ impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
 /// Create a reactive resource — mirror of `runtime_shared::resource` (see
 /// that fn's docs for the authoring contract: `deps` is a [`Trackable`]
 /// re-fetched on change, `fetcher` runs eagerly and receives a
-/// [`ResourceCancel`]). New-core specifics — creation context, lifetime
+/// [`ResourceCancel`]). World-kernel specifics — creation context, lifetime
 /// anchoring, completion staging, teardown safety — are in the module
 /// docs. Panics outside `World::enter`.
 pub fn resource<D, T, E, Fut, F>(deps: D, fetcher: F) -> Resource<T, E>
@@ -402,7 +394,7 @@ where
             *active_cancel.borrow_mut() = Some(cancel.clone());
 
             // Mark loading; clear stale error; KEEP previous data (no
-            // empty-flash on refetch — old-core contract).
+            // empty-flash on refetch).
             state.update(|s| ResourceState {
                 data: s.data.clone(),
                 error: None,
@@ -457,7 +449,7 @@ where
 /// mirror of `runtime_shared::Mutation` (fires only on
 /// [`trigger`](Self::trigger)/[`run`](Self::run); the write-side
 /// sibling of [`Resource`]). `Clone`, not `Copy` — it owns the handler
-/// closure via `Rc`, same as the old core.
+/// closure via `Rc`.
 pub struct Mutation<I, T, E> {
     state: Signal<MutationState<T, E>>,
     /// Trigger sequence guard: out-of-order completions (slow first
@@ -513,7 +505,7 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
     }
 
     /// Collapsed [`NetworkState`] view; a never-triggered mutation
-    /// projects to `Idle` (old-core precedence rules).
+    /// projects to `Idle`.
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn network_state(&self) -> NetworkState<T, E> {
         let s = self.state.get();
@@ -577,8 +569,8 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
     }
 
     /// Clear back to the never-triggered default and invalidate any
-    /// in-flight trigger. `set_always` for the same reason as the old
-    /// core: a reset notifying its subscribers is the contract (and the
+    /// in-flight trigger. `set_always`: a reset notifying its subscribers
+    /// is the contract (and the
     /// state's `PartialEq` is a notification identity anyway).
     pub fn reset(&self) {
         self.sequence.set(self.sequence.get().wrapping_add(1));
@@ -600,7 +592,7 @@ impl<I: 'static, T: Clone + 'static, E: Clone + 'static> Mutation<I, T, E> {
 
 /// Create a callback-driven async primitive — mirror of
 /// `runtime_shared::mutation` (see that fn's docs for the authoring
-/// contract). New-core specifics: panics outside `World::enter` (its
+/// contract). World-kernel specifics: panics outside `World::enter` (its
 /// state signal needs a world), and its lifetime anchors to the
 /// registering scope like [`resource`] — clones share the one state
 /// slot, so a `Mutation` captured by a longer-lived closure must not be
@@ -627,25 +619,20 @@ where
 //
 // Mirror of `runtime_shared::async_reducer` on the world kernel, for the
 // same reason as `resource` / `mutation`: the shared original's status
-// signal is an old-arena `Signal`, so an aliased crate calling it on a
-// world mount would create state no world effect can subscribe to.
+// signal is a legacy-arena `Signal`, so calling it under a world would
+// create state no world effect can subscribe to.
 //
-// Divergences from the shared original, all forced by the kernel and all
+// Differences from the shared original, all forced by the kernel and all
 // shared with `mutation` (see the module docs):
 //
 // - creation requires `World::enter`; lifetime is the registering scope;
 // - no `cycle(..)` wrap around the apply. On this kernel `state.update`
 //   STAGES and the flush commits, so the state+status writes coalesce
-//   into one fan-out by construction. The old wrap was also load-bearing
-//   for re-entrancy (apply writing a sibling signal while `state`'s box
-//   was moved out of the arena); staging removes that hazard entirely —
-//   there is no moved-out box to re-enter;
+//   into one fan-out by construction, and there is no moved-out arena
+//   box for an apply writing a sibling signal to re-enter;
 // - `E: PartialEq` is additionally required, because `AsyncStatus<E>`
 //   lives in a world signal and world storage is `PartialEq`-bounded.
-//   The old core needed only `Clone` and used `set_always` throughout;
-//   the mirror keeps the always-notify contract with `set_always`, so
-//   the observable behavior is unchanged for any `E` that can satisfy
-//   the bound.
+//   `set_always` keeps the always-notify contract.
 
 /// Handle for an [`async_reducer`]. `Clone` so it can be captured into
 /// multiple event handlers; cheap (one `Rc` clone per call).
@@ -659,7 +646,7 @@ pub struct AsyncReducer<I, E> {
     live: Rc<Cell<bool>>,
     /// All the work — sequence bump, status flip, perform-and-apply —
     /// in one closure, which type-erases `R` and `S` away from the
-    /// public handle type. Exactly the old core's shape.
+    /// public handle type.
     #[allow(clippy::type_complexity)]
     run_fn: Rc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<(), E>>>>>,
 }
@@ -729,8 +716,8 @@ impl<I: 'static, E: Clone + PartialEq + 'static> AsyncReducer<I, E> {
 
 /// Construct an async reducer over a caller-owned `Signal<S>` — mirror
 /// of `runtime_shared::async_reducer` (see that fn's docs for the
-/// authoring contract and the design rationale). New-core specifics are
-/// in the section comment above this item.
+/// authoring contract and the design rationale). World-kernel specifics
+/// are in the section comment above this item.
 pub fn async_reducer<S, I, R, E, F, Fut, A>(
     state: Signal<S>,
     perform: F,

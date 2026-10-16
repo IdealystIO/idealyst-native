@@ -10,7 +10,7 @@ use runtime_scene::Host;
 
 /// The accessibility surface that does NOT live on `create_*` prop
 /// bags: reactive prop-bag replacement, live-region announcements, and
-/// the GPU-backend parallel semantics tree. Serves the walker's
+/// the GPU-backend parallel semantics tree. Serves the handlers'
 /// reactive a11y effect and the `announce()` free function's installer.
 pub trait A11yOps: Host {
     /// Replace the accessibility prop bag on an existing node.
@@ -59,7 +59,7 @@ pub trait AnimationOps: Host {
 
 /// Dev/robot-facing geometry and introspection: frames in three
 /// coordinate systems, native render-tree reads, and real-surface
-/// screenshots. Serves `walker.rs`'s robot verbs (`frame`,
+/// screenshots. Serves the robot verbs (`frame`,
 /// `absolute_frame`, `device_frame`, `introspect_native`,
 /// `capture_screenshot`) and overlay anchoring.
 pub trait IntrospectionOps: Host {

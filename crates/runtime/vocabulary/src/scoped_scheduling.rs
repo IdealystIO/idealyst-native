@@ -1,35 +1,25 @@
-//! New-core scope-anchored scheduling — the glue shadows for the old
-//! core's `after_ms_scoped` / `raf_loop_scoped` / `session::after_ms`.
+//! Scope-anchored scheduling: `after_ms_scoped`, `raf_loop_scoped`, and
+//! `session::after_ms` (re-exported through `glue`).
 //!
-//! # Why the old fns can't be re-exported (the "welcome never animates"
-//! bug)
-//!
-//! The old-core scoped variants anchor their cancellation through
-//! old-core `reactive::on_cleanup`, which OUTSIDE any old-core scope
-//! silently drops its callback immediately — and a new-core build never
-//! has an old-core scope active. Dropping the callback drops the
-//! captured `ScheduledTask` / `RafLoop` handle, whose `Drop` cancels
-//! the timer/loop, so on the new core the old `after_ms_scoped` /
-//! `raf_loop_scoped` were **inert**: the welcome app's `timeline!` acts
-//! never fired and its raf-driven sun/planet pulse never started when
-//! the embedded simulator first mounted on a new-core graph. (Same
-//! root cause as glue's `AnimatedValue::bind` shadow — see the module
-//! comment above `glue::animation`.)
+//! These must anchor to the world's scopes, not to the legacy
+//! `runtime_shared::reactive::on_cleanup`: outside a legacy scope that
+//! drops its callback immediately, which drops the captured
+//! `ScheduledTask` / `RafLoop` and cancels it — so a timer or loop
+//! registered through the shared fns would never fire (the "welcome
+//! never animates" bug: `timeline!` acts and the raf-driven pulse never
+//! started). Same cause as glue's `AnimatedValue::bind` wrapper — see the
+//! module comment above `glue::animation`.
 //!
 //! # Anchoring model
 //!
 //! An [`Anchor`] owns the schedule handles registered under it and a
 //! `dead` flag every deferred callback checks before running (the
 //! browser can dispatch a timer already queued for the current tick
-//! even after cancellation — the old core's teardown-safety flag,
-//! reproduced here). Where the anchor's `kill` comes from mirrors the
-//! old capture rules:
+//! even after cancellation). Where the anchor's `kill` comes from:
 //!
 //! - **Inside an effect run** (`runtime_world::in_effect()`): killed via
 //!   `runtime_world::on_cleanup` — the effect's next re-run or its
-//!   owner's drop cancels every pending dispatch, exactly the old
-//!   "timers die when the surrounding `effect!` re-runs / the Owner
-//!   drops" contract.
+//!   owner's drop cancels every pending dispatch.
 //! - **Inside a build** (`runtime_world::is_entered()`, no effect
 //!   running): killed by a dependency-free keepalive effect owned by
 //!   the ambient collector (`component_scope` / the boot's
@@ -42,19 +32,16 @@
 //!   would otherwise be killed by the driver's next re-run while the
 //!   subtree was still mounted.
 //! - **Inside a deferred body registered here** (a nested
-//!   `raf_loop_scoped` inside a `session::after_ms` callback — the
-//!   welcome app's exact shape): the firing callback re-pushes its
-//!   registering anchor onto a thread-local stack, so nested `*_scoped`
-//!   calls attach to the SAME lifetime — the old contract's "the
-//!   deferred callback re-enters the registering scope when it fires".
-//! - **Outside all of the above**: no-op, mirroring the old "outside
-//!   any reactive scope the scoped variants are inert" posture. Use
-//!   `after_ms_detached` / raw `raf_loop` for detached work.
+//!   `raf_loop_scoped` inside a `session::after_ms` callback): the
+//!   firing callback re-pushes its registering anchor onto a
+//!   thread-local stack, so nested `*_scoped` calls attach to the SAME
+//!   lifetime.
+//! - **Outside all of the above**: no-op. Use `after_ms_detached` / raw
+//!   `raf_loop` for detached work.
 //!
-//! No `cycle()` wrap and no busy-skip (old-core arena concerns): on the
-//! new kernel, writes staged by a deferred body commit via the host
-//! scheduler's post-dispatch flush hook, and staging is re-entrancy
-//! safe by construction.
+//! No `cycle()` wrap and no busy-skip: writes staged by a deferred body
+//! commit via the host scheduler's post-dispatch flush hook, and staging
+//! is re-entrancy safe by construction.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -124,7 +111,7 @@ impl Drop for KillOnDrop {
 
 /// Resolve the anchor for a `*_scoped` registration at THIS call site,
 /// per the module-doc capture rules. `None` = "outside any scope" —
-/// the caller must be inert (old-core parity).
+/// the caller must be inert.
 fn current_anchor() -> Option<Anchor> {
     if let Some(top) = DEFERRED.with(|d| d.borrow().last().cloned()) {
         return Some(top);
@@ -142,10 +129,9 @@ fn current_anchor() -> Option<Anchor> {
         // idempotent, so whichever lifetime ends first wins and the
         // other guard's later drop is a no-op.
         //
-        // Builds no longer reach this branch at all (they run
-        // `unanchored`, so they take the collector-only case below);
-        // this stays as the correct answer for effect-body code that
-        // creates a collector by hand.
+        // Builds never reach this branch (they run `unanchored`, so they
+        // take the collector-only case below); it covers effect-body
+        // code that creates a collector by hand.
         if runtime_world::in_collector() {
             own_kill_guard_in_collector(&anchor);
         }
@@ -190,13 +176,11 @@ fn with_deferred_anchor(anchor: &Anchor, f: impl FnOnce()) {
     f();
 }
 
-/// New-core mirror of `runtime_shared::scheduling::after_ms_scoped` — a
-/// one-shot timer that dies with the registering scope (see the module
+/// A one-shot timer that dies with the registering scope (see the module
 /// docs for the exact anchor rules).
 pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     let Some(anchor) = current_anchor() else {
-        // Outside any scope: inert, mirroring the old core's documented
-        // "the captured task is dropped immediately" posture.
+        // Outside any scope: inert (module docs).
         return;
     };
     let anchor_cb = anchor.clone();
@@ -209,8 +193,7 @@ pub fn after_ms_scoped<F: FnOnce() + 'static>(delay_ms: i32, f: F) {
     anchor.own(task);
 }
 
-/// New-core mirror of `runtime_shared::scheduling::raf_loop_scoped` — a
-/// recurring animation-frame loop that dies with the registering scope.
+/// A recurring animation-frame loop that dies with the registering scope.
 pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     let Some(anchor) = current_anchor() else {
         return;
@@ -225,12 +208,10 @@ pub fn raf_loop_scoped<F: FnMut() + 'static>(mut f: F) {
     anchor.own(handle);
 }
 
-/// New-core mirror of `runtime_shared::session::after_ms` — schedule
-/// relative to the session epoch (already-elapsed offsets fire on the
-/// next tick), anchored like [`after_ms_scoped`]. The epoch/registry
-/// machinery is the shared old-core `session` module (pure
-/// thread-local state, core-agnostic); only the scope anchoring
-/// diverges — which is the entire reason this shadow exists.
+/// Schedule relative to the session epoch (already-elapsed offsets fire
+/// on the next tick), anchored like [`after_ms_scoped`]. The epoch comes
+/// from `runtime_shared::session` (plain thread-local state); only the
+/// scope anchoring differs from `runtime_shared::session::after_ms`.
 pub fn session_after_ms(at_session_ms: u64, body: impl FnOnce() + 'static) {
     let elapsed_us =
         runtime_shared::time::now_micros().saturating_sub(runtime_shared::session::epoch_micros());

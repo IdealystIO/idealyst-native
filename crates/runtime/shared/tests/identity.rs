@@ -1,14 +1,12 @@
 //! `runtime_shared::identity` — `Identity` / `use_id` / `use_id_keyed` /
 //! `hash_key`, exercised through the crate's PUBLIC paths.
 //!
-//! RELOCATED from `runtime-core/tests/identity.rs` (deletion baseline
-//! §4.2, SV-R). `shared/src/identity.rs` already carries 16 inline tests
-//! and the two suites overlap heavily, but four cases here have no inline
-//! twin — `nested_with_current_identity`, `use_id_outside_scope_is_stable`,
-//! `hash_key_is_deterministic`, `unidentified_is_distinct` — so the file
-//! is relocated whole rather than triaged case by case. The inline tests
-//! reach private items; this one reaches only what the crate exports,
-//! which is the half that matters to the facade's author surface.
+//! Overlaps `shared/src/identity.rs`'s inline tests, but four cases here
+//! have no inline twin — `nested_with_current_identity`,
+//! `use_id_outside_scope_is_stable`, `hash_key_is_deterministic`,
+//! `unidentified_is_distinct`. The inline tests reach private items; this
+//! one reaches only what the crate exports, which is the half that matters
+//! to the author surface.
 //!
 //! `current_identity()` returns the identity the renderer is emitting
 //! under; `with_current_identity(id, f)` runs `f` with `id` active.

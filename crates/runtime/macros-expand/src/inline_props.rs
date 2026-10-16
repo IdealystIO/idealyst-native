@@ -229,15 +229,13 @@ fn emit_glue(item_fn: &ItemFn, fields: &[Field], attr: &ComponentAttr, import_ke
             // `.into()` pinned by the field type — the same coercion
             // `#[component(default(...))]` and the `ui!` call site apply.
             Some(expr) => quote! { #name: (#expr).into(), },
-            // `new-core`: `runtime_world`'s signal handles have no
-            // `Default` (the old core's detached-sentinel Default can't
-            // be reproduced for a foreign type). A signal-typed prop's
+            // `runtime_world`'s signal handles have no `Default` (and one
+            // can't be added to a foreign type). A signal-typed prop's
             // struct-update base mints a fresh default-valued signal in
             // the ambient scope instead (`glue::__default_signal_prop`,
-            // reached through the retargeted path). Divergence, on
-            // purpose and documented (glue docs): OMITTING a required
-            // signal prop reads a fresh default-valued signal here,
-            // where the old core panicked on first read.
+            // reached through the retargeted path), so OMITTING a
+            // required signal prop reads a fresh default-valued signal
+            // (glue docs).
             None if is_signal_handle_type(&f.ty) => {
                 quote! { #name: ::runtime_core::__default_signal_prop(), }
             }
@@ -612,7 +610,7 @@ mod tests {
             quote! { fn Panel(id: u32) -> Element { body() } },
         );
         // Chunk boundary: the readable split-module name + the attribute
-        // path both cores share (retargeted under new-core).
+        // path (retargeted by `finish`).
         assert!(glue.contains("wasm_split(__idealyst_lazy_Panel)"), "{glue}");
         assert!(
             glue.contains("use::runtime_core::__wasm_splitaswasm_split"),

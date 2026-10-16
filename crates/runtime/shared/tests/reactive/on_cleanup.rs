@@ -130,8 +130,7 @@ fn cleanup_does_not_double_fire() {
 ///
 /// Inside a render scope (where scope-owned `effect! { … }` slots are
 /// adopted by the active `Scope`), teardown is deferred to the scope
-/// drop instead. That path is covered by the walker tests; this test
-/// pins the standalone-handle behavior.
+/// drop instead; this test pins the standalone-handle behavior.
 #[test]
 fn nested_effect_outside_scope_drops_at_block_end() {
     let parent_trigger: Signal<i32> = signal(0);

@@ -1,10 +1,9 @@
 //! The TypeId-keyed handler [`Registry`] — the scene's ONLY mount path.
 //!
-//! Generalizes runtime-core's `ExternalRegistry` (external.rs) into the
-//! universal primitive contract: every payload type — framework-shipped or
-//! third-party — registers one handler per backend, type erasure is paid
+//! The universal primitive contract: every payload type — framework-shipped
+//! or third-party — registers one handler per backend, type erasure is paid
 //! at exactly one line (inside [`Registry::register`]), and user-facing
-//! constructors stay fully typed. "External" stops being a concept.
+//! constructors stay fully typed. There is no separate "external" path.
 //!
 //! # Two registration windows
 //!

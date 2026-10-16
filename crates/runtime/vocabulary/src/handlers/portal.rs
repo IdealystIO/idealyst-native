@@ -1,9 +1,9 @@
-//! Render-elsewhere handler: `portal` — port of `walker/portal.rs::build`
-//! (which also serves the `overlay` / `anchored_overlay` compositions,
+//! Render-elsewhere handler: `portal` (which also serves the `overlay` /
+//! `anchored_overlay` compositions,
 //! since those lower to a portal item at build time — see
 //! [`crate::builders::overlay`]).
 //!
-//! Sequence (walker order preserved): `create_portal` → children →
+//! Sequence: `create_portal` → children →
 //! attach_style → ref-fill → ScreenNav visibility effect →
 //! `release_portal` teardown guard.
 
@@ -50,8 +50,7 @@ where
     // this, an overlay (modal / popover / click-away catcher) opened on
     // one screen keeps floating over the next. `ScreenNav` is provided
     // by the nearest navigator's screen mount; absent (a portal outside
-    // any navigator) there's nothing to track, so we skip — the walker's
-    // exact gating.
+    // any navigator) there's nothing to track, so we skip.
     //
     // The `is_alive` probe is the consumer-side half of the stale-context
     // fix (`realize_screen`'s owned `ctx_scope` is the other). `ScreenNav`
@@ -73,13 +72,13 @@ where
     }
 
     // `release_portal` when the surrounding subtree drops (host's
-    // open-state signal flipped, parent rebuilds, owner teardown) — the
-    // old `PortalHandleCleanup` RAII guard. Release goes through the
+    // open-state signal flipped, parent rebuilds, owner teardown).
+    // Release goes through the
     // try-borrow-else-microtask dance because this teardown can run
     // while the backend is already mutably borrowed (e.g. a virtualizer
     // release synchronously dropping row scopes that contain a portal —
     // the iOS "SIGABRT already-borrowed navigating away from a docs
-    // page" crash the old `release_or_defer` exists to prevent).
+    // page" crash).
     let backend_c = backend.clone();
     let node_c = node.clone();
     on_teardown(move || match backend_c.try_borrow_mut() {

@@ -419,10 +419,10 @@ impl Link for Poisonable {
     }
 }
 
-/// Regression: a reply from a bundle that can no longer be called used to
+/// Regression: a reply from a bundle that can no longer be called must not
 /// panic the app ("bundle is gone, but a node it built is still live") —
-/// so one panic in a bundle's handler took the whole app down with it.
-/// Every reply site now falls back: getters keep their last value, holes
+/// one panic in a bundle's handler would take the whole app down with it.
+/// Every reply site falls back: getters keep their last value, holes
 /// and keyed rows render nothing, handlers do nothing, style getters
 /// resolve to defaults. Driven here through every node kind the codec
 /// carries, after the link is cut.

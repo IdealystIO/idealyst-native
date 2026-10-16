@@ -99,7 +99,7 @@ fn every_placement_puts_content_where_web_does() {
     }
 }
 
-/// REGRESSION (CrewForge kiosk, 2026-10-15): a click-through overlay's
+/// REGRESSION (CrewForge kiosk): a click-through overlay's
 /// portal style (`pointer_events: None` only) must not move the content.
 /// Backends layer it over the placement; replacing the placement with it
 /// reset `justify_content` and pulled a `Bottom` toast host to the top.

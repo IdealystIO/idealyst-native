@@ -12,13 +12,13 @@
 //! - [`Role`] — semantic widget role (`Button`, `Slider`, …).
 //! - [`AccessibilityTraits`] — orthogonal per-element state flags
 //!   (`SELECTED`, `DISABLED`, …).
-//! - [`AccessibilityProps`] — the shape passed to every `Backend::create_*`.
+//! - [`AccessibilityProps`] — the shape passed to every backend `create_*`.
 //! - [`AccessibilityAction`] — custom rotor-menu / TalkBack-action
 //!   entries.
 //! - [`AccessibilityTree`] / [`AccessibilityNode`] — the parallel
 //!   semantics tree GPU backends produce.
-//! - [`announce_for_accessibility`] (Backend trait method) — global
-//!   live-region announcement hook.
+//! - `A11yOps::announce_for_accessibility` (capability trait method in
+//!   `runtime-vocabulary`) — global live-region announcement hook.
 
 use std::rc::Rc;
 
@@ -141,14 +141,12 @@ bitflags::bitflags! {
 // ---------------------------------------------------------------------------
 
 /// Priority for live-region announcements when an [`AccessibilityProps`]
-/// label changes or when [`Backend::announce_for_accessibility`] is
+/// label changes or when `A11yOps::announce_for_accessibility` is
 /// called.
 ///
 /// `Polite` queues behind the user's current screen-reader focus;
 /// `Assertive` interrupts. Maps directly to ARIA `aria-live` values
 /// and to per-platform announcement notification priority keys.
-///
-/// [`Backend::announce_for_accessibility`]: crate::Backend::announce_for_accessibility
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LiveRegionPriority {
@@ -216,7 +214,7 @@ pub struct AccessibilityProps {
     /// Author-supplied a11y label. `None` means "derive from the
     /// primitive's natural content" (Button's visible label, Text's
     /// content, Image's `alt`). Backends implement derivation; the
-    /// walker doesn't pre-fill.
+    /// framework doesn't pre-fill.
     ///
     /// Setting an explicit `Some(...)` opts the element into live-region
     /// announce-on-change semantics: if a reactive update changes this
@@ -291,7 +289,7 @@ impl AccessibilityProps {
 // AccessibilityTree — parallel semantics tree produced by GPU backends.
 // ---------------------------------------------------------------------------
 
-/// Parallel semantics tree returned by [`Backend::dump_accessibility_tree`]
+/// Parallel semantics tree returned by `A11yOps::dump_accessibility_tree`
 /// — only GPU/canvas backends implement it. Native widget backends
 /// (iOS, Android, web, macOS) return `None` because their a11y data
 /// lives on the widget; the platform AX walker traverses the widget
@@ -304,8 +302,6 @@ impl AccessibilityProps {
 /// Design inspired by Flutter's [`SemanticsNode`](https://api.flutter.dev/flutter/semantics/SemanticsNode-class.html)
 /// (parallel semantics tree, traversal order distinct from paint
 /// order). See `docs/accessibility-design.md` §5.
-///
-/// [`Backend::dump_accessibility_tree`]: crate::Backend::dump_accessibility_tree
 #[derive(Clone, Debug)]
 pub struct AccessibilityTree {
     pub root: AccessibilityNode,
@@ -358,16 +354,14 @@ pub struct AccessibilityRect {
 
 /// The set of primitive kinds the framework ships. Used by
 /// [`default_role`] to map a primitive variant to its default a11y
-/// role without coupling this module to `Element` (which lives in
-/// a sibling module and depends on a lot of unrelated machinery).
+/// role without coupling this module to the scene's element payloads.
 ///
-/// Kept in lockstep with `crate::element::Element`'s variants —
-/// see the `.claude/audits/accessibility-default-role.md` audit (added
-/// in phase 8) which scans for new `Element` variants without
-/// matching entries here. Control-flow variants (`When`, `Switch`,
-/// `Repeat`) are intentionally absent: they're transparent containers
-/// with no a11y identity of their own; the walker reads their inner
-/// primitive's kind instead.
+/// Kept in lockstep with the builtin primitive set — the
+/// `.claude/audits/accessibility-completeness.md` audit scans for
+/// primitives without matching entries here. Control-flow constructs
+/// (`when`, `switch`, `for`) are intentionally absent: they're
+/// transparent containers with no a11y identity of their own; their
+/// inner primitive's kind is used instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PrimitiveKind {

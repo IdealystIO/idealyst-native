@@ -1,9 +1,10 @@
-//! Backend batching for `Element::Repeat`.
+//! Backend batching for the static `for i in 0..n` repeat.
 //!
-//! The walker accumulates a small command queue when expanding a
-//! Repeat whose rows match a "batchable" shape (View + Text + static
-//! style). The whole queue is then submitted to the backend in a
-//! single FFI call via [`Backend::execute_batch`]. The backend
+//! The vocabulary's `repeat` many-handler accumulates a small command
+//! queue when expanding a repeat whose rows match a "batchable" shape
+//! (View + Text + static style). The whole queue is then submitted to
+//! the backend in a single FFI call via
+//! `runtime_vocabulary::caps::BatchOps::execute_batch`. The backend
 //! materializes the structural ops, applies pre-minted classes, and
 //! returns the resulting `Self::Node`s indexed by the `local_id` each
 //! op referenced.
@@ -28,10 +29,10 @@ use std::rc::Rc;
 
 use crate::style::StyleRules;
 
-/// One structural operation queued for [`Backend::execute_batch`].
+/// One structural operation queued for `BatchOps::execute_batch`.
 ///
 /// `local_id` / `node` / `parent` / `child` are dense `u32` indices
-/// into the batch's local node table — the walker hands these out
+/// into the batch's local node table — the batch builder hands these out
 /// monotonically as it queues ops, and the backend returns a parallel
 /// `Vec<Self::Node>` indexed by them. They are NOT framework
 /// `NodeId`s and are not stable beyond the lifetime of one
@@ -42,11 +43,11 @@ pub enum BatchOp {
     CreateView { local_id: u32 },
     /// Create a text node with the given static content.
     CreateText { local_id: u32, content: String },
-    /// Apply a static style to a previously-created node. The walker
+    /// Apply a static style to a previously-created node. The builder
     /// supplies the pre-minted backend-side class identifier as
     /// `class_name` (e.g. the web backend's CSS class name). Backends
     /// that don't key styles by name can ignore this op — the
-    /// walker also keeps the resolved `StyleRules` on hand for
+    /// builder also keeps the resolved `StyleRules` on hand for
     /// fallback paths, but the web backend reads only `class_name`
     /// inside the batch's tight loop.
     ApplyStyleStatic {
@@ -62,17 +63,17 @@ pub enum BatchOp {
 
 /// A batch of structural commands to execute in one FFI round-trip.
 ///
-/// Built by the walker as it expands a `Element::Repeat` whose
+/// Built by the `repeat` handler as it expands a static repeat whose
 /// rows match the batchable shape (View + Text + static style, no
 /// other primitives). Backends that opt in via
-/// [`Backend::supports_batched_repeat`] receive this batch and
+/// `BatchOps::supports_batched_repeat` receive this batch and
 /// return one `Self::Node` per distinct `local_id` (size =
 /// [`node_count`](Self::node_count)).
 pub struct BackendBatch {
     pub ops: Vec<BatchOp>,
     /// Number of distinct `local_id` values referenced by `ops`. Used
     /// by backends to size their return Vec and pre-allocate the
-    /// local→real-node map. The walker fills this as it builds the
+    /// local→real-node map. The builder fills this as it builds the
     /// batch (one increment per `CreateView` / `CreateText`).
     pub node_count: u32,
 }
@@ -111,14 +112,14 @@ impl Default for BackendBatch {
 #[cfg(test)]
 mod tests {
     //! Tests for the batch protocol — small, but a few invariants
-    //! callers (the walker, backend impls) depend on:
+    //! callers (the batch builder, backend impls) depend on:
     //!
     //! - `next_id` allocates strictly monotonically from 0 on a fresh
-    //!   batch, matching the walker's "local_ids index into the
+    //!   batch, matching the builder's "local_ids index into the
     //!   returned `Vec<Self::Node>`" contract.
     //! - `with_capacity(ops, nodes)` seeds `node_count` to `nodes`,
     //!   so subsequent `next_id`s start at `nodes` — letting backends
-    //!   that pre-mint placeholder nodes interleave with the walker
+    //!   that pre-mint placeholder nodes interleave with the builder
     //!   without id collisions.
     //! - The `ops` Vec capacity is a hint, not a cap — pushes past
     //!   the initial capacity are allowed (just slower if they
@@ -174,7 +175,7 @@ mod tests {
     #[test]
     fn ops_capacity_is_a_hint_not_a_cap() {
         // `with_capacity(3, …)` hints 3 ops; pushing 10 must still
-        // work without panic. The walker over-allocates in
+        // work without panic. The builder over-allocates in
         // production paths but small-batch cases might under-shoot.
         let mut batch = BackendBatch::with_capacity(3, 0);
         for _ in 0..10 {
@@ -209,7 +210,7 @@ mod tests {
 
     #[test]
     fn next_id_advances_node_count_in_lockstep() {
-        // The walker uses `node_count` as both "how many slots the
+        // The builder uses `node_count` as both "how many slots the
         // backend should pre-allocate" and "the value of the next
         // local_id". `next_id` must keep these in sync.
         let mut batch = BackendBatch::new();

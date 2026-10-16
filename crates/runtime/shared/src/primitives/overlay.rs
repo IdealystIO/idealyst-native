@@ -1,13 +1,12 @@
-//! `overlay()` and `anchored_overlay()` — compositions on top of
-//! [`primitives::portal`]. These aren't framework primitives; they're
-//! builders that lower to `Element::Portal` at conversion time,
-//! adding the backdrop wiring around the caller's children.
+//! Shared types for `overlay()` and `anchored_overlay()` — compositions on
+//! top of the portal primitive. These aren't framework primitives; the
+//! builders (in `runtime_vocabulary::builders::portal`) lower to a portal
+//! item, adding the backdrop wiring around the caller's children.
 //!
 //! Defaults baked in here are deliberate UX choices for the common
 //! cases (centered modal with dismiss-on-tap backdrop; popover with
 //! no backdrop). Authors who want non-default behavior either chain
-//! the builder methods or reach for [`portal()`](super::portal::portal)
-//! directly and assemble their own backdrop + content children.
+//! the builder methods or reach for `portal()` directly and assemble their own backdrop + content children.
 
 
 // =============================================================================
@@ -37,37 +36,3 @@ pub enum BackdropMode {
     /// No scrim at all. The viewport behind stays interactive.
     None,
 }
-
-// =============================================================================
-// overlay() — viewport-anchored composition
-// =============================================================================
-
-
-
-
-
-
-
-
-// =============================================================================
-// anchored_overlay() — element-anchored composition
-// =============================================================================
-
-
-// NOTE: `anchored_overlay` has no `click_through` — popovers, tooltips,
-// dropdowns and context menus are content-sized (not full-strip), so their
-// root only covers what they render; there's no empty band to pass through.
-// The shared lowering always receives `click_through: false` for it below.
-
-
-
-
-
-
-
-// =============================================================================
-// Lowering — shared between both compositions
-// =============================================================================
-
-
-

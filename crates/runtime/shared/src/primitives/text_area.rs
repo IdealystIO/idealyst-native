@@ -79,7 +79,7 @@ pub trait TextAreaOps {
 /// font's single-line height), and `v_pad` (the per-edge vertical padding) from
 /// its OWN real metrics, then calls this so the `min_rows`/`max_rows` → pixel
 /// conversion is identical and uses each platform's true line height instead of
-/// an estimate (the old idea-ui guess).
+/// an estimate.
 ///
 /// - floors at `max(1, min_rows)` lines so an empty box is never shorter than
 ///   its resting row count;

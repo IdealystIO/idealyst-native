@@ -1,17 +1,14 @@
-//! Code-splitting handler: `lazy` — the old `walker/lazy.rs` build
-//! path re-expressed on the new core, invariant for invariant.
+//! Code-splitting handler: `lazy`.
 //!
 //! # Shape (and why it is NOT a Dyn hole)
 //!
 //! One container view (`create_view` — the "lazy-boundary wrapper
 //! div") whose children are swapped **imperatively** between the three
-//! states (loading / chunk body / error), exactly like the old walker.
-//! A scene `Dyn` hole would nest the states under a reactive anchor on
-//! anchored hosts (`<div style="display: contents">` on SSR/hydrate),
-//! which the old core does not emit — the imperative swap keeps the
-//! node stream byte-identical across cores (the website SSG parity
-//! gate) and keeps a future hydration adoption of lazy boundaries
-//! cursor-compatible with old-core SSR output.
+//! states (loading / chunk body / error). A scene `Dyn` hole would nest
+//! the states under a reactive anchor on anchored hosts
+//! (`<div style="display: contents">` on SSR/hydrate); the imperative
+//! swap keeps that extra node out of the SSG output and keeps hydration
+//! adoption of lazy boundaries cursor-compatible with the SSR output.
 //!
 //! # Ownership + async discipline
 //!
@@ -24,11 +21,9 @@
 //!   bumps a `tick` signal (handle-routed staged write — legal from a
 //!   naked executor task). The swap effect, owned by the enclosing
 //!   subtree, does all construction/realization when the flush driver
-//!   commits the tick. Teardown cancellation is therefore free: once
-//!   the enclosing `Realized` drops the swap effect, a late-resolving
-//!   load bumps a signal nobody observes (the old walker needed an
-//!   explicit `cancelled` flag + `ScopedLoad` because its continuation
-//!   built directly into the container).
+//!   commits the tick. Teardown cancellation needs only a `cancelled`
+//!   flag flipped by a teardown probe: a late-resolving load checks it
+//!   and drops its outcome instead of bumping the (freed) tick.
 //! - Chunk-load completion reaches the UI via the platform's installed
 //!   dispatch hook (web: `HookedFuture` fires the flush after every
 //!   executor poll) — the flush-driver discipline; no flush is
@@ -36,11 +31,9 @@
 //!
 //! # SSR
 //!
-//! `LifecycleOps::renders_lazy_chunks()` is the same gate the old
-//! walker consulted: when `false` (SSR/SSG), the placeholder realizes
-//! statically into the container — no signals, no effects, no spawn —
-//! so the server bytes are the untouched loading UI, identical to the
-//! old core's output.
+//! When `LifecycleOps::renders_lazy_chunks()` is `false` (SSR/SSG), the
+//! placeholder realizes statically into the container — no signals, no
+//! effects, no spawn — so the server bytes are the untouched loading UI.
 
 #[cfg(feature = "async-driver")]
 use std::cell::{Cell, RefCell};
@@ -119,7 +112,7 @@ fn with_robot_parent<R>(_parent: &RobotParent, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Mount a `lazy` boundary — port of `walker/lazy.rs::build`.
+/// Mount a `lazy` boundary.
 pub fn mount_lazy<H>(cx: &mut MountCx<'_, H>, prim: LazyPrim, _children: Vec<Element>) -> H::Node
 where
     H: ViewOps + LifecycleOps + StyleServices,
@@ -133,8 +126,8 @@ where
     // ALWAYS styled. An unstyled container is a plain block box that
     // breaks the parent's flex chain — the route body inside collapses
     // to 0 px and its toolbar overflows into an ancestor that swallows
-    // every click (`lazy_boundary_fill_rules` docs, CrewForge
-    // FRAMEWORK-NOTES #116). The default is the outlet-style fill
+    // every click (`lazy_boundary_fill_rules` docs; seen in CrewForge).
+    // The default is the outlet-style fill
     // contract; an author `style` replaces it wholesale, the same
     // one-source-of-truth rule every other view follows.
     let mut container = backend.borrow_mut().create_view(&prim.a11y);
@@ -147,7 +140,7 @@ where
     let placeholder = prim.placeholder;
 
     // Fire `Loading` synchronously at mount so author UI sees a
-    // consistent first event on every backend (walker contract).
+    // consistent first event on every backend.
     if let Some(cb) = on_state.as_ref() {
         cb(LazyState::Loading);
     }
@@ -222,8 +215,8 @@ where
         // Swap the container to the state UI `build` produces. Anchored
         // dispose order: old scope drops FIRST, then the container
         // clears, then the new subtree builds + realizes and inserts.
-        // The initial paint skips the clear (freshly empty container —
-        // the walker's `show_loading(false)` contract).
+        // The initial paint skips the clear (freshly empty container:
+        // `show_loading(false)`).
         //
         // Takes the BUILD THUNK, not a built `Element`: `component_scope`
         // runs the author's body eagerly at construction, and that body
@@ -300,8 +293,7 @@ where
         // collected into that subtree's `Owned`, so a LATE continuation
         // touching it would trip the kernel's stale-signal-handle
         // diagnostic (freed slot in a live world). The teardown probe
-        // flips the flag; the continuation checks it first — the
-        // new-core residue of the old walker's `LazyCancelGuard`.
+        // flips the flag; the continuation checks it first.
         let cancelled = Rc::new(Cell::new(false));
         {
             let cancelled = cancelled.clone();
@@ -329,8 +321,7 @@ where
             })
         };
 
-        // Retry plumbing — same weak-holder shape as the old walker:
-        // the error UI's retry handle reaches `retry_holder` weakly, so
+        // Retry plumbing — a weak holder: the error UI's retry handle reaches `retry_holder` weakly, so
         // the cycle `swap effect → retry → show_loading/run_load` can't
         // leak; after teardown a lingering retry upgrades to nothing.
         let retry_holder: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
@@ -358,8 +349,7 @@ where
         // Construction runs inside `component_scope` (in `swap_to`) so
         // state the chunk creates eagerly (an External extension
         // allocating signals in its constructor) is owned by the chunk
-        // subtree — the `ScopedLoad` invariant, at the mount site
-        // (prims/lazy.rs module docs). Owns `mounted` + `retry_holder`
+        // subtree (prims/lazy.rs module docs). Owns `mounted` + `retry_holder`
         // for teardown.
         let _swap = effect(move || {
             let _ = tick.get();

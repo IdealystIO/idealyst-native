@@ -4,8 +4,8 @@ use runtime_shared::BackendBatch;
 use runtime_scene::Host;
 
 /// Batched materialization of static View+Text repeat rows. Serves the
-/// `Element::Repeat` expansion in `walker/view.rs`. `: Host` supplies
-/// `insert_many` for the frozen `execute_batch_with_attach` default.
+/// `repeat` handler (`handlers/repeat.rs`). `: Host` supplies
+/// `insert_many` for the `execute_batch_with_attach` default.
 pub trait BatchOps: Host {
     /// Opt-in flag for the batched-Repeat path.
     ///

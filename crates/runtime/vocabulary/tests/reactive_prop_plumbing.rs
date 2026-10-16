@@ -1,10 +1,8 @@
-//! Per-primitive reactive-prop plumbing — the **new-core successor** of the
-//! old core's seven single-primitive suites
-//! (`runtime-core/tests/{icon_reactive_data, image_alt_reactive,
-//! link_url_reactive, activity_indicator_size_reactive,
-//! text_input_secure_reactive, preserves_focus, text_input_blur}.rs`).
+//! Per-primitive reactive-prop plumbing (icon data, image alt/src, link
+//! url, activity-indicator size, text-input secure, `preserves_focus`,
+//! text-input `on_blur`).
 //!
-//! Each of those pinned the same **triple** for one prop:
+//! Each reactive prop pins the same **triple**:
 //!
 //! 1. a **live** source pushes the in-place `update_*` on change, and does
 //!    NOT rebuild the node;
@@ -14,9 +12,9 @@
 //!    source can be written without reaching the (released) backend, and
 //!    the closure itself is dropped.
 //!
-//! Before this file the new core had that triple for exactly ONE prop
-//! (`vocab.rs::{const,dyn}_button_label_*`); `caps_conformance.rs` only
-//! proves the caps are *callable*. Halves 2 and 3 are the ones that
+//! `vocab.rs::{const,dyn}_button_label_*` covers the button label;
+//! `caps_conformance.rs` only proves the caps are *callable*. Halves 2 and
+//! 3 are the ones that
 //! regress silently: a spurious effect install costs a wasted subscription
 //! and an extra mount-time backend call that no op-log golden covers (the
 //! goldens record what the handlers DO emit, not what they must not), and a
@@ -28,17 +26,14 @@
 //! `create_*` already consumed the initial value, while
 //! `handlers::bind_value` applies once even for `Const` (the props whose
 //! `create_*` does NOT take them — image `src`, controlled `value`
-//! write-backs). The old walker drew exactly that line; these tests pin
-//! which prop is on which side.
+//! write-backs). These tests pin which prop is on which side.
 //!
 //! Half 3 is asserted two ways: behaviourally (no further backend op) and
 //! structurally (a `Weak` probe on an `Rc` moved into the source closure
 //! upgrades to `None`, so the closure — and therefore the effect slot —
-//! really was freed, not merely left inert). The old suites used the
-//! legacy arena's `arena_stats().effects_in_use` balance for that half;
-//! the world kernel has no slot-census API, and the `Weak` probe is a
-//! strictly stronger statement anyway (it proves the captured state died,
-//! not just that a counter moved).
+//! really was freed, not merely left inert). The world kernel has no
+//! slot-census API, and the `Weak` probe is the stronger statement anyway
+//! (it proves the captured state died, not just that a counter moved).
 
 use std::rc::{Rc, Weak};
 
@@ -246,7 +241,7 @@ fn static_image_alt_installs_no_update_effect() {
     );
     // `src` is on the other side of the bind_value/bind_dyn line: its
     // initial value is NOT consumed by create_image, so mount applies it
-    // once even when static (old walker shape).
+    // once even when static.
     assert_eq!(
         ops_named(&log, "update_image_src"),
         vec!["update_image_src n0 \"a.png\"".to_string()],
@@ -307,7 +302,7 @@ fn reactive_link_url_updates_in_place_without_rebuild() {
         );
         (realized, url)
     });
-    // The Dyn binding's first fire lands at mount (walker shape).
+    // The Dyn binding's first fire lands at mount.
     assert_eq!(
         ops_named(&h.take_log(), "update_link_url"),
         vec!["update_link_url n0 \"/one\"".to_string()],
@@ -762,7 +757,7 @@ fn static_text_input_placeholder_installs_no_update_effect() {
 
 // ===========================================================================
 // `preserves_focus` — the focus-preserving press region (Autocomplete
-// mouse-selection fix). Successor of runtime-core/tests/preserves_focus.rs.
+// mouse-selection fix).
 // ===========================================================================
 
 #[test]
@@ -809,8 +804,7 @@ fn unmarked_nodes_are_not_marked() {
 }
 
 // ===========================================================================
-// text_input `on_blur` — the cancelable `BlurOutcome`. Successor of
-// runtime-core/tests/text_input_blur.rs.
+// text_input `on_blur` — the cancelable `BlurOutcome`.
 // ===========================================================================
 
 #[test]

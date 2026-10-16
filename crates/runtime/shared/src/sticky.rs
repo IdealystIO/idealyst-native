@@ -42,7 +42,7 @@
 //! that slides beneath it. The native backends reproduce this by
 //! raising a view at sticky-registration time — `layer.zPosition` on
 //! iOS/macOS, `setTranslationZ` on Android, an implicit sibling-sort z
-//! in the wgpu walker — and restoring it on deregister. Web lowers
+//! in the wgpu render walk — and restoring it on deregister. Web lowers
 //! sticky with `z-index: 1` (`css::rules_to_css`): CSS on its own puts
 //! a sticky box above STATIC siblings only, and at `z-index: auto` a
 //! later positioned sibling (a `Relative` cell, a translated row) would

@@ -1,14 +1,13 @@
 //! The native engine: the in-process arena every app runs. See
 //! [`crate::engine`] for the seam this implements and why it exists.
 //!
-//! Everything here was the body of `lib.rs` before the engine seam. What
-//! changed with it: values arrive and leave type-erased (`Box<dyn
-//! AnySignal>`), and creation returns raw `(slot, gen)` pairs that the typed
-//! layer wraps into handles; a one-entry world cache sits in front of the
-//! registry (see `Tls::cached_arena`); `world_drop` is keyed by id (a
-//! `World` no longer holds its arena), running cleanups before the world
-//! unregisters; and the thread-local's own `Drop` runs the cleanups of
-//! worlds still registered when the thread ends.
+//! Values arrive and leave type-erased (`Box<dyn AnySignal>`), and creation
+//! returns raw `(slot, gen)` pairs that the typed layer wraps into handles;
+//! a one-entry world cache sits in front of the registry (see
+//! `Tls::cached_arena`); `world_drop` is keyed by id (a `World` does not
+//! hold its arena), running cleanups before the world unregisters; and the
+//! thread-local's own `Drop` runs the cleanups of worlds still registered
+//! when the thread ends.
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -63,12 +62,11 @@ struct Tls {
     /// effect's previous dep set (`reconcile_deps`). This is the
     /// stable-deps fast path: an effect whose reads are identical run to
     /// run (the overwhelmingly common shape — style bindings, text
-    /// bindings) touches NO subscriber list on re-run. The old scheme
-    /// (unsubscribe-all upfront via `retain`, re-subscribe via
-    /// `contains`) was O(subscribers) per operation — quadratic for N
-    /// same-signal subscribers per commit, measured as the dominant cost
-    /// of the js-framework-bench shared-style fan-out (1k effects × 1k
-    /// entry scans).
+    /// bindings) touches NO subscriber list on re-run. Not
+    /// unsubscribe-all + re-subscribe: that is O(subscribers) per
+    /// operation — quadratic for N same-signal subscribers per commit,
+    /// measured as the dominant cost of the js-framework-bench
+    /// shared-style fan-out (1k effects × 1k entry scans).
     pending_deps: Vec<Vec<(u32, u32)>>,
     /// In-flight ownership collectors (see [`collect_owned`]), innermost
     /// last. Signal/effect creations register into the top collector; with
@@ -662,8 +660,7 @@ pub(crate) fn maybe_subscribe(world: WorldId, slot: u32, gen: u32) -> bool {
     // end) turns the collected frame into subscription adds/removes by
     // diff; a dep set identical to the previous run's does zero work.
     // This also makes the tracked-read hot path allocation- and
-    // arena-borrow-free (the old scheme paid an O(subscribers)
-    // `contains` per first read of each signal).
+    // arena-borrow-free (no O(subscribers) `contains` per first read).
     TLS.with(|t| {
         let mut t = t.borrow_mut();
         if t.untrack_depth > 0 {
@@ -679,7 +676,7 @@ pub(crate) fn maybe_subscribe(world: WorldId, slot: u32, gen: u32) -> bool {
             .pending_deps
             .last_mut()
             .expect("pending frame exists whenever an effect is on the stack");
-        // Same-run dedupe (the old subscribers.contains role) — frames
+        // Same-run dedupe — frames
         // are small (an effect's distinct reads), so the scan is cheap.
         if !frame.contains(&(slot, gen)) {
             frame.push((slot, gen));
@@ -715,10 +712,10 @@ pub(crate) fn enqueue(arena: &WorldArena, slot: u32, gen: u32, force: bool) {
 /// effect body is its own tracking context. `untrack` suspends tracking for
 /// the *enclosing* code region, but an effect CREATED inside an untracked
 /// region still runs its first body there — and that first run is the only
-/// dependency-collection pass it gets. Without the reset, the P1 structural
-/// drivers (which realize subtrees inside `untrack`, per the old walker's
-/// `untrack_for_build` contract) would create nested driver/binding effects
-/// that never subscribe anything and never re-fire. This is Solid/Leptos
+/// dependency-collection pass it gets. Without the reset, the scene's
+/// structural drivers (which realize subtrees inside `untrack`) would
+/// create nested driver/binding effects that never subscribe anything and
+/// never re-fire. This is Solid/Leptos
 /// semantics; regression: `effect_created_inside_untrack_still_tracks`.
 fn run_effect(arena: &Rc<WorldArena>, data: &Rc<EffectData>) {
     run_cleanups(data);

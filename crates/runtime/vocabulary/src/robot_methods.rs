@@ -476,7 +476,7 @@ pub fn invoke_method(
 ) -> Result<(), String> {
     // Clone the Rc out under a short borrow so the invoker can run
     // without holding the registry borrow — invokers may trigger
-    // rebuilds that register new components (old registry's guard).
+    // rebuilds that register new components.
     let invoker = COMPONENTS.with(|c| {
         let c = c.borrow();
         let entry = c
@@ -521,8 +521,7 @@ mod tests {
     use runtime_shared::__serde_json::json;
     use std::cell::Cell;
 
-    /// Register → list → invoke → drop deregisters (guard lifecycle),
-    /// mirroring the old `components.rs` contract.
+    /// Register → list → invoke → drop deregisters (guard lifecycle).
     #[test]
     fn register_invoke_and_unregister_on_drop() {
         reset();

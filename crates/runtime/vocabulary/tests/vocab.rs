@@ -1,10 +1,9 @@
-//! P2b unit tests: builder coercions, `StyleProp` paths, prop-binding
-//! shapes, teardown probes, and the mount-once payload contract —
-//! against the shared `host-mock` substrate (crates/dev/host-mock): the
-//! native scene `Host` + caps recording mock, no `Backend`, no
-//! `LegacyBridge` (the full-op *sequence* parity lives in
-//! `scene-parity`'s golden suite; these tests pin the vocabulary-local
-//! behaviors in isolation).
+//! Vocabulary unit tests: builder coercions, `StyleProp` paths,
+//! prop-binding shapes, teardown probes, and the mount-once payload
+//! contract — against the shared `host-mock` substrate
+//! (crates/dev/host-mock): the native scene `Host` + caps recording mock
+//! (the full-op *sequence* lives in `scene-parity`'s golden suite; these
+//! tests pin the vocabulary-local behaviors in isolation).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -20,7 +19,7 @@ use runtime_vocabulary::StyleProp;
 use runtime_world::{signal, Value, World};
 
 // ===========================================================================
-// Harness (host-mock, configured like the old suite-local Mini)
+// Harness (host-mock)
 // ===========================================================================
 
 fn width_of(rules: &StyleRules) -> String {
@@ -95,11 +94,10 @@ fn style_prop_coercions() {
 }
 
 // ===========================================================================
-// glue::styled_text — the old `styled_text(runs)` author mirror
+// glue::styled_text
 // ===========================================================================
 
-/// The glue mirror of old `styled_text(runs).with_style(…)` (the
-/// website Prose surface) lowers through the text builder's `runs`
+/// `styled_text(runs).with_style(…)` (the website Prose surface) lowers through the text builder's `runs`
 /// channel to ONE `create_styled_text` with the runs intact — not the
 /// plain-concat `create_text` degradation — and the author style lands
 /// on that node.
@@ -193,8 +191,8 @@ fn dynamic_style_reapplies_on_signal_change_and_state_flip() {
     );
 
     // A native state flip (through the attach_states setter) re-fires
-    // the binding — the re-apply contract the old event-driven path
-    // has. (Overlay resolution is deferred; the rules are unchanged.)
+    // the binding — the event-driven re-apply contract. (Raw rules carry
+    // no overlays; the rules are unchanged.)
     let setter = h.state_setter(0);
     setter(StateBits::HOVERED, true);
     world.flush();
@@ -370,7 +368,7 @@ fn non_external_link_without_on_activate_panics_at_mount() {
     });
 }
 
-/// Regression shape for the walker's uniform-disable contract: a bare
+/// The uniform-disable contract: a bare
 /// pressable is not a native form control, so the press must be blocked
 /// at the callback (the shared flag), not just via `set_disabled`.
 #[test]
@@ -445,8 +443,8 @@ fn dyn_text_uses_update_text_fallback_without_id_support() {
 }
 
 // ===========================================================================
-// P3c sheet-engine paths (stylesheet!-shaped sheets built by hand — the
-// macro's new-core emission produces exactly these StyleProp arms; the
+// Sheet-engine paths (stylesheet!-shaped sheets built by hand — the
+// macro's emission produces exactly these StyleProp arms; the
 // registration/token calls pinned here are deliberately OUTSIDE the
 // scene-parity golden alphabet, so this is their behavioral gate)
 // ===========================================================================
@@ -746,8 +744,7 @@ fn preminted_stamps_classes_and_layers_overrides() {
 }
 
 /// Preminted-only worlds still deliver theme tokens: the theme driver
-/// (not sheet registration, which never happens) drains the queue —
-/// the old premint-host-driver contract.
+/// (not sheet registration, which never happens) drains the queue.
 #[test]
 fn preminted_world_still_delivers_tokens() {
     let h = harness();
@@ -776,10 +773,9 @@ fn preminted_world_still_delivers_tokens() {
     );
 }
 
-/// FRAMEWORK-NOTES #112: two `install_tokens` calls before the first
-/// flush (a base theme, then an extension's own token block) must BOTH
-/// reach the backend. The pending install used to be a latest-wins slot,
-/// so the backend saw only the second set — `token_value` still answered
+/// Two `install_tokens` calls before the first flush (a base theme, then
+/// an extension's own token block) must BOTH reach the backend. With a
+/// latest-wins pending slot the backend saw only the second set — `token_value` still answered
 /// for the first, but every `var(--…)` referencing it rendered unset.
 #[test]
 fn regression_second_install_tokens_before_flush_keeps_the_first() {
@@ -812,9 +808,9 @@ fn regression_second_install_tokens_before_flush_keeps_the_first() {
 /// A LIVE (non-preminted) world must publish the theme's default text
 /// font to the document, exactly like a preminted one.
 ///
-/// This delivery used to be gated on `premint_used`, on the reasoning
-/// that only preminted rule bodies read the `--iy-default-font`
-/// variable. That covered the variable but not the font: only a STATIC
+/// Regression for gating this delivery on `premint_used`, on the
+/// reasoning that only preminted rule bodies read the `--iy-default-font`
+/// variable. That covers the variable but not the font: only a STATIC
 /// style application gets the theme font folded into its own rules, a
 /// reactive one deliberately does not, and body / plain containers are
 /// never styled by the framework at all. With the gate on, a live web
@@ -880,12 +876,12 @@ fn default_text_font_fills_absent_font_family() {
 }
 
 // ===========================================================================
-// P5 identity seam: the vocabulary robot registry (`--features robot`)
+// Identity seam: the vocabulary robot registry (`--features robot`)
 //
 // Registries are thread-local and the test runner gives each #[test] its
 // own thread, so these tests are isolated by construction (reset() is
 // defensive). Queries that resolve reactive labels run inside
-// `world.enter` — new-core signal reads need the ambient world (the
+// `world.enter` — world signal reads need the ambient world (the
 // bridge-adapter contract documented in `robot`'s module docs).
 // ===========================================================================
 
@@ -899,12 +895,11 @@ mod robot_registry {
     /// A `link` must honor `test_id`, and its robot `click` must fire the
     /// activation.
     ///
-    /// `LinkPrim` used to carry NO identity slot: `link(test_id = …)` parsed,
-    /// compiled, and was silently discarded (the glue wrapper was explicitly
-    /// `test_id_ignored`). A link is usually an app's only way to reach another
-    /// screen, so that dropped anchor meant automation could not navigate a
-    /// route-based app at all — `find_element` had nothing to match, and the
-    /// per-route parity sweep over `idea-ui-docs` had no way to visit a route.
+    /// Regression: with no identity slot on `LinkPrim`, `link(test_id = …)`
+    /// parsed, compiled, and was silently discarded. A link is usually an
+    /// app's only way to reach another screen, so that dropped anchor meant
+    /// automation could not navigate a route-based app at all —
+    /// `find_element` had nothing to match.
     #[test]
     fn a_link_registers_its_test_id_and_click_activates_it() {
         let robot = Robot::new();
@@ -1022,9 +1017,7 @@ mod robot_registry {
     }
 
     /// Regression: a reactive branch swap (`dyn_keyed`) deregisters the
-    /// OLD branch's entries and registers the new branch's — the
-    /// scene-level analogue of the old walker's when-branch-swap
-    /// deregistration.
+    /// OLD branch's entries and registers the new branch's.
     #[test]
     fn regression_branch_swap_deregisters_old_branch() {
         let robot = Robot::new();
@@ -1058,8 +1051,8 @@ mod robot_registry {
         robot.reset();
     }
 
-    /// Duplicate-id policy through the REAL mount path (old-core
-    /// mirror): `find` is last-wins, `find_all` returns every holder —
+    /// Duplicate-id policy through the REAL mount path: `find` is
+    /// last-wins, `find_all` returns every holder —
     /// sibling rows sharing one affordance test_id is a core E2E
     /// pattern (`getByTestId(...).toHaveCount(n)`).
     #[test]
@@ -1084,7 +1077,7 @@ mod robot_registry {
     }
 
     /// Reactive text reports its LIVE label (label_fn), not the value
-    /// frozen at mount — the old registry's staleness rule, ported.
+    /// frozen at mount.
     #[test]
     fn reactive_text_label_stays_live() {
         let robot = Robot::new();
@@ -1796,10 +1789,10 @@ mod repeat_handler {
         // Teardown: the cohort entry unregisters (backend-invisible) and
         // NOTHING per row — batched rows carry no per-node backend style
         // state (`mint_style_class` touches no node; `ApplyStyleStatic`
-        // stamps the shared class), so the old core's "for symmetry"
-        // per-row `on_node_unstyled` loop is deliberately dropped (it
-        // was N no-ops costing one FFI each — the teardown bench-gate
-        // residual; see the repeat handler + `BatchOps` contract).
+        // stamps the shared class), so there is deliberately no per-row
+        // `on_node_unstyled` loop (it would be N no-ops costing one FFI
+        // each — the teardown bench-gate residual; see the repeat handler
+        // + `BatchOps` contract).
         drop(realized);
         assert_eq!(
             h.take_log(),
@@ -1865,7 +1858,7 @@ mod repeat_handler {
             vec![
                 "create n0 view".to_string(),
                 // Row 1: per-node mounts (raw-rules style is NOT the
-                // batchable sheet shape — same bail as the old core).
+                // batchable sheet shape).
                 "create n1 view".to_string(),
                 "create n2 text \"\"".to_string(),
                 "update_text n2 \"a\"".to_string(),
@@ -2041,7 +2034,7 @@ mod repeat_handler {
         );
     }
 
-    /// Empty repeat: zero backend calls (old walker's early-out).
+    /// Empty repeat: zero backend calls.
     #[test]
     fn empty_repeat_is_free() {
         let h = harness();
@@ -2058,8 +2051,8 @@ mod repeat_handler {
 }
 
 // ===========================================================================
-// P6 SDK-retarget glue extensions (glue.rs's "P6 root-surface" wave):
-// the mirrors that carry LOGIC — watch/Subscription, the theme-install
+// Glue author-surface functions that carry LOGIC — watch/Subscription,
+// the theme-install
 // shared-registry seed, `.bind(Ref)` handle filling, the icon square
 // sheet, `on_defer`, `unscope`.
 // ===========================================================================
@@ -2119,8 +2112,8 @@ mod p6_glue {
     /// AND seeds runtime-core's shared token registry, so
     /// `Tokenized::resolve` (component-code color reads, native
     /// apply-time reads) sees the installed values instead of the
-    /// compile-time fallbacks — with the old walker-flush queues
-    /// drained (nothing consumes them on this core).
+    /// compile-time fallbacks — with the pending-delivery queue drained
+    /// (nothing consumes it).
     #[test]
     fn theme_install_seeds_shared_token_registry() {
         let world = World::new();
@@ -2152,8 +2145,7 @@ mod p6_glue {
 
     /// `pressable(children, cb).bind(ref)` fills a REAL mount-time
     /// handle (the vocabulary handler's `make_pressable_handle`), so
-    /// imperative surfaces (anchors, focus, AnimatedValue) work as on
-    /// the old core.
+    /// imperative surfaces (anchors, focus, AnimatedValue) work.
     #[test]
     fn pressable_bind_fills_real_handle_at_mount() {
         use runtime_vocabulary::glue::IntoElement;
@@ -2170,10 +2162,9 @@ mod p6_glue {
     }
 
     /// `scroll_view(children).bind(ref)` fills a REAL mount-time
-    /// [`ScrollViewHandle`] — the `GlueScrollView` mirror of
-    /// `Bound::<ScrollViewHandle>::bind`. Regression for the glue gap
-    /// that forced the website's shell.rs to cfg-fork onto the raw
-    /// vocabulary builder's `on_handle` under new-core.
+    /// [`ScrollViewHandle`]. Regression for the glue gap that forced the
+    /// website's shell.rs to cfg-fork onto the raw vocabulary builder's
+    /// `on_handle`.
     #[test]
     fn scroll_view_bind_fills_real_handle_at_mount() {
         use runtime_vocabulary::glue::IntoElement;
@@ -2187,12 +2178,10 @@ mod p6_glue {
         assert!(r.get().is_some(), "Ref filled with the mount-time handle");
     }
 
-    /// Regression (new-core `if` E0507 class): the static `if` arm's
-    /// thunks are `FnOnce` (old-core `builder.rs::StaticCond` parity),
-    /// so a taken branch may MOVE a captured `String` — the shape every
+    /// Regression (`if` E0507 class): the static `if` arm's thunks are
+    /// `FnOnce`, so a taken branch may MOVE a captured `String` — the shape every
     /// hoisted-condition (`let has_x = !x.is_empty()`) component emits.
-    /// Under the original `Fn + 'static` bounds this test does not
-    /// compile ("cannot move out of a captured variable in an `Fn`
+    /// Under `Fn + 'static` bounds this test does not compile ("cannot move out of a captured variable in an `Fn`
     /// closure").
     #[test]
     fn static_cond_branch_may_move_string_captures() {
@@ -2209,7 +2198,7 @@ mod p6_glue {
         assert!(taken.is_empty());
     }
 
-    /// `GlueIcon::size` mirrors the old square-sizing sheet: width =
+    /// `GlueIcon::size` mints a square-sizing sheet: width =
     /// height = px, `flex_shrink: 0`, and the sheet is CACHED per
     /// rounded px so every icon at a size shares one Rc.
     #[test]
@@ -2271,7 +2260,7 @@ mod p6_glue {
         });
     }
 
-    /// `on_defer` mirrors the old skip-first contract: the first run
+    /// `on_defer`'s skip-first contract: the first run
     /// only records the baseline; every subsequent dependency change
     /// fires with (new, Some(prev)).
     #[test]
@@ -2297,8 +2286,7 @@ mod p6_glue {
     }
 
     /// `glue::unscope` — slots created inside are world-root-owned:
-    /// dropping the enclosing collector must NOT retire them (the old
-    /// `unscope` thread-lifetime contract, world-scoped here).
+    /// dropping the enclosing collector must NOT retire them.
     #[test]
     fn unscope_escapes_the_enclosing_collector() {
         let world = World::new();
@@ -2309,15 +2297,15 @@ mod p6_glue {
         });
     }
 
-    /// The "Switch thumb never travels" bug: old `AnimatedValue::bind`
-    /// anchors its per-frame subscription via old-core `on_cleanup`,
-    /// which OUTSIDE any old-core Scope — i.e. on every new-core build —
-    /// silently drops the callback at bind time, so the tween ticked but
+    /// The "Switch thumb never travels" bug: runtime-shared's
+    /// `AnimatedValue::bind` anchors its per-frame subscription via the
+    /// legacy arena's `on_cleanup`, which OUTSIDE a legacy scope — i.e.
+    /// under every world — drops the callback at bind time, so the tween
+    /// ticked but
     /// no `set_animated_f32` ever reached the backend. The glue's
     /// `animation::AnimatedValue` must (a) deliver value changes through
     /// the mounted `ViewHandle` for the component's lifetime and (b)
-    /// still drop the listener at unrealize — the recycled-`Ref`
-    /// protection the old anchoring existed for.
+    /// still drop the listener at unrealize (recycled-`Ref` protection).
     #[test]
     fn regression_switch_thumb_animated_bind_delivers_and_dies_with_scope() {
         use glue::animation::{AnimProp, AnimatedValue};

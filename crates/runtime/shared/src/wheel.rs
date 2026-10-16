@@ -7,7 +7,7 @@
 //! trackpad two-finger rotation, a trackpad two-finger scroll, a mouse
 //! scroll-wheel — are **not** touches. They arrive through this separate
 //! channel: the backend installs a [`WheelHandler`] on a view via
-//! [`Backend::install_wheel_handler`](crate::Backend::install_wheel_handler)
+//! `InputOps::install_wheel_handler`
 //! and fires it for every wheel / magnify event hitting that view.
 //!
 //! Only the desktop backends source these (web `wheel`, macOS `magnify:` /

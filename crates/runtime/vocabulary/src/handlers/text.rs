@@ -9,7 +9,7 @@ use crate::style_attach::{attach_style, on_teardown, StyleServices};
 
 use super::bind_value;
 
-/// Mount a `text` — port of `walker/text.rs::build`.
+/// Mount a `text`.
 ///
 /// Sequences by source:
 /// - `Const`: `create_text(content)`; no effects.
@@ -18,23 +18,21 @@ use super::bind_value;
 ///   binding effect moves each computed `String` into
 ///   `update_text_by_id` (first fire at mount). On `None`, the legacy
 ///   `create_text("")` + per-fire `update_text` path.
-/// - `JsBinding`: the f-string fast path (walker's `TextSource::JsBinding`
-///   arm) — on a `supports_js_text_bindings` backend the structured
+/// - `JsBinding`: the f-string fast path — on a `supports_js_text_bindings` backend the structured
 ///   binding is handed over (`register_reactive_text_binding`) with ONE
 ///   world-root notifier effect per signal (`notify_signal_text_js`, the
 ///   signal-class delivery pattern) and NO per-leaf effect; elsewhere it
 ///   lowers to the `Dyn` shape via `compute_fallback`.
-/// - `Runs`: `create_styled_text` once (basic styled runs; theme-cohort
-///   re-realization is deferred — crate docs).
+/// - `Runs`: `create_styled_text` once (basic styled runs; not
+///   re-realized on a theme swap — crate docs' known gaps).
 ///
-/// Then attach_style → ref-fill, matching the walker's outer sequence.
+/// Then attach_style → ref-fill.
 pub fn mount_text<H>(cx: &mut MountCx<'_, H>, prim: TextPrim, _children: Vec<Element>) -> H::Node
 where
     H: TextOps + StyleServices + IntrospectionOps,
 {
     let backend = cx.backend().clone();
-    // Robot label capture, per source arm (old `robot_extract_meta`
-    // shape): a mount-time snapshot for every source, plus a live
+    // Robot label capture, per source arm: a mount-time snapshot for every source, plus a live
     // recompute for reactive content — the cached string would go
     // stale after the binding updates the backend (the registry entry
     // is never re-registered on signal change).
@@ -71,9 +69,8 @@ where
                     // Release the backend's id slot when the subtree
                     // tears down (switch-arm flip, unmount) — without
                     // this every mount/unmount cycle leaks a registry
-                    // entry (the walker's rationale, ported). Registered
-                    // BEFORE the binding effect, like the walker's
-                    // on_cleanup-before-Effect ordering.
+                    // entry. Registered BEFORE the binding effect
+                    // (teardown-before-effect ordering).
                     let b = backend.clone();
                     on_teardown(move || {
                         b.borrow_mut().release_text_id(id);
@@ -100,8 +97,7 @@ where
             }
         }
         TextSourceProp::JsBinding(binding) => {
-            // The f-string fast path — port of `walker/text.rs`'s
-            // `TextSource::JsBinding` arm. Robot label = the whole-text
+            // The f-string fast path. Robot label = the whole-text
             // recompute (live, untracked), every path.
             #[cfg(feature = "robot")]
             {
@@ -117,12 +113,12 @@ where
                 (Some((node, text_id)), true) => {
                     // Fast path: hand the structured binding to the
                     // backend's own fan-out — NO Rust effect per leaf.
-                    // World signals have no `Signal::set` JS write hook
-                    // (the old delivery channel), so lease ONE notifier
-                    // effect per signal that ships commits via
-                    // `notify_signal_text_js` — the signal-class notifier
-                    // pattern, string edition. First-registrant-wins across
-                    // class+text bindings (old single-notifier semantics);
+                    // World signals have no `Signal::set` JS write hook,
+                    // so lease ONE notifier effect per signal that ships
+                    // commits via `notify_signal_text_js` — the
+                    // signal-class notifier pattern, string edition.
+                    // First-registrant-wins across class+text bindings
+                    // (one notifier per signal);
                     // leased BEFORE registration so the first fire seeds the
                     // JS-side value cache, and held until this binding's
                     // teardown (see `style_attach::SignalNotifiers`).
@@ -156,8 +152,7 @@ where
                         );
                     }
                     // Release the JS-side binding AND the id slot on
-                    // teardown (the walker's on_cleanup, same order), then
-                    // this binding's notifier leases.
+                    // teardown, then this binding's notifier leases.
                     let b = backend.clone();
                     on_teardown(move || {
                         {
@@ -204,8 +199,7 @@ where
         }
         TextSourceProp::Runs(runs) => {
             // Styled runs are static content — report the concatenated
-            // plain text, the same value the styled node renders (old
-            // `label_now`'s Styled arm).
+            // plain text, the same value the styled node renders.
             #[cfg(feature = "robot")]
             {
                 robot_label = Some(runtime_shared::styled_text::plain_text_of(&runs));
@@ -233,13 +227,12 @@ where
     node
 }
 
-/// Mount a `button` — port of `walker/button.rs::build`.
+/// Mount a `button`.
 ///
 /// Sequence: `create_button(initial label, action, icons)` →
-/// attach_style → ref-fill → disabled binding (`set_disabled`; the
-/// state-setter flip rides the deferred state-overlay machinery) →
-/// label binding effect for `Dyn` labels (`update_button_label`, first
-/// fire at mount — the walker's reactive-label shape).
+/// attach_style → ref-fill → disabled binding (`set_disabled` + the
+/// style state-setter's `DISABLED` bit) → label binding effect for `Dyn`
+/// labels (`update_button_label`, first fire at mount).
 pub fn mount_button<H>(cx: &mut MountCx<'_, H>, prim: ButtonPrim, _children: Vec<Element>) -> H::Node
 where
     H: ButtonOps + StyleServices + IntrospectionOps,
@@ -309,7 +302,7 @@ where
         // A real widget goes inert natively via set_disabled — no
         // press-block flag (that's the bare-pressable path). The
         // DISABLED state-bit flip rides the styled setter so a
-        // `state disabled { … }` overlay applies (old `attach_disabled`).
+        // `state disabled { … }` overlay applies.
         let b = backend.clone();
         let n = node.clone();
         #[cfg(feature = "robot")]

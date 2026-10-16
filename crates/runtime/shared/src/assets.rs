@@ -23,13 +23,13 @@
 //!   the path. Native/wgpu use the bytes; web still prefers the path.
 //!
 //! The feature is flipped by the dep graph, not the author: each
-//! byte-consuming backend enables `runtime-core/embed-font-bytes`
+//! byte-consuming backend enables `runtime-shared/embed-font-bytes`
 //! through its own dep. URL-loaded fonts (arbitrary remote `Remote`
 //! sources) are still intentionally unsupported for fonts — only
 //! project-shipped font files are valid.
 //!
-//! At render time the framework calls [`Backend::register_asset`] /
-//! [`Backend::register_typeface`] the first time an asset id is
+//! At render time the framework calls `AssetOps::register_asset` /
+//! `AssetOps::register_typeface` the first time an asset id is
 //! observed. Each backend decides what registration means for it:
 //!
 //! - **Web**: a font becomes a `@font-face` rule and an `@import`-able
@@ -41,14 +41,12 @@
 //! - **wgpu / native renderer**: bytes go to cosmic-text /
 //!   texture-upload paths.
 //! - **runtime-server / wire**: bytes ship over the wire on first reference and
-//!   live in the [`SceneModel`](crate::backend) snapshot.
+//!   live in the dev server's `SceneModel` snapshot.
 //!
 //! The `Asset<K>` handle is generic over a marker type so the type
 //! system rejects passing an image where a font is expected. Marker
 //! types live in the [`kinds`] submodule.
 //!
-//! [`Backend::register_asset`]: crate::Backend::register_asset
-//! [`Backend::register_typeface`]: crate::Backend::register_typeface
 
 use std::marker::PhantomData;
 
@@ -76,7 +74,7 @@ pub struct TypefaceId(pub u64);
 
 /// Runtime tag matching one of the [`kinds`] marker types. Passed to
 /// the backend alongside [`AssetSource`] so a single
-/// [`Backend::register_asset`](crate::Backend::register_asset) entry
+/// `AssetOps::register_asset` entry
 /// point can route by kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetTag {
@@ -134,7 +132,7 @@ pub mod kinds {
 // ---------------------------------------------------------------------------
 
 /// Where the bytes come from. The backend's
-/// [`register_asset`](crate::Backend::register_asset) implementation
+/// `AssetOps::register_asset` implementation
 /// decides what to do with each variant — fetch over the network,
 /// register with the OS, hand to a GPU uploader, etc.
 #[derive(Clone, Copy)]
@@ -681,7 +679,7 @@ mod tests {
                 assert!(!bytes.is_empty());
                 assert_eq!(extension, "rs");
             }
-            // `embed-font-bytes` OFF (runtime-core's default test
+            // `embed-font-bytes` OFF (this crate's default test
             // build): path only, no bytes baked into the binary.
             AssetSource::Bundled { path } => {
                 assert_eq!(path, "assets.rs");

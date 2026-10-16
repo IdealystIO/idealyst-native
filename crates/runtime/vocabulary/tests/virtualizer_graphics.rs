@@ -2,9 +2,8 @@
 //! (mount/release via backend-held callbacks, per-row ownership scopes,
 //! the measured-size cache), the data-changed effect, and both
 //! primitives' teardown-release probes — driven through the `host-mock`
-//! recording host (the caps surface implemented natively, no `Backend`,
-//! no `LegacyBridge`; op-stream parity with the old walker lives in
-//! `scene-parity`'s golden suite).
+//! recording host (the caps surface implemented natively; the full op
+//! streams live in `scene-parity`'s golden suite).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -66,9 +65,8 @@ fn virtualizer_mount_sequence_create_then_data_effect_then_style() {
     world.flush();
     assert_eq!(h.take_log(), vec!["virtualizer_data_changed n0".to_string()]);
 
-    // Teardown: unstyle BEFORE release (effect-creation order — the
-    // old core's Effect order, preserved by `Owned`'s creation-order
-    // free).
+    // Teardown: unstyle BEFORE release (effect-creation order, preserved
+    // by `Owned`'s creation-order free).
     drop(realized);
     assert_eq!(
         h.take_log(),
@@ -187,8 +185,7 @@ fn regression_released_row_effects_stop_firing() {
 }
 
 /// Signals created while CONSTRUCTING the row element (not just during
-/// the mount walk) must die with the row — the old walker's
-/// `with_scope` wrapped `render(idx)` too. A leak here pins row state
+/// the mount walk) must die with the row. A leak here pins row state
 /// until world drop.
 #[test]
 fn row_construction_creations_die_with_the_row() {
@@ -327,7 +324,7 @@ fn multi_root_row_panics_with_diagnostic() {
 /// same borrow (`style_attach`'s `on_node_unstyled`). The callbacks
 /// bundle owns the handler's scope map, and every backend drops the
 /// bundle inside `release_virtualizer` — iOS additionally calls
-/// `release_item` for each mounted cell first — so the rows used to die
+/// `release_item` for each mounted cell first — so the rows can die
 /// UNDER the borrow. "RefCell already borrowed", raised across an ObjC
 /// frame that cannot unwind, is an `abort`: rebuilding any subtree
 /// holding a `flat_list` killed the app, and a search box above the list
@@ -335,8 +332,8 @@ fn multi_root_row_panics_with_diagnostic() {
 ///
 /// Two observables, both of them the fix:
 /// - every live row is unstyled BEFORE `release_virtualizer` reaches the
-///   backend (pre-fix the rows outlived the probe entirely — the mock
-///   keeps its bundle, so they were never freed at all), and
+///   backend (otherwise the rows outlive the probe entirely — the mock
+///   keeps its bundle, so they would never be freed at all), and
 /// - a backend's own late `release_item` finds nothing left to free, so
 ///   an eager shutdown loop can't reintroduce the abort.
 #[test]
@@ -464,7 +461,7 @@ fn graphics_mount_wires_callbacks_and_releases_on_teardown() {
 
     // Teardown: unstyle THEN release (creation-order effect free) —
     // and release fires even though the style effect exists (it's an
-    // independent probe, the old GraphicsHandleCleanup contract).
+    // independent probe).
     drop(realized);
     assert_eq!(
         h.take_log(),
@@ -642,10 +639,10 @@ fn virtualizer_handle_is_inert_but_safe_on_a_backend_without_ops() {
 }
 
 // ===========================================================================
-// Item-change detection (FRAMEWORK-NOTES #50)
+// Item-change detection
 // ===========================================================================
 
-/// Regression (FRAMEWORK-NOTES #50): the handler must be able to tell a
+/// Regression: the handler must be able to tell a
 /// backend that a surviving key's row was rendered from an item that has
 /// since changed — and that an unchanged survivor is still fresh. Pre-fix
 /// there was no `item_changed` at all, so a keyed-diff backend (web,

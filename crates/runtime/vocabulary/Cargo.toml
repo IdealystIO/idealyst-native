@@ -1,18 +1,13 @@
-# runtime-vocabulary — the vocabulary layer of the idea-lite core migration
-# (P2a): the capability-trait split of runtime-core's 159-method `Backend`
-# mega-trait.
+# runtime-vocabulary — the capability traits and the builtin vocabulary
+# over the `runtime_scene::Host` structural seam.
 #
-# `caps` holds one Ops trait per primitive family (signatures FROZEN to
-# today's `Backend`), every trait a subtrait of the `runtime_scene::Host`
-# structural seam extracted in P1. `bridge::LegacyBridge<B>` adapts any
-# existing `Backend` impl to the full capability surface with zero edits
-# to backend crates — the compile-time proof of the signature freeze.
-# `COVERAGE.md` accounts for every Backend method.
-#
-# P2b adds the built-in vocabulary: payload types (`prims`), builders
-# (the ui! contract), generic mount handlers (the walker's per-primitive
-# build modules re-homed, bounded on exactly the caps they use), the
-# shared `style_attach` service, and `register_builtins`.
+# `caps` holds one Ops trait per primitive family, every trait a subtrait
+# of `runtime_scene::Host`; a backend implements the families it
+# supports. The builtin vocabulary is the payload types (`prims`), the
+# builders (the `ui!` contract), the generic mount handlers (each bounded
+# on exactly the caps it uses), the shared `style_attach` service,
+# `register_builtins`, and `glue` — the author surface `runtime-core`
+# re-exports.
 
 [package]
 name = "runtime-vocabulary"
@@ -21,20 +16,16 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-# The new-core element identity / robot registry (`src/robot.rs`):
-# mount handlers register every identity-bearing primitive for the
-# automation surface (find-by-test_id, tap, type_text, snapshot, …).
-# OFF by default, mirroring runtime-core's `robot` gate — the `test_id`
+# The element identity / robot registry (`src/robot.rs`): mount
+# handlers register every identity-bearing primitive for the automation
+# surface (find-by-test_id, tap, type_text, snapshot, …). OFF by
+# default (`runtime-core/robot` forwards here) — the `test_id`
 # slots always exist (so `ui! { view(test_id = …) }` compiles in every
 # build), only the per-mount registration overhead is gated. `serde`
 # carries the `Deserialize` bound of `robot::watch_signal_writable` (the
 # bridge's `write_signal` verb parses the new value as JSON).
 robot = ["dep:serde"]
 
-# Phase-timer instrumentation for the new-core mount/style hot paths
-# (repeat batch, dynamic-sheet effect). Same discipline as the other
-# crates' debug-stats (CLAUDE.md §6): OFF by default, counters land in
-# runtime-core's thread-local phase map, zero code when off.
 # `ui-overlay`: the dev-time overlay's RUNTIME half — the per-node tag a
 # patch addresses by, the applier that edits a built `Element`, and the
 # live applier that edits a mounted tree through the backend seam.
@@ -44,33 +35,31 @@ robot = ["dep:serde"]
 # `runtime-core/ui-overlay`, which forwards to each.
 ui-overlay = ["runtime-scene/ui-overlay"]
 
+# Phase-timer instrumentation for the mount/style hot paths (repeat
+# batch, dynamic-sheet effect). Same discipline as the other crates'
+# debug-stats (CLAUDE.md §6): OFF by default, counters land in
+# runtime-shared's thread-local phase map, zero code when off.
 debug-stats = ["runtime-shared/debug-stats"]
 
-# Forward runtime-shared's `async-driver` gate so glue can mirror the old
-# root's feature-gated `driver` module (`spawn_async` / `render_loop`).
-# Apps whose aliased sources spell `runtime_core::driver::…` enable this
-# (the website's embedded-simulator new-core build is the consumer).
+# Forward runtime-shared's `async-driver` gate so glue exposes the
+# feature-gated `driver` module (`spawn_async` / `render_loop`) that
+# author code reaches as `runtime_core::driver::…`.
 async-driver = ["runtime-shared/async-driver"]
 
 # Forward runtime-shared's `style-dump` gate so glue can re-export the
 # `premint` linkme registry at `glue::premint`. This is where the
 # `stylesheet!` expansion's `cfg(idealyst_premint_dump)` registration
 # lands after the macro's retarget rewrites `::runtime_core::premint::…`
-# → `::runtime_vocabulary::glue::premint::…` (runtime-macros/src/lib.rs
-# flagged this as the one retarget path with no glue home; a premint
-# dump build is now necessarily a runtime-v2 build, so it needs one).
-# Only the CLI's ephemeral dump build and `premint-dump`'s own tests
+# → `::runtime_vocabulary::glue::premint::…`. Only the CLI's ephemeral dump build and `premint-dump`'s own tests
 # enable it — shipped graphs carry zero registry code.
 style-dump = ["runtime-shared/style-dump"]
 
-# MCP catalog anchor for new-core graphs (idea-lite wave 2b): links
-# `mcp-catalog` and re-exports it at `glue::__mcp`, where the
-# retargeted `#[component]` / `doc_scope!` emissions land
-# (`::runtime_core::__mcp::…` → `::runtime_vocabulary::glue::__mcp::…`
-# under `runtime-macros/new-core`). Forwards `runtime-shared/catalog`
-# so the robot bridge's `get_catalog` verb + the static core-primitive
-# recipes ride along — one switch gives a new-core session the full
-# catalog. Off by default (production carries zero catalog code);
+# MCP catalog anchor: links `mcp-catalog` and re-exports it at
+# `glue::__mcp`, where the `#[component]` / `doc_scope!` emissions land
+# (`::runtime_core::__mcp::…` → `::runtime_vocabulary::glue::__mcp::…`).
+# Forwards `runtime-shared/catalog` so the robot bridge's `get_catalog`
+# verb + the static core-primitive recipes ride along — one switch gives
+# a session the full catalog. Off by default (production carries zero catalog code);
 # the emission gate itself is `runtime-macros/catalog`, enabled by
 # whichever wrapper/app wants capture (see runtime-core/catalog).
 catalog = ["dep:mcp-catalog", "runtime-shared/catalog"]
@@ -122,7 +111,7 @@ remote-inline = ["remote"]
 [dependencies]
 # The shared prop/data types (StyleRules, AccessibilityProps, handler
 # aliases, primitives::* payloads, robot bridge, host slots) live in
-# runtime-shared — the permanent substrate. This crate has NO dependency
+# runtime-shared — the shared substrate. This crate has NO dependency
 # on the author-surface `runtime-core` root (which depends on it).
 runtime-shared = { workspace = true }
 runtime-scene = { workspace = true }
@@ -152,23 +141,20 @@ dev-hot = { workspace = true, optional = true }
 # Self-dev-dep so the test targets compile the lib WITH `async-driver`
 # (feature unification): the lazy chunk driver (handlers/lazy.rs,
 # tests/lazy.rs) and the resource/mutation mirrors
-# (src/async_reactive.rs, tests/async_reactive.rs) are gated on it
-# exactly like the old core's same-named gate, and a plain
+# (src/async_reactive.rs, tests/async_reactive.rs) are gated on it,
+# and a plain
 # `cargo test -p runtime-vocabulary` must exercise both instead of
 # silently vanishing behind a --features flag nobody passes in CI.
 runtime-vocabulary = { path = ".", features = ["async-driver", "robot"] }
-# The new-core test substrate: scene Host + all-30-caps recording mock.
-# Dev-dep cycle (host-mock depends on this crate's lib) is fine — Cargo
-# permits dev-dependency cycles, and it keeps the suites off the old
-# `Backend` trait ahead of the deletion wave.
+# The test substrate: scene Host + every-caps recording mock. Dev-dep
+# cycle (host-mock depends on this crate's lib) is fine — Cargo permits
+# dev-dependency cycles.
 host-mock = { path = "../../dev/host-mock" }
 # `ui!` / `#[component]`, for the tests that must pin the AUTHOR-FACING
 # spelling of a feature this crate owns rather than its builder form
 # (`tests/slots.rs`). Safe as a dev-dep here: the macros always emit
 # `::runtime_vocabulary::glue::…` absolute paths, which resolve inside
-# this crate's own test targets, and the `new-core` lowering switch that
-# used to make a proc-macro feature a cross-crate unification hazard is
-# gone (see runtime-macros/Cargo.toml).
+# this crate's own test targets.
 runtime-macros = { path = "../macros" }
 # The Taffy layout tree every native backend (iOS/macOS/Android) drives,
 # for `tests/presence_layout.rs`: a host whose nodes ARE layout nodes, so a

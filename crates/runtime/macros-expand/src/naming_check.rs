@@ -1,7 +1,7 @@
 //! `strict-naming` — compile-time component-naming enforcement.
 //!
 //! When the `strict-naming` feature is on (forwarded from
-//! `runtime-core/strict-naming`), `#[component]` errors if the component
+//! `runtime-macros/strict-naming`), `#[component]` errors if the component
 //! fn name isn't PascalCase. The convention is load-bearing: inside
 //! `ui!`/`jsx!`, a PascalCase tag routes to `#[component]` dispatch while a
 //! lowercase tag is a framework primitive (`view`, `text`, …). A

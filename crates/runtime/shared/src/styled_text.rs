@@ -22,7 +22,8 @@
 //! Colors and sizes are `Tokenized` so they participate in theming:
 //! web emits them as `var(--token)` (theme swaps ride the CSS
 //! cascade); native backends resolve them at realize time and get
-//! re-realized through the theme cohort (see `walker::text`).
+//! re-realized through the theme cohort (see the vocabulary's
+//! `handlers::text`).
 //!
 //! Reactive content is out of scope for styled runs: the run list is
 //! static per node. Reactive text rides the `Bound`/`JsBinding`

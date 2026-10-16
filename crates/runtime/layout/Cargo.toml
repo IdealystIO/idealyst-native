@@ -6,8 +6,7 @@ license.workspace = true
 description = "Flex layout utility for native backends (iOS, Android). Wraps Taffy and translates runtime-core styles into Taffy styles."
 
 [dependencies]
-# Style data model (StyleRules/Length/animation props) now lives in
-# runtime-shared; the walker-half runtime-core is no longer needed here.
+# Style data model (StyleRules/Length/animation props).
 runtime-shared = { workspace = true }
 # Pure-Rust flex/grid layout engine. Matches CSS flex semantics so
 # native backends produce the same output as the web backend's

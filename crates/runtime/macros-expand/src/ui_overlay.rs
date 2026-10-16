@@ -59,16 +59,15 @@
 //! the fallback and silently apply nothing — the worst possible failure
 //! here, since it looks exactly like "no patch staged".
 //!
-//! # Why the descriptor is not here any more
+//! # Why the descriptor is not emitted here
 //!
-//! It used to be: this module emitted a `static Descriptor` per site
-//! describing every node's props and literals, and registered it at
-//! build time. Measured on CrewForge (~256 CGUs), that cost **+1.4 s on
-//! every one-edit rebuild** — 5.0 s to 6.5 s, a 27% tax on exactly the
-//! loop the feature exists to shorten — with the time in
+//! Emitting a `static Descriptor` per site (every node's props and
+//! literals, registered at build time) measured on CrewForge (~256 CGUs)
+//! at **+1.4 s on every one-edit rebuild** — 5.0 s to 6.5 s, a 27% tax on
+//! exactly the loop the feature exists to shorten — with the time in
 //! `macro_expand_crate` (1.65 s to 2.52 s) and `serialize_dep_graph`,
-//! and none of it in codegen. Compiling the descriptor out and keeping
-//! only the tags measured within noise of the feature being off:
+//! and none of it in codegen. Tags alone measure within noise of the
+//! feature being off:
 //!
 //! | one-edit rebuild | off | tags only | tags + descriptor |
 //! |---|---|---|---|
@@ -87,9 +86,8 @@
 //! the stamp rides through the split pass's clone into the tree the
 //! emission walks. [`tag`] is handed that number.
 //!
-//! The alternative — a counter incremented once per `emit_component` —
-//! was what this module did first, and it is subtly wrong: emission
-//! order is not source order for every primitive (`anchored_overlay`
+//! Not a counter incremented once per `emit_component` — that is subtly
+//! wrong: emission order is not source order for every primitive (`anchored_overlay`
 //! splits its children, `presence` builds a thunk), so a counter numbers
 //! some trees differently from a walk of the same tree. The build-time
 //! descriptor producer has only the tree. Taking the number FROM the

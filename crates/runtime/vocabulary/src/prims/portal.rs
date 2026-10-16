@@ -1,9 +1,8 @@
-//! Render-elsewhere payload: `portal` (and the new-core [`ScreenNav`]
-//! context the portal's visibility effect reads).
+//! Render-elsewhere payload: `portal` (and the [`ScreenNav`] context the
+//! portal's visibility effect reads).
 //!
-//! `overlay` / `anchored_overlay` have NO payload of their own — exactly
-//! like the old core (`primitives/overlay.rs`), they are build-time
-//! compositions that lower to a `PortalPrim` item with the backdrop /
+//! `overlay` / `anchored_overlay` have NO payload of their own — they
+//! are build-time compositions that lower to a `PortalPrim` item with the backdrop /
 //! content wiring added around the caller's children (see
 //! [`crate::builders`]'s `overlay()` / `anchored_overlay()`).
 
@@ -16,8 +15,8 @@ use runtime_world::ReadSignal;
 use crate::style_attach::StyleProp;
 
 /// The `portal` primitive — render children at a window-level target,
-/// escaping layout and clipping. Fields mirror what `walker/portal.rs`
-/// receives/forwards to `create_portal`.
+/// escaping layout and clipping. Fields are what the handler forwards to
+/// `create_portal`.
 pub struct PortalPrim {
     pub target: PortalTarget,
     /// Platform-level dismissal (web Escape, Android back, iOS

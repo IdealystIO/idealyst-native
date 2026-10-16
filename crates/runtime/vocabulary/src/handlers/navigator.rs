@@ -1,20 +1,14 @@
 //! Navigator handlers: `swap_navigator`, `stack_navigator`, and the
-//! `navigator_outlet` — the port of `walker/navigator.rs` plus the two
-//! backend-neutral SDK handlers (`swap-navigator`, `stack-navigator`)
-//! onto the new-core mount contract.
+//! `navigator_outlet`, all backend-neutral.
 //!
-//! # Architecture (vs the old core)
+//! # Architecture
 //!
-//! The old path was three-layered: walker substrate → per-backend
-//! `NavigatorRegistry` → SDK handler, with a `NavigatorHost` bundle of
-//! backend-erased closures and a `schedule_microtask` deferral for the
-//! author-layout build (which couldn't run inside the `create_navigator`
-//! `&mut B` borrow). The new mount contract removes the borrow window —
-//! handlers hold `Rc<RefCell<H>>` and borrow per call — so the layout
-//! builds **synchronously inside the mount handler**, and the whole
-//! navigator is one ordinary registry handler. The mount ORDER still
-//! mirrors the old walker exactly (root → initial screen → author style
-//! → chrome/outlet → seat), so the parity goldens match byte-for-byte.
+//! Each navigator is one ordinary registry handler. Handlers hold
+//! `Rc<RefCell<H>>` and borrow per call, so the author layout builds
+//! **synchronously inside the mount handler** — no deferral is needed to
+//! escape a backend borrow. The mount ORDER is root → initial screen →
+//! author style → chrome/outlet → seat; `crates/dev/scene-parity`'s
+//! goldens pin it.
 //!
 //! # Dispatch runs on the world's flush (handler-safety invariant)
 //!
@@ -38,9 +32,9 @@
 //! Dropping the `Realized` (LazyDisposing evict, stack pop/replace/reset,
 //! navigator teardown) is the entire screen teardown: effects die,
 //! cleanups fire. Detached retained screens hold no layout/tree
-//! membership — the old macOS bug where cached persistent screens were
-//! re-framed on every apply-frames pass cannot recur from this layer,
-//! because a cached screen simply isn't reachable from any live root.
+//! membership: a cached screen isn't reachable from any live root, so an
+//! apply-frames pass can't re-frame it (a macOS bug when cached screens
+//! stayed attached).
 //!
 //! "Cleanups fire" covers the author's too, and that is a guarantee the
 //! kernel provides rather than something this module arranges. A screen
@@ -49,8 +43,8 @@
 //! context may become the screen's cleanup anchor. `component_scope` and
 //! the mount walk run `runtime_world::unanchored`, so an author's
 //! `on_scope_drop` / scoped timer / resource in a screen body belongs to
-//! the screen's own `Owned` in both. Without that the seated screen
-//! anchored to whatever effect mounted the navigator (a `when` gate's
+//! the screen's own `Owned` in both. Otherwise the seated screen would
+//! anchor to whatever effect mounted the navigator (a `when` gate's
 //! driver, which never re-runs ⇒ its registrations leaked for the
 //! navigator's whole life) and a selected screen anchored to the driver
 //! effect (⇒ fired on the NEXT navigation, retracting a retained
@@ -59,7 +53,7 @@
 //! `regression_swap_cached_screen_keeps_its_claim_across_navigation`,
 //! `regression_stack_screen_claims_track_the_stack_not_the_driver`.
 //!
-//! # URL sync (conformance wave)
+//! # URL sync
 //!
 //! Platform-URL synchronization is a SEAM here, not an implementation:
 //! a URL-bearing host installs a [`url_sync::UrlSyncService`] and both
@@ -70,9 +64,8 @@
 //! `newcore_url_sync` (installed by `newcore::start`); hosts without
 //! URLs install nothing and the hooks vanish. Cold-start deep links
 //! need no seam: the handlers already `peek_initial_path()`, which the
-//! web boot seeds from `location.pathname` — `defer_initial_mount` is
-//! unnecessary on the new core because the seed happens before the
-//! synchronous mount.
+//! web boot seeds from `location.pathname` before the synchronous mount,
+//! so no deferred initial mount is needed.
 //!
 //! A navigator that mounts LATER does need the seam, and takes it
 //! through [`url_sync::UrlSyncService::current_url`]: the launch slot is
@@ -90,36 +83,29 @@
 //! dispatch, and the router moves the ones whose slice of the path
 //! changed. See [`inbound`] and `docs/deep-links.md`.
 //!
-//! # What is intentionally NOT ported here (each returns with its phase)
+//! # Robot registry, screen chrome, links, native stacks
 //!
-//! - Native system-back routing (`on_system_back`) and the iOS/Android
-//!   native push surfaces — P4/P5 backend work.
-//! - ~~Robot nav registry / back-stack snapshots~~ — LANDED (P5 robot
-//!   remainder): robot builds register each navigator into
-//!   `crate::robot`'s nav registry (element-registry entry +
-//!   snapshot-closure over the mirror signals / back-stack, dispatch
-//!   marks "current", teardown deregisters); `list_navigators` /
-//!   `get_navigator_state` serve wire-identical JSON. `type_name` is
-//!   the builder's `.nav_label(...)` (the SDK sets its old
-//!   presentation type name — wire parity), falling back to the
-//!   vocabulary builder name (`"swap_navigator"`/`"stack_navigator"`)
-//!   for bare vocabulary mounts.
-//! - ~~Stack per-screen header options~~ — LANDED (P6 SDK retarget):
-//!   the screen contract is [`crate::prims::Screen`] (`Element` +
-//!   opaque options, `Into<Screen>` keeps bare-`Element` builders
-//!   source-compatible); the stack publishes the ACTIVE screen's
-//!   options into [`StackNav::screen_chrome`] as a rev-stamped
-//!   [`ScreenChrome`] on every navigation (the old `set_always`
-//!   republish contract), and the stack SDK's `header_state` downcasts
-//!   to `StackScreenOptions` → `StackHeaderState`.
-//! - ~~`link(route = …)`~~ — LANDED (P6): both navigators `provide` a
-//!   [`LinkActivator`] (swap = `Select`, stack = `Push`) around every
-//!   screen build AND the author-layout build; the vocabulary link
-//!   handler captures it at mount (`prims::RouteLink`). Same
-//!   `Dyn`-rebuild recapture limitation as `ScreenNav` (world context
-//!   has no scoping).
-//! - `ScreenNav` portal-hiding context — re-lands with the portal
-//!   handler port (the portal agent owns that seam).
+//! - Robot builds register each navigator into `crate::robot`'s nav
+//!   registry (element-registry entry + snapshot closure over the mirror
+//!   signals / back-stack; dispatch marks "current", teardown
+//!   deregisters), served by `list_navigators` / `get_navigator_state`.
+//!   `type_name` is the builder's `.nav_label(...)` (the SDK sets its
+//!   presentation type name), falling back to the vocabulary builder
+//!   name (`"swap_navigator"`/`"stack_navigator"`) for bare mounts.
+//! - Stack per-screen header options: the screen contract is
+//!   [`crate::prims::Screen`] (`Element` + opaque options;
+//!   `Into<Screen>` keeps bare-`Element` builders working). The stack
+//!   publishes the ACTIVE screen's options into
+//!   [`StackNav::screen_chrome`] as a rev-stamped [`ScreenChrome`] on
+//!   every navigation (republished even when equal), and the stack SDK's
+//!   `header_state` downcasts to `StackScreenOptions` → `StackHeaderState`.
+//! - `link(route = …)`: both navigators `provide` a [`LinkActivator`]
+//!   (swap = `Select`, stack = `Push`) around every screen build AND the
+//!   author-layout build; the vocabulary link handler captures it at
+//!   mount (`prims::RouteLink`). Same `Dyn`-rebuild recapture limitation
+//!   as `ScreenNav` (world context has no scoping).
+//! - Native stacks (UIKit push animations, swipe-back, system Back): see
+//!   [`native_push`].
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -174,7 +160,7 @@ pub fn register_navigator<H: NavCaps + 'static>(registry: &mut Registry<H>) {
 }
 
 // ===========================================================================
-// Outlet capture — port of the walker's `OutletCaptureGuard`
+// Outlet capture
 // ===========================================================================
 
 thread_local! {
@@ -182,8 +168,7 @@ thread_local! {
     /// pushes a typed cell around its author-layout build; the outlet
     /// handler writes its node into the TOP cell. A stack (not one
     /// slot) so a nested navigator building its own layout inside a
-    /// parent's layout captures into its own cell, never the parent's —
-    /// the same invariant the old walker's `OUTLET_CAPTURE` pinned.
+    /// parent's layout captures into its own cell, never the parent's.
     static OUTLET_CAPTURE: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -225,12 +210,11 @@ fn outlet_capture_record<N: Clone + 'static>(node: &N) {
 }
 
 // ===========================================================================
-// Style-override fold — port of `Element::with_style_overrides`
+// Style-override fold
 // ===========================================================================
 
-/// Fold `rules` onto `prop` as the override layer (overrides win on
-/// conflicts, exactly like the old element override layer which
-/// resolves last).
+/// Fold `rules` onto `prop` as the override layer (resolves last, so
+/// overrides win on conflicts).
 fn fold_prop(prop: Option<StyleProp>, rules: &Rc<StyleRules>) -> StyleProp {
     let rules = rules.clone();
     match prop {
@@ -290,15 +274,13 @@ macro_rules! try_fold_payload {
 }
 
 /// Layer `rules` onto a screen ROOT element's style override layer —
-/// the new-core port of `Element::with_style_overrides`, restricted to
-/// what `NavigatorHost::set_screen_style_overlay` used it for (the
-/// stack's `screen_flow_fill_rules` full-bleed/flow-fill placement).
+/// used for the stack's `screen_flow_fill_rules` full-bleed/flow-fill
+/// placement.
 ///
-/// The old enum matched on every style-bearing variant; here the payload
-/// is type-erased, so the fold enumerates the built-in payload types.
-/// A screen whose root is a third-party primitive, a `Dyn` hole, or a
-/// `Keyed` list is left untouched (the old core's node-less variants
-/// were skipped the same way) — give such screens an `Item` root.
+/// The payload is type-erased, so the fold enumerates the built-in
+/// payload types. A screen whose root is a third-party primitive, a
+/// `Dyn` hole, or a `Keyed` list (no node of its own) is left untouched
+/// — give such screens an `Item` root.
 fn fold_style_overrides(element: &mut Element, rules: &Rc<StyleRules>) {
     use crate::prims::{
         ActivityIndicatorPrim, ButtonPrim, IconPrim, ImagePrim, LazyPrim, LinkPrim,
@@ -380,13 +362,11 @@ struct LiveScreen<N> {
 /// Realize one screen: run the route builder inside the screen's own
 /// scope (component_scope: untracked, creations collected into the
 /// element's `Owned`), with the nav-base / screen-state / screen-route
-/// thread-local guards held across BOTH the builder and the realize —
-/// the old `mount_screen`'s `with_scope(|| builder() … build())` shape.
+/// thread-local guards held across BOTH the builder and the realize.
 ///
 /// [`crate::prims::ScreenNav`] is `provide`d into a scope THIS SCREEN
 /// owns (`LiveScreen::ctx_scope`) so any portal in the subtree can
-/// install its hide-when-inactive visibility effect — the old
-/// `mount_screen`'s `reactive::provide(ScreenNav …)`.
+/// install its hide-when-inactive visibility effect.
 ///
 /// The ownership is load-bearing, not tidiness. `ScreenNav` carries
 /// `active_route`, a `Copy` handle owned by the NAVIGATOR's scope, and
@@ -395,16 +375,15 @@ struct LiveScreen<N> {
 /// Unowned, the entry outlives the navigator that a route gate or an
 /// auth swap tore down, and the next portal to mount injects it and
 /// aborts with `stale-signal-handle` on its first `active_route.get()`.
-/// Screen ownership also replaces the old save/restore-`prev` idiom,
-/// which could *reinstate* a dead `ScreenNav` by re-providing a snapshot
-/// taken before the teardown.
+/// Don't replace this with a save/restore-`prev` idiom: that can
+/// *reinstate* a dead `ScreenNav` by re-providing a snapshot taken before
+/// the teardown.
 ///
 /// World context is a per-type stack, not a tree, so with two screens
 /// retained at once a `Dyn` region rebuilt LATER injects whichever
-/// screen provided most recently rather than its own. That is the old
-/// core's `AmbientNavContext` recapture, which rides the P3 driver work
-/// — it is a wrong-value limitation now, no longer a crash, because
-/// every entry on the stack is backed by live signals.
+/// screen provided most recently rather than its own. That is a known
+/// wrong-value limitation, not a crash: every entry on the stack is
+/// backed by live signals.
 ///
 /// Must run with the owning world ambient (mount handlers and driver
 /// effects both qualify) — the handler-safety invariant in the module
@@ -425,7 +404,7 @@ fn realize_screen<H: NavCaps + 'static>(
         .get(name)
         .unwrap_or_else(|| panic!("navigator: route '{name}' is not registered"));
     // Publish the base prefix for any navigator nested in THIS screen
-    // (`current_nav_base()` reads it) — hierarchy port, old `NavBaseGuard`.
+    // (`current_nav_base()` reads it).
     //
     // This is the screen's CONCRETE path (`/projects/p1`), not
     // `join_path(base, entry.path)`: the registered pattern still holds
@@ -447,10 +426,9 @@ fn realize_screen<H: NavCaps + 'static>(
             active_route: active_route.read_only(),
             route: name,
         });
-        // The ambient route-link seam (P6): a `link(route = …)` mounted
-        // in THIS screen's subtree resolves to THIS navigator's dispatch
-        // — push-vs-select decided by the navigator kind, the old
-        // `install_link_activator` contract. Owned by the screen so a
+        // The ambient route-link seam: a `link(route = …)` mounted in
+        // THIS screen's subtree resolves to THIS navigator's dispatch —
+        // push-vs-select decided by the navigator kind. Owned by the screen so a
         // nested navigator's screens re-shadow correctly, and so the
         // entry cannot outlive the dispatch signals it closes over.
         provide(link_activator.clone());
@@ -470,7 +448,7 @@ fn realize_screen<H: NavCaps + 'static>(
     let options = options_slot.borrow_mut().take();
     // Handler-requested screen placement (the stack's flow-fill) rides
     // the root element's style OVERRIDE layer, composing with the
-    // screen's own styles — old `set_screen_style_overlay` semantics.
+    // screen's own styles.
     if let Some(rules) = overlay {
         fold_style_overrides(&mut element, rules);
     }
@@ -518,7 +496,7 @@ fn route_rank(entry: &NavScreenEntry) -> (usize, usize, std::cmp::Reverse<usize>
 /// Prefix-resolve `path` against `screens` (base already stripped by the
 /// caller via `match_prefix(path, base)`): the best-ranked matching
 /// route per [`route_rank`] wins, returning the unconsumed tail for a
-/// nested navigator. Port of the walker's `resolve_entry`.
+/// nested navigator.
 fn resolve_entry(
     screens: &HashMap<&'static str, NavScreenEntry>,
     base: &str,
@@ -553,8 +531,8 @@ fn robot_resolve(
     Ok((route, rel, params, query))
 }
 
-/// Full-match `path` against `screens` — the walker's `match_path`,
-/// used by the stack to re-mount cold (disposed) entries from their URL.
+/// Full-match `path` against `screens` — used by the stack to re-mount
+/// cold (disposed) entries from their URL.
 /// Ranked by [`route_rank`] exactly like [`resolve_entry`]: a cold
 /// re-mount must rebuild the screen the URL originally resolved to.
 fn match_path(
@@ -578,29 +556,25 @@ fn match_path(
 // URL-sync seam — the backend-installed platform-URL service
 // ===========================================================================
 
-/// Platform-URL synchronization seam (the new-core counterpart of the
-/// old `NavigatorControl::enable_url_sync` opt-in). The handlers are
-/// backend-neutral and never touch a URL themselves; a URL-bearing host
-/// (backend-web's new-core boot) installs a [`UrlSyncService`] and every
-/// navigator mounted afterwards registers with it. Hosts without URLs
-/// install nothing and the seam is invisible — exactly the old
-/// provider-model behavior (only web ever touched a URL).
+/// Platform-URL synchronization seam. The handlers are backend-neutral
+/// and never touch a URL themselves; a URL-bearing host (backend-web's
+/// boot) installs a [`UrlSyncService`] and every navigator mounted
+/// afterwards registers with it. Hosts without URLs install nothing and
+/// the seam is invisible.
 pub mod url_sync {
     use super::*;
 
     /// Which navigator flavor registered — decides how the service
     /// translates a browser-back into commands (`Select` for the
-    /// depth-less swap, `Pop`(s) for a stack), the role the old
-    /// `build_link_command` played.
+    /// depth-less swap, `Pop`(s) for a stack).
     #[derive(Copy, Clone, PartialEq, Eq, Debug)]
     pub enum NavSyncKind {
         Swap,
         Stack,
     }
 
-    /// Coarse post-commit classification — mirror of the old
-    /// `url_sync::CommandKind`, computed by the driver BEFORE the
-    /// command moves into the commit match.
+    /// Coarse post-commit classification, computed by the driver BEFORE
+    /// the command moves into the commit match.
     #[derive(Copy, Clone, PartialEq, Eq, Debug)]
     pub enum CommittedKind {
         /// Push / Select / Replace / Reset — a fresh screen now shows.
@@ -696,22 +670,20 @@ pub mod url_sync {
         }
         /// Runs at DISPATCH time with the base-composed command, before
         /// it is staged — the outlet still shows the outgoing screen, so
-        /// scroll snapshots see it (old `before_command` contract).
+        /// scroll snapshots see it.
         ///
         /// Returns `true` when this dispatch is the service's own echo
         /// (popstate reconciliation): the driver must then SKIP
-        /// [`after_commit`] for the command. The old core checked a
-        /// RECONCILING flag at commit time, which was synchronous with
-        /// dispatch; the new core commits on a later flush, so the flag
-        /// would be stale by then — the suppress bit captures it at the
-        /// only moment it is valid.
+        /// [`after_commit`] for the command. Commit happens on a later
+        /// flush, so a RECONCILING flag checked at commit time would be
+        /// stale by then — the suppress bit captures it at the only
+        /// moment it is valid.
         ///
         /// [`after_commit`]: UrlSyncService::after_commit
         fn before_command(&self, id: u64, cmd: &NavCommand) -> bool;
         /// Runs in the driver right after the handler committed a
-        /// command — the outlet shows the new screen (old
-        /// `after_command` contract: forward = scroll-to-top, pop =
-        /// history bookkeeping + scroll restore).
+        /// command — the outlet shows the new screen (forward =
+        /// scroll-to-top, pop = history bookkeeping + scroll restore).
         fn after_commit(&self, id: u64, kind: CommittedKind);
         /// Navigator teardown.
         fn deregister(&self, id: u64);
@@ -893,9 +865,9 @@ pub mod inbound {
 /// a stack pop produce the *same* outlet content change — the top screen
 /// is swapped — and differ only in **direction**. Direction is exactly
 /// what `UINavigationController` needs in order to animate, and what the
-/// interactive swipe-back gesture needs in order to exist at all. So
-/// the single direction-blind reveal this handler used to have could
-/// not be the hook. The five directions of [`Reveal`] are.
+/// interactive swipe-back gesture needs in order to exist at all. So a
+/// single direction-blind reveal cannot be the hook; the five directions
+/// of [`Reveal`] are.
 ///
 /// # The two-way contract
 ///
@@ -1121,7 +1093,7 @@ fn params_from_url(screens: &HashMap<&'static str, NavScreenEntry>, cmd: NavComm
 }
 
 /// Compose this navigator's base prefix onto a command's
-/// (navigator-relative) url — old `NavigatorControl::compose_url`.
+/// (navigator-relative) url.
 fn compose_url(base: &str, cmd: NavCommand) -> NavCommand {
     match cmd {
         NavCommand::Push { name, url, params, query } => {
@@ -1141,10 +1113,9 @@ fn compose_url(base: &str, cmd: NavCommand) -> NavCommand {
 }
 
 /// Mirror a route-carrying command into the active route/path signals
-/// BEFORE the handler commits it — the old dispatch's pre-write, so
-/// chrome effects and the structural swap land in the same flush.
-/// `Pop` carries no route; the driver writes the revealed entry after
-/// committing (old `active_changed` contract).
+/// BEFORE the handler commits it, so chrome effects and the structural
+/// swap land in the same flush. `Pop` carries no route; the driver
+/// writes the revealed entry after committing.
 fn mirror_command(
     cmd: &NavCommand,
     route: Signal<&'static str>,
@@ -1187,9 +1158,8 @@ struct InitialResolution {
 
 /// Resolve the initial (route, params, full path) for a navigator from
 /// the first URL source that resolves against `base`, falling back to
-/// the configured initial. Port of the walker's non-deferred
-/// initial-mount resolution, including the concrete-path (not pattern)
-/// mirror fix.
+/// the configured initial. The mirror holds the concrete path, not the
+/// route pattern.
 ///
 /// Two sources, in order, because a navigator can mount at two very
 /// different moments:
@@ -1317,7 +1287,7 @@ struct SwapShared<H: NavCaps + 'static> {
     /// Mounted screens keyed by normalized URL — NOT route name: a
     /// parameterized route funnels many screens through one name;
     /// name-keying made same-route selects no-ops and served entry A's
-    /// cached screen for entry B (the docs-app catalog bug, ported).
+    /// cached screen for entry B (the docs-app catalog bug).
     mounted: RefCell<HashMap<String, LiveScreen<H::Node>>>,
     /// Currently shown `(route name, normalized url)`.
     active: RefCell<Option<(&'static str, String)>>,
@@ -1380,10 +1350,10 @@ impl<H: NavCaps + 'static> SwapShared<H> {
         if self.mount_policy == MountPolicy::LazyDisposing {
             // Take the evicted screen OUT of the map and end every
             // borrow before dropping it: the drop runs author cleanups
-            // that may navigate (re-entering these cells). Under the
-            // new core a re-entrant navigation only stages a command
-            // (the driver picks it up next round), but the borrow
-            // hygiene is kept anyway — cleanups can also read state.
+            // that may navigate (re-entering these cells). A re-entrant
+            // navigation only stages a command (the driver picks it up
+            // next round), but the borrow hygiene is kept anyway —
+            // cleanups can also read state.
             let prev_key = self.active.borrow().as_ref().map(|(_, u)| u.clone());
             let evicted = prev_key.and_then(|k| self.mounted.borrow_mut().remove(&k));
             // Screen teardown: effects die, cleanups fire — and the host
@@ -1423,8 +1393,7 @@ impl<H: NavCaps + 'static> SwapShared<H> {
     }
 }
 
-/// Mount a `swap_navigator` — port of `walker/navigator.rs::build` +
-/// `swap_navigator::SwapHandler` (one handler, all backends). See the
+/// Mount a `swap_navigator` (one handler, all backends). See the
 /// module docs for the mount-order contract.
 pub fn mount_swap_navigator<H: NavCaps + 'static>(
     cx: &mut MountCx<'_, H>,
@@ -1437,16 +1406,14 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
 
     // Root container + fill-the-container default (a bare root hugs
     // content, collapsing a viewport-height app). The author's style is
-    // attached later, onto the same node, so it overrides this — the old
-    // init-then-walker-style order.
+    // attached later, onto the same node, so it overrides this.
     let root = backend.borrow_mut().create_view(&prim.a11y);
     backend.borrow_mut().apply_style(&root, &navigator_fill_rules());
     // Identity registration (robot builds): the navigator surfaces as an
     // `ElementKind::Navigator` element whose children are everything
     // mounted inside this handler (initial screen + chrome) — the guard
     // lives to the end of the fn so those mounts link here. Screens
-    // mounted LATER by the driver effect register as orphan roots (the
-    // old registry's exact behavior for post-walk screen mounts).
+    // mounted LATER by the driver effect register as orphan roots.
     #[cfg(feature = "robot")]
     let robot_reg = crate::robot::register_mount(
         &backend,
@@ -1458,18 +1425,17 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         crate::robot::MountActions::default(),
     );
 
-    // SSG route discovery (the new-core leg of `backend_ssr::render_all`):
-    // publish this navigator's screen path patterns to the shared
-    // route collector — the same hook the old walker's
-    // `dispatch_navigator` fires (`record_routes`), so the crawl
-    // harvests nested navigators' routes as their parent screen mounts.
+    // SSG route discovery (`backend_ssr::render_all`): publish this
+    // navigator's screen path patterns to the shared route collector, so
+    // the crawl harvests nested navigators' routes as their parent screen
+    // mounts.
     // No-op when no collector is enabled (live backends).
     record_route_paths(prim.config.screens.values().map(|e| e.path));
 
     // Resolve the initial BEFORE creating the nav-state signals so a
-    // cold-start deep link is their *committed* initial value (the new
-    // core stages writes; creating-then-setting would leave chrome's
-    // first build reading the configured initial).
+    // cold-start deep link is their *committed* initial value (writes
+    // stage; creating-then-setting would leave chrome's first build
+    // reading the configured initial).
     let InitialResolution {
         route: initial_route,
         params: initial_params,
@@ -1482,10 +1448,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     let initial_cfg_full = join_path(&base, split_query(prim.config.initial_path).0);
 
     // Nav-state mirror. Created inside the handler ⇒ collected into the
-    // navigator's Realized ⇒ freed exactly at navigator teardown. This
-    // replaces the old dedicated-scope-retained-on-the-control dance
-    // (the QuillEMR "signal used after its scope was dropped" fix) — the
-    // ownership is now structural.
+    // navigator's Realized ⇒ freed exactly at navigator teardown, so the
+    // signals can't be used after their scope drops (a QuillEMR crash
+    // when the ownership was arranged by hand).
     let active_route = signal(initial_route);
     let active_path = signal(initial_path.clone());
     let active_query = signal(initial_query.clone());
@@ -1502,9 +1467,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         link_activator: RefCell::new(None),
     });
 
-    // Robot nav registry (P5): snapshot closure over the mirror signals
-    // + a Weak of the shared state (liveness gate, the old registry's
-    // dead-`Weak` prune); deregistration rides a teardown probe owned by
+    // Robot nav registry: snapshot closure over the mirror signals + a
+    // Weak of the shared state (liveness gate: a dead `Weak` prunes the
+    // entry); deregistration rides a teardown probe owned by
     // the navigator's Realized. A swap navigator is depth-less: depth 1,
     // no back, stack = its single active entry.
     #[cfg(feature = "robot")]
@@ -1512,9 +1477,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         let weak = Rc::downgrade(&shared);
         let base = base.clone();
         let nav_id = crate::robot::register_navigator(
-            // Presentation label: the SDK supplies its old presentation
-            // type name (wire parity with the old bridge); bare
-            // vocabulary mounts fall back to the builder name.
+            // Presentation label: the SDK supplies its presentation type
+            // name; bare vocabulary mounts fall back to the builder name.
             prim.nav_label.unwrap_or("swap_navigator"),
             Some(robot_reg.id().0),
             Rc::new(move || {
@@ -1569,9 +1533,8 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         Rc::new(move |cmd| dispatch_linked(cmd, None))
     };
 
-    // Route links inside this navigator's screens/chrome Select — the
-    // swap half of the old `install_select_link_activator` contract
-    // ("links switch, never push"). Handler-safe: rides the staged
+    // Route links inside this navigator's screens/chrome Select ("links
+    // switch, never push"). Handler-safe: rides the staged
     // dispatch.
     let link_activator = {
         let dispatch = dispatch.clone();
@@ -1630,22 +1593,21 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
                         shared.select(name, &url, params, query);
                     }
                     // Swap navigators have no stack; stray stack verbs
-                    // are ignored, never a panic (the old tab-handler
-                    // panic regression, ported as a comment-guard).
+                    // are ignored, never a panic (a tab handler sending
+                    // one must not crash the app).
                     _ => {}
                 }
                 if !suppress_sync {
                     sync.after(kind);
                 }
             }
-            // Centralized post-navigation layout guarantee — the old
-            // `install_request_layout(|| B::schedule_layout_pass())`.
+            // Centralized post-navigation layout guarantee.
             H::schedule_layout_pass();
         });
     }
 
-    // Initial screen — mounted BEFORE the author layout builds, matching
-    // the old walker (screen ops precede the microtask-deferred chrome).
+    // Initial screen — mounted BEFORE the author layout builds (screen
+    // ops precede chrome; the scene-parity goldens pin the order).
     // Under SSR hydration the server document nests this screen inside
     // the outlet (built below) — the begin/end pair steers the adoption
     // cursor there and back. See `LifecycleOps::hydrate_nav_screen_begin`.
@@ -1665,7 +1627,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     backend.borrow_mut().hydrate_nav_screen_end();
     // Root navigator: the nested subtree mounted synchronously above, so
     // every nested navigator already peeked the launch URL. Clear the
-    // slot so a later rebuild isn't poisoned (old walker contract).
+    // slot so a later rebuild isn't poisoned.
     if base.is_empty() {
         set_initial_path(None);
     }
@@ -1677,13 +1639,11 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
         fill(NavHandle::new(dispatch.clone()));
     }
 
-    // Author layout (or a bare outlet). Built synchronously — the new
-    // mount contract has no borrow window to defer around — inside the
-    // navigator's Realized collector, so author `effect()`s in chrome
-    // are owned by the navigator (the old retained-chrome-scope
-    // guarantee, now structural). `SwapNav` is provided into the world
-    // context for `inject`; the previous value is restored afterwards so
-    // nested navigators don't clobber their parent's context.
+    // Author layout (or a bare outlet). Built synchronously — the mount
+    // contract has no borrow window to defer around — inside the
+    // navigator's Realized collector, so author `effect()`s in chrome are
+    // owned by the navigator. `SwapNav` is provided into the world
+    // context for `inject` (ownership below).
     let on_select: Rc<dyn Fn(&'static str)> = {
         let dispatch = dispatch.clone();
         let select_args = prim.select_args;
@@ -1692,7 +1652,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
             // builder) — `None` ⇒ unregistered or needs path params a
             // bare name can't supply; ignore rather than panic (chrome
             // taps must not crash; use `NavHandle::select` for
-            // typed-param routes). The old select-args fix, ported.
+            // typed-param routes).
             let Some((url, params)) = select_args.get(name).and_then(|build| build()) else {
                 return;
             };
@@ -1705,9 +1665,9 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     // when the navigator unmounts. That is the lifetime the contents
     // demand (`SwapNav` carries this navigator's `active_route` /
     // `active_path`), and it keeps the context resolvable for chrome that
-    // rebuilds reactively after mount. The old save/restore-`prev` idiom
-    // left it published FOREVER at the top level, which is how a
-    // destroyed navigator's signals stayed reachable through `inject`.
+    // rebuilds reactively after mount. Don't use a save/restore-`prev`
+    // idiom here: it leaves the entry published FOREVER at the top level,
+    // so a destroyed navigator's signals stay reachable through `inject`.
     provide(SwapNav { active_route, active_path, query: active_query, on_select });
     // Chrome links target this navigator too (a nav bar of
     // `link(route = …)`s) — same ownership.
@@ -1744,7 +1704,7 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
     }
     *shared.outlet.borrow_mut() = outlet;
     // Seat the initial screen: cache under the RESOLVED url (deep-link
-    // aware) and show it — old `seat_initial`.
+    // aware) and show it.
     let key = url_key(&initial_path);
     shared.show_in_outlet(&initial.node);
     shared.mounted.borrow_mut().insert(key.clone(), initial);
@@ -1833,9 +1793,9 @@ struct StackShared<H: NavCaps + 'static> {
     /// seats or re-seats that screen.
     initial_query: QueryParams,
     /// Every mounted stack screen gets these rules layered onto its
-    /// root's style override layer — the ported
-    /// `set_screen_style_overlay(screen_flow_fill_rules())` (without it
-    /// a `flex_grow` screen collapses to content height in the outlet).
+    /// root's style override layer (`screen_flow_fill_rules()`; without
+    /// it a `flex_grow` screen collapses to content height in the
+    /// outlet).
     screen_overlay: Rc<StyleRules>,
     active_route: Signal<&'static str>,
     active_path: Signal<String>,
@@ -1843,9 +1803,8 @@ struct StackShared<H: NavCaps + 'static> {
     depth: Signal<usize>,
     can_go_back: Signal<bool>,
     /// The active screen's chrome slot (see [`StackNav::screen_chrome`])
-    /// + its rev stamp (`sync_chrome` republishes on EVERY stack change,
-    /// the old `set_always` contract — screens with identical options
-    /// still swapped underneath).
+    /// + its rev stamp (`sync_chrome` republishes on EVERY stack change —
+    /// screens with identical options still swapped underneath).
     screen_chrome: Signal<ScreenChrome>,
     chrome_rev: std::cell::Cell<u64>,
     /// This navigator's route-link seam (`Push`) — a cell for the same
@@ -1883,8 +1842,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
 
     /// Publish the top screen's options into the scoped `screen_chrome`
     /// signal so an author `StackHeader` re-renders for the current
-    /// screen — the old handler's `sync_chrome`, rev-stamped (module
-    /// docs on [`ScreenChrome`]). Called after every stack mutation.
+    /// screen, rev-stamped (module docs on [`ScreenChrome`]). Called after every stack mutation.
     fn sync_chrome(&self) {
         let options = self
             .stack
@@ -1916,9 +1874,8 @@ impl<H: NavCaps + 'static> StackShared<H> {
     /// below a cold-start deep link).
     ///
     /// With no presenter attached, all five directions collapse to the
-    /// same `clear_children` + `insert` this handler has always done, so
-    /// the emitted op stream is byte-identical to the pre-presenter one
-    /// — which is what the `nav_stack_push_pop` scene-parity golden pins.
+    /// same `clear_children` + `insert` — the op stream the
+    /// `nav_stack_push_pop` scene-parity golden pins.
     fn reveal_node(&self, dir: Reveal, node: H::Node) {
         if let Some(handle) = self.presenter.borrow().as_ref() {
             // The presenter owns placement: it seated a native container
@@ -1987,8 +1944,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
     /// route DIFFERENT from the configured initial, seat the configured
     /// initial BELOW it so Back returns to the index — live (`Retain`)
     /// or cold (`Rebuild`: the parent was never visited; it must not run
-    /// effects until a pop reveals it). Old `seat_initial`, invariant
-    /// for invariant.
+    /// effects until a pop reveals it).
     fn seat_initial(
         &self,
         route: &'static str,
@@ -2092,9 +2048,8 @@ impl<H: NavCaps + 'static> StackShared<H> {
             return;
         }
         let popped = self.stack.borrow_mut().pop();
-        // Popped screen teardown FIRST, then reveal — the old
-        // release_screen-then-show ordering (cleanups fire before the
-        // revealed screen's insert). Dropped outside any stack borrow.
+        // Popped screen teardown FIRST, then reveal (cleanups fire before
+        // the revealed screen's insert). Dropped outside any stack borrow.
         release_and_drop(&self.backend, popped.and_then(|e| e.live));
         self.materialize_top();
         // On the presenter-initiated path the container already shows
@@ -2106,7 +2061,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
         }
         self.publish_depth();
         // Pop carries no route through the command — mirror the revealed
-        // entry ourselves (old `active_changed`). Copied out so no stack
+        // entry ourselves. Copied out so no stack
         // borrow is held across the signal writes.
         // The revealed entry's query goes back up with it, so a screen
         // reading `StackNav::query` sees the state it was pushed with —
@@ -2167,8 +2122,7 @@ impl<H: NavCaps + 'static> StackShared<H> {
     }
 }
 
-/// Mount a `stack_navigator` — port of `walker/navigator.rs::build` +
-/// `stack_navigator::StackHandler`.
+/// Mount a `stack_navigator` (one handler, all backends).
 pub fn mount_stack_navigator<H: NavCaps + 'static>(
     cx: &mut MountCx<'_, H>,
     prim: StackNavigatorPrim,
@@ -2193,7 +2147,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     );
 
     // Browser semantics on web, native-stack semantics elsewhere
-    // (resolved at mount, old handler contract).
+    // (resolved at mount).
     let retention = match prim.retention {
         StackRetention::PlatformDefault => {
             if matches!(runtime_shared::platform(), runtime_shared::Platform::Web) {
@@ -2247,9 +2201,9 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         link_activator: RefCell::new(None),
     });
 
-    // Robot nav registry (P5): the stack's snapshot reads the live
-    // back-stack through a Weak of the shared state (root-first
-    // `(route, path)` pairs — the old `NavSnapshot.stack` contract).
+    // Robot nav registry: the stack's snapshot reads the live back-stack
+    // through a Weak of the shared state (root-first `(route, path)`
+    // pairs).
     #[cfg(feature = "robot")]
     let nav_id = {
         let weak = Rc::downgrade(&shared);
@@ -2311,10 +2265,8 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         Rc::new(move |cmd| dispatch_linked(cmd, None))
     };
 
-    // Route links inside this navigator's screens/chrome PUSH — the
-    // stack half of the old link-activator contract (the old stack
-    // installed no activator and links fell back to `Push`; here the
-    // fallback is explicit). Handler-safe: rides the staged dispatch.
+    // Route links inside this navigator's screens/chrome PUSH.
+    // Handler-safe: rides the staged dispatch.
     let link_activator = {
         let dispatch = dispatch.clone();
         LinkActivator::new(move |name, url, params| {
@@ -2388,8 +2340,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
                     NavCommand::Reset { name, params, query, url } => {
                         shared.reset(name, params, query, url)
                     }
-                    // A stack never receives Select; ignore (old
-                    // dispatcher contract).
+                    // A stack never receives Select; ignore.
                     NavCommand::Select { .. } | NavCommand::Custom(_) => {}
                 }
                 if !suppress_sync {
@@ -2400,7 +2351,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
         });
     }
 
-    // Initial screen before chrome (old walker order). Under SSR
+    // Initial screen before chrome (scene-parity order). Under SSR
     // hydration the server document nests this screen inside the outlet
     // (built below) — the begin/end pair steers the adoption cursor
     // there and back so the out-of-document-order build still adopts.
@@ -2537,8 +2488,7 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
 // navigator_outlet
 // ===========================================================================
 
-/// Mount a `navigator_outlet` — port of `dispatch_navigator_outlet`:
-/// an empty container view (`mark_container`, like a plain container
+/// Mount a `navigator_outlet`: an empty container view (`mark_container`, like a plain container
 /// view) whose sole child the enclosing navigator swaps. Style-less
 /// outlets get the bounded, fillable flex default (`outlet_fill_rules`);
 /// an author style REPLACES it entirely.
@@ -2558,15 +2508,13 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
     //
     // The rules sit in the sheet's BASE layer, not behind
     // `with_computed("__navigator_outlet_fill", …)`. `outlet_fill_rules`
-    // is a pure constant — no theme read, no runtime input — and the
-    // computed wrapper existed only to keep the minted class
-    // byte-identical to old-core SSR, a core that no longer exists. What
-    // the wrapper still cost was real: `computed.is_some()` is a premint
-    // disqualifier (the dump cannot enumerate an arbitrary closure's
-    // key), so EVERY navigator outlet in every app fell through to the
-    // live style engine. As a plain constant sheet it premints, and the
-    // class it wears is identical on SSR and on the client because both
-    // mint it from this one definition.
+    // is a pure constant — no theme read, no runtime input — and
+    // `computed.is_some()` is a premint disqualifier (the dump cannot
+    // enumerate an arbitrary closure's key), so a computed wrapper would
+    // send EVERY navigator outlet in every app to the live style engine.
+    // As a plain constant sheet it premints, and the class it wears is
+    // identical on SSR and on the client because both mint it from this
+    // one definition.
     let style = prim.style.unwrap_or_else(|| {
         fn outlet_sheet() -> Rc<runtime_shared::StyleSheet> {
             static KEY: u8 = 0;
@@ -2588,7 +2536,7 @@ pub fn mount_navigator_outlet<H: NavCaps + 'static>(
 
 #[cfg(test)]
 mod route_rank_tests {
-    //! Route resolution specificity (FRAMEWORK-NOTES #72). The bug was a
+    //! Route resolution specificity. The bug was a
     //! tie broken by `HashMap` iteration order, which std seeds randomly
     //! PER MAP — so each case below builds a fresh map many times, in
     //! both registration orders. Pre-fix, every map whose iteration

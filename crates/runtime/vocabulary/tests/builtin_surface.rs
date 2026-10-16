@@ -2,31 +2,18 @@
 //!
 //! # Why this test exists
 //!
-//! On the old core, a heavy third-party renderer (canvas-vello → vello →
-//! wgpu, the PDF stack, maps) reached `main.wasm` only through its
-//! `Element::External` handler registration, and an SDK could *defer* that
-//! registration into a `#[wasm_split]` chunk body
-//! (`runtime_shared::defer_external_registration`) so the payload shipped in
-//! the chunk instead. Four hand-built `examples/*-canvas` fixtures probed
-//! that axis by eye, and `tests/lazy-external-split` + the
-//! `prune-regression` runner measured it in bytes (a 512 KiB fake SDK; the
-//! lazy variant's `main.wasm` had to be ≥ 400 KiB smaller).
+//! Every handler `register_builtins` installs is registered at the boot
+//! seam and is therefore statically reachable from the entry point, in
+//! every build, on every target — the built-in set IS the bundle floor.
+//! (A third-party extension can keep its handler out of `main.wasm` by
+//! declaring the kind with `Registry::defer` and installing it from its
+//! chunk via `register_deferred` — `tests/lazy-payload-split` measures
+//! that — but built-ins are always eager.)
 //!
-//! Runtime v2 removes that axis entirely. [`runtime_scene::realize`] takes
-//! an `Rc<Registry<H>>` with **no interior mutability** and
-//! `Registry::register` needs `&mut self`, so handlers can only be
-//! installed at the boot seam (`register_builtins` + the app's
-//! `register_scene_extensions`) before the tree goes live. Every
-//! registered handler is therefore statically reachable from the entry
-//! point, in every build, on every target — registration IS the bundle
-//! floor, and there is no lazy escape hatch left to measure.
-//!
-//! So the byte-diff experiment has nothing left to vary, but the thing it
-//! ultimately protected — "the framework does not silently grow what every
-//! app must carry" — is now decided entirely by *how many handlers
-//! `register_builtins` installs and what they reach*. That is what this
-//! file gates, deterministically and offline, instead of building two wasm
-//! artifacts and diffing them.
+//! So "the framework does not silently grow what every app must carry"
+//! is decided by *how many handlers `register_builtins` installs and what
+//! they reach*. That is what this file gates, deterministically and
+//! offline, instead of building two wasm artifacts and diffing them.
 //!
 //! # What a failure means
 //!
@@ -46,8 +33,8 @@
 //! list, which is `runtime-shared` / `runtime-scene` / `runtime-world` and
 //! nothing else — see this crate's `Cargo.toml`, where every heavier
 //! anchor (`mcp-catalog`'s `inventory` ctors, `runtime-shared`'s `linkme`
-//! premint registry, `runtime-core`'s `LegacyBridge`) is behind an
-//! off-by-default feature so shipped graphs carry none of it.
+//! premint registry) is behind an off-by-default feature so shipped
+//! graphs carry none of it.
 
 use runtime_scene::Registry;
 use runtime_vocabulary::caps::ViewOps;
@@ -109,7 +96,7 @@ fn regression_builtin_handler_set_size_is_pinned() {
 fn regression_builtin_handler_identities_are_pinned() {
     let registry = builtins();
 
-    // The 13 P2 primitives.
+    // The basic primitives.
     assert!(registry.has::<PrimCell<ViewPrim>>(), "view");
     assert!(registry.has::<PrimCell<TextPrim>>(), "text");
     assert!(registry.has::<PrimCell<ButtonPrim>>(), "button");
@@ -127,7 +114,8 @@ fn regression_builtin_handler_identities_are_pinned() {
     assert!(registry.has::<PrimCell<TextInputPrim>>(), "text_input");
     assert!(registry.has::<PrimCell<TextAreaPrim>>(), "text_area");
 
-    // The P3 set + the navigator prims + the lazy chunk boundary.
+    // Lists, graphics, overlays + the navigator prims + the lazy chunk
+    // boundary.
     assert!(registry.has::<PrimCell<VirtualizerPrim>>(), "virtualizer");
     assert!(registry.has::<PrimCell<VirtualGridPrim>>(), "virtual_grid");
     assert!(registry.has::<PrimCell<GraphicsPrim>>(), "graphics");

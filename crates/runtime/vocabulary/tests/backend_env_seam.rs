@@ -6,23 +6,19 @@
 //! Five author-facing free functions — `platform()`, `color_scheme()`,
 //! `open_url()`, `set_fullscreen()`, `announce()` — read thread-local
 //! slots rather than taking a backend reference, so they work from any
-//! component body, effect, or event handler. Under the pre-v2 core, a
-//! central `mount()` filled those slots from the backend. `mount()` was
-//! deleted with the walker, and nothing replaced it: every backend still
-//! implemented `AppEnvOps::{platform, color_scheme, url_opener,
-//! fullscreen_setter}` and `A11yOps::announce_for_accessibility`, but no
-//! code path forwarded them. The installers had also been left
-//! `#[doc(hidden)]` and documented as "not part of the public API", so a
-//! backend author had no sanctioned way to call them.
+//! component body, effect, or event handler — so something must fill
+//! those slots from the backend at boot. With no code path forwarding
+//! them, every backend still implemented `AppEnvOps::{platform,
+//! color_scheme, url_opener, fullscreen_setter}` and
+//! `A11yOps::announce_for_accessibility`, but nothing reached the slots
+//! (and with the installers `#[doc(hidden)]`, a backend author had no
+//! sanctioned way to call them).
 //!
 //! Net effect on EVERY backend: `platform()` returned `Custom("")`,
 //! `color_scheme()` returned `Auto`, and `open_url()` /
 //! `set_fullscreen()` / `announce()` were silent no-ops that logged at
 //! debug level. It type-checked, mounted, and rendered — the failure was
 //! only visible to an author who called one of the five and got nothing.
-//! `backend_macos::newcore` documented the gap in a comment ("until the
-//! migration gives those installs a public seam") rather than a test,
-//! which is why it survived.
 //!
 //! `runtime_vocabulary::backend::install_env_services` is that seam, and
 //! this file pins it. The companion source-scan in

@@ -482,7 +482,8 @@ impl GraphicsHandle {
     /// Borrow the backend-specific node Rc the handle wraps.
     /// Authors using a non-portable backend extension (e.g. the
     /// wgpu preview's `register_graphics_drawer`) downcast this
-    /// to the concrete `Backend::Node` to install per-node state.
+    /// to the concrete backend node type (`Host::Node`) to install
+    /// per-node state.
     /// Portable code doesn't need to call this — the lifecycle
     /// callbacks (`on_ready` / `on_resize` / `on_lost`) handle
     /// it on every supported backend.

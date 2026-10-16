@@ -1,15 +1,14 @@
-//! Navigator substrate — the Element-free half of the old
-//! `runtime_core::primitives::navigator`.
+//! Navigator substrate — the Element-free half of navigation.
 //!
 //! `shared` here carries the kind-agnostic substrate (registry,
 //! routing, control plane, reactive nav state, screen-state stacks,
 //! fill-rule sheets); `scroll` the per-navigator scroll persistence;
-//! `url_sync` the web URL synchronization. The Element-coupled items
-//! (`Screen`, `RouteEntry`/`NavigatorConfig`, `SwapContext`,
-//! `navigator_outlet`) and the Backend-coupled handler contract
-//! (`NavigatorHost` / `NavigatorHandler` / `NavigatorRegistry`) stay in
-//! `runtime-core`, whose `primitives::navigator` module re-exports this
-//! one.
+//! `url_sync` the web URL synchronization; `query` the screen-state
+//! query encoding. The Element-coupled items (`Screen`, `NavConfig`,
+//! `navigator_outlet`) and the navigator handlers live in
+//! `runtime-vocabulary` (`prims::navigator`, `handlers::navigator`),
+//! whose glue re-exports this module's data types (routes, query state,
+//! header slots) under `runtime_core::primitives::navigator`.
 
 pub mod query;
 pub mod scroll;
@@ -48,8 +47,8 @@ pub use shared::{
 };
 
 /// Test-support reset for the robot nav registry. Doc-hidden `pub`
-/// (not `pub(crate)`): runtime-core's tests still reach it across the
-/// crate boundary during the transition.
+/// (not `pub(crate)`): tests in other crates reach it across the crate
+/// boundary.
 #[cfg(feature = "robot")]
 #[doc(hidden)]
 pub use shared::nav_registry_reset;

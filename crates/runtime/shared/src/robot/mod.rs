@@ -15,21 +15,27 @@
 //!   reports them) via [`Robot::introspect_native`] / the bridge's
 //!   `introspect_native` verb, so two backends' trees can be diffed for
 //!   cross-platform parity. See [`crate::introspect`]. Backed by
-//!   `Backend::introspect_native` (web, macOS and Linux/GTK today); the verb is
+//!   `IntrospectionOps::introspect_native` (web, macOS and Linux/GTK today); the verb is
 //!   gated on the `debug-stats` feature.
 //!
 //! # Architecture
 //!
-//! When the `robot` feature is enabled, the framework's render walker
-//! registers every mounted primitive into a thread-local **Registry**.
-//! Each entry records:
+//! This module defines a thread-local element **Registry**. Each entry
+//! records:
 //! - the primitive kind,
 //! - an optional `test_id` (author-assigned stable identifier),
 //! - an optional label (for buttons/text),
 //! - an opaque handle for control actions.
 //!
-//! The [`Robot`] struct is the user-facing API. It queries the registry
-//! and dispatches control commands through the stored handles.
+//! The [`Robot`] struct queries the registry and dispatches control
+//! commands through the stored handles.
+//!
+//! No framework mount path writes to this registry: a live app registers
+//! its elements into `runtime_vocabulary::robot`'s registry (same entry
+//! shape and query semantics), and each backend installs a
+//! [`bridge::VerbRouter`] that answers element verbs from it. What the
+//! running app uses from this module is the transport ([`bridge`]),
+//! custom commands, logs and screenshots.
 //!
 //! # Usage
 //!
@@ -60,12 +66,10 @@
 //! per-node overhead and retains references that would otherwise be
 //! freed by scope drops.
 
-// VISIBILITY NOTE (migration transitional): the registry internals below
-// were `pub(crate)` when this module lived inside runtime-core. They are
-// plain `pub` now because the OLD-core walker (runtime-core, pending
-// deletion) still drives registration/attachment across the crate
-// boundary. They are not part of the supported author surface; treat
-// everything not re-exported by the crate root as internal.
+// VISIBILITY NOTE: the registry internals below are plain `pub` so another
+// crate could drive registration/attachment across the crate boundary.
+// They are not part of the supported author surface; treat everything not
+// re-exported by the crate root as internal.
 
 pub mod bridge;
 pub mod components;
@@ -77,7 +81,7 @@ pub use components::{
     component_for_element, invoke_method, list_components, register_component, ComponentInstanceId,
     ComponentRegistration, ComponentSnapshot, Method,
 };
-// Walk-time linkage helpers — crate-internal (the walker arms/consumes them).
+// Mount-time linkage helpers — internal (a mount path arms/consumes them).
 pub use components::{
     link_component_element, set_pending_component_link, take_pending_component_link,
 };
@@ -131,7 +135,7 @@ pub struct ElementId(pub u32);
 
 /// Type-erased action dispatch table for a mounted element. Each
 /// variant is populated at registration time based on the primitive
-/// kind and what handles/callbacks the walker has available.
+/// kind and what handles/callbacks the mount path has available.
 #[derive(Clone)]
 pub struct ElementActions {
     /// Trigger a click/press action (buttons, pressables, links).
@@ -148,24 +152,24 @@ pub struct ElementActions {
     /// Blur the element.
     pub blur: Option<Rc<dyn Fn()>>,
     /// Set the element's scroll offset (scroll views). Wraps
-    /// `Backend::set_node_scroll`; lets e2e drives bring off-screen
+    /// `ScrollOps::set_node_scroll`; lets e2e drives bring off-screen
     /// content into view on backends with no OS-level input synthesis
     /// (the iOS simulator has no scriptable touch injection).
     pub set_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// Read the element's rect in **parent** coordinates. Wraps
-    /// `Backend::frame`. Returns `None` if the node isn't mounted in
+    /// `IntrospectionOps::frame`. Returns `None` if the node isn't mounted in
     /// a layout yet.
     pub frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
     /// Read the element's rect in **viewport/window** coordinates.
-    /// Wraps `Backend::absolute_frame`.
+    /// Wraps `IntrospectionOps::absolute_frame`.
     pub absolute_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
     /// Read the element's rect in **physical device-screen pixels** for
-    /// OS-level input injection. Wraps `Backend::device_frame`.
+    /// OS-level input injection. Wraps `IntrospectionOps::device_frame`.
     pub device_frame: Option<Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>>,
     /// Read the element's **platform-native render tree** — resolved
     /// geometry + visual props as the platform reports them, plus the
     /// native sub-objects composing this one primitive. Wraps
-    /// `Backend::introspect_native`. `Some` only when the backend opts into
+    /// `IntrospectionOps::introspect_native`. `Some` only when the backend opts into
     /// native introspection. The parity-testing surface.
     pub introspect: Option<Rc<dyn Fn() -> Option<crate::introspect::NativeNode>>>,
 }
@@ -207,12 +211,13 @@ pub struct RegistryEntry {
     /// text/labels (`TextSource::Bound` / `JsBinding`); `None` for
     /// static labels, where `label` is authoritative.
     ///
-    /// Why this exists: the registry entry is built once at walker
+    /// Why this exists: the registry entry is built once at mount
     /// registration and is NOT re-registered when a bound signal
     /// changes (the reactive Effect updates the backend's view, not the
     /// robot registry). Caching the string at registration made
     /// `get_snapshot` / `find(Label)` report stale text after the UI
-    /// updated — see `regression_robot_snapshot_reflects_reactive_text`.
+    /// updated — see `regression_robot_snapshot_reflects_reactive_text`
+    /// (dev-server's `aas_headless` tests).
     /// Resolving lazily at query time keeps the introspection surface
     /// honest without hooking the reactive update path.
     pub label_fn: Option<Rc<dyn Fn() -> Option<String>>>,
@@ -336,7 +341,7 @@ impl Registry {
 
 thread_local! {
     pub static REGISTRY: RefCell<Registry> = RefCell::new(Registry::new());
-    /// Stack of parent element IDs. The walker pushes before building
+    /// Stack of parent element IDs. The mount path pushes before building
     /// children and pops after. Children peek the top to set their
     /// `parent` field.
     static PARENT_STACK: RefCell<Vec<ElementId>> = RefCell::new(Vec::new());
@@ -802,12 +807,11 @@ impl Robot {
     /// screen mounts can register content against a parent id that is dead
     /// by snapshot time (e.g. a navigator's robot id captured on
     /// `current_parent()` whose slot was reused, or any timing where the
-    /// build's `PARENT_STACK` top no longer exists). Before this, such an
-    /// orphan was unreachable from every `parent == None` root, so the
-    /// current screen's elements vanished from `snapshot()` and `find`
-    /// could still see them but the tree showed only a bare `Navigator` —
-    /// see `stack-navigator/tests/robot_nav_screen_tree`. Treating a dead
-    /// parent as "no parent" keeps mounted content always visible in the
+    /// build's `PARENT_STACK` top no longer exists). Collecting only
+    /// `parent == None` roots would leave such an orphan unreachable, so
+    /// the current screen's elements would vanish from `snapshot()` while
+    /// `find` still saw them (the tree showing only a bare `Navigator`).
+    /// Treating a dead parent as "no parent" keeps mounted content always visible in the
     /// tree, independent of which backend/handler mounted it.
     pub fn snapshot(&self) -> Vec<TreeNode> {
         REGISTRY.with(|r| {
@@ -925,12 +929,9 @@ impl Robot {
 }
 
 // =============================================================================
-// Registration helpers (called by the walker)
+// Registration helpers (called by a mount path)
 // =============================================================================
 
-/// Register a newly-mounted element. Called by the walker when
-/// building primitives. Returns the element ID so the walker can
-/// track parent/child relationships and deregister on scope drop.
 /// Monotonic change-revision for the live-update push channel. Any
 /// robot-observable mutation — element register/deregister, log append,
 /// navigator dispatch — bumps it via [`bump_revision`]. The bridge's
@@ -959,19 +960,17 @@ pub fn current_revision() -> u64 {
     ROBOT_REVISION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Register a newly-mounted element. Called by the mount path when
+/// building primitives. Returns the element ID so the caller can
+/// track parent/child relationships and deregister on scope drop.
 pub fn register(entry: RegistryEntry) -> ElementId {
     let id = REGISTRY.with(|r| r.borrow_mut().insert(entry));
     bump_revision(); // tree grew → live-update subscribers should refresh
     id
 }
 
-/// Attach frame-reading closures to an already-registered element.
-/// The walker registers the element from the `Element` (which
-/// happens *before* the backend has produced a node), then calls
-/// this with closures that capture the built node so positions can
-/// be read on demand.
 /// Attach the scroll-offset action to a mounted scroll view. Called by the
-/// walker after dispatch (the backend node exists only then), mirroring
+/// mount path after the backend node exists, mirroring
 /// [`attach_frame_actions`].
 pub fn attach_scroll_action(id: ElementId, set_scroll: Rc<dyn Fn(f32, f32)>) {
     REGISTRY.with(|r| {
@@ -982,6 +981,11 @@ pub fn attach_scroll_action(id: ElementId, set_scroll: Rc<dyn Fn(f32, f32)>) {
     });
 }
 
+/// Attach frame-reading closures to an already-registered element.
+/// The mount path registers the element from its payload (which
+/// happens *before* the backend has produced a node), then calls
+/// this with closures that capture the built node so positions can
+/// be read on demand.
 pub fn attach_frame_actions(
     id: ElementId,
     frame: Rc<dyn Fn() -> Option<crate::primitives::portal::ViewportRect>>,
@@ -999,7 +1003,7 @@ pub fn attach_frame_actions(
 }
 
 /// Attach the native-introspection closure to an already-registered element.
-/// Wired by the walker alongside [`attach_frame_actions`] at the same capture
+/// Wired alongside [`attach_frame_actions`] at the same capture
 /// site (after the backend node exists), so it covers every registered
 /// primitive. The closure reads the live platform render state on demand.
 pub fn attach_introspect_action(
@@ -1015,10 +1019,10 @@ pub fn attach_introspect_action(
 }
 
 /// Attach `focus`/`blur` actions to a registered element now that its backend
-/// node exists (wired by the walker for editable text inputs). Lets the robot
+/// node exists (wired for editable text inputs). Lets the robot
 /// `focus`/`blur` verbs drive a real text input — the testing analogue of a
-/// user clicking into the field. Previously unset, so `focus` reported
-/// "action not available" for every text input.
+/// user clicking into the field; without it `focus` reports "action not
+/// available" for every text input.
 pub fn attach_focus_actions(
     id: ElementId,
     focus: Rc<dyn Fn()>,
@@ -1033,12 +1037,12 @@ pub fn attach_focus_actions(
     });
 }
 
-/// Remove a previously-registered element. Wired by the walker as an
-/// `on_cleanup` against the element's owning reactive scope, so a
-/// `when`/`switch`/`each` branch swap (or any scope teardown) drops the
-/// old subtree's registry entries instead of leaking them as phantom
-/// live roots in `snapshot()` — see
-/// `regression_when_branch_swap_disposes_old_branch_from_robot_registry`.
+/// Remove a previously-registered element. Wired as an `on_cleanup`
+/// against the element's owning reactive scope, so a `when`/`switch`/`each`
+/// branch swap (or any scope teardown) drops the old subtree's registry
+/// entries instead of leaking them as phantom live roots in `snapshot()`
+/// (the vocabulary registry pins the same rule with
+/// `regression_branch_swap_deregisters_old_branch`).
 pub fn deregister(id: ElementId) {
     REGISTRY.with(|r| r.borrow_mut().remove(id));
     bump_revision(); // tree shrank → live-update subscribers should refresh
@@ -1086,9 +1090,10 @@ mod find_all_tests {
 
     /// Regression: `find_all` by `test_id` must return EVERY element sharing
     /// that id — sibling list rows legitimately share one affordance test_id
-    /// (Playwright's `getByTestId(...).toHaveCount(n)`). Previously it read the
-    /// `by_test_id` 1:1 index and returned at most one, so a list-affordance
-    /// count assertion (e.g. the conformance per-row del-marker) always saw 1.
+    /// (Playwright's `getByTestId(...).toHaveCount(n)`). Reading the
+    /// `by_test_id` 1:1 index returns at most one, so a list-affordance
+    /// count assertion (e.g. the conformance per-row del-marker) always
+    /// saw 1.
     #[test]
     fn find_all_returns_every_duplicate_test_id() {
         let robot = Robot::new();
@@ -1111,10 +1116,10 @@ mod find_all_tests {
     /// This is the navigation-time screen-content loss: a screen mounted on
     /// navigation can register content against a parent id (the navigator's
     /// robot id captured via `current_parent()`) whose slot is dead by
-    /// snapshot time. Before the fix, `snapshot()` collected only
-    /// `parent == None` roots, so the orphan was unreachable from any root and
-    /// the current screen's elements vanished from the tree (only a bare
-    /// `Navigator` showed). Mounted content must always be reachable.
+    /// snapshot time. A `snapshot()` that collects only `parent == None`
+    /// roots leaves the orphan unreachable from any root, and the current
+    /// screen's elements vanish from the tree (only a bare
+    /// `Navigator` shows). Mounted content must always be reachable.
     #[test]
     fn snapshot_surfaces_orphan_with_dead_parent() {
         let robot = Robot::new();

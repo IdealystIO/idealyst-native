@@ -1,7 +1,7 @@
-//! The scene suite: idea-lite's scene-layer tests (28–33), ported for
-//! real (P0 deferred them to P1), plus driver-invariant tests that assert
-//! the golden-pinned behaviors directly at the unit level — the parity
-//! crate (`scene-parity`) then re-asserts them against the shared goldens.
+//! The scene suite: scene-layer behavior tests plus driver-invariant tests
+//! that assert the golden-pinned behaviors directly at the unit level —
+//! the parity crate (`scene-parity`) then re-asserts them against the
+//! shared goldens.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -247,8 +247,7 @@ fn counter() -> Rc<Cell<usize>> {
 }
 
 /// Register a probe effect in the CURRENT build scope whose cleanup bumps
-/// `drops` — makes scope teardown observable (idea-lite's
-/// `label_with_drop_probe`).
+/// `drops` — makes scope teardown observable.
 fn drop_probe(drops: &Rc<Cell<usize>>) {
     let drops = drops.clone();
     effect(move || {
@@ -269,8 +268,7 @@ fn cleanup_marker(ops: &Rc<RefCell<Vec<String>>>, label: &str) {
     });
 }
 
-/// Flatten the live tree into visible labels, in order — idea-lite's
-/// `render()` walk, following holes and keyed rows through their slots.
+/// Flatten the live tree into visible labels, in order, following holes and keyed rows through their slots.
 /// Anchors are structural, not content, and are skipped.
 fn render_labels(rig: &Rig, realized: &Realized<u32>) -> Vec<String> {
     fn walk(labels: &HashMap<u32, String>, node: &LiveNode<u32>, out: &mut Vec<String>) {
@@ -319,12 +317,11 @@ fn render_labels(rig: &Rig, realized: &Realized<u32>) -> Vec<String> {
 }
 
 // ============================================================================
-// idea-lite ports (tests 28–33)
+// Scene basics
 // ============================================================================
 
 #[test]
 fn key_conversions() {
-    // idea-lite test 33, deferred from P0 to land with `Key`.
     assert_eq!(Key::from(3i32), Key::Int(3));
     assert_eq!(Key::from(-7i64), Key::Int(-7));
     assert_eq!(Key::from(3u32), Key::UInt(3));
@@ -511,8 +508,8 @@ fn anchored_dispose_order_drops_scope_before_clear() {
             }
         },
     )]));
-    // Mount: no first-fire clear_children on the virgin anchor (sanctioned
-    // divergence #2 — the old walker emitted a no-op clear here).
+    // Mount: no first-fire clear_children on the virgin anchor (it would
+    // be a no-op; scene-parity's divergence #2).
     assert_eq!(
         rig.take_ops(),
         [
@@ -932,8 +929,7 @@ fn nested_dyn_in_keyed_row_rebuilds_in_place_and_dies_with_the_row() {
 fn dyn_as_row_root_anchors_even_on_splice_hosts() {
     // A hole at a subtree ROOT (here: the entire keyed row body) has no
     // parent to splice into at build time, so it takes the anchored path
-    // even on a splice-capable host — matching the old walker, where only
-    // children-list positions splice.
+    // even on a splice-capable host — only children-list positions splice.
     let rig = Rig::new(true);
     let (list, flag) = rig.world.enter(|| (signal(vec![1]), signal(true)));
     let _shell = rig.realize(v(vec![keyed(
@@ -1089,8 +1085,8 @@ fn many_without_handler_panics() {
     let _ = rig.realize(v(vec![many(UnregisteredMany)]));
 }
 
-/// A Many as a detached subtree root mirrors the old walker's
-/// `Element::Repeat` standalone-root panic.
+/// A Many as a detached subtree root panics: it stands for N siblings,
+/// never a single root.
 #[test]
 #[should_panic(expected = "standalone subtree root")]
 fn many_as_detached_root_panics() {
@@ -1099,14 +1095,13 @@ fn many_as_detached_root_panics() {
 }
 
 // ============================================================================
-// Recursion depth budget (deletion-baseline §4.1 #9)
+// Recursion depth budget
 // ============================================================================
 //
-// The old walker's only guarantee against deep trees was a per-call frame
-// budget, pinned by `runtime-core/tests/walker/stack_depth.rs` on a
-// thread constrained to wasm-ld's 1 MiB default stack. That test dies
-// with the walker; these two are its successors, and the second adds the
-// named cap the old core never had (see `realize::depth`).
+// Two guards against deep trees (see `realize::depth`): a per-level
+// frame budget, pinned on a thread constrained to wasm-ld's 1 MiB default
+// stack, and a named cap past which realize panics instead of
+// overflowing.
 
 /// Build `depth` levels of nested `view(...)` around a leaf `text`,
 /// realize them, and tear the tree back down — all on a thread whose
@@ -1142,13 +1137,11 @@ fn realize_nested_on_constrained_stack(depth: usize, stack: usize) {
         .expect("realize thread aborted — likely a per-level stack-frame regression");
 }
 
-/// The direct successor to the old walker's `stack_depth.rs`: 30 levels
-/// of nesting realize on a wasm-sized 1 MiB stack.
+/// 30 levels of nesting realize on a wasm-sized 1 MiB stack.
 ///
-/// Same depth and same stack size as the old test, deliberately, so the
-/// old core's guarantee is provably carried over rather than merely
-/// re-stated. The old walker needed ~20 KiB per level (~600 KiB at this
-/// depth, under 1 MiB with ~40% headroom); this core needs ~1.1 KiB.
+/// Pins the website `/demo` overflow, where a ~77 KB per-level frame
+/// trapped at ~13 levels of nesting on wasm. Realize currently needs
+/// ~1.1 KiB per level.
 #[test]
 fn deep_nested_items_realize_within_wasm_stack_budget() {
     const WASM_DEFAULT_STACK: usize = 1024 * 1024;
@@ -1163,8 +1156,7 @@ fn deep_nested_items_realize_within_wasm_stack_budget() {
 /// carries ~900 levels; 1000 aborts). 400 levels is ~440 KiB — a ~2.4×
 /// margin, so this passes comfortably today and goes red if one level
 /// ever costs more than ~2.6 KiB. Native code-gen is not wasm code-gen,
-/// but the two track closely enough for this to be the early warning the
-/// old core got from its own 30-level test.
+/// but the two track closely enough for this to be an early warning.
 #[test]
 fn realize_per_level_stack_cost_stays_within_its_measured_budget() {
     const WASM_DEFAULT_STACK: usize = 1024 * 1024;
@@ -1174,10 +1166,9 @@ fn realize_per_level_stack_cost_stays_within_its_measured_budget() {
 
 /// Past the cap, realize reports itself instead of overflowing.
 ///
-/// This is the half the old core did NOT have: it had no cap at all, so
-/// an unbounded-recursion component body produced a stack overflow (an
-/// opaque `memory access out of bounds` on wasm). The panic message names
-/// the likely cause.
+/// Without the cap an unbounded-recursion component body produces a stack
+/// overflow (an opaque `memory access out of bounds` on wasm). The panic
+/// message names the likely cause.
 #[test]
 #[should_panic(expected = "nests more than 512 levels deep")]
 fn realize_past_the_depth_cap_panics_by_name_instead_of_overflowing() {
@@ -1725,9 +1716,9 @@ fn logging_hook(ops: &Rc<RefCell<Vec<String>>>, name: &'static str) -> RealizeHo
 }
 
 /// Why this exists: the robot registry brackets every component with a
-/// hook in dev builds. The previous wrapper was a `Dyn` hole, which put an
-/// anchor node around each component on anchored hosts — a dev tree that
-/// no longer matched release. On BOTH host kinds the hooked tree must
+/// hook in dev builds. Wrapping it in a `Dyn` hole would put an anchor
+/// node around each component on anchored hosts — a dev tree that no
+/// longer matches release. On BOTH host kinds the hooked tree must
 /// create exactly the nodes the plain tree creates.
 #[test]
 fn regression_realize_hook_adds_no_host_node() {
@@ -1848,9 +1839,9 @@ fn realize_hook_keeps_the_component_scope_alive_until_unmount() {
 }
 
 /// Published crates (idea-ui 1.12, table 1.6) destructure `Element::Owned`
-/// with no `..`. The realize hooks first landed as a third field on the
-/// variant, which would have broken those crates against any newer
-/// `runtime-scene` 1.x; they ride in the scope as an attachment instead.
+/// with no `..`. A third field on the variant would break those crates
+/// against any newer `runtime-scene` 1.x, so the realize hooks ride in
+/// the scope as an attachment instead.
 /// This exhaustive pattern is the pin: it stops compiling if the variant
 /// grows a field.
 #[test]

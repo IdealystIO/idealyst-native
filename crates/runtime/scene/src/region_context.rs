@@ -8,11 +8,12 @@
 //! mount handler reads from a thread-local "where am I being mounted" stack
 //! reads it EMPTY on those later runs.
 //!
-//! The robot registry is the case that forced this: its parent stack is
-//! that kind of ambient state, so every element a region re-realized
-//! registered as a detached root, and `find_all` returned a form step's
-//! inputs in recycled-slot order instead of screen order (see the
-//! vocabulary's `regression_region_rerealize_keeps_parent_and_order`).
+//! The robot registry's parent stack is that kind of ambient state:
+//! without this seam every element a region re-realized registered as a
+//! detached root, and `find_all` returned a form step's inputs in
+//! recycled-slot order instead of screen order (pinned by the vocabulary's
+//! `regression_find_all_is_document_order_across_branch_swaps` and this
+//! crate's `regression_region_rerealize_reenters_mount_time_context`).
 //!
 //! The seam is generic so the scene takes no dependency on any consumer:
 //! a provider installed with [`install_region_context`] is asked for a

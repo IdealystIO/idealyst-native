@@ -1,49 +1,36 @@
 //! Per-session-thread persistent state.
 //!
 //! The runtime-server sidecar runs one session per OS thread. A
-//! `SessionMsg::Rerender` (hot-patch landed) drops the
-//! reactive `Owner` and re-runs `mount(app)`, which means
-//! every `signal!`, `animated!`, `effect!`, and `node_ref!`
+//! `SessionMsg::Rerender` (hot-patch landed) drops the app's
+//! reactive scope and re-runs `mount(app)`, which means
+//! every `signal()`, `animated!`, `effect!`, and `node_ref!`
 //! in the user's tree gets fresh storage — and any
 //! time-/state-driven animation in progress visibly snaps
 //! back to its initial value.
 //!
 //! This module provides a thread-local typed registry that
-//! lives *outside* the reactive `Owner`'s scope graph. Entries
+//! lives *outside* the reactive scope graph. Entries
 //! are inserted on first call, retrieved on subsequent calls,
 //! and survive any number of rerenders. The registry is freed
 //! only when the session thread exits.
 //!
-//! # Composability
+//! # Surface
 //!
-//! This is the storage substrate for three layers of hot-patch
-//! state retention:
+//! Everything here is a thin accessor over [`get_or_init`]:
 //!
-//! - **Layer 1 (this commit):** `epoch_micros()` — a session-
-//!   wide time anchor. Author code that captures
-//!   `runtime_core::session::epoch_micros()` once and reads
-//!   wall-clock `time::now_micros()` per frame gets a
-//!   continuous `elapsed` across rerenders, so time-driven
-//!   animation phases don't restart.
-//!
-//! - **Layer 2 (follow-up):** `keyed_signal(key, init)` /
-//!   `keyed_animated!(key, init)` etc. — author-supplied keys.
-//!   Reactive primitives stored in this registry survive
-//!   rerenders, including in-flight spring/tween state.
-//!
-//! - **Layer 3 (eventual):** call-site-keyed hooks via macro-
-//!   injected `concat!(file!(), line!(), column!())` keys. No
-//!   author-visible key parameter; "Rules of Hooks" call-order
-//!   discipline applies.
-//!
-//! All three layers share `get_or_init` for storage. The API
-//! surface differs (named accessor for L1, key-arg macros for
-//! L2, transparent macros for L3) but the underlying mechanism
-//! is the same map.
+//! - [`epoch_micros`] — a session-wide time anchor. Author code that
+//!   captures `runtime_core::session::epoch_micros()` once and reads
+//!   wall-clock `time::now_micros()` per frame gets a continuous
+//!   `elapsed` across rerenders, so time-driven animation phases don't
+//!   restart; [`after_ms`] schedules against it.
+//! - [`animated`] / [`signal`] — author-keyed reactive primitives that
+//!   survive rerenders, including in-flight spring/tween state.
+//! - [`push_scope`] / [`clear`] / [`clear_prefix`] / [`reset_epoch`] —
+//!   lifetime control for hosts that embed an app.
 //!
 //! # What this is NOT
 //!
-//! - Not a replacement for `signal!` / `animated!`. Author code
+//! - Not a replacement for `signal()` / `animated!`. Author code
 //!   that doesn't opt in keeps the current behavior (fresh state
 //!   on each rerender). This module is purely additive.
 //! - Not a process-global store. Each session thread has its
@@ -129,35 +116,11 @@ fn with_top<R>(f: impl FnOnce(&mut FxHashMap<&'static str, Box<dyn Any>>) -> R) 
     })
 }
 
-/// Return the value stored under `key`, or initialise it from
-/// `init` and store it. Subsequent calls with the same key
-/// return the same value (cloned out) — `init` is invoked at
-/// most once per session-thread per key.
-///
-/// `T` must be `Clone` because we return a value, not a
-/// reference (returning a reference would extend the borrow
-/// across the closure that the caller likely wants to do
-/// reactive work in). For `Rc`-backed reactive primitives
-/// (`Signal`, `AnimatedValue`, …) clone is cheap.
-///
-/// **Reentrancy safe.** `init` runs outside the registry's
-/// borrow so it can recursively call `get_or_init` for other
-/// keys without panicking on `BorrowMutError`. This matters
-/// for Layer 2/3 where init closures may construct other
-/// reactive primitives.
-///
-/// **Type-mismatch tolerant.** If the stored entry's concrete
-/// type doesn't match `T` (e.g. author changed the type of a
-/// keyed signal between hot-patches), the stale entry is
-/// overwritten with a fresh `init()`. The previous value is
-/// dropped. This is the only way to recover; preserving the
-/// old typed value would be a memory leak that author code
-/// can't observe.
-/// Drop every entry in the current session-thread's registry.
+/// Drop every entry in the current (top) scope of the session-thread's
+/// registry.
 ///
 /// Intended for hosts that mount-then-unmount an embedded app
-/// (e.g. `render_wgpu::Host::unmount` for a navigator-hidden
-/// preview): the embedded app's `session::animated(...)` AVs
+/// (e.g. a navigator-hidden preview): the embedded app's `session::animated(...)` AVs
 /// otherwise outlive the unmount — they're keyed in the global
 /// REGISTRY by `&'static str`, so dropping the reactive scope
 /// drops the scope's clones but leaves the registry's clone
@@ -167,13 +130,10 @@ fn with_top<R>(f: impl FnOnce(&mut FxHashMap<&'static str, Box<dyn Any>>) -> R) 
 /// it was the last clone) drops the `Inner` and unregisters the
 /// tick.
 ///
-/// **Scope is the entire thread.** This wipes every keyed entry,
-/// not just the embedded app's. In practice `session::animated`
-/// is rarely used outside embedded apps (welcome-style demos);
-/// outer apps tend to drive their reactive state through plain
-/// `Signal` / `Effect` / non-session AVs. If a use case ever
-/// needs partitioned registries (one per Host), that becomes a
-/// real refactor; `clear()` is the pragmatic interim.
+/// **Scope is the whole top scope.** This wipes every keyed entry in
+/// it, not just the embedded app's. A host that needs its own
+/// partition uses [`push_scope`] instead; [`clear_prefix`] wipes one
+/// app's keys.
 pub fn clear() {
     with_top(|top| top.clear());
 }
@@ -221,6 +181,29 @@ pub fn clear_prefix(prefix: &str) {
     });
 }
 
+/// Return the value stored under `key`, or initialise it from
+/// `init` and store it. Subsequent calls with the same key
+/// return the same value (cloned out) — `init` is invoked at
+/// most once per session-thread per key.
+///
+/// `T` must be `Clone` because we return a value, not a
+/// reference (returning a reference would extend the borrow
+/// across the closure that the caller likely wants to do
+/// reactive work in). For `Rc`-backed reactive primitives
+/// (`Signal`, `AnimatedValue`, …) clone is cheap.
+///
+/// **Reentrancy safe.** `init` runs outside the registry's
+/// borrow so it can recursively call `get_or_init` for other
+/// keys without panicking on a `BorrowMutError` — init closures
+/// may construct other session-keyed primitives.
+///
+/// **Type-mismatch tolerant.** If the stored entry's concrete
+/// type doesn't match `T` (e.g. author changed the type of a
+/// keyed signal between hot-patches), the stale entry is
+/// overwritten with a fresh `init()`. The previous value is
+/// dropped. This is the only way to recover; preserving the
+/// old typed value would be a memory leak that author code
+/// can't observe.
 pub fn get_or_init<T: 'static + Clone>(
     key: &'static str,
     init: impl FnOnce() -> T,
@@ -271,13 +254,13 @@ pub fn get_or_init<T: 'static + Clone>(
 /// that should "start from when the user does X" call it at X.
 ///
 /// The internal key is `__epoch_us` (double-underscore prefix
-/// reserves it from author-supplied keys at the Layer 2 API).
+/// reserves it from author-supplied keys).
 pub fn epoch_micros() -> u64 {
     get_or_init("__epoch_us", crate::time::now_micros)
 }
 
 // ---------------------------------------------------------------
-// Typed reactive-primitive accessors (Layer 2)
+// Typed reactive-primitive accessors
 // ---------------------------------------------------------------
 //
 // These wrap `get_or_init` for the three reactive primitives
@@ -288,7 +271,7 @@ pub fn epoch_micros() -> u64 {
 // across hot-patch rerenders.
 //
 // Why this helps: after `SessionMsg::Rerender`, the old reactive
-// `Owner` drops + the new `mount(app)` runs. With plain
+// scope drops + the new `mount(app)` runs. With plain
 // `animated!(0.0_f32)`, that builds a fresh `AnimatedValue` whose
 // value is 0.0 again — every animation snaps back to its initial
 // state. With `session::animated("welcome_opacity", 0.0_f32)`,
@@ -303,7 +286,6 @@ pub fn epoch_micros() -> u64 {
 // arena slots were freed when the old scope dropped, so they
 // no-op on fire but still cost a closure call. For dev-mode
 // rerender frequencies (~1/edit) this is sub-microsecond noise.
-// A future cleanup pass can dedupe; not the bottleneck.
 
 /// Retrieve or initialise a session-persistent `AnimatedValue<T>`
 /// at `key`. Equivalent to `animated!(initial)` except the

@@ -9,14 +9,13 @@
 //!
 //! # Descriptors are not in the binary
 //!
-//! They used to be: `ui!` emitted a `static Descriptor` per site and
-//! registered it at build time. That was measured on a real app
-//! (CrewForge, ~256 CGUs) and cost about **1.4 s on every one-edit
-//! rebuild** — a 27% tax on the loop the feature exists to speed up,
-//! almost all of it in `macro_expand_crate` and `serialize_dep_graph`.
-//! The same measurement with the descriptor compiled out and only the
-//! node TAGS kept was within noise of the feature being off entirely.
-//! See `docs/ui-layer.md` for the table.
+//! Emitting a `static Descriptor` per `ui!` site, registered at build
+//! time, measured on a real app (CrewForge, ~256 CGUs) at about **1.4 s
+//! on every one-edit rebuild** — a 27% tax on the loop the feature exists
+//! to speed up, almost all of it in `macro_expand_crate` and
+//! `serialize_dep_graph`. With only the node TAGS emitted it measures
+//! within noise of the feature being off entirely. See
+//! `docs/ui-layer.md` for the table.
 //!
 //! So the descriptor is produced from SOURCE at build time, by the same
 //! split pass the macro uses, and written next to the build. The binary

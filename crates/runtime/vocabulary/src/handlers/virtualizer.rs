@@ -1,13 +1,8 @@
-//! Virtualizer handler — port of `walker/virtualizer.rs`'s closure path
-//! (`build` → `build_virtualizer`).
+//! Virtualizer handler — the closure path (`render_item(idx)` per row).
 //!
-//! The structured / generator-backend path
-//! (`build_virtualizer_declarative`: slot capture + `row_template` +
-//! `note_virtualizer_binding`) is NOT ported — generator-backend wire
-//! metadata is the crate-level sanctioned deferral (see `lib.rs`: every
-//! author shape lowers to the equivalent closure form; generator
-//! backends re-land post-P7). Runtime backends only ever took the
-//! closure path, which is what conformance exercises.
+//! There is no structured / generator-backend path (slot capture +
+//! `row_template` + `note_virtualizer_binding`): every author shape
+//! lowers to the closure form (crate docs).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,9 +29,8 @@ where
 
 /// One mounted row's ownership: the realized subtree PLUS the scope
 /// that collected creations made while *constructing* the row element.
-/// `realize()` only collects what the mount walk creates; the old
-/// walker's `with_scope(|| { render(idx); build(...) })` covered element
-/// construction too. Without `extra`, a signal/effect created inside a
+/// `realize()` only collects what the mount walk creates, not what
+/// element construction creates. Without `extra`, a signal/effect created inside a
 /// row's builder chain (component props, probe effects) would be
 /// world-root-owned and leak until world drop instead of dying on
 /// `release_item` — the "row state pinned forever" leak class.
@@ -48,18 +42,15 @@ struct RowScope<N> {
     snapshot: Option<Box<dyn std::any::Any>>,
 }
 
-/// Mount a `virtualizer` — port of `walker/virtualizer.rs::build` +
-/// `build_virtualizer`.
+/// Mount a `virtualizer`.
 ///
 /// Sequence: build the callback bundle → `create_virtualizer` →
-/// data-changed effect (first fire at mount, exactly like the old
-/// `Effect::new`) → attach_style → teardown probe
-/// (`release_virtualizer`) → ref-fill. The teardown order at drop
-/// matches the old core because both sides free effects in creation
-/// order: data effect (no cleanup), style probe (`on_node_unstyled`),
-/// release probe (`release_virtualizer`).
+/// data-changed effect (first fire at mount) → attach_style → teardown
+/// probe (`release_virtualizer`) → ref-fill. Effects are freed in
+/// creation order, so teardown runs: data effect (no cleanup), style
+/// probe (`on_node_unstyled`), release probe (`release_virtualizer`).
 ///
-/// # The backend-callback contract (ported invariants)
+/// # The backend-callback contract
 ///
 /// - **Lazy row realization inverts control**: the platform asks for
 ///   rows via `mount_item`/`release_item`; the handler must therefore
@@ -75,9 +66,8 @@ struct RowScope<N> {
 ///   mount/release explicitly (`enter_mounted_world`; the
 ///   flat_list-renders-zero-rows bug was every backend missing this).
 ///   The backend must also NOT invoke `mount_item` synchronously inside
-///   `create_virtualizer` (the backend is mutably borrowed there; the
-///   old core had the identical constraint — web/iOS/Android all defer
-///   the initial window fill). The same holds for
+///   `create_virtualizer` (the backend is mutably borrowed there —
+///   web/iOS/Android all defer the initial window fill). The same holds for
 ///   `virtualizer_data_changed`, which the data effect below calls under
 ///   `borrow_mut()`: a backend must defer the reload (its row releases
 ///   AND remounts) to a later turn — the GTK backend once reloaded
@@ -93,8 +83,8 @@ struct RowScope<N> {
 ///   teardown can re-enter `backend.borrow_mut()`. See the probe.
 /// - **Rows realize DETACHED.** Nothing here attaches a row to the
 ///   scene tree or assumes in-tree layout — macOS mounts rows as
-///   Taffy-orphan cells laid out via `layout_detached_root`
-///   ([[project_macos_virtualizer_fix]]); the handler hands the backend
+///   Taffy-orphan cells laid out via `layout_detached_root`; the
+///   handler hands the backend
 ///   a bare node and the backend owns placement.
 /// - **Per-row ownership scope**: each row's signals/effects die on
 ///   `release_item` (drop of its [`RowScope`]) — without this, queued
@@ -107,7 +97,7 @@ struct RowScope<N> {
 ///   row scope. `item_changed(idx)` compares that snapshot with the item
 ///   now at `idx`; a keyed-diff backend (web, Android) releases + remounts
 ///   a surviving key whose item changed and keeps an unchanged survivor's
-///   node (FRAMEWORK-NOTES #50). iOS/macOS `reloadData` remounts every
+///   node. iOS/macOS `reloadData` remounts every
 ///   visible row anyway. `live_by_key` maps a key to its live row so the
 ///   backend can ask by the key's NEW index after a reorder.
 /// - **The measured-size cache is keyed by item KEY, not scope id, and
@@ -205,7 +195,7 @@ where
             let id = {
                 let mut n = next_id.borrow_mut();
                 let v = *n;
-                // Wrap like the old core: ids identify LIVE rows only.
+                // Wrapping is fine: ids identify LIVE rows only.
                 *n = n.checked_add(1).unwrap_or(0);
                 v
             };
@@ -337,7 +327,7 @@ where
     // Data effect: touching item_count subscribes to whatever signals
     // the count closure reads; each change tells the backend to
     // re-query count/key/size and diff its mounted set. First fire at
-    // mount — same as the old `Effect::new`'s immediate run.
+    // mount (the effect's immediate run).
     {
         let backend = backend.clone();
         let node = node.clone();
@@ -353,8 +343,8 @@ where
     }
 
     // Teardown: drop the live rows, then release the backend's side.
-    // Registered AFTER attach_style so teardown order matches the old
-    // effect-creation order (unstyle first, then release).
+    // Registered AFTER attach_style so teardown runs unstyle first, then
+    // release (effects free in creation order).
     {
         let b = backend.clone();
         let n = node.clone();
@@ -383,8 +373,7 @@ where
 
             // Now the backend drops its listeners + callback handles so
             // queued scroll/resize events can't call into freed per-item
-            // scopes ("signal used after its scope was dropped") — the
-            // old `VirtualizerHandleCleanup` empty-Effect, as a probe.
+            // scopes ("signal used after its scope was dropped").
             b.borrow_mut().release_virtualizer(&n);
         });
     }

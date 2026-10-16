@@ -2,9 +2,9 @@
 //! `call0!` macros) in a real browser.
 //!
 //! Each accessor is its own glue import with the property name baked into
-//! its JS. They used to share one generic import per kind that took the
-//! name as `(ptr, len)` and decoded it with `TextDecoder` on every call —
-//! on the benchmark's theme toggle (`sheet`, `cssRules`, `style` ×2,
+//! its JS. A shared generic import per kind that takes the name as
+//! `(ptr, len)` would decode it with `TextDecoder` on every call — on the
+//! benchmark's theme toggle (`sheet`, `cssRules`, `style` ×2,
 //! `documentElement`) that decode was the whole gap to the web-sys build.
 //! These tests pin every accessor kind's behaviour (values, `null` →
 //! `None`, setters, the `call0!` method form, handle ownership) and that

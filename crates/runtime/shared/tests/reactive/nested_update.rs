@@ -1,13 +1,13 @@
 //! Re-entrancy inside `Signal::update` / `Signal::set` closures.
 //!
-//! `update`/`set` run their closure via `with_signal_mut`, which used to
-//! hold the signal-arena `RefCell` borrow across the closure. Any signal
-//! access inside — `Signal::new`, another signal's `.get()` — re-enters
-//! the arena and panicked: `RefCell already borrowed` (reactive.rs:979).
+//! `update`/`set` run their closure via `with_signal_mut`. Holding the
+//! signal-arena `RefCell` borrow across the closure would make any signal
+//! access inside — `Signal::new`, another signal's `.get()` — re-enter the
+//! arena and panic with `RefCell already borrowed`.
 //!
-//! The fix takes the signal's box out of the arena and drops the borrow
-//! before running the closure, then restores it. These tests pin that:
-//! they panic against the pre-fix code and pass after.
+//! `with_signal_mut` takes the signal's box out of the arena and drops the
+//! borrow before running the closure, then restores it. These tests pin
+//! that.
 //!
 //! Real-world trigger: a reactive-list "Add item" handler that pushes a
 //! `Row { count: signal(0) }` inside `items.update(|l| …)`.

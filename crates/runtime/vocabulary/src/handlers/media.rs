@@ -12,12 +12,12 @@ use crate::style_attach::{attach_style, StyleServices};
 
 use super::{bind_dyn, bind_value, initial_of};
 
-/// Mount an `image` — port of `walker/image.rs::build`.
+/// Mount an `image`.
 ///
 /// Sequence: (`register_asset`) → `create_image(initial src, static
 /// alt)` → attach_style → load/error handler installs (before the src
 /// binding, so a cached decode can't race the handler) → src binding
-/// (one `update_image_src` at mount for Const AND Dyn — the walker's
+/// (one `update_image_src` at mount for Const AND Dyn — an
 /// unconditional effect) → `Dyn` alt binding → ref-fill.
 pub fn mount_image<H>(cx: &mut MountCx<'_, H>, prim: ImagePrim, _children: Vec<Element>) -> H::Node
 where
@@ -78,18 +78,17 @@ where
     node
 }
 
-/// Mount an `icon` — port of `walker/icon.rs::build`.
+/// Mount an `icon`.
 ///
 /// Sequence: `create_icon(initial data, initial color)` → attach_style
 /// → `Dyn` data binding → `Dyn` color binding → stroke (inline apply +
-/// `Dyn` binding — the walker applies inline THEN installs the effect,
-/// so a `Dyn` stroke emits two `update_icon_stroke` at mount) →
+/// `Dyn` binding — inline apply THEN the effect, so a `Dyn` stroke emits
+/// two `update_icon_stroke` at mount) →
 /// draw-in (snap to `from`, animate on the next microtask) → ref-fill.
 ///
-/// Microtask scheduling rides `runtime_shared::schedule_microtask` during
-/// the transition (same host-installed scheduler every backend already
-/// wires; synchronous fallback off-web without one, exactly like the
-/// walker).
+/// Microtask scheduling rides `runtime_shared::schedule_microtask` (the
+/// host-installed scheduler every backend wires; synchronous fallback
+/// without one).
 pub fn mount_icon<H>(cx: &mut MountCx<'_, H>, prim: IconPrim, _children: Vec<Element>) -> H::Node
 where
     H: IconOps + StyleServices + IntrospectionOps,
@@ -170,14 +169,13 @@ where
     node
 }
 
-/// Mount a `link` — port of `walker/link.rs::build`.
+/// Mount a `link`.
 ///
 /// Sequence: build [`LinkConfig`] (external links default activation to
-/// the platform URL opener, the walker's port; route links resolve the
-/// ambient [`LinkActivator`](crate::prims::LinkActivator) AT MOUNT —
-/// the new-core counterpart of the old construction-time ambient
-/// capture, and mounted-outside-any-navigator links silently no-op on
-/// activation, the old `link()` posture; links with none of
+/// the platform URL opener; route links resolve the ambient
+/// [`LinkActivator`](crate::prims::LinkActivator) AT MOUNT, and
+/// mounted-outside-any-navigator links silently no-op on activation;
+/// links with none of
 /// callback/external/route panic) → `create_link` → children →
 /// attach_style → `Dyn` url binding (`update_link_url`, first fire at
 /// mount) → ref-fill.

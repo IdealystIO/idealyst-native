@@ -1,4 +1,4 @@
-//! Payload types for the built-in primitives (P2b) — one struct per
+//! Payload types for the built-in primitives — one struct per
 //! primitive, carried inside an [`Element::Item`](runtime_scene::Element)
 //! behind a [`PrimCell`].
 //!
@@ -10,15 +10,12 @@
 //!   exactly one for `Dyn`).
 //! - `Rc<dyn Fn(...)>` for callbacks.
 //! - Plain fields for inert config (`AccessibilityProps`, `SafeAreaSides`,
-//!   icon data, …), reusing runtime-core's data types (the sanctioned
-//!   transitional dependency — those types migrate here at P7).
-//! - [`StyleProp`](crate::style_attach::StyleProp) for the style slot
-//!   (static resolved rules / dynamic rules closure — the two P2 paths).
+//!   icon data, …), reusing runtime-shared's data types.
+//! - [`StyleProp`](crate::style_attach::StyleProp) for the style slot.
 //!
-//! Field shapes are derived from what the old walker passes to
-//! `create_*`/`update_*` (each payload's docs name its walker module), so
-//! the generic handlers can reproduce the walker's backend-call streams —
-//! the property `scene-parity`'s full-op goldens pin.
+//! Field shapes follow what the handlers pass to `create_*`/`update_*`;
+//! `scene-parity`'s full-op goldens pin the resulting backend-call
+//! streams.
 
 use std::cell::RefCell;
 
@@ -70,8 +67,7 @@ impl<T> PrimCell<T> {
     }
 
     /// Mutate the (not-yet-mounted) payload in place. Used by the
-    /// navigator handlers' style-override fold
-    /// (`Element::with_style_overrides`'s new-core port): the screen
+    /// navigator handlers' style-override fold: the screen
     /// ROOT element's payload gets the handler's overlay rules layered
     /// onto its style prop before realization. No-op after `take`.
     pub fn with_mut(&self, f: impl FnOnce(&mut T)) {

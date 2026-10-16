@@ -1,7 +1,6 @@
 //! Platform-URL synchronization for outlet-model navigators.
 //!
-//! One substrate-level implementation of what the legacy web navigator
-//! helpers did per-SDK: mirror navigation into the browser URL
+//! Mirrors navigation into the browser URL
 //! (`pushState`/`replaceState`), reconcile browser back/forward
 //! (`popstate`) into ordinary [`NavCommand`]s, remember per-entry scroll
 //! offsets so back restores them, and seed cold-start deep links. The
@@ -13,30 +12,27 @@
 //!
 //! # Provider model
 //!
-//! `runtime-core` cannot depend on `web-sys`, so the actual History API
-//! is an installed provider ([`install_url_provider`]) — the same
-//! pattern as `install_scheduler` / the wheel + file-drop channels. The
-//! web backend installs one at startup; native/SSR backends install
-//! nothing and every entry point below is a no-op, which is exactly the
-//! legacy behavior (only web ever touched a URL).
+//! This crate cannot depend on the DOM, so the actual History API is an
+//! installed provider ([`install_url_provider`]) — the same pattern as
+//! `install_scheduler` / the wheel + file-drop channels. The web backend
+//! installs one at startup; native/SSR backends install nothing and every
+//! entry point below is a no-op (only web touches a URL).
 //!
 //! # Opt-in, not automatic
 //!
-//! While the legacy class-based navigators (stack/tab/drawer) coexist
-//! with the outlet model, both generations dispatch through the same
-//! `NavigatorControl`. The legacy web handlers already do their own
-//! `pushState`/popstate work, so hooking every dispatch would
-//! double-write history. `enable_url_sync()` is therefore called only
-//! by handlers that delegate URL work to the substrate; controls that
-//! never call it are invisible to this module.
+//! Handlers that do their own `pushState`/popstate work would
+//! double-write history if every dispatch were hooked, so
+//! `enable_url_sync()` is called only by handlers that delegate URL work
+//! to the substrate; controls that never call it are invisible to this
+//! module. (The vocabulary's navigator handlers use their own
+//! `handlers::navigator::url_sync` service rather than this registry.)
 //!
-//! # Semantics (ported from `web-navigator-helpers`)
+//! # Semantics
 //!
 //! - `Push`/`Select` with a URL → `pushState` + one history entry
 //!   recording the URL being covered and its scroll offset. (`Select`
 //!   pushes real history entries — on web the browser back button is
-//!   expected to undo a tab/sidebar selection, exactly as the legacy
-//!   drawer did.)
+//!   expected to undo a tab/sidebar selection.)
 //! - `Replace` → `replaceState`, history untouched. `Reset` →
 //!   `replaceState` + history cleared.
 //! - Programmatic `Pop` → the handler commits the pop synchronously;
@@ -47,15 +43,14 @@
 //!   new path's slice it OWNS (`owned_of`, the full path minus any
 //!   nested navigator's remainder) with its active owned slice.
 //!   Unchanged ⇒ the change belongs to a nested navigator: skip —
-//!   remounting here would tear the nested navigator down mid-pop (the
-//!   teardown race the legacy helpers document). A match deeper in the
+//!   remounting here would tear the nested navigator down mid-pop. A match deeper in the
 //!   recorded history ⇒ dispatch that many `Pop`s; anything else ⇒ a
 //!   forward navigation, dispatched through the navigator's link
 //!   activator (`Select` for swap, `Push` for stacks).
 //! - Scroll: forward navigations reset the outlet to the top; back
 //!   restores the recorded offset. Only meaningful when the outlet is
 //!   itself a scroll surface — screens that own their scroll via
-//!   `scroll_view` are unaffected, same as legacy.
+//!   `scroll_view` are unaffected.
 
 use super::shared::{NavCommand, NavState, NavigatorControl};
 use std::any::Any;
@@ -131,13 +126,12 @@ struct HistoryEntry {
     scroll: (f32, f32),
 }
 
-/// The URL-sync context the walker parks on every `NavigatorControl`
+/// The URL-sync context parked on a `NavigatorControl` at build
 /// (kind-agnostically); it becomes a live registry entry only when a
 /// handler opts in via `enable_url_sync`.
 #[doc(hidden)]
 pub struct UrlSyncContext {
-    /// Hierarchical PREFIX resolver — same closure the `NavigatorHost`
-    /// carries. Returns `(route, params, remainder)` for a full path.
+    /// Hierarchical PREFIX resolver. Returns `(route, params, remainder)` for a full path.
     pub resolve_entry: Rc<dyn Fn(&str) -> Option<(&'static str, Box<dyn Any>, String)>>,
     /// Reactive nav-state mirror (depth read untracked for the initial
     /// browser-history seed; active_path for the same).
@@ -163,8 +157,7 @@ struct NavEntry {
 
 impl NavEntry {
     /// The portion of `url` THIS navigator owns: the full URL minus the
-    /// unconsumed remainder a nested navigator resolves. Ported from
-    /// the legacy helpers (`NavigatorInstance::owned_of`).
+    /// unconsumed remainder a nested navigator resolves.
     fn owned_of(&self, url: &str) -> String {
         match (self.ctx.resolve_entry)(url) {
             Some((_, _, remainder)) if !remainder.is_empty() => url
@@ -214,7 +207,7 @@ pub(crate) fn register(control: &Rc<NavigatorControl>, ctx: UrlSyncContext) -> O
     });
     // Resolve the active owned slice from the platform URL when this
     // navigator's routes match it (cold-start deep link already mounted
-    // by the walker's initial-path resolution), else from the
+    // by the initial-path resolution), else from the
     // configured initial path.
     let entry = Rc::new(NavEntry {
         id,
@@ -250,8 +243,7 @@ pub(crate) fn register(control: &Rc<NavigatorControl>, ctx: UrlSyncContext) -> O
                     // Deep link with a synthesized entry below (a stack
                     // root that reconstructed its index): make the browser
                     // back button work immediately — index entry under the
-                    // deep-link entry, mirroring the legacy cold-start
-                    // flow. Capture the FULL platform path BEFORE the
+                    // deep-link entry. Capture the FULL platform path BEFORE the
                     // replace (so a deeper nested remainder survives),
                     // then re-push it above the index entry.
                     let full = (p.current_path)();
@@ -393,8 +385,7 @@ pub(crate) fn after_command(id: u64, kind: CommandKind) {
     let Some(entry) = entry_by_id(id) else { return };
     match kind {
         CommandKind::Forward => {
-            // Fresh screen starts at the top (legacy `mount_internal`
-            // behavior). No-op when the outlet isn't a scroll surface.
+            // Fresh screen starts at the top. No-op when the outlet isn't a scroll surface.
             entry.set_scroll(0.0, 0.0);
         }
         CommandKind::Pop => {
@@ -441,8 +432,7 @@ pub fn handle_popstate(new_path: &str) {
         let owned = entry.owned_of(new_path);
         // Our slice is unchanged → the change belongs to a NESTED
         // navigator. Touching our screen here would tear the nested
-        // navigator's subtree down mid-transition (the legacy teardown
-        // race), so skip.
+        // navigator's subtree down mid-transition, so skip.
         if owned == *entry.active_owned.borrow() {
             continue;
         }

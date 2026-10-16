@@ -9,7 +9,7 @@
 //! (it needs the platform's drag machinery — the web `DataTransfer`, macOS's
 //! `NSDraggingDestination`), so an app cannot build it out of touch/press.
 //! The backend installs a [`FileDropHandler`] on a view via
-//! [`Backend::install_file_drop_handler`](crate::Backend::install_file_drop_handler)
+//! `InputOps::install_file_drop_handler`
 //! and fires it for the drag lifecycle over that view.
 //!
 //! Only the desktop-class backends source these: **web** (`dragenter` /

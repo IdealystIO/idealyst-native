@@ -162,7 +162,7 @@ pub struct ButtonHandle {
 }
 
 impl ButtonHandle {
-    /// Backend constructor. Called by `Backend::make_button_handle`
+    /// Backend constructor. Called by `ButtonOps::make_button_handle`
     /// impls. The `node` is type-erased here so user code can hold
     /// `Ref<ButtonHandle>` without naming the backend's node type.
     pub fn new(node: Rc<dyn Any>, ops: &'static dyn ButtonOps) -> Self {
@@ -257,8 +257,7 @@ impl ViewHandle {
 
     /// Type-erased access to the backend's native node. Each
     /// backend stores its own `Node` type behind an `Rc<dyn Any>`
-    /// here; framework helpers (notably `LayoutPlan`'s outlet
-    /// resolution) downcast it back to the concrete type.
+    /// here; framework helpers downcast it back to the concrete type.
     pub fn as_any(&self) -> &dyn Any {
         &*self.node
     }
@@ -553,10 +552,10 @@ impl TextHandle {
 // RefOps + RefFill
 // =============================================================================
 
-/// Per-backend bundle of `Ops` trait objects, returned from
-/// `Backend::ref_ops()`. The framework asks the backend for these once
-/// (during render setup) and uses them to construct primitive handles
-/// at mount time.
+/// Per-backend bundle of `Ops` trait objects for constructing primitive
+/// handles at mount time. (No framework code builds or consumes one
+/// today: the vocabulary's caps traits mint handles directly via
+/// `make_*_handle`.)
 pub struct RefOps {
     pub button: &'static dyn ButtonOps,
     pub view: &'static dyn ViewOps,
@@ -568,8 +567,7 @@ pub struct RefOps {
 /// handle without runtime kind-matching on the closure itself. The
 /// closure is monomorphic to `H`, so type-checking against the
 /// call-site `Ref<H>` happens at `.bind()`. User code never constructs
-/// this directly; it's exposed only because `Element`'s variants
-/// carry it.
+/// this directly. (No framework code constructs or consumes it today.)
 pub enum RefFill {
     Button(Box<dyn FnOnce(ButtonHandle)>),
     Pressable(Box<dyn FnOnce(PressableHandle)>),
@@ -587,13 +585,12 @@ pub enum RefFill {
     Graphics(Box<dyn FnOnce(primitives::graphics::GraphicsHandle)>),
     Link(Box<dyn FnOnce(primitives::link::LinkHandle)>),
     Portal(Box<dyn FnOnce(primitives::portal::PortalHandle)>),
-    /// Fill closure for third-party `Element::External` primitives.
-    /// The framework hands the closure an `Rc<dyn Any>` wrapping the
+    /// Fill closure for third-party primitives. The framework hands the closure an `Rc<dyn Any>` wrapping the
     /// backend's native node; the third-party facade downcasts to
     /// build the user-facing `ExternalHandle<T>` before filling the
     /// `Ref`.
     External(Box<dyn FnOnce(Rc<dyn Any>)>),
-    /// Fill closure for `Element::Navigator`. Hands the SDK a
+    /// Fill closure for a navigator. Hands the SDK a
     /// pre-built `NavigatorHandle` wired to the navigator's control
     /// plane; the SDK wraps it in its own kind-specific handle type
     /// (`StackHandle` / `TabsHandle` / `DrawerHandle` / custom) before

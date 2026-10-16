@@ -16,8 +16,7 @@
 //!   each backend implements + installs its own driver at init time.
 //!
 //! Both are gated behind the `async-driver` feature so apps that don't
-//! need a frame ticker pay nothing for the wasm-bindgen-futures /
-//! pollster deps. Backends that ship a render-loop driver expose a
+//! need a frame ticker pay nothing for the pollster / log deps. Backends that ship a render-loop driver expose a
 //! matching `async-driver` feature that forwards here.
 //!
 //! # Use with the `Graphics` surface primitive
@@ -55,13 +54,13 @@ use std::sync::OnceLock;
 
 /// Drive a future to completion on the current execution context.
 ///
-/// On **web**: spawns the future on the JS event loop via
-/// `wasm_bindgen_futures::spawn_local`. Returns immediately; the
-/// future makes progress as its `Wake` notifications fire.
+/// Routes to the backend's installed [`AsyncExecutor`] when there is one
+/// (web: `backend_web::install_async_executor()`, which spawns on the JS
+/// event loop via `web_glue::spawn_local` and returns immediately).
 ///
-/// On **native** (Android / iOS / desktop): blocks the calling thread
-/// on the future via `pollster::block_on` and returns once the future
-/// completes. If you need the work to happen off the calling thread,
+/// With no executor installed, native targets (Android / iOS / desktop)
+/// block the calling thread on the future via `pollster::block_on` and
+/// return once it completes; wasm32 panics. If you need the work to happen off the calling thread,
 /// use `std::thread::spawn(move || spawn_async(async { ... }))`.
 ///
 /// # Send bound
@@ -69,8 +68,8 @@ use std::sync::OnceLock;
 /// On native, the future has to be at least `'static`; it does *not*
 /// need to be `Send` because `block_on` polls it on the current
 /// thread. On web, futures are inherently `!Send` (the JS event loop
-/// is single-threaded) and `wasm_bindgen_futures::spawn_local` accepts
-/// `!Send` futures. So the per-target API uses a single non-`Send`
+/// is single-threaded) and `web_glue::spawn_local` accepts `!Send`
+/// futures. So the per-target API uses a single non-`Send`
 /// bound everywhere, which lines up with what most author code wants
 /// to write (closures capturing `Rc`, `Cell`, etc.).
 ///

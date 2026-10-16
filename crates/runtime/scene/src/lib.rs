@@ -1,29 +1,29 @@
-//! runtime-scene — the scene core of the idea-lite migration (P1).
+//! runtime-scene — the scene core.
 //!
 //! The scene sits between the reactive kernel (`runtime-world`) and the
-//! primitive vocabulary (P2): it defines *structure* and nothing else.
+//! primitive vocabulary (`runtime-vocabulary`): it defines *structure* and
+//! nothing else.
 //!
 //! - [`Element`] — the abstract blueprint a component returns: six
 //!   variants (`Item`/`Fragment`/`Dyn`/`Keyed`/`Owned`/`Many`), of which
 //!   only `Item` and `Many` ever cross the platform boundary. Payloads are
 //!   type-erased; the scene never interprets them.
 //! - [`Host`] — the entire structural seam a platform must implement:
-//!   7 methods (`insert`, `insert_many`, `insert_at`, `remove_child`,
-//!   `clear_children`, `create_anchor`, `supports_splice`), extracted
-//!   verbatim from the old `Backend` trait's structural subset.
+//!   `insert`, `insert_many`, `insert_at`, `remove_child`,
+//!   `clear_children`, `release_subtree`, `create_anchor`,
+//!   `supports_splice`.
 //! - [`Registry`] — TypeId-keyed handlers, one per payload type. Built-in
-//!   and third-party primitives mount through the same contract; the old
-//!   `Element::External` concept dissolves into "a payload type whose
-//!   handler ships outside the framework".
+//!   and third-party primitives mount through the same contract: a
+//!   third-party primitive is just a payload type whose handler ships
+//!   outside the framework.
 //! - **Late-bound payloads** ([`Registry::defer`],
 //!   [`Registry::register_deferred`], [`defer_registration`]) — the
 //!   bundle-size seam. An app declares a payload kind late-bound at boot;
 //!   realize then PARKS items of that kind behind a placeholder instead of
 //!   panicking, and the handler installs itself later — typically from
 //!   inside a lazily loaded wasm chunk — at which point the parked items
-//!   realize in place, in document order, with no remount. This is the
-//!   scene-model successor to the old core's
-//!   `defer_external_registration`; it exists so a heavy third-party
+//!   realize in place, in document order, with no remount. It exists so
+//!   a heavy third-party
 //!   handler's code can live in a chunk instead of being anchored in
 //!   `main.wasm` by its own registration
 //!   (measured by `tests/lazy-payload-split`).
@@ -35,12 +35,11 @@
 //! - [`MAX_DEPTH`] — the realize recursion budget. The walk descends by
 //!   recursion, so a pathologically deep tree (an unbounded-recursion
 //!   component body) would exhaust the stack; past the cap it raises a
-//!   named panic instead. See `realize::depth` for the numbers and for
-//!   what the old walker did (a frame-size budget, and no cap at all).
-//! - Structural drivers (in [`realize`](mod@crate::realize)) — direct
-//!   ports of the old walker's `when_switch.rs`/`dynamic.rs`/`each.rs`
-//!   with their op-sequence invariants pinned by the `scene-parity`
-//!   golden suite (see that crate's README for the contract).
+//!   named panic instead. See `realize::depth` for the numbers.
+//! - Structural drivers (in [`realize`](mod@crate::realize)) — the
+//!   Dyn (`when`/`switch`/dynamic) and Keyed (`for`) drivers, with their
+//!   op-sequence invariants pinned by the `scene-parity` golden suite
+//!   (see that crate's README for the contract).
 
 mod element;
 mod host;

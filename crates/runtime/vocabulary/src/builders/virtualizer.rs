@@ -11,13 +11,10 @@ use runtime_scene::{item, Element};
 use crate::prims::{PrimCell, VirtualizerPrim};
 use crate::style_attach::IntoStyleProp;
 
-/// Start a `virtualizer` — port of the old
-/// `primitives::virtualizer::virtualizer(...)` constructor (the four
-/// required callbacks are positional, exactly like the old entry point;
-/// the typed `flat_list<T>` wrapper re-lands on this builder when the
-/// SDK layer retargets at P6). Defaults mirror the old `Bound`:
-/// `overscan = 1.0`, `VirtualLayout::default()` (vertical single-lane
-/// list, no gaps).
+/// Start a `virtualizer`. The four required callbacks are positional;
+/// the typed `flat_list<T>` wrapper (`glue::primitives::flat_list`) sits
+/// on this builder. Defaults: `overscan = 1.0`,
+/// `VirtualLayout::default()` (vertical single-lane list, no gaps).
 pub fn virtualizer(
     item_count: impl Fn() -> usize + 'static,
     item_key: impl Fn(usize) -> ItemKey + 'static,

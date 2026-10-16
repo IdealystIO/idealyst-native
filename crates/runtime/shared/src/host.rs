@@ -1,10 +1,9 @@
 //! Host-registry surface — the per-thread slots the active backend
 //! installs at mount (platform identity, color scheme, URL opener,
 //! full-screen setter, AX announcer) plus the shared host data types
-//! (`Screenshot`, `VirtualizerCallbacks`). Moved verbatim from
-//! runtime-core's `backend.rs`; the `Backend` trait itself stays in
-//! runtime-core. Each thread-local here is THE single authority — the
-//! old core re-exports, never duplicates.
+//! (`Screenshot`, `VirtualizerCallbacks`). The capability traits live in
+//! `runtime_vocabulary::caps`. Each thread-local here is THE single
+//! authority — crates above re-export, never duplicate.
 
 use std::rc::Rc;
 
@@ -497,10 +496,7 @@ pub fn install_announcer(
 
 #[cfg(test)]
 mod tests {
-    //! Host-registry unit tests — moved verbatim from runtime-core's
-    //! `backend.rs` alongside the code they exercise. Trait-default
-    //! tests (`default_platform`, `default_url_opener_is_none`) stayed
-    //! behind with the `Backend` trait.
+    //! Host-registry unit tests.
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;

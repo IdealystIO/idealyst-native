@@ -524,9 +524,8 @@ fn emit_element(
     // as post-fix setter calls. User components receive them as ordinary
     // props-struct fields via `emit_user`.
     //
-    // `test_id` and (on `button`) `disabled` attach post-fix too — they
-    // used to fall into the rest and be dropped, as they once were in
-    // `ui!`.
+    // `test_id` and (on `button`) `disabled` attach post-fix too —
+    // falling into the rest would drop them.
     let (style_value, a11y_props, other_props): (Option<&PropValue>, Vec<&Prop>, Vec<&Prop>) =
         if is_primitive {
             let mut style = None;

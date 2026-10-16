@@ -182,9 +182,8 @@ pub fn props(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// reactivity (cloning parameter-rooted paths into reactive closures) and
 /// emits the dispatch glue `ui!`/`jsx!` target: a `pub type Name =
 /// NameProps` tag alias plus an `impl runtime_core::BuildElement for
-/// NameProps` (a no-arg component gets an empty marker struct instead).
-/// This replaced the old per-component `macro_rules!` — see
-/// `invocation_macro`.
+/// NameProps` (a no-arg component gets an empty marker struct instead;
+/// no per-component `macro_rules!` — see `invocation_macro`).
 ///
 /// Props can be declared two ways:
 ///

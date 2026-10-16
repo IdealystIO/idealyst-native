@@ -110,15 +110,15 @@ thread_local! {
     /// hands its drained effect boxes (and per-scope guards) to this
     /// function instead of dropping them synchronously. Backends that
     /// need to amortize teardown across frames — the web backend uses
-    /// this to slice wasm-bindgen `Closure` drops over `requestAnimation
-    /// Frame` so the cost doesn't land inside the apply window — install
+    /// this to slice JS `Closure` drops over `requestAnimationFrame` so
+    /// the cost doesn't land inside the apply window — install
     /// a policy at boot. Native backends leave it `None` and drops fall
     /// through to a synchronous `drop(boxes)`.
     ///
     /// The signature is a bare `fn` (not `Box<dyn Fn>`) because the
     /// policy is install-once and queue-state is the backend's job to
     /// store (typically another backend-local thread-local). This keeps
-    /// the runtime-core slot zero-sized.
+    /// the slot here zero-sized.
     static DROP_DEFERRAL: std::cell::Cell<Option<fn(Vec<Box<dyn Any>>)>> =
         const { std::cell::Cell::new(None) };
 
@@ -135,7 +135,7 @@ thread_local! {
     /// dropped" (the taken slot reads `None`) or corrupt the in-flight
     /// effect's dep set. The scope-anchored scheduling helpers consult
     /// [`is_reactive_busy`] and skip the offending invocation, re-arming
-    /// on the next frame instead. See `crates/runtime/core/src/scheduling.rs`.
+    /// on the next frame instead. See [`crate::scheduling`].
     static REACTIVE_BUSY: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 
     /// Backend-installed callback fired each time the OUTERMOST reactive
@@ -214,16 +214,14 @@ impl Drop for ReactiveBusyGuard {
 /// allocate; the backend owns its own queue + scheduler state in a sibling
 /// thread-local.
 ///
-/// Designed for the web backend's rAF-sliced drain — wasm-bindgen `Closure`
+/// Designed for the web backend's rAF-sliced drain — JS `Closure`
 /// drops are expensive and pile up inside the apply window otherwise. Native
 /// backends never call this; their `Scope::drop` runs synchronously, which
 /// is the right choice when teardown is cheap.
 ///
-/// Pre-refactor this whole machinery lived behind `#[cfg(target_arch =
-/// "wasm32")]` in runtime-core, which violated the framework-purity rule
-/// (no platform-specific implementations in `framework/`). The cfg-gated
-/// storage and scheduler now lives in `backend-web`; this hook is the
-/// portable seam.
+/// The hook is the portable seam: the platform-specific queue and
+/// scheduler live in `backend-web`, so this crate carries no
+/// `#[cfg(target_arch)]` switch.
 pub fn install_drop_deferral(policy: fn(Vec<Box<dyn Any>>)) {
     DROP_DEFERRAL.with(|c| c.set(Some(policy)));
 }
@@ -252,9 +250,9 @@ struct Arena {
     /// recognised as STALE (the original signal's scope unmounted and
     /// the slot was reused, possibly by a different-typed signal) and
     /// becomes a safe no-op instead of aliasing the new occupant —
-    /// which previously panicked with "signal type mismatch" (a
+    /// which would panic with "signal type mismatch" (a
     /// process-aborting crash across the JNI/FFI boundary) or, worse,
-    /// silently fired the wrong signal's subscribers. The classic
+    /// silently fire the wrong signal's subscribers. The classic
     /// generational-arena guard (Leptos/Slotmap).
     signal_gen: Vec<u32>,
     effects: Vec<Option<Box<dyn Any>>>,
@@ -557,8 +555,8 @@ struct EffectInner {
     /// re-track on the way back in) — the caller has asserted the
     /// effect's dep set is stable across re-runs. Use only when
     /// every re-run reads exactly the same set of signals that the
-    /// initial run did (the walker's reactive-text builder is the
-    /// canonical caller). Set by [`Effect::new_with_stable_deps`]
+    /// initial run did (a reactive-text binding is the canonical
+    /// caller). Set by [`Effect::new_with_stable_deps`]
     /// after the initial run; defaults to `false` for any effect
     /// created through [`Effect::new`].
     ///
@@ -1014,7 +1012,7 @@ pub fn with_inject<T: 'static, R>(f: impl FnOnce(&T) -> R) -> Option<R> {
 pub fn on_cleanup<F: FnOnce() + 'static>(f: F) {
     // Thin generic shim: box here, work in the non-generic inner —
     // otherwise every distinct cleanup closure (there are dozens across
-    // the walker and primitives) monomorphizes the whole arena/scope
+    // the framework and primitives) monomorphizes the whole arena/scope
     // attach sequence. Same wasm-size split as `Effect::create`.
     on_cleanup_boxed(Box::new(f));
 }
@@ -1063,9 +1061,9 @@ fn on_cleanup_boxed(f: Box<dyn FnOnce()>) {
 pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
     // Bump the user-intent depth so the snapshot-read diagnostic stays
     // quiet inside: `untrack` is the author (or a framework read path)
-    // explicitly declaring "no subscription wanted". The WALKER's
-    // build-region untrack (`untrack_for_build`) deliberately does NOT
-    // bump it — see that fn for why.
+    // explicitly declaring "no subscription wanted". The build-region
+    // untrack (`untrack_for_build`) deliberately does NOT bump it — see
+    // that fn for why.
     USER_UNTRACK_DEPTH.with(|d| d.set(d.get() + 1));
     let prev = CURRENT.with(|c| c.borrow_mut().take());
     let result = f();
@@ -1074,7 +1072,7 @@ pub fn untrack<R, F: FnOnce() -> R>(f: F) -> R {
     result
 }
 
-/// Walker-internal variant of [`untrack`] for build regions (`when`/
+/// Framework-internal variant of [`untrack`] for build regions (`when`/
 /// `switch`/`each`/`dynamic`/`presence` branch construction). Clears the
 /// tracking context like `untrack` but does NOT count as declared
 /// snapshot intent — component bodies rebuilt inside these regions must
@@ -1107,7 +1105,7 @@ pub fn untrack_for_build<R, F: FnOnce() -> R>(f: F) -> R {
 thread_local! {
     /// Depth of user-intent [`untrack`] calls (also bumped by internal
     /// read paths that use `untrack` — those are intentional untracked
-    /// reads too). Distinct from the walker's `untrack_for_build`.
+    /// reads too). Not bumped by `untrack_for_build`.
     static USER_UNTRACK_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
@@ -2485,7 +2483,7 @@ impl Effect {
     /// signal it read changes.
     /// Thin generic shim: box the closure, delegate to the non-generic
     /// [`Self::create_boxed`]. The split matters for wasm size — this
-    /// constructor has 50+ distinct closure call sites across the walker
+    /// constructor has 50+ distinct closure call sites across the framework
     /// and primitives, and a generic body would monomorphize the whole
     /// arena-insert + register + first-run sequence once **per closure
     /// type** (std's `thread::spawn` uses the same shape for the same
@@ -2537,7 +2535,7 @@ impl Effect {
     /// active, the returned handle owns the slot directly.
     ///
     /// Crate-internal adopt-or-own constructor used throughout the framework
-    /// (the render walker, `resource`, `memo_with`, …). It is **not** part of
+    /// (`resource`, `memo_with`, …). It is **not** part of
     /// the public API — author code uses `effect! { … }` (scope-owned) or
     /// [`watch`] (caller-owned). Writing `Effect::new` in author code is a
     /// privacy error, which is the point: the tempting React/Solid-style name
@@ -2548,8 +2546,8 @@ impl Effect {
         Self::create(f, true)
     }
 
-    /// Raw arena slot index of this effect. Crate-internal, for the walker
-    /// to attach a reactive-profile binding label via `debug::label_effect`
+    /// Raw arena slot index of this effect. Crate-internal, for a node
+    /// binding to attach a reactive-profile binding label via `debug::label_effect`
     /// (e.g. naming the node a text effect drives). Only needed under
     /// `debug-stats`; gated to avoid a dead-code warning otherwise.
     #[cfg(feature = "debug-stats")]
@@ -2631,7 +2629,7 @@ impl Effect {
         location: &'static std::panic::Location<'static>,
     ) -> Self {
         // Reactive-profile identity, same as `create`. This constructor is the
-        // walker's node-binding path (text/style effects), so the entry
+        // node-binding path (text/style effects), so the entry
         // recorded here is what `debug::label_effect` later attaches
         // "text#<id>" / "style#<id>" to — without it the label would have no
         // slot and be silently dropped.
@@ -2702,12 +2700,12 @@ impl Effect {
 /// This is the one sanctioned `pub` effect constructor, deliberately given a
 /// `__`-prefixed, purpose-specific name so no author reaches for it.
 ///
-/// Semantics: adopt-or-own with **no** scope assertion. The build walker
-/// always runs components inside a `Scope` (so the registration guard lives
+/// Semantics: adopt-or-own with **no** scope assertion. A mount always
+/// runs components inside a `Scope` (so the registration guard lives
 /// exactly as long as the component's mounted subtree), but a component
 /// constructor invoked directly outside `mount` — as some tests do — must
-/// not panic. That rules out [`Effect::scoped`]; this mirrors the historical
-/// `let _ = Effect::new(...)` exactly.
+/// not panic. That rules out [`Effect::scoped`]; this behaves exactly like
+/// `let _ = Effect::new(...)`.
 #[doc(hidden)]
 pub fn __component_keepalive_effect<F: FnMut() + 'static>(f: F) {
     let _ = Effect::create(f, true);
@@ -3200,17 +3198,16 @@ impl Scope {
 
     /// Adopt an arbitrary RAII guard into the scope. The guard's
     /// `Drop` impl fires when the scope drops, in the same batch as
-    /// the effect/signal drops. Used by `attach_style_static` to
-    /// hold a `StyleHandle` without allocating an Effect.
+    /// the effect/signal drops. Used by [`adopt_guard_into_active_scope`]
+    /// (the static-style path) to hold a `StyleHandle` without allocating
+    /// an Effect.
     pub(crate) fn adopt_guard<G: 'static>(&mut self, guard: G) {
         self.guards.push(Box::new(guard));
     }
 
     /// Adopts the given effect into this scope. The original `Effect`
     /// handle has its `owns` flag cleared so drop becomes a no-op; the
-    /// scope is now responsible for freeing the slot. Reserved for the
-    /// future integration where the renderer's `Owner` directly wraps a
-    /// `Scope` instead of a `Vec<Effect>`.
+    /// scope is now responsible for freeing the slot. No caller.
     #[allow(dead_code)]
     pub(crate) fn adopt_effect(&mut self, mut e: Effect) {
         self.effects.push(e.id);
@@ -3231,8 +3228,7 @@ impl Drop for Scope {
         // during destruction", non-unwinding panic in a dtor). The
         // thread is exiting: semantic teardown is moot, so drop the raw
         // storage without running anything. Runtime drops (arena alive)
-        // take the full path below unchanged. Regression: mock-backend
-        // `nested_teardown_repro`.
+        // take the full path below unchanged.
         if ARENA.try_with(|_| ()).is_err() {
             self.cleanups.clear();
             self.signals.clear();
@@ -3299,7 +3295,7 @@ impl Drop for Scope {
         // Backend cleanup hooks (`release_virtualizer`,
         // `release_graphics`, etc.) run from inside an
         // EffectInner's drop — they tear down JS-side listeners
-        // and drop the wasm-bindgen Closures that JS was holding.
+        // and drop the JS Closures that JS was holding.
         // During that teardown, a queued browser event (scroll,
         // ResizeObserver, microtask-deferred refresh) can fire
         // synchronously into a Rust callback that reads a user

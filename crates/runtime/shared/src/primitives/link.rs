@@ -103,10 +103,11 @@ pub trait LinkOps {
 }
 
 // ---------------------------------------------------------------------------
-// LinkConfig — what `Backend::create_link` receives
+// LinkConfig — what the backend's `create_link` receives
 // ---------------------------------------------------------------------------
 
-/// Bundle the framework hands to `Backend::create_link`. The
+/// Bundle the framework hands to the backend's `create_link`
+/// (`runtime_vocabulary::caps::LinkOps`). The
 /// backend wires the platform-native interaction widget (a real
 /// `<a href>` on web, an accessibility-Link-roled tappable
 /// container on native) and calls `on_activate` when the user
@@ -138,20 +139,5 @@ pub struct LinkConfig {
     /// navigates.)
     pub on_activate: Rc<dyn Fn()>,
 }
-
-// ---------------------------------------------------------------------------
-// Constructor
-// ---------------------------------------------------------------------------
-
-
-
-// ---------------------------------------------------------------------------
-// Bound<LinkHandle> — builder methods
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Internals shared with the walker
-// ---------------------------------------------------------------------------
 
 

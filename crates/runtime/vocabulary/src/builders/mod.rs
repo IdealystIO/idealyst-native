@@ -1,7 +1,7 @@
-//! Builders for the built-in primitives — the `ui!` contract (P2b).
+//! Builders for the built-in primitives — the `ui!` contract.
 //!
-//! Convention (ports idea-lite's builder shapes, prop names aligned with
-//! the current `ui!` surface so the P3 macro retarget is mechanical):
+//! Convention (prop names aligned with the `ui!` surface, so the macro
+//! lowering is mechanical):
 //!
 //! - `view() -> ViewBuilder`, props as methods (`.style(...)`,
 //!   `.on_touch(...)`, …), children via `.child(...)`, and
@@ -21,7 +21,7 @@
 //! (`crates/runtime/macros-parse/src/primitives.rs`): `view`, `text`, `button`,
 //! `pressable`, `image`, `icon`, `toggle`, `slider`,
 //! `activity_indicator`, `link`, `scroll_view`, `text_input`,
-//! `text_area`, plus the P3-set `virtualizer` (`flat_list`'s
+//! `text_area`, plus `virtualizer` (`flat_list`'s
 //! type-erased core), `graphics`, `portal` (with the
 //! `overlay`/`anchored_overlay` compositions) and `presence`. (`when`
 //! needs no builder: it lowers to the scene's `dyn_keyed` hole
@@ -141,8 +141,8 @@ impl_builder_child!(
     NavigatorOutletBuilder,
 );
 
-/// Text-content coercion — the vocabulary's display policy (ports
-/// idea-lite's `TextContent`): `&str`/`String` are static; closures of
+/// Text-content coercion — the vocabulary's display policy:
+/// `&str`/`String` are static; closures of
 /// any `ToString` are dynamic; signals/memos of `ToString` values are
 /// dynamic through their own `get()`.
 pub trait TextContent {

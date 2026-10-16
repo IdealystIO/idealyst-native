@@ -1,14 +1,12 @@
 //! Per-primitive shared surface: the prop/handle/Ops STRUCTS of each
-//! primitive family — the walker-free half of the old
-//! `runtime_core::primitives`.
+//! primitive family.
 //!
-//! The `Element`/`Bound` builder fns (`icon(..)`, `text_input(..)`,
-//! `portal(..)`, …) stay in `runtime-core`'s same-named modules, which
-//! wildcard-re-export these types so every old path keeps resolving.
-//! Ungated by design: these types appear in `Element` payloads, wire
-//! frames, and `Backend`/caps trait signatures, so the old core's
-//! `prim-*` features gate the *builders and dispatchers*, never the
-//! types.
+//! The builder fns (`icon(..)`, `text_input(..)`, `portal(..)`, …) live
+//! in `runtime-vocabulary` (`glue::primitives`), which re-exports these
+//! types under `runtime_core::primitives::*`. Ungated by design: these
+//! types appear in element payloads, wire frames, and caps trait
+//! signatures, so feature gates apply to builders and handlers, never
+//! to the types.
 
 pub mod activity_indicator;
 pub mod flat_list;

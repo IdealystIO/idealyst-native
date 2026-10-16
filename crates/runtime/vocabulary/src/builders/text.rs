@@ -14,7 +14,7 @@ use crate::style_attach::IntoStyleProp;
 use super::TextContent;
 
 /// Start a `text` — a text leaf. Content via [`content`](TextBuilder::content)
-/// (or [`child`](TextBuilder::child), the idea-lite spelling), styled
+/// (or [`child`](TextBuilder::child), the spelling the macro uses), styled
 /// runs via [`runs`](TextBuilder::runs).
 pub fn text() -> TextBuilder {
     TextBuilder {
@@ -42,8 +42,8 @@ impl TextBuilder {
         self
     }
 
-    /// idea-lite spelling of [`content`](Self::content): the macro puts a
-    /// text tag's brace block here.
+    /// Alias of [`content`](Self::content): the macro puts a text tag's
+    /// brace block here.
     pub fn child(self, content: impl TextContent) -> Self {
         self.content(content)
     }

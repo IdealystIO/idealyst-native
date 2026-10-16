@@ -1,22 +1,17 @@
-//! The kernel's semantics suite: the 33-test idea-lite suite ported to
-//! worlds + Copy handles, plus the P0 additions — derivation-class flush
-//! (diamond glitch-freedom), multi-world routing, generational staleness,
-//! ownership collectors, and the guarded-set decomposition
-//! (set / set_always / touch / set_untracked).
+//! The kernel's semantics suite: signals/effects on worlds + Copy handles,
+//! derivation-class flush (diamond glitch-freedom), multi-world routing,
+//! generational staleness, ownership collectors, and the guarded-set
+//! decomposition (set / set_always / touch / set_untracked).
 //!
-//! Port notes (idea-lite `src/tests.rs` → here):
+//! Notes:
 //! - Effect handles are `Copy` and non-owning; every "drop the guard" test
 //!   holds the effect in an `Owned` from `collect_owned` and drops that.
-//! - idea-lite's `writes_to_a_dead_world_are_noops` also asserted `get()`
-//!   still answered after the scheduler died (its signals were self-owning
-//!   Rcs). Arena signals die with their world, so the port asserts writes
-//!   stay silent no-ops while reads panic (`reads_from_a_dead_world_panic`).
-//! - Tests 28–32 exercised idea-lite's scene layer (`Element`/`realize`/
-//!   keyed lists). Their LIFECYCLE semantics are ported here against the
-//!   kernel's ownership primitives — see the "scene-lifecycle analogues"
-//!   section, which hand-rolls the P1 Dyn/Keyed driver shapes on
-//!   `collect_owned`; the full scene-layer ports live in
-//!   `runtime-scene/src/tests.rs` (P1), including `key_conversions` (33).
+//! - Arena signals die with their world: writes to a dead world are silent
+//!   no-ops while reads panic (`reads_from_a_dead_world_panic`).
+//! - The "scene-lifecycle analogues" section hand-rolls the scene's
+//!   Dyn/Keyed driver shapes on `collect_owned` to pin their lifecycle
+//!   semantics at the kernel level; the scene-layer tests themselves live
+//!   in `runtime-scene/src/tests.rs`.
 
 use super::*;
 use std::cell::Cell;
@@ -117,7 +112,7 @@ fn writes_to_a_dead_world_are_noops() {
     drop(world);
     // Every write shape must be a silent no-op — nothing can ever commit
     // without a world (in-flight async writes racing a teardown are
-    // expected). The read-side deviation from idea-lite is covered by
+    // expected). The read side is covered by
     // `reads_from_a_dead_world_panic`.
     s.set(2);
     s.set_always(3);
@@ -204,8 +199,8 @@ fn an_effect_runs_once_per_flush_even_with_two_changed_deps() {
 
 #[test]
 fn dropping_the_owned_scope_retires_the_effect() {
-    // Port of `dropping_the_handle_retires_the_effect`: handles are Copy and
-    // non-owning here, so lifecycle rides on the Owned collector instead.
+    // Handles are Copy and non-owning, so lifecycle rides on the Owned
+    // collector.
     let world = World::new();
     let runs = counter();
     let s = world.enter(|| signal(0));
@@ -1009,16 +1004,15 @@ fn component_bodies_run_untracked() {
 }
 
 // ============================================================================
-// Scene-lifecycle analogues — ports of idea-lite's realize/Dyn/Keyed tests
-// (28–32) against the kernel's ownership primitives. These hand-roll the
-// exact scope shapes P1's structural drivers will use, so the lifecycle
+// Scene-lifecycle analogues — realize/Dyn/Keyed lifecycle against the
+// kernel's ownership primitives. These hand-roll the scope shapes the
+// scene's structural drivers use, so the lifecycle
 // semantics (swap = drop old scope, unmount = drop, keyed identity keeps
 // row scopes alive) are pinned at the kernel level.
 // ============================================================================
 
 /// A scope owning one effect whose cleanup bumps `drops` — makes teardown
-/// observable, the way component effects are in real apps. (Port of
-/// idea-lite's `label_with_drop_probe`.)
+/// observable, the way component effects are in real apps.
 fn scope_with_drop_probe(label: &str, drops: &Rc<Cell<usize>>) -> (String, Owned) {
     let drops = Rc::clone(drops);
     collect_owned(move || {
@@ -1033,8 +1027,7 @@ fn scope_with_drop_probe(label: &str, drops: &Rc<Cell<usize>>) -> (String, Owned
 
 #[test]
 fn nested_scopes_compose_results() {
-    // Port of `realize_walks_structure`: structure comes back through the
-    // collector transparently, and ownership PARTITIONS — the inner scope's
+    // Structure comes back through the collector transparently, and ownership PARTITIONS — the inner scope's
     // creations belong to the inner Owned only.
     let world = World::new();
     let ((tree, inner_owned, s_outer, s_inner), outer_owned) = world.enter(|| {
@@ -1055,8 +1048,7 @@ fn nested_scopes_compose_results() {
 
 #[test]
 fn dyn_slot_swap_tears_down_previous_scope() {
-    // Port of `dyn_holes_swap_and_tear_down`: the P1 Dyn driver's shape — an
-    // effect that rebuilds a scope on each run and stores it in a slot,
+    // The scene Dyn driver's shape — an effect that rebuilds a scope on each run and stores it in a slot,
     // where the assignment drops the previous Realized/Owned.
     let world = World::new();
     let drops = counter();
@@ -1085,8 +1077,7 @@ fn dyn_slot_swap_tears_down_previous_scope() {
 
 #[test]
 fn dropping_the_root_scope_retires_owned_effects() {
-    // Port of `dropping_the_realized_tree_retires_its_effects`: unmounting
-    // is dropping.
+    // Unmounting is dropping.
     let world = World::new();
     let runs = counter();
     let s = world.enter(|| signal(0));
@@ -1110,18 +1101,16 @@ fn dropping_the_root_scope_retires_owned_effects() {
 }
 
 /// The live state of a keyed list: one scope per key, plus presentation
-/// order. The P1 Keyed driver's core, hand-rolled.
+/// order. The scene Keyed driver's core, hand-rolled.
 struct KeyedScopes {
     order: Vec<i64>,
     entries: HashMap<i64, (String, Owned)>,
 }
 
-/// One reconcile pass, ported from idea-lite's `Element::Keyed` effect body:
-/// kept keys carry their scope over untouched (`render` NOT called), new
+/// One reconcile pass: kept keys carry their scope over untouched (`render` NOT called), new
 /// keys render fresh, duplicates panic. Returns the vanished scopes so the
 /// caller can drop them AFTER releasing any borrows (their cleanups run at
-/// that drop — idea-lite's "release the borrow before the vanished subtrees
-/// drop" invariant).
+/// that drop — "release the borrow before the vanished subtrees drop").
 fn reconcile_keyed(
     list: &mut KeyedScopes,
     items: &[i64],
@@ -1141,7 +1130,6 @@ fn reconcile_keyed(
 
 #[test]
 fn keyed_scopes_reconcile_by_identity() {
-    // Port of `keyed_lists_reconcile_by_identity`.
     let world = World::new();
     let renders = counter();
     let drops = counter();
@@ -1197,26 +1185,21 @@ fn keyed_scopes_reconcile_by_identity() {
 #[test]
 #[should_panic(expected = "duplicate key")]
 fn duplicate_keys_panic() {
-    // Port of idea-lite's duplicate-key panic, against the same reconcile
-    // shape P1 will use. (No world needed: collect_owned works anywhere.)
+    // Duplicate keys panic in the reconcile shape the scene uses. (No
+    // world needed: collect_owned works anywhere.)
     let mut list = KeyedScopes { order: Vec::new(), entries: HashMap::new() };
     let _ = reconcile_keyed(&mut list, &[1, 1], &mut |n| collect_owned(|| format!("r{n}")));
 }
 
-// NOT PORTED HERE — `key_conversions` (33/33): `Key` is a scene-layer type
-// (Element::Keyed's identity); it landed with P1's runtime-scene, where the
-// test now lives (`runtime-scene/src/tests.rs::key_conversions`).
-
 // ============================================================================
-// NEW (P0): derivation-class flush — glitch freedom
+// Derivation-class flush — glitch freedom
 // ============================================================================
 
 #[test]
 fn diamond_effect_runs_once_with_consistent_pair() {
-    // The P0 centerpiece: S → memo(S), one Reaction reading BOTH. The
-    // reaction must run exactly once per flush and never observe
-    // (fresh S, stale memo). idea-lite's naive round loop ran it twice, the
-    // first time with the stale pair.
+    // S → memo(S), one Reaction reading BOTH. The reaction must run
+    // exactly once per flush and never observe (fresh S, stale memo) — a
+    // naive round loop runs it twice, the first time with the stale pair.
     let world = World::new();
     let runs = counter();
     let pairs: Rc<RefCell<Vec<(i32, i32)>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1276,7 +1259,7 @@ fn memo_chain_settles_in_one_flush_with_one_reaction_run() {
 }
 
 // ============================================================================
-// NEW (P0): multi-world routing
+// Multi-world routing
 // ============================================================================
 
 #[test]
@@ -1380,7 +1363,7 @@ fn dropping_one_world_leaves_others_working() {
 }
 
 // ============================================================================
-// NEW (P0): generational staleness + ownership teardown
+// Generational staleness + ownership teardown
 // ============================================================================
 
 #[test]
@@ -1462,7 +1445,7 @@ fn nested_collectors_own_their_scopes_independently() {
 }
 
 // ============================================================================
-// NEW (P0): guarded-set decomposition — set / set_always / touch /
+// Guarded-set decomposition — set / set_always / touch /
 // set_untracked, staged-commit flavor (mirrors runtime-core's
 // reactive/tests.rs notify-semantics section, with flush as the window).
 // ============================================================================
@@ -1594,7 +1577,7 @@ fn set_nan_always_notifies() {
 }
 
 // ============================================================================
-// NEW (P0): with() borrow-reads, untrack globality, flush introspection
+// with() borrow-reads, untrack globality, flush introspection
 // ============================================================================
 
 /// Deliberately NOT Clone: `with`/`set` compiling against it proves the
@@ -1711,13 +1694,13 @@ fn handles_are_copy() {
 }
 
 // ============================================================================
-// NEW (P1 support): nested-effect tracking context + Owned::merge
+// Nested-effect tracking context + Owned::merge
 // ============================================================================
 
 #[test]
 fn effect_created_inside_untrack_still_tracks() {
-    // Regression for the P1 structural drivers: subtree builds run inside
-    // `untrack()` (the old walker's `untrack_for_build` contract), and every
+    // Regression for the scene's structural drivers: subtree builds run
+    // inside `untrack()`, and every
     // nested driver/binding effect is CREATED — and first-run — inside that
     // window. That first run is the only dependency-collection pass the
     // effect gets, so its body must be a fresh tracking context. Before
@@ -1804,7 +1787,8 @@ fn owned_merge_folds_scopes_into_one_drop() {
 
 #[test]
 fn unscoped_creations_survive_the_enclosing_collector() {
-    // The world-lifetime-service escape hatch (new-core style engine):
+    // The world-lifetime-service escape hatch (the style engine's
+    // per-world theme state):
     // a signal/effect created via `unscoped` inside a `collect_owned`
     // scope must NOT be collected — it lives until the world drops.
     let world = World::new();
@@ -2231,8 +2215,7 @@ mod staged_read_diagnostic {
     }
 
     /// The headline case: stage a write, read the same signal before the
-    /// flush. This is the exact shape the migration guide's step 4 used to
-    /// ask upgraders to grep for by hand.
+    /// flush.
     #[test]
     fn staged_write_then_read_warns_and_names_both_sites() {
         let _ = drain();

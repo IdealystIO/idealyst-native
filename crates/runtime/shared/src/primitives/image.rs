@@ -22,8 +22,8 @@
 //!   `on_error`. The backend deliberately doesn't declare it, so apps that
 //!   never load remote images don't ask for the permission.
 //! - **Asset-based**: [`image_asset`] takes a declarative
-//!   [`Asset<kinds::Image>`](crate::assets::Asset). The walker calls
-//!   `Backend::register_asset` once before `create_image`, and the
+//!   [`Asset<kinds::Image>`](crate::assets::Asset). The framework calls
+//!   `AssetOps::register_asset` once before `ImageOps::create_image`, and the
 //!   backend resolves the asset to its locally-correct URL (web's
 //!   `dist/assets/` path, iOS bundle resource, Android `AssetManager`,
 //!   etc.). Internally the framework still hands the backend a URL —
@@ -55,7 +55,7 @@ pub trait ImageOps {
     // Reserved for future image-specific operations (reload, measure).
 }
 
-/// Payload delivered to an [`on_load`](Bound::on_load) handler once an
+/// Payload delivered to an image builder's `on_load` handler once an
 /// image's bitmap has decoded. `width`/`height` are the image's
 /// **natural** (intrinsic) pixel dimensions — `naturalWidth`/
 /// `naturalHeight` on web, the `NSImage`/`UIImage` `size` on Apple.
@@ -70,7 +70,7 @@ pub struct ImageLoadEvent {
     pub height: f32,
 }
 
-/// Installed via [`Bound::<ImageHandle>::on_load`]. Fires once, when the
+/// Installed via the image builder's `on_load`. Fires once, when the
 /// image's bitmap has finished decoding, with its natural
 /// [dimensions](ImageLoadEvent). Reactive `src` swaps re-fire it when the
 /// new bitmap loads. Born batched — one reactive cycle per call, like the
@@ -80,10 +80,10 @@ pub struct ImageLoadEvent {
 /// the wgpu renderer (async URL completion + synchronous asset / `data:`
 /// assignment). A no-op on
 /// headless / CPU backends (no real decode). See
-/// [`crate::Backend::install_image_load_handler`].
+/// `runtime_vocabulary::caps::ImageOps::install_image_load_handler`.
 pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
 
-/// Installed via [`Bound::<ImageHandle>::on_error`]. Fires when the image
+/// Installed via the image builder's `on_error`. Fires when the image
 /// fails to load or decode — a network error, a 404, or bytes no decoder
 /// accepts. Carries no payload (there's nothing to report but the
 /// failure). Born batched like [`ImageLoadHandler`].
@@ -91,7 +91,7 @@ pub type ImageLoadHandler = Rc<dyn Fn(&ImageLoadEvent)>;
 /// Same backend coverage as [`ImageLoadHandler`]: web (`<img>` `error`),
 /// Apple, Android, Windows, Linux and wgpu (load / decode failure, or a src
 /// the contract rejects); no-op on headless / CPU backends. See
-/// [`crate::Backend::install_image_error_handler`].
+/// `runtime_vocabulary::caps::ImageOps::install_image_error_handler`.
 pub type ImageErrorHandler = Rc<dyn Fn()>;
 
 /// Trait the macro emits for `src = ...`. Accepts a bare string, a

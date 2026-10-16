@@ -10,8 +10,8 @@
 //! ```
 //!
 //! so the only thing `#[component]` has to emit is the trait impl that
-//! ties `FooProps` to the component function. This replaces the old
-//! per-component `macro_rules!`: dispatch now resolves across crate
+//! ties `FooProps` to the component function. No per-component
+//! `macro_rules!`: dispatch resolves across crate
 //! boundaries by ordinary path rules (no `#[macro_export]` /
 //! `#[macro_use]` ordering), and the call site is a real struct literal,
 //! so rust-analyzer gives field completion / hover / go-to-def on props.

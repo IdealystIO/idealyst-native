@@ -9,11 +9,9 @@
 //! identically and the resolved bytes match across web/iOS/Android/macOS
 //! (CLAUDE.md §7).
 //!
-//! This decision used to be copy-pasted byte-for-byte into
-//! `backend-ios-core` and `backend-android-core` (with the constants
-//! re-stated again in `backend-macos`), each carrying a "MUST match the
-//! other backends" comment. Hosting it here makes that invariant a single
-//! definition instead of a hand-synced one — there is no cross-platform
+//! Hosting it here makes "every backend decides the same way" a single
+//! definition instead of a hand-synced copy per backend — there is no
+//! cross-platform
 //! backend crate below the framework that all of iOS/Android/macOS can
 //! reach, so the framework core is the canonical home.
 

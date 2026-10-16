@@ -22,7 +22,7 @@
 //!
 //! Presence solves both by carrying its own animation declaration —
 //! a small, deliberately-narrow vocabulary of presence-only
-//! properties — and managing the timing in the walker:
+//! properties — and managing the timing in the presence handler:
 //!
 //! - **Enter**: apply `enter.state` to the node *before* the first
 //!   paint, then one animation-frame later clear the override so the
@@ -196,20 +196,12 @@ impl PresenceHandle {
 
 pub trait PresenceOps {}
 
-// ============================================================================
-// Constructor + builder
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     //! `PresenceState` / `PresenceAnim` builder algebra. Pure data —
     //! no backend, no core.
-    //!
-    //! RELOCATED from `runtime-core/src/primitives/presence.rs` (deletion
-    //! baseline §4.2, SV-R). The types live HERE; only the old
-    //! `Element`/`Bound` constructor lived in runtime-core, and these
-    //! tests never touched it — they are the same 10 assertions against
-    //! the same code, re-homed so they survive the walker's deletion.
+
 
     use super::*;
     use crate::style::Easing;

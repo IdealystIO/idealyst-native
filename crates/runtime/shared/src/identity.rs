@@ -1,17 +1,15 @@
 //! Stable structural identity for primitives, scopes, styles, and handlers.
 //!
 //! The framework's internal counters (`NodeId`, `StyleId`, `ScopeId`,
-//! `HandlerId`) are sequential u64s assigned in walk order. That's
-//! fine within a single walk, but **breaks across rebuilds** in runtime-server
+//! `HandlerId`) are sequential u64s assigned in mount order. That's
+//! fine within a single mount, but **breaks across rebuilds** in runtime-server
 //! mode: when a sidecar respawns, its counters restart from 0, so
 //! `RegisterStyle { id: 0, … }` from the new sidecar overwrites an
-//! unrelated style on the client — see the comment chain that
-//! introduced this module for the canonical "theme toggle scrambles
-//! layout" repro.
+//! unrelated style on the client (a theme toggle scrambles layout).
 //!
 //! [`Identity`] is the framework's answer: a content-addressed hash
 //! derived from the emission site's *position in the structural tree*
-//! (not its position in walk order). Two walks of the same tree
+//! (not its position in mount order). Two mounts of the same tree
 //! produce the same identities for the same nodes; the host-side
 //! recorder maps `Identity → wire_id` once and reuses the mapping
 //! across rebuilds, so downstream commands always reference the
@@ -34,7 +32,7 @@
 //! # Inputs
 //!
 //! - **`slot`** — emission order within the parent's children list.
-//!   The walker computes this as it iterates; macros never need to
+//!   The mount path computes this as it iterates; macros never need to
 //!   surface a slot number to the author.
 //! - **`branch`** — discriminator for `if` / `match` arms. Same slot
 //!   in different branches produces different identities, matching
@@ -147,14 +145,10 @@ impl Identity {
     /// uninitialized id doesn't masquerade as the root.
     pub const ROOT_SCOPE: Identity = Identity(0xD1BE_4A24_71B2_75A1);
 
-    /// Sentinel for "this site is not yet identified" — used by the
-    /// walker during the transition window where some emission sites
-    /// haven't been threaded through `Identity` yet. The host recorder
-    /// treats `UNIDENTIFIED` specially: it mints a fresh wire id every
-    /// time it sees one, with no dedup. Effectively reverts to the
-    /// legacy sequential behavior for that emission.
-    ///
-    /// Remove once every `create_*` site is identity-aware.
+    /// Sentinel for "this site is not identified" — the value outside
+    /// any [`with_current_identity`] scope. The host recorder treats
+    /// `UNIDENTIFIED` specially: it mints a fresh wire id every time it
+    /// sees one, with no dedup (sequential ids for that emission).
     pub const UNIDENTIFIED: Identity = Identity(0);
 }
 
@@ -216,25 +210,22 @@ fn mix(salt: u64, parent: u64, slot: u32, branch: Option<u32>, key: Option<u64>)
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    /// Identity the walker is currently emitting under. The walker
-    /// sets this immediately before every `backend.create_*` call;
-    /// backends that care (notably the dev-server's
-    /// `WireRecordingBackend`, which uses it to dedup `NodeId`s
-    /// across sidecar respawns) read it lazily. Backends that don't
-    /// care ignore the thread-local entirely — that's the entire
-    /// trick that makes this rollout zero-trait-surface-change.
+    /// Identity the mount path is currently emitting under, set via
+    /// [`with_current_identity`] around a `create_*` call; backends that
+    /// care (a wire-recording backend dedups `NodeId`s across sidecar
+    /// respawns with it) read it lazily, and backends that don't care
+    /// ignore it — no trait surface involved. (No framework mount path
+    /// sets it today, so reads see the default.)
     ///
-    /// Defaults to [`Identity::UNIDENTIFIED`] (the legacy "mint a
-    /// fresh id each walk, no dedup" lane) so any call path that
-    /// hasn't been migrated yet keeps working.
+    /// Defaults to [`Identity::UNIDENTIFIED`] (the "mint a fresh id each
+    /// mount, no dedup" lane).
     static CURRENT_IDENTITY: Cell<Identity> = const { Cell::new(Identity::UNIDENTIFIED) };
 }
 
 /// Set the current identity for the duration of `f`'s execution.
 /// Restores the previous value on return — RAII-style, so nested
-/// calls compose correctly (e.g., a navigator's
-/// `drawer_navigator_attach_initial` emission running inside a
-/// component build).
+/// calls compose correctly (e.g., a navigator's initial-screen
+/// emission running inside a component build).
 pub fn with_current_identity<F, R>(id: Identity, f: F) -> R
 where
     F: FnOnce() -> R,
@@ -258,7 +249,7 @@ where
     f()
 }
 
-/// Read the identity the walker is currently emitting under. Returns
+/// Read the identity the mount path is currently emitting under. Returns
 /// [`Identity::UNIDENTIFIED`] outside a `with_current_identity`
 /// scope or after thread-local destruction.
 pub fn current_identity() -> Identity {

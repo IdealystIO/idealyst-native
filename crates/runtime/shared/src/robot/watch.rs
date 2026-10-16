@@ -21,7 +21,7 @@
 //! # Generational safety
 //!
 //! Arena slots are recycled, and their generation is bumped on free
-//! (see `Arena::signal_gen` / [[project_generational_signal_handles]]).
+//! (see [`crate::reactive::signal_generation`]).
 //! Each entry records the generation captured at registration time;
 //! every read re-checks it against the slot's *current* generation
 //! ([`crate::reactive::signal_is_live`]) and skips + prunes stale

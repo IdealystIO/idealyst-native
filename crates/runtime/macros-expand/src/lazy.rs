@@ -86,23 +86,22 @@ pub fn emit(input: TokenStream2) -> TokenStream2 {
     let split_name = syn::Ident::new(&format!("__idealyst_lazy_{hash}"), Span::call_site());
 
     // Wrap the body in a `#[wasm_split]`-annotated async fn. On web the
-    // build's wasm-split post-process (dioxus reloc splitter, run after
-    // wasm-bindgen) hoists this function — and everything only it reaches —
-    // into a separate chunk wasm loaded on demand. The split is a post-link
-    // rewrite of the SINGLE already-bindgen'd module, so it handles ARBITRARY
-    // body code uniformly, bindgen/web-sys/wgpu included (no per-module
-    // bindgen, no PIC). On native targets the attribute lowers to a plain
+    // build's wasm-split post-process (`wasm-carve`, run on the linked,
+    // packaged module) hoists this function — and everything only it
+    // reaches — into a separate chunk wasm loaded on demand. The split is a
+    // post-link rewrite of the SINGLE already-linked module, so it handles
+    // ARBITRARY body code uniformly (no per-module glue, no PIC). On native
+    // targets the attribute lowers to a plain
     // inline async fn that resolves synchronously.
     //
     // `IntoElement::into_element` coerces whatever the block returns
-    // (`Bound<H>`, `Element`, `LazyBuilder`, …) into a bare `Element` — the
+    // (a glue wrapper, `Element`, `LazyBuilder`, …) into a bare `Element` — the
     // wasm-split function signature pins the return type concretely.
-    // Chunk body fn: same old/new-core split as `lazy_component.rs` —
-    // the new core defers construction behind a body thunk because a
-    // loader-future poll has no world entered (see that module's docs).
-    // The caller (`lib.rs::lazy`) pipes the whole expansion through
-    // `finish`, so these `::runtime_core::…` paths retarget to the
-    // `runtime_vocabulary::glue` mirrors under `new-core`.
+    // Chunk body fn: same shape as `lazy_component.rs` — construction is
+    // deferred behind a body thunk because a loader-future poll has no
+    // world entered (see that module's docs). The caller (`lib.rs::lazy`)
+    // pipes the whole expansion through `finish`, so these
+    // `::runtime_core::…` paths retarget to `runtime_vocabulary::glue`.
     let body_fn = quote! {
         #[::runtime_core::__wasm_split::wasm_split(#split_name)]
         async fn #body_ident(_: ()) -> ::runtime_core::primitives::lazy::LazyBodyThunk {
@@ -130,8 +129,8 @@ pub fn emit(input: TokenStream2) -> TokenStream2 {
             use ::runtime_core::__wasm_split as wasm_split;
             #body_fn
             ::runtime_core::primitives::lazy::lazy_split(|| {
-                // The loader yields `Result<_, String>` (the chunk's Element
-                // on the old core, its body thunk on the new). The wasm-split
+                // The loader yields `Result<_, String>` (the chunk's body
+                // thunk). The wasm-split
                 // wrapper resolves once the chunk is linked, so wrap it `Ok`;
                 // the `Err` arm exists for hand-rolled loaders and drives the
                 // `.on_error(..)` UI.

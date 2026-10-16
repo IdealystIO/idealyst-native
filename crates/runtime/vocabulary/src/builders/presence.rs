@@ -17,7 +17,7 @@ use super::IntoSceneElement;
 /// flip-on.
 ///
 /// Default: always present (the child mounts immediately and never
-/// exits) — same as the old core; real call sites chain `.present(…)`.
+/// exits); real call sites chain `.present(…)`.
 pub fn presence<E: IntoSceneElement>(child: impl Fn() -> E + 'static) -> PresenceBuilder {
     PresenceBuilder {
         prim: PresencePrim {
@@ -62,7 +62,6 @@ impl PresenceBuilder {
         self
     }
 
-    /// Receive the imperative-ref handle at mount (P2 form of `.bind`).
     /// Robot/automation anchor (`test_id = …`): the mount handler
     /// registers this node under `id` in the vocabulary robot registry
     /// (`robot` feature; the slot is inert otherwise).
@@ -71,6 +70,7 @@ impl PresenceBuilder {
         self
     }
 
+    /// Receive the imperative-ref handle at mount.
     pub fn on_handle(mut self, fill: impl FnOnce(PresenceHandle) + 'static) -> Self {
         self.prim.ref_fill = Some(Box::new(fill));
         self

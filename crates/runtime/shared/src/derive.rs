@@ -1,8 +1,7 @@
 //! `Derived<T>` and `Action` — the canonical structured reactive
 //! expressions.
 //!
-//! See [REACTIVITY_DSL_DESIGN.md](../../../../REACTIVITY_DSL_DESIGN.md)
-//! for the design rationale. Quick summary: closures are opaque,
+//! Design rationale: closures are opaque,
 //! generator backends (like Roku) can't ship closures to the
 //! device, so reactive expressions need both their runtime form
 //! (a callable) and a structured description (method name +
@@ -15,14 +14,10 @@
 //! `Derived<T>` / `Action` for the author. The types live here so
 //! the macro + backends share a single canonical shape.
 //!
-//! ## Migration status
+//! ## Consumers
 //!
-//! Phase 0: these types exist but nothing in the framework
-//! consumes them yet. The legacy `TextSource::Bound`,
-//! `WhenBinding`, `ActionBinding`, and `*Decl` primitives still
-//! carry the structure. Subsequent phases migrate primitives one
-//! at a time to consume `Derived<T>` / `Action`, then delete the
-//! legacy surface.
+//! `Derived<T>` is carried by `TextSource::Bound` and the `Reactive`
+//! prop type; `Action` by the vocabulary's button/text handlers.
 
 use std::rc::Rc;
 

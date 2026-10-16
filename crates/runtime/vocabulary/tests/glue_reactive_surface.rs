@@ -2,20 +2,19 @@
 //! surface, not just the subset the framework's own code happened to
 //! name.
 //!
-//! Companion to `glue_host_surface.rs`. Same failure mode: the old
-//! `runtime_shared` root was `pub use runtime_shared::*;`, so everything
-//! public at the shared root reached authors for free. The facade
-//! enumerates, so anything nobody listed silently vanished from
-//! `runtime_shared::…` — a product regression, not a test gap.
+//! Companion to `glue_host_surface.rs`. Same failure mode: `glue`
+//! enumerates its re-exports, so anything nobody listed is silently
+//! missing from the author surface — a product regression, not a test
+//! gap.
 //!
 //! Three groups here:
 //!
 //! 1. **Reactive helpers that had to be REIMPLEMENTED, not re-exported**
-//!    (`on`, `memo_with`, `reducer`). The shared originals build
-//!    old-arena signals and effects, which nothing on a world mount
-//!    subscribes to — re-exporting them would have been worse than the
-//!    gap, because the call would compile and then silently do nothing.
-//!    These tests assert the mirrors are LIVE on the world kernel.
+//!    (`on`, `memo_with`, `reducer`). The runtime-shared versions build
+//!    legacy-arena signals and effects, which nothing on a world mount
+//!    subscribes to — re-exporting them would be worse than the gap,
+//!    because the call would compile and then silently do nothing. These
+//!    tests assert the glue versions are LIVE on the world kernel.
 //! 2. **`identity`** — a straight re-export, plus an explicit pin on the
 //!    ambient-source gap (see `use_id_*` below).
 //! 3. **Event payloads / recognizer contract / logging** — path pins for
@@ -133,7 +132,7 @@ fn glue_memo_with_uses_the_caller_supplied_equality() {
 }
 
 /// `memo_with`'s value is live and readable before any flush (seeded
-/// untracked at construction, as the old core did).
+/// untracked at construction).
 #[test]
 fn glue_memo_with_is_seeded_before_the_first_flush() {
     let (_world, value) = in_world(|| {
@@ -243,19 +242,17 @@ fn glue_reexports_the_identity_surface() {
 /// ⚠️ **Known gap, pinned rather than hidden.**
 ///
 /// `use_id()`'s documented contract is "deterministic per position in the
-/// tree": the OLD walker set the ambient identity before every emission
-/// (`runtime-core/src/walker.rs::build` → `with_current_identity`), so
-/// two components at different positions got different ids. The
-/// surviving renderer (`runtime_scene::realize`) does NOT set an ambient
-/// identity, so `use_id()` answers from `Identity::UNIDENTIFIED`
+/// tree": two components at different positions get different ids. The
+/// renderer (`runtime_scene::realize`) does NOT set an ambient identity
+/// per emission, so `use_id()` answers from `Identity::UNIDENTIFIED`
 /// everywhere and every call site in a tree returns the SAME string.
 ///
 /// It is stable and non-panicking, so nothing crashes — which is exactly
 /// why it needs a test: a silently-degraded id generator is the kind of
 /// thing that ships. This test documents the current answer. When the
 /// renderer starts seeding identity per mount site (the same change that
-/// restores the dev-server recorder's identity-keyed `NodeId` reuse —
-/// see `dev_server::newcore`'s module docs), this test goes red and
+/// enables the dev-server recorder's identity-keyed `NodeId` reuse),
+/// this test goes red and
 /// should be replaced with a per-position-uniqueness assertion.
 #[test]
 fn use_id_is_currently_position_independent_because_the_renderer_seeds_no_identity() {

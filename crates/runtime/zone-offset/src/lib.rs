@@ -229,8 +229,9 @@ mod imp {
 
         /// Runs on a Windows target — real Windows, or Wine via
         /// `cargo test --target x86_64-pc-windows-gnu` with a Wine runner.
-        /// Under Wine this aborted the test process before the fix (the
-        /// `Ex` import is an abort stub there); now the lookup falls back.
+        /// Under Wine the `Ex` import is an abort stub, so calling it
+        /// unconditionally aborts the test process; the lookup must fall
+        /// back.
         /// Where `Ex` exists, the fallback must agree with it.
         #[test]
         fn regression_offset_lookup_survives_a_kernel32_without_the_ex_export() {
