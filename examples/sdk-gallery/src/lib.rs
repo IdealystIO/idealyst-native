@@ -1,6 +1,6 @@
 //! `sdk-gallery` — one panel per client SDK, for checking each on a
 //! platform by hand: an SVG, a clipboard round trip, live connectivity,
-//! a notification (now and scheduled), and an embedded web page.
+//! a notification (now and scheduled), an embedded web page and a video.
 
 mod app;
 
@@ -14,6 +14,7 @@ where
 {
     svg::register(registry);
     webview::register(registry);
+    video::register(registry);
 }
 
 /// Android entry shim, for parity with the other examples.

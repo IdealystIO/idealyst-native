@@ -11165,6 +11165,7 @@ dependencies = [
  "runtime-scene",
  "runtime-vocabulary",
  "svg",
+ "video",
  "webview",
 ]
 
@@ -13976,6 +13977,7 @@ dependencies = [
  "backend-linux",
  "backend-macos",
  "backend-web",
+ "backend-windows",
  "block2 0.5.1",
  "gtk4",
  "host-mock",
@@ -13992,6 +13994,9 @@ dependencies = [
  "runtime-world",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-numerics",
 ]
 
 [[package]]

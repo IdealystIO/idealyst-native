@@ -16,6 +16,9 @@
 //!   `contents` for the live `MediaStream` path.
 //! - **Android** — a `FrameLayout` host that the Kotlin shim fills with
 //!   a `VideoView` (URL) or an `ImageView` fed RGBA frames (stream).
+//! - **Linux** — `gtk::Video` (GStreamer); live frames as a paintable.
+//! - **Windows** — Media Foundation's Media Engine into a composition
+//!   swapchain on a graphics node, painted controls (see `windows.rs`).
 //! - **Every other host (SSR, terminal, gpu, host-mock)** — the frozen
 //!   External-placeholder degradation path
 //!   ([`ExternalOps::create_external`]): author style + ref fill +
@@ -79,6 +82,10 @@ mod ios;
 mod macos;
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod linux;
+// Windows: Media Foundation (Media Engine frame server) into a composition
+// swapchain on a graphics node; painted controls. See `windows.rs`.
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+mod windows;
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -391,11 +398,14 @@ static OPS: &dyn VideoOps = crate::macos::OPS;
 static OPS: &dyn VideoOps = crate::ios::OPS;
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 static OPS: &dyn VideoOps = crate::android::OPS;
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+static OPS: &dyn VideoOps = crate::windows::OPS;
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "macos",
     target_os = "ios",
-    target_os = "android"
+    target_os = "android",
+    target_os = "windows"
 )))]
 static OPS: &dyn VideoOps = &UnsupportedOps;
 
@@ -559,6 +569,20 @@ fn mount_video_macos(
 
 /// Linux (GTK4) mount handler — `Registry<LinuxBackend>`-concrete.
 /// Builds a real `gtk::Video` (GStreamer-backed), not the placeholder.
+/// Windows mount handler — `Registry<WindowsBackend>`-concrete. Media
+/// Foundation playback into a composition swapchain (see `windows.rs`).
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+fn mount_video_windows(
+    cx: &mut MountCx<'_, backend_windows::WindowsBackend>,
+    prim: &Rc<VideoPrim>,
+    _children: Vec<Element>,
+) -> backend_windows::WindowsNode {
+    let backend = cx.backend().clone();
+    let node = crate::windows::build(&prim.props, &backend);
+    finish_mount(&backend, &node, prim);
+    node
+}
+
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 fn mount_video_linux(
     cx: &mut MountCx<'_, backend_linux::LinuxBackend>,
@@ -640,6 +664,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_linux::LinuxBackend>>() {
             reg.register::<VideoPrim, _>(mount_video_linux);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<VideoPrim, _>(mount_video_windows);
             return;
         }
     }

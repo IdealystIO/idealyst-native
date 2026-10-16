@@ -25,6 +25,7 @@ clipboard = { workspace = true }
 connectivity = { workspace = true }
 notifications = { workspace = true }
 webview = { workspace = true }
+video = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "SDK Gallery"

@@ -7,6 +7,7 @@ use std::time::Duration;
 use idea_ui::{install_idea_theme, light_theme, tone, variant, Button};
 use runtime_core::driver::spawn_async;
 use runtime_core::{component, effect, rx, signal, ui, Element, IntoElement, Signal};
+use video::VideoBind;
 use webview::WebViewBind;
 
 /// The gallery root.
@@ -24,6 +25,7 @@ pub fn app() -> Element {
                 ConnectivityPanel()
                 NotificationsPanel()
                 WebViewPanel()
+                VideoPanel()
             }
         }
     }
@@ -236,6 +238,54 @@ pub fn WebViewPanel() -> Element {
     }
 }
 
+/// A public MP4 (the Sintel trailer, W3C's media test file).
+const CLIP: &str = "https://media.w3.org/2010/05/sintel/trailer.mp4";
+
+/// `video` — a URL with native-style controls, plus the imperative ops.
+#[component]
+pub fn VideoPanel() -> Element {
+    let handle: runtime_core::Ref<video::VideoHandle> = runtime_core::Ref::new();
+    let status = signal("Press play on the video, or use the buttons.".to_string());
+    let h = handle.clone();
+    let from_ten = Rc::new(move || {
+        h.with(|v| {
+            v.seek(10.0);
+            v.play();
+        });
+    }) as Rc<dyn Fn()>;
+    let h = handle.clone();
+    let pause = Rc::new(move || {
+        h.with(|v| v.pause());
+    }) as Rc<dyn Fn()>;
+    let h = handle.clone();
+    let where_at = Rc::new(move || {
+        let line = h
+            .with(|v| format!("At {:.1} s of {:.1} s.", v.position(), v.duration()))
+            .unwrap_or_default();
+        status.set(line);
+    }) as Rc<dyn Fn()>;
+    ui! {
+        Panel(title = "video".to_string()) {
+            view(style = styles::Row()) {
+                Button(label = "Play from 0:10".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = from_ten)
+                Button(label = "Pause".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = pause)
+                Button(label = "Position".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = where_at)
+            }
+            view(style = styles::VideoBox()) {
+                { video::Video(video::VideoProps {
+                    source: video::url(CLIP),
+                    controls: true,
+                    ..Default::default()
+                })
+                .with_style(styles::WebFill())
+                .bind(handle.clone())
+                .into_element() }
+            }
+            Status(line = rx!(status.get()))
+        }
+    }
+}
+
 mod styles {
     use idea_ui::IdeaThemeRef;
     use runtime_core::{stylesheet, AlignItems, FlexDirection, FlexWrap, Length};
@@ -333,6 +383,17 @@ mod styles {
             base(t) {
                 height: Length::Px(320.0),
                 width: Length::pct(100.0),
+                border_radius: t.radius.sm(),
+            }
+        }
+    }
+
+    stylesheet! {
+        pub VideoBox<IdeaThemeRef> {
+            base(t) {
+                height: Length::Px(300.0),
+                width: Length::pct(100.0),
+                background: t.color.text(),
                 border_radius: t.radius.sm(),
             }
         }

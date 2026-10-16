@@ -90,6 +90,34 @@ backend-linux = { workspace = true }
 gtk4 = { version = "0.9", features = ["v4_12"] }
 runtime-core = { workspace = true }
 
+# Windows: Media Foundation's Media Engine (frame server) into a
+# composition swapchain on the backend's graphics surface; Direct2D +
+# DirectWrite paint the live-stream frames and the control bar.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+backend-windows = { workspace = true }
+windows-numerics = "0.3"
+# `#[implement]` (the Media Engine's notify callback) expands to
+# `::windows_core` paths.
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D10",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+# `tests/windows_video.rs`: a real HWND + the Media Engine.
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [target.'cfg(target_os = "ios")'.dependencies]
 backend-ios-mobile = { workspace = true }
 block2 = "0.5"
