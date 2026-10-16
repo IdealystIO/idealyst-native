@@ -555,8 +555,8 @@ mod tests {
                 P::View { children, .. } => children,
                 _ => panic!("the open menu wraps [catcher, anchored] in a View"),
             };
-            for (i, child) in kids.into_iter().enumerate() {
-                match classify(child) {
+            for (i, portal) in kids.into_iter().flat_map(crate::test_support::portals).enumerate() {
+                match portal {
                     P::Portal { trap_focus, .. } => assert!(
                         !trap_focus,
                         "Select portal {i} traps focus — an empty trapping portal steals focus \

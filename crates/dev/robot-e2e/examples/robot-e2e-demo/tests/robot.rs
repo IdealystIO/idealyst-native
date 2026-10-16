@@ -79,9 +79,9 @@ fn a_native_tap_presses_the_button(app: &mut App) {
     app.signal("count").assert_eq(0);
 }
 
-/// Under an overlay, a native tap doesn't reach the button: a backend with
-/// a hit test refuses and says what covers it; every backend leaves the
-/// count alone.
+/// Under an overlay's default backdrop, a native tap doesn't reach the
+/// button: a backend with a hit test refuses and says what covers it; every
+/// backend leaves the count alone.
 #[robot_test]
 fn an_overlay_stops_a_native_tap(app: &mut App) {
     app.call_function("demo.set_count", json!({ "value": 0 }));
@@ -99,4 +99,18 @@ fn an_overlay_stops_a_native_tap(app: &mut App) {
     app.signal("count").assert_eq(0);
     app.call_function("demo.set_cover", json!({ "on": false }));
     app.test_id("cover-label").assert_hidden();
+}
+
+/// An overlay with no backdrop leaves the page usable: a native tap beside
+/// its content reaches the button underneath.
+#[robot_test]
+fn an_overlay_without_a_backdrop_leaves_the_page_tappable(app: &mut App) {
+    app.call_function("demo.set_count", json!({ "value": 0 }));
+    app.call_function("demo.set_cover", json!({ "on": true, "backdrop": false }));
+    app.test_id("cover-label").assert_visible();
+    app.test_id("inc").tap_native();
+    app.signal("count").assert_eq(1);
+    app.call_function("demo.set_cover", json!({ "on": false }));
+    app.test_id("cover-label").assert_hidden();
+    app.call_function("demo.set_count", json!({ "value": 0 }));
 }

@@ -120,8 +120,8 @@ the old `runtime-core` test suite, which 1.0 deleted.
 - **Bare-path/field conditions** (`if flag`, `if state.open`) still dispatch by
   type: `bool` → static, `Signal<bool>` / `Derived<bool>` (e.g. `memo(...)`) →
   reactive.
-- **`if let PAT = EXPR`** is unchanged — always static (author a reactive form as
-  `match sig.get() { … }`).
+- **`if let PAT = EXPR`** lowers as a two-arm `match` under the same gate:
+  `if let Some(x) = sig.get()` is reactive; a signal-free scrutinee is static.
 
 ## Lazy loading: component surface + a fallible loader
 

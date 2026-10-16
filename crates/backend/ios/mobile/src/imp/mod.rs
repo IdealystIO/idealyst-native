@@ -2838,7 +2838,13 @@ impl IosBackend {
         // through to `create_view()`. This
         // override is what makes `idea_ui::Tabs`, `CardTabs`, and
         // any other Pressable-backed control respond to taps on iOS.
-        let view = unsafe { UIView::new(self.mtm) };
+        // An `IdealystTouchView`, not a plain `UIView`: with no touch
+        // handler installed it forwards touches to `super` unchanged, and it
+        // is the class that records an explicit `pointer_events` — so a
+        // pressable opting back in (`Auto`) under a `none` root (an
+        // overlay's backdrop, a click-through toast's button) takes taps.
+        // A plain `UIView` dropped the `Auto` and the tap passed through.
+        let view: Retained<UIView> = Retained::into_super(touch::IdealystTouchView::new(self.mtm));
         let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: true] };
 
         let target = CallbackTarget::new(self.mtm, on_click);

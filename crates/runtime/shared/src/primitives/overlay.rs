@@ -15,24 +15,25 @@
 
 /// How an overlay's backdrop layer behaves.
 ///
-/// Backdrop dismissal is composition-level here — we render a
-/// fullscreen `pressable()` as the first child inside the portal and
-/// wire its `on_click` to the user's `on_dismiss` (for `Dismiss`)
-/// or leave it as a passive scrim (for `Opaque`). A `Dismiss` backdrop
-/// also carries a fill layer whose `on_touch` dismisses on a
-/// non-primary press (`runtime_vocabulary::builders::portal`), because
-/// a pressable's click is primary-only on every backend.
+/// A backdrop is composition-level (`runtime_vocabulary::builders::portal`):
+/// its own full-screen portal, mounted behind the overlay's content,
+/// holding a `pressable()` that fills the viewport whatever the overlay's
+/// placement. It is transparent; `backdrop_style` paints it (a scrim
+/// colour). A `Dismiss` backdrop also carries a fill layer whose
+/// `on_touch` dismisses on a non-primary press, because a pressable's
+/// click is primary-only on every backend.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BackdropMode {
-    /// Semi-transparent scrim. A press of ANY button on the scrim —
-    /// primary click/tap, right-click, middle-click — fires the
-    /// `on_dismiss` callback; a secondary press is consumed, so no
-    /// native context menu opens over the scrim.
+    /// Covers the viewport. A press of ANY button on it — primary
+    /// click/tap, right-click, middle-click — fires the `on_dismiss`
+    /// callback and reaches nothing beneath; a secondary press is
+    /// consumed, so no native context menu opens over it.
     #[default]
     Dismiss,
-    /// Semi-transparent scrim. Clicks on the scrim do NOT dismiss;
-    /// the host must drive open/close itself.
+    /// Covers the viewport and swallows presses without dismissing; the
+    /// host drives open/close itself.
     Opaque,
-    /// No scrim at all. The viewport behind stays interactive.
+    /// No backdrop. Only the overlay's content takes presses; the
+    /// viewport around it stays interactive.
     None,
 }

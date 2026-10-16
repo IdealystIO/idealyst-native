@@ -616,8 +616,8 @@ mod tests {
                 P::View { children, .. } => children,
                 _ => panic!("the open popup wraps [catcher, anchored] in a View"),
             };
-            for (i, child) in kids.into_iter().enumerate() {
-                match classify(child) {
+            for (i, portal) in kids.into_iter().flat_map(crate::test_support::portals).enumerate() {
+                match portal {
                     P::Portal { trap_focus, .. } => assert!(
                         !trap_focus,
                         "date popup portal {i} traps focus — an empty trapping portal steals \

@@ -89,7 +89,8 @@ pub fn app() -> Element {
     COUNT.with(|c| c.set(Some(count)));
     runtime_vocabulary::robot_fn::register(set_count::robot());
     runtime_vocabulary::robot_fn::register(set_count_later::robot());
-    let covered: Signal<bool> = signal(false);
+    // `Some(backdrop)` while the overlay is shown.
+    let covered: Signal<Option<bool>> = signal(None);
     COVERED.with(|c| c.set(Some(covered)));
     runtime_vocabulary::robot_fn::register(set_cover::robot());
 
@@ -107,23 +108,20 @@ pub fn app() -> Element {
         runtime_core::after_ms_detached(INITIAL_RUN_DELAY_MS, run_suite);
     }
 
-    // A window-covering overlay, shown by `demo.set_cover`: what a native
-    // tap must not reach through. FullScreen with an inset-0 backdrop is
-    // what covers the window on every backend (idea-ui's click-away
-    // catchers are built the same way).
+    // An overlay shown by `demo.set_cover`, as an app writes one: the
+    // default `Center` placement and, unless asked for none, the default
+    // `Dismiss` backdrop — which covers the window on every backend, so a
+    // native tap must not reach the page through it. With no backdrop only
+    // the overlay's content takes taps and the page stays usable.
     let cover = ui! {
-        if covered.get() {
+        if covered.get().is_some() {
             runtime_core::overlay(vec![text("Covered").test_id("cover-label").into_element()])
-                .placement(runtime_core::primitives::portal::ViewportPlacement::FullScreen)
-                .backdrop_style(std::rc::Rc::new(runtime_core::StyleRules {
-                    position: Some(runtime_core::Position::Absolute),
-                    top: Some(runtime_core::Length::Px(0.0).into()),
-                    left: Some(runtime_core::Length::Px(0.0).into()),
-                    right: Some(runtime_core::Length::Px(0.0).into()),
-                    bottom: Some(runtime_core::Length::Px(0.0).into()),
-                    ..Default::default()
-                }))
-                .on_dismiss(move || covered.set(false))
+                .backdrop(if covered.get() != Some(false) {
+                    runtime_core::primitives::overlay::BackdropMode::Dismiss
+                } else {
+                    runtime_core::primitives::overlay::BackdropMode::None
+                })
+                .on_dismiss(move || covered.set(None))
         }
     };
     ui! {
@@ -141,13 +139,15 @@ thread_local! {
 }
 
 thread_local! {
-    static COVERED: std::cell::Cell<Option<Signal<bool>>> = const { std::cell::Cell::new(None) };
+    static COVERED: std::cell::Cell<Option<Signal<Option<bool>>>> = const { std::cell::Cell::new(None) };
 }
 
-/// Show (or hide) a full-window overlay over the screen.
+/// Show (or hide) an overlay over the screen; `backdrop: false` shows it
+/// without its backdrop.
 #[runtime_core::robot_fn(name = "demo.set_cover")]
-fn set_cover(on: bool) -> Result<(), String> {
-    COVERED.with(|c| c.get()).ok_or("the app has not mounted")?.set(on);
+fn set_cover(on: bool, backdrop: Option<bool>) -> Result<(), String> {
+    let covered = COVERED.with(|c| c.get()).ok_or("the app has not mounted")?;
+    covered.set(on.then_some(backdrop.unwrap_or(true)));
     Ok(())
 }
 

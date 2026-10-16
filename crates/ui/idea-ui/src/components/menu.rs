@@ -966,7 +966,7 @@ mod tests {
             assert_eq!(kids.len(), 2, "Menu = fullscreen catcher + anchored panel");
 
             // child[0]: fullscreen catcher portal with a tap-catching backdrop.
-            match classify(kids.remove(0)) {
+            match crate::test_support::portals(kids.remove(0)).remove(0) {
                 P::Portal { mut children, target, .. } => {
                     assert!(
                         matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
@@ -1068,8 +1068,8 @@ mod tests {
                 P::View { children, .. } => children,
                 _ => panic!("a targeted Menu must wrap [catcher, anchored] in a View"),
             };
-            for (i, child) in kids.into_iter().enumerate() {
-                match classify(child) {
+            for (i, portal) in kids.into_iter().flat_map(crate::test_support::portals).enumerate() {
+                match portal {
                     P::Portal { trap_focus, .. } => assert!(
                         !trap_focus,
                         "Menu portal {i} traps focus — focusable panel content becomes untypable"

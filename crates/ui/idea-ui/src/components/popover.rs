@@ -341,7 +341,7 @@ mod tests {
 
             // child[0]: the fullscreen catcher portal. Its backdrop pressable is
             // the first portal child, and its target is the FullScreen viewport.
-            match classify(kids.remove(0)) {
+            match crate::test_support::portals(kids.remove(0)).remove(0) {
                 P::Portal { mut children, target, .. } => {
                     assert!(
                         matches!(target, PortalTarget::Viewport(ViewportPlacement::FullScreen)),
@@ -398,8 +398,8 @@ mod tests {
             };
             assert_eq!(kids.len(), 2, "Popover = fullscreen catcher + anchored surface");
 
-            for (i, child) in kids.into_iter().enumerate() {
-                match classify(child) {
+            for (i, portal) in kids.into_iter().flat_map(crate::test_support::portals).enumerate() {
+                match portal {
                     P::Portal { trap_focus, .. } => assert!(
                         !trap_focus,
                         "Popover portal {i} traps focus — a trapping catcher/surface bounces \
@@ -422,14 +422,15 @@ mod tests {
             P::Portal { mut children, .. } => children.remove(0),
             _ => panic!("the second child is the anchored Portal"),
         };
-        // The anchored overlay hosts its content in an unstyled wrapper view;
-        // the surface is the first styled view under it.
+        // The anchored overlay hosts its content in a wrapper view (styled
+        // only `pointer-events: auto`); the surface is the first sheet-styled
+        // view under it.
         let mut node = classify(surface);
         let app = loop {
             match node {
                 P::View { style: Some(TStyle::AppFn(f)), .. } => break f(),
                 P::View { style: Some(TStyle::App(a)), .. } => break a,
-                P::View { style: None, mut children, .. } if children.len() == 1 => {
+                P::View { style: None | Some(TStyle::Rules(_)), mut children, .. } if children.len() == 1 => {
                     node = classify(children.remove(0));
                 }
                 _ => panic!("expected the surface View under the anchored portal"),

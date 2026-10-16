@@ -1950,13 +1950,23 @@ fn emit_if(
     //   - Wrap the value in `Rc`/`Arc` and clone a handle per arm, or hoist
     //     it into an owner the arm borrows rather than moves.
     // 0. `if let PAT = EXPR { … }` — the condition is a refutable `let`, not a
-    //    value. It can't be a `bool`/`Signal<bool>`, so neither the reactive
-    //    paths nor the type-driven `__idealyst_if` dispatch apply (you can't
-    //    call a method on a `let` expression). Emit a plain Rust `if let`,
-    //    splicing the binding so the then-branch sees it. Always static — a
-    //    reactive `if let` (re-binding on signal change) is not a supported
-    //    construct; author it as `match sig.get() { … }` instead.
-    if matches!(cond, Expr::Let(_)) {
+    //    value, so neither the `when` paths nor the type-driven
+    //    `__idealyst_if` dispatch apply. It IS a two-arm `match`, so it
+    //    lowers as one: `match EXPR { PAT => then, _ => else }`, which is
+    //    reactive by the same gate as any `match` (a scrutinee that may read
+    //    a signal re-binds and rebuilds on change). A provably signal-free
+    //    scrutinee stays a plain Rust `if let`. Not lowering it reactively
+    //    froze `if let Some(x) = sig.get()` at its first value, silently —
+    //    the one thing the reactive-by-default gate exists to prevent.
+    if let Expr::Let(l) = cond {
+        if condition_may_read_signal(&l.expr) || is_reactive_call_shape(&l.expr) {
+            let wild: syn::Pat = syn::parse_quote!(_);
+            let arms = vec![
+                MatchArm { pat: (*l.pat).clone(), guard: None, body: then_body.to_vec() },
+                MatchArm { pat: wild, guard: None, body: else_body.map(<[UiNode]>::to_vec).unwrap_or_default() },
+            ];
+            return emit_match(&l.expr, &arms, ctx);
+        }
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
     // No structured `Derived<bool>` wire metadata: the reactive-call

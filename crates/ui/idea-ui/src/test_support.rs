@@ -204,6 +204,16 @@ impl P {
 
 pub use imp::classify;
 
+/// The portals `el` mounts, in order: an overlay with a backdrop lowers to
+/// `[backdrop portal, content portal]`, one without to its portal alone.
+/// Anything that is not a portal comes back as itself.
+pub fn portals(el: Element) -> Vec<P> {
+    match classify(el) {
+        P::Fragment { children } => children.into_iter().flat_map(portals).collect(),
+        other => vec![other],
+    }
+}
+
 mod imp {
     use super::*;
     use runtime_core::{Owned, __Value as Value};

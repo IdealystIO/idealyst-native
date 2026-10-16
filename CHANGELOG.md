@@ -15,6 +15,30 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Overlays take taps the same way on every backend** (`runtime-vocabulary`,
+  `backend-ios-mobile`). What an `overlay()` blocked differed per backend:
+  a native portal container spans the viewport, so on macOS an overlay
+  with no backdrop swallowed every click on the page; web's root is the
+  content's box, so a default overlay's `Dismiss` backdrop covered only
+  the content there and a tap beside it reached the page; on iOS nothing
+  covered it. Now, per the `BackdropMode` contract: a portal's root never
+  takes a tap (`pointer-events: none`) and its content does; a `Dismiss`
+  / `Opaque` backdrop is its own `FullScreen` portal behind the content,
+  filling the viewport whatever the placement; with no backdrop the page
+  stays usable around the content. `backdrop_style` now paints a layer
+  INSIDE the backdrop (fill it with `position: absolute; inset: 0`, as
+  idea-ui's sheets do). iOS pressables are `IdealystTouchView`s, so an
+  `Auto` opt-in under a `none` root takes taps (it was dropped). An
+  overlay lowers to two portals when it has a backdrop. *Migration:* an
+  app that relied on a backdrop-less overlay blocking the page should ask
+  for a backdrop (`BackdropMode::Opaque` blocks without dismissing).
+
+- **`if let` in `ui!` is reactive** (`runtime-macros-expand`). `if let
+  Some(x) = sig.get() { … }` lowered to a plain Rust `if let`: it ran
+  once and froze at the first value, silently. It now lowers as `match
+  EXPR { PAT => …, _ => … }` under the same gate as `match` (a
+  signal-free scrutinee stays a plain `if let`).
+
 - **The robot works on Android, and `idealyst test` runs on every platform**
   (`backend-android-mobile`, `build-android`, `run-android`, `run-ios`,
   `run-windows`, `idealyst-cli`, `robot-test`, `runtime-vocabulary`,

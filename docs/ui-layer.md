@@ -398,8 +398,9 @@ call like `if del_visible()` (where `del_visible` is a plain closure) is
 opaque call's hidden body. This keeps a genuinely static `if helper()`
 free of any reactive machinery, and is why `del_visible` is authored as a
 `memo` rather than a bare `move || …` closure. (`if let PAT = EXPR { … }`
-is always a plain static `if let` — a re-binding reactive `if let` is not
-a construct; use `match sig.get() { … }`.)
+lowers as `match EXPR { PAT => …, _ => … }`, under the same gate as a
+`match`: `if let Some(x) = sig.get()` re-binds when the signal changes; a
+signal-free scrutinee stays a plain `if let`.)
 
 This mirrors the `for` loop's `StaticForEach` / `ReactiveForEach`
 type-dispatch: reactivity lives in the *type*, not in a guess about

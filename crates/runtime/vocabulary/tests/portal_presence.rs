@@ -211,10 +211,11 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
             .child(text().content("body"))
             .build(),
     );
-    // Backdrop pressable mounts FIRST (paints behind), then the content
-    // wrapper view hosting the caller's children. A wired `Dismiss`
-    // backdrop carries its secondary-press layer (a styled fill view
-    // that dismisses on right-click) as its only child.
+    // The backdrop's own full-screen portal mounts FIRST (paints behind):
+    // its pressable fills it, carrying the secondary-press layer of a
+    // wired `Dismiss` backdrop. Then the content's portal, whose wrapper
+    // view hosts the caller's children. Every portal root is styled
+    // `pointer-events: none`, the pressable and the wrapper `auto`.
     assert_eq!(
         h.take_log(),
         [
@@ -223,11 +224,16 @@ fn overlay_composition_backdrop_first_then_content_wrapper() {
             "create n2 view",
             "apply_style n2",
             "insert n1 <- n2",
+            "apply_style n1",
             "insert n0 <- n1",
-            "create n3 view",
-            "create n4 text \"body\"",
+            "apply_style n0",
+            "create n3 portal",
+            "create n4 view",
+            "create n5 text \"body\"",
+            "insert n4 <- n5",
+            "apply_style n4",
             "insert n3 <- n4",
-            "insert n0 <- n3",
+            "apply_style n3",
         ]
     );
     let _ = dismissed;
