@@ -254,6 +254,11 @@ macro_rules! __remote_import {
 }
 #[cfg(feature = "robot")]
 pub mod robot;
+// Without `robot`: the robot calls app code makes (`watch_signal`,
+// `is_test_driven`), inert, so the app needs no `cfg` around them.
+#[cfg(not(feature = "robot"))]
+#[path = "robot_inert.rs"]
+pub mod robot;
 #[cfg(feature = "robot")]
 pub(crate) mod robot_highlight;
 // Always compiled (inert without `robot`): extension handlers register

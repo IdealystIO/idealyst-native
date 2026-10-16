@@ -22,7 +22,19 @@ and is treated as one.
 - `crates/runtime/shared/src/robot/` — the transport (TCP bridge, relay
   client) and the registry-independent verbs (`get_logs`, `screenshot`, …).
 - Clients: `crates/dev/robot-test` (`#[robot_test]` host-side tests),
-  `crates/dev/robot-e2e` (in-app suites), the MCP server.
+  `crates/dev/robot-e2e` (in-app suites, which drive `Robot` directly: their
+  `click` is the robot's `click`, with no native tier), the MCP server.
+
+## In the app
+
+What an app does to be testable compiles in every build, so it needs no
+`cfg`: `test_id = "…"` on an element, `robot::watch_signal("name", sig)`
+(and `watch_signal_writable`), `robot_fn::register(f::robot())`, an SDK's
+`register_robot_controls()`, and `robot::is_test_driven()`. Outside a robot
+build each is inert — `is_test_driven()` is `false`. An app can't gate them
+itself: `idealyst dev` and `idealyst test` turn on the framework's `robot`
+features, never the app crate's own, so an app-side
+`#[cfg(feature = "robot")]` is off in dev builds too.
 
 ## Elements
 

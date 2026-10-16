@@ -12,16 +12,13 @@ publish = false
 crate-type = ["rlib"]
 
 [features]
-# `robot` mirrors `runtime-core/robot`. It MUST be a default feature: the
-# `ui!` macro's `#[cfg(feature = "robot")]` gate is evaluated in THIS
-# crate's context, so without `robot` enabled here the lowered primitives
-# omit their `test_id` slots — and the whole demo is about locating by
-# `test_id`. `idealyst/robot` turns on the backend half: without it the
-# host never installs the Robot driver env, so an action's staged writes
-# are not committed before the next assertion reads the tree, and the
-# in-app suite fails every step that changes state. The E2E harness module
-# is gated on this feature so `--no-default-features` still builds a plain
-# app with no Robot dependency.
+# `robot` compiles in the demo's IN-APP suite (`src/e2e.rs`, which drives
+# the `Robot` API directly) and the framework's robot with it. It is a
+# default feature because the CLI turns on the framework's robot features
+# in a dev build, never this crate's own, and the in-app suite is the
+# demo. An app that is only driven from outside (`tests/robot.rs`, the
+# MCP) needs no feature of its own: `test_id`, `#[robot_fn]` registration
+# and `robot::watch_signal` all compile in every build.
 default = ["robot"]
 robot = ["runtime-core/robot", "runtime-shared/robot", "idealyst/robot"]
 

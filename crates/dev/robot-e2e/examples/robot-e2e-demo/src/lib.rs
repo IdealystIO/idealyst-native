@@ -78,10 +78,8 @@ pub fn app() -> Element {
 
     // Expose `count` by name so an out-of-process driver (`idealyst test`,
     // the inspector) can read it via the `read_signal` bridge verb — the
-    // signal-assertion half of a cross-platform test. Gated on `robot`
-    // because `watch_signal` only exists when that feature is on (the same
-    // feature `idealyst dev` always enables).
-    #[cfg(feature = "robot")]
+    // signal-assertion half of a cross-platform test. No cfg: outside a
+    // robot build the call does nothing.
     runtime_vocabulary::robot::watch_signal("count", count);
 
     // Robot functions a host-side test calls by name (`call_function`).
@@ -214,8 +212,6 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>) -
     // The secret panel: an `if` branch that mounts (and registers) the
     // `secret` text only while `show_secret` is true — so the E2E suite
     // can assert it's *not* visible first, then visible after a click.
-    // The text itself uses the builder form for its `test_id` (see the NOTE
-    // below).
     let secret = || text("🔓 Secret unlocked").test_id("secret").into_element();
     let secret_branch = ui! {
         if show_secret.get() {
@@ -242,13 +238,8 @@ fn screen(count: Signal<i32>, show_secret: Signal<bool>, name: Signal<String>) -
     .test_id("greeting")
     .into_element();
 
-    // NOTE: the interactive primitives use the *builder* form
-    // (`button(...).test_id(...)`) rather than `ui! { button(test_id=...) }`.
-    // The `ui!` macro only emits a primitive's `test_id` when the *example
-    // crate's* own `robot` feature is active, whereas the builder method
-    // sets it directly (gated only on `runtime-core/robot`, which `idealyst
-    // dev` always turns on). Since an E2E demo lives or dies by its
-    // `test_id`s resolving, the builder form is the reliable choice here.
+    // `ui! { button(test_id = …) }` lowers to the same `.test_id(…)` call
+    // the builder form below makes, in every build.
     let children: Vec<Element> = vec![
         ui! { Typography(content = "Robot E2E Demo".to_string(), kind = typography_kind::H1) },
         ui! {

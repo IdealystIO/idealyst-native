@@ -21,12 +21,9 @@ license.workspace = true
 # surface (find-by-test_id, tap, type_text, snapshot, …). OFF by
 # default (`runtime-core/robot` forwards here) — the `test_id`
 # slots always exist (so `ui! { view(test_id = …) }` compiles in every
-# build), only the per-mount registration overhead is gated. `serde`
-# carries the `Deserialize` bound of `robot::watch_signal_writable` (the
-# bridge's `write_signal` verb parses the new value as JSON) and the
-# argument decoding of `#[robot_fn]`s; `async-driver` drives an async
-# robot function (`robot_fn`).
-robot = ["dep:serde", "async-driver"]
+# build), only the per-mount registration overhead is gated.
+# `async-driver` drives an async robot function (`robot_fn`).
+robot = ["async-driver"]
 
 # `ui-overlay`: the dev-time overlay's RUNTIME half — the per-node tag a
 # patch addresses by, the applier that edits a built `Element`, and the
@@ -99,7 +96,7 @@ hot-reload = ["dep:dev-hot", "dev-hot/hot", "runtime-world/hot-reload"]
 # components. See `src/remote/mod.rs`.
 # `async-driver`: a bundle drives `#[host_fn]` futures with its own executor
 # (`remote::wasm`), installed through runtime-shared's driver seam.
-remote = ["dep:serde", "dep:postcard", "dep:linkme", "async-driver", "runtime-shared/remote-serde", "runtime-world/bridge"]
+remote = ["dep:postcard", "dep:linkme", "async-driver", "runtime-shared/remote-serde", "runtime-world/bridge"]
 # Both halves in one process, on the kernel's loopback engine: what the
 # codec's own tests run on (`cargo test -p runtime-vocabulary --features
 # remote-loopback --test remote_elements`).
@@ -126,7 +123,13 @@ runtime-world = { workspace = true }
 # type must resolve in every build — the dependency is unconditional even
 # though the overlay that consumes descriptors is feature-gated.
 runtime-template = { workspace = true }
-serde = { workspace = true, optional = true }
+# The `Deserialize` bound of `robot::watch_signal_writable` (the bridge's
+# `write_signal` verb parses the new value as JSON) in EVERY build — the
+# robot-less `robot` module keeps the same signature so app code needs no
+# `cfg` — plus `#[robot_fn]` argument decoding and the remote codec.
+# runtime-shared depends on serde unconditionally, so this adds nothing
+# to the graph.
+serde = { workspace = true }
 # The remote element codec's wire format (feature `remote`).
 postcard = { version = "1", default-features = false, features = ["alloc"], optional = true }
 # The app's table of components bundles may import, filled at link time by
