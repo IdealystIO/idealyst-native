@@ -92,8 +92,10 @@ Card(variant = card::variant::Outline, style = Some(dashed)) { … }"##.to_strin
         ui! {
             Callout(label = "Custom variants".to_string()) {
                 P(content = "Card's variant trait is open. Implement Variant on a marker type and \
-                    install an extended sheet via install_card_sheet before any Card mounts — then \
-                    use Card(variant = Tinted.into()) anywhere.".to_string())
+                    install an extended sheet via install_card_sheet(build_card_sheet(vec![Tinted.into()], tones)) \
+                    before any Card mounts — then use Card(variant = Tinted.into()) anywhere. The built-in \
+                    variants stay registered; pass a variant keyed `regular` (or another built-in's key) to \
+                    replace just that one.".to_string())
             }
         },
     ])

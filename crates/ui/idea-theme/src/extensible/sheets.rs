@@ -2476,7 +2476,10 @@ pub fn install_default_progress_sheet() {
 //     `with_computed` layer.
 //   - `thumb_sheet`: the round handle. `appearance` arms tint `background`;
 //     `size` arms set the diameter; the component sets `left` (the value
-//     position) via a `with_computed` layer.
+//     position) via a `with_computed` layer. Centers its one optional child.
+//   - `thumb_icon_sheet`: the optional icon inside the thumb. `appearance`
+//     arms tint `color` with the variant foreground, so the glyph reads on
+//     the thumb fill the way a Button label reads on its background.
 
 thread_local! {
     static SLIDER_SHEETS: RefCell<Option<SliderSheets>> = const { RefCell::new(None) };
@@ -2487,6 +2490,7 @@ pub struct SliderSheets {
     pub track_sheet: Rc<StyleSheet>,
     pub fill_sheet: Rc<StyleSheet>,
     pub thumb_sheet: Rc<StyleSheet>,
+    pub thumb_icon_sheet: Rc<StyleSheet>,
 }
 
 pub fn install_slider_sheets(sheets: SliderSheets) {
@@ -2502,6 +2506,12 @@ pub fn installed_slider_sheets() -> SliderSheets {
 
 /// Closed dimensions per size: `(rail_thickness, thumb_diameter)` in px.
 pub const SLIDER_DIMS: [(&str, f32, f32); 3] = [("sm", 3.0, 12.0), ("md", 4.0, 16.0), ("lg", 6.0, 20.0)];
+
+/// Closed dimensions per size for a thumb carrying an icon:
+/// `(thumb_diameter, icon_px)`. The plain thumb is too small to hold a
+/// legible glyph, so an icon thumb grows; the rail thickness is unchanged.
+pub const SLIDER_ICON_THUMB_DIMS: [(&str, f32, f32); 3] =
+    [("sm", 20.0, 12.0), ("md", 24.0, 14.0), ("lg", 28.0, 16.0)];
 
 pub struct SliderSheetBuilder {
     tones: Vec<ToneRef>,
@@ -2523,7 +2533,7 @@ impl SliderSheetBuilder {
         self
     }
     pub fn build(self) -> SliderSheets {
-        use runtime_core::{Length, Overflow, Position};
+        use runtime_core::{AlignItems, JustifyContent, Length, Overflow, Position};
         let pill = || Tokenized::token("radius-pill", Length::Full);
 
         // ---- track (the muted rail) ----
@@ -2572,6 +2582,8 @@ impl SliderSheetBuilder {
         let mut thumb = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
             position: Some(Position::Absolute),
             top: Some(Tokenized::Literal(Length::Px(0.0))),
+            align_items: Some(AlignItems::Center),
+            justify_content: Some(JustifyContent::Center),
             border_top_left_radius: Some(pill()),
             border_top_right_radius: Some(pill()),
             border_bottom_left_radius: Some(pill()),
@@ -2596,6 +2608,11 @@ impl SliderSheetBuilder {
             .variant_default("appearance", "primary_filled")
             .variant_default("size", "md");
 
+        // ---- thumb icon (foreground glyph on the thumb fill) ----
+        let mut thumb_icon = StyleSheet::new(|_vs: &VariantSet| StyleRules::default());
+        thumb_icon = add_indicator_color_arms(thumb_icon, &self.tones, &self.variants, false);
+        thumb_icon = thumb_icon.variant_default("appearance", "primary_filled");
+
         // Premint identities, like the checkbox/button sibling builders —
         // without them every Slider track/fill/thumb fell through to the
         // live engine (`--premint-report` on the docs corpus). The
@@ -2607,6 +2624,7 @@ impl SliderSheetBuilder {
             track_sheet: track.premint_as(&format!("{id}|track")),
             fill_sheet: fill.premint_as(&format!("{id}|fill")),
             thumb_sheet: thumb.premint_as(&format!("{id}|thumb")),
+            thumb_icon_sheet: thumb_icon.premint_as(&format!("{id}|thumb_icon")),
         }
     }
 }
@@ -2945,6 +2963,7 @@ mod selection_sheet_tests {
         let s = SliderSheetBuilder::new().build();
         assert_eq!(appearance_arms(&s.fill_sheet), BUILTIN_APPEARANCE_ARMS);
         assert_eq!(appearance_arms(&s.thumb_sheet), BUILTIN_APPEARANCE_ARMS);
+        assert_eq!(appearance_arms(&s.thumb_icon_sheet), BUILTIN_APPEARANCE_ARMS);
         assert!(has(&s.track_sheet, "size", "sm"));
         assert!(has(&s.thumb_sheet, "size", "lg"));
     }

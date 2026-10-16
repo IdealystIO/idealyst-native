@@ -57,10 +57,13 @@ use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
     component, stylesheet, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length,
-    Position, Reactive, StyleApplication, StyleSheet
+    Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
 };
 
 use crate::stylesheets::Popover as PopoverStyle;
+
+/// Default `PopoverProps::min_width`, in px.
+pub const POPOVER_DEFAULT_MIN_WIDTH: f32 = 180.0;
 
 /// A full-bleed, fully transparent backdrop sheet. It catches the
 /// outside tap (so the popover can dismiss on outside-click) without
@@ -167,6 +170,12 @@ pub struct PopoverProps {
     /// Gap in pixels between the anchor and the popover. Default 4.
     #[schema(constraint = "pixels, >= 0")]
     pub offset: f32,
+    /// Narrowest the surface may be, in px. Default 180, so a short menu
+    /// still reads as a panel; `0.0` sizes the popover to its content (e.g.
+    /// a list of zoom levels under a narrow field). The surface still grows
+    /// past it for wider content.
+    #[schema(constraint = "pixels, >= 0")]
+    pub min_width: f32,
     /// Fires on Escape and on an outside click (a tap anywhere off the
     /// popover surface). Flip your open-state signal here. When unset,
     /// the popover can't dismiss itself — Escape and the outside tap are
@@ -183,6 +192,7 @@ impl Default for PopoverProps {
             side: Reactive::Static(ElementSide::Below),
             align: Reactive::Static(ElementAlign::Start),
             offset: Reactive::Static(4.0),
+            min_width: Reactive::Static(POPOVER_DEFAULT_MIN_WIDTH),
             on_dismiss: None,
             children: Vec::new(),
         }
@@ -208,7 +218,13 @@ pub fn Popover(props: PopoverProps) -> Element {
         return runtime_core::view(Vec::new()).into_element();
     };
 
-    let surface_style = PopoverStyle();
+    let min_width = props.min_width.clone();
+    let surface_style = move || {
+        StyleApplication::new(PopoverStyle::sheet()).with_inline(StyleRules {
+            min_width: Some(Tokenized::Literal(Length::Px(min_width.get()))),
+            ..Default::default()
+        })
+    };
 
     let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
@@ -393,5 +409,61 @@ mod tests {
                 }
             }
     });
+    }
+
+    /// The anchored surface's resolved `min_width`.
+    fn surface_min_width(props: PopoverProps) -> Option<Tokenized<Length>> {
+        use crate::test_support::TStyle;
+        let mut kids = match classify(Popover(props)) {
+            P::View { children, .. } => children,
+            _ => panic!("a targeted Popover wraps [catcher, anchored] in a View"),
+        };
+        let surface = match classify(kids.remove(1)) {
+            P::Portal { mut children, .. } => children.remove(0),
+            _ => panic!("the second child is the anchored Portal"),
+        };
+        // The anchored overlay hosts its content in an unstyled wrapper view;
+        // the surface is the first styled view under it.
+        let mut node = classify(surface);
+        let app = loop {
+            match node {
+                P::View { style: Some(TStyle::AppFn(f)), .. } => break f(),
+                P::View { style: Some(TStyle::App(a)), .. } => break a,
+                P::View { style: None, mut children, .. } if children.len() == 1 => {
+                    node = classify(children.remove(0));
+                }
+                _ => panic!("expected the surface View under the anchored portal"),
+            }
+        };
+        runtime_core::resolve_style(&app).min_width.clone()
+    }
+
+    fn targeted(min_width: Option<f32>) -> PopoverProps {
+        use runtime_core::primitives::portal::AnchorTarget;
+        use runtime_core::{PressableHandle, Ref};
+        let trigger: Ref<PressableHandle> = Ref::new();
+        let mut props = PopoverProps {
+            target: Some(AnchorTarget::from(trigger)),
+            children: vec![runtime_core::text("100%").into_element()],
+            ..Default::default()
+        };
+        if let Some(w) = min_width {
+            props.min_width = Reactive::Static(w);
+        }
+        props
+    }
+
+    // The surface's 180px floor was baked into the sheet with no prop, so a
+    // popover of short items (zoom levels under a 72px field) could never be
+    // narrower than 180px.
+    #[test]
+    fn regression_popover_min_width_is_not_overridable() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+            assert_eq!(surface_min_width(targeted(None)), px(POPOVER_DEFAULT_MIN_WIDTH));
+            assert_eq!(surface_min_width(targeted(Some(72.0))), px(72.0));
+            assert_eq!(surface_min_width(targeted(Some(0.0))), px(0.0), "0 sizes to content");
+        });
     }
 }

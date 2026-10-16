@@ -70,7 +70,7 @@ pub use sheets::{
     SwitchSheetBuilder, TagSheetBuilder,
     TypographySheetBuilder, font_weight_key, premint_identity, tone_keys, variant_keys,
     CHECKBOX_DIMS, DISABLED_CONTROL_OPACITY, FONT_WEIGHT_KEYS, PROGRESS_DIMS, PROGRESS_FILL_WIDTH_MS,
-    PROGRESS_SWEEP_FRACTION, RADIO_DIMS, SLIDER_DIMS, SWITCH_TRACK_DIMS,
+    PROGRESS_SWEEP_FRACTION, RADIO_DIMS, SLIDER_DIMS, SLIDER_ICON_THUMB_DIMS, SWITCH_TRACK_DIMS,
 };
 
 use std::rc::Rc;

@@ -29,7 +29,11 @@
 //! The Card stylesheet is built programmatically (variant × padding
 //! axes) and installed lazily on first use. Apps with custom Card
 //! variants install an extended sheet via [`install_card_sheet`]
-//! before mounting.
+//! before mounting. [`build_card_sheet`] always carries the four
+//! built-ins; a passed variant whose key matches a built-in replaces
+//! that one arm (e.g. a `regular` with a shadow), and any other key is
+//! added. A Card whose variant key has no arm on the installed sheet
+//! draws the bare base style; debug builds log a warning once per key.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -171,6 +175,27 @@ pub mod variant {
 
 thread_local! {
     static CARD_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
+    #[cfg(debug_assertions)]
+    static WARNED_CARD_VARIANTS: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Debug builds: log once per key when a Card asks for a variant the
+/// installed sheet has no arm for. Without an arm the key resolves to the
+/// sheet's base (a transparent box with a 1px border) and nothing else
+/// says so. Returns whether it warned, for the test.
+#[cfg(debug_assertions)]
+fn warn_unregistered_variant(sheet: &StyleSheet, key: &str) -> bool {
+    let registered = sheet.variant_keys().iter().any(|(a, v)| a == "variant" && v == key);
+    if registered || !WARNED_CARD_VARIANTS.with(|w| w.borrow_mut().insert(key.to_string())) {
+        return false;
+    }
+    runtime_core::log_warn!(
+        "[idea-ui] Card variant `{key}` has no arm on the installed card sheet, so it draws \
+         the bare base style (transparent, 1px border). Pass it to `build_card_sheet` \
+         before `install_card_sheet`."
+    );
+    true
 }
 
 /// Install a custom Card stylesheet (e.g. with app-defined variants).
@@ -184,26 +209,45 @@ fn card_sheet() -> Rc<StyleSheet> {
     CARD_SHEET.with(|s| {
         if s.borrow().is_none() {
             let tones: Vec<ToneRef> = ToneRef::builtins().into_iter().map(|(_, t)| t).collect();
-            let built = build_card_sheet(
-                vec![
-                    variant::Regular.into(),
-                    variant::Outline.into(),
-                    variant::Flat.into(),
-                    variant::Elevated.into(),
-                ],
-                tones,
-            );
-            *s.borrow_mut() = Some(built);
+            *s.borrow_mut() = Some(build_card_sheet(Vec::new(), tones));
         }
         s.borrow().as_ref().cloned().unwrap()
     })
 }
 
-/// Build a Card stylesheet from a list of variants. The padding axis
-/// is fixed (none/sm/md/lg → theme spacing tokens). Each variant arm
-/// pulls its background/shadow from `variant.render(ctx)` (Card
-/// variants ignore the tone, so a placeholder Neutral is passed).
+/// The four built-in variants, in the order [`build_card_sheet`] registers them.
+fn builtin_variants() -> Vec<VariantRef> {
+    vec![
+        variant::Regular.into(),
+        variant::Outline.into(),
+        variant::Flat.into(),
+        variant::Elevated.into(),
+    ]
+}
+
+/// The built-ins with `extra` layered on by key: an `extra` variant whose
+/// key matches a built-in (or an earlier `extra`) replaces it in place;
+/// any other key is appended.
+fn merge_variants(extra: Vec<VariantRef>) -> Vec<VariantRef> {
+    let mut merged = builtin_variants();
+    for v in extra {
+        match merged.iter_mut().find(|m| m.key() == v.key()) {
+            Some(slot) => *slot = v,
+            None => merged.push(v),
+        }
+    }
+    merged
+}
+
+/// Build a Card stylesheet: the four built-in variants plus `variants`.
+/// A passed variant whose key matches a built-in replaces that arm, so an
+/// app that only wants a different `regular` passes just that one — the
+/// other built-ins stay registered. The padding axis is fixed
+/// (none/sm/md/lg → theme spacing tokens). Each variant arm pulls its
+/// background/shadow from `variant.render(ctx)` (Card variants ignore the
+/// tone, so a placeholder Neutral is passed).
 pub fn build_card_sheet(variants: Vec<VariantRef>, tones: Vec<ToneRef>) -> Rc<StyleSheet> {
+    let variants = merge_variants(variants);
     let radius = || tokens().radius.lg();
 
     let mut sheet = StyleSheet::new(move |_vs: &VariantSet| StyleRules {
@@ -375,7 +419,10 @@ pub fn Card(props: CardProps) -> Element {
         move || -> StyleApplication {
             let variant_key = variant.get().key().to_string();
             let padding_key = padding.get().as_variant_str().to_string();
-            let mut style = StyleApplication::new(card_sheet())
+            let sheet = card_sheet();
+            #[cfg(debug_assertions)]
+            warn_unregistered_variant(&sheet, &variant_key);
+            let mut style = StyleApplication::new(sheet)
                 .with("variant", variant_key)
                 .with("padding", padding_key);
 
@@ -651,7 +698,7 @@ mod tests {
     }
 
     // Each built-in variant must be a real arm on the default sheet — an
-    // unregistered key silently resolves to the base (no fill at all).
+    // unregistered key resolves to the base (no fill at all).
     #[test]
     fn every_builtin_variant_resolves_distinctly() {
         with_test_world(|| {
@@ -670,5 +717,75 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// A custom `regular` with a shadow, the way an app restyles one built-in.
+    struct LiftedRegular;
+    impl idea_theme::extensible::Variant for LiftedRegular {
+        fn key(&self) -> &'static str {
+            "regular"
+        }
+        fn render(&self, _ctx: &ResolutionCtx) -> StyleRules {
+            StyleRules {
+                shadow: Some(runtime_core::Shadow {
+                    x: 0.0,
+                    y: 2.0,
+                    blur: 8.0,
+                    color: runtime_core::Color("rgba(0,0,0,0.2)".into()).into(),
+                }),
+                ..Default::default()
+            }
+        }
+    }
+
+    fn all_tones() -> Vec<ToneRef> {
+        ToneRef::builtins().into_iter().map(|(_, t)| t).collect()
+    }
+
+    // An app that installed a sheet listing only the variants it changed lost
+    // every other built-in: a `Card(variant = Flat)` drew the base style (a
+    // transparent box with a 1px border) instead of Flat's `surface_alt` fill
+    // with no border, and nothing reported it.
+    #[test]
+    fn regression_partial_card_sheet_drops_builtin_variants() {
+        with_test_world(|| {
+            theme();
+            install_card_sheet(build_card_sheet(
+                vec![VariantRef(Rc::new(LiftedRegular)), variant::Elevated.into()],
+                all_tones(),
+            ));
+            let flat = resolved(variant::Flat.into(), None);
+            assert_eq!(flat.background, Some(surface(|c| &c.surface_alt)));
+            assert_eq!(widths(&flat), [Some(0.0); 4], "Flat keeps its borderless arm");
+
+            // The passed `regular` replaces the built-in arm by key.
+            let regular = resolved(variant::Regular.into(), None);
+            assert!(regular.shadow.is_some(), "the app's `regular` wins");
+            assert_eq!(regular.background, None, "the built-in `regular` arm is gone");
+        });
+    }
+
+    #[test]
+    fn build_card_sheet_registers_each_key_once() {
+        let sheet = build_card_sheet(vec![VariantRef(Rc::new(LiftedRegular))], all_tones());
+        let mut keys: Vec<String> = sheet
+            .variant_keys()
+            .into_iter()
+            .filter(|(a, _)| a == "variant")
+            .map(|(_, v)| v.to_string())
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["elevated", "flat", "outline", "regular"]);
+    }
+
+    // The base-style fallback is silent at render time, so debug builds say
+    // so — once per key, not once per restyle.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn unregistered_card_variant_warns_once_in_debug() {
+        let sheet = build_card_sheet(Vec::new(), all_tones());
+        assert!(!warn_unregistered_variant(&sheet, "flat"), "a registered key is quiet");
+        assert!(warn_unregistered_variant(&sheet, "frosted"), "an unknown key warns");
+        assert!(!warn_unregistered_variant(&sheet, "frosted"), "and only the first time");
     }
 }

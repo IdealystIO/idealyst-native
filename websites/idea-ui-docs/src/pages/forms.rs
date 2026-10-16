@@ -300,7 +300,6 @@ pub fn slider() -> Element {
                 Stack(gap = StackGap::Md) {
                     Slider(value = volume, on_change = on_volume.clone(), tone = tone::Primary)
                     readout
-                    Slider(value = volume, on_change = on_volume.clone(), tone = tone::Primary, leading_icon = Some(HEART), trailing_icon = Some(STAR))
                 }
             }
             CodePanel(src = r##"let volume = signal(0.5_f32);
@@ -311,6 +310,26 @@ ui! {
         value = volume,
         on_change = on_volume,
         tone = tone::Primary,
+    )
+}"##.to_string())
+        }
+    }, ui! {
+        Section(title = "Icons".to_string()) {
+            P(content = "`leading_icon` / `trailing_icon` flank the track in a muted tint. \
+                `thumb_icon` puts a glyph inside the thumb, tinted with the variant \
+                foreground; the thumb grows to hold it (Sm 20 / Md 24 / Lg 28 px).".to_string())
+            DemoSurface {
+                Stack(gap = StackGap::Md) {
+                    Slider(value = volume, on_change = on_volume.clone(), tone = tone::Primary, leading_icon = Some(HEART), trailing_icon = Some(STAR))
+                    Slider(value = volume, on_change = on_volume.clone(), tone = tone::Primary, thumb_icon = Some(STAR))
+                    Slider(value = volume, on_change = on_volume.clone(), tone = tone::Success, size = ControlSize::Lg, thumb_icon = Some(HEART))
+                }
+            }
+            CodePanel(src = r##"ui! {
+    Slider(
+        value = volume,
+        on_change = on_volume,
+        thumb_icon = Some(STAR),
     )
 }"##.to_string())
         }
@@ -338,6 +357,9 @@ ui! {
                 Prop { name: "variant",   ty: "VariantRef",       desc: "Surface skeleton. Default: Filled." },
                 Prop { name: "size",      ty: "ControlSize",      desc: "Sm / Md / Lg rail thickness + thumb size. Default: Md." },
                 Prop { name: "disabled",  ty: "bool",              desc: "When true, blocks dragging and dims the control. Default: false." },
+                Prop { name: "leading_icon",  ty: "Option<IconData>", desc: "Muted icon left of the track." },
+                Prop { name: "trailing_icon", ty: "Option<IconData>", desc: "Muted icon right of the track." },
+                Prop { name: "thumb_icon",    ty: "Option<IconData>", desc: "Icon inside the thumb, tinted with the variant foreground. Grows the thumb (Sm 20 / Md 24 / Lg 28 px)." },
             ])
         }
     }])

@@ -2359,7 +2359,8 @@ stylesheet! {
 // These style the inner content container of an Overlay, not the
 // overlay itself (which is positioned by the framework). Modal is
 // the card-like centered surface; Popover is a smaller floating
-// panel anchored to a trigger.
+// panel anchored to a trigger. Popover's width floor is the
+// component's `min_width` prop (inline layer), not part of this sheet.
 
 stylesheet! {
     pub Modal<IdeaThemeRef> {
@@ -2397,7 +2398,6 @@ stylesheet! {
             border_color: t.color.border(),
             gap: t.spacing.xs(),
             flex_direction: FlexDirection::Column,
-            min_width: 180.0,
             shadow: runtime_core::Shadow {
                 x: 0.0,
                 y: 6.0,

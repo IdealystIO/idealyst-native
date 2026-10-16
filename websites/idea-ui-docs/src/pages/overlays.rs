@@ -278,6 +278,7 @@ pub fn popover() -> Element {
                     Prop { name: "side",       ty: "ElementSide",          desc: "Which side of the target the popover sits on. Default: Below." },
                     Prop { name: "align",      ty: "ElementAlign",         desc: "Alignment along the anchor's edge. Default: Start." },
                     Prop { name: "offset",     ty: "f32",                  desc: "Gap in px between the anchor and the popover. Default: 4." },
+                    Prop { name: "min_width",  ty: "f32",                  desc: "Narrowest the surface may be, in px. Default: 180. 0.0 sizes the popover to its content." },
                     Prop { name: "on_dismiss", ty: "Option<Rc<dyn Fn()>>", desc: "Fires on Escape and on an outside click. Flip your open-state signal here. Unset → can't self-dismiss." },
                 ])
             }
