@@ -66,7 +66,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // A real Windows machine instead of Wine (see `remote`).
     if !cfg!(target_os = "windows") {
         if let Some(remote) = remote::Remote::from_env() {
-            let mut child = remote.launch(&built.binary, &built.runtime_files, project_dir, &opts.env_vars)?;
+            let mut child = remote.launch_with_runtime_files(&built.binary, &built.runtime_files, project_dir, &opts.env_vars)?;
             if opts.background {
                 return Ok(RunArtifact { binary: built.binary, child: Some(child) });
             }

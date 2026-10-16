@@ -134,12 +134,18 @@ impl Remote {
         Ok(())
     }
 
+    /// Copy `binary` (with its `assets/` folder) over and start it on the
+    /// remote desktop — [`Self::launch_with_runtime_files`] with none.
+    pub fn launch(&self, binary: &Path, project_dir: &Path, env_vars: &[(String, String)]) -> Result<Child> {
+        self.launch_with_runtime_files(binary, &[], project_dir, env_vars)
+    }
+
     /// Copy `binary` (with its `assets/` folder and the SDK `runtime_files`
     /// it needs beside it — `build_windows::BuildArtifact::runtime_files`)
     /// over and start it on the remote desktop. Returns the local ssh
     /// session that keeps the forwards up and the app alive (see the module
     /// docs).
-    pub fn launch(
+    pub fn launch_with_runtime_files(
         &self,
         binary: &Path,
         runtime_files: &[std::path::PathBuf],
