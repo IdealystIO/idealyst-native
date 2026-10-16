@@ -160,6 +160,10 @@ pub struct SegmentedControlProps {
     /// height as a Select, Field or outlined Button at that size, with the
     /// same font size, so the control lines up beside them in a toolbar.
     pub size: ControlSize,
+    /// When `true`, the control fills its container's width and the
+    /// segments share it evenly — like Button's `block`. Default `false`:
+    /// the control hugs its options.
+    pub block: bool,
 }
 
 impl Default for SegmentedControlProps {
@@ -171,6 +175,7 @@ impl Default for SegmentedControlProps {
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
             size: Reactive::Static(ControlSize::Md),
+            block: Reactive::Static(false),
         }
     }
 }
@@ -185,11 +190,16 @@ pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
     let value = props.value;
     let on_change = props.on_change;
     let size = props.size;
+    let block = props.block;
+    let block_group = block.clone();
+    let group_style = move || {
+        StyleApplication::new(SegmentedGroup::sheet()).with("block", block_arm(block_group.get()))
+    };
 
     ui! {
-        view(style = SegmentedGroup()) {
+        view(style = group_style) {
             for option in options {
-                segment(option, value.clone(), on_change.clone(), size.clone())
+                segment(option, value.clone(), on_change.clone(), size.clone(), block.clone())
             }
         }
     }
@@ -206,6 +216,7 @@ fn segment(
     value: Reactive<String>,
     on_change: Rc<dyn Fn(String)>,
     size: Reactive<ControlSize>,
+    block: Reactive<bool>,
 ) -> Element {
     let id = option.id;
 
@@ -225,6 +236,7 @@ fn segment(
         StyleApplication::new(SegmentButton::sheet())
             .with("selected", selected_arm(selected.get()))
             .with("size", size_style.get().as_variant_str())
+            .with("block", block_arm(block.get()))
     };
 
     let label = option.label;
@@ -279,6 +291,11 @@ fn render_adornment(adornment: &Adornment, selected: Memo<bool>, size: Reactive<
         }
         Adornment::Group(items) => items.iter().flat_map(|a| render_adornment(a, selected, size.clone())).collect(),
     }
+}
+
+/// The `block` axis arm.
+fn block_arm(block: bool) -> &'static str {
+    if block { "on" } else { "off" }
 }
 
 /// The `selected` axis arm for a segment's state.
@@ -528,8 +545,8 @@ mod tests {
     }
 
     /// The control's two sheets are its own, not the Tabs sheets: distinct
-    /// sheets with distinct premint identities, a single
-    /// author axis `selected` (default `off`) instead of the tab's `active`,
+    /// sheets with distinct premint identities, a `selected` author axis
+    /// (default `off`) instead of the tab's `active`,
     /// and the hovered/pressed/focused state overlays — focus draws the
     /// themed ring rather than the platform default.
     #[test]
@@ -550,8 +567,8 @@ mod tests {
             let axes: Vec<_> = seg.premint_author_axes().iter().map(|(a, d)| (a.as_str(), d.as_deref())).collect();
             assert_eq!(
                 axes,
-                vec![("selected", Some("off")), ("size", Some("md"))],
-                "a `selected` axis resting off, and a `size` axis resting md"
+                vec![("block", Some("off")), ("selected", Some("off")), ("size", Some("md"))],
+                "a `block` axis resting off, a `selected` axis resting off, and a `size` axis resting md"
             );
             let mut arms: Vec<_> = seg
                 .variant_keys()

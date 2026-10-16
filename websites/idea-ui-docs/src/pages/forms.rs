@@ -966,11 +966,28 @@ ui! {
             DemoSurface {
                 SegmentedControl(
                     value = theme,
+                    on_change = on_theme.clone(),
+                    options = vec![
+                        SegmentOption::new("light", "Light"),
+                        SegmentOption::new("dark", "Dark"),
+                    ],
+                )
+            }
+        }
+    }, ui! {
+        Section(title = "Full width".to_string()) {
+            P(content = "`block = true` stretches the control to its container and splits the \
+                width evenly between the segments, like Button's `block` — so it lines up with \
+                the Fields beside it in a fixed-width panel.".to_string())
+            DemoSurface {
+                SegmentedControl(
+                    value = theme,
                     on_change = on_theme,
                     options = vec![
                         SegmentOption::new("light", "Light"),
                         SegmentOption::new("dark", "Dark"),
                     ],
+                    block = true,
                 )
             }
         }
@@ -995,6 +1012,7 @@ ui! {
                 Prop { name: "value",     ty: "Reactive<String>",   desc: "Selected segment's id — a Signal<String> or a model-derived rx!(...)." },
                 Prop { name: "on_change", ty: "Rc<dyn Fn(String)>", desc: "Fires with the chosen segment's id when the user taps a segment." },
                 Prop { name: "size",      ty: "Reactive<ControlSize>", desc: "Sm, Md (default) or Lg — the height and font of a Select / Field / outlined Button of the same size." },
+                Prop { name: "block",     ty: "bool",               desc: "Fill the container's width, segments sharing it evenly. Default: false (hugs its options)." },
                 Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label), plus .leading(Adornment) / .trailing(Adornment) beside the label (Icon recolors with selection; Element is any component)." },
             ])
         }

@@ -2249,7 +2249,8 @@ fn segment_pad_v(control_pad: runtime_core::Tokenized<Length>) -> f32 {
 
 stylesheet! {
     // The track. Hugs its segments on both axes, so a control inside a
-    // stretching column stays the width of its options.
+    // stretching column stays the width of its options — unless `block`,
+    // which fills the container like Button's `block`.
     pub SegmentedGroup<IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Row,
@@ -2262,6 +2263,15 @@ stylesheet! {
             border_width: 1.0,
             border_color: t.color.border(),
             border_radius: t.radius.md(),
+        }
+        variant block {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                width: Length::Percent(100.0),
+                align_self: runtime_core::AlignSelf::Stretch,
+                flex_shrink: 1.0,
+            }
         }
         transitions {
             background: 250ms EaseInOut,
@@ -2309,6 +2319,18 @@ stylesheet! {
                 padding_vertical: segment_pad_v(t.spacing.md()),
                 padding_horizontal: t.spacing.lg(),
                 font_size: t.typography.body_lg_size(),
+            }
+        }
+        // `block`: segments split the filled track evenly. `flex_basis: 0`
+        // makes the shares equal regardless of label length; the label's
+        // min-content width still floors each one.
+        variant block {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                flex_basis: Length::Px(0.0),
             }
         }
         variant selected {
