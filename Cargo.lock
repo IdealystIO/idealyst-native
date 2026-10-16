@@ -6518,7 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.12.0"
+version = "1.13.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7661,7 +7661,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.24.1"
+version = "1.25.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -7686,7 +7686,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-server"
-version = "1.11.0"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10815,7 +10815,7 @@ version = "0.1.0"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "dev-hot",
  "host-mock",

@@ -486,7 +486,7 @@ runtime-shared = { path = "crates/runtime/shared", version = "2.0.1", registry =
 runtime-world = { path = "crates/runtime/world", version = "1.8.2", registry = "idealyst" }
 runtime-tls = { path = "crates/runtime/tls", version = "0.1.0", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.10.1", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "3.2.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "3.3.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.0", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -519,9 +519,9 @@ dev-hot = { path = "crates/dev/hot", version = "1.7.0", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "1.19.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "1.12.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "1.2.1", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "1.24.1", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "1.25.0", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.0.0", registry = "idealyst" }
-mcp-server = { path = "crates/mcp/server", version = "1.11.0", registry = "idealyst" }
+mcp-server = { path = "crates/mcp/server", version = "1.12.0", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
 runtime-layout = { path = "crates/runtime/layout", version = "2.0.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.1.0", registry = "idealyst" }
@@ -776,7 +776,7 @@ swap-demo = { path = "crates/sdk/client/navigators/swap/examples/swap-demo", ver
 todo-sync-demo = { path = "crates/sdk/client/sync/examples/todo-sync-demo", version = "1.5.2", registry = "idealyst" }
 toolbar-demo = { path = "crates/sdk/client/toolbar/examples/toolbar-demo", version = "1.5.2", registry = "idealyst" }
 video-compose-demo = { path = "crates/sdk/client/video-compose/examples/video-compose-demo", version = "1.5.2", registry = "idealyst" }
-idealyst-cli = { path = "crates/tools/cli", version = "1.12.0", registry = "idealyst" }
+idealyst-cli = { path = "crates/tools/cli", version = "1.13.0", registry = "idealyst" }
 ota-publish = { path = "crates/ota/publish", version = "0.1.0", registry = "idealyst" }
 
 # Dev profile: `opt-level = "z"` works around a wasm OOB seen at
