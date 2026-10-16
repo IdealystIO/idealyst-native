@@ -1,82 +1,62 @@
-//! New-core adoption for the wire-recording dev backend (idea-lite
-//! migration — the dev-session wire chain).
+//! The scene seam for the wire-recording dev backend.
 //!
-//! Implements [`runtime_scene::Host`] plus **all 30** capability traits
-//! (`runtime_vocabulary::caps`) directly on [`WireRecordingBackend`] —
-//! the same shape every shipping backend took (see
-//! `backend-ssr/src/newcore.rs`, the template this file's delegation
-//! bodies are generated from). Every trait method delegates via UFCS
-//! (`WireRecordingBackend::method(self, …)`) to the
-//! existing `Backend` impl, so the wire emission mechanism — node/style
-//! interning, handler-table registration, `SceneModel` mirroring, the
-//! `Command` log — is REUSED verbatim.
+//! Implements [`runtime_scene::Host`] plus the capability traits
+//! (`runtime_vocabulary::caps`) on [`WireRecordingBackend`]. Every trait
+//! method delegates via UFCS (`WireRecordingBackend::method(self, …)`) to
+//! the recorder's inherent methods in `lib.rs`, which own the wire
+//! emission — node/style interning, handler-table registration,
+//! `SceneModel` mirroring, the `Command` log.
 //!
-//! **The wire protocol is the compatibility contract.** Because the
-//! caps signatures are frozen to the old `Backend` signatures and every
-//! cap here resolves to the recorder's existing `Backend` impl, a
-//! new-core realize that performs the same logical backend operations
-//! as an old-core walk emits the **identical wire `Command`s** — by
-//! construction, not by re-implementation. The new-core wire-behavior
-//! tests in `mock-backend` (`tests/wire_behavior_newcore.rs`) pin this
-//! end-to-end: same scene → same reconstructed client tree, over the
-//! real codec.
+//! **The wire protocol is the compatibility contract.** Replay clients
+//! only ever see wire `Command`s; the mock-backend wire-behavior tests
+//! (`crates/dev/mock-backend/tests/wire_behavior.rs`) pin it end-to-end:
+//! same scene → same reconstructed client tree, over the real codec.
 //!
 //! # The recorder is ANCHORED — the wire structural contract
 //!
 //! [`Host::supports_splice`] is **hard-coded `false`** (not delegated):
 //! the wire protocol has `Insert` / `InsertMany` / `ClearChildren` ops
-//! but **no** `RemoveChild` / `InsertAt` — a splice simply cannot be
-//! expressed on the wire. Anchored mode keeps every reactive region
-//! under a `CreateReactiveAnchor` + `ClearChildren` + re-insert cycle,
-//! all of which are wire ops the replay client already understands
-//! (including old clients — no protocol bump). If the recorder ever
-//! wants splice, the protocol must grow those two ops first; flipping
-//! this bool without them silently drops structural updates on every
-//! client. Regression-pinned by `newcore_recorder_is_anchored`.
+//! but **no** `RemoveChild` / positional-insert op — a splice simply
+//! cannot be expressed on the wire. Anchored mode keeps every reactive
+//! region under a `CreateReactiveAnchor` + `ClearChildren` + re-insert
+//! cycle, all of which are wire ops every replay client understands. If
+//! the recorder ever wants splice, the protocol must grow those two ops
+//! first; flipping this bool without them silently drops structural
+//! updates on every client. Regression-pinned by
+//! `newcore_recorder_is_anchored`.
 //!
 //! # Session mounting — [`SceneSession`]
 //!
-//! [`SceneSession::mount`] is the new-core counterpart of the old
-//! `runtime_shared::mount(recorder, app)` call the sidecar makes: fresh
-//! per-session [`World`], `register_builtins` + a registration seam,
-//! realize inside `World::enter`, `finish` the single root, one
-//! `flush`. Dropping the session runs every cleanup (realized tree
-//! first, then the world — same teardown order as
-//! `backend_ssr::newcore::render_path`). Event dispatch commits through
-//! [`SceneSession::flush`] — world signals have no ambient auto-flush
-//! driver on the dev server; the sidecar flushes after every dispatched
-//! event / animation tick, then drains the recorder's command log.
+//! [`SceneSession::mount`]: fresh per-session [`World`],
+//! `register_builtins` + a registration seam, realize inside
+//! `World::enter`, `finish` the single root, one `flush`. Dropping the
+//! session runs every cleanup (realized tree first, then the world — same
+//! teardown order as `backend_ssr::newcore::render_path`). Event dispatch
+//! commits through [`SceneSession::flush`] — world signals have no
+//! ambient auto-flush driver on the dev server; the sidecar flushes after
+//! every dispatched event / animation tick, then drains the recorder's
+//! command log.
 //!
-//! # Robot + MCP catalog (wave 2b — the pre-2b "no catalog in
-//! `--new-core` sessions" gap is CLOSED)
+//! # Robot + MCP catalog
 //!
 //! [`install_robot_env`] wires the vocabulary robot registry into the
 //! shared TCP bridge for a mounted session (driver env + verb router;
 //! see its docs), and the sidecar session thread starts the bridge
-//! transport exactly like the old-core `mount` did. The catalog side
-//! needs no code here: the recipes are static data in
-//! `runtime_shared::recipes`, and the generated `--new-core` sidecar
-//! wrapper enables `runtime-core/dev` + `runtime-core/dev` so the
-//! emission gate, the `__mcp` anchors, and the bridge's `get_catalog`
-//! verb are all live (build-runtime-server pins this).
+//! transport. The catalog side needs no code here: the recipes are
+//! static data in `runtime_shared::recipes`, and the generated sidecar
+//! wrapper enables `runtime-core/dev` so the emission gate, the `__mcp`
+//! anchors, and the bridge's `get_catalog` verb are all live
+//! (build-runtime-server pins this).
 //!
-//! # What the new-core session does NOT yet do (each named, none silent)
+//! # Known limitation: no node-id reuse across re-mounts
 //!
-//! - **Identity-keyed node dedup across re-mounts.** The old walker set
-//!   `runtime_shared::current_identity()` before every `create_*`, which
-//!   the recorder's `mint_node` uses to reuse wire `NodeId`s across
-//!   hot-reload re-renders (incremental patching). The new-core realize
-//!   path does not set ambient identities, so every re-mount mints
-//!   fresh ids and clients rebuild the scene from the epoch-bumped
-//!   snapshot — correct, but a full rebuild rather than an incremental
-//!   patch. Fixing this belongs in the vocabulary drivers (set ambient
-//!   identity per mount site), not here.
-//! - **Hot-patch function rebinding.** The `#[component]` macro's
-//!   new-core emission has no `dev_hot` split form yet, so a subsecond
-//!   jump table cannot rebind patched component bodies. The CLI's
-//!   `--new-core` dev flow therefore disables the hot-patch adapter and
-//!   rides the host's rebuild-and-respawn path (state does not survive
-//!   saves; the session itself and all clients do).
+//! The recorder's `mint_node` can reuse wire `NodeId`s across re-renders
+//! when `runtime_shared::current_identity()` is set before each
+//! `create_*`, but realize does not set ambient identities. Every
+//! re-mount therefore mints fresh ids and clients rebuild the scene from
+//! the epoch-bumped snapshot — correct, but a full rebuild rather than an
+//! incremental patch. The fix belongs in the vocabulary drivers (set
+//! ambient identity per mount site), not here.
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -108,7 +88,7 @@ pub type SceneRegistry = Registry<WireRecordingBackend>;
 // Session mounting
 // ===========================================================================
 
-/// A mounted new-core dev session: the per-session [`World`] plus the
+/// A mounted dev session: the per-session [`World`] plus the
 /// realized scene, in teardown order (realized drops first — cleanups
 /// fire while their world is still alive).
 pub struct SceneSession {
@@ -194,8 +174,7 @@ impl SceneSession {
             realized
         });
 
-        // Single-root contract, matching the old-core `mount` and the
-        // other new-core boots: `finish` marks the mount complete on
+        // Single-root contract, matching the other scene boots: `finish` marks the mount complete on
         // the wire (`Command::Finish { root }`), which replay clients
         // use to close the initial batch.
         let mut roots = realized.collect_nodes();
@@ -310,9 +289,7 @@ impl Host for WireRecordingBackend {
         WireRecordingBackend::insert_many(self, parent, children)
     }
 
-    /// APPEND — the index is deliberately ignored, reproducing the body
-    /// the recorder inherited from the old `Backend` default
-    /// (`self.insert(parent, child)`). The wire protocol has no
+    /// APPEND — the index is deliberately ignored. The wire protocol has no
     /// positional-insert op, and `supports_splice` is hard `false`, so
     /// no driver ever asks for a positional insert on this host: the
     /// only callers are structural paths that already appended. Kept as
@@ -322,7 +299,7 @@ impl Host for WireRecordingBackend {
         WireRecordingBackend::insert(self, parent, child)
     }
 
-    /// NO-OP — reproducing the old `Backend` default. Same reason as
+    /// NO-OP. Same reason as
     /// [`Self::insert_at`]: the wire protocol has no `RemoveChild`, and
     /// anchored regions detach by `ClearChildren` on their anchor
     /// instead. A silent no-op is correct here and wrong on a splicing
@@ -337,8 +314,8 @@ impl Host for WireRecordingBackend {
         WireRecordingBackend::create_reactive_anchor(self)
     }
 
-    /// Hard `false`, NOT delegated to `supports_child_splice`: the wire
-    /// protocol has no `RemoveChild`/`InsertAt` ops, so a splice cannot
+    /// Hard `false`, never delegated: the wire
+    /// protocol has no `RemoveChild` / positional-insert ops, so a splice cannot
     /// be expressed to replay clients — anchored regions
     /// (`CreateReactiveAnchor` + `ClearChildren` + re-insert) are the
     /// wire's structural contract (module docs, "the recorder is
@@ -979,8 +956,7 @@ impl caps::WireBindingOps for WireRecordingBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Robot env for a new-core session (wave 2b: robot + MCP catalog in
-// `--new-core` dev sessions)
+// Robot env for a scene session
 // ---------------------------------------------------------------------------
 
 /// Install the vocabulary Robot driver env + the shared bridge's verb
@@ -993,14 +969,14 @@ impl caps::WireBindingOps for WireRecordingBackend {
 ///   `SceneSession::flush` so a verb's staged writes commit before its
 ///   reply — the same contract `backend_web::robot_transport` installs
 ///   for web boots.
-/// - **Verb router**: the shared TCP bridge dispatches against the OLD
-///   registry, which a new-core session leaves empty (`find_element`
-///   would answer `null`, silently blinding drivers). The router
-///   forwards verbs the vocabulary bridge owns to
+/// - **Verb router**: the shared TCP bridge's built-in element verbs
+///   read `runtime_shared::robot`'s own registry, which a scene session
+///   never fills (`find_element` would answer `null`, silently blinding
+///   drivers). The router forwards verbs the vocabulary bridge owns to
 ///   `runtime_vocabulary::robot::bridge::invoke_command`
 ///   (wire-identical responses) and falls back — keyed on the exact
 ///   `unknown command:` marker so real verb errors are never masked —
-///   for the registry-INDEPENDENT verbs old dispatch still owns:
+///   for the registry-independent verbs the shared bridge serves:
 ///   `get_catalog` (the MCP catalog), `get_logs`, and custom commands
 ///   (the sidecar's `screenshot`).
 ///
@@ -1043,7 +1019,7 @@ mod tests {
     use super::*;
 
     /// REGRESSION: the recorder's `Host::supports_splice` must be
-    /// `false` — the wire protocol has no `RemoveChild`/`InsertAt` ops,
+    /// `false` — the wire protocol has no `RemoveChild` / positional-insert ops,
     /// so a splice can't be expressed to replay clients (module docs,
     /// "the recorder is ANCHORED"). The assertion is a literal, not a
     /// delegation: nothing upstream can flip it by accident.
@@ -1057,11 +1033,9 @@ mod tests {
     }
 
     /// REGRESSION: `Host::insert_at` APPENDS (index ignored) and
-    /// `Host::remove_child` is a no-op — the two Host-required methods
-    /// the recorder used to inherit as `Backend` trait defaults. Both
-    /// are now explicit bodies; this pins that they still behave the way
-    /// the wire protocol requires (no positional-insert op, no
-    /// remove-child op) rather than silently acquiring some other
+    /// `Host::remove_child` is a no-op — pins that these explicit bodies
+    /// behave the way the wire protocol requires (no positional-insert
+    /// op, no remove-child op) rather than silently acquiring some other
     /// default.
     #[test]
     fn newcore_recorder_insert_at_appends_and_remove_child_is_inert() {

@@ -1,6 +1,6 @@
-# newcore-canvas-smoke — live-verification vehicle for the External-SDK
-# wave: the canvas SDK rendered through the scene registry on the web
-# boot path. Direct vocabulary-builder calls (no macros — the
+# newcore-canvas-smoke — live-verification app for a scene-registry SDK:
+# the canvas SDK rendered through the scene registry on the web boot
+# path. Direct vocabulary-builder calls (no macros — the
 # newcore-web-smoke posture) build a tree containing a `canvas::Canvas`
 # whose draw closure reads a signal; a button bumps the signal, and the
 # repaint must flow through the SDK's world effect → canvas-native's
@@ -33,6 +33,6 @@ canvas = { workspace = true }
 canvas-native = { workspace = true }
 wasm-bindgen = "0.2"
 # `report()` reads the mounted <canvas> back: Document + Element are this
-# crate's own features (media-stream no longer enables them for everyone).
+# crate's own features (nothing else in the graph enables them).
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "console"] }
 console_error_panic_hook = "0.1"

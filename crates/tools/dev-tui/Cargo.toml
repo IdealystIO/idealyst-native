@@ -22,8 +22,7 @@ backend-terminal = { workspace = true }
 host-terminal = { workspace = true }
 # Pulled in for `install_theme` + the default light palette. The
 # framework panics on first render without an installed theme, even
-# though the panel drives no tokens itself (see
-# [[project_install_theme_required]]).
+# though the panel drives no tokens itself.
 idea-ui = { workspace = true }
 
 [dev-dependencies]

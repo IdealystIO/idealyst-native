@@ -415,8 +415,7 @@ fn main() {{
     // `run_with` (not `run`) so the user crate's
     // `pub fn register_scene_extensions(&mut Registry<_>)` seam runs after
     // `register_builtins` — how SDK payload handlers get into the scene
-    // registry. Same seam as the GTK / macOS wrappers; `register_extensions`
-    // was the pre-v2 name and took the backend. Returns the exit code.
+    // registry. Same seam as the GTK / macOS wrappers. Returns the exit code.
     std::process::exit(host_win32::run_with(opts, {user_lib}::register_scene_extensions, app));
 }}
 "#,
@@ -587,7 +586,7 @@ mod tests {
         assert_ne!(d, PathBuf::from("Z:/proj/target"));
     }
 
-    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// Regression (the iOS wrapper's twin): the
     /// Windows wrapper deleted its `Cargo.lock` on every generation, so
     /// each run resolved the registry's newest versions instead of the
     /// app's locked ones — a different graph from the app's and a new

@@ -1,19 +1,19 @@
 //! Web build orchestration for `idealyst build web` and the dev
 //! server.
 //!
-//! **No wrapper crate.** Unlike `crates/build/ios/` and
-//! `crates/build/android/`, which still generate an ephemeral crate to
+//! **No wrapper crate.** Unlike `crates/tools/build/ios/` and
+//! `crates/tools/build/android/`, which generate an ephemeral crate to
 //! carry the platform entry point, the web target builds the app crate
 //! *itself*. The app owns a `src/main.rs` holding one
 //! `idealyst::entry!(<lib>)` line, and the `idealyst` facade carries the
-//! wasm-only deps (`backend-web`, `web-glue`, `lol_alloc`) the author
-//! used to have to name. See [`ensure_entry_point`], which reports a missing one in the
-//! author's terms.
+//! wasm-only deps (`backend-web`, `web-glue`, `lol_alloc`). See
+//! [`ensure_entry_point`], which reports a missing one in the author's
+//! terms.
 //!
-//! That removes the failure mode the wrapper existed to create: the
-//! wrapper resolved `runtime-core` independently of the app, and any
-//! disagreement produced two `runtime_core` crates and "expected
-//! `Element`, found `Element`" at a boundary the author never wrote.
+//! Building the app directly means the framework resolves once, in the
+//! app's own graph: a separately resolved wrapper can pull a second
+//! `runtime_core` and fail with "expected `Element`, found `Element`" at
+//! a boundary the author never wrote.
 //!
 //! What's left here is packaging, which `cargo build` does not do:
 //! `cargo build --target wasm32-unknown-unknown` against the app, then the
@@ -34,7 +34,7 @@
 //! ```text
 //! <workspace>/target/idealyst/<project>/web/
 //! ```
-//! is now a staging directory for that output, not a crate.
+//! is a staging directory for that output, not a crate.
 
 use std::fs;
 use std::io::Write;
@@ -63,12 +63,13 @@ use flate2::Compression;
 
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
-    /// Build in release mode (`wasm-pack build --release`). Default:
-    /// debug (`--dev`), which skips wasm-opt and keeps debug info.
+    /// Build in release mode. Default: debug, which skips wasm-opt and
+    /// carries the debug info [`Self::debuginfo`] selects.
     pub release: bool,
-    /// Where the wrapper Cargo.toml should source framework crates
-    /// from. The CLI constructs this with `FrameworkSource::detect`
-    /// before invoking `build()`.
+    /// Where framework crates come from (workspace path or registry):
+    /// decides the target-dir root, the per-app staging dir, and the
+    /// premint dump crate's deps. The CLI constructs this with
+    /// `FrameworkSource::detect` before invoking `build()`.
     pub source: FrameworkSource,
     /// Compile the runtime style engine OUT (`--premint-only`).
     ///
@@ -106,26 +107,18 @@ pub struct BuildOptions {
     /// `release`, which has its own fixed profile. See [`DevOpt`] for the
     /// measured trade-off and why `Fast` is the default.
     pub dev_opt: DevOpt,
-    /// Which builtin primitives the bundle registers (`--primitives`).
-    ///
-    /// `None` keeps `runtime_vocabulary::AllBuiltins`, the historical
-    /// behavior. `Some(list)` makes the wrapper declare a
-    /// `builtin_set!` of exactly those names, so every unlisted
-    /// primitive's handler is never reached from the boot entry and
-    /// LLVM drops it — along with the web-sys imports and JS glue it
-    /// alone reached. Measured on a `view`+`text` app: 195,255 →
-    /// 126,813 bytes brotli, 236 → 163 wasm imports.
-    ///
-    /// Validated by [`resolve_primitive_set`] before the wrapper is
-    /// written, so a typo is a CLI error rather than a macro error
-    /// inside generated code.
+    /// The `--primitives` flag, which is no longer a build option: the
+    /// primitive set lives in the app's
+    /// `[package.metadata.idealyst.app] primitives`, where
+    /// `idealyst::entry!` declares the `builtin_set!`. `Some` makes the
+    /// build fail with that migration message; `None` is the only value
+    /// that builds.
     pub primitives: Option<Vec<String>>,
     /// Cargo features to enable on the **user crate** (e.g.
-    /// `["dev-hot-reload"]` for runtime-server-mode hot reload). The wrapper's
-    /// Cargo.toml grows a parallel `[features]` block that forwards
-    /// each named feature to the user-crate dep, and wasm-pack runs
-    /// with `-- --features <list>` so those features are active.
-    /// Empty means "default features" — the common case.
+    /// `["dev-hot-reload"]` for runtime-server-mode hot reload). Names in
+    /// `FRAMEWORK_FEATURES` are forwarded to the `idealyst` facade
+    /// (`robot` → `idealyst/robot`); anything else is the app's own
+    /// feature. Empty means "default features" — the common case.
     pub user_features: Vec<String>,
     /// When `Some`, after the normal in-project `pkg/` sync also stage
     /// a self-contained static-site bundle at this path. The bundle
@@ -180,10 +173,10 @@ pub struct BuildOptions {
     pub runtime_server_url: Option<String>,
     /// Build a base module a subsecond PATCH can link against.
     ///
-    /// Dev-only and off by default: it adds `--export-dynamic`, which
-    /// takes the module's export count from ~6 to ~1700 after
-    /// wasm-bindgen. That is the whole point (a patch imports what it
-    /// does not define from the base) and it is not something a
+    /// Dev-only and off by default: it links with `--no-gc-sections`,
+    /// exports the table, memory and stack/heap globals, and roots every
+    /// function in the table (`hotpatch_base`). That is the whole point (a patch imports
+    /// what it does not define from the base) and it is not something a
     /// shipped bundle should carry. See [`wasm_link_args`].
     pub hot_patch: bool,
     /// Pre-gzip every text-ish file in the staged bundle, writing
@@ -264,9 +257,9 @@ pub struct BuildOptions {
     /// module. A non-splitting build emits no relocations; in hybrid mode
     /// wasm-bindgen's own dead-code pass and debug-strip do the compaction,
     /// in own mode LLD's `--gc-sections` already did and the glue pass
-    /// strips DWARF. Measured on crewforge (hybrid, before own mode) (a 217 MB dev module with
-    /// relocations, 157 MB without; ~200 K lines of app code; interleaved
-    /// UI-edit rebuilds on one loaded machine):
+    /// strips DWARF. Measured on CrewForge in hybrid mode (a 217 MB dev
+    /// module with relocations, 157 MB without; interleaved UI-edit
+    /// rebuilds):
     ///
     /// ```text
     ///            post-cargo passes      served wasm
@@ -275,14 +268,13 @@ pub struct BuildOptions {
     /// ```
     ///
     /// So off buys most of the packaging tail and costs ~15% of served
-    /// bytes, which the browser compiles on every reload. The old
-    /// no-split — relocations still emitted, exports still pinned — served
-    /// 113.7 MB, which is why it used to read as a bad trade.
+    /// bytes, which the browser compiles on every reload. That only holds
+    /// because a non-splitting build also drops the relocations and the
+    /// pinned exports: with them it served 113.7 MB.
     pub wasm_split: bool,
     /// Where the build reports: each stage as it starts and ends, cargo's
-    /// progress and diagnostics, and the lines this crate used to print.
-    /// `Reporter::default()` prints them to stderr as plain lines, which
-    /// is exactly what the build printed before it took a reporter.
+    /// progress and diagnostics, and the build's own log lines.
+    /// `Reporter::default()` prints them to stderr as plain lines.
     pub reporter: dev_events::Reporter,
 }
 
@@ -340,48 +332,28 @@ impl DebugInfo {
 
 /// Optimization posture for DEV (non-release) web builds.
 ///
-/// [`Optimized`][Self::Optimized] is the default and is what you want
-/// almost always. [`Fast`][Self::Fast] exists for one specific regime,
-/// documented below, and is a net loss outside it.
+/// [`Optimized`][Self::Optimized] is the default. [`Fast`][Self::Fast]
+/// wins only with incremental compilation off.
 ///
-/// # Why the obvious change isn't a win
-///
-/// `profile.dev.package."*"` does NOT match workspace members (cargo:
-/// "for any non-workspace member"), so under `Optimized` every framework
-/// crate compiles at whatever the workspace `[profile.dev]` says —
-/// `opt-level = "z"` in this repo. Dropping members to `opt-level = 0`
-/// looks like it should make a framework-crate edit much cheaper, and in
-/// isolated `cargo build` timings it does.
-///
-/// It loses anyway, because cargo is not the whole build. `Fast` inflates
-/// the module by ~37% (41.9 MB vs 30.5 MB on `charts-demo`), and
-/// wasm-bindgen and wasm-split are both O(module size) and run on every
-/// rebuild. End-to-end through the CLI, warm target dir, two rounds:
+/// `profile.dev.package."*"` does not match workspace members, so under
+/// `Optimized` framework crates compile at the workspace `[profile.dev]`
+/// (`opt-level = "z"` here). Dropping them to `opt-level = 0` makes cargo
+/// cheaper but inflates the module ~37% (41.9 MB vs 30.5 MB on
+/// `charts-demo`), and wasm-bindgen / wasm-split are O(module size) on
+/// every rebuild. End-to-end, warm target dir, two rounds:
 ///
 /// | edit | `Fast` | `Optimized` |
 /// |---|---|---|
 /// | framework crate | 8.66s / 6.87s | **4.52s / 5.70s** |
 /// | leaf app crate | 4.90s / 5.63s | **3.37s / 3.16s** |
 ///
-/// The cargo half is close (3.0-6.0s vs 2.9-4.1s); the post-cargo passes
-/// are what decide it (~2.5s vs ~1.4s). This is also why the older
-/// leaf-edit measurement recorded in [`profile_config_args`] still holds.
-///
-/// # When `Fast` does win
-///
-/// With incremental compilation OFF, the cargo half stops being close —
-/// a framework-crate edit measured 7.33s under `Fast` vs 14.19s under
-/// `Optimized` — and `Fast` wins comfortably. That is not the default
-/// regime, but it is the regime you are in after a `cargo clean`, with
-/// `CARGO_INCREMENTAL=0` exported, or on a machine where the incremental
-/// cache has been disabled for disk reasons.
-///
-/// Note that a *poisoned* incremental cache looks like this too but is a
-/// different problem with a different fix: the cache degrades when one
-/// target dir is shared across build configurations that keep evicting
-/// each other, which is what [`config_key`] now prevents by giving each
-/// configuration its own directory. Reach for `--dev-opt fast` only after
-/// confirming the target dir is healthy.
+/// With incremental compilation off (after `cargo clean`, or with
+/// `CARGO_INCREMENTAL=0`) the cargo half dominates — a framework-crate
+/// edit measured 7.33s under `Fast` vs 14.19s under `Optimized` — and
+/// `Fast` wins. A slow incremental build can also be a target dir shared
+/// across configurations that evict each other; [`config_key`] gives each
+/// configuration its own dir, so check that before reaching for
+/// `--dev-opt fast`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DevOpt {
     /// Workspace members inherit the workspace's own `[profile.dev]`,
@@ -402,11 +374,9 @@ impl DevOpt {
     ///
     /// MUST NOT be the enum discriminant. Hashing `self as u8` ties the
     /// target-dir key to declaration ORDER, so reordering the variants
-    /// silently hands one posture the other's directory — which is a
-    /// full, unexplained rebuild of the framework the next time either is
-    /// used, i.e. exactly the failure `config_key` exists to prevent.
-    /// (This is not hypothetical: it happened when `Optimized` was
-    /// promoted to the default and moved to the front.)
+    /// silently hands one posture the other's directory — a full,
+    /// unexplained rebuild of the framework the next time either is used,
+    /// exactly the failure `config_key` exists to prevent.
     fn key_tag(self) -> &'static str {
         match self {
             DevOpt::Optimized => "opt-optimized",
@@ -431,12 +401,13 @@ const WASM_SPLIT_LOADER: &str = "./__wasm_split.js";
 
 #[derive(Debug)]
 pub struct BuildArtifact {
-    /// Path to the generated `pkg/` directory inside the user project
-    /// (NOT inside the wrapper). The dev server / static serve points
-    /// here.
+    /// The `pkg/` the dev server / static serve points at: the staged
+    /// bundle's `pkg/` when `bundle_out_dir` was set, else
+    /// `<project>/pkg/`.
     pub pkg_dir: PathBuf,
-    /// Path to the generated wrapper crate. Useful for debugging and
-    /// for a future `idealyst scaffold web` command.
+    /// The per-app staging dir (`<wrapper root>/<app>/web`) holding the
+    /// packaged `pkg/` and the premint dump crate. Not a crate itself;
+    /// the name follows `FrameworkSource::wrapper_root`.
     pub wrapper_dir: PathBuf,
     /// Path to the staged static-site bundle, when `bundle_out_dir`
     /// was set on the build options. `None` otherwise.
@@ -453,11 +424,12 @@ pub struct BuildArtifact {
     /// and the passes were skipped; the staged bundle was refreshed from
     /// the existing `pkg/`, so nothing downstream needs to reload.
     pub wasm_changed: bool,
-    /// The wasm module the BROWSER runs — after wasm-bindgen and after
-    /// the command-export neutralize pass.
+    /// The wasm module the BROWSER runs — the packaged
+    /// `pkg/<lib>_bg.wasm` (in hybrid mode, after wasm-bindgen and the
+    /// command-export neutralize pass).
     ///
     /// The hot-patch tier reads its function table from here and nowhere
-    /// else: both of those passes rewrite the module, so a table index
+    /// else: packaging rewrites the module, so a table index
     /// taken from cargo's own artifact names a different function than
     /// the one the page will call.
     pub served_wasm: PathBuf,
@@ -468,8 +440,8 @@ pub struct BuildArtifact {
     /// hot-patch tier was armed. `None` otherwise.
     ///
     /// Written during base prep and not recoverable later: it comes from
-    /// the `linking` section's function indices, which wasm-bindgen
-    /// renumbers and base prep drops. See [`hotpatch_aliases`].
+    /// the `linking` section's function indices, which base prep drops
+    /// (and wasm-bindgen, in hybrid mode, renumbers). See [`hotpatch_aliases`].
     pub symbol_aliases: Option<PathBuf>,
     /// The base's data-symbol addresses, read from the LINKED module
     /// beside [`Self::symbol_aliases`], when the hot-patch tier was armed.
@@ -477,13 +449,9 @@ pub struct BuildArtifact {
     pub data_symbols: Option<PathBuf>,
 }
 
-/// The primitives `--primitives` accepts — one per method on
-/// `runtime_vocabulary::BuiltinSet`.
-///
-/// Kept in sync with that trait (and with `builtin_set_keep!`'s arms) by
-/// `primitive_names_match_the_vocabulary_trait` below. Drift is not
-/// silent either way: a name here that the macro lacks fails to compile
-/// in the generated wrapper.
+/// The primitive names a `builtin_set!` keep-list accepts — one per
+/// method on `runtime_vocabulary::BuiltinSet`. Only [`resolve_primitive_set`]
+/// reads it; nothing checks it against the trait.
 pub const SELECTABLE_PRIMITIVES: &[&str] = &[
     "view",
     "text",
@@ -515,8 +483,8 @@ const PRIMITIVE_PRESETS: &[(&str, &[&str])] = &[
     ("all", SELECTABLE_PRIMITIVES),
 ];
 
-/// Normalize `--primitives` into the concrete keep-list the wrapper
-/// declares, or `None` for "every builtin" (the flag's absence).
+/// Normalize a `--primitives` spec into a concrete keep-list, or `None`
+/// for "every builtin" (the flag's absence).
 ///
 /// Accepts a preset (`core`, `all`) or an explicit comma-separated list.
 /// An unknown name is rejected here, with the valid set in the message —
@@ -573,22 +541,6 @@ pub fn resolve_primitive_set(spec: Option<&[String]>) -> Result<Option<Vec<Strin
     Ok(Some(keep))
 }
 
-/// Build the user's project at `project_dir` for the web target.
-///
-/// Builds the app crate's own binary for `wasm32-unknown-unknown`, packages
-/// it (own mode, or `wasm-bindgen` in hybrid mode — see the module docs;
-/// plus `wasm-split`, and `wasm-opt` on release), and stages the `pkg/`
-/// bundle into `project_dir/pkg/` and `dist/web`. No wrapper crate is
-/// involved.
-/// The cargo target dir a web build of `project_dir` with `opts` compiles
-/// into: `<framework target dir>/idealyst-web-<config key>` (see
-/// [`config_key`] for what the key separates).
-///
-/// Public so a caller running another build beside this one — the
-/// full-stack dev loop builds the project's server concurrently — can
-/// tell whether the two would contend for one target dir's lock. The dir
-/// is keyed, so in practice they never do; the check keeps that true if
-/// the layout changes.
 /// Directory (under the framework target root, beside the
 /// `idealyst-web-<key>` dirs) recording which key each build slot last
 /// used. See [`record_web_key`].
@@ -636,11 +588,11 @@ fn is_web_key(k: &str) -> bool {
 /// target root holding the `idealyst-web-*` dirs), and retire the dir the
 /// slot used before if nothing else still uses it. Returns the retired dir.
 ///
-/// The CLI used to start a new `idealyst-web-<key>` on every config change
-/// and never remove the old one. Measured in CrewForge (2026-10-08):
-/// `app-checkin` held a 2.6 GB dir three weeks after its config moved on.
+/// Without this, every config change strands its previous
+/// `idealyst-web-<key>` dir for good (CrewForge: a 2.6 GB dir three weeks
+/// after its config moved on).
 ///
-/// The old dir is kept when another slot still records its key (in-tree
+/// The previous dir is kept when another slot still records its key (in-tree
 /// examples share dirs: the key leaves out the app unless hot-patching),
 /// or when a build holds its cargo locks; `idealyst clean --stale` sweeps
 /// whatever no slot references.
@@ -706,12 +658,28 @@ pub fn web_record_variant(app: &str) -> String {
     build_ios::target_gc::variant_key(app)
 }
 
+/// The cargo target dir a web build of `project_dir` with `opts` compiles
+/// into: `<framework target dir>/idealyst-web-<config key>` (see
+/// [`config_key`] for what the key separates).
+///
+/// Public so a caller running another build beside this one — the
+/// full-stack dev loop builds the project's server concurrently — can
+/// tell whether the two would contend for one target dir's lock. The dir
+/// is keyed, so in practice they never do; the check keeps that true if
+/// the layout changes.
 pub fn web_target_dir(project_dir: &Path, opts: &BuildOptions) -> PathBuf {
     let project_dir = fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
     let key = config_key(opts, &project_dir);
     opts.source.cargo_target_dir(&project_dir).join(format!("idealyst-web-{key}"))
 }
 
+/// Build the user's project at `project_dir` for the web target.
+///
+/// Builds the app crate's own binary for `wasm32-unknown-unknown`, packages
+/// it (own mode, or `wasm-bindgen` in hybrid mode — see the module docs;
+/// plus `wasm-split`, and `wasm-opt` on release), and stages the `pkg/`
+/// bundle into `project_dir/pkg/` and `dist/web`. No wrapper crate is
+/// involved.
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     build_inner(project_dir, opts, true)
 }
@@ -749,11 +717,10 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
     let project_dir = fs::canonicalize(project_dir)
         .with_context(|| format!("resolve project dir {}", project_dir.display()))?;
     let manifest = parse_manifest(&project_dir)?;
-    // `--primitives` used to generate a `builtin_set!` into the wrapper.
-    // There is no wrapper to generate into: the set is now declared in
-    // the manifest, where `idealyst::entry!` reads it. Fail loudly
-    // rather than silently drop the trim — it was worth ~35% of the
-    // bundle on a small app.
+    // The primitive set is declared in the manifest, where
+    // `idealyst::entry!` reads it. Fail loudly on the flag rather than
+    // silently drop the trim — it is worth ~35% of the bundle on a small
+    // app.
     if let Some(list) = opts.primitives.as_deref() {
         anyhow::bail!(
             "`--primitives` is no longer a build flag — the primitive set is \
@@ -776,8 +743,7 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
     let bin_name = manifest.name.clone();
     ensure_entry_point(&project_dir, &bin_name)?;
 
-    // Per-app staging: `pkg/` output and the premint dump wrapper. No
-    // longer holds a generated crate.
+    // Per-app staging: `pkg/` output and the premint dump crate.
     let build_dir = opts
         .source
         .wrapper_root(&project_dir)
@@ -800,38 +766,35 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         format!("target dir: {} ({})", target_dir.display(), config_summary(&opts)),
     );
 
-    // Direct pipeline (no wasm-pack), so we can hit the flag matrix
-    // the splitter (`wasm-carve`) needs to actually extract chunks:
+    // The pipeline, ordered by what the splitter (`wasm-carve`) needs to
+    // actually extract chunks:
     //
     //   1. `cargo build` with `-C link-args=--emit-relocs` (passed via
     //      `CARGO_ENCODED_RUSTFLAGS`) so the rustc-emitted wasm has the
     //      relocation info wasm-split needs to rewrite indirect calls.
-    //   2. `wasm-bindgen --keep-lld-exports` so wasm-bindgen preserves
-    //      the LLD-emitted exports wasm-split's reachability walker
-    //      uses to identify chunk-only code.
-    //   3. `wasm-carve` rewrites the bindgened wasm into a
+    //   2. Glue extraction, then packaging: own mode writes `pkg/`
+    //      directly; hybrid mode runs `wasm-bindgen --keep-lld-exports`
+    //      so the LLD-emitted exports wasm-split's reachability walk
+    //      uses to identify chunk-only code survive.
+    //   3. `wasm-carve` rewrites the packaged wasm into a
     //      lean base + per-chunk wasms + a `__wasm_split.js` loader.
     //      Skippable with `--no-split`. Not skipped by default even
     //      when there is nothing to extract: outside release this is
     //      also the only pass that compacts the module, so skipping it
     //      trades packaging time for a much larger served wasm.
     //   4. `wasm-opt -Oz` runs LAST, per-file, on the base + every
-    //      chunk. wasm-pack ran it BEFORE wasm-bindgen which mangled
-    //      symbols wasm-split needed — that's why my earlier
-    //      website measurements showed 0 KB chunks even when the
-    //      lazy body was clearly extractable.
+    //      chunk. Run before the split it mangles the symbols wasm-split
+    //      matches on, and the chunks come out empty.
     let wrapper_pkg = build_dir.join("pkg");
     let original_wasm = target_dir
         .join("wasm32-unknown-unknown")
         .join(if opts.release { "release" } else { "debug" })
         .join(format!("{bin_name}.wasm"));
-    // premint × hydrate COMPOSES now: the SSR/SSG server binary is built
+    // premint × hydrate compose: the SSR/SSG server binary is built
     // with the same `--cfg idealyst_premint*` posture (build-ssr injects
-    // the cfgs and the wrapper links premint.css + arms the minted-class
+    // the cfgs and its wrapper links premint.css + arms the minted-class
     // guard), so server and client stamp identical deterministic `iy-*`
-    // classes and hydration's `classList.add` re-stamp is a no-op. The
-    // historical bail here refused the combination back when the server
-    // could only emit live-minted classes.
+    // classes and hydration's `classList.add` re-stamp is a no-op.
     // Everything after `cargo` is O(module size) and blind to whether
     // cargo actually produced a new module — see [`passes_skippable`].
     let stamp_file = build_dir.join(format!(".wasm-stamp-{key}"));
@@ -914,9 +877,10 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
         // A hot-patch base reads cargo's module ONCE: the bytes feed the
         // extraction here and the base prep below, and the base's symbol
         // tables (aliases, data symbols — read from the `linking` section
-        // the prep drops) are pulled on their own threads meanwhile. They
-        // were a second read of the whole module and two serial parses
-        // inside `hotpatch-base-prep` (CrewForge: 1.18 s of a 2.75 s floor).
+        // the prep drops) are pulled on their own threads meanwhile —
+        // inline they are a second read of the whole module and two serial
+        // parses inside `hotpatch-base-prep` (CrewForge: 1.18 s of a 2.75 s
+        // floor).
         let linked = if opts.hot_patch {
             let bytes = fs::read(&original_wasm)
                 .with_context(|| format!("read {}", original_wasm.display()))?;
@@ -1109,7 +1073,7 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
 
     if opts.premint {
         // Native dump build → `pkg/premint.css`. Written into the
-        // wrapper pkg BEFORE staging/sync so both the staged bundle and
+        // build's pkg BEFORE staging/sync so both the staged bundle and
         // the in-project `pkg/` carry it, and before `fingerprint_pkg`
         // so it gets content-addressed with the rest of the bundle.
         let css = timings
@@ -1323,9 +1287,6 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
             .hot_patch
             .then(|| original_wasm.with_extension("datasyms.tsv")),
         pkg_dir,
-        // No longer a generated crate — the per-app staging dir that
-        // holds `pkg/` and the premint dump. Field name kept so the
-        // display lines in `cmd/build.rs` don't churn.
         wrapper_dir: build_dir,
         bundle_dir,
         entry_js,
@@ -1406,8 +1367,8 @@ impl BaseSymbols {
 }
 
 /// Stage a deployable static-site bundle at `out_dir`. `pkg/` is
-/// populated separately by the caller, straight from the wasm-pack
-/// output dir — that way the project root never has to carry a `pkg/`
+/// populated separately by the caller, straight from the build's
+/// `pkg/` — that way the project root never has to carry a `pkg/`
 /// for the bundle's sake. `out_dir` is fully cleared first so stale
 /// files from a prior bundle (renamed wasm, removed assets) never
 /// linger.
@@ -1612,13 +1573,6 @@ pub fn default_index_html(title: &str, lib_name: &str) -> String {
     )
 }
 
-/// Read `index_path`, splice `<link rel="preload">` tags for every
-/// font in `paths` right before `</head>`, write it back. No-op when
-/// `paths` is empty — most projects don't declare preloads.
-///
-/// Mirrors the dev-http path: both call the same `font_preload_tags`
-/// + `inject_into_head` helpers so the dev loop and the deployed
-/// bundle preload the same set from the same TOML list.
 /// Splice the preminted stylesheet `<link>` into the staged
 /// `index.html` head. Same read-modify-write shape as the font-preload
 /// injector below; runs before gzip for the same reason.
@@ -1671,6 +1625,13 @@ pub fn premint_font_families(css: &str) -> String {
     seen.join(",")
 }
 
+/// Read `index_path`, splice `<link rel="preload">` tags for every
+/// font in `paths` right before `</head>`, write it back. No-op when
+/// `paths` is empty — most projects don't declare preloads.
+///
+/// Mirrors the dev-http path: both call the same `font_preload_tags`
+/// + `inject_into_head` helpers so the dev loop and the deployed
+/// bundle preload the same set from the same TOML list.
 fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -> Result<()> {
     let snippet = font_preload_tags(paths);
     if snippet.is_empty() {
@@ -1684,14 +1645,6 @@ fn inject_font_preloads_into_staged_index(index_path: &Path, paths: &[String]) -
     Ok(())
 }
 
-/// The staged-index relay step, gate included: `None` writes nothing at
-/// all.
-///
-/// The gate lives here rather than at the call site so it is reachable
-/// from a test. What it protects is not cosmetic — a deploy bundle that
-/// picked up a dev machine's relay port would ship an app that dials a
-/// developer's laptop, and every `idealyst build` path relies on this
-/// staying a no-op.
 /// Splice an arbitrary `<script>` into the staged `index.html` head.
 ///
 /// Same read-modify-write shape as the relay-URL injector, and it must
@@ -1706,6 +1659,14 @@ fn stage_head_script(index_path: &Path, script: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The staged-index relay step, gate included: `None` writes nothing at
+/// all.
+///
+/// The gate lives here rather than at the call site so it is reachable
+/// from a test. What it protects is not cosmetic — a deploy bundle that
+/// picked up a dev machine's relay port would ship an app that dials a
+/// developer's laptop, and every `idealyst build` path relies on this
+/// staying a no-op.
 fn stage_robot_relay_url(index_path: &Path, url: Option<&str>) -> Result<()> {
     let Some(url) = url else { return Ok(()) };
     inject_robot_relay_url_into_staged_index(index_path, url)
@@ -1838,8 +1799,9 @@ fn sync_and_inject_web_icons(project_dir: &Path, staged: &Path, cache_dir: &Path
     Ok(())
 }
 
-/// Drop wasm-pack housekeeping files from a staged `pkg/`. They're
-/// build artifacts that have no place in a deployed bundle:
+/// Drop npm-package housekeeping files (`.d.ts`, `package.json`,
+/// `.gitignore`, `README.md`) from a staged `pkg/`. They have no place
+/// in a deployed bundle:
 /// `package.json` makes some CDNs mis-guess directory MIME types,
 /// and `.d.ts` files just bloat the wire for browsers that don't
 /// touch them.
@@ -1970,7 +1932,7 @@ pub fn fingerprint_pkg(pkg_dir: &Path, lib_name: &str) -> Result<PkgFingerprint>
         // it (index.html is rewritten separately) and it links to nothing.
         // So it gets its OWN content hash rather than the build-wide one.
         //
-        // Sharing the build hash made the CSS URL rotate on every deploy
+        // Sharing the build hash would rotate the CSS URL on every deploy
         // that touched a single line of Rust, evicting a byte-identical
         // stylesheet from every browser cache. That defeats the point of
         // shipping styles as a separate asset: app code changes far more
@@ -2390,52 +2352,6 @@ fn feature_spec(name: &str) -> String {
     }
 }
 
-/// Profile settings wasm-split depends on, passed as `--config` rather
-/// than written into a manifest.
-///
-/// The generated wrapper used to carry these in its own
-/// `[profile.release]`. Building the app crate directly means the
-/// profile comes from the *app's* workspace, which the framework
-/// doesn't own and shouldn't edit — so they're injected per-invocation.
-/// Each is load-bearing:
-///
-/// * `lto = "off"` — `"fat"` LTO inlines `#[wasm_split]`-annotated
-///   functions back into their callers, putting the body in the main
-///   bundle and leaving the chunk a stub. wasm-opt's per-chunk pass
-///   recovers most of the size win anyway.
-/// * `codegen-units = 1` — fewer cross-unit indirections gives
-///   wasm-split's reachability walker more precision (it is pessimistic
-///   across CU boundaries).
-/// * `strip = "none"` — keeps the `name` section wasm-split's call-graph
-///   matching pairs functions by; wasm-opt strips it as a final step.
-/// * `debug = 0` — no DWARF. The splitter reads `name`, `linking` and
-///   `reloc.*` and never DWARF, so the `"limited"` this used to set only
-///   bought a bigger module for every post-cargo pass: on CrewForge
-///   146 MB of 232 MB, a 2.9 GB wasm-bindgen instead of 1.5 GB, and a
-///   cold release build of 306 s instead of 197 s, for byte-identical
-///   split output.
-///
-/// `[profile.dev.package."*"] opt-level = 3` optimizes DEPENDENCIES
-/// only (the glob excludes the app crate, so app iteration stays fast to
-/// compile). Without it, compute-heavy dependency crates — a CPU
-/// rasterizer's un-inlined inner loops — run 10-40x slower in dev.
-///
-/// The two dev-only settings beside it are pure iteration cost, and both
-/// override whatever the app's own workspace declares (that is what
-/// `--config` does — same as the opt-level line above):
-///
-/// * `debug` — cargo defaults dev to `2`, which on wasm means a dev
-///   bundle carries full DWARF with no sidecar to put it in. See [`DebugInfo`]; `--debuginfo full` restores
-///   cargo's default for a debugging session.
-/// * `lto = "off"` — `false` (cargo's dev default) still runs thin-LOCAL
-///   LTO across the crate's own codegen units. `-Ztime-passes` on the
-///   website's app crate attributes 0.63s per rebuild to it, buying
-///   nothing a dev build wants.
-///
-/// Note the app crate's own `opt-level` is deliberately NOT set: dropping
-/// it to 0 measured *slower* end-to-end (10.4s vs 9.1s on the website)
-/// and 30% larger, because unoptimized IR costs more to emit and link
-/// than the `-Oz` passes cost to run.
 /// Wall-clock attribution for the build pipeline.
 ///
 /// The web build is a chain of passes with wildly different cost
@@ -2748,6 +2664,51 @@ fn config_summary(opts: &BuildOptions) -> String {
     parts.join(", ")
 }
 
+/// Profile settings wasm-split depends on, passed as `--config` rather
+/// than written into a manifest.
+///
+/// The app crate is built directly, so the profile comes from the
+/// *app's* workspace, which the framework doesn't own and shouldn't edit
+/// — so they're injected per-invocation.
+/// Each is load-bearing:
+///
+/// * `lto = "off"` — `"fat"` LTO inlines `#[wasm_split]`-annotated
+///   functions back into their callers, putting the body in the main
+///   bundle and leaving the chunk a stub. wasm-opt's per-chunk pass
+///   recovers most of the size win anyway.
+/// * `codegen-units = 1` — fewer cross-unit indirections gives
+///   wasm-split's reachability walker more precision (it is pessimistic
+///   across CU boundaries).
+/// * `strip = "none"` — keeps the `name` section wasm-split's call-graph
+///   matching pairs functions by; wasm-opt strips it as a final step.
+/// * `debug = 0` — no DWARF. The splitter reads `name`, `linking` and
+///   `reloc.*` and never DWARF, so `debug = "limited"` only buys a
+///   bigger module for every post-cargo pass: on CrewForge 146 MB of
+///   232 MB, a 2.9 GB wasm-bindgen instead of 1.5 GB, and a cold release
+///   build of 306 s instead of 197 s, for byte-identical split output.
+///
+/// `[profile.dev.package."*"] opt-level = 3` optimizes DEPENDENCIES
+/// only (the glob excludes the app crate, so app iteration stays fast to
+/// compile). Without it, compute-heavy dependency crates — a CPU
+/// rasterizer's un-inlined inner loops — run 10-40x slower in dev.
+///
+/// The two dev-only settings beside it are pure iteration cost, and both
+/// override whatever the app's own workspace declares (that is what
+/// `--config` does — same as the opt-level line above):
+///
+/// * `debug` — cargo defaults dev to `2`, which on wasm means a dev
+///   bundle carries full DWARF with no sidecar to put it in. See [`DebugInfo`]; `--debuginfo full` restores
+///   cargo's default for a debugging session.
+/// * `lto = "off"` — `false` (cargo's dev default) still runs thin-LOCAL
+///   LTO across the crate's own codegen units. `-Ztime-passes` on the
+///   website's app crate attributes 0.63s per rebuild to it, buying
+///   nothing a dev build wants.
+///
+/// Under the default [`DevOpt::Optimized`] the app crate's own
+/// `opt-level` is deliberately NOT set: dropping
+/// it to 0 measured *slower* end-to-end (10.4s vs 9.1s on the website)
+/// and 30% larger, because unoptimized IR costs more to emit and link
+/// than the `-Oz` passes cost to run.
 fn profile_config_args(release: bool, debuginfo: DebugInfo, dev_opt: DevOpt) -> Vec<String> {
     let settings: Vec<String> = if release {
         [
@@ -2831,24 +2792,6 @@ fn ensure_entry_point(project_dir: &Path, bin_name: &str) -> Result<()> {
     )
 }
 
-/// Run `cargo build --target wasm32-unknown-unknown` against the
-/// app crate. When splitting, `-C link-args=--emit-relocs` is set so the
-/// rustc-emitted wasm carries the relocation info the splitter needs
-/// to identify indirect-call targets per chunk; a non-splitting build
-/// leaves them out, because nothing downstream reads them.
-///
-/// Flags reach cargo through `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated)
-/// rather than the space-separated `RUSTFLAGS`, because release builds add
-/// `--remap-path-prefix` flags that embed filesystem paths — a space in one
-/// would otherwise split it into two garbage arguments. Any user-supplied
-/// `RUSTFLAGS` is folded in, since cargo ignores it once the encoded form
-/// is set.
-/// The `-C link-args=…` entries the wasm link needs, as a pure
-/// function of the two switches that decide them.
-///
-/// Extracted so the combination is testable: it is three interacting
-/// flags whose wrong pairing is invisible in a build log and shows up
-/// as either a bloated release bundle or a hot patch that cannot link.
 /// The link args a non-splitting hot-patch base build passes, without
 /// the `link-args=` prefix `-C` needs.
 ///
@@ -2861,6 +2804,12 @@ pub fn hot_patch_link_args() -> Vec<String> {
         .collect()
 }
 
+/// The `-C link-args=…` entries the wasm link needs, as a pure
+/// function of the two switches that decide them.
+///
+/// Extracted so the combination is testable: it is three interacting
+/// flags whose wrong pairing is invisible in a build log and shows up
+/// as either a bloated release bundle or a hot patch that cannot link.
 fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |arg: &str| {
@@ -2889,8 +2838,8 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
         // A patchable base module. Dev-only, and only when the hot-patch
         // tier is actually armed.
         //
-        // The shape of this set is decided by one measured fact:
-        // wasm-bindgen runs its own dead-code pass, and it does not care
+        // The shape of this set is decided by one measured fact: in hybrid
+        // mode wasm-bindgen runs its own dead-code pass, and it does not care
         // what the linker kept. On the probe crate, rustc linked 2993
         // functions under `--no-gc-sections` and wasm-bindgen cut them to
         // 560, keeping only what the exports and the element segment
@@ -2926,8 +2875,8 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
         push("--growable-table");
         // The `linking` custom section, which survives wasm-bindgen and is
         // the only place a merged function's several names are still
-        // distinguishable. Dev builds are opt-level 0 so merging is rare,
-        // but a wrong pairing here is a silent mis-dispatch, so we keep
+        // distinguishable. Merging is rare in dev builds, but a wrong
+        // pairing here is a silent mis-dispatch, so we keep
         // the evidence rather than assume.
         push("--emit-relocs");
         // A PIC patch's prologue reads these to find the stack and the
@@ -2942,12 +2891,11 @@ fn wasm_link_args(wasm_split: bool, hot_patch: bool) -> Vec<String> {
 
 /// The module the page runs, as the hot-patch tier must read it.
 ///
-/// The wrapper's own `pkg/`, never the staged bundle's. Staging a
-/// full-stack project's bundle content-addresses every file
+/// The build's own `pkg/` (`wrapper_pkg`), never the staged bundle's.
+/// Staging a full-stack project's bundle content-addresses every file
 /// (`<lib>_bg.<hash>.wasm`) and may gzip it in place, so the plain name
-/// does not exist there. Reading it from the staged dir is how the first
-/// body edit on CrewForge was refused with "No such file or directory".
-/// The wrapper copy is the same bytes: staging only renames and
+/// does not exist there and a patch read from it fails with "No such
+/// file or directory". The build's copy is the same bytes: staging only renames and
 /// compresses, after packaging finished (own mode's glue pass, or
 /// wasm-bindgen and the neutralize pass in hybrid mode).
 pub fn served_wasm_path(wrapper_pkg: &Path, lib_name: &str) -> PathBuf {
@@ -2976,6 +2924,18 @@ pub fn patch_url_path(file_name: &str) -> String {
     format!("/pkg/hotpatch/{file_name}")
 }
 
+/// Run `cargo build --target wasm32-unknown-unknown` against the
+/// app crate. When splitting, `-C link-args=--emit-relocs` is set so the
+/// rustc-emitted wasm carries the relocation info the splitter needs
+/// to identify indirect-call targets per chunk; a non-splitting build
+/// leaves them out, because nothing downstream reads them.
+///
+/// Flags reach cargo through `CARGO_ENCODED_RUSTFLAGS` (`\x1f`-separated)
+/// rather than the space-separated `RUSTFLAGS`, because release builds add
+/// `--remap-path-prefix` flags that embed filesystem paths — a space in one
+/// would otherwise split it into two garbage arguments. Any user-supplied
+/// `RUSTFLAGS` is folded in, since cargo ignores it once the encoded form
+/// is set.
 fn cargo_build_wasm(
     reporter: &dev_events::Reporter,
     project_dir: &Path,
@@ -3024,18 +2984,17 @@ fn cargo_build_wasm(
         // Rebuild std so the panic-strip applies to it (not just the user
         // crates). `panic_abort` must be listed explicitly alongside `std`.
         //
-        // NOTE: `panic_immediate_abort` was promoted from a std/core *feature*
-        // to a real panic strategy in recent nightlies (rustc ~1.98): the old
-        // `-Z build-std-features=panic_immediate_abort` now `compile_error!`s
-        // in `core::panicking`. The replacement is the `immediate-abort` panic
-        // strategy, selected via `-Zunstable-options -Cpanic=immediate-abort`
-        // in RUSTFLAGS below (still requires `-Z build-std` to recompile core).
+        // `panic_immediate_abort` is a panic strategy on current nightlies
+        // (rustc ~1.98+), not a build-std feature —
+        // `-Z build-std-features=panic_immediate_abort` `compile_error!`s in
+        // `core::panicking`. It is selected via `-Zunstable-options
+        // -Cpanic=immediate-abort` in RUSTFLAGS below (still requires
+        // `-Z build-std` to recompile core).
         cmd.args(["-Z", "build-std=std,panic_abort"]);
     }
     // One `--features` list against the app crate. Framework features
     // are spelled `idealyst/<f>`, which cargo accepts because `idealyst`
-    // is a direct dependency of the app. The wrapper's parallel
-    // `[features]` forwarding block is gone entirely.
+    // is a direct dependency of the app.
     let mut features: Vec<String> = user_features.iter().map(|f| feature_spec(f)).collect();
     if hydrate {
         features.push("idealyst/hydrate".to_string());
@@ -3194,15 +3153,14 @@ fn cargo_build_wasm(
 
 /// The flags `wasm-bindgen --target web` gets beyond the target, by
 /// whether the splitter runs afterwards. Pure, so the decision is
-/// pinned by `wasm_bindgen_flag_tests` — it was wrong once, invisibly:
-/// nothing lazy was exercised in a dev session for weeks.
+/// pinned by `wasm_bindgen_flag_tests` — a wrong pairing is invisible in
+/// a build log.
 ///
 /// `--keep-lld-exports` rides BOTH paths, for two different reasons:
 ///
 /// * Splitting: without it wasm-bindgen strips the LLD-emitted exports
 ///   the splitter uses to identify per-chunk reachable code, and it
-///   conservatively keeps everything in main — which is what
-///   was happening to the website's bundle in the wasm-pack pipeline.
+///   conservatively keeps everything in main.
 /// * Not splitting: the inline `__wasm_split.js` wakes each lazy future
 ///   through the main module's `__indirect_function_table`, which
 ///   `cargo_build_wasm` asks LLD to export (`--export-table`) on exactly
@@ -3211,8 +3169,7 @@ fn cargo_build_wasm(
 ///   `main().__indirect_function_table.get(...)` throws `Cannot read
 ///   properties of undefined (reading 'get')`, and every
 ///   `#[component(lazy)]` in a dev session sits on its loading UI
-///   forever. Measured on CrewForge the day its 14 areas went lazy: 54
-///   exports, no table. The flag pins every export as a GC root, so the
+///   forever (CrewForge: 54 exports, no table). The flag pins every export as a GC root, so the
 ///   no-split module is larger than bindgen's own dead-code pass alone
 ///   would make it; that is the price of a working loader.
 ///
@@ -3223,9 +3180,9 @@ fn cargo_build_wasm(
 ///   hero-simulator chunk measured 469 bytes. A non-splitting build gets
 ///   demangled names, which is what a person wants in a stack trace.
 ///
-/// It does NOT take `--keep-debug`, which it used to on the belief that
-/// the splitter's symbol matching needs it. wasm-bindgen 0.2.128 passes
-/// the `name`, `linking` and `reloc.*` sections through without it; what
+/// It does NOT take `--keep-debug`: the splitter's symbol matching does
+/// not need it. wasm-bindgen 0.2.128 passes the `name`, `linking` and
+/// `reloc.*` sections through without it; what
 /// the flag keeps is DWARF, which the splitter never reads and the
 /// neutralize pass dropped anyway. On CrewForge it cost wasm-bindgen
 /// 2.9 GB / 7.7 s against 2.1 GB / 1.5 s without.
@@ -3234,10 +3191,10 @@ fn cargo_build_wasm(
 /// jump table is built by pairing the base's function names against the
 /// patch's, and they have to be MANGLED on both sides, since the patch is
 /// linked by wasm-ld and never sees wasm-bindgen at all. A demangled base
-/// pairs with nothing. It used to take `--keep-debug` too, unmeasured;
-/// base prep already drops the DWARF, so the flag kept
-/// nothing and only switched on walrus's per-instruction offset tracking
-/// — measured on CrewForge's base, 11.7 s / 6.2 GB with it and 5.7 s /
+/// pairs with nothing. It does not take `--keep-debug` either: base prep
+/// already drops the DWARF, so the flag would keep nothing and only switch
+/// on walrus's per-instruction offset tracking — measured on CrewForge's
+/// base, 11.7 s / 6.2 GB with it and 5.7 s /
 /// 5.6 GB without, byte-identical output.
 fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
     if hot_patch {
@@ -3249,8 +3206,8 @@ fn wasm_bindgen_flags(split: bool, hot_patch: bool) -> &'static [&'static str] {
     }
 }
 
-/// Run `wasm-bindgen --target web` to turn the rustc-emitted wasm into
-/// the JS-callable wasm-bindgen output. The flags are
+/// Hybrid mode: run `wasm-bindgen --target web` to turn the
+/// glue-extracted wasm into the JS-callable wasm-bindgen output. The flags are
 /// [`wasm_bindgen_flags`]'s decision.
 fn wasm_bindgen_build(
     reporter: &dev_events::Reporter,
@@ -3501,28 +3458,6 @@ fn clear_wasm_split_artifacts(pkg_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run the splitter (`wasm-carve`) against the wasm-bindgen output to extract
-/// `#[wasm_split]`-annotated functions into separate chunk wasms.
-///
-/// Inputs:
-/// - `original_wasm`: the rustc-emitted wasm (in the wrapper's
-///   `target/wasm32-unknown-unknown/<profile>/<lib>.wasm`). Carries
-///   the `linking` / `reloc.*` sections the splitter needs.
-/// - `pkg_dir`: the wasm-bindgen output directory. Contains
-///   `<lib>_bg.wasm` (the bindgened binary) and `<lib>.js` (the JS
-///   shim). After this fn returns, `<lib>_bg.wasm` is REPLACED by
-///   wasm-split's `main.wasm` and chunk wasms + a `__wasm_split.js`
-///   shim are added alongside.
-///
-/// The emitted `__wasm_split.js` uses some default placeholder URLs
-/// for the chunk wasm files (`/harness/split/...`); we rewrite those
-/// to relative paths that resolve against wherever the bundle is
-/// served. Same for its `import { initSync } from "./main.js"` —
-/// rewritten to `./<lib>.js` so it lands on the wasm-bindgen shim.
-///
-/// Skips silently when the wasm has no `#[wasm_split]` annotations
-/// (the splitter emits just the main module with no chunks; we detect
-/// that and leave the pkg dir alone).
 /// Strip wasm-bindgen 0.2.122's `*.command_export` wrappers from the
 /// bindgened wasm in place — without this, every JS↔wasm round trip
 /// (string marshal, closure invoke) re-runs `__wasm_call_ctors`, which
@@ -3563,6 +3498,22 @@ fn neutralize_command_export_wrappers(
     Ok(())
 }
 
+/// Run the splitter (`wasm-carve`) against the packaged module to extract
+/// `#[wasm_split]`-annotated functions into separate chunk wasms.
+///
+/// Inputs:
+/// - `original_wasm`: cargo's linked wasm
+///   (`<target dir>/wasm32-unknown-unknown/<profile>/<bin>.wasm`). Carries
+///   the `linking` / `reloc.*` sections the splitter needs.
+/// - `pkg_dir`: the packaged `pkg/`. Contains `<lib>_bg.wasm` and
+///   `<lib>.js` (the JS shim). After this fn returns, `<lib>_bg.wasm` is
+///   REPLACED by the split main module, and the chunk wasms plus a
+///   `__wasm_split.js` loader are written alongside.
+///
+/// The loader references chunks by `./`-relative URLs and imports
+/// `initSync` from `./<lib>.js`, so it resolves against wherever the
+/// bundle is served. A module with no `#[wasm_split]` annotations yields
+/// no chunks and a loader with no exports.
 fn run_wasm_split(
     reporter: &dev_events::Reporter,
     original_wasm: &Path,
@@ -3602,8 +3553,7 @@ fn run_wasm_split(
         .with_context(|| format!("write split main to {}", bindgened_wasm.display()))?;
 
     // Drop each chunk + module wasm into pkg_dir alongside the main.
-    // Naming mirrors what the CLI binary used to emit, so the
-    // generated JS shim's URLs still match.
+    // The names must match the loader URLs written below.
     let mut chunk_count = 0;
     for (idx, chunk) in output.chunks.iter().enumerate() {
         let name = format!("chunk_{idx}_{}.wasm", chunk.module_name);
@@ -3657,7 +3607,7 @@ fn run_wasm_split(
         )?;
     }
     // Wrap `fetch(url)` to resolve module-relative — without this
-    // the chunk URLs (rewritten to `./`) resolve against the page
+    // the `./` chunk URLs resolve against the page
     // URL, not against __wasm_split.js's own location.
     let shim = shim.replace(
         "const response = await fetch(url);",
@@ -3673,8 +3623,8 @@ fn run_wasm_split(
 }
 
 
-/// Mirror `wrapper_pkg/` → `project_pkg/`. We don't trust an OS-level
-/// symlink for this — the dev server's static-file logic uses
+/// Mirror the build's `pkg/` (`wrapper_pkg`) → `project_pkg/`. We don't
+/// trust an OS-level symlink for this — the dev server's static-file logic uses
 /// `is_file` checks that would follow the link but cache filenames,
 /// and on Windows symlinks need admin. Plain copy is robust and
 /// `pkg/` is small (a few hundred KB).
@@ -3685,13 +3635,13 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
             src.display()
         );
     }
-    // Clean slate — wasm-pack sometimes leaves stale files behind
+    // Clean slate — an earlier build can leave stale files behind
     // (e.g. renaming the lib renames the .js but leaves the old one).
     if dst.exists() {
         fs::remove_dir_all(dst).with_context(|| format!("remove stale {}", dst.display()))?;
     }
     fs::create_dir_all(dst).with_context(|| format!("create {}", dst.display()))?;
-    // Recurse so wasm-pack subdirs (notably `snippets/<crate>-<hash>/`
+    // Recurse so subdirs (notably `snippets/<crate>-<hash>/`
     // for `#[wasm_bindgen(inline_js = ...)]` blocks) come along.
     // Missing snippets/ shows up at runtime as a 404 for
     // `pkg/snippets/.../inline*.js` which the main shim's `import`
@@ -3703,19 +3653,10 @@ fn sync_pkg_dir(src: &Path, dst: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod regression_tests {
-    //! Regression coverage for how the app crate is invoked.
-    //!
-    //! This module used to assert on the *text* of a generated wrapper
-    //! Cargo.toml and lib.rs — that the wrapper carried a direct
-    //! `runtime-core` dep, that both boot paths named the same builtin
-    //! set, that the runtime-server feature reached `backend-web`. All
-    //! of that compensated for generated code being unchecked until
-    //! someone ran a build.
-    //!
-    //! Those went with the wrapper. The boot sequence is ordinary
-    //! compiled code in `idealyst::boot` now, so the compiler enforces
-    //! what string-matching approximated. What's left here is what the
-    //! compiler still can't see: the shape of the cargo invocation.
+    //! Regression coverage for the build's pure decisions — the shape of
+    //! the cargo invocation (features, profile, config key), the
+    //! pass-skip stamp, target-dir retirement, the entry-point check, and
+    //! bundle staging.
 
     use super::*;
     use std::io::Read;
@@ -3799,9 +3740,8 @@ mod regression_tests {
 
     /// wasm-split needs `lto = "off"` (fat LTO inlines `#[wasm_split]`
     /// bodies back into their callers, leaving stub chunks) plus the
-    /// symbol names `strip = "none"` keeps for call-graph matching. The wrapper
-    /// carried these in its own `[profile.release]`; they now have to be
-    /// injected per-invocation rather than written into a manifest the
+    /// symbol names `strip = "none"` keeps for call-graph matching. They
+    /// are injected per-invocation rather than written into a manifest the
     /// framework doesn't own.
     #[test]
     fn release_profile_config_preserves_what_wasm_split_needs() {
@@ -3952,10 +3892,9 @@ mod regression_tests {
         );
     }
 
-    /// Regression (CrewForge, 2026-10-08): a config change started a new
-    /// `idealyst-web-<key>` dir and the old one stayed forever
-    /// (`app-checkin`: 2.6 GB, three weeks stale). Now a slot moving to a
-    /// new key retires the dir it used before.
+    /// Regression: a config change started a new `idealyst-web-<key>` dir
+    /// and the old one stayed forever (CrewForge: 2.6 GB, three weeks
+    /// stale). A slot moving to a new key retires the dir it used before.
     #[test]
     fn regression_superseded_web_dirs_never_retired() {
         let root = tempfile::tempdir().unwrap();
@@ -4110,7 +4049,7 @@ mod regression_tests {
         assert_eq!(config_key(&a, Path::new("/project")), config_key(&b, Path::new("/project")));
     }
 
-    /// `--dev-opt optimized` is the historical posture: optimize
+    /// `--dev-opt optimized` (the default) optimizes
     /// DEPENDENCIES only — the `"*"` glob excludes workspace members, so
     /// the app crate stays fast to compile while compute-heavy deps don't
     /// run 10-40x slower.
@@ -4510,7 +4449,7 @@ mod regression_tests {
             !out.join("Cargo.lock").exists(),
             "Cargo.lock (and all *.lock) must NOT ship",
         );
-        // Bundling owns pkg/ — it gets populated from wasm-pack output
+        // Bundling owns pkg/ — it gets populated from the build's pkg/
         // by the caller, NOT scraped out of the project root. A stale
         // project-root pkg/ from a previous build must not leak in,
         // or deployments would ship outdated wasm.
@@ -5224,10 +5163,10 @@ mod fingerprint_tests {
     /// The preminted stylesheet must keep its URL across a code-only
     /// deploy.
     ///
-    /// It used to share the build-wide digest, so editing one line of Rust
-    /// rotated `premint.<hash>.css` even though the CSS bytes were
-    /// identical — every browser re-downloaded a stylesheet it already
-    /// had. That defeats the reason premint moves rules out of the wasm in
+    /// Regression: sharing the build-wide digest rotated
+    /// `premint.<hash>.css` on a one-line Rust edit even though the CSS
+    /// bytes were identical — every browser re-downloaded a stylesheet it
+    /// already had. That defeats the reason premint moves rules out of the wasm in
     /// the first place: styles change on a different (much slower)
     /// schedule than app code, and shipping them separately is only worth
     /// anything if they can be cached separately.
@@ -5619,14 +5558,12 @@ mod robot_relay_tests {
 mod wasm_bindgen_flag_tests {
     use super::wasm_bindgen_flags;
 
-    /// Regression (37bdef45): the no-split path dropped
-    /// `--keep-lld-exports` when it dropped the other two splitter
-    /// flags, and wasm-bindgen's gc then removed the
-    /// `__indirect_function_table` export that `cargo_build_wasm` had
+    /// Regression: the no-split path dropped `--keep-lld-exports` along
+    /// with the splitter-only flags, and wasm-bindgen's gc then removed
+    /// the `__indirect_function_table` export that `cargo_build_wasm` had
     /// asked LLD for on that very path. The inline lazy loader calls
     /// through that table, so every `#[component(lazy)]` in a dev
-    /// session sat on its loading UI forever. Nothing lazy was exercised
-    /// in dev for weeks, so nothing caught it.
+    /// session sat on its loading UI forever.
     #[test]
     fn regression_no_split_keeps_the_lld_exports_the_inline_loader_calls_through() {
         assert!(
@@ -5635,9 +5572,9 @@ mod wasm_bindgen_flag_tests {
         );
     }
 
-    /// And ONLY that one: `--keep-debug` and `--no-demangle` serve the
-    /// splitter's symbol matching, and a non-splitting build wants
-    /// bindgen's debug strip and demangled stack traces.
+    /// And ONLY that one: `--no-demangle` serves the splitter's symbol
+    /// matching, `--keep-debug` serves nothing, and a non-splitting build
+    /// wants bindgen's debug strip and demangled stack traces.
     #[test]
     fn no_split_does_not_carry_the_splitter_only_flags() {
         let flags = wasm_bindgen_flags(false, false);
@@ -5694,8 +5631,7 @@ mod wasm_link_args_tests {
     }
 
     /// A shipped bundle must not carry the patch scaffolding. The tell
-    /// is `--no-gc-sections`: it hands wasm-bindgen every function rustc
-    /// emitted, which is right for a base a patch links against and
+    /// is `--no-gc-sections`: it keeps every function rustc emitted, which is right for a base a patch links against and
     /// wrong for anything a browser downloads.
     #[test]
     fn a_normal_build_carries_no_hot_patch_flags() {

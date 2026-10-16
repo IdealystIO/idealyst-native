@@ -43,8 +43,9 @@ pub struct RunOptions {
     pub mode: RunMode,
     /// Framework-source resolution for the wrapper crate's deps.
     pub source: FrameworkSource,
-    /// Cargo features to enable on the build. `idealyst dev` passes
-    /// `runtime-core/dev` here so the Robot bridge auto-starts.
+    /// Cargo features to enable on the build. `idealyst dev` passes the
+    /// wrapper's `dev` feature (→ `runtime-core/dev`) here so the Robot
+    /// bridge auto-starts.
     pub user_features: Vec<String>,
     /// Environment variables to set on the spawned binary.
     /// `idealyst dev` plumbs `IDEALYST_BRIDGE_PORT_FILE` (and

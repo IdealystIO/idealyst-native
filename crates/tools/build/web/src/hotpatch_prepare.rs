@@ -1,6 +1,6 @@
 //! Make a freshly linked wasm patch loadable — without rewriting it.
 //!
-//! # What changed, and why
+//! # Why nothing is rewritten
 //!
 //! `wasm-ld --pie --experimental-pic` links a patch that imports what it
 //! does not define (measured on a CrewForge screen crate, ~3,600 of
@@ -14,15 +14,14 @@
 //! __wbindgen_placeholder__.* / other  few  wasm-bindgen's names, JS shims
 //! ```
 //!
-//! subsecond's loader supplies exactly one namespace — `env`, the base's
-//! exports plus `__memory_base`/`__table_base` — so this used to be a
-//! walrus pass turning every other import into a local stub that
-//! `call_indirect`s the base's table slot, and every `GOT` import into a
-//! constant. Each of those rewrites renumbers the module, so walrus had
-//! to parse and re-emit all of it: 0.7 s of every save on a Mac, 1.0 s in
-//! the devcontainer, for a 27 MB patch.
+//! A loader that supplies only `env` (subsecond's: the base's exports plus
+//! `__memory_base`/`__table_base`) forces every other import to be
+//! rewritten into a local stub and every `GOT` import into a constant.
+//! Each such rewrite renumbers the module, so the pass must parse and
+//! re-emit all of it — measured with walrus, 0.7 s of every save on a Mac,
+//! 1.0 s in the devcontainer, for a 27 MB patch.
 //!
-//! The page now loads the patch itself (`backend_web::hot_patch`) and can
+//! The page loads the patch itself (`backend_web::hot_patch`) and can
 //! supply ANY import. So nothing is rewritten: this module reads the
 //! imports (a few milliseconds), decides where each one comes from, and
 //! appends that decision to the module as a custom section — the
@@ -35,8 +34,8 @@
 //! * [`ImportSource::Slot`] — the base's function in that table slot,
 //!   passed as the function itself (`table.get(slot)`). Its identity is
 //!   the base's, so a `fn` pointer taken in the patch compares equal to
-//!   one taken in the base, and a call is a direct call rather than the
-//!   old stub's `call_indirect`;
+//!   one taken in the base, and a call is a direct call rather than a
+//!   `call_indirect`;
 //! * [`ImportSource::Global`] — a `GOT` entry: the base slot of a
 //!   function, or the address of a base `static`;
 //! * [`ImportSource::Glue`] — a web-glue import
@@ -49,9 +48,7 @@
 //!   module the page already has is refused and the page reloads;
 //! * [`ImportSource::Trap`] — a function that must never run (a
 //!   wasm-bindgen descriptor), or one whose signature the base disagrees
-//!   with. Calling it throws with the reason. The old stub trapped on
-//!   the same calls, through `call_indirect`'s signature check or the
-//!   null slot.
+//!   with. Calling it throws with the reason.
 //!
 //! # The two edits that remain
 //!
@@ -295,8 +292,7 @@ fn resolve_import(
     };
     // A base function, passed as itself — after checking the base agrees
     // about its signature: an import of the wrong type fails the WHOLE
-    // instantiation, where the old `call_indirect` stub trapped only on
-    // the call.
+    // instantiation, so a mismatch becomes a trap on the call instead.
     let slot = |slot: u32| -> ImportSource {
         match (func_sig.as_deref(), base.slot_sigs.get(&slot)) {
             (Some(want), Some(have)) if want != have => ImportSource::Trap(format!(
@@ -438,9 +434,9 @@ fn resolve_import(
 /// `__wasm_apply_global_relocs` the start function. It adds `__table_base`
 /// to every `GOT.func.internal.*` global — the address of a function the
 /// PATCH defines, which the linker can only write relative to the
-/// patch's own element segment. Dropped, those globals stay relative: on
-/// the lab, `<Option<u64> as Debug>::fmt` reached `format!` as fn pointer
-/// 0 and the first render trapped with "null function". With any
+/// patch's own element segment. Dropped, those globals stay relative —
+/// e.g. `<Option<u64> as Debug>::fmt` reaches `format!` as fn pointer 0
+/// and the first render traps with "null function". With any
 /// zero-initialized static the start is `__wasm_start`, calling that and
 /// `__wasm_init_memory` (which zero-fills the patch's `.bss`). Both touch
 /// only the patch's own globals and freshly grown memory.
@@ -1007,8 +1003,7 @@ mod tests {
     }
 
     /// A descriptor symbol runs only at bindgen time; the base has none.
-    /// It traps if called, saying what it is — where the old stub jumped
-    /// to the null slot.
+    /// It traps if called, saying what it is.
     #[test]
     fn a_wasm_bindgen_descriptor_traps() {
         let raw = patch(&[("__wbindgen_placeholder__", "__wbindgen_describe")]);
@@ -1078,8 +1073,7 @@ mod tests {
 
     /// The page passes a base function as ITSELF, and an import of the
     /// wrong type fails the whole instantiation. A signature the base
-    /// disagrees with becomes a trap on call — what the old stub's
-    /// `call_indirect` signature check did — and a matching one a slot.
+    /// disagrees with becomes a trap on call, and a matching one a slot.
     #[test]
     fn a_signature_the_base_disagrees_with_traps_instead_of_failing_the_load() {
         let raw = patch(&[("env", "_RNvCs_3app5other")]);

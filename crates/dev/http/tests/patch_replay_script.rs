@@ -148,7 +148,7 @@ fn a_stream_from_a_restarted_session_reloads_the_page() {
     assert_eq!(out["applied"], serde_json::json!([]), "{out}");
 }
 
-/// A booted module with no hot-patch applier keeps the old fallback:
+/// A booted module with no hot-patch applier falls back to a reload:
 /// the dev loop decided not to rebuild, so the page reloads.
 #[test]
 fn a_booted_page_without_the_applier_still_reloads() {

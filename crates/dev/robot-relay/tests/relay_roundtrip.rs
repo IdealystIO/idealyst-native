@@ -215,10 +215,9 @@ fn screenshot_response_is_saved_to_the_configured_dir() {
 /// Regression: a web app redials the relay when its socket drops (the
 /// same-origin `/__idealyst/relay` proxy goes away with a restarting app
 /// server). The new session takes over while the old one may still be
-/// noticing its dead socket — and the old session's teardown used to
-/// clear the app channel unconditionally, unplugging the NEW app: every
-/// verb then failed "no app connected to the relay" with the page
-/// connected.
+/// noticing its dead socket. If the old session's teardown cleared the
+/// app channel unconditionally it would unplug the NEW app: every verb
+/// then fails "no app connected to the relay" with the page connected.
 #[test]
 fn regression_an_old_session_closing_does_not_unplug_the_redialed_app() {
     let relay = start_relay();

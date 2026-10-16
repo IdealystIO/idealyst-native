@@ -286,10 +286,9 @@ pub fn run(events: Queue, opts: RunOptions) -> Result<(), host_terminal::RunErro
     )
 }
 
-/// The framework panics on first render without an installed theme (see
-/// [[project_install_theme_required]]); the panel uses none of its
-/// tokens, so the default light palette is as good as any. Public for
-/// tests that mount the panel without [`run`].
+/// The framework panics on first render without an installed theme; the
+/// panel uses none of its tokens, so the default light palette is as good
+/// as any. Public for tests that mount the panel without [`run`].
 pub fn install_theme() {
     // Idempotent: a later install replaces the active theme.
     idea_ui::install_idea_theme(idea_ui::light_theme());

@@ -1,5 +1,5 @@
 //! A headless, queryable platform backend (`runtime_scene::Host` + the
-//! 30 `runtime_vocabulary::caps::*Ops` traits) plus over-the-wire test
+//! `runtime_vocabulary::caps::*Ops` traits) plus over-the-wire test
 //! harnesses.
 //!
 //! The point: exercise the **runtime-server / hot-reload pipeline**
@@ -116,7 +116,7 @@ pub struct MockNode {
     pub safe_area_apply_count: u32,
     /// `keyboard_avoiding_view` opt-in received over the wire.
     pub keyboard_avoid: Option<runtime_shared::KeyboardAvoid>,
-    /// Scroll offset written via `Backend::set_node_scroll` (read back by
+    /// Scroll offset written via `ScrollOps::set_node_scroll` (read back by
     /// `node_scroll`). The mock treats every node as scrollable so
     /// navigator URL-sync scroll snapshot/restore is testable headlessly.
     pub scroll: (f32, f32),
@@ -157,10 +157,11 @@ pub struct MockBackend {
     roots: Vec<u64>,
     /// Total `finish` calls — a hot-reload re-render bumps this.
     pub finish_count: usize,
-    /// `Element::External` payloads the dev-client reconstructed from the
-    /// wire and dispatched here, keyed by node id as `(type_name,
-    /// payload)`. Lets tests assert the External-over-wire serde round-trip
-    /// landed with the right concrete payload. Stored in a side map (not
+    /// Scene-registry extension payloads the dev-client reconstructed from
+    /// the wire and dispatched to `ExternalOps::create_external`, keyed by
+    /// node id as `(type_name, payload)`. Lets tests assert the
+    /// extension-payload serde round-trip landed with the right concrete
+    /// payload. Stored in a side map (not
     /// `MockNode`) so `MockNode` stays `Debug` (`Rc<dyn Any>` isn't).
     #[allow(clippy::type_complexity)]
     external_payloads: HashMap<u64, (String, Rc<dyn std::any::Any>)>,
@@ -227,9 +228,9 @@ impl MockBackend {
             .find_map(|n| n.safe_area_sides.map(|s| (s, n.safe_area_apply_count)))
     }
 
-    /// The reconstructed `Element::External` payload for the first node
-    /// whose `type_name` contains `needle` (e.g. `"CodeBlockProps"`).
-    /// `None` means no External with that type reached the client with a
+    /// The reconstructed extension payload for the first node whose
+    /// `type_name` contains `needle` (e.g. `"CodeBlockProps"`).
+    /// `None` means no payload of that type reached the client with a
     /// deserialized payload — i.e. the over-the-wire serde didn't round-
     /// trip. Downcast the returned `Rc<dyn Any>` to the SDK's payload type
     /// to assert its contents.

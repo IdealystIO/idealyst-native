@@ -5,11 +5,6 @@
 //! surface (`Element`, `signal`, `memo`, `Signal`, the primitive value
 //! types) is named, so `app.rs` reads as ordinary author code with a
 //! single `use crate::prelude::*;`.
-//!
-//! The prelude exists because this crate used to be the DUAL-CORE proof:
-//! the same `app.rs` compiled against the old walker and against runtime
-//! v2, and the prelude was the only per-core wiring. With one core it is
-//! simply the crate's import surface.
 
 /// The authoring surface `app.rs` builds against.
 pub mod prelude {
@@ -19,7 +14,7 @@ pub mod prelude {
     // The robot watch surface: this crate enables
     // `runtime-vocabulary/robot`, so the app's `watch_signal` calls
     // register live entries the bridge's `read_signal` /
-    // `list_watched_signals` verbs (and robot-test's `assert_signal`)
+    // `list_watched_signals` verbs (and robot-test's `App::signal` assertions)
     // read.
     pub use runtime_vocabulary::robot::watch_signal;
     // Primitive value types (`overlay` placement/backdrop,

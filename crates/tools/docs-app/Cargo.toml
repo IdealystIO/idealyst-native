@@ -27,9 +27,9 @@ sidecar = ["dep:dev-server"]
 # wrapper crate.
 idealyst = { workspace = true }
 # The author surface. `runtime-core` is aliased to `runtime_core` at
-# the crate root (src/lib.rs) — one core, no feature switch.
+# the crate root (src/lib.rs).
 #
-# `catalog` is the mirror of the old `runtime-core/catalog`: it flips the
+# `catalog` flips the
 # emission gate in `runtime-macros` AND the vocabulary's `glue::__mcp`
 # anchor (which this root's glob re-export carries, so alias-resolved
 # `#[derive(IdealystSchema)]` / `recipe!` / `doc_scope!` emissions land

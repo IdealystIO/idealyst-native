@@ -12,7 +12,7 @@
 //! because the session thread drove the future with `pollster::block_on`
 //! on a thread that had no Tokio runtime context. After the fix,
 //! `dev_server::async_executor::install()` (called per session thread in
-//! `run_session_thread`) routes `runtime_shared::driver::spawn_async`
+//! `run_session_thread_newcore`) routes `runtime_shared::driver::spawn_async`
 //! through a current-thread Tokio runtime, so the socket finds its
 //! reactor.
 //!
@@ -46,7 +46,7 @@ fn one_shot_server() -> std::net::SocketAddr {
 
 /// THE regression test. Replicates the session-thread setup: a bare
 /// `std::thread` (no ambient runtime), the executor installed exactly as
-/// `run_session_thread` does, then app-style async work via
+/// `run_session_thread_newcore` does, then app-style async work via
 /// `spawn_async`. Before the fix this future panics at
 /// `tokio/net/tcp/stream.rs` ("no reactor running"); after it, the
 /// connect + read completes and we observe the byte.
@@ -54,7 +54,7 @@ fn one_shot_server() -> std::net::SocketAddr {
 fn regression_aas_session_async_has_reactor() {
     let addr = one_shot_server();
 
-    // Mirror `run_session_thread`: a fresh worker thread with no Tokio
+    // Mirror `run_session_thread_newcore`: a fresh worker thread with no Tokio
     // context, install the sidecar executor, then drive author async.
     let handle = std::thread::Builder::new()
         .name("aas-session-test_00000001".into())

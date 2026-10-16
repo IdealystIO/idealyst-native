@@ -45,17 +45,18 @@ pub struct RunOptions {
     pub source: FrameworkSource,
     /// If true, spawn the binary detached (stdin nulled, parent's
     /// launcher thread returns immediately so other dev targets can
-    /// launch). Used by `idealyst dev`. NOTE this no longer means the
-    /// app's lifetime is *decoupled* from the CLI's — the dev
-    /// orchestrator now links them bidirectionally: it sets
+    /// launch). Used by `idealyst dev`. NOTE this does not decouple the
+    /// app's lifetime from the CLI's — the dev orchestrator links them
+    /// bidirectionally: it sets
     /// `IDEALYST_LAUNCHER_PID` so the AppKit host's watchdog exits the app
     /// when the CLI dies, and it waits on the returned child so closing
     /// the app window tears the dev session down. One-shot `idealyst run
     /// macos` leaves this false — the user there expects a foreground
     /// process they can Ctrl-C.
     pub background: bool,
-    /// Cargo features to enable on the build. `idealyst dev` passes
-    /// `runtime-core/dev` here so the Robot bridge auto-starts.
+    /// Cargo features to enable on the build. `idealyst dev` passes the
+    /// wrapper's `dev` feature (→ `runtime-core/dev`) here so the Robot
+    /// bridge auto-starts.
     pub user_features: Vec<String>,
     /// Environment variables to set on the spawned binary.
     /// `idealyst dev` uses this to plumb `IDEALYST_BRIDGE_PORT_FILE`
@@ -71,12 +72,9 @@ pub struct RunArtifact {
     pub binary: PathBuf,
     /// `Some` in background mode — the still-running spawned
     /// [`Child`]. Foreground mode waits-and-drops, leaving `None`.
-    /// Pre-fix the caller never got a handle to the detached binary
-    /// and the dev orchestrator's Ctrl-C handler couldn't kill it,
-    /// so every `idealyst dev --macos` session leaked one
-    /// `nicho-portfolio-macos[-aas]` process per invocation. The
-    /// caller (`cli/cmd/dev.rs::launch_macos`) now pushes this into
-    /// the shared `children` Vec so the SIGINT handler reaches it.
+    /// The dev orchestrator pushes this into its shared `children` Vec
+    /// so the SIGINT handler can kill the detached binary — without the
+    /// handle every `idealyst dev --macos` session leaks the app process.
     pub child: Option<Child>,
 }
 
@@ -169,9 +167,8 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         // orchestrator's terminal input, but pipe stdout/stderr
         // through to the orchestrator so runtime-server-mode connection logs +
         // any apply-time panic from the macOS binary actually
-        // surface (pre-fix both were `Stdio::null()`, which made
-        // "nothing renders" debugging impossible — the binary
-        // would crash or log silently). Leave the child unwaited
+        // surface (nulled, a "nothing renders" crash is silent).
+        // Leave the child unwaited
         // so we can return; the returned `Child` handle goes into
         // the dev orchestrator's `children` Vec so Ctrl-C reaches
         // it.
@@ -630,8 +627,8 @@ mod tests {
     }
 
     /// The Info.plist must carry the macOS distribution keys from
-    /// `[..app.macos]` plus `CFBundleVersion` from `build_number` (it used to
-    /// be hardcoded `1`) — these gate Mac App Store acceptance.
+    /// `[..app.macos]` plus `CFBundleVersion` from `build_number` — these
+    /// gate Mac App Store acceptance.
     #[test]
     fn info_plist_emits_macos_distribution_keys() {
         let app = app_metadata(MacosMetadata {

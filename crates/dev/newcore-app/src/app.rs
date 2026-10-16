@@ -10,11 +10,9 @@
 use crate::prelude::*;
 use runtime_macros::{component, stylesheet, ui};
 
-// The app's stylesheet — P3c: theme tokens (the `color-surface`
-// background tracks the installed theme), a `size` variant, and a
-// `state hovered` interaction overlay. Core-agnostic like everything
-// else in this file: the macro emits the old `IntoStyleSource` impl or
-// the new `IntoStyleProp` impl depending on the build's core.
+// The app's stylesheet: theme tokens (the `color-surface` background
+// tracks the installed theme), a `size` variant, and a `state hovered`
+// interaction overlay.
 stylesheet! {
     pub Card<()> {
         base(_t) {
@@ -182,11 +180,9 @@ fn TodoRow(
 }
 
 // ===========================================================================
-// P3-set primitive demo (overlay / anchored_overlay / presence /
-// flat_list) — a second root, mounted by its own e2e tests so the
-// TodoApp op-log assertions stay undisturbed. Core-agnostic like
-// everything else in this file: the tags lower to the old primitives or
-// to the vocabulary glue depending on the build's core.
+// Primitive demo (overlay / anchored_overlay / presence / flat_list) —
+// a second root, mounted by its own e2e tests so the TodoApp op-log
+// assertions stay undisturbed.
 // ===========================================================================
 
 /// The demo's root signals, exposed so tests can drive mutations
@@ -197,7 +193,7 @@ pub struct DemoHandle {
     pub rows: Signal<Vec<Todo>>,
 }
 
-/// Build the P3-set demo tree plus its handle. Must run with the owning
+/// Build the primitive demo tree plus its handle. Must run with the owning
 /// world/scope ambient (tests wrap this in `World::enter`).
 pub fn build_demo() -> (Element, DemoHandle) {
     let modal_open = signal(false);
@@ -304,7 +300,7 @@ fn TodoApp(
     let remaining = memo(move || todos.get().iter().filter(|t| !t.done).count());
     // Robot watch: exposes the memo's live value to the bridge's
     // `read_signal`/`list_watched_signals` verbs (robot-test's
-    // `assert_signal`), via the prelude's re-export of the vocabulary
+    // `App::signal` assertions), via the prelude's re-export of the vocabulary
     // watch registry.
     watch_signal("remaining", remaining);
     ui! {

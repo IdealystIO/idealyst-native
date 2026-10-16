@@ -2,5 +2,5 @@
 //!
 //! The suite itself is `tests/registers_component.rs`, which `include!`s
 //! the body from `tests/shared/catalog_emission.rs`. This lib is
-//! intentionally empty — see `Cargo.toml` for why the suite needs its own
-//! crate rather than living in `mcp-catalog`.
+//! intentionally empty. `mcp-catalog`'s own `tests/registers_component.rs`
+//! compiles the same body (plus its round-trip and scanner tests).

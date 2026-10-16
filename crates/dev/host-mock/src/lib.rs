@@ -806,7 +806,7 @@ impl caps::TextOps for HostMock {
     }
 
     // create_text_with_id stays the trait default (`None`): dyn text
-    // exercises the legacy create+update fallback, like the old Minis.
+    // exercises the create+update fallback.
 }
 
 impl caps::ButtonOps for HostMock {

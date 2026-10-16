@@ -96,9 +96,8 @@ pub struct Args {
     #[arg(long)]
     pub new_core: bool,
 
-    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing this
-    /// fails with the migration pointer (`crate::core_mode`,
-    /// `docs/migrating-to-runtime-v2.md`).
+    /// Rejected with a pointer to `docs/migrating-to-runtime-v2.md`: there
+    /// is no other runtime to select (`crate::core_mode`).
     #[arg(long)]
     pub old_core: bool,
 

@@ -89,7 +89,7 @@ pub const RELOAD_SSE_URL: &str = "/__idealyst/reload";
 /// both servers, handed to [`ReloadSignal::page_ack`].
 ///
 /// This is how the terminal learns a save LANDED rather than merely that
-/// it was sent: the facts used to exist only in the browser's console.
+/// it was sent; otherwise the facts exist only in the browser's console.
 /// The page posts with `navigator.sendBeacon` — a CORS "simple" request,
 /// so the cross-origin full-stack stream needs no preflight, and a
 /// beacon sent from a page that is about to reload still goes out.
@@ -194,10 +194,9 @@ pub struct OverlayContext {
 /// when the project declares an icon block, so the dev loop's tag
 /// set matches what `build-web` ships in the deployed bundle.
 ///
-/// Empty string = no injection. The deliberately generic field name
-/// (rather than `icon_link_tags`) reflects the future direction —
-/// other manifest-driven head injections (meta viewport, OG tags,
-/// etc.) would chain into the same context.
+/// Empty string = no injection. The field name is deliberately generic
+/// (not icon-specific) so other manifest-driven head injections (meta
+/// viewport, OG tags, etc.) can chain into the same context.
 #[derive(Clone, Default)]
 pub struct HeadInjectionContext {
     pub html: String,

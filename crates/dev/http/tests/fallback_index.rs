@@ -2,7 +2,7 @@
 //!
 //! The bug: `idealyst dev --web` serves straight from the project root,
 //! so a project that ships no `index.html` (e.g. a freshly-written
-//! example) used to 404 at `/` — nothing to serve. `serve_static` now
+//! example) would 404 at `/` — nothing to serve. `serve_static`
 //! accepts a `fallback_index` HTML string and serves it whenever the
 //! root has no `index.html`, so dev works without hand-authored
 //! boilerplate. A project's own `index.html` still wins, and real asset

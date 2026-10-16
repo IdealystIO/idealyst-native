@@ -1,11 +1,10 @@
 //! Running a subprocess whose output belongs to the session.
 //!
-//! The dev loop's builds used to inherit the CLI's stdio, so cargo wrote
-//! straight to the terminal. That made its output impossible to show
-//! anywhere else, and impossible to hide: the interactive panel had to
-//! redirect the CLI's own stderr to a file to keep cargo's chatter off
-//! its screen. Captured here instead, every line becomes an event, and
-//! the plain sink prints it exactly as the subprocess would have.
+//! A build that inherits the CLI's stdio writes straight to the
+//! terminal, so its output can be neither shown anywhere else nor hidden
+//! (the interactive panel needs cargo's chatter off its screen).
+//! Captured here instead, every line becomes an event, and the plain
+//! sink prints it exactly as the subprocess would have.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};

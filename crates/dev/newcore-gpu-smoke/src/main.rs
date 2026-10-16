@@ -20,7 +20,7 @@
 //!   timer stages a write; committing it proves the dispatch-hook flush
 //!   route end-to-end on the live event loop. Prints
 //!   `[SMOKE-SELFTEST] committed=… views=…` and exits 0/1.
-//! - `NEWCORE_SMOKE_HEADLESS=<prefix>` (offscreen): renders the mounted
+//! - `NEWCORE_SMOKE_HEADLESS=<prefix>` (offscreen): renders the
 //!   mounted tree on a real wgpu device (Metal on macOS) via the
 //!   headless `Screenshotter`, presses the button through the wrapped
 //!   `on_click`, flushes, and captures before/after PNGs — pixel
@@ -122,8 +122,7 @@ pub fn app() -> Element {
                 .label("Reverse")
                 .on_press(move || rows.update(|r| r.iter().rev().copied().collect())),
         )
-        // Keyed list (anchored full-rebuild on this no-splice backend —
-        // the old walker's contract here too).
+        // Keyed list (anchored full-rebuild on this no-splice backend).
         .child(keyed(
             move || rows.get(),
             |n| *n,

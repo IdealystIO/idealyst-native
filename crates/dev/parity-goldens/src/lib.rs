@@ -1,61 +1,39 @@
-//! Frozen parity artifacts — the mechanism that let the runtime-v2
-//! migration's old-vs-new parity harnesses survive the deletion of the
-//! old core.
+//! Golden-file substrate for the backend parity suites.
 //!
-//! # The problem it solved
-//!
-//! Several backends were gated by *cross-core output identity*: the same
-//! logical scene rendered through the old walker and through the current
-//! runtime had to produce identical observable output — byte-identical
-//! SSR/email HTML, cell-identical terminal grids, pixel-identical CPU
-//! framebuffers, byte-identical Roku command streams, byte-identical
-//! wire snapshots. Those assertions were the strongest regression
-//! coverage the new core had, and every one of them needed the OLD core
-//! in the same process to produce the reference half.
-//!
-//! Deleting the old core would have deleted those suites with it and the
-//! coverage would have silently vanished.
-//!
-//! # The mechanism
-//!
-//! The reference half was frozen to a committed file while the old core
-//! was still here; the surviving assertion compares the CURRENT
-//! implementation against that file:
+//! Each consumer renders a scene with the current implementation and
+//! compares the observable output against a committed reference file:
+//! byte-exact SSR/email HTML, cell-exact terminal grids, pixel-exact CPU
+//! framebuffers (lossless RGBA8 PNG), byte-exact Roku command streams,
+//! and wire-snapshot JSON.
 //!
 //! ```ignore
 //! let goldens = Goldens::new(env!("CARGO_MANIFEST_DIR"));
 //!
 //! let out = render(scene());
-//! goldens.check_text("kitchen_sink.html", &out);  // the frozen-golden gate
+//! goldens.check_text("kitchen_sink.html", &out);
 //! ```
 //!
-//! `freeze_*` writes **only** under `IDEALYST_FREEZE_GOLDENS=1`;
-//! `check_*` always compares. The freeze call sites were the old-core
-//! render halves, and they are gone — a normal `cargo test` run is a
-//! golden comparison and nothing else.
+//! # Contract
 //!
-//! # Regeneration, and what it means after the deletion
+//! `check_*` always compares. `freeze_*` writes **only** under
+//! `IDEALYST_FREEZE_GOLDENS=1` and is a no-op otherwise, so a normal
+//! `cargo test` run is a golden comparison and nothing else.
 //!
-//! ```text
-//! IDEALYST_FREEZE_GOLDENS=1 cargo test -p <crate>
-//! ```
+//! The backend references are fixed: they were captured from an
+//! independent reference renderer that no longer exists, so no backend
+//! test calls `freeze_*` and they cannot be regenerated (dev-tui's panel
+//! goldens are the one freezable corpus). Rewriting
+//! one by hand (or by adding a freeze call) re-baselines it against the
+//! current implementation's own output — review that diff as the
+//! substance of the change, and never do it to turn a red test green.
 //!
-//! The freeze call sites were the OLD core's render halves, and the old
-//! core is deleted — so `IDEALYST_FREEZE_GOLDENS=1` can only ever
-//! re-baseline the artifacts against **the current implementation's
-//! output**. That is a deliberate re-baseline, not a regeneration: it
-//! discards the old core's testimony permanently and there is no way to
-//! get it back. Treat it like editing a golden by hand — review the
-//! diff as the substance of the change, and never do it to make a red
-//! test green.
+//! # Normalization
 //!
-//! # Node/id instability
-//!
-//! Nothing here normalizes. Normalization (sanctioned divergences,
-//! non-deterministic ids) is the *consumer's* job and must be applied
-//! to BOTH the frozen text and the actual before comparing — freeze the
-//! normalized form if the raw form is unstable, and say so in the
-//! consumer's `tests/goldens/README.md`.
+//! Nothing here normalizes beyond one trailing newline on text files.
+//! Normalization (sanctioned divergences, non-deterministic ids) is the
+//! *consumer's* job and must be applied to BOTH the reference and the
+//! actual before comparing — freeze the normalized form if the raw form
+//! is unstable, and say so in the consumer's `tests/goldens/README.md`.
 
 use std::path::{Path, PathBuf};
 

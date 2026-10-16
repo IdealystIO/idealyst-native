@@ -1033,9 +1033,9 @@ pub const PATCH_LINK_ARGS: &[&str] = &[
     // functions we want are precisely the ones only the jump
     // table will ever reach.
     "--no-gc-sections",
-    // No DWARF in the linked patch. walrus drops it on the
-    // resolve emit anyway, so the served module never carried
-    // any; linking it only cost time. Measured on CrewForge:
+    // No DWARF in the linked patch. The served copy strips it
+    // anyway (`hotpatch_patch::strip_debug_sections`), so
+    // linking it only costs time. Measured on CrewForge:
     // link 0.73 -> 0.34 s, linked file 92 -> 63 MB (less for
     // resolve to read). The `name` section is not debug info
     // and survives, which is what the jump table pairs on. The

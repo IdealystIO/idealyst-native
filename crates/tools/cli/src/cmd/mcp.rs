@@ -237,8 +237,8 @@ pub fn run(args: Args) -> Result<()> {
             // Expand each root: a project directory yields itself, a
             // workspace root yields every member carrying
             // `[package.metadata.idealyst]`. This is what makes a bare
-            // `idealyst mcp` work at a monorepo root — it used to fail
-            // here and leave the server serving an empty catalog.
+            // `idealyst mcp` work at a monorepo root instead of serving an
+            // empty catalog.
             let mut projects: Vec<std::path::PathBuf> = Vec::new();
             let mut expand_errors: Vec<String> = Vec::new();
             for root in &roots {
@@ -421,7 +421,7 @@ pub fn run(args: Args) -> Result<()> {
 /// The refresh command for the scanned catalog: this binary's
 /// `catalog-json --scan` over `projects`, and the crate directories to
 /// watch — every member the scan reads, not only the projects, since a
-/// refresh no longer costs a build. `None` (with the reason on stderr)
+/// refresh costs no build. `None` (with the reason on stderr)
 /// when the scan cannot be planned; the caller then compiles the catalog
 /// as before.
 struct ScannedCatalogSource {
@@ -495,7 +495,7 @@ enum CatalogSource {
 /// feature) across the whole graph, so the catalog is always complete —
 /// every `#[component]` plus dependency-provided entries (icon sets, …).
 /// There is no auto-discovered "prebuilt project `catalog` bin" fast path:
-/// projects no longer scaffold such a bin, and one built from a project's
+/// projects don't scaffold such a bin, and one built from a project's
 /// static `catalog` feature couldn't see dependency-only entries anyway.
 /// Use `--from-bin` for the explicit lock-free / no-toolchain case.
 fn resolve_catalog_source(
@@ -578,12 +578,10 @@ fn run_install(args: InstallArgs) -> Result<()> {
 /// Build the project's catalog the same way the server does, for
 /// `--check`.
 ///
-/// `--check` used to lint `ResolvedCatalog::build()` — the CLI process's
-/// OWN `inventory` slice, which is empty, because the CLI links no app
-/// crates and is not built with the `catalog` feature. So the gate
-/// reported "OK — 0 components" and exited 0 for every project on earth,
-/// and could never have failed. A CI gate that cannot fail is worse than
-/// no gate: it reports success for a check that never ran.
+/// Not `ResolvedCatalog::build()`: that is the CLI process's OWN
+/// `inventory` slice, which is empty (the CLI links no app crates and is
+/// not built with the `catalog` feature), so a gate over it would report
+/// "OK — 0 components" for every project and could never fail.
 fn check_catalog(
     project_roots: Vec<std::path::PathBuf>,
     cwd: Option<std::path::PathBuf>,

@@ -1,14 +1,10 @@
 //! Cross-platform runtime-server-client run-loop.
 //!
-//! The original runtime-server-iOS implementation lived entirely in
-//! `examples/hello-ios-runtime-server/src/lib.rs` and bundled together a few
-//! genuinely platform-specific concerns (the `ios_main` C entry,
-//! `dispatch_async_f` main-thread scheduling, iOS-specific layout
-//! pass) with a much larger pile of platform-agnostic logic
+//! The platform-agnostic half of a native runtime-server client
 //! (WebSocket connect/reconnect, inbound channel drain, message
-//! dispatch). This module is the platform-agnostic pile, lifted into
-//! the shared `runtime-server-shell-native` crate so iOS, Android, and
-//! desktop hosts can all consume it.
+//! dispatch), shared so iOS, Android, and desktop hosts all consume
+//! one implementation. Platform-specific concerns (C entry points,
+//! main-thread scheduling, layout passes) stay in each platform shell.
 //!
 //! The split between this and the platform shell:
 //!
@@ -26,10 +22,10 @@
 //!
 //! ## Endpoint resolution
 //!
-//! The shell does NOT discover the dev-server itself — discovery was
-//! historically mDNS / Bonjour, which was unreliable across networks
-//! and required platform-specific permissions (iOS `NSBonjourServices`,
-//! Android `MulticastLock`). Instead the CLI bakes the endpoint URL
+//! The shell does NOT discover the dev-server itself — mDNS / Bonjour
+//! discovery is unreliable across networks and needs platform-specific
+//! permissions (iOS `NSBonjourServices`, Android `MulticastLock`).
+//! Instead the CLI bakes the endpoint URL
 //! into the wrapper build via `IDEALYST_DEV_ENDPOINT=ws://host:port`
 //! and the wrapper passes the resolved URL straight into
 //! [`RuntimeServerShell::spawn`]. See [`resolve_endpoint`].
@@ -80,8 +76,8 @@ pub fn endpoint_or_panic() -> String {
 /// every time.
 ///
 /// `client` is `Rc<RefCell<...>>` because the host can hand out
-/// references for re-entrant access (e.g. `backend_mut()` after a
-/// batch apply, to run a layout pass).
+/// references for re-entrant access (e.g. reaching the backend after
+/// a batch apply, to run a layout pass).
 pub struct RuntimeServerShell<B: AllCaps + 'static> {
     pub client: Rc<RefCell<RuntimeServerClient<B>>>,
     inbound: mpsc::Receiver<DevToApp>,
@@ -120,12 +116,10 @@ pub struct RuntimeServerShellOptions {
     /// Shipped in `AppToDev::Hello.viewport`; the sidecar plugs it
     /// into `RecordingViewOps::frame()` so author code reading
     /// `page_ref.with(|h| h.frame())` sees the *real* native window
-    /// size instead of the hardcoded `393×800` fallback. Pre-fix
-    /// every native runtime-server shell shipped `None`, so welcome's planet-
-    /// orbit math (and any other code that reads the viewport)
-    /// rendered for a phantom 393×800 mobile canvas — visible as
-    /// off-aligned content on any client whose window isn't that
-    /// exact size. iOS / Android wrappers should fill this from
+    /// size instead of the hardcoded `393×800` fallback (with `None`,
+    /// any code that reads the viewport renders for a phantom 393×800
+    /// mobile canvas — off-aligned content on any client whose window
+    /// isn't that exact size). iOS / Android wrappers should fill this from
     /// `UIView.bounds` / the root `View`'s size after layout; the
     /// macOS wrapper supplies the `NSWindow.contentView.bounds`.
     pub viewport: Option<wire::WireViewport>,
@@ -229,15 +223,13 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
     /// **Why the `RequestFrame`:** animation cadence is
     /// **client-driven** on the sidecar side. `tick_animations` only
     /// runs in response to an inbound `RequestFrame`; without one,
-    /// timeline tweens (welcome's intro fade-in, page-bg dark wash)
-    /// never start and the AV.bind subscriptions never emit
-    /// `SetAnimated*` commands. Pre-fix every native runtime-server shell
-    /// (iOS / Android / macOS) had its session sitting at "ready"
-    /// while the user saw a blank initial frame — only the web
-    /// shell sent `RequestFrame` (from its raf pump in
-    /// `backend-web::dev_transport`). Pushing one here on every
-    /// drain tick pairs the inbound + outbound rates 1:1, mirrors
-    /// the web behavior, and costs ~16 bytes per tick over the WS.
+    /// timeline tweens never start and the AV.bind subscriptions never
+    /// emit `SetAnimated*` commands — the session sits at "ready" while
+    /// the user sees a blank initial frame. The web shell sends
+    /// `RequestFrame` from its raf pump in `backend-web::dev_transport`;
+    /// pushing one here on every drain tick pairs the inbound + outbound
+    /// rates 1:1, mirrors the web behavior, and costs ~16 bytes per tick
+    /// over the WS.
     ///
     /// `dt_ms` defaults to 16 — the typical 60fps cadence the
     /// drain timer is scheduled at. If a caller drives the drain
@@ -249,9 +241,6 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         self.drain_with_dt_ms(16)
     }
 
-    /// As [`Self::drain`] but lets the caller specify the
-    /// `dt_ms` value used in the trailing `RequestFrame`. Useful
-    /// for callers whose drain cadence isn't ~16ms.
     /// One-stop main-thread tick: report viewport, drain inbound
     /// (which sends `RequestFrame`), drive a layout pass on the
     /// backend if anything was applied. Single call covers every
@@ -263,15 +252,8 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
     /// animation pacer the sidecar needs). Calling it on a layout
     /// pass with no new commands skips the `run_layout` invocation.
     ///
-    /// Pre-fix every platform shell wrote its own version of this:
-    /// iOS called `shell.drain()` then `backend_mut().run_layout()`
-    /// in its dispatch trampoline; Android called `shell.drain()`
-    /// then conditionally `backend_mut().run_layout()`; macOS called
-    /// `shell.drain()` and relied on `finish()` to layout-as-it-
-    /// applies. None of them reported viewport per-tick (only the
-    /// initial Hello) — Android grew that path latest after we
-    /// noticed welcome's planet orbit using the 393×800 fallback.
-    /// All three converge on this single entry point now.
+    /// Every platform shell uses this single entry point rather than
+    /// hand-rolling its own drain + layout + viewport sequence.
     pub fn tick(&self, viewport: Option<wire::WireViewport>) -> bool {
         if let Some(vp) = viewport {
             self.report_viewport(vp);
@@ -285,7 +267,7 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         self.report_user_activity(runtime_shared::user_activity::count());
         let had_inbound = self.drain();
         if had_inbound {
-            // `Backend::run_layout` is a no-op by default; backends
+            // `LifecycleOps::run_layout` is a no-op by default; backends
             // whose `finish()` synchronously applies frames (macOS,
             // web) leave it at the default. iOS + Android override
             // to drive the deferred path their normal scheduler
@@ -356,6 +338,9 @@ impl<B: AllCaps + 'static> RuntimeServerShell<B> {
         self.last_reported_activity.set(count);
     }
 
+    /// As [`Self::drain`] but lets the caller specify the
+    /// `dt_ms` value used in the trailing `RequestFrame`. Useful
+    /// for callers whose drain cadence isn't ~16ms.
     pub fn drain_with_dt_ms(&self, dt_ms: u32) -> bool {
         let mut msgs: Vec<DevToApp> = Vec::new();
         while let Ok(msg) = self.inbound.try_recv() {
@@ -398,11 +383,9 @@ fn apply_dev_msg<B: AllCaps + 'static>(client: &mut RuntimeServerClient<B>, msg:
             // A protocol mismatch means the commands that follow may
             // fail to decode or replay into the wrong backend calls —
             // the classic "blank screen after a wire bump" footgun.
-            // The legacy `transport::connect_and_run` path already
-            // warned here; the worker-thread shell (iOS / Android /
-            // macOS) used to swallow it entirely. Match the legacy
-            // behavior so the failure is diagnosable rather than a
-            // silent no-render. Rebuilding via `idealyst dev` re-bakes
+            // Warn (as `transport::connect_and_run` does) so the
+            // failure is diagnosable rather than a silent no-render.
+            // Rebuilding via `idealyst dev` re-bakes
             // a matching client.
             if protocol_mismatch(protocol_version) {
                 eprintln!(

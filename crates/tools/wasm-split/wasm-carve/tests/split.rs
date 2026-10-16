@@ -671,10 +671,10 @@ fn without_customs(bytes: &[u8], drop: impl Fn(&str) -> bool) -> Vec<u8> {
     m.finish()
 }
 
-/// Regression: own mode packages a module WITHOUT `linking` (wasm-bindgen
-/// used to carry it through). The splitter read data symbols only from the
-/// packaged module, found none, and `--data-prune` silently zeroed nothing —
-/// lazy-payload-split's main kept the chunk's 512 KiB. The symbol table now
+/// Regression: own mode packages a module WITHOUT `linking` (only
+/// wasm-bindgen carries it through). Reading data symbols only from the
+/// packaged module finds none, and `--data-prune` silently zeroes nothing —
+/// lazy-payload-split's main kept the chunk's 512 KiB. The symbol table
 /// falls back to the rustc module's.
 #[test]
 fn regression_data_prune_works_on_a_packaged_module_without_linking() {
@@ -715,7 +715,7 @@ fn synthetic_export_names_are_short_and_dodge_collisions() {
 }
 
 /// Regression: a failed split-module fetch must wake the Rust future with
-/// `false`. The old glue logged and returned, so `load()` awaited forever.
+/// `false`; logging and returning leaves `load()` awaiting forever.
 #[test]
 fn make_load_glue_signals_callback_on_failure() {
     let glue = wasm_carve::MAKE_LOAD_JS;

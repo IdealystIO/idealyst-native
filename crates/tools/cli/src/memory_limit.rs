@@ -2,8 +2,7 @@
 //!
 //! Long-running CLI modes (`idealyst mcp`, `idealyst dev`,
 //! `idealyst serve`) are stdio-attached children of an editor /
-//! agent host. If one of them leaks — and there's a known suspect
-//! around the runtime-server + MCP catalog paths — the parent host
+//! agent host. If one of them leaks, the parent host
 //! buffers stdio and OOMs along with the child. A hard cap on the
 //! CLI's memory turns a silent multi-GB drift into a loud,
 //! debuggable abort.
@@ -33,29 +32,19 @@
 //!
 //! ### Why not `setrlimit(RLIMIT_AS)` on Linux
 //!
-//! It was the original Linux strategy, and it silently broke that
-//! contract: `RLIMIT_AS` is **inherited across fork/exec**, so every
-//! build subprocess the CLI spawns ran under the CLI's 4 GB cap.
-//! `idealyst dev --web` on this repo's website died with
-//! `memory allocation of 160 bytes failed` + SIGABRT — wasm-bindgen
-//! needs ~6.4 GB of address space for the website's 419 MB debug
-//! wasm, hit the inherited 4 GB ceiling, and aborted on the next
-//! (tiny) allocation. The same latent failure sat behind all ~30
-//! `Command::new("cargo")` sites across the build tools.
-//!
-//! Root-caused 2026-07-23. The fix is deliberately here rather than
-//! at the call sites: sprinkling [`unlimit_child`] over 30 spawns
-//! leaves every *future* spawn re-broken, and it kept Linux
-//! observably different from macOS (where the cap never touched
-//! children because the poll thread isn't inherited). One mechanism,
-//! same observable behavior on both platforms.
+//! `RLIMIT_AS` is **inherited across fork/exec**, so every build
+//! subprocess the CLI spawns would run under the CLI's cap — a debug
+//! website build's wasm-bindgen needs ~6.4 GB of address space and
+//! aborts on a 4 GB inherited ceiling with `memory allocation of 160
+//! bytes failed`. The poll thread is not inherited, so one mechanism
+//! gives the same observable behavior on Linux and macOS, and no
+//! `Command::new` site has to remember [`unlimit_child`].
 //!
 //! Trade-off accepted: RSS polling loses `RLIMIT_AS`'s exact
 //! abort-at-the-allocation-site precision, and measures resident
 //! rather than reserved memory. Both are fine here — RSS is the
 //! better proxy for "will this OOM the host" anyway (address-space
-//! reservations aren't what crater the machine), and macOS has run
-//! on exactly these semantics since the cap was introduced.
+//! reservations aren't what crater the machine).
 //!
 //! ## Aborting must not leave the session's servers behind
 //!
@@ -106,11 +95,10 @@
 //!
 //! A command that runs the web build pipeline (`build --web`, `run`
 //! on web, `docs`, and `dev` with a web target) does legitimately heavy
-//! work in THIS process: the command_export neutralize and wasm-split
-//! parse the linked module with walrus, and the hot-patch tier's base
-//! prep parses the debug module. On CrewForge that is 3.7 GB (base prep)
-//! to 4.0 GB (a one-worker split) — at or past the 4096 MB default, which
-//! is sized for catching leaks in `mcp`/`serve`, not for this work.
+//! work in THIS process: the command_export neutralize, wasm-split and
+//! the hot-patch tier's base prep all read the linked (debug) module,
+//! which on a large app can approach the 4096 MB default — sized for
+//! catching leaks in `mcp`/`serve`, not for this work.
 //!
 //! So those commands call [`raise_for_web_pipeline`], which lifts the cap
 //! to half of the machine's memory, never below the default
@@ -127,13 +115,10 @@
 //! host — and leaves the other half to the compiler children the cap
 //! never covers.
 //!
-//! There used to be a fixed 8192 MB ceiling on the raise. The app team
-//! it was written for raised their cap by hand four times in three weeks
-//! (4096 → 8192 → 12288 → 15360) as their module grew, and each value was
-//! stale within a week. The fix for that was on the other side: the
-//! splitter (`wasm-carve`) no longer builds an in-memory copy of the
-//! program per output, so its peak is a few hundred MB whatever the app's
-//! size or the core count.
+//! There is no fixed ceiling on the raise: a fixed value goes stale as
+//! an app's module grows. The splitter (`wasm-carve`) keeps no in-memory
+//! copy of the program per output, so its peak is a few hundred MB
+//! whatever the app's size or the core count.
 //!
 //! The cap is an atomic the monitor thread re-reads every poll, so the
 //! raise takes effect on the running monitor rather than spawning a
@@ -161,8 +146,7 @@
 /// trips the cap well before it can crater the host — while leaving
 /// headroom for the CLI's legitimately heavy in-process work:
 /// `wasm-split` on a debug-build wasm parses + rewrites the whole
-/// module in memory and peaks past 2 GB on large apps (the website's
-/// ~42 MB post-bindgen debug wasm aborted at the old 2 GB cap).
+/// module in memory and can peak past 2 GB on large apps.
 pub const DEFAULT_LIMIT_MB: u64 = 4096;
 
 /// Env var name for override. `0` disables.
@@ -829,15 +813,14 @@ fn current_rss_bytes() -> Option<u64> {
 /// Lift the address-space cap for a child that legitimately reserves huge
 /// address space. Headless Chromium is the motivating case: V8 reserves
 /// multi-GB virtual regions (pointer-compression cage) at startup, so under
-/// an inherited `RLIMIT_AS` it dies INSTANTLY and silently — dev's headless
-/// web client spawned and vanished with no output (root-caused live
-/// 2026-07-20). The child raises its soft cap back to the hard limit between
-/// fork and exec. No-op off Linux.
+/// an inherited `RLIMIT_AS` it dies INSTANTLY and silently. The child raises
+/// its soft cap back to the hard limit between fork and exec. No-op off
+/// Linux.
 ///
-/// Since [`apply`] no longer sets `RLIMIT_AS` (see module docs), this is now
-/// belt-and-braces: it only matters when something *outside* the CLI — the
-/// user's shell, a CI runner, a systemd unit — imposed a soft cap that a
-/// memory-hungry child can't live within.
+/// [`apply`] never sets `RLIMIT_AS` (see module docs), so this only matters
+/// when something *outside* the CLI — the user's shell, a CI runner, a
+/// systemd unit — imposed a soft cap that a memory-hungry child can't live
+/// within.
 pub fn unlimit_child(cmd: &mut std::process::Command) {
     #[cfg(target_os = "linux")]
     {
@@ -925,11 +908,9 @@ mod tests {
         }
     }
 
-    // The bug this module was re-engineered for: `apply` used to
-    // `setrlimit(RLIMIT_AS, 4GB)`, which fork/exec inherits, so every build
-    // subprocess ran under the CLI's leak cap. `idealyst dev --web` aborted
-    // in wasm-bindgen ("memory allocation of 160 bytes failed", SIGABRT) —
-    // it needs ~6.4 GB for the website's 419 MB debug wasm. Asserts the cap
+    // Regression: a cap set via `setrlimit(RLIMIT_AS)` is inherited by
+    // every build subprocess — `idealyst dev --web` aborted in wasm-bindgen
+    // ("memory allocation of 160 bytes failed", SIGABRT). Asserts the cap
     // never touches the rlimit that children inherit.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
@@ -1010,9 +991,9 @@ mod tests {
         panic!("grandchild {grandchild} was still running after the tree kill");
     }
 
-    /// The regression this registry exists for: the cap used to abort
-    /// with the session's servers still running, re-parented to init
-    /// and still holding their ports.
+    /// The regression this registry exists for: aborting on the cap with
+    /// the session's servers still running, re-parented to init and still
+    /// holding their ports.
     ///
     /// Both halves in one test on purpose — the registry is a global,
     /// and two tests writing it would race under cargo's thread pool.

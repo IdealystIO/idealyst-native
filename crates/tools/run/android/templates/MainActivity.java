@@ -58,8 +58,8 @@ public class MainActivity extends FragmentActivity {
 
         // Robot bridge relay (dev only): `idealyst dev` bakes the relay URL
         // into the manifest as `IdealystRobotRelayUrl` meta-data and sets up an
-        // `adb reverse` tunnel. Hand it to Rust BEFORE `attach` so the bridge's
-        // walker dials the host relay instead of self-hosting. Absent in
+        // `adb reverse` tunnel. Hand it to Rust BEFORE `attach` so the bridge
+        // dials the host relay instead of self-hosting. Absent in
         // release builds, so this is a no-op there.
         try {
             android.os.Bundle meta = getPackageManager()
@@ -86,10 +86,9 @@ public class MainActivity extends FragmentActivity {
 
     /**
      * Vestigial: with the NoActionBar theme the system ActionBar
-     * never dispatches here. Kept so the legacy
-     * `RustActionBarHelper.dispatchHomePress` path compiles; new
-     * screen-level toolbars are built inline in
-     * `tab_drawer::attach_initial`.
+     * never dispatches here, and `RustActionBarHelper.dispatchHomePress`
+     * always returns false. Screen-level toolbars are built inline by
+     * the navigator helpers (`navigators/helpers/android`).
      */
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {

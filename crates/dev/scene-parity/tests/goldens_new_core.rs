@@ -5,9 +5,8 @@
 //! closed `goldens_newcore/` override set (cross-effect firing order).
 //! See `src/new_core.rs` for the mechanism.
 //!
-//! The goldens were frozen from the old walker before it was deleted;
-//! `tests/goldens.rs` (the walker-side half that generated them) went
-//! with it.
+//! The goldens are a fixed reference with no generator (see the crate
+//! docs).
 
 use std::collections::BTreeSet;
 
@@ -90,13 +89,9 @@ golden_test!(
 golden_test!(dispose_order_when_spliced, "dispose_order_when", Mode::Spliced);
 
 /// The scenario registry is FROZEN: this literal is the (name, modes)
-/// inventory the old walker's registry carried when the goldens were
-/// generated, transcribed from the deleted `src/scenarios.rs`. It used
-/// to be checked live against that registry
-/// (`new_core_registry_matches_old`); with the walker gone the frozen
-/// list is the surviving half — it still catches a scenario being
-/// dropped, renamed, or silently having a mode removed, which is the
-/// failure mode the mirror test existed to prevent.
+/// inventory the goldens were recorded for. It catches a scenario being
+/// dropped, renamed, or silently having a mode removed — which would
+/// otherwise just stop checking that golden.
 const FROZEN_SCENARIO_REGISTRY: &[(&str, &[Mode])] = &[
     ("when_toggle", &[Mode::Anchored, Mode::Spliced]),
     ("when_dedup_extra_signal", &[Mode::Anchored, Mode::Spliced]),

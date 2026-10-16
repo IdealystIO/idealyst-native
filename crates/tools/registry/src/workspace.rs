@@ -262,10 +262,10 @@ impl Workspace {
     ///
     /// That is every normal and build dependency, and every VERSIONED
     /// dev-dependency whose target is part of this release (`releasing`).
-    /// `cargo package` resolves a versioned dev-dep like any other; during
-    /// the 2026-09-24 release `wire` (dev-dep `runtime-macros`, versioned via
-    /// the workspace dep) was packaged before the new `runtime-macros` was
-    /// uploaded and the run died.
+    /// `cargo package` resolves a versioned dev-dep like any other, so
+    /// packaging `wire` (dev-dep `runtime-macros`, versioned via the
+    /// workspace dep) before the new `runtime-macros` is uploaded kills the
+    /// run.
     ///
     /// A dev edge to a crate NOT being released is dropped: its current
     /// version is already in the registry and the floor still names it, so it

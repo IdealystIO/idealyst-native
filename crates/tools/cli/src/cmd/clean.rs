@@ -373,7 +373,7 @@ mod tests {
         (app, source)
     }
 
-    /// Regression (CrewForge, 2026-10-08): `clean` looked for
+    /// Regression (CrewForge): `clean` looked for
     /// `target/idealyst-web`, a name no build has used since the web dir
     /// became `idealyst-web-<key>`, and knew nothing of the dev-server or
     /// MCP builds — so it reclaimed nothing from any of them.

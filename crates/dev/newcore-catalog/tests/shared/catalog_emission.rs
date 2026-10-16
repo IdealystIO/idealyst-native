@@ -1,4 +1,4 @@
-// End-to-end catalog-emission suite — **shared by both cores**.
+// End-to-end catalog-emission suite.
 //
 // A `#[component]`-annotated function in this file should appear in
 // `catalog::entries()` at runtime, with its doc comment captured and
@@ -13,50 +13,40 @@
 //
 // # Why this file is `include!`d rather than a test target
 //
-// The catalog has **two** inventory anchors, one per lowering (see
-// `runtime_core::__mcp` / `runtime_vocabulary::glue::__mcp`), and only
-// one of them used to be tested. Proving they emit the same inventory
-// means compiling this SAME source under both lowerings:
+// Two test targets compile this same source:
 //
-// - old core: `crates/mcp/catalog/tests/registers_component.rs`
-//   (`cargo test -p mcp-catalog`) — `runtime_core` is the real crate,
-//   `#[component]` emits `::runtime_core::__mcp`. This is the leg that
-//   disappears with `runtime-core`, which is why the shared body lives
-//   on the new-core side.
-// - new core: `crates/dev/newcore-catalog/tests/registers_component.rs`
-//   (`cargo test -p newcore-catalog`) — `extern crate runtime_core as
-//   runtime_core;`, `#[component]`'s emission is retargeted to
-//   `::runtime_vocabulary::glue::__mcp` while the NON-retargeted
-//   emissions (`#[derive(IdealystSchema)]`, `#[idealyst_tool]`,
-//   `recipe!`, `doc_scope!`) resolve `::runtime_core::__mcp` through the
-//   facade root. Both anchors re-export the same `mcp-catalog`
-//   instance, so a single inventory must result — pinned by
-//   [`catalog_inventory_is_identical_across_cores`], whose expected
-//   value is a literal in this shared source and therefore asserted
-//   verbatim on both legs.
+// - `crates/mcp/catalog/tests/registers_component.rs`
+//   (`cargo test -p mcp-catalog`), which adds the JSON round-trip and
+//   source-scanner parity tests on top;
+// - `crates/dev/newcore-catalog/tests/registers_component.rs`
+//   (`cargo test -p newcore-catalog`).
 //
-// mcp-catalog cannot host the new-core leg itself: `runtime-core`
-// depends (transitively) on `mcp-catalog`, so a non-dev dep would be a
-// cargo cycle, and a *dev*-dep can't be optional — an unconditional one
-// would enable `runtime-macros/new-core` for the old leg too
-// (proc-macro features unify graph-wide).
+// Both are named `registers_component` because the inventory
+// fingerprint compares `module_path!()`s, which for an integration test
+// is the target name.
 //
-// Everything in here is core-agnostic: `runtime_core::…` is either the
-// real old core or the facade alias, and the catalog surface is reached
-// through the `__mcp` anchor rather than a direct `mcp-catalog` dep (the
-// new-core leg only sees the crate through the anchor).
+// The catalog has **two** inventory anchors: `#[component]`'s emission
+// is retargeted to `::runtime_vocabulary::glue::__mcp`, while the
+// NON-retargeted emissions (`#[derive(IdealystSchema)]`,
+// `#[idealyst_tool]`, `recipe!`, `doc_scope!`) resolve
+// `::runtime_core::__mcp` through the facade root. Both anchors
+// re-export the same `mcp-catalog` instance, so a single inventory must
+// result — pinned by [`catalog_inventory_is_identical_across_cores`],
+// whose expected value is a literal in this source.
+//
+// The catalog surface is reached through the `__mcp` anchor rather than
+// a direct `mcp-catalog` dep, so the suite needs nothing beyond the
+// author-facing facade.
 
 use runtime_core::{
     component, idealyst_tool, jsx, recipe, ui, ChildList, Element, IdealystSchema, IntoElement,
 };
 
-/// The catalog crate, reached through whichever core is in scope — this
-/// is the anchor the emissions themselves resolve.
+/// The catalog crate, reached through the facade's `__mcp` anchor — the
+/// anchor the emissions themselves resolve.
 use runtime_core::__mcp as catalog;
 
-/// Stub body for components whose only job is to register. Same source
-/// on both cores: `view(children)` returns the old `Bound<ViewHandle>`
-/// or the glue `GlueView`, and `IntoElement` is implemented for both.
+/// Stub body for components whose only job is to register.
 ///
 /// Deliberately NOT a `ui!` body — `democomponent` asserts an EMPTY
 /// `composes` list, so the stub must contribute no component-position
@@ -133,8 +123,8 @@ pub fn jsx_fragmented() -> Element {
     stub_view()
 }
 
-/// Generic container used by `nested_host` to exercise the walker's
-/// recursion into a component's children block (`Nest() { ChildA() … }`).
+/// Generic container used by `nested_host` to exercise the `composes`
+/// extractor's recursion into a component's children block (`Nest() { ChildA() … }`).
 #[derive(Default)]
 pub struct NestProps {
     pub children: Vec<Element>,
@@ -615,7 +605,7 @@ fn sdks_table_indexes_non_ui_capability_crates() {
         assert_eq!(s.category, catalog::SdkCategory::Data, "{required} is a data crate");
     }
 
-    // The component library + an Element::External primitive are tagged.
+    // The component library + a scene-registry extension SDK are tagged.
     assert_eq!(by_name("idea-ui").category, catalog::SdkCategory::Ui);
     assert_eq!(by_name("webview").kind, catalog::SdkKind::External);
 
@@ -842,7 +832,7 @@ fn positional_params_captured_in_order() {
     );
 }
 
-/// Phase 3b: `IdealystSchema` derive should produce a
+/// `IdealystSchema` derive should produce a
 /// `PropsSchemaEntry` whose fields carry per-field docs + the
 /// `#[schema(constraint = "...")]` hint.
 #[allow(dead_code)]
@@ -892,7 +882,7 @@ fn param_records_type_short_name_for_join() {
     assert_eq!(entry.params[0].type_short_name, "BadgeProps");
 }
 
-/// Phase 3c: a `#[idealyst_tool]` fn should land in the
+/// A `#[idealyst_tool]` fn should land in the
 /// `ToolEntry` slice with its parameters captured the same way a
 /// `#[component]` records them.
 #[idealyst_tool]
@@ -1214,13 +1204,9 @@ fn struct_schema_also_emits_type_entry() {
 /// pick up both `reset` and `bump_by` with their docs and parameters.
 ///
 /// **Inline props, not `props: &CounterProps`** — deliberately: the
-/// legacy explicit-props `#[method]` shape rides the old `Bindable<H>`
-/// (which closes over the old `Element`) and is a *named compile error*
-/// on the new core, so the same-source form has to be the inline one
-/// (`crates/runtime/macros-expand/src/lib.rs`, the `#[method]` deferral). The
-/// method body likewise writes `set(get() + n)` rather than `update`,
-/// whose closure shape differs between the cores
-/// (`docs/migrating-to-runtime-v2.md`, "Testing and the robot bridge").
+/// explicit-props `#[method]` shape is a named compile error
+/// (`crates/runtime/macros-expand/src/lib.rs`, the `#[method]` shape
+/// check); `#[method]` requires the inline-props form.
 #[component]
 pub fn counter(initial: i32) -> Element {
     let _ = initial;
@@ -1296,7 +1282,7 @@ fn animated_macros_emit_animation_entries() {
 }
 
 // -----------------------------------------------------------------------------
-// Recipes target ANY entity (phase 3) — not just components. A recipe
+// Recipes target ANY entity — not just components. A recipe
 // for a free function must surface via `recipes_for`, and the cross-kind
 // `resolve_entity` must tag names with their kind.
 // -----------------------------------------------------------------------------
@@ -1409,8 +1395,8 @@ fn catalog_json_round_trips_through_build_from_json() {
     use catalog::ResolvedCatalog;
 
     // `Value: Display` renders JSON, so the round-trip needs no
-    // serde_json dep of its own (the new-core leg reaches the catalog
-    // only through the `__mcp` anchor).
+    // serde_json dep of its own (the suite reaches the catalog only
+    // through the `__mcp` anchor).
     let json_str = catalog::catalog_json().to_string();
     let rebuilt = ResolvedCatalog::build_from_json(&json_str)
         .expect("build_from_json should accept catalog_json output");
@@ -1525,16 +1511,15 @@ fn catalog_json_round_trips_through_build_from_json() {
 }
 
 // -----------------------------------------------------------------------------
-// Cross-core inventory identity.
+// Inventory identity across the two anchors.
 //
-// The two cores emit through DIFFERENT anchors (`runtime_core::__mcp` vs
-// `runtime_vocabulary::glue::__mcp`, plus the facade root for the
-// non-retargeted derive/tool/recipe/scope emissions). This suite compiles
-// from one shared source under both lowerings, so the resulting inventory
-// must be identical — and because the expected value below is a literal in
-// that shared source, both legs assert the SAME string. A retarget that
-// dropped, duplicated, or reshaped any emission moves this fingerprint on
-// exactly one leg.
+// The emissions go through DIFFERENT anchors (`runtime_vocabulary::glue::__mcp`
+// for `#[component]`, the facade root's `runtime_core::__mcp` for the
+// non-retargeted derive/tool/recipe/scope emissions). Both must land in the
+// one `mcp-catalog` inventory, and because the expected value below is a
+// literal in this shared source, both host crates assert the SAME string. A
+// retarget that dropped, duplicated, or reshaped any emission moves this
+// fingerprint.
 //
 // Deliberately excluded from the fingerprint: `file` and `line`. `file!()`
 // reports the path by which this file was `include!`d, which differs
@@ -1546,7 +1531,7 @@ fn catalog_json_round_trips_through_build_from_json() {
 /// Every macro-EMITTED slice, rendered as sorted, stable lines. The
 /// framework's hand-curated static tables (primitives / utilities /
 /// macros / states / guides / sdks / icon_sets) live inside the catalog
-/// crate itself and are core-independent by construction, so they are
+/// crate itself and are independent of the emission path, so they are
 /// covered by the per-slice tests above rather than pinned here (adding a
 /// primitive must not have to touch this literal).
 fn emitted_inventory_fingerprint() -> String {

@@ -5,17 +5,17 @@
 //! registrations are present, and (b) is built with `runtime-core/catalog`
 //! on so the `#[component]` macro actually *emits* those registrations.
 //!
-//! Rather than make every project carry that binary + an `catalog` feature
-//! (the old scaffold did), the CLI generates a throwaway wrapper crate
-//! under `target/idealyst/<project(s)>/catalog/` — the same place and
-//! shape as the per-platform `{web,ios,android}` wrappers. The wrapper
+//! Rather than make every project carry that binary + a `catalog` feature,
+//! the CLI generates a throwaway wrapper crate under
+//! `target/idealyst/<project(s)>/catalog/` — the same place and shape as
+//! the per-platform native wrappers. The wrapper
 //! path-deps the project and turns on `runtime-core/catalog`; Cargo's
 //! feature unification then builds `runtime-macros` with emission on for
 //! the *entire* graph, so the project's components register even though
 //! the project declares no `catalog` feature itself.
 //!
 //! This is the mechanism that lets `idealyst mcp` work against any
-//! project — old or new — with zero per-project boilerplate.
+//! project with zero per-project boilerplate.
 //!
 //! ## Several projects, one catalog
 //!
@@ -26,11 +26,9 @@
 //!
 //! That is what makes `idealyst mcp` useful in a monorepo: pointed at a
 //! cargo workspace root, [`resolve_project_roots`] discovers every member
-//! carrying `[package.metadata.idealyst]` and they are wrapped together.
-//! Before this, a workspace root simply failed to parse as a project and
-//! the server served an EMPTY catalog with only a line on stderr to say
-//! why — indistinguishable, to a client, from a project with no
-//! components.
+//! carrying `[package.metadata.idealyst]` and they are wrapped together,
+//! rather than failing to parse as a project and serving an EMPTY catalog
+//! that a client can't tell from a project with no components.
 //!
 //! ## Force-linking dependency component crates
 //!
@@ -61,11 +59,10 @@
 //! `target/` when the framework is a local path, otherwise the target
 //! directory **cargo itself reports for the project's workspace**
 //! (`cargo metadata`'s `target_directory`, which honours
-//! `CARGO_TARGET_DIR` and `build.target-dir`). It used to be
-//! `<crate dir>/target`, which for a workspace member is a brand-new
-//! `target/` inside the source tree (`crates/ui-shared/target/`) that an
-//! anchored `/target` ignore rule does not cover, holding a second full
-//! copy of the dependency graph per member the editor extension opened.
+//! `CARGO_TARGET_DIR` and `build.target-dir`) — never `<crate dir>/target`,
+//! which for a workspace member is a brand-new `target/` inside the source
+//! tree that an anchored `/target` ignore rule does not cover, holding a
+//! second full copy of the dependency graph per member.
 //!
 //! Cargo never deletes a superseded compilation unit, and rustc only
 //! garbage-collects sessions *inside* one `incremental/<crate>-<hash>`
@@ -276,7 +273,6 @@ fn metadata_target_dir(meta: &Value) -> Option<PathBuf> {
 /// more than the catalog needs.
 ///
 /// This is what makes a bare `idealyst mcp` work at a workspace root.
-/// Previously that errored and the server degraded to an empty catalog.
 pub fn resolve_project_roots(root: &Path) -> Result<Vec<PathBuf>> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("canonicalize {}", root.display()))?;
@@ -328,7 +324,7 @@ fn workspace_metadata(dir: &Path) -> Result<Value> {
         .with_context(|| format!("parse cargo metadata for {}", manifest_path.display()))
 }
 
-/// Pure core of [`discover_workspace_projects`], unit-testable against a
+/// Pure core of [`resolve_project_roots`]'s workspace scan, unit-testable against a
 /// synthetic `cargo metadata` document.
 ///
 /// Returns member directories sorted by path, so the generated wrapper is
@@ -1086,14 +1082,10 @@ fn dep_has_normal_kind(dep: &Value, host_filtered: bool) -> bool {
 /// True if a package's manifest declares a dependency named
 /// `runtime-core` (any kind) — the marker that it may host components.
 ///
-/// This matched TWO spellings during the runtime-v2 migration, when the
-/// author surface briefly lived in a `runtime-facade` package: matching
-/// only `runtime-core` silently stopped force-linking every migrated
-/// component library (idea-ui, idea-theme, icons-lucide, …), so
-/// `idealyst mcp` / `catalog-json` / `export` saw an empty dependency
-/// slice — the components compiled but their `inventory::submit!` ctors
-/// were never linked in. One spelling again; the regression test below
-/// still pins the behavior.
+/// A miss here is silent: the components compile but their
+/// `inventory::submit!` ctors are never linked in, so `idealyst mcp` /
+/// `catalog-json` / `export` see an empty dependency slice. The
+/// regression test below pins the behavior.
 fn pkg_depends_on_core(pkg: &Value) -> bool {
     pkg.get("dependencies")
         .and_then(|d| d.as_array())
@@ -1456,7 +1448,7 @@ mod tests {
         assert!(cargo.contains("my-app = { path ="), "cargo: {cargo}");
         // Standalone so the parent workspace doesn't claim it.
         assert!(cargo.contains("[workspace]"));
-        // Regression (CrewForge, 2026-10-08: a 16 GB `idealyst-mcp/`): the
+        // Regression (CrewForge: a 16 GB `idealyst-mcp/`): the
         // catalog binary is only run, never debugged — no DWARF in its
         // objects or incremental caches.
         assert!(cargo.contains("[profile.dev]\ndebug = 0\n"), "{cargo}");
@@ -2160,7 +2152,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Regression (CrewForge, 2026-10-08: 174 caches / 33 GB in one
+    /// Regression (CrewForge: 174 caches / 33 GB in one
     /// sidecar): every extraction now builds through `build_extractor`,
     /// which records its units under the wrapper's own name and prunes the
     /// sidecar to the union of every recorded extractor. A graph change

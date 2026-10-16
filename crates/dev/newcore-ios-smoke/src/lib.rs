@@ -511,8 +511,8 @@ mod entry {
     use backend_ios::newcore::NewCoreApp;
 
     thread_local! {
-        /// The mounted app must outlive `ios_main` returning —
-        /// same retention convention as the old wrapper's `OWNER` slot.
+        /// The mounted app must outlive `ios_main` returning (dropping it
+        /// unmounts); `ios_teardown` takes it.
         static APP: RefCell<Option<NewCoreApp>> = const { RefCell::new(None) };
     }
 

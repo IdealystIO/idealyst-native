@@ -10,9 +10,9 @@
 //! * an export `X_command_export` is pointed at the function named `X`.
 //!
 //! wasm-bindgen 0.2.128 emits no such wrappers, so on a current toolchain
-//! this finds nothing and hands the input back — where the walrus version
-//! parsed and re-emitted the whole module (1.4 GB on CrewForge) to change
-//! nothing.
+//! this finds nothing and hands the input back — where an IR pass
+//! (walrus) would parse and re-emit the whole module (1.4 GB on
+//! CrewForge) to change nothing.
 
 use std::{borrow::Cow, collections::HashMap};
 

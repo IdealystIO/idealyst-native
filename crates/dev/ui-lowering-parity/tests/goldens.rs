@@ -1,14 +1,12 @@
-//! Phase-1 gate: the DIRECT lowering against the goldens captured from
-//! the PRE-slot-rewrite emitter.
+//! Emission gate: the `ui!` lowering against goldens captured from the
+//! emitter before the slot-list rewrite.
 //!
-//! These goldens are the whole point of the phase-1 ordering. The
-//! slot-list rewrite changes *when* a dynamic prop expression is
-//! evaluated (hoisted, in source order, instead of wherever the builder
-//! chain happened to splice it), and nothing else may change. A suite
-//! that only compared the rewritten lowering against itself would be
-//! satisfied by a uniformly-wrong emitter; comparing against a frozen
-//! recording of the old one is what makes "behavior-preserving"
-//! falsifiable.
+//! The slot-list emission decides *when* a dynamic prop expression is
+//! evaluated (hoisted, in source order), and nothing observable may
+//! differ from the frozen recording. A suite that only compared the
+//! emitter against itself would be satisfied by a uniformly-wrong
+//! emitter; comparing against an independent frozen recording is what
+//! makes "behavior-preserving" falsifiable.
 //!
 //! Regenerate with `UPDATE_UI_PARITY_GOLDENS=1 cargo test -p
 //! ui-lowering-parity` — and only after reviewing the diff, because

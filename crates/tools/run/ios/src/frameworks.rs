@@ -13,12 +13,10 @@
 //! (CoreMedia/CoreVideo) fail even earlier — at link time — because their
 //! functions are direct undefined symbols.
 //!
-//! Previously the framework list was hardcoded to the camera demo's set
-//! (AVFoundation/CoreMedia/CoreVideo) in both the device pbxproj template and
-//! the simulator `swiftc` invocation, so a screen-capture app silently
-//! shipped without ReplayKit. The fix mirrors how Android already derives its
-//! per-SDK Kotlin/Java sources: each SDK declares the frameworks it needs in
-//! its own `Cargo.toml`,
+//! So the list is never hardcoded (in the device pbxproj template or the
+//! simulator `swiftc` invocation). Like Android's per-SDK Kotlin/Java
+//! sources, each SDK declares the frameworks it needs in its own
+//! `Cargo.toml`,
 //!
 //! ```toml
 //! [package.metadata.idealyst.ios]

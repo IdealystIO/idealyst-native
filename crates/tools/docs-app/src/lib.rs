@@ -29,7 +29,7 @@
 //! - `lib.rs` (this) — `app()` entry + the boot registration seams.
 //! - `catalog.rs` — pure catalog → `CatalogModel` view-model mapping (unit-tested).
 //! - `routes.rs` — the single catalog root route + URL-encoded entry routing.
-//! - `shell.rs` — sidebar + detail-page components (`EntryPage`, `FieldsTable`, `CodePanel`, …).
+//! - `shell.rs` — sidebar + detail-page components (`entry_page`, `FieldsTable`, `CodePanel`, …).
 //! - `styles.rs` — local chrome stylesheets (lifted from idea-ui-docs).
 
 use std::cell::RefCell;
@@ -85,8 +85,7 @@ fn model() -> Rc<CatalogModel> {
 ///   animations tables render the SDK's `<table>`/`<tr>`/`<td>`.
 ///
 /// Registration is mandatory: an unregistered payload **panics at
-/// realize** (the scene contract fails loud — the pre-v2 walker rendered
-/// a placeholder box instead).
+/// realize** (the scene contract fails loud).
 ///
 /// Registry-generic over the scene `Host`, so ONE seam serves the web
 /// boot, the SSG crawl, the native hosts, and the GPU desktop host — each
@@ -124,10 +123,9 @@ pub fn scene_app() -> Element {
     app()
 }
 
-/// Wrap a screen body in a `Screen`. The `title` used to drive the drawer
-/// chrome's native header bar; the swap/outlet model has no navigator
-/// chrome (the app owns its layout), so the Screen carries no options —
-/// the helper is kept so screen closures still document their display
+/// Wrap a screen body in a `Screen`. The swap/outlet model has no
+/// navigator chrome (the app owns its layout), so the `title` is unused;
+/// it stays in the signature so screen closures document their display
 /// title next to the body they build.
 fn titled(title: String, el: Element) -> Screen {
     let _ = title;
@@ -141,11 +139,9 @@ pub fn app() -> Element {
     // window: signal creation outside `World::enter` panics, and the
     // sidebar's toggle only writes the signal from its handler.
     theme::init();
-    // Align the framework's `Lg` breakpoint with the sidebar pin width the
-    // old drawer chrome used (`install_navigator_pin_width(960.0)`), so
-    // `AppShell(pin_at = Lg)` and the mobile hamburger flip at the same
-    // 960-px width the drawer collapsed at. First-install wins — must run
-    // before any breakpoint-keyed sheet resolves.
+    // Pin the framework's `Lg` breakpoint at 960 px so `AppShell(pin_at =
+    // Lg)` and the mobile hamburger flip at the same width. First-install
+    // wins — must run before any breakpoint-keyed sheet resolves.
     let _ = runtime_core::install_breakpoints(runtime_core::Breakpoints {
         lg_min: 960.0,
         ..Default::default()
@@ -181,18 +177,17 @@ pub fn app() -> Element {
                 .unwrap_or_else(|| "Not found".to_string());
             titled(title, shell::entry_page(&cat_entry, kind, &slug))
         })
-        // Legacy drawer-on-web behavior: one screen resident at a time;
-        // switching away disposes the screen's scope and a return rebuilds
-        // it fresh (matches browser semantics; screens are generated from
-        // the catalog so remounting is cheap).
+        // One screen resident at a time: switching away disposes the
+        // screen's scope and a return rebuilds it fresh (matches browser
+        // semantics; screens are generated from the catalog so remounting
+        // is cheap).
         .mount_policy(MountPolicy::LazyDisposing)
         // The shell: AppShell packages pinned-sidebar ⇄ drawer around the
         // one-shot outlet; the mobile hamburger bar collapses in at narrow
         // widths. The sidebar builds ONCE and survives every navigation.
         .layout(move |nav_ctx| {
             // Auto-close the drawer when a sidebar link navigates while
-            // unpinned (the legacy web drawer engine did this in its
-            // Select arm; author-owned now). Watch `active_path` — not
+            // unpinned (the app owns this; AppShell doesn't). Watch `active_path` — not
             // `active_route` — because every catalog entry shares the one
             // parameterized `entry` route name, so only the path changes
             // on entry→entry navigation.

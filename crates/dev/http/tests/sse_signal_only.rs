@@ -79,15 +79,14 @@ fn start(port: u16) -> std::sync::Arc<ReloadSignal> {
 
 /// The injected script and the bundle have to agree on ONE name.
 ///
-/// `#[wasm_bindgen]` puts an export on the MODULE, not on `window`, so
+/// A wasm export lives on the MODULE, not on `window`, so
 /// `backend-web` explicitly publishes `window.__idealyst_overlay_patch`
 /// at boot. This pins the script's half of that agreement; the bundle's
 /// half is `backend_web::newcore::install_overlay_patch_entry`.
 ///
 /// Getting it wrong is quiet: the script looks, finds nothing, logs
 /// "this bundle has no overlay" and does nothing — on a bundle that has
-/// one. That is exactly how it failed the first time, and only looking
-/// at a real page caught it.
+/// one.
 #[test]
 fn the_injected_script_calls_the_name_the_bundle_publishes() {
     let script = dev_http::reload_script_tag("http://127.0.0.1:1234/__idealyst/reload");
@@ -203,9 +202,9 @@ fn read_until(stream: &mut TcpStream, needle: &str, deadline: Instant) -> String
 
 /// Regression: a page that connects AFTER a hot patch — a browser
 /// refresh, a second tab — has just loaded the base bundle, which no
-/// patch rebuilds. The stream used to send it only the generation, so it
-/// ran the pre-edit code while the session reported the edit applied.
-/// It now gets the patch right after the baseline; a page that connects
+/// patch rebuilds. Sent only the generation, it would run the pre-edit
+/// code while the session reported the edit applied, so it gets the
+/// patch right after the baseline; a page that connects
 /// after the base is replaced gets nothing.
 #[test]
 fn regression_a_page_connecting_after_a_hot_patch_receives_it() {

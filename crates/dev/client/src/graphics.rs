@@ -21,7 +21,7 @@
 //!
 //! When `Command::CreateGraphics { renderer }` arrives, the replay
 //! engine looks up `renderer` and hands the resulting closures to
-//! `Backend::create_graphics`.
+//! `GraphicsOps::create_graphics`.
 
 use std::collections::HashMap;
 

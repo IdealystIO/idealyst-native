@@ -16,9 +16,8 @@
 //!    via `/__idealyst/aas_url`. Wasm bundles pick it up synchronously
 //!    at boot, no async fetch dance required.
 //!
-//! Replaces the old `serve.py` — that script only did the static
-//! side, so users had to bake the runtime-server URL into the wasm at build
-//! time. This binary closes the loop: a dev-server that restarts
+//! Serving the URL at request time (rather than baking it into the
+//! wasm at build time) means a dev-server that restarts
 //! on a fresh port is transparently picked up by a page refresh
 //! (the port file gets rewritten by the new host on bind).
 //!
@@ -27,7 +26,7 @@
 //! ```text
 //! web-dev-host \
 //!     --addr 0.0.0.0:8080 \
-//!     --root examples/hello-world/pkg \
+//!     --root examples/welcome/pkg \
 //!     --port-file /path/to/host-port
 //! ```
 //!

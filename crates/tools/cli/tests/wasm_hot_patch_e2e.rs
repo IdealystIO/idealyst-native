@@ -520,7 +520,7 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
 
     // ── a const VALUE edit ─────────────────────────────────────────────
     // `const HEADLINE: &str` read only by a component body: a hot patch,
-    // where it used to rebuild (the shape held every const's value).
+    // not a rebuild.
     let patches_before = session.log().matches("[hotpatch] src/app.rs ·").count();
     let source = std::fs::read_to_string(&app_rs).unwrap();
     std::fs::write(&app_rs, source.replace("\"headline v1\"", "\"headline v2\"")).unwrap();
@@ -621,9 +621,9 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
 
 // ── a restart resumes the patched base ─────────────────────────────
 
-/// A restart after hot patches used to compile the patched sources into a
-/// new base before the page came up — on CrewForge 11–18 s, against 3–7 s
-/// with nothing changed. The last session's base, its patches and its
+/// A restart after hot patches must not compile the patched sources into a
+/// new base before the page comes up (11–18 s on CrewForge, against 3–7 s
+/// with nothing changed). The last session's base, its patches and its
 /// archives are reused instead when nothing outside the workspace's `.rs`
 /// sources moved (`dev_reload::resume`): no cargo, and the page is
 /// replayed the patch. An edit made while no session ran is decided as a
@@ -711,7 +711,7 @@ fn regression_a_restart_after_a_hot_patch_resumes_the_patched_base() {
     }
 }
 
-/// CrewForge, 2026-10-01: a tab opened after two hot patches, the second
+/// Regression (CrewForge): a tab opened after two hot patches, the second
 /// made while no page was connected, showed the BASE build — neither
 /// patch — while the status pill said "hot patch". A verifier that opens
 /// its own tab checked stale code. A page that connects late must run

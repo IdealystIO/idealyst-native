@@ -3,8 +3,8 @@
 //! The recipe *data* (name/docs/source/uses) lives in
 //! `runtime_shared::recipes` as static text — `include_str!` of the
 //! files under `crates/runtime/shared/recipes/`. That anchoring is what
-//! keeps the catalog core-independent (see the module docs there). This
-//! test is the other half of the old `recipe!` contract: the snippet
+//! keeps the catalog independent of the author surface (see the module
+//! docs there). This test is the other half of the contract: the snippet
 //! sources stay REAL, compile-checked Rust against the live author
 //! surface, so a prop/API change that would rot a served example fails
 //! here.
@@ -15,8 +15,7 @@
 //! parse, it must build a scene.
 //!
 //! Two of the recipes target the navigation SDKs
-//! (`swap_three_screens_tab_bar`, `stack_two_screens`). They used to be
-//! `recipe!` invocations inside those crates; they live in
+//! (`swap_three_screens_tab_bar`, `stack_two_screens`). They live in
 //! `runtime_shared::recipes` like the core-primitive ones and are
 //! compile-checked HERE, against the SDKs' real public surface.
 

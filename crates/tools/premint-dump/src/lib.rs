@@ -117,7 +117,7 @@ pub fn dump_all_css() -> String {
 /// a preminted layer references, deduped by [`runtime_core::assets::TypefaceId`].
 ///
 /// At runtime, `@font-face` registration rides sheet registration
-/// (`ensure_typefaces_registered_with` → `Backend::register_typeface`)
+/// (`ensure_typefaces_registered_with` → `AssetOps::register_typeface`)
 /// — exactly the step a preminted class skips. Emitting the faces into
 /// the same `.css` asset is what makes typeface-carrying sheets
 /// premintable at all (fonts are a fact of real apps; without this the
@@ -302,9 +302,8 @@ fn dump_sheet_parts(
     //    so a state beats a variant on a property both set. `:where()`
     //    sheds the pseudo-class's specificity so this is decided by source
     //    order alone, and compounds (step 6, (0,2,0)) still beat it.
-    //    This used to come before the axes, which pinned the pre-ce33c0a6
-    //    resolver order: a `state pressed { background }` lost to a
-    //    `form` axis's background on every premint build.
+    //    Emitting states before the axes would let e.g. a `form` axis's
+    //    background beat `state pressed { background }`.
     for (bit, axis) in sheet.premint_state_axes() {
         let Some(pseudo) = css::state_pseudo(*bit) else { continue };
         let Some(delta) = sheet.premint_delta(axis, "on") else { continue };
@@ -436,11 +435,11 @@ fn dump_sheet_parts(
 /// The theme default-font hook for a fontless BASE, as a standalone
 /// specificity-(0,0,0) rule. The live engine fills an absent
 /// `font_family` with the installed theme's default text font at apply
-/// time (`with_default_text_font`) — but the dump runs in a build step
+/// time (`fill_default_text_font`) — but the dump runs in a build step
 /// where no theme exists yet, so a fontless base gets
 /// `font-family: var(--iy-default-font, inherit)` and the premint host
 /// driver defines that variable from the live theme
-/// (`Backend::apply_default_text_font`); with no default installed the
+/// (`StyleOps::apply_default_text_font`); with no default installed the
 /// `inherit` fallback reproduces plain cascade. Delta layers never get
 /// the hook — a delta that sets a font overrides the base's on the same
 /// element, and one that doesn't leaves it standing, which is exactly
@@ -593,9 +592,9 @@ mod tests {
     /// fails independently for the other's regression.)
     ///
     /// A `#[component(lazy)]` screen's runtime-assembled sheets only
-    /// exist after its body runs. Before the dump learned to pump
-    /// (2026-08), a lazy body whose load was still pending after mount
-    /// never ran: idea-ui-docs' 50 lazily-split pages shipped a
+    /// exist after its body runs. Without the pump, a lazy body whose
+    /// load is still pending after mount never runs: idea-ui-docs' 50
+    /// lazily-split pages shipped a
     /// premint.css with no rules for their pages' sheets, and
     /// `--premint-only` panicked at style_attach's uncrawled-sheet
     /// diagnostic on first navigation. This mounts a boundary whose
@@ -605,9 +604,8 @@ mod tests {
     ///
     /// Its loader yields once on purpose. Off wasm a lazy boundary polls
     /// its loader at mount and, if it's already done, realizes the body
-    /// right there (`handlers/lazy.rs`, the off-web fast path, 2026-08-05).
-    /// This test used a ready loader until then and has failed since:
-    /// the body ran at mount, before the pump it was written to check.
+    /// right there (`handlers/lazy.rs`, the off-web fast path), so a ready
+    /// loader would run the body before the pump this test checks.
     /// [`lazy_body_styles_mint_at_mount_when_ready`] covers that path.
     #[test]
     fn lazy_body_styles_mint_after_pump() {
@@ -828,9 +826,8 @@ mod tests {
 
     // A second sheet whose base SETS a font — the default-font var must
     // not override an explicit author font.
-    // A SHADOWED sheet — premintable since the `shadow`/`text_shadow`
-    // split (the old single field lowered per node kind and disqualified
-    // the whole sheet; the SwitchThumb was the measured fall-through).
+    // A SHADOWED sheet — premintable because `shadow` and `text_shadow`
+    // are separate fields, so neither lowering depends on node kind.
     stylesheet! {
         Thumb<()> {
             base(_t) {
@@ -859,8 +856,8 @@ mod tests {
         PremintSheet { base_class: "iy-mono", sheet: mono_style };
 
     /// Fontless BASE rules carry the theme-default hook; explicit fonts
-    /// win untouched — mirrors the live engine's `with_default_text_font`
-    /// fill exactly (see `emit_base`).
+    /// win untouched — mirrors the live engine's `fill_default_text_font`
+    /// exactly (see `font_hook_rule`).
     #[test]
     fn regression_fontless_base_references_default_font_var() {
         let out = dump_all_css();

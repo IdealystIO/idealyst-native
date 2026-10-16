@@ -204,16 +204,15 @@ pub fn synthesize(
 
     // Dispatch on symbol kind. Mirrors dx's
     // `create_undefined_symbol_stub` decision tree
-    // (cli/src/build/patch.rs, commit 33159f3). Pre-this-change we
-    // routed *every* resolved symbol through `encode_trampoline` —
-    // correct for Text symbols, broken for Tls and Data:
+    // (cli/src/build/patch.rs, commit 33159f3). `encode_trampoline` is
+    // correct only for Text symbols, so Tls and Data get their own shape:
     //
     // * Text: jump trampolines work because the dylib's `bl` to the
     //   undefined ref lands on the trampoline, the trampoline jumps to
     //   the host's runtime address, host code runs, returns through
     //   the trampoline's `br x16` (tail-jump pattern, lr preserved).
     //
-    // * Tls (this is the bug we're fixing): the dylib accesses a
+    // * Tls: the dylib accesses a
     //   thread-local via `ldr x16, [tlv_descriptor]; blr x16` — it
     //   expects to LOAD 8 bytes from the symbol's address and call
     //   them as a function pointer (the TLV thunk). A code trampoline
@@ -222,7 +221,7 @@ pub fn synthesize(
     //   u64 + blr → branches to a wild address (some encoding of the
     //   thunk-pointer-shaped instructions) → corrupts callee-saved
     //   regs (including sp) → SIGBUS at the next function entry's
-    //   `stp [sp, #-N]!`. This is THE crash pattern we localized.
+    //   `stp [sp, #-N]!`.
     //
     //   Fix: emit as `SymbolKind::Tls` with the host's `__thread_data`
     //   init bytes. The `object` crate's Mach-O writer then auto-

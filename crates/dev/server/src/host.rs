@@ -1,19 +1,10 @@
 //! Long-lived runtime-server dev-host runtime.
 //!
-//! Pre-refactor, every project that ran `idealyst dev --aas` got a
-//! freshly-generated `<project>-runtime-server-host/src/main.rs` (~280 lines)
-//! pasted out of a `format!` string in `build-runtime-server`. That template
-//! reached into [`crate::sidecar::SidecarIn`] and the rest of this
-//! crate's transport API directly, so any internal refactor of
-//! `SidecarIn` / `SidecarOut` shape (struct ⇄ tuple variants,
-//! field rename, …) shattered every project whose pinned framework
-//! rev still emitted the old template — even though the runtime
-//! API was perfectly capable of supporting an out-of-tree CLI.
-//!
-//! This module owns that loop. The generated host wrapper is now
+//! This module owns the host loop, so the generated host wrapper is
 //! ~25 lines: build a [`HostConfig`], optionally build a
-//! [`HotPatchAdapter`], call [`run`]. Internal IPC churn stops at
-//! this crate's boundary.
+//! [`HotPatchAdapter`], call [`run`]. Changes to the
+//! `SidecarIn` / `SidecarOut` shape stop at this crate's boundary instead
+//! of breaking projects whose generated wrapper predates them.
 //!
 //! ## What "host" means here
 //!
@@ -182,29 +173,24 @@ pub fn run(
 
     // The port sentinel goes up FIRST, before anything expensive.
     //
-    // The CLI parent blocks for 10s waiting for this file — it cannot
-    // bake `IDEALYST_DEV_ENDPOINT` into a platform launch without the
-    // number. Everything below this point does real work before the
+    // The CLI parent blocks (with a timeout) waiting for this file — it
+    // cannot bake `IDEALYST_DEV_ENDPOINT` into a platform launch without
+    // the number. Everything below this point does real work before the
     // listener binds: parsing the sidecar binary's symbol table for the
-    // hot-patch cache, and scanning the crate's `ui!` sites. On a small
-    // app both are milliseconds. On a real one they are seconds, and
-    // the sentinel thread — which only polls a mutex — used to be
-    // started AFTER them, so the session died at startup with "the host
-    // process likely crashed" while the host was in fact fine and
-    // merely busy.
+    // hot-patch cache, and scanning the crate's `ui!` sites — seconds on
+    // a real app. So the sentinel thread, which only polls a mutex,
+    // starts first.
     let port_mirror: Arc<Mutex<Option<u16>>> = Arc::new(Mutex::new(None));
 
     if let Ok(path) = std::env::var("IDEALYST_RUNTIME_SERVER_PORT_FILE") {
         let port_for_file = port_mirror.clone();
         std::thread::spawn(move || {
             // Ensure the sentinel's parent dir exists before the
-            // write loop starts. Pre-fix every fresh project printed
-            // `could not write port sentinel … No such file or
-            // directory (os error 2)` on first launch because the
-            // path lives under `target/idealyst/<project>/aas/` —
-            // a dir build-runtime-server creates only when the host wrapper
-            // itself is compiled, not when the orchestrator points
-            // a pre-built host at the path. mkdir_p is idempotent.
+            // write loop starts: the path lives under
+            // `target/idealyst/<project>/…`, a dir build-runtime-server
+            // creates only when the host wrapper itself is compiled, not
+            // when the orchestrator points a pre-built host at the path.
+            // mkdir_p is idempotent.
             if let Some(parent) = std::path::Path::new(&path).parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     eprintln!(
@@ -246,8 +232,8 @@ pub fn run(
     // still gets the sidecar killed cleanly. Without this, the
     // host would exit and the sidecar would reparent to PID 1 —
     // every dev session that ended via the orchestrator's
-    // `child.kill()` (or a terminal close) leaked one
-    // `nicho-portfolio-runtime-server-app` process. ctrlc's `termination`
+    // `child.kill()` (or a terminal close) would leak one
+    // `<project>-runtime-server-app` process. ctrlc's `termination`
     // feature catches SIGINT + SIGTERM + SIGHUP on Unix.
     //
     // The handler is install-once-per-process; calling it twice
@@ -550,7 +536,7 @@ pub fn run(
     // session id, fresh mirror, fresh mount). That's plumbing that
     // crosses host.rs ↔ transport.rs and warrants a focused design
     // pass. Until then: the fail-fast in
-    // `crates/build/runtime-server/src/hotpatch/stub.rs` catches the most
+    // `crates/tools/build/runtime-server/src/hotpatch/stub.rs` catches the most
     // common crash class (Rust-internal monomorphization deferrals)
     // up-front, routing through the existing `try_hotpatch` →
     // `respawn_sidecar` fallback — which DOES coordinate mirror

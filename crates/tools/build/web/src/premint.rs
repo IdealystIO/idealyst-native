@@ -19,7 +19,7 @@
 //!    `RUSTFLAGS="--cfg idealyst_premint"` (see `cargo_build_wasm`),
 //!    which flips the macro-generated `into_style_source` to return
 //!    `StyleSource::Preminted { class }` for all-constant applications
-//!    — the walker then stamps the class instead of invoking the style
+//!    — the backend then stamps the class instead of invoking the style
 //!    engine, and the browser resolves it against the emitted `.css`.
 
 use anyhow::{Context, Result};
@@ -34,8 +34,8 @@ pub const PREMINT_CSS_NAME: &str = "premint.css";
 
 /// Generate the ephemeral dump wrapper, build it natively, run it, and
 /// return the emitted CSS. `wrapper_root` is the per-project web build
-/// dir (the parent of the wasm `wrapper/`); the dump crate lands in a
-/// `premint-dump/` sibling.
+/// dir (the one holding `pkg/`); the dump crate lands in its
+/// `premint-dump/` subdir.
 pub(crate) fn generate_and_run_dump(
     reporter: &dev_events::Reporter,
     wrapper_root: &Path,
@@ -84,7 +84,7 @@ pub(crate) fn generate_and_run_dump(
 }
 
 /// Materialize the dump wrapper crate. Idempotent — rewritten every
-/// build, same as the wasm/SSR wrappers.
+/// build, same as the SSR wrapper.
 fn generate_dump_wrapper(
     dump_dir: &Path,
     project_dir: &Path,

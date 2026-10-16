@@ -1,26 +1,16 @@
-//! Investigation of arena finding #8: "the wgpu replay screenshot
-//! reproducibly crashed `aas-session-web` with a stack overflow whenever
-//! the scene contained idea-ui `Card` rows." Runs the exact crashing
-//! chain — real realize → wire record → replay → offscreen GPU — on real
-//! Card scenes, on a 16MB-stack thread matching the sidecar.
+//! Card scenes through the full screenshot chain — real realize → wire
+//! record → replay → offscreen GPU — on a 16MB-stack thread matching the
+//! `aas-session` sidecar. Pins that static Cards, 50 Cards in a
+//! `scroll_view`, and a "todo row" shape (Card + text_input + toggle +
+//! button in a scroll_view) all replay to a PNG (a reported stack overflow
+//! on Card rows does not reproduce on these shapes).
 //!
-//! FINDINGS (2026-07-22):
-//! * The reported symptom does NOT reproduce on the current tree: static
-//!   Cards, 50 Cards in a `scroll_view`, and the faithful "todo row" shape
-//!   (Card + text_input + toggle + button in a scroll_view) all replay to a
-//!   PNG cleanly. The originally-blamed one-shot replay path is not the
-//!   culprit — the crash was likely specific to the original app's
-//!   structure or already fixed by intervening framework work.
-//! * There IS a real latent robustness gap these tests surfaced: the render
-//!   pipeline recurses on tree DEPTH at multiple un-guarded sites, so a
-//!   pathologically deep tree (thousands of levels) overflows the stack and
-//!   aborts the sidecar. A realize-only depth guard is insufficient — with
-//!   the mount pass capped, a 5000-deep tree still overflows (in Taffy
-//!   layout or the recursive `Drop` of the deep node tree). A complete fix
-//!   spans several sites (shrink the mount frame + iterative/guarded layout
-//!   + non-recursive teardown) and is tracked as a scoped follow-up.
-//!   `deep_tree_overflow_multi_site` below is the tree's only executable
-//!   record of that budget.
+//! Known gap: the render pipeline recurses on tree DEPTH at several
+//! sites (the mount pass, Taffy layout, the recursive `Drop` of the node
+//! tree), so a pathologically deep tree (thousands of levels)
+//! overflows the stack and aborts the sidecar; guarding one site is not
+//! enough. `deep_tree_overflow_multi_site` (ignored — it aborts the
+//! process) is the executable record of that budget.
 //!
 //! Run: `cargo test -p mock-backend --features screenshot --test wire_card_overflow_repro -- --nocapture`
 
@@ -144,8 +134,8 @@ fn moderately_nested_cards_render() {
 }
 
 // Documents the un-fixed multi-site depth-recursion gap: a pathologically
-// deep tree overflows the stack across several recursion sites (proven: it
-// still overflows with `walk` guarded — Taffy layout / recursive Rc Drop are
+// deep tree overflows the stack across several recursion sites (capping
+// the mount pass alone is not enough — Taffy layout / recursive Rc Drop are
 // the others). `#[ignore]` because it ABORTS the process (can't be caught),
 // so it can't run in the normal suite; run it explicitly when working the
 // full multi-site fix: `cargo test ... -- --ignored deep_tree_overflow`.

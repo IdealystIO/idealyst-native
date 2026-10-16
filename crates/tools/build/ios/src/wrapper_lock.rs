@@ -7,11 +7,11 @@
 //!
 //! - **What cargo resolves.** If the wrapper resolves independently of
 //!   the app, it does not build the graph the app locked. With the lock
-//!   deleted per run (the old behaviour) every run re-resolved against
-//!   the registry, so each framework release — or any crates.io release
-//!   anywhere in the tree — became a fresh generation of every crate
-//!   above it, compiled next to the previous one. Measured on CrewForge
-//!   (2026-10-08): the iOS wrapper's target held two versions of 25
+//!   deleted per run, every run re-resolves against the registry, so
+//!   each framework release — or any crates.io release anywhere in the
+//!   tree — becomes a fresh generation of every crate above it, compiled
+//!   next to the previous one. Measured on CrewForge: the iOS wrapper's
+//!   target held two versions of 25
 //!   framework crates, the app's own lock a third (`backend-ios-mobile`
 //!   1.11.0 / 1.13.0 in the wrapper, 1.14.0 in the app), and a GC
 //!   reclaimed 4.2 GB from it. [`seed_wrapper_lockfile`] makes the app's
@@ -80,22 +80,20 @@ pub enum LockSeed {
 /// keep a wrapper lock the app no longer has. The marker records a hash
 /// of the bytes that were seeded.
 ///
-/// # Why this replaced deleting the lock
+/// # Why not delete the lock
 ///
-/// [`crate::refresh_wrapper_lockfile`] deleted the wrapper's lock every
-/// run so a stale one could not pin the wrapper behind the app. That
-/// fixed the staleness but made the wrapper resolve FRESH every run —
-/// newest-compatible from the registry, not what the app locked — which
-/// is both a different graph from the app's and a new generation of every
-/// crate above any newly published one. Seeding fixes the staleness the
-/// same way (the wrapper follows every app-lock change) without the
-/// re-resolution.
+/// [`crate::refresh_wrapper_lockfile`] deletes the wrapper's lock so a
+/// stale one cannot pin the wrapper behind the app, but then the wrapper
+/// resolves FRESH every run — newest-compatible from the registry, not
+/// what the app locked — which is both a different graph from the app's
+/// and a new generation of every crate above any newly published one.
+/// Seeding fixes the staleness the same way (the wrapper follows every
+/// app-lock change) without the re-resolution.
 ///
 /// Only for wrappers with a PRIVATE target dir. Seeding makes the
 /// wrapper's units hash like the app's; a wrapper that builds into the
 /// app's own `target/` would then interleave its units with the app's,
-/// which is the duplicate-crate failure the Linux builder hit (see
-/// `refresh_wrapper_lockfile`).
+/// which is the duplicate-crate failure (see `refresh_wrapper_lockfile`).
 pub fn seed_wrapper_lockfile(wrapper_dir: &Path, project_dir: &Path) -> Result<LockSeed> {
     let Some(app_lock) = project_dir
         .ancestors()

@@ -25,15 +25,14 @@
 //!   client. So scheduler tick rate = client raf rate. Idle sessions
 //!   pay nothing.
 //!
-//! - **Microtask = queued, drained at flush points.** Originally
-//!   synchronous-inline (the native fallback convention), but the
-//!   outlet-model navigators (`swap-navigator`, `stack-navigator`)
+//! - **Microtask = queued, drained at flush points.** Not run inline:
+//!   the outlet-model navigators (`swap-navigator`, `stack-navigator`)
 //!   defer their author-layout build to a microtask precisely so it
-//!   runs AFTER the walker's `create_navigator` backend borrow releases
-//!   — running it inline re-enters the borrow and panics ("RefCell
+//!   runs AFTER the navigator's mount releases its backend borrow —
+//!   running it inline re-enters the borrow and panics ("RefCell
 //!   already borrowed"), exactly what the web promise queue, the macOS
 //!   mount buffer, and the SSR queuing scheduler all avoid. Microtasks
-//!   now queue and drain (to empty, FIFO) in [`drive_pending`] — which
+//!   queue and drain (to empty, FIFO) in [`drive_pending`] — which
 //!   runs on every client `RequestFrame` — and before every
 //!   `drain_commands` flush, so their recorded commands always make the
 //!   next sync.
@@ -67,7 +66,7 @@ thread_local! {
         RefCell::new(Vec::new());
 
     /// Queued microtasks (see the module doc: queued so navigator
-    /// layout builds run outside the walker's backend borrow). Drained
+    /// layout builds run outside the mount's backend borrow). Drained
     /// FIFO-to-empty by [`drain_microtasks`].
     static MICROTASKS: RefCell<Vec<Box<dyn FnOnce() + 'static>>> =
         RefCell::new(Vec::new());
@@ -132,7 +131,7 @@ impl Scheduler for SidecarScheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
         // Queue, don't run inline: the outlet-model navigators defer
         // their layout build to a microtask so it runs AFTER the
-        // walker's `create_navigator` backend borrow releases; inline
+        // navigator mount's backend borrow releases; inline
         // execution re-enters the borrow and panics. Drained by
         // `drive_pending` (every client RequestFrame) and before each
         // recorder `drain_commands` flush — see the module doc.
@@ -231,10 +230,9 @@ pub fn install() {
 /// Install the sidecar's monotonic clock. Idempotent (process-wide
 /// `OnceLock`, first install wins).
 ///
-/// The old core installed a clock from `mount`; the new-core sidecar
-/// boot never ran that preamble, so `now_micros()` read `0` forever.
-/// Every tween and raf-driven computation then resolved against t=0
-/// and re-emitted an identical value each tick — the raf loop still
+/// Without it `now_micros()` reads `0` forever: every tween and
+/// raf-driven computation resolves against t=0 and re-emits an
+/// identical value each tick — the raf loop still
 /// spins and the wire still floods with `SetAnimated*`, but nothing
 /// moves and tweens stay pinned at their start value.
 ///
@@ -305,8 +303,7 @@ pub fn drive_pending() {
         // during the callback) re-enters `DeadlineHandle::cancel` →
         // `cell.borrow_mut()` while still borrowed → "RefCell already
         // borrowed" panic. Mirrors the `Cell::take` discipline the
-        // raf-loop path below already uses. See
-        // [[project_refmut_lifetime_reentrancy]].
+        // raf-loop path below already uses.
         let taken = cell.borrow_mut().take();
         if let Some(f) = taken {
             f();
@@ -367,12 +364,9 @@ mod tests {
     //! investigation: in the live welcome scene, timeline-driven
     //! tweens flow after rerender but the raf_loop body never fires.
     use super::*;
-    // The `*_scoped` pair moved when the old core was deleted:
-    // runtime-shared kept the substrate copy `pub(crate)` and the
-    // author-facing one lives in the vocabulary's `scoped_scheduling`
-    // (see [[project_scoped_timers_two_apis]]). This module's imports
-    // were not updated, so `cargo test -p dev-server` has not compiled
-    // since that deletion.
+    // The author-facing `*_scoped` pair lives in the vocabulary's
+    // `scoped_scheduling`; runtime-shared's substrate copy is
+    // `pub(crate)`.
     use runtime_vocabulary::scoped_scheduling::{after_ms_scoped, raf_loop_scoped};
     use std::cell::Cell;
     use std::rc::Rc;

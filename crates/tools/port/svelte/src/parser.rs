@@ -5,7 +5,7 @@
 //! 1. `sfc::split` extracts `<script>` and `<style>`; the rest is markup.
 //! 2. The script block is parsed with `port_tsx::parse(..., tsx=false)`
 //!    and walked by `script::walk` — collects `export let` (props),
-//!    plain `let` (reactive state via signal!), `$:` statements
+//!    plain `let` (reactive state via `signal()`), `$:` statements
 //!    (derived / effect), and `function` decls for handler refs.
 //! 3. The markup is walked by `markup::parse` with the script's
 //!    `handler_fns` map threaded in, so `on:click={increment}`

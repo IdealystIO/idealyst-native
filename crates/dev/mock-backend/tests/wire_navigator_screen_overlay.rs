@@ -13,10 +13,6 @@
 //! layer means the placement re-merges on every resolution — and the
 //! recorder ships the RESOLVED rules, so the client sees the merged
 //! result rather than a class it would have to know about.
-//!
-//! (Ported from the deleted `navigator_screen_style_overlay.rs`, which
-//! drove the same invariant through the old `NavigatorHost::
-//! set_screen_style_overlay` seam on a locally-mounted handler.)
 
 use mock_backend::WireHarness;
 use runtime_shared::primitives::navigator::Route;

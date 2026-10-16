@@ -16,13 +16,13 @@ license.workspace = true
 # Enables the in-process Robot TCP bridge on the dev server. When
 # on, `serve_with_robot_bridge(...)` is available — it polls a
 # `BridgeHandle` once per tick on the same thread that owns the
-# walker's reactive scope, so click / find / invoke_method commands
+# session's world, so click / find / invoke_method commands
 # from an external MCP proxy hit the *server's* registry (which is
 # where the session registered the elements in runtime-server mode).
-# Forwards to `runtime-shared/robot` (the registry itself) and
-# `runtime-vocabulary/robot` (mount handlers' `register_mount`, which is
-# what populates it) — without the latter the registry stays empty and
-# every find/click verb answers nothing.
+# Forwards to `runtime-shared/robot`. `runtime-vocabulary/robot` (mount
+# handlers' `register_mount`, which populates the registry) is enabled
+# unconditionally on the `runtime-vocabulary` dependency below — without
+# it the registry stays empty and every find/click verb answers nothing.
 #
 # Native app builds run their bridge in-process on the device, not
 # here — server-side is for runtime-server-shell mode where the device

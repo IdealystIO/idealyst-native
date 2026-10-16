@@ -64,24 +64,22 @@ pub fn app() -> Element {
     let bp = runtime_vocabulary::viewport::viewport_ctx().breakpoint();
 
     // Headless live-verification hook (`NEWCORE_SMOKE_SELFTEST=1`),
-    // four phases, from real NSTimers on the real run loop:
+    // five phases, from real NSTimers on the real run loop:
     //
     // 1. **Hook-route commit** — stage a write from an `after_ms` body
     //    and later assert it was COMMITTED (a staged `set` is only
-    //    observable through `get` after a `world.flush()`). With the
-    //    P4a monitor+timer gone, the ONLY route that can commit this is
-    //    the apple-core post-dispatch hook (`after_ms_inner` fires it
+    //    observable through `get` after a `world.flush()`). The ONLY
+    //    route that can commit this is the apple-core post-dispatch hook (`after_ms_inner` fires it
     //    after the body) → `schedule_flush` → main-queue microtask —
     //    i.e. this phase is the live proof of the settled flush driver,
     //    exactly like the iOS smoke's self-test. Also asserts the tree
     //    realized into live NSViews under the key window.
     // 2. **Press-wrapper commit** — drive the real NSButton
     //    target-action path (`performClick:` on the live "Increment"
-    //    button) and assert the staged `count.update` committed. The
-    //    removed NSEvent monitor used to cover exactly this event
-    //    family; now the dispatch-site `on_click` wrapper must
-    //    schedule the flush itself.
-    // 3. **Tracking-loop scroll commit** (the P4a-removal crux) — prove
+    //    button) and assert the staged `count.update` committed: the
+    //    dispatch-site `on_click` wrapper must schedule the flush
+    //    itself (no event monitor backs it up).
+    // 3. **Tracking-loop scroll commit** — prove
     //    a signal write staged by the `on_scroll` author callback
     //    commits WHILE a nested `NSEventTrackingRunLoopMode` run-loop
     //    turn (the run-loop state an AppKit control tracking loop /
@@ -465,14 +463,13 @@ mod selftest {
         pub scroll_y: f32,
     }
 
-    /// The tracking-loop proof (module docs, phase 2).
+    /// The tracking-loop proof (self-test phase 3).
     ///
     /// Why this shape: an AppKit control tracking loop (scroller-knob
     /// drag, NSButton/NSSlider press, menu tracking) is a nested
     /// `CFRunLoopRunInMode(NSEventTrackingRunLoopMode, …)` turn driven
-    /// from event dispatch — the run-loop state that (a) bypassed
-    /// NSEvent local monitors (the reason the removed P4a driver
-    /// carried a timer safety net) and (b) pauses default-mode
+    /// from event dispatch — the run-loop state that (a) bypasses
+    /// NSEvent local monitors and (b) pauses default-mode
     /// sources, the classic way a scheduled "later" callback silently
     /// stalls until the drag ends. This test reproduces that exact
     /// run-loop state deterministically (real momentum-phase wheel

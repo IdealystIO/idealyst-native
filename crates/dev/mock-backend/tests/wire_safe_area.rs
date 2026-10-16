@@ -47,7 +47,7 @@ fn safe_area_opt_in_crosses_wire_and_reapplies_on_inset_change() {
     //    island) must re-apply. The dev side has no insets, so this is
     //    driven by the CLIENT-side effect subscribing to the device
     //    `safe_area_insets()` signal — the wire analogue of the
-    //    framework's per-node `attach_safe_area`.
+    //    per-node `apply_safe_area_padding` re-apply a local backend does.
     set_safe_area_insets(EdgeInsets {
         top: 44.0,
         right: 0.0,

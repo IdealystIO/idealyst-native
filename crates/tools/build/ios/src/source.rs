@@ -4,22 +4,22 @@
 //! platform (`ios/wrapper`, `android/wrapper`, …). Those wrappers
 //! depend on `runtime-core`, `backend-<platform>-*`, and friends.
 //!
-//! Two cases:
+//! Three cases:
 //!
 //! 1. **In-tree.** The user's project lives inside the framework
-//!    workspace (e.g. `examples/hello-world/`). We emit
-//!    `path = ".../crates/framework/core"` deps so cargo shares
-//!    the workspace's `target/` cache and any local edits to the
-//!    framework take effect immediately.
+//!    workspace (e.g. `examples/welcome/`). We emit
+//!    `path = ".../crates/runtime/core"` deps so any local edits to
+//!    the framework take effect immediately.
 //!
-//! 2. **External.** The CLI was installed (`cargo install idealyst-cli`)
-//!    and is being run against a project that doesn't sit inside this
-//!    repo. We emit `git = "<repo>", rev = "<sha>"` deps so cargo
-//!    fetches the framework from GitHub.
+//! 2. **Registry.** An external project resolving the framework from
+//!    the idealyst cargo registry — the default for new projects.
+//!
+//! 3. **Git.** An external project pinning the framework by
+//!    `git = "<repo>", rev = "<sha>"`.
 //!
 //! Resolution happens via [`FrameworkSource::detect`]. The git
 //! defaults (URL + rev) are captured at CLI compile time and threaded
-//! down — see `crates/cli/build.rs`.
+//! down — see `crates/tools/cli/build.rs`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,9 +87,7 @@ pub enum FrameworkSource {
     /// `versions` carries one requirement PER CRATE. Framework crates
     /// release independently (`backend-web` is on 2.x while
     /// `runtime-world` is on 1.8), so no single number can be written
-    /// for all of them — the old single `version` field wrote `"1.5"`
-    /// for `backend-web` (unsatisfiable) and copied runtime-core's
-    /// `"1.11"` onto `runtime-world` (also unsatisfiable).
+    /// for all of them (one shared number is unsatisfiable for most).
     Registry { registry: String, versions: FrameworkVersions },
 }
 
@@ -170,11 +168,9 @@ impl FrameworkVersions {
     /// framework: the iOS template calls
     /// `backend_ios::newcore::deliver_inbound_link`, which exists from
     /// backend-ios-mobile 1.14. Pinning the wrapper down to an app lock at
-    /// 1.13 produced a wrapper that cannot compile (E0425). That went
-    /// unnoticed while the wrapper deleted its lock every run, because a
-    /// fresh resolve always took the newest release; once the wrapper
-    /// follows the app's lock (`wrapper_lock::seed_wrapper_lockfile`) the
-    /// requirement has to carry the template's real floor.
+    /// 1.13 produces a wrapper that cannot compile (E0425). Because the
+    /// wrapper follows the app's lock (`wrapper_lock::seed_wrapper_lockfile`),
+    /// the requirement has to carry the template's real floor.
     ///
     /// Raising cannot duplicate the crate: two caret requirements in one
     /// compatible range (`^1.13` from the app, `^1.14` from the wrapper)
@@ -269,11 +265,10 @@ impl FrameworkSource {
     /// every dependency form it doesn't model is a silent fallback to
     /// step 4 — i.e. a wrapper pinned to a different framework than
     /// the app, i.e. the `Element` mismatch this whole function exists
-    /// to prevent. That has bitten four separate ways (relative
-    /// `project_dir`, the `crates/framework/core` → `crates/runtime/core`
-    /// reorg, relative `path` deps, and `{ workspace = true }`
-    /// inheritance), and `[patch]`, `[replace]`, `paths` overrides and
-    /// vendored sources are all still unmodelled. `cargo metadata`
+    /// to prevent. Relative `project_dir`, relative `path` deps and
+    /// `{ workspace = true }` inheritance have each broken it, and
+    /// `[patch]`, `[replace]`, `paths` overrides and vendored sources are
+    /// all still unmodelled. `cargo metadata`
     /// reports the *resolved* source after all of those, so step 3
     /// is correct by construction for dep forms nobody here has
     /// thought of yet.
@@ -321,11 +316,11 @@ impl FrameworkSource {
     /// One-line summary for the "which framework am I building
     /// against?" log line `detect` emits.
     ///
-    /// The git-defaults fallback used to be indistinguishable from a
-    /// deliberate git pin, so a misdetected project looked identical
-    /// to a correctly-detected one right up until the wasm build died
-    /// with a type error naming `Element` twice. Printing the resolved
-    /// source makes that visible in one line of `idealyst dev` output.
+    /// Otherwise the git-defaults fallback is indistinguishable from a
+    /// deliberate git pin, so a misdetected project looks identical to
+    /// a correctly-detected one right up until the wasm build dies with
+    /// a type error naming `Element` twice. Printing the resolved source
+    /// makes that visible in one line of `idealyst dev` output.
     pub fn describe(&self) -> String {
         match self {
             Self::Workspace { root } => format!("path {}", root.display()),
@@ -404,15 +399,15 @@ impl FrameworkSource {
         // any framework crate MISSING from this block resolves from git
         // while its siblings resolve from the local checkout, and the
         // graph ends up with two `runtime_scene`/`runtime_shared`/…
-        // instances ("expected `Element`, found `Element`"). A hardcoded
-        // list rotted exactly that way (it predated the runtime-v2 split
-        // and listed 9 crates). Unused entries only cost a cargo warning.
+        // instances ("expected `Element`, found `Element`"), which is
+        // why the list is discovered rather than hardcoded. Unused
+        // entries only cost a cargo warning.
         let crates = Self::workspace_framework_crates(root);
         for (name, dir) in &crates {
             out.push_str(&format!("{name} = {{ path = \"{}\" }}\n", dir.display()));
         }
-        // Projects scaffolded since the registry landed pin the framework by
-        // version rather than by git, so the redirect has to cover that source
+        // Registry-sourced projects pin the framework by version rather
+        // than by git, so the redirect has to cover that source
         // too. Both sections are emitted because one wrapper may be built for
         // either kind of project; an unused `[patch]` costs a cargo warning,
         // whereas a MISSING one costs two `runtime_scene` instances and
@@ -496,7 +491,7 @@ impl FrameworkSource {
     /// Render a single dependency line for a framework crate.
     ///
     /// `subpath` is the directory under the workspace root (e.g.
-    /// `crates/framework/core`) used in workspace mode. In git mode
+    /// `crates/runtime/core`) used in workspace mode. In git mode
     /// the package name is taken from the TOML key the caller uses —
     /// cargo accepts `runtime-core = { git = "...", rev = "..." }`
     /// and resolves the matching package in the monorepo.
@@ -679,7 +674,7 @@ fn rustc_sysroot() -> Option<PathBuf> {
 /// Walk up from `start` looking for the idealyst framework workspace
 /// root.
 ///
-/// We require both `[workspace]` AND `crates/framework/core/Cargo.toml`
+/// We require both `[workspace]` AND `crates/runtime/core/Cargo.toml`
 /// to exist at the same directory before we'll claim it as the
 /// framework workspace. A consumer's project that happens to live
 /// inside its *own* unrelated Cargo workspace would otherwise be
@@ -714,10 +709,8 @@ fn is_framework_root(root: &Path) -> bool {
     if !cargo.is_file() {
         return false;
     }
-    // Post-reorg the runtime crate lives at `crates/runtime/core`
-    // (was `crates/framework/core`). Probe the new path to
-    // re-enable workspace-mode detection for in-tree projects —
-    // without this, examples like `examples/welcome` fall through
+    // The probe path must track where the runtime crate actually
+    // lives — a stale one makes examples like `examples/welcome` fall through
     // to git-mode and produce two distinct `runtime_core` crate
     // instances (one from the git rev, one from the local path),
     // failing every wrapper→user-crate type bridge.
@@ -992,7 +985,7 @@ fn percent_decode(s: &str) -> String {
 /// - `runtime-core = { git = "<url>", rev = "<sha>" }` → `Git`.
 /// - `runtime-core = { git = "<url>", branch = "<b>" }` → `Git`
 ///   with rev set to the branch name (cargo accepts branches).
-/// - `runtime-core = { path = "/p/to/framework/core" }` → strip
+/// - `runtime-core = { path = "/p/to/crates/runtime/core" }` → strip
 ///   `/crates/runtime/core` to get the workspace root and emit
 ///   `Workspace`. (Falls through to git defaults if the path
 ///   doesn't end with the expected suffix.)
@@ -1140,10 +1133,9 @@ fn find_cargo_workspace_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Back-compat thin wrapper around the legacy `find_workspace_root`
-/// semantics — kept so call sites that genuinely need an in-tree
-/// workspace (runtime-server mode, `dev` server) can fail clearly when run
-/// outside the framework checkout.
+/// The framework workspace root, or a clear error — for call sites
+/// that genuinely need an in-tree workspace (runtime-server mode, `dev`
+/// server) and must fail clearly when run outside the framework checkout.
 pub fn require_workspace_root(start: &Path) -> Result<PathBuf> {
     find_framework_workspace(start).with_context(|| {
         format!(
@@ -1157,25 +1149,18 @@ pub fn require_workspace_root(start: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    //! Regression coverage for the out-of-tree runtime-server / build path.
-    //!
-    //! The original failure mode: a user CLI installed via
-    //! `cargo install idealyst-cli` was running `idealyst dev --aas`
-    //! against a project that lived nowhere near an `idealyst-native/`
-    //! checkout. The legacy wrappers walked up looking for a framework
-    //! workspace and bailed with "could not find the idealyst framework
-    //! workspace…". The current behavior is that `FrameworkSource::detect`
-    //! falls back to reading the project's own `runtime-core` git dep,
-    //! and finally to compile-time git defaults — never to a workspace
-    //! requirement.
-    //!
-    //! These tests pin that flow so the regression can't slip back in.
+    //! Regression coverage for the out-of-tree runtime-server / build path:
+    //! an installed CLI run against a project nowhere near an
+    //! `idealyst-native/` checkout must not bail with "could not find the
+    //! idealyst framework workspace…". `FrameworkSource::detect` falls
+    //! back to the project's own `runtime-core` dep, and finally to
+    //! compile-time defaults — never to a workspace requirement.
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Tempdir under `std::env::temp_dir()` that cleans itself up on
-    /// drop. Avoids adding a `tempfile` dev-dependency for two tests.
+    /// drop.
     struct TempProject {
         path: PathBuf,
     }
@@ -1236,9 +1221,7 @@ mod tests {
     }
 
     /// Out-of-tree project pinning the framework with `git = ".." rev = ".."`
-    /// must resolve to `Git`, NOT bail with the workspace error. This is
-    /// the exact scenario `idealyst new` scaffolds and that runtime-server dev
-    /// previously broke on.
+    /// must resolve to `Git`, NOT bail with the workspace error.
     #[test]
     fn detect_out_of_tree_git_rev_yields_git_source() {
         let proj = TempProject::new("git-rev");
@@ -1791,8 +1774,8 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
         assert!(framework_source_from_metadata(&meta, &table()).expect("not an error").is_none());
     }
 
-    /// `require_workspace_root` is the legacy fail-clear helper. The
-    /// CLI's only remaining caller wraps it in `unwrap_or_else`; if a
+    /// `require_workspace_root` is the fail-clear helper. The
+    /// CLI's only caller wraps it in `unwrap_or_else`; if a
     /// new caller adds it back as a hard requirement we want them to
     /// have to acknowledge this test's existence.
     #[test]
@@ -1809,7 +1792,7 @@ runtime-core = { git = "https://github.com/IdealystIO/idealyst-native", tag = "1
 
     /// Regression: a RELATIVE `project_dir` (e.g. `.`) must still resolve the
     /// in-tree framework workspace. A caller that passed `.` without
-    /// canonicalizing used to fall through to git-mode, producing two
+    /// canonicalizing fell through to git-mode, producing two
     /// `runtime_core` instances and a `mount` "expected `Element`, found
     /// `Element`" failure (hit via `idealyst publish ios` run from a project
     /// dir). `cargo test` runs with CWD inside this crate — which lives under

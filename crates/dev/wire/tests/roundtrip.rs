@@ -259,9 +259,9 @@ impl caps::WireBindingOps for TraceBackend {}
 // ---------------------------------------------------------------------------
 
 fn build_demo_tree(backend: &mut WireRecordingBackend) {
-    // Hand-rolled walker calls. In real use the framework's walker
-    // emits these as it processes a `Element` tree; here we
-    // synthesize them directly so the test stays self-contained.
+    // Hand-rolled backend calls. In real use the realize pass emits
+    // these as it mounts a scene; here we synthesize them directly so
+    // the test stays self-contained.
 
     let mut root = backend.create_view(&Default::default());
 
@@ -291,7 +291,7 @@ fn build_demo_tree(backend: &mut WireRecordingBackend) {
     let button = backend.create_button("Click me", &on_click, None, None, &Default::default());
     backend.insert(&mut root, button);
 
-    // Reactive update: simulate the walker firing a label effect.
+    // Reactive update: simulate a label effect firing.
     backend.update_text(&title, "Hot Reload! v2");
 
     backend.finish(root);
@@ -665,8 +665,8 @@ fn graphics_round_trip_unnamed() {
 // ---------------------------------------------------------------------------
 // Accessibility wire-protocol tests.
 //
-// Phase 8 a11y plumbing: every `Create*` carries a
-// `WireAccessibilityProps`, plus two new commands —
+// Every `Create*` carries a `WireAccessibilityProps`, plus two
+// commands —
 // `UpdateAccessibility` and `AnnounceForAccessibility`. These tests
 // exercise the wire boundary (recorder → JSON → replayer →
 // TraceBackend) so a regression that drops a11y on either side surfaces

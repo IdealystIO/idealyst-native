@@ -8,8 +8,7 @@
 //! arms that a single host check never compiles.
 //!
 //! Crucially this command exits NON-ZERO when any triple fails to
-//! check — a `check` that always exits 0 is a CI footgun (the very
-//! thing this used to be while stubbed out).
+//! check — a `check` that always exits 0 is a CI footgun.
 //!
 //! `cargo check` doesn't link, so the cross targets don't need the
 //! platform SDK/linker (no Xcode, no Android NDK) — only the rustc
@@ -20,11 +19,9 @@
 //! A full-stack project (`server_bin` / `server_manifest`) gets one more
 //! check: its SERVER half, on the host, with the `server` feature. That
 //! half is the one no per-triple client check ever compiles — the
-//! `#[server]` bodies, the db layer behind them — and until this ran it
-//! there was no single command that checked such a project at all.
-//! CrewForge carried "no single cargo command checks this workspace" as
-//! a standing rule for its agents, and the agents paid for it in
-//! guessed feature sets and builds that landed in the wrong target dir.
+//! `#[server]` bodies, the db layer behind them — so this is the one
+//! command that checks such a project whole, without guessing feature
+//! sets or target dirs.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

@@ -2,15 +2,13 @@
 //! for catch-up replay, instead of resending the full append-only
 //! command log.
 //!
-//! The original protocol shipped every wire command the framework
-//! ever emitted to each freshly connecting client. That works for an
-//! initial mount but it also makes the client re-experience every
-//! transient state: open detail, close detail, type-and-delete in a
+//! Replaying the whole log would make a freshly connecting client
+//! re-experience every transient state: open detail, close detail, type-and-delete in a
 //! text field, scroll, etc. — all replayed in sequence on every
 //! reconnect, producing visible flicker and unbounded memory growth.
 //!
 //! The scene model maintains the *current* state instead. Every
-//! `Backend` method on the recorder calls [`SceneModel::apply`]
+//! op on the recorder calls [`SceneModel::apply`]
 //! with the command it just emitted; the model interprets the
 //! command and updates its mirror. On client connect, the recorder
 //! serializes the model into a topologically-ordered list of wire
@@ -95,7 +93,7 @@ pub struct SceneModel {
     /// panics, aborting the apply batch → blank screen. Replaying the
     /// tokens up front installs the theme on the client's replay thread.
     theme_tokens: Option<Command>,
-    /// Root node from `Backend::finish(root)`. Anchors reachability
+    /// Root node from the recorder's `finish(root)`. Anchors reachability
     /// — anything not in this subtree (and not a navigator screen)
     /// gets pruned during snapshot.
     root: Option<NodeId>,
@@ -110,15 +108,14 @@ pub struct SceneModel {
     /// `Command::UpdateAccessibility`. Replayed as a fresh
     /// `UpdateAccessibility` after the node's `Create*` lands so a
     /// late-joining client sees the *current* a11y state, not the
-    /// initial value baked into the create command. See
-    /// `project_aas_state_snapshot` — fresh runtime-server clients receive a
-    /// `SceneModel` snapshot, NOT the command log.
+    /// initial value baked into the create command — fresh
+    /// runtime-server clients receive a `SceneModel` snapshot, NOT the
+    /// command log.
     node_a11y: HashMap<NodeId, (WireAccessibilityProps, Option<WireRole>)>,
     /// Per-node safe-area opt-in command (`ApplySafeAreaPadding` /
     /// `ApplyScrollViewSafeAreaInset`). Replayed after the node's
     /// `Create*` so a late-joining client re-applies the device inset
-    /// (the opt-in is idempotent and resolved client-side). See
-    /// `project_aas_state_snapshot`.
+    /// (the opt-in is idempotent and resolved client-side).
     node_safe_area: HashMap<NodeId, Command>,
     /// Per-node `MarkKeyboardAvoiding`, replayed after `Create*` like the
     /// safe-area opt-in (the client observes its own keyboard).

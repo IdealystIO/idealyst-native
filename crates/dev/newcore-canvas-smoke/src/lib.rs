@@ -1,12 +1,13 @@
-//! Smoke app: the canvas SDK on the web boot path — the External-SDK
-//! wave's live-verification vehicle.
+//! Smoke app: the canvas SDK (a scene-registry extension) on the web
+//! boot path.
 //!
 //! Direct vocabulary-builder calls (no `ui!`/`jsx!` — the
 //! newcore-web-smoke posture: this crate gates the layer *under* the
 //! macro). The tree: a heading, a `canvas::Canvas` whose draw closure
 //! READS a signal (bar count + hue), and a button that bumps the
-//! signal. Clicking must repaint the canvas through the full chain: wrapped button callback → staged write → dispatch-site flush
-//! → the SDK handler's world effect re-runs the author painter →
+//! signal. Clicking must repaint the canvas through the full chain:
+//! wrapped button callback → staged write → dispatch-site flush → the
+//! SDK handler's world effect re-runs the author painter →
 //! canvas-native's shared Canvas2D rasterizer replays the scene.
 //!
 //! A `[CANVAS-SMOKE]` console line reports the canvas element's

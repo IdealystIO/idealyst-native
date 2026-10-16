@@ -1,46 +1,45 @@
-//! The NEW-core harness mode: run the parity scenarios against
-//! `runtime-scene` (the P1 core) and compare the structural-op sequences
-//! against the SAME golden files the old walker pins.
+//! The structural-op harness: run the parity scenarios against
+//! `runtime-scene` and compare the structural-op sequences against the
+//! frozen `goldens/` corpus.
 //!
-//! Three pieces mirror the old-core harness one-for-one:
+//! Three pieces:
 //!
-//! - [`SceneHost`] — a recording `runtime_scene::Host` sharing the old
-//!   recorder's op-line format and `n0, n1, …` creation-order naming, so a
+//! - [`SceneHost`] — a recording `runtime_scene::Host` that writes the
+//!   goldens' op-line format and `n0, n1, …` creation-order naming, so a
 //!   matching run produces byte-identical step bodies.
 //! - A tiny test vocabulary ([`NcView`]/[`NcText`] + [`nc_registry`]) —
 //!   the scene is payload-agnostic, so the harness brings the two
-//!   primitives the scenarios need. P2's real vocabulary replaces this.
-//! - [`NewCx`] + [`check_new`] — the scenario driver (now with a
-//!   `world.flush()` per step, per the README's re-targeting contract)
-//!   and the golden comparison.
+//!   primitives the scenarios need (the FULL-OP suite in [`crate::full`]
+//!   mounts the real vocabulary handlers).
+//! - [`NewCx`] + [`check_new`] — the scenario driver (a `world.flush()`
+//!   per step, per the README's scenario contract) and the golden
+//!   comparison.
 //!
-//! # Sanctioned divergences (README "Where the new core is ALLOWED to
-//! differ") and how each is handled
+//! # Sanctioned divergences (README) and how each is handled
 //!
-//! 1. **Anchor/node naming** — the new drivers create anchors eagerly in
-//!    the same creation order as the old walker, so names align and no
-//!    renaming layer is needed.
-//! 2. **First-fire `clear_children` on a fresh anchor** — the new Dyn/
-//!    Keyed drivers deliberately DON'T clear a virgin anchor. Rather than
-//!    forking the anchored goldens (the old core must keep matching them
-//!    byte-for-byte), [`normalize`] strips exactly that pattern — a
-//!    `clear_children nX` immediately following `create nX anchor` — from
-//!    BOTH sides of the comparison. The pattern is unambiguous: a real
-//!    (content-bearing) clear can never be adjacent to its anchor's
-//!    creation.
-//! 3. **Cross-effect firing order after an unsubscribe** — the old
-//!    arena's swap-remove unsubscription scrambles notification order;
-//!    `runtime-world`'s `retain`-based unlinking preserves creation
+//! 1. **Anchor/node naming** — the Dyn/Keyed drivers create anchors
+//!    eagerly in the same creation order the reference recorded, so names
+//!    align and no renaming layer is needed.
+//! 2. **First-fire `clear_children` on a fresh anchor** — the Dyn/Keyed
+//!    drivers deliberately DON'T clear a virgin anchor, while the
+//!    reference does. Rather than forking the anchored goldens,
+//!    [`normalize`] strips exactly that pattern — a `clear_children nX`
+//!    immediately following `create nX anchor` — from BOTH sides of the
+//!    comparison. The pattern is unambiguous: a real (content-bearing)
+//!    clear can never be adjacent to its anchor's creation.
+//! 3. **Cross-effect firing order after an unsubscribe** — the reference
+//!    recorded a swap-remove unsubscription that scrambles notification
+//!    order; `runtime-world`'s `retain`-based unlinking preserves creation
 //!    order. Exactly one (scenario, mode) observes this:
-//!    `nested_when_in_each_row.spliced`, final step. Its new-core
-//!    expectation lives in `goldens_newcore/` as an explicit override
-//!    file (each row's own remove→create→insert_at sub-sequence is
-//!    unchanged — only the row interleaving and the consequent node
-//!    numbering differ). [`check_new`] prefers an override file when one
-//!    exists; the override set is closed (`NEWCORE_OVERRIDES`).
-//! 4. **Owner-drop teardown** — as in the old harness, the final unmount
-//!    (dropping the `Realized` + `World`) happens after the last
-//!    snapshot, outside the pinned sequence.
+//!    `nested_when_in_each_row.spliced`, final step. Its expectation lives
+//!    in `goldens_newcore/` as an explicit override file (each row's own
+//!    remove→create→insert_at sub-sequence is unchanged — only the row
+//!    interleaving and the consequent node numbering differ).
+//!    [`check_new`] prefers an override file when one exists; the
+//!    override set is closed (`NEWCORE_OVERRIDES`).
+//! 4. **Owner-drop teardown** — the final unmount (dropping the
+//!    `Realized` + `World`) happens after the last snapshot, outside the
+//!    pinned sequence.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -57,17 +56,17 @@ use crate::{golden_path, serialize_steps, Mode, PNode, Recorder, Step};
 // ===========================================================================
 
 /// A `runtime_scene::Host` that records the 7 structural ops into the
-/// shared [`Recorder`], with the exact op-line format `ParityBackend`
-/// uses. Node creation for the vocabulary goes through [`SceneHost::create`]
-/// (the scene has no `create_*` methods — handlers own creation).
+/// shared [`Recorder`], in the goldens' exact op-line format. Node
+/// creation for the vocabulary goes through [`SceneHost::create`] (the
+/// scene has no `create_*` methods — handlers own creation).
 pub struct SceneHost {
     rec: Recorder,
     splice: bool,
 }
 
 impl SceneHost {
-    /// Mint a node and record `create nK <label>` — the handler-side
-    /// analogue of the old backend's `create_view`/`create_text`.
+    /// Mint a node and record `create nK <label>` — what a vocabulary
+    /// handler's mount does on a real backend.
     pub fn create(&mut self, label: &str) -> PNode {
         let n = self.rec.mint();
         self.rec.push(format!("create {n} {label}"));
@@ -146,10 +145,9 @@ pub fn nc_registry() -> Registry<SceneHost> {
 // NewCx — the scenario driver
 // ===========================================================================
 
-/// The new-core scenario driver: same `mount`/`step`/`recorder` surface as
-/// the old `Cx`, with the one contract change the README documents —
-/// `step` flushes the world after the mutation (the staged-commit core is
-/// not synchronous).
+/// The scenario driver (`mount`/`step`/`recorder`). `step` flushes the
+/// world after the mutation, as the README's scenario contract requires
+/// (staged writes are not observable until a flush commits them).
 pub struct NewCx {
     rec: Recorder,
     backend: Rc<RefCell<SceneHost>>,
@@ -190,7 +188,7 @@ impl NewCx {
     }
 }
 
-/// Run `scenario` in `mode` against the new core, returning the
+/// Run `scenario` in `mode` against `runtime-scene`, returning the
 /// serialized (header-less) step body.
 pub fn run_scenario_new(scenario: &NewScenario, mode: Mode) -> String {
     let rec = Recorder::default();
@@ -228,17 +226,17 @@ pub fn run_scenario_new(scenario: &NewScenario, mode: Mode) -> String {
 /// a matching README entry.
 pub const NEWCORE_OVERRIDES: &[(&str, Mode)] = &[("nested_when_in_each_row", Mode::Spliced)];
 
-/// Absolute path of a new-core override golden.
+/// Absolute path of a sanctioned-divergence override golden.
 pub fn newcore_golden_path(name: &str, mode: Mode) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("goldens_newcore")
         .join(format!("{name}.{}.golden", mode.suffix()))
 }
 
-/// Canonicalize a golden text for the new-core comparison:
+/// Canonicalize a golden text for comparison:
 ///
-/// 1. drop `#` header/comment lines (the shared goldens carry the
-///    old-core header; the new runner emits none),
+/// 1. drop `#` header/comment lines (the shared goldens carry a header;
+///    this runner emits none),
 /// 2. strip first-fire anchor clears — a `clear_children nX` line
 ///    IMMEDIATELY following `create nX anchor` (sanctioned divergence #2;
 ///    the adjacency makes the pattern unambiguous: an anchor with content
@@ -267,14 +265,14 @@ pub fn normalize(text: &str) -> String {
     out.join("\n")
 }
 
-/// New-core test entry point: run the named scenario in `mode` against
+/// Test entry point: run the named scenario in `mode` against
 /// `runtime-scene` and assert the (normalized) op sequence matches the
 /// shared golden — or the explicit `goldens_newcore/` override for the
 /// sanctioned-divergence pairs.
 ///
 /// With `UPDATE_NEWCORE_GOLDENS=1`, (re)writes the override file instead —
 /// but ONLY for pairs in [`NEWCORE_OVERRIDES`]; everything else must match
-/// the shared golden, which belongs to the old core.
+/// the shared golden, which has no generator.
 pub fn check_new(name: &str, mode: Mode) {
     let all = new_scenarios();
     let scenario = all

@@ -117,10 +117,9 @@ stylesheet! {
 
 // ---- Sidebar ---------------------------------------------------------------
 
-// The sidebar's own scroll surface. The legacy drawer SDK wrapped its
-// leading slot in a scroll view; the AppShell panel is a plain
-// fixed-height surface, so the sidebar provides its own. Carries the
-// same `color-surface` background the SDK wrapper did, so SidebarBody's
+// The sidebar's own scroll surface: the AppShell panel is a plain
+// fixed-height surface, so the sidebar provides its own. Carries
+// `color-surface`, so SidebarBody's
 // deliberate lack of `min_height: 100%` (see the note there) doesn't
 // leave a transparent gap below short content.
 stylesheet! {
@@ -297,8 +296,8 @@ stylesheet! {
             color: Tokenized::token("color-text", Color("#1f2328".into())),
             // The code surface's inset, INSIDE the block's scroll region
             // (the codeblock SDK diverts it to the text widget's insets
-            // on native), so it scrolls with the content. The SDK used to
-            // bake this 20 into each native handler; it's author-driven now.
+            // on native), so it scrolls with the content. Author-driven:
+            // the SDK's native handlers bake in no inset of their own.
             padding: 20.0,
         }
         transitions {
@@ -398,9 +397,8 @@ stylesheet! {
     }
 }
 
-// (Props-table styling now lives in idea-ui's themed `Table` /
-// `TableCell` components — this file no longer needs PropsTable /
-// PropCell* sheets.)
+// (Props-table styling lives in idea-ui's themed `Table` / `TableCell`
+// components.)
 
 // ---- Callout (tips / notes / cross-links) ---------------------------------
 

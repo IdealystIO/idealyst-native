@@ -14,9 +14,8 @@
 //! <workspace>/target/idealyst/<project>/ssr/wrapper/
 //! ```
 //!
-//! whose `src/main.rs` calls `backend_ssr::serve(...)` with the user's
-//! `app` + `register_ssr_extensions`. Two modes, picked at run time
-//! via CLI args (so one binary serves both):
+//! whose `src/main.rs` serves the user's `app`. Two modes, picked at
+//! run time via CLI args (so one binary serves both):
 //!
 //! - **default (hydrate)** — emits `<script>import init from "<bundle>"</script>`
 //!   so the live web bundle (`dist/web/pkg/<lib>.js`) boots and adopts
@@ -61,8 +60,7 @@ pub struct BuildOptions {
     /// whenever the paired wasm bundle is a premint build, so the server
     /// stamps the same deterministic `iy-*` classes the hydrating client
     /// stamps (the `IntoStyleProp` premint fast path is cfg-gated).
-    /// Mismatched postures re-introduce the hydration style divergence
-    /// the old `--premint × --ssg/--ssr` bail refused.
+    /// Mismatched postures diverge in hydration styles.
     pub premint: bool,
     /// Also set `--cfg idealyst_premint_only` (engine + rule closures
     /// compiled out; non-premintable styles panic, same clean-app
@@ -122,8 +120,7 @@ fn binary_name(project_name: &str) -> String {
 }
 
 /// Materialize the wrapper crate at `wrapper_dir`. Idempotent —
-/// overwrites whatever was there. Public so a future
-/// `idealyst scaffold ssr` command can drive the same generator.
+/// overwrites whatever was there.
 ///
 /// The generated binary renders through
 /// `backend_ssr::newcore::{render_all, serve}` with the user's
@@ -139,9 +136,6 @@ pub fn generate_wrapper(
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
     let bin_name = binary_name(&manifest.name);
-    // `new-core` compiles backend-ssr's per-request-`World` render path.
-    // The feature is vacuous once backend-ssr makes its contents
-    // unconditional; drop it from this list at that point.
     let bssr_dep = source.dep("crates/backend/ssr", &["serve"]);
 
     // Bake the favicon `<link>` snippet into the wrapper. Empty
@@ -412,9 +406,9 @@ fn main() {{
 ///   on RUSTFLAGS, so one dir for both would rebuild the whole native graph
 ///   on every flip. Kept apart, each caches across its own builds.
 ///
-/// It used to be the project's shared `target/` for non-premint builds;
-/// that ruled out a lock seeded from the app's and the post-build prune
-/// (see `build_ios::wrapper_target_dir`).
+/// Never the project's shared `target/`: that rules out a lock seeded
+/// from the app's and the post-build prune (see
+/// `build_ios::wrapper_target_dir`).
 pub fn ssr_target_dir(wrapper_dir: &Path, premint: bool) -> PathBuf {
     if premint {
         wrapper_dir.join("target-premint")
@@ -567,7 +561,7 @@ mod wrapper_template_tests {
         generate_wrapper(wrapper, &world.app, &world.source(), &manifest, premint).expect("generate wrapper");
     }
 
-    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the SSR
+    /// Regression (the iOS wrapper's twin): the SSR
     /// wrapper deleted its `Cargo.lock` on every generation, so each run
     /// resolved the registry's newest versions instead of the app's locked
     /// ones — a different graph from the app's and a new generation of the
@@ -626,8 +620,7 @@ mod wrapper_template_tests {
 
     /// The wrapper renders through `backend_ssr::newcore::{render_all,
     /// serve}` with the scene-registry seam, and takes a plain
-    /// `features = ["ssr"]` dep on the user crate — no core pin, since
-    /// there is one core.
+    /// `features = ["ssr"]` dep on the user crate — no core pin.
     #[test]
     fn wrapper_uses_newcore_entries_and_scene_seam() {
         let (main_rs, cargo_toml) = generated_wrapper();
@@ -706,7 +699,7 @@ mod wrapper_template_tests {
 
     /// The premint server build must inject the SAME cfgs the wasm build
     /// injects, or the two sides of hydration disagree about premint
-    /// posture — the exact divergence the old bail refused.
+    /// posture.
     #[test]
     fn premint_build_sets_cfgs_and_isolates_target_dir() {
         assert_eq!(

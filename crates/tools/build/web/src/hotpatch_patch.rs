@@ -9,12 +9,8 @@
 //! [`crate::hotpatch_prepare`] turns those answers into the plan the page
 //! loads the patch with.
 //!
-//! The patch itself used to be rewritten here — every import turned into
-//! a local `call_indirect` stub, every `GOT` import into a constant — by a
-//! walrus pass that parsed and re-emitted the whole patch on every save
-//! (0.7–1.0 s on CrewForge). The page now supplies those imports directly
-//! (`backend_web::hot_patch`), so nothing is rewritten; see
-//! `hotpatch_prepare` for what replaced it.
+//! The patch itself is not rewritten: the page supplies its imports
+//! directly (`backend_web::hot_patch`); see `hotpatch_prepare` for why.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,7 +29,7 @@ pub struct BaseIndex {
     /// function in the table.
     pub ifunc: HashMap<String, u32>,
     /// Names the base actually exports — an import matching one of
-    /// these needs no rewriting at all.
+    /// these is supplied from the runtime's exports as is.
     pub exports: HashSet<String>,
     /// Data symbol name → its absolute address in the base's memory.
     pub data: HashMap<String, u32>,
@@ -42,8 +38,7 @@ pub struct BaseIndex {
     /// `hotpatch_prepare` compares a patch's import against). The page
     /// passes a base function to the patch as ITSELF, and an import of
     /// the wrong type fails the whole instantiation — so a disagreement
-    /// is caught here and the import made to trap instead, as the old
-    /// `call_indirect` stub's signature check did.
+    /// is caught here and the import made to trap on call instead.
     pub slot_sigs: HashMap<u32, String>,
     /// Every function the base HAS, under every name the linker knew
     /// it by.
@@ -57,11 +52,12 @@ pub struct BaseIndex {
 }
 
 impl BaseIndex {
-    /// Read a wasm-bindgen'd base module: its table, its exports, and
-    /// its data symbols.
+    /// Read the served base module: its table, its exports, and its data
+    /// symbols.
     ///
     /// `aliases` is [`crate::hotpatch_aliases`]'s name-to-name map, read
-    /// from the module BEFORE wasm-bindgen renumbered it.
+    /// from the LINKED module (before base prep, and in hybrid mode
+    /// wasm-bindgen, renumbered it).
     /// Without it every symbol the linker knew by a second name — 4,060
     /// of them on the hot-reload lab, `<usize as Display>::fmt` among
     /// them — looks absent, and the patch is refused over functions that
@@ -75,10 +71,9 @@ impl BaseIndex {
         aliases: &crate::hotpatch_aliases::AliasMap,
         data: &crate::hotpatch_aliases::DataSymbols,
     ) -> Result<Self> {
-        // One streaming pass. The walrus parse this replaced built IR for
-        // every function body only to read the table, the names and the
-        // types: 4–6.5 s on CrewForge's base, in the background after
-        // every rebuild but in front of any save made during it.
+        // One streaming pass, not a walrus parse: that builds IR for every
+        // function body only to read the table, the names and the types —
+        // 4–6.5 s on CrewForge's base, in front of any save made during it.
         let parsed = scan(wasm).context("parsing the base module")?;
         let mut ifunc = HashMap::new();
         let mut slot_sigs = HashMap::new();

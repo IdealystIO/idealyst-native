@@ -34,15 +34,11 @@ use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 /// whether a symbol gets a code trampoline (Text), a TLS init-data
 /// stub (Tls), or an absolute-address data symbol (everything else).
 ///
-/// Pre-v2, the cache only stored the address and the stub blindly
-/// generated code trampolines for every resolved symbol. That broke
-/// TLS access in patched code — the dylib's `ldr x16, [tlv_desc];
-/// blr x16` would read the first 8 bytes of the trampoline (which is
-/// `movz x16 / movk x16, lsl #16`) as a function pointer, branch to
-/// that garbage address, and SIGBUS-crash the sidecar partway through
-/// the patched component's body. The Text/Tls/Data dispatch in the
-/// stub generator (mirroring dx's `create_undefined_symbol_stub`)
-/// fixes that, but it needs the kind from here to make the decision.
+/// A code trampoline for a TLS symbol SIGBUS-crashes the sidecar: the
+/// dylib's `ldr x16, [tlv_desc]; blr x16` reads the trampoline's
+/// `movz`/`movk` bytes as a function pointer. The stub generator's
+/// Text/Tls/Data dispatch (mirroring dx's `create_undefined_symbol_stub`)
+/// avoids that, and needs the kind from here to decide.
 #[derive(Clone)]
 pub struct CachedSymbol {
     pub address: u64,

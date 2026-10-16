@@ -47,11 +47,8 @@ full_golden_new!(nav_swap_dispose_evict_spliced, "nav_swap_dispose_evict", Mode:
 full_golden_new!(nav_stack_push_pop_spliced, "nav_stack_push_pop", Mode::Spliced);
 
 /// The full-op scenario registry is FROZEN: this literal is the
-/// (name, modes) inventory the old walker's `src/scenarios_full.rs`
-/// registry carried when `goldens_full/` was generated. It replaces the
-/// live `full_new_registry_matches_old` mirror, which needed the deleted
-/// walker-side registry to compare against, and preserves the same
-/// guarantee: no scenario silently disappears or loses a mode.
+/// (name, modes) inventory `goldens_full/` was recorded for, so no
+/// scenario silently disappears or loses a mode.
 const FROZEN_FULL_SCENARIO_REGISTRY: &[(&str, &[Mode])] = &[
     ("full_static_kitchen_sink", &[Mode::Spliced]),
     ("full_reactive_text", &[Mode::Spliced]),

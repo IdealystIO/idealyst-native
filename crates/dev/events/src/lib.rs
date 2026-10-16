@@ -1,18 +1,16 @@
 //! The dev loop's lifecycle, as data.
 //!
-//! `idealyst dev` used to report what it was doing with `eprintln!` from
-//! six crates. That is fine for a human reading a scrolling terminal and
-//! useless for anything else: an editor cannot tell "a patch landed"
-//! from "a build failed" without scraping text, and a status panel
-//! cannot show "building, 212/480 crates" at all, because nothing ever
-//! said so.
+//! Plain `eprintln!` lines serve a human reading a scrolling terminal
+//! and nothing else: an editor cannot tell "a patch landed" from "a
+//! build failed" without scraping text, and a status panel cannot show
+//! "building, 212/480 crates" unless something says so.
 //!
 //! So every fact the dev loop reports is a [`DevEvent`], emitted through
 //! a [`Reporter`], and fanned out to [`Sink`]s:
 //!
-//! - [`PlainLines`] renders each event as the line the CLI printed
-//!   before events existed (see [`plain`]), so a terminal, a CI log or
-//!   the MCP dev-runner's log file sees exactly what it always did;
+//! - [`PlainLines`] renders each event as a human-readable terminal line
+//!   (see [`plain`]) for a terminal, a CI log or the MCP dev-runner's
+//!   log file;
 //! - [`JsonLines`] writes one JSON object per event — the hook for
 //!   editors and tools (`idealyst dev --events-file <path>`);
 //! - [`Queue`] buffers events for a consumer that drains them on its own
@@ -346,7 +344,7 @@ impl Diagnostic {
 
 /// What a page reported back after the dev loop pushed something to it.
 ///
-/// These are the facts the browser used to print only to its own
+/// These are facts the browser otherwise knows only in its own
 /// console (`[idealyst] hot patch: 3 function(s) redirected`), carried
 /// back over the reload stream's ack endpoint so the terminal knows the
 /// save actually landed — not just that it was sent.
@@ -1089,8 +1087,8 @@ mod tests {
             ".!21378!app.rs",
             "app.rs~",
             "#app.rs#",
-            // CrewForge, 2026-10-01: a temp-and-rename save (Claude
-            // Code's Edit/Write) and GNU `sed -i`.
+            // A temp-and-rename save (editor/agent writes) and GNU
+            // `sed -i`.
             "skeleton.rs.tmp.20647.8b2d7e43908b",
             "skeleton.rs.tmp",
             "sedAaNZmz",

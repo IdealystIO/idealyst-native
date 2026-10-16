@@ -94,7 +94,8 @@ pub enum BuildMode {
     /// `runtime-server` on, doesn't depend on the user crate, exports
     /// `Java_<pkg>_NativeBridge_attachRuntimeServer(ctx, root, appId)` +
     /// `_drainRuntimeServer()` + `_detach()`. UI runs on the dev-host;
-    /// commands stream over a WebSocket discovered via Bonjour.
+    /// commands stream over a WebSocket at the URL the CLI bakes into
+    /// the manifest.
     RuntimeServer,
 }
 
@@ -270,10 +271,6 @@ fn ndk_toolchain_bin(ndk_home: &Path) -> Result<PathBuf> {
 /// and `Java_com_example_nicho_portfolio_NativeBridge_attachRuntimeServer`
 /// fails to dlsym because the Kotlin runtime mangles the same
 /// method as `Java_com_example_nicho_1portfolio_NativeBridge_…`.
-///
-/// Pre-fix this function rejected `_`/`$` outright and asked the
-/// author to rename their bundle id — fine for greenfield projects
-/// but not viable for established packages.
 fn bundle_id_to_jni_package(bundle_id: &str) -> Result<String> {
     if bundle_id.is_empty() {
         anyhow::bail!("bundle id is empty");
@@ -326,26 +323,18 @@ fn generate_wrapper(
     // simulator's wgpu surface stays blank. Mirrors the iOS wrapper,
     // whose backend-ios-mobile dep enables `async-driver` for the same
     // reason.
-    //
-    // `new-core` compiles the backend's boot path
-    // (`newcore::start`/`stop` + the Host/caps impls and flush driver)
-    // that `attach` below calls into. The feature is vacuous once
-    // backend-android-mobile makes its contents unconditional; drop it
-    // from this list at that point.
     let bandroid_local_dep =
         source.dep("crates/backend/android/mobile", &["async-driver"]);
     let bandroid_aas_dep = source.dep(
         "crates/backend/android/mobile",
         &["runtime-server", "async-driver"],
     );
-    // First-party SDKs bundled into the runtime-server client so their
-    // native chrome (Drawer navigator, code block, table) renders over
-    // the wire on device. They depend on `backend-android-mobile`, so
-    // the backend can't depend on them (Cargo cycle) — they're pulled
-    // in here at the generated wrapper, which sits above both. The
-    // wrapper calls each SDK's `register` via
-    // `attach_with_url_with_register`. Mirrors the per-app web wrapper's
-    // `register_extensions` and the iOS `backend-ios-rs-shell`.
+    // First-party SDKs linked into the runtime-server client (Drawer
+    // navigator, code block, table). They depend on
+    // `backend-android-mobile`, so the backend can't depend on them
+    // (Cargo cycle) — they're pulled in here at the generated wrapper,
+    // which sits above both. Nothing registers them client-side: their
+    // scene handlers run on the host (see `attachRuntimeServerUrl` below).
     let drawer_navigator_dep = source.dep("crates/sdk/client/navigators/drawer", &[]);
     let codeblock_dep = source.dep("crates/sdk/client/codeblock", &[]);
     let table_dep = source.dep("crates/sdk/client/table", &[]);
@@ -481,9 +470,9 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
         let context_global = env.new_global_ref(&context).expect("new_global_ref context");
         let root_global = env.new_global_ref(&root).expect("new_global_ref root");
 
-        // Register the project's identity for the Robot bridge mDNS
-        // advertisement. Bridge thread (started inside `mount`) reads
-        // from here when binding + advertising. No-op without `dev`.
+        // Register the project's identity for the Robot bridge's
+        // discovery registration. The bridge thread reads it when it
+        // binds and registers. No-op without `dev`.
         #[cfg(feature = "dev")]
         {{
             ::runtime_shared::robot::bridge::set_app_identity(
@@ -500,8 +489,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
             root_global,
         )));
         // Install a `Weak` self-handle so cross-platform animation
-        // drivers (the welcome example's `drive_av` and equivalents)
-        // can reach the backend through `backend_android::set_animated_*`
+        // drivers can reach the backend through `backend_android::set_animated_*`
         // without threading the `Rc<RefCell<>>` through every closure.
         // Same shape as `backend_ios::install_global_self`. Must be
         // called BEFORE `mount`, because `app()` subscribes the AVs
@@ -643,10 +631,10 @@ pub extern "system" fn Java_{jni}_NativeBridge_deliverLink<'local>(
 }}
 
 /// Export the robot relay URL (baked into the manifest meta-data by
-/// `idealyst dev` + reached via `adb reverse`) so the Robot bridge's walker
+/// `idealyst dev` + reached via `adb reverse`) so the Robot bridge
 /// DIALS the host relay instead of self-hosting a device-local TCP listener.
-/// Called from MainActivity BEFORE `attach`, so it's set before `mount` runs
-/// the walker. NOT gated on the wrapper's `dev` feature — it just sets an
+/// Called from MainActivity BEFORE `attach`, so it's set before the bridge
+/// starts. NOT gated on the wrapper's `dev` feature — it just sets an
 /// env var, a no-op in release where the meta-data is absent so Java
 /// never calls it.
 #[no_mangle]
@@ -686,7 +674,7 @@ use jni::JNIEnv;
 /// Stand up the runtime-server client against the dev-server URL the
 /// CLI baked into the manifest's `IdealystRuntimeServerUrl` meta-data
 /// entry. The Activity reads that value from the manifest and passes
-/// it here. mDNS / Bonjour is no longer used.
+/// it here.
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_attachRuntimeServerUrl<'local>(
     mut env: JNIEnv<'local>,
@@ -703,7 +691,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_attachRuntimeServerUrl<'local>(
                 return;
             }}
         }};
-        // No client-side SDK registration. Under runtime v2 an SDK
+        // No client-side SDK registration. An SDK
         // primitive is a scene payload whose handler installs on a
         // `runtime_scene::Registry<H>`, and in runtime-server mode the
         // scene is realized on the HOST against
@@ -711,10 +699,7 @@ pub extern "system" fn Java_{jni}_NativeBridge_attachRuntimeServerUrl<'local>(
         // `register_scene_extensions_recorder` seam). So the handler
         // already ran server-side and what arrives here is ordinary
         // primitive commands — there is nothing for the client to
-        // register. The old body called each SDK's
-        // `register(&mut AndroidBackend)`, which was the old-core
-        // `Element::External` client registry; that registry is gone.
-        // (Delta, hot-reload only: an SDK that type-dispatches to a
+        // register. (Delta, hot-reload only: an SDK that type-dispatches to a
         // backend-CONCRETE handler — e.g. `codeblock`'s native Android
         // mount — renders its portable variant here, because the
         // registry it sees is the recorder's. Local device builds go
@@ -780,10 +765,9 @@ pub extern "system" fn Java_{jni}_NativeBridge_notifyConfigChanged<'local>(
 /// dedupes consecutive identical reports and emits an
 /// `AppToDev::ViewportChanged` only on real changes.
 ///
-/// Pre-fix the Android shell shipped `viewport: None` in its
-/// Hello (since `View.getWidth()` is zero in `onCreate`) and
-/// never recovered, leaving the sidecar's `RecordingViewOps::
-/// frame()` reads stuck on the 393×800 mobile fallback.
+/// The Hello can't carry the viewport (`View.getWidth()` is zero in
+/// `onCreate`), so without these reports the sidecar's
+/// `RecordingViewOps::frame()` reads stay on the 393×800 mobile fallback.
 #[no_mangle]
 pub extern "system" fn Java_{jni}_NativeBridge_reportViewport<'local>(
     _env: JNIEnv<'local>,
@@ -870,10 +854,9 @@ fn wrapper_package_name(manifest: &Manifest, mode: BuildMode) -> String {
 /// Where the wrapper builds: a target dir PRIVATE to it
 /// ([`build_ios::wrapper_target_dir`]).
 ///
-/// It used to share the project's `target/` to reuse compiled
-/// dependencies, but nothing else builds for `aarch64-linux-android`
-/// there — the reuse was only host proc-macros and build scripts — while
-/// the sharing ruled out the two things that keep the wrapper's disk use
+/// Not the project's `target/`: nothing else builds for
+/// `aarch64-linux-android` there, so sharing would reuse only host
+/// proc-macros and build scripts, while it rules out the two things that keep the wrapper's disk use
 /// bounded: a lock seeded from the app's (identically-resolved units from
 /// two workspaces interleaved in one dir is the duplicate-crate failure
 /// the Linux builder hit), and pruning every unit no wrapper variant
@@ -914,13 +897,11 @@ fn cargo_build(wrapper_dir: &Path, spec: &target_gc::BuildSpec<'_>, features: &[
 
 #[cfg(test)]
 mod tests {
-    //! Regression coverage for the JNI bundle-id mangler.
-    //!
-    //! Pre-fix the function rejected `_` and `$` outright — usable
-    //! reverse-DNS bundle ids like `com.example.nicho_portfolio`
-    //! were unbuildable. Fix maps these per the JNI Native Method
-    //! Naming spec so the emitted `Java_<pkg>_NativeBridge_…`
-    //! symbols match what Kotlin/Java's runtime mangler produces.
+    //! Regression coverage for the JNI bundle-id mangler: `_` and `$`
+    //! in a bundle id (`com.example.nicho_portfolio`) must be escaped
+    //! per the JNI Native Method Naming spec so the emitted
+    //! `Java_<pkg>_NativeBridge_…` symbols match what Kotlin/Java's
+    //! runtime mangler produces.
     use super::bundle_id_to_jni_package;
 
     #[test]
@@ -933,9 +914,8 @@ mod tests {
 
     #[test]
     fn underscores_escape_as_underscore_one() {
-        // Real-world case from the nicho-portfolio scaffolding —
-        // the user has `_` in their bundle id and (pre-fix) the
-        // Android build refused to proceed.
+        // Real-world case from the nicho-portfolio scaffolding: a
+        // `_` in the bundle id.
         assert_eq!(
             bundle_id_to_jni_package("com.example.nicho_portfolio").unwrap(),
             "com_example_nicho_1portfolio",
@@ -1103,11 +1083,6 @@ mod regression_tests {
         );
     }
 
-    /// The Local wrapper boots the scene core: `backend-android-mobile`
-    /// carries the boot feature, `attach` mounts `scene_app()` through
-    /// `newcore::start` with the app's registry-generic
-    /// `register_scene_extensions` seam, and `detach` calls
-    /// `newcore::stop()`. The user-crate dep pins no core feature.
     /// Every `native` method `NativeBridge.java` declares must have a JNI
     /// export in the generated local wrapper — a missing one is an
     /// `UnsatisfiedLinkError` the first time Java calls it (for the link
@@ -1135,6 +1110,10 @@ mod regression_tests {
         assert!(lib_rs.contains("backend_android::newcore::deliver_inbound_link("));
     }
 
+    /// The Local wrapper boots the scene core: `attach` mounts
+    /// `scene_app()` through `newcore::start` with the app's
+    /// registry-generic `register_scene_extensions` seam, and `detach`
+    /// calls `newcore::stop()`. The user-crate dep pins no core feature.
     #[test]
     fn local_wrapper_boots_scene_core_with_registration_seam() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
@@ -1204,8 +1183,8 @@ mod regression_tests {
         .expect("regenerate wrapper");
     }
 
-    /// Regression (same bug as iOS, CrewForge 2026-10-08): the wrapper's
-    /// lock was DELETED on every generation, so every build re-resolved
+    /// Regression (same bug as iOS): the wrapper's lock was DELETED on
+    /// every generation, so every build re-resolved
     /// against the registry — a different graph from the app's lock and a
     /// new generation of the tree per framework release. It must instead
     /// be seeded from the app's lock and then left alone while that lock

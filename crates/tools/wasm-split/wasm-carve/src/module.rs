@@ -99,8 +99,8 @@ pub struct ModuleIndex<'a> {
     pub elems: Vec<Elem>,
     pub data: Vec<DataSegment>,
     pub data_count: Option<u32>,
-    /// Payload offset of the code section: relocation and walrus
-    /// `original_range` offsets count from here.
+    /// Payload offset of the code section: relocation offsets (and
+    /// `graph::walrus_range`) count from here.
     pub code_payload_start: usize,
     /// Per defined function: the entry INCLUDING its size prefix, and the
     /// body alone.

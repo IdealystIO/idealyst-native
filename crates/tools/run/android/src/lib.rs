@@ -75,8 +75,9 @@ pub struct RunOptions {
     /// missing meta-data is treated as a build error (there's no
     /// fallback discovery).
     pub runtime_server_port: Option<u16>,
-    /// Cargo features to enable on the build. `idealyst dev` passes
-    /// `runtime-core/dev` here so the Robot bridge auto-starts.
+    /// Cargo features to enable on the build. `idealyst dev` passes the
+    /// wrapper's `dev` feature (→ `runtime-core/dev`) here so the Robot
+    /// bridge auto-starts.
     pub user_features: Vec<String>,
     /// Robot relay URL (`ws://127.0.0.1:<port>`) the dev process hosts. When
     /// set, we (a) `adb reverse tcp:<port> tcp:<port>` so the emulator's
@@ -207,7 +208,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     let manifest_xml = build_dir.join("AndroidManifest.xml");
     // The runtime-server manifest carries an `IdealystAppId` meta-data entry
     // (Bonjour filter key) plus an optional `IdealystRuntimeServerUrl` override.
-    // When `aas_port` is set, we bake `ws://127.0.0.1:<port>` so the
+    // When `runtime_server_port` is set, we bake `ws://127.0.0.1:<port>` so the
     // emulator skips discovery and connects directly through the
     // `adb reverse` tunnel set up just before install. Empty string
     // means "fall through to Bonjour at runtime" — right shape for

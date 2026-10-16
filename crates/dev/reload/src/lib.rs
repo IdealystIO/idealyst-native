@@ -2,11 +2,10 @@
 //!
 //! On a source change under the project's `src/` (or its `Cargo.toml`):
 //!
-//! 1. Delegate to [`build_web::build`], which regenerates the
-//!    `target/idealyst/<name>/web/wrapper/` crate, runs `wasm-pack`
-//!    against the wrapper, and copies the resulting `pkg/` into the
-//!    user project. The user crate stays a plain `rlib` — no
-//!    `web.rs`, no `cdylib` crate-type, no `wasm-bindgen` dep.
+//! 1. Delegate to [`build_web::build`], which builds the app crate for
+//!    `wasm32-unknown-unknown`, packages the bundle (web glue, and
+//!    `wasm-bindgen` only for hybrid apps), and stages the resulting
+//!    `pkg/`.
 //! 2. Bump a shared generation counter on success and notify waiters.
 //!
 //! That counter is the contract with `dev-http`: every connected
@@ -16,10 +15,9 @@
 //! fixes the error.
 //!
 //! runtime-server mode reuses this path with `user_features =
-//! vec!["dev-hot-reload"]`; `build-web`'s wrapper grows a matching
-//! `[features]` block that forwards the flag to the user-crate dep,
-//! so the resulting wasm connects to the host's WebSocket instead
-//! of rendering the local `app()` tree.
+//! vec!["dev-hot-reload"]`, enabled on the user crate, so the resulting
+//! wasm connects to the host's WebSocket instead of rendering the local
+//! `app()` tree.
 
 /// The overlay's build-time half, re-exported.
 ///
@@ -52,13 +50,12 @@ const DEBOUNCE_MS: u64 = 50;
 /// The tree does not change one batch at a time: format-on-save writes a
 /// file twice, a multi-file refactor or a second agent writes several, a
 /// `git checkout` rewrites dozens — a *sequence* of batches spread over
-/// hundreds of milliseconds to seconds. Each batch used to start its own
-/// build, and since a build is slower than the burst, the queue never
-/// drained. Then a 400 ms quiet window was waited out before every
-/// build, which fixed the storm but was half of a small app's whole
-/// save-to-screen time (save to replay start ~475 ms, of ~630 ms).
+/// hundreds of milliseconds to seconds. A build per batch never drains
+/// (a build is slower than the burst), and a quiet window before every
+/// build costs about half of a small app's save-to-screen time (~475 ms
+/// of ~630 ms).
 ///
-/// Now the work starts at once, and a batch that arrives while it runs
+/// So the work starts at once, and a batch that arrives while it runs
 /// supersedes it ([`run_save`]): the work is abandoned (a hot patch's
 /// replays are killed) and restarted on everything changed since, so a
 /// burst still ends in one applied result from the final contents.
@@ -1089,13 +1086,11 @@ const TARGET: &str = "web";
 /// path / workspace-member crate it actually pulls in.
 ///
 /// This deliberately follows the RESOLVED GRAPH rather than the project
-/// directory. The watch set used to be `[<dir>/src, <dir>/Cargo.toml]`
-/// and nothing else, which is correct only for a single-crate app. The
-/// moment shared UI moves into a sibling crate — the normal shape once
-/// an app grows, and the universal shape in a multi-app workspace —
-/// edits to that crate changed the built wasm but triggered no rebuild.
-/// The failure mode is silent: no error, no log line, just a browser
-/// serving an hours-old bundle while every save appears to succeed.
+/// directory. Watching only `[<dir>/src, <dir>/Cargo.toml]` is correct
+/// only for a single-crate app: once shared UI lives in a sibling crate,
+/// edits there change the built wasm but trigger no rebuild — silently,
+/// with the browser serving a stale bundle while every save appears to
+/// succeed.
 ///
 /// Registry and git dependencies are skipped: cargo reports them with a
 /// non-null `source`, and they cannot change under a running dev
@@ -1105,7 +1100,7 @@ const TARGET: &str = "web";
 /// the app too; the printed watch list is what makes that visible.
 ///
 /// Best-effort: if cargo can't be run, or its output doesn't parse,
-/// fall back to the old single-crate set. A dev session that watches
+/// fall back to the single-crate set. A dev session that watches
 /// too little beats one that refuses to start.
 pub fn watch_roots(manifest_path: &Path) -> Vec<PathBuf> {
     let dir = manifest_path.parent().unwrap_or(Path::new("."));
@@ -1673,8 +1668,8 @@ fn watch_loop(
         run_save(&rx, &saves, vec![first], Duration::from_millis(MAX_COALESCE_MS), |batch, token| {
             // Every batch's paths, not only the first's: a multi-file save
             // arrives as several batches, and a file only a later batch
-            // named used to be left out of the decision (its crate's other
-            // edits then went out as an overlay patch alone, or not at all).
+            // names must still be in the decision (else its crate's other
+            // edits go out as an overlay patch alone, or not at all).
             // A restart after a superseded attempt gets the union too.
             let forced = batch.iter().any(|m| matches!(m, WatchMsg::Rebuild));
             let mut changed_paths = Vec::new();
@@ -1786,7 +1781,7 @@ fn watch_loop(
 
             reporter.emit(dev_events::DevEvent::BuildStarted { target: TARGET.into(), cause });
             // Not killed when superseded: the build writes the served
-            // bundle in place (wasm-bindgen output, the staged copy), and a
+            // bundle in place (`pkg/` output, the staged copy), and a
             // kill mid-packaging would leave a half-written bundle for the
             // next page load; a SIGKILLed cargo also orphans the rustc
             // processes under it. So it runs to the end and, if a newer
@@ -1930,7 +1925,7 @@ fn watch_loop(
             }
 
             // No `drain` here either: cargo writes under `target/` and
-            // wasm-bindgen under `pkg/`, neither watched, so whatever queued
+            // the bundler under `pkg/`, neither watched, so whatever queued
             // during the build is a save — decided next, against the archive
             // `rebuild_with_snapshot` installed from the sources the build
             // started from.
@@ -2234,10 +2229,8 @@ fn handle_save(
 ///
 /// `then` gets the build's result BEFORE the scan is waited for: it is
 /// where the caller publishes the reload, and the page must not wait on
-/// the scan. It used to: the rebuild joined the scan first, and on
-/// CrewForge (32 crates, every one rescanned) that held the reload ~7 s
-/// past a 6 s build, with nothing in the event stream to say why. The
-/// scan describes the build for the NEXT save's decision, which is the
+/// the scan (on a 32-crate workspace, joining it first held the reload
+/// ~7 s past a 6 s build). The scan describes the build for the NEXT save's decision, which is the
 /// only thing that needs it — and the loop takes no save until this
 /// returns, so no decision is made against a half-installed workspace.
 ///
@@ -2713,12 +2706,11 @@ where
             let (tx, rx) = mpsc::channel();
             let saves = Arc::new(SaveLog::default());
             let counted = saves.clone();
-            // The bundle watcher's two filters (see `watch_and_rebuild`):
+            // The bundle watcher's two filters (see `watch_loop`):
             // a batch that repeats bytes already seen is dropped here, and
             // one naming only scratch files is no work below. Without them
-            // a temp-then-rename save started a full server build on the
-            // temp file's batch (CrewForge: `[server] changed:` with no
-            // path, a 7 s cargo pass, then the real save after it).
+            // a temp-then-rename save starts a full server build on the
+            // temp file's batch, then another for the real save.
             let mut seen = SeenContent::default();
             let mut debouncer = match new_debouncer(Duration::from_millis(DEBOUNCE_MS), move |r| {
                 match seen.classify(&r) {
@@ -3497,7 +3489,7 @@ mod tests {
     /// The full-stack server's watcher reports each save it sees as a
     /// `change_detected` (the saved files, without editor scratch files)
     /// before the build it runs, so the server's row and the page's badge
-    /// can say what changed — it used to report only `build_started`.
+    /// can say what changed, not only `build_started`.
     #[test]
     fn a_labelled_watcher_reports_the_change_before_its_build() {
         let dir = tempfile::tempdir().unwrap();
@@ -3644,8 +3636,8 @@ mod tests {
         );
     }
 
-    /// Regression (CrewForge, 2026-10-01): a temp-and-rename save — every
-    /// Claude Code Edit/Write, and GNU `sed -i` — never hot-patched. The
+    /// Regression: a temp-and-rename save (editor/agent writes, GNU
+    /// `sed -i`) never hot-patched. The
     /// watcher delivered the temp file alone in one batch; it read as an
     /// empty save, which rebuilds, and the renamed file's batch then
     /// superseded that rebuild and owed a reload. A batch of only scratch

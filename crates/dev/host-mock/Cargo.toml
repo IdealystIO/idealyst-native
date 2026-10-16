@@ -1,8 +1,6 @@
 # host-mock — the permanent test substrate: a first-class
-# `runtime_scene::Host` + all-30-`runtime_vocabulary::caps::*Ops`
-# recording mock. It replaced the per-suite `impl Backend for Mini`
-# combos when the old walker was deleted, and is now the canonical way
-# to unit-test vocabulary handlers, SDK components, and anything that
+# `runtime_scene::Host` + every-`runtime_vocabulary::caps::*Ops`
+# recording mock: the canonical way to unit-test vocabulary handlers, SDK components, and anything that
 # mounts through `runtime_scene::realize`. See src/lib.rs for the op-log
 # format and the harness idioms.
 

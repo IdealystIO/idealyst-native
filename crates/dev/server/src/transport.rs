@@ -396,7 +396,7 @@ where
     // One-time hint when the host runs but no client ever attaches.
     // In sidecar mode the Robot bridge (and its `screenshot` verb) is
     // registered *per session*, on the session thread the sidecar spins
-    // up only when a client connects (see `run_session_thread`). The
+    // up only when a client connects (see `run_session_thread_newcore`). The
     // `idealyst dev --web` + `server_bin` topology serves a standalone
     // wasm bundle that runs the app *in the browser* — that browser is
     // not a runtime-server client, so the host never gets a session, the
@@ -615,7 +615,7 @@ fn accept_new(
                         continue;
                     }
                 };
-                // `initial_url` is no longer dropped: it is the ONLY
+                // `initial_url` is forwarded: it is the ONLY
                 // URL the sidecar ever sees. The app runs natively
                 // there, so `window.location` does not exist and every
                 // navigator would otherwise open on its configured

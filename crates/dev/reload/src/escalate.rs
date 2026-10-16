@@ -225,9 +225,9 @@ mod tests {
     /// Regression: "static props don't hot reload at all". A literal edit
     /// to a component prop decides as an overlay patch; when the page
     /// acks it with `refused` (a `#[prop(static)]` prop nothing
-    /// re-renders), the save used to stop there, parked on "waiting for
-    /// the next render" forever. Now the ack wakes the loop and the save
-    /// goes out as the hot patch that carries it.
+    /// re-renders), the save must not park on "waiting for the next
+    /// render" forever: the ack wakes the loop and the save goes out as
+    /// the hot patch that carries it.
     #[test]
     fn regression_static_prop_literal_edit_is_never_parked_on_overlay() {
         let tmp = tempfile::tempdir().unwrap();

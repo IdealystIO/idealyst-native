@@ -4,9 +4,9 @@
 //!
 //! What is pinned:
 //!
-//! - registering every component adds NO host node (the old `#[method]`
-//!   link wrapped each component in a `Dyn` hole, an anchor on anchored
-//!   hosts — dev and release trees differed);
+//! - registering every component adds NO host node (regression: wrapping
+//!   each component in a `Dyn` hole put an anchor on anchored hosts, so
+//!   dev and release trees differed);
 //! - each instance links to the element it renders as, nested components
 //!   sharing one element outer-first, so the bridge's `components` field
 //!   on a tree node reads as the RENDERED hierarchy;
@@ -57,7 +57,7 @@ fn Toggler(on: bool) -> Element {
     }
 }
 
-/// Carries `#[method]`s — the one kind of component the old link wrapped.
+/// Carries `#[method]`s — the component kind the registry links.
 #[component]
 fn Tally(initial: i32) -> Element {
     let value = signal(initial.get());
@@ -138,7 +138,7 @@ fn instance_of(name: &str) -> u64 {
 
 #[test]
 fn regression_registering_components_adds_no_host_node() {
-    // Anchored is the host kind the old wrapper added an anchor on.
+    // Anchored is the host kind where a wrapper would add an anchor.
     let m = mount(Mode::Anchored, || {
         ui! {
             view {
@@ -192,7 +192,7 @@ fn snapshot_nodes_carry_their_components_outer_first() {
     let (parent, _) = leaves.iter().find(|(_, n)| component_names(n) == ["Leaf"]).unwrap();
     assert_eq!(*parent, Some(element_id("card") as u64));
 
-    // An element no component links to keeps the old wire shape.
+    // An element no component links to carries no `components` field.
     let root = by_id(element_id("root") as u64).unwrap();
     assert!(root.get("components").is_none(), "{root}");
 }

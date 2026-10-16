@@ -298,10 +298,10 @@ pub struct Args {
     #[arg(long)]
     pub new_core: bool,
 
-    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing
-    /// this fails with the migration pointer rather than silently
-    /// running runtime v2 with old-core semantics expected
-    /// (`crate::core_mode`, `docs/migrating-to-runtime-v2.md`).
+    /// Rejected with a pointer to `docs/migrating-to-runtime-v2.md`: there
+    /// is no other runtime to select, and silently ignoring the flag would
+    /// let code written for the removed semantics diverge at runtime
+    /// instead (`crate::core_mode`).
     #[arg(long)]
     pub old_core: bool,
 
@@ -341,9 +341,8 @@ pub struct Args {
     /// Web + `--local` only: how much debug info each rebuild's wasm
     /// carries. `line-tables` (default) keeps panic traces mapping to
     /// source lines while dropping the DWARF for locals and types, which
-    /// on a large app is most of the module — and every byte is re-run
-    /// through wasm-bindgen and re-compiled by the browser on each
-    /// reload. `full` restores cargo's `debug = 2`; `none` drops it.
+    /// on a large app is most of the module — and every byte is
+    /// re-packaged and re-compiled by the browser on each reload. `full` restores cargo's `debug = 2`; `none` drops it.
     #[arg(long, default_value = "line-tables")]
     pub debuginfo: String,
 
@@ -354,7 +353,7 @@ pub struct Args {
     /// dependencies to `1`.
     ///
     /// `fast` cuts the cargo half but produces a ~37% larger module, and
-    /// wasm-bindgen + wasm-split are O(module size) and run on every
+    /// the packaging passes are O(module size) and run on every
     /// rebuild — so with incremental compilation on (cargo's default) it
     /// is a net LOSS end-to-end, on framework-crate and leaf edits alike.
     /// Reach for it when incremental is off (`CARGO_INCREMENTAL=0`, or
@@ -375,8 +374,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "no_split")]
     pub split: bool,
 
-    /// Accepted for compatibility: dev builds no longer split unless
-    /// `--split` is passed, so this is the default.
+    /// Hidden no-op: dev builds don't split unless `--split` is passed.
     #[arg(long, hide = true)]
     pub no_split: bool,
 
@@ -741,18 +739,16 @@ pub fn run(args: Args) -> Result<()> {
 
 
     // Full-stack projects declare a server (`server_bin` / `server_manifest`).
-    // NOTE: declaring a server used to SUPPRESS the runtime-server host
-    // ("it's a few hundred crates"). It no longer does. Wire mode is how
-    // a save becomes a hot patch instead of a full wasm rebuild, and an
-    // app large enough for that to matter is exactly the shape that
-    // declares a server — suppressing it there aimed the feature at the
-    // projects that need it least. The two coexist now: the project's
-    // own server keeps serving the bundle and the API, and the sidecar
-    // holds the reactive tree beside it (`launch_web_with_backend`).
+    // Declaring one does NOT suppress the runtime-server host: wire mode is
+    // how a save becomes a hot patch instead of a full wasm rebuild, and an
+    // app large enough for that to matter is exactly the shape that declares
+    // a server. The two coexist: the project's own server serves the bundle
+    // and the API, and the sidecar holds the reactive tree beside it
+    // (`launch_web_with_backend`).
     let _ = backend_declared;
 
     // The panel's fallback for output nothing captures. The web path's
-    // subprocesses no longer write to the terminal: cargo, wasm-bindgen,
+    // subprocesses don't write to the terminal: cargo, wasm-bindgen,
     // wasm-opt and the runtime-server host are all piped and their lines
     // arrive as events. The NATIVE targets' build crates (xcodebuild,
     // gradle, the app processes they launch) and a full-stack project's
@@ -772,7 +768,7 @@ pub fn run(args: Args) -> Result<()> {
     // server / inspector / evaluators the same way. Web-local injects the URL
     // into served HTML; desktop-native apps inherit IDEALYST_ROBOT_RELAY_URL
     // from our process env (run-macos / run-terminal don't clear it), so the
-    // walker dials the relay instead of self-hosting. The relay registers in
+    // app dials the relay instead of self-hosting. The relay registers in
     // ~/.idealyst/apps, so discovery is unchanged. Held for the whole session;
     // if it can't start, native apps fall back to self-hosting a TCP bridge.
     let robot_relay = if !args.no_robot && wants_robot_relay(&args, &active_targets) {
@@ -854,9 +850,8 @@ pub fn run(args: Args) -> Result<()> {
         // and every line becomes an event, and the host (and the sidecar
         // it runs) emit their save-path facts as marked event lines
         // (`dev_events::child`) instead of plain text. Nothing it prints
-        // reaches the terminal directly — which is what used to force a
-        // separate `dev-host.log` whenever the panel or a `--terminal`
-        // app owned the TTY; its lines are in the session log now.
+        // reaches the terminal directly, so the panel or a `--terminal`
+        // app can own the TTY; its lines land in the session log.
         cmd.env(dev_events::child::ENV, dev_events::child::ENV_STDERR)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -882,16 +877,10 @@ pub fn run(args: Args) -> Result<()> {
         // Block until the host writes its bound port. Every platform
         // launcher needs this to bake `IDEALYST_DEV_ENDPOINT`.
         //
-        // 10s used to be "generous — `TcpListener::bind` returns
-        // synchronously". That was true when the host bound first and
-        // did nothing else. It now parses the sidecar binary's symbol
-        // table for the hot-patch cache and scans the crate's `ui!`
-        // sites for the overlay tier BEFORE it binds, and both scale
-        // with the app. On CrewForge they exceeded ten seconds, and the
-        // session died claiming the host had crashed — while the host
-        // was busy, and wrote its port a moment later.
-        //
-        // Sixty seconds, because the failure this guards against is a
+        // The host parses the sidecar binary's symbol table for the
+        // hot-patch cache and scans the crate's `ui!` sites for the
+        // overlay tier BEFORE it binds, and both scale with the app — on
+        // a large app well past ten seconds. Sixty seconds, because the failure this guards against is a
         // host that never starts at all, and waiting a minute to say so
         // costs nothing next to killing a session that was working.
         match read_host_port_file(&port_file, std::time::Duration::from_secs(60)) {
@@ -1395,28 +1384,13 @@ fn build_runtime_server_host(dir: &Path, app_features: &[String]) -> Result<Path
     Ok(artifact.host_binary)
 }
 
-/// Cargo features every dev web bundle is built with.
-///
-/// `runtime-core/dev` activates the Robot bridge auto-start + the MCP
-/// catalog inventory. `robot` resolves to `idealyst/robot`
-/// (`feature_spec` in build-web) and is what compiles in the relay
-/// dial-out that `idealyst::boot::web` gates behind
-/// `#[cfg(feature = "robot")]` — without it the browser app cannot dial
-/// the relay no matter what URL it is handed.
-///
-/// Shared by BOTH web paths. The full-stack path used to build with no
-/// features at all, which is why robot-on-web silently never worked for
-/// a project declaring a `server_bin` / `server_manifest`: the relay
-/// started and registered in `~/.idealyst/apps`, so discovery looked
-/// healthy, and every verb then failed with "no app connected".
 /// Whether the subsecond hot-patch tier is armed for this session.
 ///
 /// Off when splitting: the splitter moves functions into lazy chunks and
 /// renumbers the main module's table, so a patch built against the base
 /// would pair with the wrong slots or with nothing. Rather than build a
 /// patch per save and watch it fail, the tier stands down and body edits
-/// rebuild — which is what `--split` sessions did before it existed.
-/// Splitting is off by default in dev precisely because it is a
+/// rebuild. Splitting is off by default in dev precisely because it is a
 /// deploy-time concern, so this is armed for the ordinary session.
 fn hot_patch_armed(args: &Args) -> bool {
     args.local && !args.split
@@ -1447,6 +1421,18 @@ fn web_dev_features_with(no_robot: bool, hot_patch: bool) -> Vec<String> {
     f
 }
 
+/// Cargo features every dev web bundle is built with.
+///
+/// `runtime-core/dev` activates the Robot bridge auto-start + the MCP
+/// catalog inventory. `robot` resolves to `idealyst/robot`
+/// (`feature_spec` in build-web) and is what compiles in the relay
+/// dial-out that `idealyst::boot::web` gates behind
+/// `#[cfg(feature = "robot")]` — without it the browser app cannot dial
+/// the relay no matter what URL it is handed.
+///
+/// Shared by BOTH web paths. A full-stack bundle built without them
+/// still registers its relay in `~/.idealyst/apps`, so discovery looks
+/// healthy while every verb fails with "no app connected".
 fn web_dev_features(no_robot: bool) -> Vec<String> {
     let mut f = vec!["runtime-core/dev".to_string()];
     if !no_robot {
@@ -1812,12 +1798,9 @@ fn launch_web(
                     // reaches this bundle as ordinary wire commands.
                     // See docs/hot-reload.md.
                     features: vec![
-                        // Wrapper-local feature; MUST match the
-                        // template's declaration or the
-                        // `user_feature_forwards` filter would emit
-                        // `runtime-server = ["<user>/runtime-server"]`
-                        // and require every user crate to declare an
-                        // unused `runtime-server` feature.
+                        // A framework feature: build-web resolves it to
+                        // `idealyst/runtime-server` (`FRAMEWORK_FEATURES`),
+                        // so the user crate needn't declare it.
                         "runtime-server".to_string(),
                     ],
                     bundle_out_dir: None,
@@ -2257,9 +2240,6 @@ fn launch_ssr(
                 hot_patch: false,
                 debuginfo: build_web::DebugInfo::from_cli(&args.debuginfo)?,
                 dev_opt: build_web::DevOpt::from_cli(&args.dev_opt)?,
-                // Follows the session's resolved core (runtime-v2
-                // defaults flip) so the served SSR HTML and the
-                // hydrating bundle agree on a core.
                 reporter: dev_events::global(),
                 },
         )
@@ -2274,9 +2254,8 @@ fn launch_ssr(
             release: false,
             source: source.clone(),
             user_features: app_feature_specs(&project_app_name(dir), &args.features),
-            // Follows the session's resolved core (runtime-v2
-            // defaults flip). Premint posture mirrors the wasm leg above
-            // so server-stamped classes match the hydrating bundle's.
+            // Premint posture mirrors the wasm leg above so
+            // server-stamped classes match the hydrating bundle's.
             premint: args.premint || args.premint_only || args.premint_report,
             premint_only: args.premint_only,
             premint_report: args.premint_report,
@@ -2314,40 +2293,6 @@ fn launch_ssr(
     }
 }
 
-/// Full-stack web launcher. Used when the project's manifest declares a
-/// server — either an in-crate `server_bin` or a standalone
-/// `server_manifest` workspace. The server serves both the API
-/// (`/_srv/*` via `server::router()`) AND the wasm UI at `/`, so the
-/// browser loads from the server's origin and server-fn calls + the
-/// session cookie are same-origin.
-///
-/// Both server shapes serve the bundle from the directory the CLI hands
-/// them as `WEB_DIST` — the dev session's own staging dir
-/// ([`dev_web_bundle_dir`]), never `<project>/dist/web`. What differs is
-/// only *how* we refresh after a rebuild:
-///
-/// - **In-crate** (`server_bin` only): the server resolves `WEB_DIST`
-///   first and falls back to `CARGO_MANIFEST_DIR/dist/web` for a plain
-///   `cargo run` (see
-///   `crates/api/server/examples/server-fn-demo/src/bin/server.rs`).
-///   We stage the full bundle into the dev dir and **restart the
-///   server** on each rebuild (cargo re-runs, picking up server-code
-///   changes too), then refresh.
-/// - **Standalone** (`server_manifest`): the server is its own workspace
-///   serving a fully-staged bundle (`WEB_DIST`) over `ServeDir`, so we
-///   stage the **full** bundle there each rebuild and leave the server
-///   running — it serves the files statically, so a browser refresh
-///   picks up the new wasm with no restart.
-///
-/// The invariant either way: dev stages where the server reads, and the
-/// server reads where dev tells it to. Before this was fixed the in-crate
-/// path staged to `<project>/pkg` (the `dev_reload` default) while its
-/// server read `dist/web`, so every save rebuilt a bundle the browser
-/// never loaded — stale content across refreshes and restarts. The fix
-/// for THAT staged dev into `dist/web` itself, which is the artifact dir
-/// `idealyst build --web` writes — and produced the race documented on
-/// [`dev_web_bundle_dir`].
-///
 /// Where the dev loop builds AND runs the project's server.
 ///
 /// Never the workspace's own `target/`. Cargo takes an exclusive lock on
@@ -2375,8 +2320,8 @@ fn launch_ssr(
 /// unattended cloud box that trade is backwards: nothing there runs
 /// rust-analyzer, the agent's own `cargo test` is the only other cargo
 /// in the tree, and serialising the two on one lock is what stops them
-/// running concurrently into swap. Measured on the CrewForge fleet
-/// (agentstats, 2026-09-10): the isolated dir cost every box a 344-crate
+/// running concurrently into swap. Measured on the CrewForge fleet: the
+/// isolated dir cost every box a 344-crate
 /// cold build of `crewforge-api --features server` that the workspace
 /// target already held, and the same artifact a third time for
 /// `cargo test`. Shared, the seed's one warm build serves all three.
@@ -2388,8 +2333,8 @@ fn server_target_dir(project_dir: &Path, shared: bool) -> PathBuf {
         // The PROJECT's workspace target, as cargo itself resolves it —
         // NOT `framework_source::cargo_target_dir`, which for a
         // registry-sourced app is `<app crate>/target`, a directory
-        // nothing else in the tree builds into. Measured on the
-        // CrewForge probe box (2026-09-10): that path gave the dev
+        // nothing else in the tree builds into. Measured on a
+        // CrewForge box: that path gave the dev
         // server a cold 19-minute build of the server binary into a
         // third 7 GB copy of the dependency graph, concurrent with the
         // agent's `cargo test`, which is the exact contention the flag
@@ -2467,16 +2412,11 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// `idealyst build --web` (and `run server`) — the build ARTIFACT a
 /// deploy script snapshots — while the dev loop restages on every save,
 /// from a process that is running whenever anyone is working on the
-/// tree. When both wrote the same directory the collision was the normal
-/// state of a tree with a dev session in it, not a corner case: the
-/// window between `idealyst build --web --release` returning and the
-/// deploy script copying is minutes long on a real app, and a save
-/// inside it replaced the release bundle with a debug one. CrewForge
-/// shipped an 83 MB debug wasm whose `index.html` dialled the dev-reload
-/// socket on `127.0.0.1` (2026-09-10), and the same race overwrote its
-/// SSG output mid-deploy on 2026-08-19. Nothing in the pipeline could
-/// notice, because the directory it trusted was being written by two
-/// tools.
+/// tree. Sharing the directory makes the collision the normal state, not
+/// a corner case: a save between `idealyst build --web --release`
+/// returning and the deploy script copying replaces the release bundle
+/// (or SSG output) with a debug one whose `index.html` dials the
+/// dev-reload socket on `127.0.0.1` — and nothing downstream can notice.
 ///
 /// The dev bundle is scratch and lives with the session's other scratch
 /// — `target/idealyst/dev/web` already holds the static path's overlay
@@ -2501,12 +2441,6 @@ fn dev_web_bundle_dir(project_dir: &Path) -> PathBuf {
         .join("web")
 }
 
-/// Build options for the full-stack path's web bundle.
-///
-/// Split out as a pure function so the robot wiring is testable: the
-/// loop it feeds spawns cargo, a file watcher and a server child, and
-/// the bug it guards against (see [`web_dev_features`]) was invisible
-/// for exactly as long as nothing asserted on these values.
 /// The livereload + overlay `<script>` for the full-stack shape.
 ///
 /// A full-stack project's own server hands out `index.html` and
@@ -2531,6 +2465,12 @@ fn full_stack_reload_script(sse_port: Option<u16>) -> Option<String> {
     ))
 }
 
+/// Build options for the full-stack path's web bundle.
+///
+/// Split out as a pure function so the robot wiring is testable: the
+/// loop it feeds spawns cargo, a file watcher and a server child, and
+/// the bug it guards against (see [`web_dev_features`]) was invisible
+/// for exactly as long as nothing asserted on these values.
 fn full_stack_bundle_options(
     args: &Args,
     source: &build_ios::FrameworkSource,
@@ -2560,7 +2500,7 @@ fn full_stack_bundle_options(
         features,
         // Stage the full bundle into the dev staging dir for BOTH
         // shapes — it's the dir the server is told to serve (`WEB_DIST`).
-        // `None` here (the old in-crate value) would sync `pkg/` into
+        // `None` here would sync `pkg/` into
         // the project root instead, which no server reads → stale
         // browser.
         bundle_out_dir: Some(dist_web),
@@ -2625,10 +2565,8 @@ fn full_stack_bundle_options(
 /// dirs, so different cargo locks — see [`builds_contend`]) and reports
 /// as `target: server` events, its row exists from the session's first
 /// event (`session_started.server`), and it is announced with
-/// `server_ready{full_stack}` once its port accepts connections. It used
-/// to be built by `cargo run` after the bundle, with its output straight
-/// on the terminal and nothing in the event stream: a session compiling
-/// a server for minutes showed no sign one existed.
+/// `server_ready{full_stack}` once its port accepts connections, so a
+/// session compiling a server for minutes shows that it is doing so.
 ///
 /// The page is served by that server, so a reload must never race its
 /// restart: a server build holds the page's reloads
@@ -3575,9 +3513,9 @@ impl DevAction {
 /// The load-bearing rule is that `bundle_moved` ALONE never restarts the
 /// server. A bundle rebuild republishes static files the running server
 /// reads at request time; killing the process to publish them takes the
-/// port down for a compile and buys nothing. This used to be
-/// standalone-only, and the in-crate shape paid a full `cargo run`
-/// compile — with the port closed — on every UI-only save.
+/// port down for a compile and buys nothing — for the in-crate shape
+/// too, where it would cost a full `cargo run` compile on every UI-only
+/// save.
 fn dev_action(bundle_moved: bool, server_moved: bool) -> DevAction {
     match (bundle_moved, server_moved) {
         (false, false) => DevAction::Idle,
@@ -3613,49 +3551,15 @@ impl BinStamp {
     }
 }
 
-/// Resolve what the server's watcher needs: the source roots to watch,
-/// and a closure that rebuilds it and reports whether the binary moved.
-///
-/// Handles BOTH full-stack shapes:
-///
-/// - **standalone** (`server_manifest`) — a different dependency closure,
-///   typically its own workspace, overlapping the app only on the crate
-///   declaring the `#[server]` fns. That overlap is the interesting case:
-///   one edit there has to rebuild the bundle AND the server.
-/// - **in-crate** (`server_bin` alone) — the same closure the bundle
-///   watcher follows, built with `--features server`. It gets a watcher
-///   anyway, because a watcher is what makes "build, THEN restart"
-///   possible; the old code restarted straight off the bundle signal and
-///   compiled with the port closed.
-///
-/// The closure runs `cargo build`, not `cargo run` — the caller owns the
-/// child, and building separately means a compile error leaves the
-/// running server alone instead of taking the port down.
-///
-/// It narrows to `--bin <server_bin>` when the app declares one, which
-/// also keeps the rebuild cheap: a server package commonly carries a
-/// pile of sibling bins (seeders, migrations, one-off tools), and
-/// linking them all on every save is slow enough to OOM a container.
-/// Declaring `server_bin` alongside `server_manifest` is worth it for
-/// that alone.
-///
-/// `--message-format=json-render-diagnostics` is what lets the closure
-/// find the binary without guessing profile/target-dir layout: cargo
-/// still renders rustc diagnostics to stderr (so compile errors stay
-/// readable in the dev log) while stdout carries one JSON record per
-/// artifact, and the `executable` field of the last `compiler-artifact`
-/// names exactly what was produced.
 /// The cargo arguments that select the project's server for a build —
 /// the package, the manifest, the feature, the bin — WITHOUT the verb or
 /// the target dir, so `build`, `check` and `run` can all agree on what
 /// "the server" is.
 ///
-/// One function, because it used to be written out in
-/// `server_watch_setup` and again in `spawn_backend`, and the comment
-/// beside each said the other must match or `cargo run` recompiles
-/// what `cargo build` just produced. `idealyst check` needed a third
-/// copy to type-check the server half at all, which is one copy past
-/// the point where a comment is a substitute for a function.
+/// One function because `server_watch_setup`, `spawn_backend` and
+/// `idealyst check` must agree exactly — if `cargo run` selects anything
+/// different from `cargo build`, it recompiles what the build just
+/// produced.
 ///
 /// Returns the manifest whose source tree owns the server (what the
 /// dev loop watches) alongside the args.
@@ -3722,6 +3626,38 @@ struct ServerBuildShared {
 /// then runs, reporting whether the binary moved.
 type ServerBuild = Box<dyn FnMut() -> Result<dev_reload::Rebuilt> + Send + 'static>;
 
+/// Resolve what the server's watcher needs: the source roots to watch,
+/// and a closure that rebuilds it and reports whether the binary moved.
+///
+/// Handles BOTH full-stack shapes:
+///
+/// - **standalone** (`server_manifest`) — a different dependency closure,
+///   typically its own workspace, overlapping the app only on the crate
+///   declaring the `#[server]` fns. That overlap is the interesting case:
+///   one edit there has to rebuild the bundle AND the server.
+/// - **in-crate** (`server_bin` alone) — the same closure the bundle
+///   watcher follows, built with `--features server`. It gets a watcher
+///   anyway, because a watcher is what makes "build, THEN restart"
+///   possible — restarting straight off the bundle signal compiles with
+///   the port closed.
+///
+/// The closure runs `cargo build`, not `cargo run` — the caller owns the
+/// child, and building separately means a compile error leaves the
+/// running server alone instead of taking the port down.
+///
+/// It narrows to `--bin <server_bin>` when the app declares one, which
+/// also keeps the rebuild cheap: a server package commonly carries a
+/// pile of sibling bins (seeders, migrations, one-off tools), and
+/// linking them all on every save is slow enough to OOM a container.
+/// Declaring `server_bin` alongside `server_manifest` is worth it for
+/// that alone.
+///
+/// `--message-format=json-render-diagnostics` is what lets the closure
+/// find the binary without guessing profile/target-dir layout: cargo
+/// still renders rustc diagnostics to stderr (so compile errors stay
+/// readable in the dev log) while stdout carries one JSON record per
+/// artifact, and the `executable` field of the last `compiler-artifact`
+/// names exactly what was produced.
 fn server_watch_setup(
     dir: &Path,
     manifest: &build_ios::Manifest,
@@ -4174,15 +4110,6 @@ fn spawn_worker(
     cmd.spawn().context("spawn worker (`cargo run`)")
 }
 
-/// Open the browser at the project's web URL once the server is
-/// actually accepting connections. Background-threaded because
-/// `serve_static` blocks the caller.
-///
-/// Host translation: the server may bind `0.0.0.0` / `::` to expose
-/// over LAN, but the *connect* address has to be loopback —
-/// `http://0.0.0.0:…` doesn't resolve in any browser. We rewrite any
-/// wildcard host to `localhost`.
-///
 /// Launch the headless web client once the server's listener is up (same
 /// TCP-poll dance as [`spawn_browser_opener`]). The browser `Child` goes into
 /// `children` so Ctrl-C / MCP `stop_dev` teardown kills it with the session.
@@ -4214,6 +4141,15 @@ fn spawn_headless_client(host: &str, port: u16, dir: &Path, children: Arc<Mutex<
     });
 }
 
+/// Open the browser at the project's web URL once the server is
+/// actually accepting connections. Background-threaded because
+/// `serve_static` blocks the caller.
+///
+/// Host translation: the server may bind `0.0.0.0` / `::` to expose
+/// over LAN, but the *connect* address has to be loopback —
+/// `http://0.0.0.0:…` doesn't resolve in any browser. We rewrite any
+/// wildcard host to `localhost`.
+///
 /// If `open` (macOS) / `xdg-open` (Linux) / `start` (Windows) isn't
 /// available, or the TCP poll times out, we exit silently — the URL
 /// is already logged above, so the user can click that.
@@ -4226,11 +4162,9 @@ fn spawn_browser_opener(host: &str, port: u16) {
     // then answered by whichever dialled — in practice the visible window, at
     // whatever size the user's display happens to be.
     //
-    // That silently invalidates a whole parity run: measured live, the visible
-    // window laid the page out at 1912x890 while the pinned headless client (and
-    // the native app it was being compared against) were at 1280x800, so every
-    // element differed in size and position and all 49 screens "failed". It also
-    // steals focus and pops a window in the user's face mid-test.
+    // The visible window lays the page out at the user's display size, not
+    // the pinned viewport, so every element of a parity run mismatches. It
+    // also steals focus mid-test.
     if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
         crate::dlog!(
             "dev web",
@@ -4465,11 +4399,8 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
     crate::dlog!("dev macos", "running detached ({})", artifact.binary.display());
 
     // Track the spawned macOS Child so the Ctrl-C handler can kill
-    // it on exit. Pre-fix, `cmd.spawn()` returned a `Child` that
-    // was immediately dropped, leaving the binary orphaned to
-    // `init` (PID 1) — every `idealyst dev --macos` session piled
-    // up one zombie `<project>-macos[-aas]` process per
-    // invocation, with no way to reach them short of `killall -9`.
+    // it on exit; a dropped `Child` orphans the app to `init`, leaving
+    // one stray `<project>-macos` process per session.
     if let Some(child) = artifact.child {
         // Record the app pid before moving the handle into `children`, so
         // the tail wait can detect window-close → app-exit and tear down.
@@ -4477,9 +4408,8 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
         children.lock().unwrap().push(child);
     }
 
-    // Legacy: write `.idealyst/catalog.path` too. Kept for back-
-    // compat with `bridge_discovery` path-walking callers; the
-    // registry is now the canonical source.
+    // Also write `.idealyst/catalog.path` for external tools that read
+    // it; the app registry (`~/.idealyst/apps`) is the canonical source.
     write_catalog_path(dir, &artifact.binary);
     // Record so the Ctrl-C handler can deregister.
     track_project_root(dir);
@@ -4487,10 +4417,9 @@ fn launch_macos(dir: &Path, args: &Args, children: Arc<Mutex<Vec<Child>>>, macos
 }
 
 /// Write `<project>/.idealyst/catalog.path` containing the absolute
-/// path to a binary that supports `--emit-catalog`. The MCP server
-/// discovers this file via `bridge_discovery` and auto-applies it as
-/// `--from-bin`. Best-effort — write failures are logged but don't
-/// fail the dev launch (the catalog tools will just return empty).
+/// path to a binary that supports `--emit-catalog`. No in-tree reader
+/// remains — the app registry is canonical. Best-effort — write failures
+/// are logged but don't fail the dev launch.
 fn write_catalog_path(project_dir: &Path, binary: &Path) {
     let target = project_dir.join(".idealyst").join("catalog.path");
     if let Some(parent) = target.parent() {
@@ -4794,10 +4723,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Full-stack + WIRE mode. A project declaring a server used to be
-    // excluded from the runtime-server host entirely, which aimed hot
-    // patching at the projects least likely to need it. These pin the
-    // shape of the loop now that the two coexist.
+    // Full-stack + WIRE mode: a project declaring a server still gets the
+    // runtime-server host. These pin the shape of that loop.
     // ---------------------------------------------------------------
 
     /// In wire mode the browser runs none of the app's code, so the
@@ -5570,7 +5497,7 @@ mod tests {
         assert_ne!(server_target_dir(&app, false), root.join("target"));
     }
 
-    /// Regression (CrewForge, 2026-10-08): two apps of one workspace that
+    /// Regression (CrewForge): two apps of one workspace that
     /// declare the same server package each built it into their own
     /// `<app>/target/idealyst-dev-server/` (27 + 22 GB of identical units)
     /// because the dir was rooted at the APP crate's `target/`. Both now
@@ -5706,7 +5633,7 @@ mod tests {
     /// deploy script snapshots. A save landing between the release build
     /// returning and the upload replaced the release bundle with a debug
     /// one; CrewForge shipped an 83 MB debug wasm dialling
-    /// `ws://127.0.0.1` that way (2026-09-10). The dev bundle must live
+    /// `ws://127.0.0.1` that way. The dev bundle must live
     /// under the project's `target/`, where nothing deployable is read
     /// from. Pinning the staging-dir helper directly (the full
     /// `launch_web_with_backend` / `launch_ssr` flows need `cargo` + the
@@ -5749,7 +5676,7 @@ mod tests {
         assert_eq!(opts.bundle_out_dir.as_deref(), Some(staged.as_path()));
     }
 
-    /// Regression (CrewForge, 2026-10-08): every app in a workspace builds
+    /// Regression (CrewForge): every app in a workspace builds
     /// its server into ONE `idealyst-dev-server/`, and nothing ever removed
     /// a superseded unit there — 22–27 GB per copy. Each server build now
     /// records its units under its own name, and the prune keeps the union:

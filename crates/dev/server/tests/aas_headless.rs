@@ -431,8 +431,8 @@ fn reset_log_and_scene_does_not_collide_minted_ids_with_cached_identities() {
     recorder.reset_log_and_scene();
 
     // Walk 2: the same three identities (which must reuse their cached
-    // ids) plus one NEW, unidentified emission. Pre-fix, `next_node =
-    // 0` made the new emission land on the cached View's id.
+    // ids) plus one NEW, unidentified emission. Resetting `next_node`
+    // to 0 would land the new emission on the cached View's id.
     let a = with_current_identity(ident(0), || {
         ViewOps::create_view(&mut recorder, &AccessibilityProps::default())
     });

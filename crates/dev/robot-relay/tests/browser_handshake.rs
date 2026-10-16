@@ -117,7 +117,7 @@ fn browser_dials_relay_and_robot_verbs_round_trip() {
     inject_relay_url(&staged.join("index.html"), &ws_url);
 
     // 3. Serve it (python3 maps .wasm → application/wasm on 3.11+, and
-    //    wasm-bindgen's loader falls back to arrayBuffer instantiation
+    //    the bundle's JS loader falls back to arrayBuffer instantiation
     //    otherwise — so MIME isn't load-bearing here).
     let serve_port = free_port();
     let server = Command::new("python3")

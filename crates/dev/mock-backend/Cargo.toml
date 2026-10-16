@@ -42,9 +42,9 @@ runtime-shared = { workspace = true, features = ["robot"] }
 wire = { workspace = true }
 dev-client = { workspace = true }
 # The recorder's caps adoption (`dev_server::newcore`) lets this crate's
-# `NewCoreWireHarness` mount scene trees through a per-session `World` +
+# `WireHarness` mount scene trees through a per-session `World` +
 # `realize` — the wire-behavior gate
-# (`tests/wire_behavior_newcore.rs`). Test-only crate, so the extra deps
+# (`tests/wire_behavior.rs`). Test-only crate, so the extra deps
 # cost nothing shipped.
 dev-server = { workspace = true }
 # Scene trees + world signals for the harness / tests.
@@ -60,8 +60,8 @@ runtime-server-shell-native = { workspace = true, features = ["runtime-server"] 
 headless-screenshot = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Frozen old-core wire snapshot for the cross-core wire gate, so it
-# survives the deletion of the old core. See tests/goldens/README.md.
+# Committed golden wire snapshot the wire-behavior gate compares
+# against. See tests/goldens/README.md.
 parity-goldens = { workspace = true }
 # Decode captured PNGs + parse the bridge JSON response in the
 # `screenshot`-feature integration tests.

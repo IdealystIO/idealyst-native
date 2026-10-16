@@ -2,7 +2,7 @@
 //! sitting between the TSX frontend and the idealyst Rust emitter.
 //!
 //! The IR captures *just enough* structure to drive deterministic
-//! lowering to `#[component]` + `signal!` + `jsx!`. Anything we
+//! lowering to `#[component]` + `signal()` + `jsx!`. Anything we
 //! can't (or shouldn't) translate mechanically is kept around
 //! verbatim as a [`SourceSnippet`] and emitted by the backend as a
 //! [`todo!("port: …")`] hole with the original code inline.

@@ -351,8 +351,8 @@ pub struct WebMetadata {
 impl AppMetadata {
     /// Borrow `bundle_id` or surface a helpful error pointing at
     /// the missing field. Called by every platform that needs the
-    /// bundle id — iOS, Android, runtime-server, the dev-mode bonjour service
-    /// name — so the diagnostic lands at the right time (when that
+    /// bundle id — iOS, Android, runtime-server, the Robot bridge's app
+    /// registration — so the diagnostic lands at the right time (when that
     /// platform was actually selected) instead of upfront in the
     /// shared CLI parser.
     pub fn require_bundle_id(&self) -> anyhow::Result<&str> {
@@ -637,8 +637,8 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("read {}", path.display()))?;
     // Distinguish "you pointed me at a workspace root" from a real
-    // malformed manifest. Pre-fix the user saw a cryptic
-    // `missing field \`package\`` from serde — the more common cause
+    // malformed manifest. serde's bare `missing field \`package\`` is
+    // cryptic, and the more common cause
     // (running `idealyst dev` from the repo root without naming a
     // project) deserves a hint.
     if let Ok(raw_value) = toml::from_str::<toml::Value>(&raw) {
@@ -739,12 +739,6 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
     })
 }
 
-// `find_workspace_root` was the legacy lax probe (`[workspace]` only).
-// It's been superseded by `source::FrameworkSource::detect` (returns
-// `Workspace` or falls back to `Git`) and `source::require_workspace_root`
-// (the strict variant for runtime-server / dev-server, which genuinely need the
-// in-tree checkout). Both live in [`source`].
-
 fn title_case(s: &str) -> String {
     s.split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
@@ -789,12 +783,6 @@ pub fn generate_wrapper(
     // apple-core). Without it, `spawn_async` falls back to `pollster::block_on`
     // on the main thread and a long-running future (`use_sse` / `use_socket`
     // recv loop) freezes the UI.
-    //
-    // `new-core` additionally compiles the backend's newcore module
-    // (Host + caps impls + `run_in_view` boot + dispatch-site flush
-    // driver) that `ios_main` below calls into. The feature is vacuous
-    // once backend-ios-mobile makes its contents unconditional; drop it
-    // from this list at that point.
     let bios_dep = source.dep("crates/backend/ios/mobile", &["async-driver"]);
     // Plain path dep on the user crate: the app's own defaults select
     // its prim families / feature set, and there is only one core.
@@ -909,8 +897,8 @@ pub unsafe extern "C" fn ios_main(root_view: *mut std::ffi::c_void) {{
         }}
     }});
 
-    // Register the project's identity for the Robot bridge mDNS
-    // advertisement (shared substrate — core-agnostic). No-op when the
+    // Register the project's identity for the Robot bridge's discovery
+    // registration (shared substrate — core-agnostic). No-op when the
     // `dev` feature is off (bridge isn't built).
     #[cfg(feature = "dev")]
     {{
@@ -1068,7 +1056,7 @@ fn wrapper_package_name(manifest: &Manifest) -> String {
 /// - **The artifact path** `build` returns. The cargo invocation pins
 ///   the dir with `CARGO_TARGET_DIR` ([`build_wrapper`]), which beats an
 ///   inherited `build.target-dir` or a user's global `CARGO_TARGET_DIR` —
-///   either of which used to send the build elsewhere and fail with
+///   either of which would send the build elsewhere and fail with
 ///   "staticlib was not produced".
 pub fn wrapper_target_dir(wrapper_dir: &Path) -> PathBuf {
     wrapper_dir.join("target")
@@ -1137,7 +1125,7 @@ pub fn build_wrapper(
 ///
 /// Deleting re-resolves every run against the registry, so the wrapper
 /// builds a graph the app never locked and each framework release becomes
-/// a new generation of every crate above it (CrewForge, 2026-10-08: 25
+/// a new generation of every crate above it (measured on CrewForge: 25
 /// framework crates at two versions in the iOS wrapper's target, 4.2 GB
 /// reclaimed by a GC).
 ///
@@ -1159,20 +1147,17 @@ pub fn build_wrapper(
 ///   mention of a lockfile.
 /// - **A published framework fix never arrives.** `cargo update` in the
 ///   app's workspace moves the workspace lock and nothing else; the
-///   wrapper resolves separately and stays where it was. Measured
-///   2026-09-14 against CrewForge: `backend-ios-mobile` was bumped
-///   1.8.3 → 1.8.8 in the workspace to pick up `virtual_grid` support
-///   on iOS, the app rebuilt clean, and the grid still drew "not
-///   supported on iOS" — because the wrapper was pinned at 1.8.5 and
-///   the backend was never recompiled.
+///   wrapper resolves separately and stays where it was: a backend
+///   bumped in the workspace rebuilds clean while the wrapper keeps
+///   compiling the old version.
 ///
 /// Seeding closes both (it re-seeds on every change to the app's lock).
 ///
 /// # Why seeding needs a private target dir
 ///
-/// Seeding was tried first in the Linux builder, back when it shared the
-/// workspace's `target/`, and the WORKSPACE build started failing with
-/// the duplicate-crate error: once both resolutions were identical, the
+/// Seeding into the workspace's shared `target/` makes the WORKSPACE
+/// build fail with the duplicate-crate error: once both resolutions are
+/// identical, the
 /// two builds' units of every path crate differed only in the workspace
 /// root cargo hashes their path relative to, and the project's next build
 /// linked a mixture. (The same failure later hit the unseeded shared
@@ -1340,9 +1325,6 @@ mod regression_tests {
         }
     }
 
-    /// `ios_main` boots through `backend_ios::newcore::run_in_view`,
-    /// enables `backend-ios-mobile/new-core`, and takes a plain path dep
-    /// on the user crate (no core pin — there is one core).
     /// The wrapper exports every symbol the local bridging header
     /// declares (Swift links against them — a missing one fails the app
     /// link), and the link entry points reach the inbound-link ingress.
@@ -1367,6 +1349,8 @@ mod regression_tests {
         assert!(lib_rs.contains("backend_ios::newcore::deliver_inbound_link("));
     }
 
+    /// `ios_main` boots through `backend_ios::newcore::run_in_view` and
+    /// takes a plain path dep on the user crate (no core pin).
     #[test]
     fn wrapper_boots_run_in_view_with_plain_user_dep() {
         let (wrapper_dir, _tmp) = run_generator();
@@ -1633,11 +1617,10 @@ mod regression_tests {
 
     // ── Wrapper inputs are stable across runs ─────────────────────────
     //
-    // CrewForge, 2026-10-08: the iOS wrapper re-resolved its lock on every
-    // run (`refresh_wrapper_lockfile` deleted it), so it built whatever the
-    // registry offered newest rather than what the app locked, and every
-    // release became a new generation of the whole tree beside the old one
-    // (25 framework crates at two versions, 4.2 GB reclaimed by a GC).
+    // A wrapper that re-resolves its lock every run builds whatever the
+    // registry offers newest rather than what the app locked, and every
+    // release becomes a new generation of the whole tree beside the
+    // previous one (see `refresh_wrapper_lockfile`).
 
     /// The shared offline world ([`crate::test_support::LockWorld`]) plus
     /// what the iOS wrapper names: `backend-ios-mobile` and stub `objc2*`.
@@ -1683,10 +1666,10 @@ mod regression_tests {
     }
 
     /// The wrapper must build the versions the APP locked, not re-resolve
-    /// to the newest the registry offers. Pre-fix the lock was deleted on
-    /// every generation, so cargo picked `fakedep` 1.1.0 although the app
-    /// is locked to 1.0.0 — a different graph from the app's, and a new
-    /// generation of the tree on every release.
+    /// to the newest the registry offers. With the lock deleted on every
+    /// generation, cargo picks `fakedep` 1.1.0 although the app is locked
+    /// to 1.0.0 — a different graph from the app's, and a new generation
+    /// of the tree on every release.
     #[test]
     fn regression_ios_wrapper_lock_reresolved_every_run() {
         let w = LockWorld::new();
@@ -1751,7 +1734,7 @@ mod regression_tests {
     }
 
     /// The wrapper builds into its OWN target dir, pinned on the cargo
-    /// command line — an inherited `build.target-dir` used to send it
+    /// command line — an inherited `build.target-dir` would send it
     /// elsewhere ("staticlib was not produced"), and the post-build prune
     /// deletes whatever no wrapper variant recorded.
     #[test]

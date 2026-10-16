@@ -11,20 +11,8 @@
 //! Symptom when it regresses: every planet stays at `opacity: 0` and the
 //! welcome text never fades in.
 //!
-//! On the old core this was the `mount(backend, app_fn)` vs
-//! `render(backend, app())` distinction — `render` invoked `app()`
-//! BEFORE the root scope existed, so the anchor was missing and the
-//! timer died. The sidecar had shipped the broken spelling.
-//!
-//! # Why this file changed shape
-//!
-//! The surviving core has exactly ONE boot entry
-//! ([`dev_server::newcore::SceneSession::mount`]), so the two-spelling
-//! trap it guarded is structurally gone — the deletion baseline files
-//! the old pair under DIES-legit for that reason (§4.3). What is NOT
-//! gone is the underlying requirement: `SceneSession::mount` must invoke
-//! `app()` somewhere that `after_ms_scoped` can anchor to, or the
-//! welcome bug comes straight back in a new spelling.
+//! The requirement: [`dev_server::newcore::SceneSession::mount`] must
+//! invoke `app()` somewhere that `after_ms_scoped` can anchor to.
 //!
 //! `SceneSession::mount` runs `app()` inside `World::enter` but OUTSIDE
 //! the `collect_owned` that `realize` opens. That still resolves an
@@ -81,10 +69,8 @@ fn regression_scene_session_mount_runs_after_ms_scoped_from_app_constructor() {
 /// **The inert half**, so the test above cannot pass vacuously.
 ///
 /// Called with NO ambient world, `after_ms_scoped` drops its task
-/// immediately — the documented old-core posture, carried over
-/// unchanged. This is the shape the old `render(backend, app())` spelling
-/// produced, reproduced here directly now that the spelling itself is
-/// gone.
+/// immediately (its documented posture) — the failure a boot that runs
+/// `app()` outside the world would produce.
 #[test]
 fn after_ms_scoped_outside_any_reactive_lifetime_is_inert() {
     scheduler::install();
@@ -108,9 +94,7 @@ fn after_ms_scoped_outside_any_reactive_lifetime_is_inert() {
 
 /// The mounted session records the app's tree as wire commands and ends
 /// the initial batch with `Finish`, so a replay client knows the mount is
-/// complete. (The old file asserted this implicitly by constructing a
-/// `WireRecordingBackend`; making it explicit keeps the target honest
-/// about what it drives.)
+/// complete.
 #[test]
 fn scene_session_mount_emits_a_finished_command_stream() {
     scheduler::install();

@@ -1,6 +1,6 @@
 //! Shared porter substrate.
 //!
-//! See `crates/port/README.md` for the design rationale. This
+//! See `crates/tools/port/README.md` for the design rationale. This
 //! crate exports:
 //!
 //! - the porter IR (`ir`),

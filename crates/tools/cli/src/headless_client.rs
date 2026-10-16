@@ -71,7 +71,7 @@ const EARLY_EXIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// new machine (a reclaimed cloud box), the lock names the dead host and
 /// Chromium refuses the profile and exits at once ("The profile appears
 /// to be in use by another Chromium process … on another computer"), so
-/// the page never loads and nothing connects (CrewForge, 2026-10-14).
+/// the page never loads and nothing connects.
 pub fn clear_stale_singleton(profile_dir: &Path) -> Vec<&'static str> {
     SINGLETON_FILES
         .iter()
@@ -146,7 +146,7 @@ pub fn launch(url: &str, profile_dir: &Path) -> Result<Child> {
             // renderer dies there SILENTLY (no console output, empty DOM) the
             // moment a multi-MB wasm app initializes — the page loads, the
             // app never mounts, the robot relay never sees a dial-in. Routes
-            // shared memory to /tmp instead. (Root-caused live 2026-07-20.)
+            // shared memory to /tmp instead.
             "--disable-dev-shm-usage",
             "--no-first-run",
             "--no-default-browser-check",
@@ -286,7 +286,7 @@ mod tests {
     fn regression_headless_auto_fires_only_with_relay_and_no_display() {
         // The bug this feature fixes: in a display-less container the web app
         // was served but never loaded, so the robot bridge never registered
-        // and MCP wait_for_app timed out (arena run-1, 2026-07-20).
+        // and MCP wait_for_app timed out.
         assert!(should_launch(false, false, true, false), "container + relay → auto");
         assert!(!should_launch(false, false, true, true), "desktop with display → no auto");
         assert!(!should_launch(false, false, false, false), "no relay → nothing to dial, no auto");

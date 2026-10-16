@@ -2,19 +2,12 @@
 //!
 //! ## Architecture
 //!
-//! The runtime-server dev host used to be a single binary that statically linked
-//! the user's crate (`docs`) alongside the WebSocket server, mDNS
-//! advertise, and the file-watch + rebuild loop. To load new user
-//! code after an edit, the entire process had to `execve` itself.
-//! Every reload tore down the TCP listening socket, which forced each
-//! connected client (Android, iOS) to reconnect and replay a full
-//! snapshot — incurring ~500ms of dead time per save.
-//!
-//! The split moves the user code into a *sidecar* child process. The
-//! parent ("host") keeps WS listeners, mDNS, and the watcher alive
+//! The user code runs in a *sidecar* child process. The parent ("host")
+//! keeps the WS listeners, mDNS advertise, and the file watcher alive
 //! across rebuilds; only the sidecar restarts. Clients never see a
-//! socket close, so the perceived hot-reload latency drops to roughly
-//! the build time.
+//! socket close, so a reload costs roughly the build time — no
+//! reconnect + full-snapshot replay per save, as a single process that
+//! `execve`s itself would force.
 //!
 //! ## Wire format on the IPC
 //!
@@ -55,7 +48,7 @@ use std::thread::JoinHandle;
 use wire::{AppToDev, Command};
 
 /// Frames going *from* the sidecar *to* the host. The sidecar runs
-/// the user's reactive runtime and emits these whenever the walker
+/// the user's reactive runtime and emits these whenever the session
 /// produces new wire commands — either at startup (initial snapshot)
 /// or in response to an inbound `Event`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,10 +333,10 @@ fn fulfill_frame_request(id: u64, result: FrameResult) {
 
 thread_local! {
     /// The current session thread's IPC sink — the shared stdout writer
-    /// and this session's id — so a `Backend::device_frame` call made on
+    /// and this session's id — so a `device_frame` call made on
     /// the session thread can issue a [`SidecarOut::QueryDeviceFrame`]
     /// and block for the reply. Set once at the top of
-    /// [`run_session_thread`]; `None` on any non-session thread (where
+    /// `run_session_thread_newcore`; `None` on any non-session thread (where
     /// `device_frame` then has no client to ask and returns `None`).
     static SESSION_SINK: std::cell::RefCell<Option<(Arc<Mutex<std::io::Stdout>>, String)>> =
         const { std::cell::RefCell::new(None) };
@@ -911,15 +904,11 @@ pub fn is_eof(e: &std::io::Error) -> bool {
 //
 // Compiled into the runtime-server *sidecar* binary — the worker that statically
 // links the user's crate and runs N independent author runtimes
-// (one per dev-host session) on dedicated threads. Pre-refactor this
-// code was inlined into the build-orchestrator's `format!` template
-// as ~310 lines of generated Rust; that meant every internal change
-// to `SidecarIn`/`SidecarOut` shape immediately broke any project
-// whose pinned framework rev predated the template change.
-//
-// Now the sidecar wrapper is a 4-line
-// `fn main() { run_newcore(my_crate::app, my_crate::register_scene_extensions_recorder) }`.
-// Internal refactors stop at this crate's boundary.
+// (one per dev-host session) on dedicated threads. The generated sidecar
+// wrapper is a one-liner —
+// `fn main() { run_newcore(my_crate::app, my_crate::register_scene_extensions_recorder) }` —
+// so changes to the `SidecarIn`/`SidecarOut` shape stop at this crate's
+// boundary instead of breaking projects whose generated wrapper predates them.
 
 // `mod runtime` itself is `runtime-server`-gated (the recorder-only
 // consumer — mock-backend's harness — uses `newcore::SceneSession`
@@ -938,7 +927,7 @@ mod runtime {
     // Device-frame request correlation + session-sink registration also
     // live in the parent module (process-global state shared with the
     // stdin reader): the `DeviceFrameResult` arm fulfills a blocked
-    // `device_frame` verb, and `run_session_thread` records the sink so
+    // `device_frame` verb, and `run_session_thread_newcore` records the sink so
     // `device_frame_over_wire` can reach the client. Both are
     // unconditional in this module (not screenshot-gated).
     use super::{fulfill_frame_request, set_session_sink};
@@ -1054,7 +1043,7 @@ mod runtime {
     ///
     /// `register` is the scene-registry seam (the recorder twin of the
     /// web wrapper's `register_scene_extensions`); the generated
-    /// `--new-core` sidecar wrapper passes the user crate's
+    /// sidecar wrapper passes the user crate's
     /// `register_scene_extensions_recorder`.
     ///
     /// Hot-patch note: the sidecar wrapper is built with
@@ -1078,11 +1067,10 @@ mod runtime {
         })
     }
 
-    /// Shared host-IPC loop behind [`run`] / [`run_newcore`]. The only
-    /// per-core difference is the session-thread body, so it arrives as
-    /// a closure; everything else (crash handler, scheduler install,
-    /// ASLR hello, session routing, patch fan-out, screenshot /
-    /// device-frame correlation) is identical for both cores.
+    /// The host-IPC loop behind [`run_newcore`]: crash handler, scheduler
+    /// install, ASLR hello, session routing, patch fan-out, screenshot /
+    /// device-frame correlation. The session-thread body arrives as a
+    /// closure.
     fn run_loop<F>(app_reference: u64, session_body: F) -> std::io::Result<()>
     where
         F: Fn(
@@ -1123,10 +1111,8 @@ mod runtime {
         //     pinned at their start value (welcome's planets never fade
         //     in past opacity 0; its sun never pulses).
         //
-        // The clock half was missed in the runtime-v2 migration: the old
-        // core installed it from `mount`, which the new-core boot does
-        // not run. Kept as one call so the pair cannot drift apart again
-        // — `scheduler::install_boot` is what the regression test pins.
+        // Kept as one call so the pair cannot drift apart —
+        // `scheduler::install_boot` is what the regression test pins.
         // Process-global; session threads stash their own closures in
         // thread-locals.
         crate::scheduler::install_boot();
@@ -1388,23 +1374,20 @@ mod runtime {
         runtime_vocabulary::viewport::viewport_ctx().set(size);
     }
 
-    /// New-core session worker — the [`run_session_thread`] twin for
-    /// scene mounts. Owns a `WireRecordingBackend` plus a
-    /// [`crate::newcore::SceneSession`] (per-session `World` +
-    /// realized scene). Differences from the old-core body, each
-    /// deliberate:
+    /// Session worker. Owns a `WireRecordingBackend` plus a
+    /// [`crate::newcore::SceneSession`] (per-session `World` + realized
+    /// scene).
     ///
     /// - **Mount**: `SceneSession::mount` (world + `register_builtins`
-    ///   + `realize` + `finish` + first flush) instead of
-    ///   `runtime_shared::mount`, wrapped in `dev_hot::with_retry` —
-    ///   subsecond's catch-unwind boundary for a stale `HotFnPanic`
-    ///   raised by a nested dispatch. (Subsecond 0.7 never raises one:
-    ///   `HotFn::try_call` returns `Ok` on every path, so the wrapper is
-    ///   a direct call today. It is here because the mount walk is the
-    ///   OUTERMOST frame that runs user component bodies — if a future
-    ///   subsecond reinstates the panic, this is the frame that has to
-    ///   catch it, and without it a stale call unwinds through the
-    ///   session thread and the UI silently freezes.)
+    ///   + `realize` + `finish` + first flush), wrapped in
+    ///   `dev_hot::with_retry` — subsecond's catch-unwind boundary for a
+    ///   stale `HotFnPanic` raised by a nested dispatch. (Subsecond 0.7
+    ///   never raises one, so the wrapper is a direct call today. It is
+    ///   here because the mount is the OUTERMOST frame that runs user
+    ///   component bodies — if a future subsecond reinstates the panic,
+    ///   this is the frame that has to catch it, and without it a stale
+    ///   call unwinds through the session thread and the UI silently
+    ///   freezes.)
     /// - **Event commit**: world signals have no ambient flush driver
     ///   on this thread, so every dispatched message is followed by
     ///   `session.flush()` BEFORE the command drain — that's what
@@ -1417,14 +1400,11 @@ mod runtime {
     ///   is built, and nothing re-builds a mounted tree on its own.
     ///   No rebuild, no relink, no respawn, no client reconnect: the
     ///   WebSocket and the session id both survive, and the client sees
-    ///   the new tree as ordinary wire commands.
-    ///   Node/style id memos survive the reset exactly as on the old
-    ///   core, but the new-core realize path doesn't set ambient
-    ///   identities yet, so remounts mint fresh ids and clients
-    ///   rebuild from the epoch-bumped snapshot (see
-    ///   `crate::newcore` module docs — named gap, not silent).
-    ///   Signal state does NOT survive a re-run today; that is the
-    ///   named gap tracked in `docs/hot-reload.md`.
+    ///   the new tree as ordinary wire commands. Signal values carry
+    ///   across via `runtime_world::hot_state` (harvest → seed). Realize
+    ///   doesn't set ambient identities, so remounts mint fresh node ids
+    ///   and clients rebuild from the epoch-bumped snapshot (see the
+    ///   `crate::newcore` module docs).
     fn run_session_thread_newcore(
         session: String,
         rx: mpsc::Receiver<SessionMsg>,
@@ -1435,7 +1415,7 @@ mod runtime {
         initial_url: Option<String>,
         platform: wire::WirePlatform,
     ) {
-        // Same thread-level installs as the old-core body: IPC sink for
+        // Thread-level installs: IPC sink for
         // device-frame round-trips, the Tokio-backed async executor,
         // and the session viewport (read by `RecordingViewOps::frame`).
         set_session_sink(out.clone(), session.clone());
@@ -1513,34 +1493,15 @@ mod runtime {
         };
 
         // -------------------------------------------------------------
-        // Robot bridge + MCP catalog for the new-core session (wave 2b).
-        // The old-core path gets all of this from `runtime_shared::mount`
-        // (bridge auto-start) + the walker (registry population); the
-        // scene mount does neither, so the session thread wires the
-        // three pieces explicitly:
-        //
-        // 1. DRIVER ENV — vocabulary robot queries must run with the
-        //    session's world entered (label_fn reads world signals) and
-        //    actions must settle synchronously (`SceneSession::flush`)
-        //    so a verb's staged writes commit before its reply — the
-        //    same contract backend-web installs in `robot_transport`.
-        // 2. VERB ROUTER — the shared TCP bridge dispatches against the
-        //    OLD registry, which a new-core session leaves empty (a
-        //    `find_element` would answer `null`, silently blinding
-        //    drivers). The router forwards verbs the vocabulary bridge
-        //    owns to `runtime_vocabulary::robot::bridge::invoke_command`
-        //    (wire-identical responses) and falls back — keyed on the
-        //    exact `unknown command:` marker so real verb errors are
-        //    never masked — for the registry-INDEPENDENT verbs the old
-        //    dispatch still owns: `get_catalog` (the MCP catalog, linked
-        //    via the wrapper's `catalog` features), `get_logs`, and
-        //    customs like the `screenshot` verb registered above.
-        // 3. BRIDGE TRANSPORT — relay dial-out when the dev tooling
-        //    injected `IDEALYST_ROBOT_RELAY_URL`, else a self-hosted
-        //    TCP listener + `~/.idealyst/apps` registration (byte-for-
-        //    byte the old `mount` auto-start block). The poll timer
-        //    rides the sidecar scheduler, driven by client
-        //    `RequestFrame`s like every other scheduled task.
+        // Robot bridge + MCP catalog for the scene session: the scene
+        // mount neither starts the bridge nor fills its registry, so the
+        // session thread wires them explicitly — driver env + verb router
+        // (see `newcore::install_robot_env`), then the bridge TRANSPORT:
+        // relay dial-out when the dev tooling injected
+        // `IDEALYST_ROBOT_RELAY_URL`, else a self-hosted TCP listener +
+        // `~/.idealyst/apps` registration. The poll timer rides the
+        // sidecar scheduler, driven by client `RequestFrame`s like every
+        // other scheduled task.
         {
             crate::newcore::install_robot_env(&scene_session);
             if let Some(url) = runtime_shared::robot::bridge::relay_url_from_env() {
@@ -1552,8 +1513,8 @@ mod runtime {
             }
         }
 
-        // Headless `screenshot` Robot verb — identical to the old-core
-        // registration: the recorder's scene snapshot is core-agnostic.
+        // Headless `screenshot` Robot verb, rendered from the recorder's
+        // scene snapshot.
         #[cfg(feature = "screenshot")]
         {
             let snap_recorder = recorder.clone();
@@ -1911,10 +1872,9 @@ mod session_facts_tests {
 
     /// The sidecar runs the app NATIVELY, where `window.location` does
     /// not exist and nothing installs a `UrlSyncService` — so the URL
-    /// the browser connected on is the only one it will ever see. It
-    /// used to be destructured out of `Hello` and thrown away, which
-    /// made every deep link render the app's configured initial route
-    /// while the address bar still said where the user had gone.
+    /// the browser connected on is the only one it will ever see.
+    /// Dropping it renders every deep link at the app's configured
+    /// initial route while the address bar says where the user went.
     ///
     /// Carried on `CreateSession` rather than sent afterwards for the
     /// same reason `viewport` is: the author's navigators read it

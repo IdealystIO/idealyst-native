@@ -196,11 +196,6 @@ fn generate_wrapper(
             // select its prim families / feature set, and there is only
             // one core to select.
             let user_dep = format!("{{ path = \"{}\" }}", project_dir.display());
-            // `host-appkit/new-core` compiles the boot path
-            // (windowed `run_with`) + backend-macos's
-            // Host/caps impls and flush driver. The feature is vacuous
-            // once backend-macos makes its contents unconditional; drop
-            // it from this list at that point.
             let host_dep = opts
                 .source
                 .dep("crates/gpu-backend/host/appkit", &[]);
@@ -320,7 +315,7 @@ edition = "2021"
     Ok(())
 }
 
-/// Local wrapper `main`: mounts through `host_appkit::newcore::run_with`,
+/// Local wrapper `main`: mounts through `host_appkit::run_with`,
 /// which owns the world + scene registry + flush driver + viewport
 /// source.
 fn local_main_rs(
@@ -580,13 +575,12 @@ mod regression_tests {
     //!
     //! macOS uses a wrapper-local `dev` feature: the cargo
     //! `--features dev` invocation from
-    //! `cli/cmd/dev.rs::dev_user_features_macos` activates it, and it in
+    //! `cli/cmd/dev.rs::dev_user_features_native` activates it, and it in
     //! turn pulls in `runtime-core/dev` (catalog + robot registry) and
     //! `runtime-shared/robot` (the bridge transport) — plus, for a
     //! local wrapper, `host-appkit/robot` (the wiring between them). If either half of
     //! that mapping is dropped, `idealyst mcp` against a running macOS
-    //! dev session returns an empty catalog — same end-user symptom the
-    //! runtime-server sidecar bug had.
+    //! dev session returns an empty catalog.
     //!
     //! These tests don't fire `cargo build`; they only run the
     //! wrapper-generation step (sub-millisecond) and assert on the
@@ -647,7 +641,7 @@ mod regression_tests {
 
     /// An unchanged regeneration must not touch the wrapper's files. Cargo
     /// dirties a path package on a newer source mtime, so an identical
-    /// rewrite of `src/main.rs` recompiled and relinked the wrapper binary
+    /// rewrite of `src/main.rs` recompiles and relinks the wrapper binary
     /// on every run.
     #[test]
     fn regression_macos_wrapper_rewritten_every_run() {
@@ -696,12 +690,12 @@ mod regression_tests {
             .expect("generate wrapper");
     }
 
-    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// Regression (the iOS wrapper's twin): the
     /// macOS wrapper deleted its `Cargo.lock` on every generation, so each
     /// run re-resolved against the registry — the newest compatible
     /// versions rather than the app's locked ones (`fakedep` 1.1.0 here,
     /// against an app locked to 1.0.0), and a new generation of the whole
-    /// tree on every framework release. It now seeds from the app's lock.
+    /// tree on every framework release. It must seed from the app's lock.
     #[test]
     fn regression_macos_wrapper_lock_reresolved_every_run() {
         let world = lock_world();
@@ -761,8 +755,7 @@ mod regression_tests {
     }
 
     /// The local wrapper boots through `host_appkit::run_with`,
-    /// enables `host-appkit/new-core`, takes a plain path dep on the user
-    /// crate (no core pin — there is one core), and keeps the dev
+    /// takes a plain path dep on the user crate (no core pin), and keeps the dev
     /// preamble (`--emit-catalog` + Robot identity).
     #[test]
     fn local_wrapper_boots_newcore_run_with_plain_user_dep() {

@@ -1,9 +1,9 @@
 //! A page's report of what it did with a pushed event reaches the dev
 //! session.
 //!
-//! Before this endpoint, "overlay patch: 1 applied" and "hot patch: 3
-//! function(s) redirected" existed only in the browser console: the
-//! terminal could say a patch was SENT, never that it landed. Both
+//! Without this endpoint, "overlay patch: 1 applied" and "hot patch: 3
+//! function(s) redirected" exist only in the browser console: the
+//! terminal can say a patch was SENT, never that it landed. Both
 //! servers — the static one and the stand-alone stream beside a
 //! full-stack app — take a `POST` at `ACK_URL` and hand the body to the
 //! signal, which reports it as a typed event.

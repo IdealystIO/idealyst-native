@@ -100,7 +100,7 @@ impl Host for RecordingBackend {
     }
 
     /// The recorder is anchored (the wire protocol has no
-    /// `RemoveChild`/`InsertAt`), so a replay target never splices.
+    /// `RemoveChild` / positional insert), so a replay target never splices.
     fn supports_splice(&self) -> bool {
         false
     }

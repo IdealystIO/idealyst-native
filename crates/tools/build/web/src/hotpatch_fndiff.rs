@@ -1,8 +1,8 @@
 //! Which functions of a patch differ from the base, and which of them
 //! the jump table has to redirect.
 //!
-//! A patch re-emits whole crates, and every function of theirs whose
-//! address the patch takes used to get a jump-table entry: 32,195 for a
+//! A patch re-emits whole crates. Unfiltered, every function of theirs
+//! whose address the patch takes gets a jump-table entry: 32,195 for a
 //! one-line edit in a crate ~30 others depend on (CrewForge), where a
 //! leaf crate's edit redirected 2,170. Linking, resolving and stripping
 //! all of that, and installing the table on the page, cost ~1.6 s of a
@@ -37,7 +37,7 @@
 //! vtable reach the redirected entry anyway and add nothing.
 //!
 //! Anything this cannot account for turns the filter off for that patch
-//! (every function redirected, as before): a crate with no baseline, an
+//! (every function redirected): a crate with no baseline, an
 //! object it cannot parse, a relocation kind it does not know.
 
 use std::collections::{BTreeSet, HashMap, HashSet};

@@ -179,21 +179,15 @@ fn generate_wrapper(
             // macOS host `cfg(target_os = "macos")` selects the user crate's
             // macOS backend unless a feature overrides it — this feature is
             // that override (see the tutorial's `[features] terminal`).
-            // Crates that don't declare the feature keep the old behavior
-            // (terminal auto-selected via `target_os` cfg on non-Apple
-            // desktop hosts), so this is backward-compatible. Otherwise a
-            // plain path dep — the app's own defaults select its feature
-            // set.
+            // Crates that don't declare the feature get a plain path dep —
+            // the app's own defaults (and `target_os` cfg on non-Apple
+            // desktop hosts) select its feature set.
             let terminal_feat = crate_declares_terminal_feature(project_dir);
             let user_dep = if terminal_feat {
                 format!("{{ path = \"{}\", features = [\"terminal\"] }}", project_dir.display())
             } else {
                 format!("{{ path = \"{}\" }}", project_dir.display())
             };
-            // `host-terminal/new-core` compiles the boot path (crossterm
-            // loop over `backend_terminal::newcore::start`). The feature
-            // is vacuous once backend-terminal makes its contents
-            // unconditional; drop it from this list at that point.
             let host_dep = opts
                 .source
                 .dep("crates/gpu-backend/host/terminal", &[]);
@@ -269,7 +263,7 @@ edition = "2021"
     Ok(())
 }
 
-/// Local wrapper `main`: mounts through `host_terminal::newcore::run`
+/// Local wrapper `main`: mounts through `host_terminal::run`
 /// (crossterm loop over `backend_terminal::newcore::start` — world +
 /// scene registry + dispatch-hook flush driver).
 fn local_main_rs(
@@ -462,7 +456,7 @@ mod regression_tests {
         .expect("generate wrapper");
     }
 
-    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
+    /// Regression (the iOS wrapper's twin): the
     /// terminal wrapper deleted its `Cargo.lock` on every generation, so
     /// each run resolved the registry's newest versions instead of the
     /// app's locked ones — a different graph from the app's and a new
@@ -486,7 +480,7 @@ mod regression_tests {
 
     /// An unchanged regeneration must not touch the wrapper's files. Cargo
     /// dirties a path package on a newer source mtime, so an identical
-    /// rewrite of `src/main.rs` recompiled and relinked the wrapper binary
+    /// rewrite of `src/main.rs` recompiles and relinks the wrapper binary
     /// on every run.
     #[test]
     fn regression_terminal_wrapper_rewritten_every_run() {
@@ -512,13 +506,11 @@ mod regression_tests {
 
     /// Mobile-targeted projects (`targets = ["ios", "android", …]`)
     /// author with px-sized styles calibrated for a phone viewport
-    /// — `width: px(200)` on a 393-pt iOS canvas. Pre-fix, the
-    /// local-mount terminal wrapper called `RunOptions::default()`
-    /// which keeps `cell_size = (1.0, 1.0)`, so `width: px(200)`
-    /// rendered as 200 cells and the welcome scene's planets blew
-    /// off the screen. The fix injects an explicit `cell_size =
-    /// Some((8.0, 16.0))` into the generated main.rs when the
-    /// manifest declares any non-terminal target.
+    /// — `width: px(200)` on a 393-pt iOS canvas. `RunOptions::default()`
+    /// keeps `cell_size = (1.0, 1.0)`, so `width: px(200)` would render
+    /// as 200 cells and blow the layout off the screen; the generated
+    /// main.rs injects an explicit `cell_size = Some((8.0, 16.0))` when
+    /// the manifest declares any non-terminal target.
     #[test]
     fn local_wrapper_seeds_cell_size_for_mobile_targets() {
         let (wrapper_dir, _tmp) =
@@ -617,8 +609,7 @@ mod regression_tests {
     /// the generated wrapper's `Cargo.toml` enables it on the user-crate
     /// dependency (`features = ["terminal"]`). This is what lets
     /// `idealyst dev --terminal` build on a macOS host — without it the
-    /// user crate selects `backend-macos` and the wrapper fails to compile
-    /// (mismatched `register_extensions` signature).
+    /// user crate selects `backend-macos` and the wrapper fails to compile.
     #[test]
     fn local_wrapper_enables_terminal_feature_when_declared() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -653,9 +644,8 @@ mod regression_tests {
         );
     }
 
-    /// The local wrapper boots through `host_terminal::newcore::run`,
-    /// enables `host-terminal/new-core`, and pins no core feature on the
-    /// user crate (there is one core).
+    /// The local wrapper boots through `host_terminal::run` and pins no
+    /// core feature on the user crate.
     #[test]
     fn local_wrapper_boots_newcore_run_with_plain_user_dep() {
         let (wrapper_dir, _tmp) = run_generator(vec![Target::Terminal], BuildMode::Local);

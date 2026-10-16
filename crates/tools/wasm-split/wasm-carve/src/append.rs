@@ -9,8 +9,8 @@
 //! body is copied as bytes — the code section is one `memcpy` — and only
 //! the function, table, element and `name` sections are re-encoded.
 //!
-//! The walrus pass this replaces parsed the whole module into IR and
-//! re-emitted it: 6.9–9 s of every warm CrewForge rebuild on a Mac.
+//! An IR round trip (walrus) parses the whole module and re-emits it:
+//! 6.9–9 s of every warm CrewForge rebuild on a Mac.
 
 use anyhow::{Context, Result, bail, ensure};
 use wasm_encoder::{

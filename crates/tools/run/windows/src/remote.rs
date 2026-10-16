@@ -48,8 +48,7 @@ pub const REMOTE_BRIDGE_PORT: u16 = 9718;
 
 /// How long the remote session waits for the app's process to appear. A
 /// debug build of a 3D app is half a gigabyte, and Windows scans a new
-/// executable before its first start, which took well past the 30 s the
-/// launcher used to allow.
+/// executable before its first start, which can take well past 30 s.
 const START_TIMEOUT_SECS: u32 = 180;
 
 /// Variables a remote launch drops: host-side paths and PIDs that mean

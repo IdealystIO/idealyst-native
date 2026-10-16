@@ -11,7 +11,7 @@ public class NativeBridge {
     /// Stand up the runtime-server client against the dev-server URL the
     /// CLI baked into the manifest's `IdealystRuntimeServerUrl` meta-data
     /// entry. The Activity reads that value from the manifest and passes
-    /// it here. mDNS / Bonjour is no longer used.
+    /// it here.
     public static native void attachRuntimeServerUrl(Context context, ViewGroup root, String url);
 
     /// Drain the worker's pending messages and apply them through

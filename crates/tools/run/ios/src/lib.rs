@@ -36,7 +36,7 @@
 //! path generates a `.xcodeproj` directly (no `xcodegen` dependency),
 //! builds + signs with `xcodebuild`, installs with `ios-deploy`, and
 //! launches without a debugger (`devicectl`, iOS 17+ only). See
-//! `device.rs` and [[project_ios_device_deploy_from_cli]].
+//! `device.rs`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,7 +50,7 @@ use build_ios::{capabilities, BuildOptions, FrameworkSource, Manifest};
 /// Physical-device build/sign/install/launch path. The simulator path
 /// (the rest of this crate) compiles Swift with raw `swiftc`; the device
 /// path needs an Xcode project + `xcodebuild` for code-signing. See
-/// [`device::run`] and [[project_ios_device_deploy_from_cli]].
+/// [`device::run`].
 pub mod device;
 pub mod frameworks;
 pub mod simulator;
@@ -166,8 +166,9 @@ pub struct RunOptions {
     /// runtime-server mode requires this to be `Workspace` because the runtime-server shell
     /// crate is built directly out of the framework workspace.
     pub source: FrameworkSource,
-    /// Cargo features to enable on the build. `idealyst dev` passes
-    /// `runtime-core/dev` here so the Robot bridge auto-starts.
+    /// Cargo features to enable on the build. `idealyst dev` passes the
+    /// wrapper's `dev` feature (→ `runtime-core/dev`) here so the Robot
+    /// bridge auto-starts.
     pub user_features: Vec<String>,
     /// Force a clean reinstall: `simctl uninstall` the app before the
     /// fresh `install`, so even SpringBoard's executable cache is dropped.
@@ -590,13 +591,11 @@ fn render_info_plist(
     icon_entries: &str,
     permission_entries: &str,
 ) -> Result<String> {
-    // No more network-discovery advertisement: the Robot bridge writes
-    // a per-process `~/.idealyst/apps/<name>-<pid>.json` registration
-    // file the MCP server scans, and the dev-server URL is baked into
-    // `IdealystDevEndpoint` for the runtime-server client. iOS no
-    // longer needs `NSBonjourServices` / `NSLocalNetworkUsageDescription`
-    // — every previously broadcast-driven flow now goes through
-    // file-based discovery.
+    // No network-discovery advertisement (so no `NSBonjourServices` /
+    // `NSLocalNetworkUsageDescription`): the Robot bridge writes a
+    // per-process `~/.idealyst/apps/<name>-<pid>.json` registration file
+    // the MCP server scans, and the dev-server URL is baked into
+    // `IdealystDevEndpoint` for the runtime-server client.
 
     let endpoint_entry = match mode {
         RunMode::Local => String::new(),
@@ -814,7 +813,7 @@ fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
     // Deliver the robot relay URL to the sim app: `simctl` forwards env vars
     // prefixed `SIMCTL_CHILD_` to the launched process (stripping the prefix).
     // The iOS simulator shares the host network stack, so the dev-process relay
-    // URL (loopback) is reachable as-is; the app's walker reads
+    // URL (loopback) is reachable as-is; the app's Robot bridge reads
     // `IDEALYST_ROBOT_RELAY_URL` and dials out. Inherited from the dev process
     // (`idealyst dev --local` exports it).
     if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {

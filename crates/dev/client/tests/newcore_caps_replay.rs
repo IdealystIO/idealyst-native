@@ -2,21 +2,15 @@
 //! seam (`runtime_scene::Host`) plus the `runtime_vocabulary::caps`
 //! traits can be driven end-to-end by the wire replayer.
 //!
-//! This is the client half of the dev-session wire-chain port: the
-//! compile succeeding is itself the proof that the replayer's dispatch
-//! reaches native UI through the capability surface, and the assertions
-//! pin that create / insert / update / style / finish commands land on
-//! the caps impls with the right payloads.
+//! The compile succeeding is itself the proof that the replayer's
+//! dispatch reaches native UI through the capability surface, and the
+//! assertions pin that create / insert / update / style / finish
+//! commands land on the caps impls with the right payloads.
 //!
-//! Historically the replayer was bounded on the `Backend` mega-trait and
-//! this file's whole point was that a `CapsReplay<B>` adapter bridged the
-//! two; it therefore lived behind a `new-core` cargo feature and opened
-//! with `#![cfg(feature = "new-core")]`. When the bound flipped onto
-//! `caps::AllCaps` the feature was deleted — and the `#![cfg]` silently
-//! turned the whole file into ZERO tests rather than a compile error.
-//! **That is the failure mode this wave exists to prevent**, so the gate
-//! is unconditional now: it is the only in-repo test that drives the wire
-//! replayer against a hand-written capability surface.
+//! Keep this file unconditional (no `#![cfg(feature = …)]`): a gate on a
+//! feature that later disappears silently turns the file into zero tests
+//! rather than a compile error. It is the only in-repo test that drives
+//! the wire replayer against a hand-written capability surface.
 use std::cell::RefCell;
 use std::rc::Rc;
 

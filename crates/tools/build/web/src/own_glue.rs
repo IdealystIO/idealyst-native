@@ -13,14 +13,14 @@
 //! * **Hybrid mode** — something in the app still links wasm-bindgen (wgpu
 //!   for the GPU host or canvas-vello, an app's own web-sys /
 //!   `#[wasm_bindgen]` use). The glue comes out first, wasm-bindgen runs
-//!   over the stripped module as it always did, and
+//!   over the stripped module, and
 //!   [`write_hybrid_glue_file`] supplies `pkg/__idealyst_glue.js` for the
 //!   namespace wasm-bindgen passes through. `idealyst export` is always
 //!   hybrid (its bridge is `#[wasm_bindgen]` classes) and uses
 //!   [`hybrid_extract`].
 //!
-//! [`package_own`] / [`package_hybrid`] / [`build_crate`] are the phase-1
-//! measurement paths, driven by `tests/own_glue_e2e.rs`.
+//! [`package_own`] / [`package_hybrid`] / [`build_crate`] are the
+//! standalone packaging paths `tests/own_glue_e2e.rs` drives.
 //!
 //! # Output contract
 //!
@@ -50,7 +50,7 @@
 //! wasm-bindgen's start calls only `main`), and own mode then unwraps every
 //! export but `main` ([`wasm_carve::command_exports`]): `main`'s wrapper is
 //! the one constructor run, and the loader calls `main(0, 0)` once. That is
-//! exactly what a reactor link ([`link_args`], used by the phase-1 E2E)
+//! exactly what a reactor link ([`link_args`], used by the E2E test)
 //! gives, where the loader calls `__wasm_call_ctors()` itself. Hybrid
 //! unwraps web-glue's own `__glue_*` exports only.
 
@@ -109,10 +109,9 @@ pub const HYBRID_GLUE_FILE: &str = "__idealyst_glue.js";
 /// unwrapped for web-glue's OWN exports only ([`GLUE_EXPORT_PREFIX`]):
 /// they are the entry for every listener dispatch, JS → Rust string and
 /// executor drain, and a wrapped one re-runs every static constructor per
-/// event — which today's wasm-bindgen call paths do not (measured on
-/// `examples/nav-showcase` under the pre-port pipeline: 40 clicks, 0
-/// extra constructor runs). Every other export keeps exactly the
-/// behaviour it has today; whether to unwrap THOSE is its own decision
+/// event — which wasm-bindgen's own call paths do not (measured on
+/// `examples/nav-showcase`: 40 clicks, 0 extra constructor runs). Every
+/// other export stays wrapped; whether to unwrap THOSE is its own decision
 /// (docs/proposals/own-web-bindings.md, "Open questions").
 pub fn hybrid_extract(linked: &Path) -> Result<(PathBuf, Glue)> {
     let bytes = fs::read(linked).with_context(|| format!("read {}", linked.display()))?;
@@ -404,7 +403,8 @@ fn has_export(wasm: &[u8], name: &str) -> Result<bool> {
     Ok(false)
 }
 
-/// Which packaging [`build_crate`] runs.
+/// How a module is packaged: decided by [`extract_for_build`] for a real
+/// build, chosen by the caller for [`build_crate`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// web-glue only — no wasm-bindgen invoked.
@@ -562,7 +562,7 @@ mod tests {
     /// Own mode: no wasm-bindgen metadata → every export but `main` points
     /// past its constructor wrapper (what a reactor link would give), and
     /// the linker metadata the served module has no reader for is gone —
-    /// wasm-bindgen used to drop it, and nothing runs wasm-bindgen now.
+    /// own mode has no wasm-bindgen pass to drop it.
     #[test]
     fn a_module_without_wasm_bindgen_is_packaged_own_and_unwrapped_like_a_reactor() {
         let linked = command_module(false);
@@ -587,7 +587,7 @@ mod tests {
 
     /// Hybrid mode: an import from wasm-bindgen's namespace → only
     /// web-glue's own exports are unwrapped, and everything else is left
-    /// for wasm-bindgen exactly as before.
+    /// wrapped for wasm-bindgen.
     #[test]
     fn a_module_with_wasm_bindgen_is_packaged_hybrid_and_keeps_its_other_wrappers() {
         let linked = command_module(true);

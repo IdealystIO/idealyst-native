@@ -57,8 +57,8 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
     let wrapper_dir = wrapper_root.join(&manifest.name).join("linux");
     // The wrapper builds into its OWN target directory, not the project's.
     //
-    // It used to share the project's `target/` to avoid recompiling common
-    // dependencies. That is unsound here: the wrapper is a SEPARATE workspace
+    // Sharing the project's `target/` to avoid recompiling common
+    // dependencies is unsound here: the wrapper is a SEPARATE workspace
     // (its own `[workspace]`, its own lockfile) that depends on the app crate
     // by path, so it resolves the app and every framework crate under its own
     // feature set and its own dependency resolution — then writes those
@@ -145,9 +145,6 @@ fn generate_wrapper(
          {user_name} = {user_dep}\n",
         user_name = manifest.name,
     );
-    // `dev` turns on the robot REGISTRY (`runtime-core/dev`) AND the bridge
-    // TRANSPORT (`runtime-shared/robot`) — the latter is what makes
-    // `robot::bridge::set_app_identity` below resolve.
     // `dev` turns on THREE things, and all three are load-bearing:
     //   runtime-core/dev      the robot element REGISTRY + catalog emission
     //   runtime-shared/robot  the bridge TRANSPORT (`robot::bridge` resolves)
@@ -278,8 +275,7 @@ fn main() {{
     // `pub fn register_scene_extensions(&mut Registry<_>)` seam runs after
     // `register_builtins` — this is how SDK payload handlers (codeblock,
     // table, svg, …) get into the scene registry. Mirrors the macOS
-    // template; `register_extensions` was the pre-v2 name and took the
-    // backend, which no longer has an External table to register into.
+    // template.
     let code = host_gtk::run_with(opts, {user_lib}::register_scene_extensions, app);
     std::process::exit(code);
 }}
@@ -400,10 +396,9 @@ mod regression_tests {
     /// user crate's `register_scene_extensions` so SDK payload handlers
     /// reach the scene registry (mirrors the macOS wrapper).
     ///
-    /// Regression: this emitted the pre-v2 `register_extensions`, which
-    /// takes `&mut LinuxBackend`. Apps ported to v2 only expose the
-    /// registry-generic seam, so `idealyst dev --linux` failed to compile
-    /// the generated wrapper — rustc even suggested the right name.
+    /// Regression: emitting `register_extensions(&mut LinuxBackend)`
+    /// instead fails to compile the generated wrapper — apps only expose
+    /// the registry-generic seam.
     #[test]
     fn wrapper_calls_run_with_and_register_scene_extensions() {
         let (wrapper_dir, _tmp) = run_generator();
@@ -537,11 +532,9 @@ mod regression_tests {
             .expect("generate wrapper");
     }
 
-    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the
-    /// Linux wrapper deleted its `Cargo.lock` on every generation, so each
-    /// run resolved the registry's newest versions instead of the app's
-    /// locked ones. Its target dir was already private — the reason the
-    /// deletion existed (seeding in a SHARED dir) no longer applied.
+    /// Regression (the iOS wrapper's twin): the Linux wrapper deleted its
+    /// `Cargo.lock` on every generation, so each run resolved the
+    /// registry's newest versions instead of the app's locked ones.
     #[test]
     fn regression_linux_wrapper_lock_reresolved_every_run() {
         let world = lock_world();

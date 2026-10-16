@@ -1,6 +1,6 @@
-//! Phase 1 of `docs/proposals/own-web-bindings.md`, end to end: the
-//! framework-owned JS boundary (`web-glue` + `build_web::own_glue`) in a
-//! real browser.
+//! The framework-owned JS boundary (`web-glue` + `build_web::own_glue`,
+//! see `docs/proposals/own-web-bindings.md`) end to end, in a real
+//! browser.
 //!
 //! * `own_glue_demo_runs_in_chrome_without_wasm_bindgen` — builds
 //!   `tests/own-glue/demo` (web-glue only) linked exactly as
@@ -21,8 +21,8 @@
 //!   which uses web-glue AND wasm-bindgen, packaged in hybrid mode: both
 //!   namespaces supplied, glue callbacks/strings reach web-glue's exports
 //!   through wasm-bindgen's instance, and static constructors ran once.
-//! * `measure_own_glue_against_web_sys` — the decision-gate numbers (build
-//!   time, output size, call overhead vs the web-sys twin). Prints a table;
+//! * `measure_own_glue_against_web_sys` — build time, output size and
+//!   call overhead vs the web-sys twin. Prints a table;
 //!   asserts only that both variants ran the workload.
 //!
 //! All `#[ignore]`d: they compile crates for wasm32 and drive headless

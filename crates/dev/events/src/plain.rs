@@ -100,9 +100,9 @@ pub fn render(event: &DevEvent) -> Option<String> {
                 format!("[dev-reload {label}] change detected (+{folded} more)")
             }
             (label, BuildCause::Forced) => format!("[dev-reload {label}] rebuild requested"),
-            // New with the server's typed build. Its first build used to be
-            // `cargo run`'s own output and nothing else, so a plain
-            // terminal could not tell a server was being built at all.
+            // Without this line the server's first build shows only
+            // `cargo run`'s own output, and a plain terminal cannot tell
+            // a server is being built at all.
             (SERVER_TARGET, BuildCause::Initial) => "[dev-reload server] initial build…".into(),
             // Never had a line: the caller announces what it builds.
             (_, BuildCause::Initial | BuildCause::OneShot) => return None,
@@ -188,8 +188,7 @@ pub fn render(event: &DevEvent) -> Option<String> {
         | DevEvent::Error { source, message }
         | DevEvent::Log { source, line: message } => format!("[{source}] {message}"),
         // The full-stack server's own output is not the dev loop's: tagged,
-        // so a log reader can tell a request line from a build line. It
-        // used to reach the terminal straight from the inherited pipe.
+        // so a log reader can tell a request line from a build line.
         DevEvent::Output { source, line, .. } if source == SERVER_OUTPUT_SOURCE => {
             if line.starts_with("[server]") {
                 line.clone()
@@ -311,8 +310,8 @@ fn stage_list(stages: &[Timing]) -> String {
 /// concurrently — which one was the slowest.
 ///
 /// This is THE formatter: `build_web::hotpatch_build::BuiltPatch::
-/// timing_line` delegates here, so the line the bundler used to print and
-/// the event's rendering cannot drift apart.
+/// timing_line` delegates here, so the bundler's line and the event's
+/// rendering cannot drift apart.
 pub fn patch_timing_line(steps: &[Timing], crates: &[CrateTiming], skipped: &[String]) -> String {
     let parts: Vec<String> = steps.iter().map(|t| format!("{} {}ms", t.name, t.ms)).collect();
     let total: u64 = steps.iter().map(|t| t.ms).sum();

@@ -217,7 +217,7 @@ pub fn main() {
     }
     console_error_panic_hook::set_once();
     backend_web::install_logger();
-    // Same prerendered/fresh dispatch as the CLI wrapper's `start_local`:
+    // Same prerendered/fresh dispatch as `idealyst::boot`'s web `start_local`:
     // hydrate.html ships `#app` with server-shaped DOM (adopted in place —
     // no flash, no rebuild); index.html ships it empty (fresh CSR boot).
     // `newcore::hydrate` performs the same check internally and falls back

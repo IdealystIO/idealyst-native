@@ -26,7 +26,7 @@ use serde_json::Value;
 
 /// A platform-resolved property value, deserialized from the `introspect_native`
 /// wire form (`{ "type": "...", "value": ... }`). Mirrors
-/// `runtime_core::introspect::NativeValue` — the wire contract is the shared
+/// `runtime_shared::introspect::NativeValue` — the wire contract is the shared
 /// surface, so this crate stays free of the framework dep.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
@@ -141,11 +141,11 @@ fn collect_paths(node: &Value, path: &str, out: &mut Vec<(String, u64)>) {
 // `View > Text`) are bridged: when a level has leftovers on both sides, an
 // unmatched anonymous wrapper is looked through and its children compete for
 // the other side's leftovers. The wrapper itself is still reported once, as
-// the structural divergence it is; only the content under it is no longer
-// written off. Before this, the `table` SDK's native lowering (passthrough >
-// grid > cell, where web's `<table>` DOM is not in the robot tree at all)
-// buried every docs props-table cell as ~500 "only in web" lines per sweep —
-// identical against GTK and Win32 — with none of those cells ever compared.
+// the structural divergence it is, but the content under it is compared.
+// Without this, the `table` SDK's native lowering (passthrough > grid >
+// cell, where web's `<table>` DOM is not in the robot tree at all) buries
+// every docs props-table cell as "only in web" lines (~500 per sweep) and
+// none of those cells is ever compared.
 // ===========================================================================
 
 /// A framework element from `get_snapshot`. `kind`/`test_id`/`label` are stable

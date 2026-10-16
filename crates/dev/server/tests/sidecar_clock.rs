@@ -1,21 +1,14 @@
 //! Regression: the sidecar boot must install a monotonic clock.
 //!
-//! The bug: the old core installed a time source from `mount`. The
-//! new-core sidecar boot (`sidecar::run_newcore`) never ran that
-//! preamble, so `runtime_shared::time::now_micros()` returned `0` for
+//! Without one, `runtime_shared::time::now_micros()` returns `0` for
 //! the life of the process. Every tween and every raf-driven
-//! computation then resolved against t=0 and produced an identical
-//! value on every tick.
-//!
-//! The symptom is deceptive, which is why it survived the migration:
-//! nothing errors, the raf loop still spins, and the wire still floods
-//! with `SetAnimated*` commands (a quarter-million of them in a few
-//! seconds of the welcome example) — but the values never change, so
-//! the screen is frozen and tweens sit pinned at their start value.
-//! The welcome example's planets stayed at `opacity: 0` and its sun
-//! never pulsed, while `--local` (which boots through
-//! `backend_web::newcore::start_in`, installing a `performance.now()`
-//! source) animated correctly.
+//! computation then resolves against t=0 and produces an identical
+//! value on every tick. The symptom is deceptive: nothing errors, the
+//! raf loop still spins, and the wire still floods with `SetAnimated*`
+//! commands — but the values never change, so the screen is frozen and
+//! tweens sit pinned at their start value, while `--local` (which boots
+//! through `backend_web::newcore::start_in`, installing a
+//! `performance.now()` source) animates correctly.
 //!
 //! Why this is the tightest reachable test: `TIME_SOURCE` is a
 //! process-wide `OnceLock`, so installed-vs-not cannot be toggled

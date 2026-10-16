@@ -8,14 +8,11 @@
 //! knowing:
 //!
 //! - `icon(draw_in = …)` WAS a double evaluation, and this file's test
-//!   fails against the old emission. It could not be masked by the slot
-//!   hoist, because the double splice is exactly why `draw_in` was
-//!   `Construct`-placed in `ui_split` (a hoisted local would have
-//!   silently turned two evaluations into one). The fix binds the tuple
-//!   to a local in the emitter, which also let the `Construct` exemption
-//!   go away — so `draw_in` now hoists like every other prop.
+//!   fails against the double-splicing emission. The fix binds the tuple
+//!   to a local in the emitter, so `draw_in` hoists like every other
+//!   prop.
 //! - `flat_list(gap = …)` is a double CALL, not a double evaluation, and
-//!   only since phase 1: the slot hoist already reduced it to
+//!   because the slot hoist reduces it to
 //!   `.gap(__ui_s0).gap(__ui_s0)`. Two `.gap(f32)` calls store the same
 //!   value, so nothing here can observe it —
 //!   `runtime-macros`' `regression_flat_list_gap_lowers_to_one_call`

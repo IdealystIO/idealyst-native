@@ -1,30 +1,21 @@
 //! Dev-side runtime for the hot-reload wire protocol.
 //!
-//! Provides a [`WireRecordingBackend`] that implements
-//! [`runtime_shared::Backend`] with `Node = NodeId`. Each method
-//! emits one [`Command`] (or a small cluster) into the recorder's
-//! outbound queue, plus registers any closures the walker hands it
-//! into a [`HandlerTable`].
+//! Provides [`WireRecordingBackend`], a recorder with `Node = NodeId`.
+//! Its inherent methods each emit one [`Command`] (or a small cluster)
+//! into the recorder's outbound queue, and register any closures the
+//! scene hands it into a [`HandlerTable`]. The [`newcore`] module
+//! implements `runtime_scene::Host` plus the `runtime_vocabulary::caps`
+//! traits on it by delegating to those methods, and
+//! `newcore::SceneSession` is the session mount (per-session
+//! `runtime_world::World` + `register_builtins` + `realize`); with
+//! `runtime-server` on, `sidecar::run_newcore` hosts `idealyst dev`
+//! sessions on it.
 //!
 //! When the app fires an event, the dev side looks up the
 //! `HandlerId` in the handler table and runs the captured closure.
-//! That closure mutates signals; signal-driven effects re-fire
-//! through the walker; the walker calls more `Backend` methods on
-//! this same `WireRecordingBackend`, producing more `Command`s;
-//! those flush back to the app.
-//!
-//! # New core (feature `new-core`)
-//!
-//! The recorder is DUAL, like every shipping backend: the [`newcore`]
-//! module implements `runtime_scene::Host` plus all 30
-//! `runtime_vocabulary::caps` traits on the same
-//! [`WireRecordingBackend`], each delegating to the `Backend` impl
-//! below — so a new-core `realize` emits the identical wire
-//! `Command`s (the wire protocol is the compatibility contract).
-//! `newcore::SceneSession` is the session mount (per-session
-//! `runtime_world::World` + `register_builtins` + `realize`), and —
-//! with `runtime-server` also on — `sidecar::run_newcore` hosts full
-//! `idealyst dev --new-core` sessions on it.
+//! That closure mutates signals; the session flushes, signal-driven
+//! effects re-fire and call back into this same recorder, producing
+//! more `Command`s; those flush back to the app.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -95,27 +86,21 @@ pub use transport::{
 pub use transport::serve_with_robot_bridge;
 pub use watch::{spawn_change_loop, spawn_rebuild_loop, RebuildCommand, RebuildConfig};
 
-/// The runtime-server (Application-as-a-Server) **server-side backend** —
-/// implements `runtime_shared::Backend` with `Node = NodeId`. Plug
-/// this into `runtime_shared::render(...)` exactly like you'd plug
-/// in `WebBackend` / `IosBackend` / `AndroidBackend`. Instead of
-/// driving native widgets it records every walker call as a wire
-/// [`wire::Command`] for transport to one or more
+/// The runtime-server (Application-as-a-Server) **server-side backend**:
+/// an alias for [`WireRecordingBackend`]. Instead of driving native
+/// widgets it records every scene operation as a wire [`wire::Command`]
+/// for transport to one or more
 /// [`RuntimeServerClient`](dev_client::RuntimeServerClient)s.
-///
-/// `AasBackend` is the heart of the runtime-server architecture:
 ///
 /// ```text
 /// UI tree → AasBackend → Wire (Commands) → RuntimeServerClient → Platform Backend → Native
 /// ```
 ///
-/// The same `Element` tree your iOS/web app would render natively
-/// is what the server runs against this backend. The wire output is
-/// platform-agnostic; an `RuntimeServerClient` wrapping any platform backend
-/// can replay it.
+/// The wire output is platform-agnostic; a `RuntimeServerClient`
+/// wrapping any platform backend can replay it.
 pub use crate::WireRecordingBackend as AasBackend;
 
-/// Stores the live dev-side closures the walker has handed us. Each
+/// Stores the live dev-side closures the scene has handed us. Each
 /// gets a `HandlerId` minted by the recorder; events arriving back
 /// from the app look up the entry and invoke the captured closure.
 ///
@@ -287,12 +272,12 @@ impl HandlerTable {
     }
 }
 
-/// The dev-side backend. Implements `Backend` with `Node = NodeId`;
-/// each method emits one or more `Command`s into the recorder.
+/// The dev-side recorder, with `Node = NodeId`; each op emits one or
+/// more `Command`s into the recorder.
 ///
 /// Cloning shares the underlying state (Rc<RefCell<…>>) so callers
 /// can hand out clones of the recorder to multiple owners — the
-/// usual pattern when the walker holds one ref and the dispatch
+/// usual pattern when the scene holds one ref and the dispatch
 /// loop holds another.
 pub struct WireRecordingBackend {
     inner: Rc<RefCell<RecorderState>>,
@@ -315,8 +300,9 @@ struct RecorderState {
     next_node: u64,
     next_style: u64,
     /// Identity → NodeId memo. Keyed by [`runtime_shared::Identity`]
-    /// (the structural identity the walker sets via
-    /// `with_current_identity` before every `backend.create_*` call).
+    /// (the ambient structural identity a caller sets via
+    /// `with_current_identity` before a `create_*` call; realize does
+    /// not set one today, so scene mounts mint fresh ids).
     /// Survives [`WireRecordingBackend::reset_log_and_scene`] so that
     /// across sidecar respawns the same structural emission lands on
     /// the same wire `NodeId` — that's what makes incremental hot
@@ -472,7 +458,7 @@ impl WireRecordingBackend {
         }
     }
 
-    /// Hand a recording `NavigatorHandler` a cloneable, microtask-safe
+    /// Hand a navigator handler a cloneable, microtask-safe
     /// emit handle for navigator wire commands. The handler grabs one
     /// during `init` and uses it to emit `CreateNavigator` /
     /// `NavigatorAttachInitial` / `NavigatorSelect` … both
@@ -499,13 +485,10 @@ impl WireRecordingBackend {
         self.nav_state_mirror.clone()
     }
 
-    /// Restore a previously-snapshotted navigator stack. Stubbed —
-    /// the legacy callback-driven navigator recording was removed
-    /// from runtime-core, and the replacement SDK-handler-level
-    /// recording is not yet wired up. Until then, restore is a no-op
-    /// and nav hierarchies do not survive hot-reload restarts.
+    /// Restore a previously-snapshotted navigator stack. A no-op: nothing
+    /// records navigator stacks into the mirror, so nav hierarchies do
+    /// not survive hot-reload restarts.
     pub fn restore_nav_state(&self, _saved: &NavStateSnapshot) {
-        // Pending SDK-handler-level navigator recording.
     }
 
     pub fn set_color_scheme(&self, scheme: ColorScheme) {
@@ -648,7 +631,7 @@ impl WireRecordingBackend {
         std::mem::take(&mut self.inner.borrow_mut().out)
     }
 
-    /// Total number of commands ever emitted by the walker into this
+    /// Total number of commands ever emitted into this
     /// recorder's log. Pair with [`Self::commands_since`] to ferry
     /// "everything past my cursor" to a connected client.
     pub fn command_count(&self) -> usize {
@@ -691,11 +674,11 @@ impl WireRecordingBackend {
 
     /// Dispatch an event received from the app. Returns true if the
     /// handler was found and invoked. The closure may mutate signals
-    /// (triggering further walker work + commands); callers should
+    /// (triggering further scene updates + commands); callers should
     /// `drain_commands()` after this returns to flush.
     pub fn dispatch_event(&self, id: HandlerId, args: EventArgs) -> bool {
         // Snapshot the closure ref out of the borrow first — the
-        // closure body may re-enter this backend through the walker.
+        // closure body may re-enter this backend through the scene.
         let handler_ref = {
             let state = self.inner.borrow();
             state.handlers.closures.get(&id).map(|h| match h {
@@ -758,8 +741,8 @@ impl WireRecordingBackend {
     /// sidecar respawns: the same structural emission always gets the
     /// same `NodeId`, which is what makes hot reload incremental
     /// rather than a full-scene reset. Emissions under
-    /// [`runtime_shared::Identity::UNIDENTIFIED`] (legacy path that
-    /// hasn't been migrated yet) always mint fresh — no dedup.
+    /// [`runtime_shared::Identity::UNIDENTIFIED`] (every scene realize,
+    /// which sets no ambient identity) always mint fresh — no dedup.
     fn mint_node(state: &mut RecorderState) -> NodeId {
         let id = runtime_shared::current_identity();
         if id != runtime_shared::Identity::UNIDENTIFIED {
@@ -810,7 +793,7 @@ impl WireRecordingBackend {
         // Convert to wire form and hash the serialized bytes for a
         // content-addressed lookup. This is the cross-process map
         // that makes hot reload incremental: after a sidecar
-        // respawn, the new walker re-encounters the same logical
+        // respawn, the new session re-encounters the same logical
         // stylesheets — different `Rc` pointers but identical
         // wire content — so they should land on the same `StyleId`s
         // the client already has registered.
@@ -841,11 +824,10 @@ impl WireRecordingBackend {
 }
 
 /// Cloneable, microtask-safe emit handle for navigator wire commands,
-/// handed to recording `NavigatorHandler`s via
-/// [`WireRecordingBackend::nav_recorder`].
+/// handed out via [`WireRecordingBackend::nav_recorder`].
 ///
 /// Every method funnels through [`RecorderState::emit`] (same as the
-/// `Backend` methods), so the [`SceneModel`] mirror — and therefore the
+/// recorder's ops), so the [`SceneModel`] mirror — and therefore the
 /// reconnect snapshot — stays consistent with the live command log.
 ///
 /// Holds a `Weak` to the recorder state: a `NavRecorder` captured by a
@@ -1237,8 +1219,7 @@ pub fn session_viewport() -> Option<(f32, f32)> {
 /// `TextHandle::set_animated_color` → here, *not* through
 /// `ViewHandle`. Without this override the welcome example's headline
 /// text never gets its color animated in (stays at whatever the static
-/// style declared) — same dead-letter behavior the trait-default
-/// `Backend::set_animated_color` has for the view path.
+/// style declared).
 struct RecordingTextOps;
 
 impl TextOps for RecordingTextOps {
@@ -1269,9 +1250,8 @@ impl TextOps for RecordingTextOps {
 }
 
 /// The recorder's op surface: one inherent method per wire-visible
-/// operation. These were the `runtime_shared::Backend` impl before the old
-/// walker was deleted; they are now plain inherent methods that the
-/// capability impls in [`crate::newcore`] delegate to, so the wire
+/// operation. The capability impls in [`crate::newcore`] delegate to
+/// these, so the wire
 /// emission mechanism (node/style interning, handler-table registration,
 /// `SceneModel` mirroring, the `Command` log) has exactly ONE
 /// implementation.
@@ -1300,11 +1280,8 @@ impl WireRecordingBackend {
     }
 
     /// Wrap the wire `NodeId` so layout authors who bind a
-    /// `Ref<ViewHandle>` (notably the framework's `outlet_ref` inside
-    /// `build_layout`) can retrieve the assigned wire id by
-    /// downcasting `ViewHandle::as_any()` back to `NodeId`. The default
-    /// trait impl returns an `Rc<()>` which would make outlet
-    /// resolution impossible.
+    /// `Ref<ViewHandle>` can retrieve the assigned wire id by
+    /// downcasting `ViewHandle::as_any()` back to `NodeId`.
     pub fn make_view_handle(&self, node: &NodeId) -> ViewHandle {
         ViewHandle::new(Rc::new(*node), &RecordingViewOps)
     }
@@ -1312,9 +1289,8 @@ impl WireRecordingBackend {
     /// Symmetric to [`Self::make_view_handle`] but for text nodes.
     /// Author code that calls `AnimatedValue::bind_text_color` (the
     /// welcome example's headline color fade) reaches `TextOps` via
-    /// `TextHandle::set_animated_color`; without this override the
-    /// default [`runtime_shared::Backend::make_text_handle`] returns
-    /// `NoopTextOps` and every animation tick is silently dropped.
+    /// `TextHandle::set_animated_color`; a `NoopTextOps` handle here
+    /// would silently drop every animation tick.
     pub fn make_text_handle(&self, node: &NodeId) -> TextHandle {
         TextHandle::new(Rc::new(*node), &RecordingTextOps)
     }
@@ -1713,8 +1689,8 @@ impl WireRecordingBackend {
     /// client side may consult its own external registry by `type_name`
     /// and render with default props, or render a placeholder if no
     /// registration matches. Either way, this override stops the
-    /// framework's `unimplemented!()` default from aborting the
-    /// dev-server walker on every `Element::External` mount.
+    /// `ExternalOps::create_external` default (a panic) from aborting
+    /// the dev session on every external mount.
     pub fn create_external(
         &mut self,
         _type_id: std::any::TypeId,
@@ -1975,18 +1951,13 @@ impl WireRecordingBackend {
         });
     }
 
-    // Per-frame animation writes (`set_animated_f32` /
-    // `set_animated_color` on the `Backend` trait) are *not*
-    // overridden here. The framework's `AnimatedValue::bind` routes
-    // its per-tick writes through `ViewHandle::set_animated_*`
-    // (which calls into `ViewOps`), not through the backend's
-    // `Backend::set_animated_*` directly. The actual emit point is
-    // [`RecordingViewOps`] above — it resolves the per-thread
-    // recorder via `RECORDER_HANDLE` and emits `Command::SetAnimated*`
-    // wire commands. Adding a `Backend::set_animated_*` override
-    // here would be dead code (the trait method on `Backend` is only
-    // hit by code paths that have a `&mut Backend` handle, which the
-    // animation tick path never does — it has only a `&ViewHandle`).
+    // Per-frame animation writes have no op here: `AnimatedValue::bind`
+    // routes its per-tick writes through `ViewHandle::set_animated_*`
+    // (which calls into `ViewOps`). The emit point is
+    // [`RecordingViewOps`] above — it resolves the per-thread recorder
+    // via `RECORDER_HANDLE` and emits `Command::SetAnimated*` wire
+    // commands. The animation tick path has only a `&ViewHandle`, never
+    // the recorder.
 
     pub fn attach_states(&mut self, node: &NodeId, setter: Rc<dyn Fn(StateBits, bool)>) {
         let mut state = self.inner.borrow_mut();
@@ -2011,7 +1982,7 @@ impl WireRecordingBackend {
     // Safe-area opt-in: cross only the `sides` flag. The recorder is
     // headless (no device insets), so it can't resolve the actual
     // padding — the CLIENT backend reads its own platform insets when it
-    // replays this. The framework's `attach_safe_area` Effect calls this
+    // replays this. The vocabulary's safe-area handler calls this
     // once during the build (the dev-side insets signal is a stable ZERO),
     // so a single command is emitted per opted-in node.
     pub fn apply_safe_area_padding(
@@ -2188,10 +2159,6 @@ impl WireRecordingBackend {
         // Without a renderer-name plumbing path on `OnReady` we
         // currently emit `<unnamed>` and rely on the client falling
         // back to no-op handlers when no renderer is registered.
-        // That's the documented gap captured in the wire-protocol
-        // audit (`project_aas_graphics_unsupported` originally
-        // described the placeholder-text workaround; this is the
-        // forward path that lets registered renderers actually run).
         let mut state = self.inner.borrow_mut();
         let id = Self::mint_node(&mut state);
         let wire_a11y = state.wire_a11y(a11y);
@@ -2240,7 +2207,7 @@ impl WireRecordingBackend {
     // the matching backend node and the dev-client's per-node bookkeeping
     // is dropped instead of growing across hot-reload cycles.
     //
-    // The framework's walker installs RAII cleanup guards per primitive
+    // The scene installs RAII cleanup guards per primitive
     // that fire these on `Scope::drop`. Without the overrides below, every
     // unmounted navigator / virtualizer / portal / graphics / external /
     // overlay would leak its `NodeId` on the client side (see
@@ -2267,11 +2234,9 @@ impl WireRecordingBackend {
     }
 
     // ---------------------------------------------------------------------
-    // Virtualizer. These MUST live in the trait impl: the walker calls
-    // `Backend::create_virtualizer`, whose default body is
-    // `unimplemented!()`. A refactor once left these as inherent methods
-    // on `WireRecordingBackend` — shadowed dead code, so any screen with
-    // a `flat_list` panicked the dev session thread on build.
+    // Virtualizer. `newcore`'s `caps` impl must delegate here: the
+    // capability's default body panics, so any screen with a `flat_list`
+    // would kill the dev session thread on build.
     // ---------------------------------------------------------------------
 
     pub fn create_virtualizer(
@@ -2302,17 +2267,11 @@ impl WireRecordingBackend {
             initial_keys: keys,
             a11y: wire_a11y,
         });
-        // Note: callbacks aren't stored on the recorder side yet.
-        // Lazy mount-on-demand is the natural next step:
-        //   - Stash `callbacks` in a `HashMap<NodeId, _>` similar to
-        //     navigators.
-        //   - Add `handle_virtualizer_mount_item(node, index)` on the
-        //     recorder, mirroring `handle_screen_released`.
-        //   - Inside it: `let (n, scope) = (callbacks.mount_item)(idx)`,
-        //     emit `VirtualizerAttachItem { node, index, child: n,
-        //     scope: ScopeId(scope) }`.
-        // Deferred so the comprehensive nav/link/overlay/graphics
-        // work ships first.
+        // Known gap: `callbacks` are not stored, so the client's
+        // `VirtualizerMountItem` events are ignored (the sidecar drops
+        // them) and no items mount over the wire. Closing it means
+        // keeping `callbacks` per `NodeId` and answering a mount request
+        // with `VirtualizerAttachItem`.
         let _ = callbacks; // suppress unused
         id
     }
@@ -2417,14 +2376,6 @@ fn wire_element_align(a: primitives::portal::ElementAlign) -> wire::WireElementA
     }
 }
 
-
-// ---------------------------------------------------------------------------
-// Navigator dispatcher — legacy callback path stripped. The
-// SDK-handler-level recording will live here once the dev wire is
-// rewired against `NavigatorRegistry` / `NavigatorHandler<B>`. For
-// now everything below is dead code preserved only so the existing
-// inherent methods on `WireRecordingBackend` keep their shape.
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // App→Dev event dispatch helpers exposed on WireRecordingBackend.

@@ -1,55 +1,49 @@
-//! FULL-OP golden harness (P2b exit gate): a recorder that logs the
-//! complete backend-call stream — `create_*` / `update_*` / `apply_style`
-//! / handler installs / `release_*` — not just the 7 structural ops, so
-//! the vocabulary's generic handlers can be proven to emit the SAME
-//! sequences as the old walker.
+//! FULL-OP golden harness: a recorder that logs the complete
+//! backend-call stream — `create_*` / `update_*` / `apply_style` /
+//! handler installs / `release_*` — not just the 7 structural ops, so the
+//! vocabulary's generic handlers are pinned against the frozen
+//! `goldens_full/` corpus call-for-call.
 //!
 //! # The recorded alphabet
 //!
 //! [`FullRecorder`] overrides exactly the capability methods the mount
 //! path models; everything else stays at the trait default
-//! (unrecorded). The P3c style-engine gate added `install_tokens` /
-//! `update_tokens` (theme delivery + cohort-swap ordering) and
-//! `attach_html_class` (preminted class stamping) — none fire in the
-//! pre-P3c scenarios, so their goldens are unchanged. Deliberately
-//! OUTSIDE the alphabet, with rationale:
+//! (unrecorded). `install_tokens` / `update_tokens` (theme delivery +
+//! cohort-swap ordering) and `attach_html_class` (preminted class
+//! stamping) are recorded but fire only in the style-engine scenarios.
+//! Deliberately OUTSIDE the alphabet, with rationale:
 //!
 //! - `register_stylesheet`/`unregister_stylesheet` — the fixtures mint
 //!   a fresh `Rc<StyleSheet>` per closure fire (the common inline
-//!   shape), so this stream pins Rc-lifetime churn (dead-Weak sweep
-//!   timing) rather than style semantics; and the two sides register
-//!   through different engines (runtime-core's thread-local table vs
-//!   the vocabulary's per-world table) whose sweep POINTS legitimately
-//!   differ. Registration behavior on the new path is pinned by
+//!   shape), so this stream would pin Rc-lifetime churn (dead-Weak sweep
+//!   timing) rather than style semantics, and the frozen reference
+//!   registered through a different table whose sweep points
+//!   legitimately differ from the vocabulary's per-world table.
+//!   Registration behavior is pinned by
 //!   `runtime-vocabulary/tests/vocab.rs`'s sheet-path suite instead.
 //! - `apply_default_text_font` — document-level premint plumbing with
 //!   no per-node observable; pinned by the vocabulary suite.
 //! - `WireBindingOps` notes (`note_text_binding`, …) — declarative
-//!   wire/generator backends only; scenarios use opaque closures, which
-//!   skip them on the old side too.
+//!   wire/generator backends only; the scenarios use opaque closures,
+//!   which never emit them.
 //! - `finish`/`run_layout`/`set_page_metadata`/robot/introspection —
-//!   host-lifecycle plumbing outside the mount contract (P3 drivers).
+//!   host-lifecycle plumbing outside the mount contract.
 //!
 //! Args render compactly and deterministically: closures as `<fn>`,
 //! `StyleRules` as a one-line non-`None`-fields digest
 //! ([`rules_digest`]), `AccessibilityProps` omitted when default.
 //!
 //! Each op has exactly ONE body: an inherent `<method>_impl` on
-//! [`FullRecorder`], reached through `impl runtime_scene::Host` + the 30
-//! `runtime_vocabulary::caps::*Ops` impls, directly on the recorder. The
-//! `*_impl` indirection is a fossil of the old-vs-new parity era, when
-//! the same bodies were ALSO reached through a now-deleted
-//! `impl runtime_core::Backend`; it is kept because the golden files were
-//! frozen against exactly these bodies.
+//! [`FullRecorder`], reached through `impl runtime_scene::Host` + the
+//! `runtime_vocabulary::caps::*Ops` impls, directly on the recorder.
 //!
-//! Methods the recorder does NOT implement fall to the **caps** defaults.
-//! Those bodies were audited against the old `Backend` defaults the
-//! goldens were frozen under and are byte-identical for every method
+//! Methods the recorder does NOT implement fall to the **caps** defaults,
+//! which match what the goldens were recorded under for every method
 //! reachable here (`apply_styled_states` → `apply_style`,
 //! `update_styled_text` → `update_text(plain_text_of(runs))`,
 //! `execute_batch_with_attach` → `execute_batch` + `insert_many`,
 //! `create_element` → `create_view`, all the `false`/`None`/no-op
-//! capability flags).
+//! capability flags). Changing one of those defaults shows up here.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -64,19 +58,17 @@ use runtime_vocabulary::caps;
 use crate::{Mode, PNode, Recorder};
 
 // ===========================================================================
-// Queuing microtask scheduler (navigator scenarios)
+// Queuing scheduler
 // ===========================================================================
 //
-// The old swap/stack handlers defer their author-layout build to a
-// microtask (it re-borrows the backend, so it can't run inside the
-// `create_navigator` borrow). Without an installed scheduler,
-// `schedule_microtask` runs INLINE -> double-borrow panic. So the full-op
-// harness installs a QUEUING scheduler (the SSR backend's pattern) and
-// `FullCx::mount`/`step` drain the queue after each closure - deferred
-// chrome ops land inside the same golden step, deterministically. The
-// queue is thread-local (tests run in parallel threads; the OnceLock
-// scheduler is process-global); non-navigator scenarios queue nothing,
-// so their goldens are unaffected.
+// Without an installed scheduler, `schedule_microtask` runs INLINE, so
+// deferred work would land in the middle of the call that scheduled it.
+// The full-op harness installs a QUEUING scheduler (the SSR backend's
+// pattern): microtasks are held in a queue (no driver currently calls
+// `drain`, so they never run inside a pinned step), and frames/timers
+// fire only when a scenario pumps them. The queues are thread-local
+// (tests run in parallel threads; the OnceLock scheduler is
+// process-global).
 
 mod parity_scheduler {
     use runtime_shared::scheduling::{ScheduleHandle, Scheduler};
@@ -101,8 +93,8 @@ mod parity_scheduler {
     // `ScheduledTask` semantics, which presence relies on (a cancelled
     // pending-enter must not fire over a fresh exit state). Scenarios
     // pump them at explicit step boundaries via [`pump_frames`] /
-    // [`pump_timers`]; scenarios that never pump behave exactly as
-    // before (callback held instead of dropped, zero ops).
+    // [`pump_timers`]; in scenarios that never pump, the callback is
+    // held and never fires (zero ops).
 
     type Slot = std::rc::Rc<RefCell<Option<Box<dyn FnOnce() + 'static>>>>;
 
@@ -197,8 +189,7 @@ mod parity_scheduler {
 /// Elapse one animation frame / every pending `after_ms` timer inside a
 /// scenario step (presence: the enter's animate-to-rest fires on the
 /// next frame; the exit's detach-and-teardown fires when its duration
-/// elapses). Exposed for BOTH scenario files — the two sides must pump
-/// at identical step boundaries for the goldens to line up.
+/// elapses). The goldens pin the step boundary each pump lands in.
 pub fn pump_frames() {
     parity_scheduler::pump_frames();
 }
@@ -208,8 +199,8 @@ pub fn pump_timers() {
 }
 
 /// Install the queueing parity scheduler (idempotent; first install wins
-/// process-wide). The NEW-side driver calls this too — both sides must
-/// schedule through the same queues or the pump steps can't line up.
+/// process-wide). Every driver must schedule through the same queues or
+/// the pump steps can't line up with the goldens.
 pub(crate) fn ensure_parity_scheduler() {
     parity_scheduler::ensure_installed();
 }
@@ -329,7 +320,7 @@ pub struct FullRecorder {
     actions: Vec<(String, Rc<dyn Fn()>)>,
     /// Captured `attach_states` setters, in attach order — lets a style
     /// scenario flip interaction bits exactly as a native event source
-    /// would (the P3c state-overlay gate). See
+    /// would (the state-overlay scenarios). See
     /// [`FullRecorder::state_setter`].
     state_setters: Vec<Rc<dyn Fn(StateBits, bool)>>,
     /// Captured virtualizer callback bundles, in creation order — the
@@ -408,17 +399,12 @@ impl FullRecorder {
 // Inherent op bodies — the ONE implementation of every recorded op
 // ===========================================================================
 //
-// Realization routes here through `impl runtime_scene::Host` + the 30
+// Realization routes here through `impl runtime_scene::Host` + the
 // `runtime_vocabulary::caps::*Ops` impls (below), each a mechanical
-// one-line delegation.
-//
-// The bodies live HERE rather than inline in the caps impls because they
-// used to be shared with a second, now-deleted `impl runtime_core::Backend`
-// that the golden corpus was frozen through. Keeping the split keeps the
-// recorded alphabet textually identical to what produced the goldens.
-// Method names are therefore `<old_backend_method>_impl`.
+// one-line delegation. Each `<method>_impl` writes exactly the op line
+// the goldens spell; changing a line's text is a golden change.
 impl FullRecorder {
-    // --- structural (same line format as ParityBackend/SceneHost) ---
+    // --- structural (same line format as SceneHost) ---
 
     fn insert_impl(&mut self, parent: &mut PNode, child: PNode) {
         self.rec.push(format!("insert {parent} <- {child}"));
@@ -880,10 +866,9 @@ impl FullRecorder {
         self.rec.push(format!("attach_states {node}"));
     }
 
-    // --- P3c style-engine alphabet: theme-token delivery + preminted
-    //     class stamping. None of these fire in the pre-P3c scenarios
-    //     (no tokens installed, no Preminted styles), so adding them
-    //     left the existing goldens untouched. ---
+    // --- style-engine alphabet: theme-token delivery + preminted
+    //     class stamping. Only the style-engine scenarios fire these
+    //     (the rest install no tokens and use no Preminted styles). ---
 
     fn install_tokens_impl(&mut self, tokens: &[runtime_shared::TokenEntry]) {
         let names: Vec<&str> = tokens.iter().map(|t| t.name).collect();
@@ -921,7 +906,7 @@ impl FullRecorder {
             .push(format!("apply_scroll_view_safe_area_inset {node} {sides:?}"));
     }
 
-    // --- virtualizer (the P3-set port) ---
+    // --- virtualizer ---
 
     /// Captures the callback bundle WITHOUT invoking it: the backend is
     /// mutably borrowed during `create_*`, so a synchronous window fill
@@ -956,7 +941,7 @@ impl FullRecorder {
         self.rec.push(format!("release_virtualizer {node}"));
     }
 
-    // --- graphics (the P3-set port) ---
+    // --- graphics ---
 
     fn create_graphics_impl(
         &mut self,
@@ -982,7 +967,7 @@ impl FullRecorder {
         self.rec.push(format!("release_graphics {node}"));
     }
 
-    // --- portal + presence (the P3-set port) ---
+    // --- portal + presence ---
 
     fn create_portal_impl(
         &mut self,
@@ -1495,9 +1480,8 @@ impl caps::PresenceOps for FullRecorder {
     }
 }
 
-// Defaults only — see the block comment above (`create_navigator` was
-// deleted with the old core's `NavigatorHost`; navigators mount through
-// the vocabulary's own handlers).
+// Defaults only — there is no `create_navigator`; navigators mount
+// through their SDK's own handlers.
 impl caps::NavigatorOps for FullRecorder {}
 
 impl caps::ExternalOps for FullRecorder {}
@@ -1710,9 +1694,9 @@ impl raw_window_handle::HasDisplayHandle for DummySurface {
 // identical prop values (digest equality depends on it).
 // ===========================================================================
 
-/// Test rules: `width: <w>px` + a literal background color. The old
-/// side wraps these in a static `StyleSheet`; resolution returns the
-/// same struct (literals resolve to themselves), so both sides digest
+/// Test rules: `width: <w>px` + a literal background color. Wrapped in
+/// a static `StyleSheet` or passed as a Static prop, resolution returns
+/// the same struct (literals resolve to themselves), so both digest
 /// identically.
 pub fn test_rules(width: f32, background: &str) -> StyleRules {
     StyleRules {
@@ -1761,7 +1745,7 @@ pub fn presence_exit() -> primitives::presence::PresenceAnim {
     )
 }
 
-// --- P3c style-engine fixtures ---
+// --- style-engine fixtures ---
 
 use runtime_shared::{StyleApplication, StyleSheet, TokenEntry, TokenValue, Tokenized};
 
@@ -1829,7 +1813,7 @@ pub fn full_golden_path(name: &str, mode: Mode) -> PathBuf {
         .join(format!("{name}.{}.golden", mode.suffix()))
 }
 
-/// Absolute path of a full-op NEW-core override golden (sanctioned
+/// Absolute path of a full-op override golden (sanctioned
 /// divergences only — see `full_new::FULL_NEWCORE_OVERRIDES`).
 pub fn full_newcore_golden_path(name: &str, mode: Mode) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

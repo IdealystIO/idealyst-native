@@ -1,12 +1,6 @@
-//! Wave 2b: robot verbs AND the MCP catalog coexist in a `--new-core`
-//! dev session.
+//! Robot verbs AND the MCP catalog coexist in a dev sidecar session.
 //!
-//! Pre-wave-2b, a new-core sidecar session had neither: the bridge
-//! never started, element verbs would have dispatched against the
-//! EMPTY old registry, and the catalog inventory wasn't even linked
-//! (`runtime-core/dev` was unbuildable in new-core graphs while the
-//! recipes compiled `ui!` inside runtime-core). This test drives the
-//! exact wiring the sidecar session thread now installs —
+//! Drives the exact wiring the sidecar session thread installs —
 //! [`dev_server::newcore::install_robot_env`] — through the shared TCP
 //! bridge's in-process dispatch (`runtime_shared::robot::bridge::
 //! invoke_command`, the same path `BridgeHandle::poll` runs per socket
@@ -21,11 +15,8 @@
 //!   (with the static core recipes anchored in runtime-shared) is served
 //!   in the same session.
 //!
-//! This file used to open with `#![cfg(feature = "new-core")]`. When that
-//! core-selector feature was deleted the attribute silently reduced the
-//! whole file to ZERO tests instead of failing to compile — the exact
-//! "goes silent, not red" failure the deletion baseline warns about
-//! (§4.1 #8). It is unconditional now.
+//! Deliberately NOT behind a `#![cfg(feature = …)]`: a deleted feature
+//! would silently reduce the file to zero tests instead of failing.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -105,8 +96,8 @@ fn newcore_session_serves_robot_verbs_and_catalog_over_one_bridge() {
         );
     }
 
-    // Custom commands (the sidecar's `screenshot` shape) still reach
-    // the old dispatch's custom table through the fallback.
+    // Custom commands (the sidecar's `screenshot` shape) reach the
+    // shared bridge's custom table through the fallback.
     runtime_shared::robot::bridge::register_command("wave2b_probe", |_args| {
         Ok("\"probe-ok\"".into())
     });

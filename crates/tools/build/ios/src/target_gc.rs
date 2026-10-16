@@ -5,7 +5,7 @@
 //! is compiling into. So every rehash of a crate (a framework release, a
 //! `cargo update`, a feature change) leaves the previous unit — rlib,
 //! fingerprint, build-script output, incremental cache — behind for good.
-//! Measured on CrewForge (2026-10-08): an outside GC reclaimed 4.2 GB from
+//! Measured on CrewForge: an outside GC reclaimed 4.2 GB from
 //! one iOS wrapper target; `crewforge_main` had 12 dead incremental caches
 //! in its web build's `incremental/` and 19 in `incremental-hotpatch/`,
 //! ~10 GB each.
@@ -1103,7 +1103,7 @@ pub(crate) mod tests {
 
     // ── Recency fallback ─────────────────────────────────────────────
 
-    /// Regression (CrewForge, 2026-10-08): the hot-patch replay's
+    /// Regression: the hot-patch replay's
     /// `incremental-hotpatch/` piled up 19 dead caches for one crate,
     /// because only `incremental/` was ever trimmed and rustc never
     /// collects another hash's dir. Both are trimmed now.
@@ -1552,7 +1552,7 @@ pub(crate) mod tests {
     /// hash, so its fingerprint dir read as superseded and was deleted after
     /// EVERY build — and cargo recompiled it on every run.
     ///
-    /// Regression (CrewForge, 2026-10-08): every framework release left a
+    /// Regression: every framework release left a
     /// whole superseded generation in the iOS wrapper's target — root
     /// staticlib included, ~1.1 GB each, times two for dev on/off — and
     /// nothing ever removed one. After a build exactly the units the

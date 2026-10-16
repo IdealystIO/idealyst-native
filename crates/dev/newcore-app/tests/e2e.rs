@@ -1,7 +1,7 @@
 //! End-to-end proof of the `ui!` / `#[component]` lowering: the authored
 //! app (src/app.rs) mounted against the scene-parity mock host (the bare
-//! `FullRecorder`, which implements `runtime_scene::Host` + all 30 caps
-//! traits directly), driven by recorded BUTTON HANDLERS (the real event
+//! `FullRecorder`, which implements `runtime_scene::Host` + every caps
+//! trait directly), driven by recorded BUTTON HANDLERS (the real event
 //! path: macro → builders → prims → registry handlers → backend calls)
 //! plus `world.flush()`, asserting the recorded full-op log — structure
 //! at mount, in-place updates, keyed reconcile behavior, and row-local
@@ -93,10 +93,8 @@ fn pump_timers() {
     pump(&TIMER_QUEUE);
 }
 
-// The scene-parity recorder implements `runtime_scene::Host` + all 30
-// caps traits DIRECTLY — no `Backend` trait anywhere in this harness.
-// (The alias name is historical: it used to wrap the recorder in
-// `LegacyBridge`.)
+// The scene-parity recorder implements `runtime_scene::Host` + every
+// caps trait directly; the harness mounts against it with no adapter.
 type Bridged = FullRecorder;
 
 struct Harness {
@@ -353,7 +351,7 @@ fn drop_realized_is_unmount() {
 }
 
 // ===========================================================================
-// P3c: the stylesheet!-styled component through the sheet engine
+// The stylesheet!-styled component through the sheet engine
 // ===========================================================================
 
 /// The `stylesheet!` card mounts through the sheet engine: the `large`
@@ -406,9 +404,8 @@ fn theme_swap_reapplies_styled_card() {
 }
 
 // ===========================================================================
-// P3-set primitives: overlay / anchored_overlay / presence / flat_list
-// (the formerly macro-deferred tags), driven through the same authored
-// path: macro → glue wrappers → builders → prims → handlers → backend.
+// Primitives: overlay / anchored_overlay / presence / flat_list, driven
+// through the same authored path: macro → glue wrappers → builders → prims → handlers → backend.
 // ===========================================================================
 
 struct DemoHarness {
@@ -420,7 +417,7 @@ struct DemoHarness {
 }
 
 impl DemoHarness {
-    /// Mount the P3-set demo; returns the harness plus the mount-time
+    /// Mount the primitive demo; returns the harness plus the mount-time
     /// op log. Installs the pumped scheduler first (presence anims).
     fn mount() -> (DemoHarness, Vec<String>) {
         ensure_scheduler();
@@ -603,9 +600,9 @@ fn hover_flip_applies_the_state_overlay() {
 }
 
 // ===========================================================================
-// P5 identity seam: the authored `test_id = ...` anchors drive the app
+// Identity seam: the authored `test_id = ...` anchors drive the app
 // through the vocabulary robot registry — the same find/act surface the
-// conformance app's robot bridge will adapt (see
+// conformance app's robot bridge uses (see
 // runtime_vocabulary::robot's module docs for the transport contract).
 // ===========================================================================
 
@@ -702,8 +699,7 @@ fn robot_registry_empties_on_app_unmount() {
 }
 
 // ===========================================================================
-// P5 robot remainder: `#[method]` components + `watch_signal` on the
-// new core — driven through the same registry/bridge surfaces the
+// Robot: `#[method]` components + `watch_signal` — driven through the same registry/bridge surfaces the
 // conformance app and robot-test client use.
 // ===========================================================================
 
@@ -769,7 +765,7 @@ fn robot_method_component_registers_invokes_and_deregisters() {
 }
 
 /// `watch_signal("remaining", memo)` in the authored source exposes the
-/// live memo value to the watch registry (robot-test's `assert_signal`
+/// live memo value to the watch registry (robot-test's `App::signal` assertions
 /// rides the same reads via the `read_signal` bridge verb), and the
 /// entry dies with the component scope on unmount.
 #[test]

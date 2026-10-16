@@ -1,28 +1,25 @@
-//! The parity scenarios, re-targeted at the new scene core per the
-//! README's contract: SAME names, SAME modes, SAME step labels, SAME
-//! mutations — built through `runtime-scene`'s element constructors and
-//! driven by `runtime-world` signals (each step ends in a `world.flush()`
-//! inside `NewCx::step`).
+//! The structural parity scenarios: SAME names, modes, step labels and
+//! mutations as the frozen `goldens/` corpus, built through
+//! `runtime-scene`'s element constructors and driven by `runtime-world`
+//! signals (each step ends in a `world.flush()` inside `NewCx::step`).
 //!
-//! Lowering map (old public constructor → new-core form):
+//! Scenario names use the constructor vocabulary the goldens were
+//! recorded with; the constructs they map to:
 //!
-//! | old                      | new                                         |
+//! | golden name says         | scenario builds                             |
 //! |--------------------------|---------------------------------------------|
-//! | `view(children)`         | `item(NcView, children)`                    |
-//! | `text(s)`                | `item(NcText(s), vec![])`                   |
-//! | `when(cond, a, b)`       | `dyn_keyed(cond, \|&b\| ...)` (guarded)     |
-//! | `switch(scrutinee, arm)` | `dyn_keyed(scrutinee, arm)` (guarded)       |
-//! | `dynamic(f)`             | `dyn_element(f)` (unguarded)                |
-//! | `fragment(children)`     | `fragment(children)`                        |
-//! | `each_keyed(snapshot)`   | `keyed(items, key, render)`                 |
+//! | `view` / `text`          | `item(NcView, ..)` / `item(NcText(s), ..)`  |
+//! | `when` / `switch`        | `dyn_keyed(cond, ..)` (guarded hole)        |
+//! | `dynamic`                | `dyn_element(f)` (unguarded)                |
+//! | `each` / `each_keyed`    | `keyed(items, key, render)`                 |
 //! | multi-node row           | row renders a `fragment(...)`               |
-//! | `on_cleanup(marker)`     | probe `effect` returning the marker closure |
+//! | cleanup marker           | probe `effect` returning the marker closure |
 //!
-//! The `on_cleanup` mapping: the kernel's `on_cleanup` requires a running
+//! The cleanup marker: the kernel's `on_cleanup` requires a running
 //! effect, and row/branch builders run inside the subtree's collector but
 //! not inside an effect of their own — so scenarios register a probe
-//! `effect` whose returned cleanup fires when the subtree's `Owned` drops.
-//! Same observable moment (scope teardown), same marker line.
+//! `effect` whose returned cleanup fires when the subtree's `Owned` drops
+//! (scope teardown), writing the `cleanup <label>` line.
 
 use runtime_scene::{dyn_element, dyn_keyed, fragment, item, keyed, Element};
 use runtime_world::{effect, signal, Signal};
@@ -101,8 +98,7 @@ fn when(
 
 /// A cleanup marker scoped to the CURRENT build (row/branch): a probe
 /// effect whose returned cleanup fires when the enclosing subtree's
-/// `Owned` drops — the new-core mapping of the old scenarios'
-/// `on_cleanup(|| rec.note_cleanup(..))`.
+/// `Owned` drops (see the module docs for why not `on_cleanup`).
 fn cleanup_marker(rec: &Recorder, label: String) {
     let rec = rec.clone();
     effect(move || {

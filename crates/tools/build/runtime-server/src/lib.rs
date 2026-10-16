@@ -7,15 +7,15 @@
 //! ## Split-process architecture
 //!
 //! The runtime-server dev host is **two** binaries, generated side by side under
-//! `<workspace>/target/idealyst/<project>/aas/`:
+//! `<workspace>/target/idealyst/<project>/runtime-server/`:
 //!
 //! - `host/`   → `<project>-runtime-server-host`  — long-lived infra (WebSocket
-//!                                       server, mDNS, file watcher).
+//!                                       server, file watcher).
 //!                                       Statically links `dev-server`
 //!                                       but NOT the user crate.
 //! - `app/`    → `<project>-runtime-server-app`   — short-lived sidecar that
 //!                                       statically links the user
-//!                                       crate, runs `render(app())`,
+//!                                       crate, mounts the user's scene,
 //!                                       and streams wire commands /
 //!                                       reads events over its
 //!                                       stdout / stdin pipes.
@@ -24,14 +24,13 @@
 //! SIGKILLs the running sidecar, and respawns. The WebSocket listener
 //! stays up the entire time — connected clients (Android, iOS) never
 //! disconnect, so the perceived hot-reload latency drops to roughly
-//! the user-crate rebuild + sidecar startup time. This is the win
-//! over the legacy single-process model where every save did a
-//! self-exec and forced every client to reconnect.
+//! the user-crate rebuild + sidecar startup time, and no save forces
+//! a client to reconnect.
 //!
 //! ## Layout
 //!
 //! ```text
-//! <workspace>/target/idealyst/<project>/aas/
+//! <workspace>/target/idealyst/<project>/runtime-server/
 //! ├── host/
 //! │   ├── Cargo.toml
 //! │   ├── .cargo/config.toml      ← share workspace target dir
@@ -39,12 +38,10 @@
 //! └── app/
 //!     ├── Cargo.toml
 //!     ├── .cargo/config.toml      ← share workspace target dir
-//!     └── src/main.rs             ← runs render(app()) + frame I/O
+//!     └── src/main.rs             ← mounts the user's scene + frame I/O
 //! ```
 //!
-//! Both crates are regenerated on every build. `idealyst scaffold
-//! aas` (future) will materialize editable copies into the repo for
-//! users who want to customize either side.
+//! Both crates are regenerated on every build.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,9 +89,8 @@ pub struct BuildArtifact {
 
 /// Bind address the generated host uses unless overridden via its
 /// first CLI arg. `0.0.0.0:0` means "OS picks a free port and listen
-/// on every interface" — the chosen port is published over mDNS so
-/// clients (iOS, Android, …) discover the host without anyone having
-/// to coordinate a fixed number.
+/// on every interface" — the host reports the chosen port through its
+/// port sentinel, so nobody has to coordinate a fixed number.
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:0";
 
 pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
@@ -116,11 +112,9 @@ fn build_sidecar_mode(
     let wrapper_root = opts.source.wrapper_root(project_dir).join(&manifest.name);
     // Both wrappers + the captures/patches dirs live under the same
     // `runtime-server/` parent so the host's read paths line up with
-    // the build's write paths. Pre-fix the sidecar lived under
-    // `aas/app` (legacy name) while captures went under
-    // `runtime-server/captures` — the host then probed
-    // `aas/captures` (computed from `sidecar_dir.parent()`), found
-    // nothing, failed every hot-patch, and fell through to the slow
+    // the build's write paths: the host derives the captures dir from
+    // `sidecar_dir.parent()`, so a sidecar anywhere else finds no
+    // captures, fails every hot-patch, and falls through to the slow
     // respawn path on every save.
     let wrapper_dir = wrapper_root.join("runtime-server/host");
     let sidecar_dir = wrapper_root.join("runtime-server/app");
@@ -278,7 +272,7 @@ fn generate_sidecar_wrapper(
     let sidecar_name = sidecar_binary_name(&manifest.name);
     // `dev` enables the framework's Robot bridge auto-start + the
     // MCP catalog inventory — without it the sidecar runs the user's
-    // components but `idealyst mcp` finds no components via mDNS.
+    // components but `idealyst mcp` finds no components.
     // Local-mount terminal builds get this via `--features
     // runtime-core/dev` at cargo invocation; the sidecar build is
     // driven by build-runtime-server (not the launcher's cargo
@@ -298,8 +292,7 @@ fn generate_sidecar_wrapper(
     // table plus an inner `__<Name>_hot_impl` carrying the body), and
     // links the substrate that applies a table. Without it the host's
     // patch dylib would link, the table would apply, and every component
-    // would keep running the OLD body — the silent failure the
-    // `hot_patch: None` in the generated host `main` used to prevent.
+    // would keep running the OLD body, silently.
     //
     // `runtime-macros` is a proc-macro crate, so this flips the emission
     // for every crate in the sidecar's cargo invocation. Wanted: a
@@ -317,8 +310,8 @@ fn generate_sidecar_wrapper(
     let shared_dep = source.dep("crates/runtime/shared", &["robot"]);
     // `runtime-server` is dev-server's opt-in for both `host::run` and
     // `sidecar::run_newcore`. It pulls `dev-hot`, `subsecond-types`,
-    // `libc`, and `anyhow` into the wrapper transitively — we no
-    // longer name those deps from this Cargo.toml.
+    // `libc`, and `anyhow` into the wrapper transitively, so this
+    // Cargo.toml doesn't name them.
     //
     // `screenshot` registers the headless `"screenshot"` Robot-bridge
     // verb in each session, so Robot / the MCP server can rasterize the
@@ -329,9 +322,7 @@ fn generate_sidecar_wrapper(
     // adds the verb + the offscreen renderer.
     //
     // The recorder's caps adoption + `run_newcore` (per-session World +
-    // realize) are unconditional now that there is one core, so no
-    // feature selects them — `new-core` used to be named here and no
-    // longer exists on dev-server.
+    // realize) are unconditional; no feature selects them.
     let dev_server_dep =
         source.dep(
             "crates/dev/server",
@@ -495,8 +486,7 @@ anyhow = "1"
     let idealyst_bin = std::env::current_exe()
         .context("locate the idealyst CLI binary for the host's respawn env")?;
 
-    // Bundle id is no longer threaded into the host (we used to bake
-    // it as the mDNS TXT-record key). Resolve it anyway so the
+    // The host doesn't use the bundle id. Resolve it anyway so the
     // template build still fails fast when the manifest is missing one
     // — better than discovering it at platform-launch time.
     let _ = manifest.app.require_bundle_id()?;
@@ -831,10 +821,9 @@ mod regression_tests {
     /// overlay, AND `hot-reload` — and the host must install the
     /// hot-patch adapter that feeds it.
     ///
-    /// dev surface: pre-fix it was omitted, so the MCP catalog inventory
-    /// never registered and `idealyst mcp` returned zero components in
-    /// runtime-server mode, while local mode (which passes the dev
-    /// feature via cargo) worked.
+    /// dev surface: without it the MCP catalog inventory never registers
+    /// and `idealyst mcp` returns zero components in runtime-server mode
+    /// (local mode passes the dev feature via cargo instead).
     ///
     /// `hot-reload`: the sidecar and the host are two halves of one
     /// mechanism, and either alone fails SILENTLY — the sidecar without
@@ -962,11 +951,9 @@ mod regression_tests {
             !cargo_toml.contains("old-core"),
             "wrapper must not mention old-core:\n{cargo_toml}",
         );
-        // The scene-session module is unconditional now; assert the wrapper
-        // does NOT resurrect the deleted feature (naming a feature that no
-        // longer exists is a hard cargo resolution error, and a generated
-        // Cargo.toml is not type-checked — see
-        // docs/runtime-v2-deletion-baseline.md §7.7).
+        // The scene-session module is unconditional; the wrapper must not
+        // name a `new-core` feature (an unknown feature is a hard cargo
+        // resolution error, and a generated Cargo.toml is not type-checked).
         assert!(
             !dep_features(deps, "dev-server").iter().any(|f| f == "new-core"),
             "dev-server has no `new-core` feature any more:\n{cargo_toml}",

@@ -178,9 +178,9 @@ fn a_patch_built_from_a_real_crate_pairs_with_its_base() {
     // dead-code pass keeps a private function only because the element
     // segment roots it. Without `prepare_base_module` this is gone, and
     // with it there is a table slot to redirect.
-    // The alias map has to be read from the LINKED module: walrus and
-    // wasm-bindgen both renumber functions, and the `linking` section
-    // travels with the stale indices.
+    // The alias map has to be read from the LINKED module: wasm-bindgen
+    // renumbers functions, and the `linking` section travels with the
+    // stale indices.
     let aliases = hotpatch_aliases::read_from_linked(&std::fs::read(&linked).unwrap()).unwrap();
     assert!(
         !aliases.is_empty(),

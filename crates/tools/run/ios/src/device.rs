@@ -7,8 +7,7 @@
 //! so the auto-provisioning machinery (`-allowProvisioningUpdates`) can
 //! register the device with the portal and mint a development profile.
 //!
-//! The validated sequence (see [[project_ios_device_deploy_from_cli]],
-//! proven on an iPhone X / iOS 16.7):
+//! The validated sequence (proven on an iPhone X / iOS 16.7):
 //!
 //! ```text
 //!   build-ios::build (device, release)  → libNAME_ios_wrapper.a (aarch64-apple-ios)
@@ -412,7 +411,7 @@ struct PbxParams<'a> {
     lib_name: &'a str,
     /// The Apple frameworks to link, derived from the dep graph (base set +
     /// each SDK's declared frameworks). Drives the four framework-related
-    /// pbxproj sections, replacing what used to be hardcoded in the template.
+    /// pbxproj sections.
     frameworks: &'a [Framework],
     /// The entitlements file (project-relative) to sign with, when the app
     /// declares any — today, universal-link domains
@@ -1368,8 +1367,7 @@ mod tests {
     /// Regression for the hardcoded-frameworks bug: a screen-capture app
     /// declares ReplayKit via `[package.metadata.idealyst.ios].frameworks`, and
     /// the generated pbxproj MUST link it (strong) — otherwise
-    /// `class!(RPScreenRecorder)` panics at launch. Before the fix the list was
-    /// hardcoded to the camera set, so ReplayKit never appeared.
+    /// `class!(RPScreenRecorder)` panics at launch.
     #[test]
     fn pbxproj_links_replaykit_strong_when_declared() {
         let frameworks = crate::frameworks::collect_ios_frameworks_for_test(&[
@@ -1621,10 +1619,9 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
         assert!(rendered.contains("ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon"));
     }
 
-    /// `CFBundleVersion` reflects the manifest's `build_number` (it used to
-    /// be hardcoded `1`). App Store Connect keys on this for build
-    /// uniqueness, so a stale hardcoded value would block every upload past
-    /// the first.
+    /// `CFBundleVersion` reflects the manifest's `build_number`. App Store
+    /// Connect keys on this for build uniqueness, so a hardcoded value would
+    /// block every upload past the first.
     #[test]
     fn plist_build_number_is_substituted() {
         let mut m = crate::tests_support::fake_manifest();

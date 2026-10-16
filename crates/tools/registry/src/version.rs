@@ -215,17 +215,13 @@ fn run_git(root: &Path, args: &[String]) -> Result<String> {
 /// 2. an internal dependency whose floor moved — the same line either
 ///    side, differing only inside its `version = "…"` field.
 ///
-/// The second used to disqualify a commit, and that was the bug.
-/// `apply_plan` moves a released crate's floor in its dependents BEFORE
-/// packaging, so those edits are already inside the published tarball;
-/// git only records them afterwards, in the `chore(release):` commit. A
-/// dependent whose floor moved therefore looked "changed since the
-/// published commit" forever after, and every subsequent release
-/// dragged the previous release's crate set along with it — which is
-/// exactly what per-crate versions exist to stop. Seen on 2026-09-08: a
-/// one-file iOS fix planned `css` and `idealyst` too, because
-/// `53cbea1b` had moved their `runtime-shared` and `backend-web`
-/// floors.
+/// The second must not count. `apply_plan` moves a released crate's
+/// floor in its dependents BEFORE packaging, so those edits are already
+/// inside the published tarball; git only records them afterwards, in the
+/// `chore(release):` commit. Counted, a dependent whose floor moved would
+/// look "changed since the published commit" forever, and every release
+/// would drag the previous release's crate set along with it — exactly
+/// what per-crate versions exist to stop.
 ///
 /// Still deliberately strict about everything else. `version.workspace
 /// = true` has the key `version.workspace`, not `version`, and does not

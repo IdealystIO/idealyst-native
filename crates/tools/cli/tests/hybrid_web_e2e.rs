@@ -5,7 +5,7 @@
 //! links no wasm-bindgen and the build never runs its CLI. Hybrid is the
 //! supported path for everything else, and the one real dependency that
 //! still forces it is wgpu — here through `canvas-vello`, the GPU canvas
-//! renderer (docs/proposals/own-web-bindings.md, phase 5). So this
+//! renderer. So this
 //! materializes a small app on the in-tree framework that registers
 //! `canvas-native` and then `canvas-vello` (last registration wins), builds
 //! it with the real `idealyst build --web`, serves `dist/web`, and drives

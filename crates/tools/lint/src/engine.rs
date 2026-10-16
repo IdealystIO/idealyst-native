@@ -246,9 +246,8 @@ mod tests {
 
     #[test]
     fn does_not_flag_element_external() {
-        // The old core's extension seam, still exempt in the legacy
-        // sources that carry it (today's extension path is the scene
-        // `Registry`, which has no hand-built `Element` shape at all).
+        // The pre-v2 extension seam stays exempt (today's extension path
+        // is the scene `Registry`, which has no hand-built `Element` shape).
         let diags = lint("fn f() { let e = Element::External { name: \"x\" }; }");
         assert!(diags.is_empty(), "got {diags:?}");
     }

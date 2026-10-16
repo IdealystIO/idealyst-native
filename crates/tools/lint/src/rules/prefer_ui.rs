@@ -7,10 +7,7 @@
 //!   call to one of the framework's primitive constructors qualified by a
 //!   framework path segment. These are the free functions `ui!` lowers
 //!   its tags to; calling them directly is *exactly* the hand-built form
-//!   the rule exists for. (Historically only a `builder::` segment was
-//!   recognised, so `runtime_core::view(vec![…])` — the spelling the
-//!   framework's own docs use for the positional constructor — sailed
-//!   through unflagged.)
+//!   the rule exists for.
 //! - `view(…)`, `text(…)`, … written bare, when the file imports that
 //!   name from the framework (`use runtime_core::view;` or a glob
 //!   `use runtime_core::*;`) and nothing in the file shadows it — a local
@@ -20,14 +17,14 @@
 //! - `BuildElement::build(props)` — the trait call the macro emits for
 //!   component dispatch; writing it by hand is the manual form.
 //! - `Element::View { … }`, `Element::Text { … }`, … — a struct literal of
-//!   a primitive `Element` variant (the old core's shape; kept so legacy
-//!   sources still get the pointer).
+//!   a primitive `Element` variant. The current `Element` has no such
+//!   variants; this shape only matches sources written against the
+//!   pre-v2 element enum, so they still get the pointer.
 //!
-//! The old core's `Element::External { … }` / `Element::Component { … }`
-//! literals are deliberately **not** flagged: `Component` is the macro's
-//! own wrapper and `External` was the pre-`Registry` extension seam —
-//! both legitimate hand-written forms in the sources that still carry
-//! them.
+//! `Element::External { … }` / `Element::Component { … }` literals (same
+//! pre-v2 enum) are deliberately **not** flagged: `Component` was the
+//! macro's own wrapper and `External` the extension seam (now the scene
+//! `Registry`).
 //!
 //! The reactive control-flow glue (`when`, `switch`) is reported under
 //! its own id, [`CONTROL_FLOW_RULE`] (`prefer-ui-control-flow`): those

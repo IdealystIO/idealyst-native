@@ -1,10 +1,10 @@
 //! App-side replay engine.
 //!
-//! Wraps a real platform [`Backend`] and applies an incoming stream
-//! of [`Command`]s against it. The wire's `NodeId` namespace is held
-//! in a `HashMap<NodeId, B::Node>`; styles are pre-registered into a
-//! `HashMap<StyleId, Rc<StyleRules>>`. Every wire command maps to
-//! one `Backend` trait method call (or a small cluster).
+//! Wraps a real platform backend (any [`caps::AllCaps`] host) and
+//! applies an incoming stream of [`Command`]s against it. The wire's
+//! `NodeId` namespace is held in a `HashMap<NodeId, B::Node>`; styles are
+//! pre-registered into a `HashMap<StyleId, Rc<StyleRules>>`. Every wire
+//! command maps to one capability-trait method call (or a small cluster).
 //!
 //! Event flow back to the dev side runs through closures the
 //! replayer installs at command-apply time. Each closure captures a
@@ -41,12 +41,12 @@ use wire::{
 pub mod convert;
 pub mod graphics;
 pub mod navigators;
-// Compatibility aliases for the replay client's historical names
-// (`NewCoreReplayClient`, `WireBackend::new_newcore`). See the module.
+// Aliases `NewCoreReplayClient` / `WireBackend::new_newcore`, still
+// spelled by generated wrappers. See the module.
 pub mod newcore;
 
 /// The runtime-server (Application-as-a-Server) **client-side replayer** —
-/// wraps any `runtime_shared::Backend` and feeds it the wire
+/// wraps any capability-complete platform backend and feeds it the wire
 /// [`wire::Command`]s shipped by an
 /// [`AasBackend`](dev_server::AasBackend). Idempotent
 /// apply means re-sending a snapshot only does DOM work for the
@@ -236,23 +236,19 @@ impl From<Sender<AppToDev>> for OutboundSender {
     }
 }
 
-/// The app-side replay engine. Generic over a `Backend` so a single
+/// The app-side replay engine. Generic over the platform backend so a single
 /// implementation covers iOS, Android, web, and any future target.
 pub struct WireBackend<B: caps::AllCaps>
 where
     B::Node: 'static,
 {
-    /// Shared backend handle. Pre-refactor this was `backend: B`
-    /// (owned by value), which blocked the wgpu sim shell from
-    /// sharing its `WgpuBackend` with `render-wgpu::Host` — Host
-    /// keeps the backend behind its own `Rc<RefCell<>>` so its
-    /// `Renderer::render` call can read scene state across the
-    /// frame. With the wrapper here, the sim path constructs the
-    /// backend once, wraps it, and hands the shared `Rc` to BOTH
-    /// the wire backend (via [`Self::new_with_shared`]) and the
-    /// Host. The iOS / Android / macOS shells still use the by-
-    /// value [`Self::new`] which wraps internally; they don't
-    /// share, so there's no observable behavior change for them.
+    /// Shared backend handle, not owned by value, so the wgpu sim shell
+    /// can share its `WgpuBackend` with `render-wgpu::Host` (Host keeps
+    /// the backend behind its own `Rc<RefCell<>>` so its
+    /// `Renderer::render` call can read scene state across the frame):
+    /// the sim path wraps the backend once and hands the shared `Rc` to
+    /// both this replayer (via [`Self::new_with_shared`]) and the Host.
+    /// Shells that don't share use [`Self::new`], which wraps internally.
     backend: Rc<RefCell<B>>,
     nodes: HashMap<NodeId, B::Node>,
     /// Command shapes whose replay failure has already been reported.
@@ -296,7 +292,7 @@ where
     /// backend resolves the real platform inset. A single shared effect
     /// (`safe_area_effect`) re-applies all of these whenever the client's
     /// `safe_area_insets()` signal changes (rotation / sheet adaptation),
-    /// mirroring the framework's per-node `attach_safe_area` for the
+    /// mirroring the framework's per-node safe-area effect on the
     /// local-render path.
     #[allow(clippy::type_complexity)]
     safe_area_nodes: Rc<RefCell<Vec<(NodeId, B::Node, runtime_shared::SafeAreaSides, bool)>>>,
@@ -391,7 +387,7 @@ where
 
     /// Handle a [`DevToApp::QueryDeviceFrame`]: look the wire `node` up in
     /// the node map, ask the real backend for its physical screen-pixel
-    /// rect (`Backend::device_frame`), and reply with an
+    /// rect (`IntrospectionOps::device_frame`), and reply with an
     /// [`AppToDev::DeviceFrameResult`] carrying the same `request_id`.
     /// An unknown node id (or a backend that doesn't implement
     /// `device_frame`) replies with `found = false` so the server's
@@ -457,28 +453,17 @@ where
         self.backend.borrow().color_scheme()
     }
 
-    /// Apply a batch of commands. Each command is applied to the
-    /// real backend; errors short-circuit the batch and surface to
-    /// the caller (in production-dev, log + continue; in tests,
-    /// fail loudly).
     /// Apply a frame. A command that fails is SKIPPED, named, and the
     /// rest of the frame still applies.
     ///
-    /// This used to stop at the first error, on the reasoning that a
-    /// half-applied frame hides a desynchronized mirror. The reasoning
-    /// was wrong about what actually fails here. The errors in practice
-    /// are not mirror drift — they are ops naming a primitive whose
-    /// REPLAY is not implemented yet (`apply_create_virtualizer` is a
-    /// stub, so the client never registers the node and every later op
-    /// about it is an `UnknownNode`). Stopping meant one unimplemented
-    /// primitive discarded every unrelated command behind it: on
-    /// CrewForge, a `VirtualizerDataChanged` at command 1165 of 1259
-    /// blanked the app's entire content pane, and the only clue was a
-    /// node id that by definition names nothing the reader can look up.
-    ///
-    /// Skipping degrades the same failure to "the virtualized list is
-    /// missing, everything else painted" — which is both more useful
-    /// and more honest about what is wrong.
+    /// Not stop-at-first-error: the failures in practice are not mirror
+    /// drift but ops naming a primitive whose REPLAY is not implemented
+    /// yet (`apply_create_virtualizer` is a stub, so the client never
+    /// registers the node and every later op about it is an
+    /// `UnknownNode`). Stopping would let one unimplemented primitive
+    /// discard every unrelated command behind it and blank the whole
+    /// screen; skipping degrades it to "the virtualized list is
+    /// missing, everything else painted".
     ///
     /// It is NOT silent. Each distinct failure is logged once per
     /// client (keyed on the command's shape, so a per-frame effect
@@ -560,7 +545,7 @@ where
                     // Button already exists. Update label if it
                     // changed. Re-binding the `on_click` handler
                     // without recreating the DOM node isn't exposed
-                    // by the `Backend` trait — but in practice the
+                    // by the capability traits — but in practice the
                     // wire's `HandlerId` allocation is positional
                     // and stable for unchanged structure, so the
                     // existing handler dispatch still routes to the
@@ -1291,12 +1276,10 @@ where
                 url,
             } => {
                 // Select is dispatched as `NavCommand::Select` to the
-                // select-style (swap) navigator. Pre-fix this was
-                // conflated with `Reset`, which drained the snapshot
-                // model's per-screen state (a Reset means "discard
-                // stack and mount new root"; a Select means "switch
-                // active screen"). The dev-server now emits
-                // `NavigatorSelect` for the select-flavored push-like.
+                // select-style (swap) navigator. Distinct from `Reset`,
+                // which would drain the snapshot model's per-screen
+                // state (a Reset means "discard stack and mount new
+                // root"; a Select means "switch active screen").
                 self.dispatch_push_like(
                     navigator, screen, scope, options, NavOp::Select, url, false,
                 )?;
@@ -1336,25 +1319,21 @@ where
                 root,
                 outlet,
             } => {
-                // Dev wire layout attach stubbed pending protocol
-                // redesign; legacy Backend trait method removed.
+                // No-op: the capability traits have no layout-attach
+                // target for this command.
                 let _ = (navigator, root, outlet);
             }
 
             // --- Navigator chrome styles ---
-            // Dev wire navigator chrome dispatch is stubbed pending
-            // protocol redesign for the SDK-based navigator model. The
-            // old Backend trait methods (apply_navigator_*_style etc.)
-            // were removed when the per-kind nav surface left core; the
-            // wire ops below remain in the protocol but no longer have
-            // a generic backend target. Wire navigators no-op until
-            // the protocol is reworked to drive through the SDK's
-            // `NavigatorHandler::apply_slot_style`.
+            // No-op: these wire ops remain in the protocol but have no
+            // capability-trait target (navigator chrome is styled by the
+            // navigator extension itself), so wire navigators render
+            // without per-slot chrome styles.
             Command::ApplyNavigatorHeaderStyle { .. }
             | Command::ApplyNavigatorTitleStyle { .. }
             | Command::ApplyNavigatorButtonStyle { .. }
             | Command::ApplyNavigatorBodyStyle { .. } => {
-                // no-op: dev wire navigator chrome TBD post-SDK migration
+                // no-op: see above
             }
 
             // --- Virtualizer control plane ---
@@ -1386,9 +1365,8 @@ where
                 // Mirror `SceneModel::apply(Command::ReleaseNode)` — clear
                 // every per-node map so a hot-reload that releases and
                 // re-creates the same logical primitive doesn't leak the
-                // old node's bookkeeping. Pre-fix, only `self.nodes` was
-                // cleared, leaving `text_content` / `button_labels` /
-                // `inserted_edges` / `navigators` to accumulate forever.
+                // old node's bookkeeping in `text_content` /
+                // `button_labels` / `inserted_edges` / `navigators`.
                 self.nodes.remove(&node);
                 self.text_content.remove(&node);
                 self.button_labels.remove(&node);
@@ -1644,8 +1622,8 @@ where
         let final_state = Rc::new(navigators::NavigatorAppState {
             kind: navigators::NavigatorKind::Stack,
             node: nav_node.clone(),
-            // Stack reconstruction is Phase 7; mount screens straight
-            // into the nav node for now so the active screen renders.
+            // No stack reconstruction: screens mount straight into the
+            // nav node so the active screen renders.
             outlet: nav_node.clone(),
             screen_stack: Rc::new(RefCell::new(Vec::new())),
             control,
@@ -1720,9 +1698,9 @@ where
     /// Create — once — the shared effect that re-applies every registered
     /// safe-area opt-in whenever the CLIENT's `safe_area_insets()` signal
     /// changes (rotation, sheet adaptation, dynamic island). This is the
-    /// device-side analogue of the framework's per-node `attach_safe_area`
-    /// effect, which over the wire only ran on the headless (ZERO-inset)
-    /// dev side. A caller-owned `watch` stored on the backend (created with
+    /// device-side analogue of the framework's per-node safe-area effect,
+    /// which over the wire only runs on the headless (ZERO-inset) dev
+    /// side. A caller-owned `watch` stored on the backend (created with
     /// no active scope), so its `Subscription` lives until this backend drops.
     fn ensure_safe_area_effect(&mut self) {
         if self.safe_area_effect.is_some() {
@@ -1755,13 +1733,11 @@ where
         url: String,
         _restore: bool,
     ) -> Result<(), ReplayError> {
-        // Dev wire push/replace/reset/select dispatch is stubbed
-        // pending the SDK-driven navigator wire-protocol redesign.
-        // The legacy callback layer this method used to drive (via
-        // `NavigatorControl::dispatch` plus a pending mount) has
-        // been removed from runtime-core. We still maintain the
-        // mounted_urls/replay_pos bookkeeping so dedup logic
-        // continues to behave deterministically across reconnects.
+        // A native-handler navigator (`state.native`) is driven through
+        // `NavigatorControl::dispatch`; otherwise `screen` becomes the
+        // outlet's single visible child. Either way the
+        // mounted_urls/replay_pos bookkeeping keeps dedup deterministic
+        // across reconnects.
         let state = self
             .navigators
             .get(&navigator)

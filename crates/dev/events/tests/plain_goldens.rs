@@ -524,9 +524,8 @@ fn the_server_down_lines() {
 }
 
 /// The full-stack server PROCESS's own output (request logs, tracing,
-/// panics, `cargo run`'s lines) used to reach the terminal straight from
-/// an inherited pipe. It is captured now, and a plain terminal still sees
-/// every line — tagged, so a CI log or the MCP dev-runner can tell it
+/// panics, `cargo run`'s lines) is captured, and a plain terminal still
+/// sees every line — tagged, so a CI log or the MCP dev-runner can tell it
 /// from the dev loop's.
 #[test]
 fn the_server_process_lines_are_tagged() {

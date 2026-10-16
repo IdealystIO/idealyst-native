@@ -910,8 +910,7 @@ fn every_tier_is_reported_in_the_file_and_on_the_page_and_the_page_acks_it() {
 
     // Own mode: a framework-only app links no wasm-bindgen, so no build of
     // the session — the initial one or the rebuild — ran the wasm-bindgen
-    // CLI. The glue pass wrote `pkg/` instead (docs/proposals/
-    // own-web-bindings.md, phase 6). A stage that ran is a stage that
+    // CLI. The glue pass wrote `pkg/` instead. A stage that ran is a stage that
     // reported; the hybrid-only stages must not appear at all.
     let stages: Vec<String> = session
         .events()

@@ -1,5 +1,5 @@
-//! Split a linked, wasm-bindgen'd module at its `#[wasm_split]` boundaries
-//! without building an instruction IR.
+//! Split a linked, packaged module (own-mode glue or wasm-bindgen output) at
+//! its `#[wasm_split]` boundaries without building an instruction IR.
 //!
 //! It replaced Dioxus's `wasm-split-cli`, which parsed the whole program
 //! into walrus IR — ~60 bytes per byte of code — once for its analysis and

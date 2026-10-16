@@ -1,5 +1,5 @@
 //! In-memory → wire conversions used by [`crate::WireRecordingBackend`]
-//! when recording walker calls. Symmetric counterpart to the
+//! when recording scene operations. Symmetric counterpart to the
 //! `convert` module in `dev-client`.
 //!
 //! Style conversions are intentionally one-way + lossy in the same

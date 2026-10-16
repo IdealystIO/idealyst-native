@@ -1,27 +1,22 @@
-//! Props-arrival contract — the successor of the old walker's
-//! `inline_props.rs` (7) and `component_dispatch.rs` (2).
+//! Props-arrival contract.
 //!
 //! `runtime-macros` has EMISSION tests (it asserts what tokens come out);
-//! what died with the walker was the *behavioral* half: that the values a
-//! `ui!` call site writes actually reach the component body, that omitted
-//! props take their declared defaults, that a `Signal`-typed prop threads
+//! this suite is the *behavioral* half: that the values a `ui!` call
+//! site writes actually reach the component body, that omitted props
+//! take their declared defaults, that a `Signal`-typed prop threads
 //! through un-wrapped, that a signal handed to a data prop arrives LIVE
 //! (`Dynamic`, not snapshotted), that `#[prop(static)]` keeps the bare
 //! type, and that a `children: Vec<Element>` param receives the call
 //! site's block.
 //!
-//! Component bodies run eagerly at build on runtime v2 (inside
-//! `component_scope`: once, untracked, collected), so building the tree
-//! inside `World::enter` is the whole gate — no host needed. Each body
-//! records what it observed into a thread-local, so the assertions do not
-//! depend on any render plumbing.
+//! Component bodies run eagerly at build (inside `component_scope`:
+//! once, untracked, collected), so building the tree inside
+//! `World::enter` is the whole gate — no host needed. Each body records
+//! what it observed into a thread-local, so the assertions do not depend
+//! on any render plumbing.
 //!
-//! One **sanctioned divergence** is pinned here rather than the old
-//! behavior: omitting a required two-way signal prop mints a fresh
-//! default-valued signal instead of panicking on a detached sentinel
-//! (`docs/migrating-to-runtime-v2.md`, "Omitted required signal props").
-//! The old `component_dispatch.rs::omitting_required_signal_prop_panics_loudly`
-//! has no successor by design — its successor is
+//! Omitting a required two-way signal prop mints a fresh default-valued
+//! signal rather than panicking — pinned by
 //! `omitted_required_signal_prop_mints_a_fresh_signal`.
 
 use std::cell::RefCell;
@@ -226,9 +221,8 @@ fn children_param_receives_children_block() {
 ///
 /// Hand-rolled `Default` (not `#[derive]`): the world kernel's `Signal`
 /// has no `Default` — a handle must belong to a world — so a props
-/// struct with a signal field supplies the base explicitly. That is the
-/// new-core replacement for the old core's detached sentinel, and the
-/// reason the divergence below exists at all.
+/// struct with a signal field supplies the base explicitly — which is
+/// why an omitted signal prop gets a fresh signal (test below).
 pub struct LabelProps {
     pub value: Signal<i32>,
 }
@@ -264,10 +258,9 @@ fn dispatches_with_required_signal_prop() {
     );
 }
 
-/// **Sanctioned divergence** (migration guide): omitting the required
-/// signal prop mints a FRESH default-valued signal on runtime v2, where
-/// the old core panicked on the detached sentinel. The component builds
-/// and renders with unshared state; nothing aborts.
+/// Omitting the required signal prop mints a FRESH default-valued
+/// signal: the component builds and renders with unshared state;
+/// nothing aborts.
 #[test]
 fn omitted_required_signal_prop_mints_a_fresh_signal() {
     reset();

@@ -68,10 +68,8 @@ pub(crate) fn check_call(call: &syn::ExprCall, out: &mut Vec<RawDiag>) {
             );
         }
         // No arm for the `memo(…)` free function: it IS the canonical
-        // form (the old `prefer-memo-macro` rule flagged it toward the
-        // since-removed `memo!` — that direction inverted with the
-        // macro's removal; leftover `memo!` invocations are caught in
-        // `check_macro` below).
+        // form (leftover invocations of the removed `memo!` macro are
+        // caught in `check_macro` below).
         _ => {}
     }
 }

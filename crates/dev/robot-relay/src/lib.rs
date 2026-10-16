@@ -8,12 +8,12 @@
 //! diverges (dial vs listen), behavior converges — the MCP side is identical to
 //! a native app.
 //!
-//! ## Designed as the universal registry (web now, native next)
+//! ## The universal registry
 //!
-//! Although web is the only platform that *dials in* today, nothing here is
-//! web-specific. An app announces its identity on connect (a `hello` frame),
-//! and the relay keeps an app table. When native moves to dial-out, it speaks
-//! the same WS protocol and lands in the same registry — no second transport.
+//! Nothing here is web-specific. An app announces its identity on connect (a
+//! `hello` frame), and the relay keeps an app table. A native app configured
+//! with `IDEALYST_ROBOT_RELAY_URL` dials out the same way, speaking the same
+//! WS protocol into the same registry — no second transport.
 //!
 //! ## Protocol
 //!

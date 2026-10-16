@@ -1,29 +1,7 @@
-//! The FULL-OP scenarios re-targeted at the NEW core: the SAME logical
-//! trees as `scenarios_full.rs` (same names, modes, step labels,
-//! mutations, prop values from `full.rs`'s shared fixtures), built
-//! through the vocabulary builders and driven by `runtime-world`
-//! signals.
-//!
-//! Lowering map (old public constructor → vocabulary builder):
-//!
-//! | old                              | new                                     |
-//! |----------------------------------|-----------------------------------------|
-//! | `view(children).with_style(app)` | `view().style(rules).child(...)`        |
-//! | `text("s")` / `text(closure)`    | `text().content(...)` (TextContent)     |
-//! | `styled_text(runs)`              | `text().runs(runs)`                     |
-//! | `button(label, f)`               | `button().label(...).on_press(f)`       |
-//! | `pressable(children, f)`         | `pressable(f).child(...)`               |
-//! | `image(src).alt(s)`              | `image().src(...).alt(s)`               |
-//! | `icon(DATA)`                     | `icon().data(DATA)`                     |
-//! | `toggle(sig, f)`                 | `toggle().value(sig).on_change(f)`      |
-//! | `slider(sig, f).range().step()`  | `slider().value(sig)...`                |
-//! | `activity_indicator()`           | `activity_indicator()`                  |
-//! | `external_link(url, ch)`         | `link().url(url).external(true)...`     |
-//! | `scroll_view(ch).safe_area(s)`   | `scroll_view().safe_area(s).child(...)` |
-//! | `text_input(sig, f)`             | `text_input().value(sig).on_change(f)`  |
-//! | `text_area(sig, f)`              | `text_area().value(sig).on_change(f)`   |
-//! | `when(cond, a, b)`               | `dyn_keyed(cond, ...)` (guarded hole)   |
-//! | `.with_style(closure)`           | `.style(closure)` (Dynamic StyleProp)   |
+//! The FULL-OP scenarios: logical trees built through the vocabulary
+//! builders (prop values from `full.rs`'s shared fixtures) and driven by
+//! `runtime-world` signals. Each scenario's name, modes and step labels
+//! must match the frozen `goldens_full/` corpus.
 
 use runtime_shared::{SafeAreaSides, TextRun};
 use runtime_scene::dyn_keyed;
@@ -37,7 +15,7 @@ use crate::full::{test_rules, TEST_ICON};
 use crate::full_new::{FullNewCx, FullNewScenario};
 use crate::Mode;
 
-/// The re-targeted registry — one entry per old-side scenario.
+/// The scenario registry — one entry per `goldens_full/` scenario.
 pub fn full_new_scenarios() -> Vec<FullNewScenario> {
     vec![
         FullNewScenario {
@@ -389,7 +367,7 @@ fn full_repeat_fallback(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (g) P3c: static sheets + tokens + cohort + styled unmount
+// (g) static sheets + tokens + cohort + styled unmount
 // ===========================================================================
 
 fn full_style_sheet_cohort(cx: &mut FullNewCx) {
@@ -427,7 +405,7 @@ fn full_style_sheet_cohort(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (h) P3c: static sheet with a state overlay (the divert + flip)
+// (h) static sheet with a state overlay (the divert + flip)
 // ===========================================================================
 
 fn full_style_state_overlay(cx: &mut FullNewCx) {
@@ -449,7 +427,7 @@ fn full_style_state_overlay(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (i) P3c: signal_class fallback rebind
+// (i) signal_class fallback rebind
 // ===========================================================================
 
 fn full_style_signal_class(cx: &mut FullNewCx) {
@@ -469,7 +447,7 @@ fn full_style_signal_class(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (j) P3c: preminted classes + premint host token delivery
+// (j) preminted classes + premint host token delivery
 // ===========================================================================
 
 fn full_style_preminted(cx: &mut FullNewCx) {
@@ -499,7 +477,7 @@ fn full_style_preminted(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (k) P3-set: virtualizer lifecycle (window sim drives the callbacks)
+// (k) virtualizer lifecycle (window sim drives the callbacks)
 // ===========================================================================
 
 fn full_virtualizer_lifecycle(cx: &mut FullNewCx) {
@@ -576,7 +554,7 @@ fn full_virtualizer_lifecycle(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (l) P3-set: virtualizer lane-config change (node rebuild via a hole)
+// (l) virtualizer lane-config change (node rebuild via a hole)
 // ===========================================================================
 
 fn full_virtualizer_lane_swap(cx: &mut FullNewCx) {
@@ -617,7 +595,7 @@ fn full_virtualizer_lane_swap(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (m) P3-set: graphics lifecycle
+// (m) graphics lifecycle
 // ===========================================================================
 
 fn full_graphics_lifecycle(cx: &mut FullNewCx) {
@@ -673,7 +651,7 @@ fn full_graphics_lifecycle(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// (P3-set) portal + overlay compositions + presence
+// portal + overlay compositions + presence
 // ===========================================================================
 
 fn full_portal_toggle(cx: &mut FullNewCx) {
@@ -804,10 +782,9 @@ fn full_presence_bare(cx: &mut FullNewCx) {
 }
 
 // ===========================================================================
-// Navigator scenarios — the vocabulary swap/stack handlers, mirroring
-// the old side's REAL SDK-handler runs. Dispatches stage a command +
-// tick; the step's `world.flush()` runs the driver effect, so the ops
-// land in the same step snapshot as the old side's synchronous dispatch.
+// Navigator scenarios — the swap/stack SDK handlers. Dispatches stage a
+// command + tick; the step's `world.flush()` runs the driver effect, so
+// the ops land in the same step snapshot as the dispatch.
 // ===========================================================================
 
 use std::rc::Rc;
@@ -823,9 +800,9 @@ const NAV_ABOUT: Route<()> = Route::new("about", "/about");
 const NAV_DETAIL: Route<()> = Route::new("detail", "/detail");
 
 fn nav_screen(label: &'static str, width: f32, background: &'static str) -> runtime_scene::Element {
-    // `test_rules` as a Static prop digests identically to the old
-    // side's static sheet (literal rules resolve to themselves) — the
-    // same equivalence the kitchen-sink scenario relies on.
+    // `test_rules` as a Static prop digests identically to the static
+    // sheet the goldens recorded (literal rules resolve to themselves) —
+    // the same equivalence the kitchen-sink scenario relies on.
     view()
         .style(test_rules(width, background))
         .child(text().content(label))

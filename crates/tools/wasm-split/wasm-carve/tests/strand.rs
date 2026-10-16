@@ -91,8 +91,7 @@ fn calls(m: &ModuleIndex<'_>, name: &str) -> Vec<String> {
     refs.into_iter().map(|f| name_of(m, f)).collect()
 }
 
-/// The walrus pass this replaces took 5.4–5.7 s of every warm CrewForge
-/// rebuild; its behavior is the contract: the stranded import is gone,
+/// The contract: the stranded import is gone,
 /// a defined function that traps stands in for it under
 /// `{PREFIX}{name}`, and everything that named any function still names
 /// the same one.

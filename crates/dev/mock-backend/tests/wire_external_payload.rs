@@ -7,10 +7,9 @@
 //! handler on the scene registry (`codeblock::register`), and the
 //! runtime-server recorder is caps-complete, so that handler runs
 //! against the RECORDER. Its output is ordinary node ops
-//! (`CreateElement`/`CreateText`/`ApplyStyle`/`Insert`), which every
+//! (`CreateView`/`CreateText`/`ApplyStyle`/`Insert`), which every
 //! replay client already understands. Nothing type-erased crosses at
-//! all: the payload never leaves the dev process. This is what
-//! `Element::External` used to need a bespoke wire path for.
+//! all: the payload never leaves the dev process.
 //!
 //! **2. The escape hatch — `Command::CreateExternal` + a payload
 //! serde.** A handler that cannot run on the recorder (a platform-only
@@ -96,10 +95,10 @@ fn register_serde() {
 fn external_payload_round_trips_over_wire_to_the_real_handler() {
     register_serde();
 
-    // Drive the recorder's `create_external` directly: on the surviving
-    // core this cap is reached from a handler that chose the escape
-    // hatch (or from `missing_primitive_placeholder`), never from a
-    // walker, so the cap IS the seam under test.
+    // Drive the recorder's `create_external` directly: this cap is only
+    // reached from a handler that chose the escape hatch (or from
+    // `missing_primitive_placeholder`), so the cap IS the seam under
+    // test.
     let recorder = dev_server::WireRecordingBackend::new();
     {
         let mut rec = recorder.clone();

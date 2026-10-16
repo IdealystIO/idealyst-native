@@ -890,7 +890,7 @@ mod tests {
 
     #[test]
     fn every_idea_ui_component_is_scoped() {
-        // Phase 7 dogfood: with the `idea-ui` + `components` scopes
+        // With the `idea-ui` + `components` scopes
         // declared, every idea-ui component must resolve to a scope by
         // ambient module proximity. This is exactly what
         // `mcp --check --strict-scopes` enforces — assert it holds for

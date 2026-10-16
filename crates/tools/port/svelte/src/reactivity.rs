@@ -6,7 +6,7 @@
 //!
 //! - written *and* read in the template, or written from event
 //!   handlers, or appears as a dependency of a reactive
-//!   statement → **reactive let**, lowers to `signal!`.
+//!   statement → **reactive let**, lowers to `signal()`.
 //! - written only at declaration → **constant let**, lowers to a
 //!   plain `let` (forwarded verbatim).
 //! - read in a reactive statement but never assigned → **prop**,

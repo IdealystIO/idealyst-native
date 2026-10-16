@@ -13,11 +13,9 @@
 //! the app's wrapper actually resolves (found through `cargo metadata`,
 //! like the third-party sources below): its `runtime/kotlin/` tree, which
 //! every published version of the crate carries. The Kotlin therefore
-//! always matches the JNI code it is compiled against. It used to be
-//! embedded into the CLI with `include_str!`, which tied it to the
-//! commit the CLI was built from rather than to the app's backend, and
-//! needed a hand-kept file list — `RustUnderlineSpan.kt` was never added
-//! to it, so its class was missing from every APK.
+//! always matches the JNI code it is compiled against — embedding it in
+//! the CLI would tie it to the commit the CLI was built from rather than
+//! to the app's backend, and need a hand-kept file list.
 //!
 //! # Third-party SDK contributions
 //!

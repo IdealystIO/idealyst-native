@@ -7,7 +7,7 @@
 //! - `let foo = expr;` — declares a top-level binding. Reactive
 //!   iff *anything* reassigns it later (in functions, in `$:`,
 //!   in event handlers). For our scope we assume any non-prop
-//!   top-level let is reactive (`signal!`) — Svelte's compiler
+//!   top-level let is reactive (`signal()`) — Svelte's compiler
 //!   does a usage analysis but our fixtures don't have const
 //!   lets, and over-promoting to a signal is harmless.
 //! - `$: expr;` — reactive statement. If `expr` is an assignment

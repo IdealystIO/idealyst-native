@@ -192,18 +192,13 @@ fn generate_wrapper(
     // Runtime-server mode opts the form-factor crate into its
     // `runtime-server` feature so `run_runtime_server` is in scope.
     // Local mode keeps zero transport overhead.
-    // `new-core` compiles the variant's boot path
-    // (`variant_*::run_with` over `host_winit`). The
-    // feature is vacuous once the variant/host crates make their
-    // contents unconditional; drop it from these lists at that point.
     let form_features: &[&str] = if opts.mode.is_runtime_server() {
-        // Native runtime-server shells render streamed wire commands —
-        // the wire client is core-agnostic and has no newcore twin.
+        // Native runtime-server shells render streamed wire commands.
         &["runtime-server"]
     } else {
-        // The variant crates' `new-core` feature is gone — their runtime-v2
-        // boot entries (`variant_*::{run, run_at, run_with}`) are the crate's
-        // only surface now, so no feature selects them.
+        // The variant crates' boot entries
+        // (`variant_*::{run, run_at, run_with}`) are unconditional, so no
+        // feature selects them.
         &[]
     };
     let form_dep = opts.source.dep(form_subpath, form_features);
@@ -458,7 +453,7 @@ mod regression_tests {
             .expect("generate wrapper");
     }
 
-    /// Regression (CrewForge, 2026-10-08, the iOS wrapper's twin): the sim
+    /// Regression (the iOS wrapper's twin): the sim
     /// wrapper deleted its `Cargo.lock` on every generation, so each run
     /// resolved the registry's newest versions instead of the app's locked
     /// ones — a different graph from the app's and a new generation of the

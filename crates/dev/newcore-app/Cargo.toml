@@ -21,12 +21,6 @@
 # rot a served example fails here.
 #
 #   cargo test -p newcore-app
-#
-# Historically this crate was the DUAL-CORE proof: one source tree
-# compiled and e2e-tested under both the old walker and runtime v2, with
-# a per-core prelude in `src/lib.rs` as the only wiring. The old core is
-# gone — the prelude resolves one surface now, and the suites are the
-# value that remains.
 [package]
 name = "newcore-app"
 version.workspace = true

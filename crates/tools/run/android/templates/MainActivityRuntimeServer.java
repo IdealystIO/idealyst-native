@@ -116,11 +116,11 @@ public class MainActivity extends FragmentActivity {
      */
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        // Vestigial: the activity now uses a NoActionBar theme, so the
-        // system ActionBar never dispatches here. Kept so the
-        // RustActionBarHelper hook continues to compile against the
-        // legacy path; new screen-level toolbars are built inline by
-        // `tab_drawer::attach_initial`.
+        // Vestigial: the activity uses a NoActionBar theme, so the
+        // system ActionBar never dispatches here, and
+        // `RustActionBarHelper.dispatchHomePress` always returns false.
+        // Screen-level toolbars are built inline by the navigator
+        // helpers (`navigators/helpers/android`).
         if (item.getItemId() == android.R.id.home
             && io.idealyst.runtime.RustActionBarHelper.dispatchHomePress()) {
             return true;

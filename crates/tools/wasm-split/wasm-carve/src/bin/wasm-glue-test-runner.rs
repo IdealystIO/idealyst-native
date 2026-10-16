@@ -6,7 +6,7 @@
 //! (see `wasm_carve::glue`). wasm-bindgen-test-runner knows nothing of
 //! that: left alone it would hand wasm-bindgen a module whose glue imports
 //! have no JS behind them. So this wrapper does to the test binary what the
-//! build does to an app (`build_web::own_glue::hybrid_pass`):
+//! build does to an app (`build_web::own_glue::package_hybrid`):
 //!
 //! 1. `glue::extract` — rename the glue imports, strip the records;
 //! 2. write the stripped module and `__idealyst_glue.js` (the hybrid
@@ -17,7 +17,7 @@
 //!    modules are keyed by URL, so `./wasm-bindgen-test.js` would load a
 //!    SECOND, never-initialized copy of the bindgen module, and every
 //!    lazy attach would instantiate from `undefined` ("WebAssembly.Module():
-//!    Argument 0 must be a buffer source" — the failure that found this);
+//!    Argument 0 must be a buffer source");
 //! 3. exec `wasm-bindgen-test-runner` on the stripped module with that
 //!    directory as its working directory.
 //!
@@ -42,9 +42,9 @@
 //! native test binary, and wasm-bindgen-test-runner rejects the ones it
 //! does not know. `cargo test -q` passes `--quiet`, which it answers with
 //! `Error: unexpected argument '--quiet'` and an exit before any test runs —
-//! cargo then reports only "test failed" with no result line, which read
-//! as a flaky browser start-up through two release sweeps. `harness_args`
-//! translates it to the runner's own spelling of terse output.
+//! cargo then reports only "test failed" with no result line, which looks
+//! like a flaky browser start-up. `harness_args` translates it to the
+//! runner's own spelling of terse output.
 
 use std::ffi::OsString;
 use std::path::PathBuf;

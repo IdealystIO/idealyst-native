@@ -235,7 +235,7 @@ pub struct Args {
     /// dependencies to `1`.
     ///
     /// `fast` cuts the cargo half but produces a ~37% larger module, and
-    /// wasm-bindgen + wasm-split are O(module size) and run on every
+    /// the packaging passes are O(module size) and run on every
     /// rebuild — so with incremental compilation on (cargo's default) it
     /// is a net LOSS end-to-end, on framework-crate and leaf edits alike.
     /// Reach for it when incremental is off (`CARGO_INCREMENTAL=0`, or
@@ -277,10 +277,8 @@ pub struct Args {
     #[arg(long)]
     pub new_core: bool,
 
-    /// REMOVED: the pre-runtime-v2 walker no longer exists. Passing
-    /// this fails with the migration pointer rather than silently
-    /// building runtime v2 with old-core semantics expected
-    /// (`crate::core_mode`, `docs/migrating-to-runtime-v2.md`).
+    /// Rejected with a pointer to `docs/migrating-to-runtime-v2.md`: there
+    /// is no other runtime to select (`crate::core_mode`).
     #[arg(long)]
     pub old_core: bool,
 
@@ -604,14 +602,6 @@ fn build_terminal_target(dir: &std::path::Path, args: &Args) -> Result<()> {
 }
 
 fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
-    // Web builds go through a generated wrapper crate, same shape as
-    // iOS / Android: the user's app crate stays platform-agnostic
-    // (no `web.rs`, no `[lib] crate-type = ["cdylib"]`, no
-    // `wasm-bindgen` dep) and the wrapper carries the
-    // `#[wasm_bindgen(start)]` entry point + cdylib output. The
-    // wrapper is regenerated on every build; wasm-pack runs against
-    // it, and the resulting `pkg/` is copied into the user project
-    // so existing `index.html` references keep working.
     let source = crate::framework_source::resolve(dir)?;
 
     // `idealyst build --web` always stages a self-contained bundle at
@@ -619,11 +609,9 @@ fn build_web(dir: &std::path::Path, args: &Args) -> Result<Option<String>> {
     // its own `dist/<target>` subdir so building several platforms into
     // the same project root doesn't clobber siblings, and `idealyst
     // serve` can default to `dist/web`. The bundle is what gets
-    // deployed; nothing lands in the project root anymore. The older
-    // "pkg/ in project dir" path is still used by the dev loop
-    // (`idealyst dev --web`, which calls `build_web::build` with
-    // `bundle_out_dir: None`) so the dev HTTP server can serve from
-    // the project tree.
+    // deployed; nothing lands in the project root. (The dev loop calls
+    // `build_web::build` with `bundle_out_dir: None` for the static
+    // path, staging `<project>/pkg/` for the dev HTTP server.)
     let bundle_out_dir = Some(
         args.out_dir
             .clone()

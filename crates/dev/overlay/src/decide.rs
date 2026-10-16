@@ -1253,9 +1253,9 @@ fn Landing() -> Element {
 
     /// A `ui!` invocation appearing inside another site's body leaves the
     /// skeleton byte-identical (the outer body is blanked in it) and
-    /// changes only the ordinal count. That returned `SitesMoved` and
-    /// rebuilt; it is a body-only edit, and a hot patch compiles the new
-    /// site in with everything else.
+    /// changes only the ordinal count. It must not be read as moved sites
+    /// (a rebuild): it is a body-only edit, and a hot patch compiles the
+    /// new site in with everything else.
     #[test]
     fn regression_new_ui_site_inside_a_body_is_a_hot_patch() {
         let src = r#"

@@ -519,17 +519,14 @@ fn apply_plan(ws: &Workspace, plan: &BTreeMap<String, Release>, r: &RemoteArgs) 
     // Dependents resolve through `[workspace.dependencies]`, so the floor
     // there follows EVERY bump, patch included.
     //
-    // This used to skip anything but a major, reasoning that `1.5` already
-    // admits 1.5.3 so a rewrite would only churn dependents. Both halves were
-    // wrong. Rewriting the floor does not republish anyone — the root manifest
-    // is not published, and `plan` forces dependents only on a *major* — it
-    // decides what a dependent records the next time it is published anyway.
-    // And the floor is what a dependent packaged in THIS release carries: skip
-    // it and the dependent ships a requirement below the sibling it was
-    // actually compiled against. That is exactly how `gesture 1.5.3` shipped
-    // `runtime-shared = "1.5"` while calling `Recognizer::drive`, which
-    // landed in runtime-shared 1.7.1 — a patch. See the regression test on
-    // `manifest::set_workspace_dep_version`.
+    // Rewriting the floor does not republish anyone — the root manifest is
+    // not published, and `plan` forces dependents only on a *major* — it
+    // decides what a dependent records the next time it is published. And
+    // the floor is what a dependent packaged in THIS release carries: skip
+    // it on a minor/patch and the dependent ships a requirement below the
+    // sibling it was compiled against (`gesture 1.5.3` recorded
+    // `runtime-shared = "1.5"` while calling an API from 1.7.1). See the
+    // regression test on `manifest::set_workspace_dep_version`.
     //
     // Order matters: this runs before `cargo package`, so a dependent in the
     // same plan picks up the sibling's new floor.
@@ -694,11 +691,9 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
 /// (idea-ui-nav renders idea-ui components and shares its theme), so a
 /// consumer on the old line who lets cargo pick up the new release ends up
 /// with two copies of the dependency: separate theme state, and types that
-/// no longer unify. That is what dragging dependents in at a PATCH did:
-/// idea-ui 5.0.0 shipped with idea-ui-nav 1.5.9 and idea-theme-editor 1.5.8,
-/// and a `cargo update` within 1.5 put idea-ui 5 next to the app's idea-ui 4
-/// (CrewForge, 2026-10-14). A library that earned a smaller bump of its own
-/// in the same release is raised to major for the same reason.
+/// don't unify (a patch-bumped idea-ui-nav put idea-ui 5 next to an app's
+/// idea-ui 4). A library that earned a smaller bump of its own in the same
+/// release is raised to major for the same reason.
 ///
 /// A dependent with no library target (the CLI, dev tools, doc sites built
 /// as binaries) cannot leak anything into a consumer, so it is republished

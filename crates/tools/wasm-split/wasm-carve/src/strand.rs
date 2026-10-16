@@ -4,8 +4,8 @@
 //! A hot-reload base roots every function before wasm-bindgen runs, which
 //! keeps its descriptor machinery alive; that machinery calls
 //! `__wbindgen_placeholder__` imports wasm-bindgen emits no JS binding
-//! for (see `build_web::hotpatch_base`). The walrus pass that fixed this
-//! parsed and re-emitted the whole module to change a handful of imports:
+//! for (see `build_web::hotpatch_base`). An IR pass (walrus) parses and
+//! re-emits the whole module to change a handful of imports:
 //! 5.4–5.7 s of every warm CrewForge rebuild on a Mac, 19–25 s in the
 //! container.
 //!

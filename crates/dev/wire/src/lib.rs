@@ -56,187 +56,21 @@ pub use payload_serde::{
 /// - Changing semantics of an existing variant (e.g. payload shape):
 ///   BUMP.
 ///
-/// Bumped to 2 with the audit-driven additions: `CreateTextArea`,
-/// `UpdateTextAreaValue`, `CreateExternal`, `NavigatorSelect`, plus
-/// scene-model handling of theme tokens and drawer-open state.
+/// Not a bump: a Rust-side refactor that leaves every variant, field,
+/// type and `serde` attribute unchanged (e.g. moving the external-payload
+/// serde registry into [`payload_serde`] — same bytes, different home).
+/// A bump is a compatibility signal to a peer binary and forces a
+/// dev/app lockstep upgrade, so it is reserved for real wire changes.
 ///
-/// Bumped to 3 to carry accessibility props end-to-end: every `Create*`
-/// command grew an `a11y: WireAccessibilityProps` field, and two new
-/// variants — `UpdateAccessibility` and `AnnounceForAccessibility` —
-/// were added so the dev-server's `update_accessibility` /
-/// `announce_for_accessibility` Backend calls reach the app side
-/// instead of being dropped on the floor.
+/// Numbers 9 and 11 were never shipped. The per-version change list
+/// lives in the commit history.
 ///
-/// Bumped to 4 to carry `AccessibilityAction` handlers across the wire.
-/// Previously `WireAccessibilityProps::actions` was `Vec<String>` —
-/// only the names survived, and the replayer reconstructed actions with
-/// no-op handlers. v4 changes the shape to
-/// `Vec<WireAccessibilityAction { name, handler: HandlerId }>`, mirroring
-/// the `on_click` / `on_change` trampoline pattern: the recorder mints a
-/// `HandlerId` for each action and the replayer builds a closure that
-/// posts `AppToDev::Event { handler, args: Unit }` back over the reverse
-/// channel. Removes the documented gap in
-/// `docs/accessibility-design.md`.
-///
-/// Bumped to 5 to carry per-client runtime-server sessions across the Hello
-/// exchange. Sessions are entirely server-assigned — the client never
-/// names one. Instead the client sends an `identity: ClientIdentity`
-/// (platform + optional human-readable device label) that the server
-/// uses for log lines and the future session-picker dev tool. The
-/// server's `DevToApp::Hello.session: String` reports back the
-/// server-minted id so the client can show it in dev tools.
-///
-/// "Multi vs. single session" is a server-side knob, not a client
-/// preference: in the default *per-client* mode every connection gets
-/// a fresh isolated session; in *shared* mode all connections land on
-/// one common scene (the legacy collaborative-devices mode).
-///
-/// Bumped to 6 to carry per-frame animation writes. `AnimatedValue::bind`
-/// subscribes a callback to the animation clock that calls
-/// `backend.set_animated_f32`/`set_animated_color` each tick. In runtime-server
-/// mode the sidecar runs that callback; without a wire path the
-/// server-side `WireRecordingBackend` would fall through to the
-/// trait-default no-op and the client would render the initial
-/// (often `opacity: 0`) state forever. `SetAnimatedF32` and
-/// `SetAnimatedColor` (plus their `WireAnimProp` discriminator)
-/// shuttle each tick's value to the client, where the client's
-/// `WireBackend::apply` dispatches to the wrapped backend's
-/// `set_animated_f32`/`set_animated_color` — those have working
-/// per-platform impls (DOM inline `style.transform` on web, CALayer
-/// on iOS, etc.).
-///
-/// Bumped to 7 to flip the animation tick cadence from sidecar-self-
-/// paced to **client-driven** via `AppToDev::RequestFrame { dt_ms }`.
-/// Each client fires `RequestFrame` from its native raf; the dev side
-/// runs one animation clock tick per request and ships the resulting
-/// `SetAnimated*` commands back. Animations now stop when the tab is
-/// backgrounded (browser throttles raf) and adapt to client framerate
-/// — no wasted dev-host CPU on a quiet client.
-///
-/// Bumped to 10 to carry the textarea wrap mode. `CreateTextArea` grew
-/// `wrap` so a code-editor (`wrap: false`) textarea reproduces on the
-/// client instead of always rendering the default wrapping box. The
-/// field carries `#[serde(default = "wire_true")]` so a v9 sender still
-/// deserializes — `wrap` defaults to `true` (the primitive default).
-/// (Content-height "autogrow" needs no wire field: it's intrinsic
-/// sizing, reproduced by the client's own backend from the style.)
-/// Bumped to 12 to add the `device_frame` round-trip
-/// ([`DevToApp::QueryDeviceFrame`] ⇄ [`AppToDev::DeviceFrameResult`]).
-/// This lets the Robot bridge ask a connected client for a node's
-/// **physical screen-pixel** rect (for OS-level input injection, e.g.
-/// `adb shell input tap`) in runtime-server mode — the recorder has no
-/// real layout, so the honest answer comes from the client's real
-/// backend over the wire. New `DevToApp` variant: a sender on an older
-/// client simply never receives it (the server only emits it when a
-/// `get_device_frame` Robot call is made).
-///
-/// (Versions 9 and 11 were skipped numerically — bumps landed in even
-/// steps while batched changes were in flight; no v9/v11 wire shape ever
-/// shipped.)
-///
-/// Bumped to 13 to add host-surface / document-chrome commands:
-/// [`Command::SetAppBackground`], [`Command::SetScrollbarTheme`],
-/// [`Command::SetPageMetadata`], [`Command::RegisterRawCss`]. These mirror
-/// the same-named `Backend` methods, which the recorder previously dropped
-/// on the floor — so a runtime-server client never themed its host surface
-/// / scrollbar, set its document title, or received navigator raw CSS. All
-/// four are additive variants; an older client just never receives them.
-///
-/// Bumped to 14 to carry four more reactive-prop in-place updates whose
-/// recorder methods previously fell through to the trait no-op:
-/// [`Command::UpdateLinkUrl`] (link `<a href>`),
-/// [`Command::UpdateImageAlt`] (image alt text),
-/// [`Command::UpdateIconData`] (icon geometry swap), and
-/// [`Command::UpdateActivityIndicatorSize`] (spinner size). Each mirrors an
-/// existing reactive setter (`UpdateImageSrc` / `UpdateIconColor`) and folds
-/// into the matching snapshot `Create*` so a late-joining client renders the
-/// current state. All additive — an older client just never receives them.
-///
-/// Bumped to 15: [`Command::CreateTextArea`] grew `min_rows` / `max_rows`
-/// (autogrow row bounds; the client backend converts rows→px from its real
-/// font metrics). Both `#[serde(default)]` → a pre-15 sender omits them and the
-/// client reads `None` (unbounded growth), so the field is backward-compatible.
-///
-/// Bumped to 17: the legacy tab/drawer navigator SDKs were removed, and
-/// with them their kind-specific wire surface: `Command::CreateTabNavigator`,
-/// `CreateDrawerNavigator`, `DrawerAttachSidebar`, `NavigatorMountTab`,
-/// `OpenDrawer`/`CloseDrawer`/`ToggleDrawer`, the `ApplyDrawerSidebarStyle` /
-/// `ApplyDrawerScrimStyle` / `ApplyTab{Bar,Icon,Label}Style` slot channels,
-/// and the `AppToDev::DrawerStateChanged` / `TabSelected` reverse events
-/// (plus their support types and the client-side drawer factory registry).
-/// Navigation "kinds" are now author-side compositions over the generic
-/// swap/stack primitives, which travel as ordinary node ops — only the
-/// kind-agnostic navigator control plane (`CreateNavigator`,
-/// `NavigatorAttachInitial`, `NavigatorPush`/`Pop`/`Replace`/`Reset`/
-/// `Select`, `AttachNavigatorLayout`) remains. serde's external tagging is
-/// name-based, so surviving variants encode identically; the bump follows
-/// the remove-a-variant policy above.
-///
-/// **NOT bumped for the runtime-v2 deletion.** Removing the old core did
-/// not touch the serialized surface: every [`Command`] / `AppToDev`
-/// variant and every field kept its name, type and `serde` attribute.
-/// What changed is Rust-side only — the recorder now records a realize
-/// pass instead of a walker, and the external-payload serde registry
-/// moved from `runtime_core` into [`payload_serde`] in this crate (same
-/// bytes, different home). A bump is a compatibility signal to a peer
-/// binary; there is nothing here for a peer to be incompatible with, so
-/// bumping would have forced a needless dev/app lockstep upgrade.
-/// **Bumped to 18 for `DevToApp::OverlayPatch`.** Adding an
-/// externally-tagged enum variant is not backward compatible in the
-/// direction that matters: an app built against 17 cannot deserialize a
-/// message named `OverlayPatch` and would drop the connection rather
-/// than ignore it. The bump is the signal that lets the two sides
-/// notice.
-///
-/// **Bumped to 19 for the style "definition" block.** `WireStyleRules`
-/// carried 46 of `StyleRules`' 109 properties, and the missing ones
-/// were not exotic — every border width and colour, both shadows, the
-/// cursor, line-height and letter-spacing. A wire-mode app therefore
-/// rendered FLAT next to the same app in `--local`: cards, inputs,
-/// dividers and separators with no edge, nothing raised, the default
-/// arrow over every control, and text at the browser's default
-/// leading. Every added field is `#[serde(default)]`, so a v18 peer on
-/// either side still decodes and simply carries no definition; the
-/// bump is a signal, not a hard break. `WireCursor` reserves its
-/// catch-all for the same reason — a peer that learns a new cursor
-/// first lands on `Auto`, which is what the node would have had.
-///
-/// Still absent, and the reason this is not the last bump here: the 34
-/// `*_transition` fields, `display` / the grid placement family,
+/// `WireStyleRules` does not yet carry every `StyleRules` property:
+/// the `*_transition` fields, `display` / the grid placement family,
 /// `flex_wrap`, `align_self`, `align_content`, the row/column gaps,
 /// text decoration and transform, `user_select`, `pointer_events` and
-/// `caret_color`. See `docs/hot-reload.md`.
-///
-/// **Bumped to 20 for `border_style`.** Same shape as the v19 block: one
-/// `#[serde(default)]` field, so a v19 peer still decodes and draws the
-/// border solid. Without it a dashed border crossed the wire as a solid
-/// one — the exact "renders differently from `--local`" drift v19 closed.
-/// `WireBorderStyle` falls back to `Solid` for a pattern it hasn't
-/// learned, which is what an older peer draws anyway.
-///
-/// **Bumped to 21 for `max_lines`.** One `#[serde(default)]` field again:
-/// a v20 peer decodes and draws the text unlimited. Without it a truncated
-/// name crossed as an unlimited one and overflowed its cell, unlike
-/// `--local`.
-///
-/// **Bumped to 22 for `AppToDev::KeyboardChanged`.** A new client→server
-/// message: the soft-keyboard inset, so author `keyboard_inset()` updates
-/// under runtime-server dev exactly as under `--local`. A v21 server
-/// can't decode it and drops the message (the keyboard still avoids
-/// on-device; only author reactivity misses it). Also adds
-/// `Command::MarkKeyboardAvoiding` (`keyboard_avoiding_view`).
-///
-/// **Bumped to 23 for `AppToDev::UserActivity`.** A new client→server
-/// message: the device's `user_activity()` tick count, so an author idle
-/// clock in the sidecar restarts on device touches exactly as under
-/// `--local`. A v22 server can't decode it and drops the message (the
-/// app still runs; only `user_activity()` stays frozen).
-///
-/// **Bumped to 24 for `Command::UpdateTextInputKeyboard`.** The
-/// `text_input` soft-keyboard hint (`keyboard = KeyboardKind::Email`), so
-/// a device under runtime-server dev shows the same email / phone / digit
-/// keyboard as under `--local`. A new server→client command: a v23
-/// client can't decode it (the field keeps the default keyboard there).
+/// `caret_color` are still absent, so a wire-mode app can render
+/// differently from `--local` there. See `docs/hot-reload.md`.
 pub const PROTOCOL_VERSION: u32 = 24;
 
 
@@ -325,7 +159,7 @@ pub enum DevToApp {
 
     /// A batch of backend commands to apply atomically. Batching
     /// matters: a single user-facing event often produces many
-    /// walker calls (mounting a screen → 30+ create_/insert calls).
+    /// backend calls (mounting a screen → 30+ create_/insert calls).
     Commands(Vec<Command>),
 
     /// Dev process is rebuilding the user crate. App freezes input
@@ -368,7 +202,7 @@ pub enum DevToApp {
     OverlayPatch { patch: WireOverlayPatch },
 
     /// Ask the client for `node`'s rect in **physical device-screen
-    /// pixels** (`Backend::device_frame`) and reply with
+    /// pixels** (`IntrospectionOps::device_frame`) and reply with
     /// [`AppToDev::DeviceFrameResult`] carrying the same `request_id`.
     /// Used by the Robot `get_device_frame` verb in runtime-server mode:
     /// the recorder has no real layout, so the on-screen pixel an
@@ -411,7 +245,7 @@ pub enum AppToDev {
         #[serde(default)]
         viewport: Option<WireViewport>,
         /// Whether this client's real backend can capture its rendered
-        /// surface (`Backend::supports_screenshot`). The server uses it
+        /// surface (`IntrospectionOps::supports_screenshot`). The server uses it
         /// to decide whether the `screenshot` Robot verb's `client` /
         /// `auto` source can be served by a real-surface capture or must
         /// fall back to the wgpu replay. `#[serde(default)]` → older
@@ -460,7 +294,7 @@ pub enum AppToDev {
     /// is **client-driven**: each browser/native client fires this
     /// from its own `requestAnimationFrame`-equivalent, supplying
     /// the wall-clock elapsed since its last frame. The dev side
-    /// runs one `runtime_core::animation::clock` tick per request
+    /// runs one `runtime_shared::animation::clock` tick per request
     /// and emits the produced commands through the normal broadcast
     /// path.
     ///
@@ -606,7 +440,7 @@ pub enum EventArgs {
 // Commands — the meat of the protocol.
 // ---------------------------------------------------------------------------
 
-/// One command corresponds to one (or one cluster of) `Backend` trait
+/// One command corresponds to one (or one cluster of) capability-trait
 /// method call(s) on the dev side. Variants are roughly grouped:
 /// create_, insert, update_, apply_, release_, plus the navigator /
 /// virtualizer / overlay control planes.
@@ -871,7 +705,7 @@ pub enum Command {
     },
 
     /// Per-frame animation tick — scalar family. Mirrors
-    /// `Backend::set_animated_f32`. Emitted by the dev-side
+    /// `AnimationOps::set_animated_f32`. Emitted by the dev-side
     /// `WireRecordingBackend` every time the sidecar's animation
     /// clock fires an `AnimatedValue::bind` callback that writes a
     /// scalar (`Opacity`, `TranslateX`, `RotateZ`, `ZIndex`, …).
@@ -890,7 +724,7 @@ pub enum Command {
     },
 
     /// Per-frame animation tick — color family. Mirrors
-    /// `Backend::set_animated_color`. `value` is sRGB
+    /// `AnimationOps::set_animated_color`. `value` is sRGB
     /// `[r, g, b, a]` with channels in `0..=1`. See
     /// [`Command::SetAnimatedF32`] for the surrounding contract.
     SetAnimatedColor {
@@ -1066,11 +900,10 @@ pub enum Command {
     /// Switch a select-style (swap) navigator to a different mounted
     /// screen without tearing down the rest of the stack. Mirrors a
     /// stack-`Push` payload but the client side dispatches
-    /// `NavCommand::Select` instead. Pre-fix this was conflated with
-    /// `NavigatorReset`; SceneModel's snapshot would treat a select swap
-    /// as a full stack reset, dropping any persisted state on the same
-    /// navigator. See the wire-protocol audit (`PushLikeKind::Select`
-    /// masquerade).
+    /// `NavCommand::Select` instead. Kept distinct from
+    /// `NavigatorReset` so SceneModel's snapshot doesn't treat a select
+    /// swap as a full stack reset and drop persisted state on the same
+    /// navigator.
     NavigatorSelect {
         navigator: NodeId,
         screen: NodeId,
@@ -1125,7 +958,7 @@ pub enum Command {
     },
 
     // --- Lifecycle ---
-    /// Terminal command emitted by the walker's final `finish(root)`
+    /// Terminal command emitted by the recorder's final `finish(root)`
     /// call. App applies any remaining flush work and marks the
     /// initial mount complete.
     Finish {
@@ -1178,13 +1011,12 @@ pub enum Command {
 
     // --- Accessibility ---
     /// Replace the accessibility prop bag on an existing node. Mirrors
-    /// `Backend::update_accessibility(&node, &props, inferred_role)` —
-    /// the walker's reactive a11y Effect emits this when any field of
-    /// the resolved [`AccessibilityProps`] changes for a mounted node.
+    /// `A11yOps::update_accessibility(&node, &props, inferred_role)` —
+    /// emitted when any field of the resolved [`AccessibilityProps`]
+    /// changes for a mounted node.
     ///
-    /// `inferred_role` is the primitive's default role (the same value
-    /// the walker computed via
-    /// `runtime_core::accessibility::default_role`). Backends fall
+    /// `inferred_role` is the primitive's default role
+    /// (`runtime_shared::accessibility::default_role`). Backends fall
     /// back to it when `a11y.role.is_none()`.
     ///
     /// [`AccessibilityProps`]: WireAccessibilityProps
@@ -1195,7 +1027,7 @@ pub enum Command {
     },
 
     /// Imperative live-region announcement. Mirrors
-    /// `Backend::announce_for_accessibility(msg, priority)` — no node
+    /// `A11yOps::announce_for_accessibility(msg, priority)` — no node
     /// target, just a one-shot post into the platform's AX subsystem.
     AnnounceForAccessibility {
         msg: String,
@@ -1204,7 +1036,7 @@ pub enum Command {
 
     // --- Host surface / document chrome ---
     //
-    // These mirror `Backend` methods that theme the surface *around* the
+    // These mirror capability methods that theme the surface *around* the
     // rendered tree (or the host document) rather than a node. The
     // recorder resolves any `Tokenized<Color>` to a concrete literal
     // dev-side (the wire only carries literals); the theme SDK re-emits on
@@ -1212,7 +1044,7 @@ pub enum Command {
     // the `SceneModel` and replayed in a late-joining client's snapshot.
     /// Theme the host surface behind the rendered tree — web `<html>`/
     /// `<body>`, iOS `UIWindow`, Android decor view, the wgpu clear color.
-    /// Mirrors `Backend::set_app_background`.
+    /// Mirrors `AppEnvOps::set_app_background`.
     SetAppBackground {
         color: WireColor,
     },
@@ -1223,20 +1055,18 @@ pub enum Command {
     /// node: the theme declares ONE inheritable family on the document
     /// root, and every node that does not name its own inherits it.
     ///
-    /// `None` clears it. The recorder had no override for this cap, so
-    /// it took the trait's no-op — the theme published its font inside
-    /// the sidecar, a no-op consumed it, and nothing reached the
-    /// browser. Statically-sheeted text still looked right (the font
-    /// folds into `StyleRules.font_family` on that path) while every
-    /// reactively-styled node fell back to the browser default, so a
-    /// wire-mode page rendered in TWO fonts — Times beside the theme's.
+    /// `None` clears it. Without this command the recorder would take the
+    /// trait's no-op: statically-sheeted text still looks right (the font
+    /// folds into `StyleRules.font_family` on that path) but every
+    /// reactively-styled node falls back to the browser default, so a
+    /// wire-mode page renders in two fonts.
     SetDefaultTextFont {
         #[serde(default)]
         font: Option<WireFontFamily>,
     },
 
     /// Theme the platform scrollbar where the backend supports it.
-    /// Mirrors `Backend::set_scrollbar_theme`. Both colors resolved
+    /// Mirrors `AppEnvOps::set_scrollbar_theme`. Both colors resolved
     /// dev-side.
     SetScrollbarTheme {
         thumb: WireColor,
@@ -1245,13 +1075,13 @@ pub enum Command {
 
     /// Declare page-level metadata (title / description / OG image /
     /// canonical URL) for the screen just built. Mirrors
-    /// `Backend::set_page_metadata`.
+    /// `AppEnvOps::set_page_metadata`.
     SetPageMetadata {
         meta: WirePageMetadata,
     },
 
     /// Register a raw CSS stylesheet to ship once (navigator chrome,
-    /// `Element::External` handlers). Mirrors `Backend::register_raw_css`;
+    /// third-party registry handlers). Mirrors `DocumentOps::register_raw_css`;
     /// backends may dedupe identical sheets.
     RegisterRawCss {
         css: String,
@@ -1737,7 +1567,7 @@ pub enum WireTokenValue {
 /// Wire mirror of `runtime_core::accessibility::AccessibilityProps`.
 ///
 /// Every `Create*` command carries one of these so the app side can
-/// pass the right `AccessibilityProps` into `Backend::create_*`. The
+/// pass the right `AccessibilityProps` into the backend's `create_*`. The
 /// dev-server's recorder serializes from `&AccessibilityProps`; the
 /// dev-client's replayer deserializes back into `AccessibilityProps`.
 ///
@@ -1907,12 +1737,12 @@ pub struct WireHeaderButton {
 
 /// Cross-axis lane subdivision for a virtualizer, wire form. Serde
 /// mirror of `runtime_shared::primitives::virtualizer::Lanes` (the ONE
-/// in-memory definition, re-exported through `runtime_core` and shared
-/// by both cores). `Fixed(1)` is a plain list. Conversions live in
+/// in-memory definition, re-exported through `runtime_core`).
+/// `Fixed(1)` is a plain list. Conversions live in
 /// `dev-server::convert_out::virtual_layout_to_wire` /
 /// `dev-client::convert::wire_virtual_layout` (exhaustive matches, so a
 /// new variant fails compile there); the bijection is pinned by
-/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
+/// `wire/tests/virtual_layout_roundtrip.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum WireLanes {
     Fixed(usize),

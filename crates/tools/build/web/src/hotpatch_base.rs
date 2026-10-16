@@ -7,7 +7,8 @@
 //! running in the page. The obvious way to make a function resolvable is
 //! to export it — and that does not work here, for two measured reasons:
 //!
-//! 1. **wasm-bindgen garbage-collects.** Measured on the probe crate:
+//! 1. **wasm-bindgen garbage-collects** (hybrid mode). Measured on the
+//!    probe crate:
 //!    rustc linked 2993 functions with `--no-gc-sections`, and
 //!    wasm-bindgen's own pass cut that to 560, keeping only what is
 //!    reachable from the 12 exports and the element segment. Passing
@@ -24,10 +25,10 @@
 //!
 //! # What we do instead
 //!
-//! Promote every local function into `__indirect_function_table` before
-//! wasm-bindgen runs. A table entry is a GC root, so wasm-bindgen keeps
-//! the function; and a table index is exactly what the patch needs
-//! anyway, since a wasm `fn` pointer IS a table index and the patch's
+//! Promote every local function into `__indirect_function_table` (in
+//! hybrid mode, before wasm-bindgen runs: a table entry is a GC root, so
+//! wasm-bindgen keeps the function). A table index is exactly what the
+//! patch needs anyway, since a wasm `fn` pointer IS a table index and the patch's
 //! `GOT.func` imports are satisfied with one. This is the technique
 //! dioxus's `dx` uses, and it sidesteps wasm-bindgen's export-count
 //! ceiling at the same time (emscripten#22863).
@@ -39,8 +40,8 @@
 //!
 //! # Cost, and why it is dev-only
 //!
-//! This inflates the table by roughly the module's function count and
-//! defeats wasm-bindgen's dead-code pass wholesale. It runs only when
+//! This inflates the table by roughly the module's function count and,
+//! in hybrid mode, defeats wasm-bindgen's dead-code pass wholesale. It runs only when
 //! the hot-patch tier is armed, which is a dev-mode switch; a release
 //! bundle never sees it.
 
@@ -154,19 +155,18 @@ pub fn prepare_base_module(wasm: &[u8], flavor: Flavor) -> Result<(Vec<u8>, Base
     // becomes — is an IMPORT in the base, not a function, so it has no
     // table slot, and a patch that calls one has nothing to resolve to.
     // So is a `#[component(lazy)]` loader in a no-split build: an import
-    // from `./__wasm_split.js` that the stub module answers at once. On
-    // CrewForge the first patch that got past the shims stopped on 17 of
-    // those. Every function import gets a trampoline, except wasm-bindgen's
+    // from `./__wasm_split.js` that the stub module answers at once.
+    // Every function import gets a trampoline, except wasm-bindgen's
     // own descriptor and externref-transform machinery, which it rewrites
     // or deletes and which no user code calls.
     // Give each a local forwarding body under a name wasm-bindgen does
     // not recognise, and root that. The shim's own import stays exactly
     // where wasm-bindgen expects it; the trampoline just calls it.
     //
-    // NOT exported. The first version of this exported the trampoline as
-    // `__saved_wbg_<name>`, and wasm-bindgen then generated its JS
-    // accessors against OUR export name (see below). A table slot is a
-    // GC root without being a name wasm-bindgen can find.
+    // NOT exported: wasm-bindgen generates its JS accessors against a
+    // function's export name, and would pick up an exported trampoline's
+    // (see below). A table slot is a GC root without being a name
+    // wasm-bindgen can find.
     let mut func_import = 0u32;
     for import in &source.imports {
         if !matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
@@ -201,8 +201,7 @@ pub fn prepare_base_module(wasm: &[u8], flavor: Flavor) -> Result<(Vec<u8>, Base
     // compiled from a crate that builds a `Closure` itself (CrewForge's
     // ui-shared: WebSocket and audio handlers) still calls the
     // instantiation by its MANGLED name, and nothing in the served module
-    // answers to it — the first ui-shared patch was refused over six of
-    // them. So each gets a forwarding body under a name that keeps the
+    // answers to it. So each gets a forwarding body under a name that keeps the
     // mangled one, rooted like every other. wasm-bindgen repoints the
     // body's call at the import it generates (it replaces the callee,
     // not the call sites), and `BaseIndex` resolves the mangled name to
@@ -215,15 +214,15 @@ pub fn prepare_base_module(wasm: &[u8], flavor: Flavor) -> Result<(Vec<u8>, Base
         }
     }
 
-    // NOTE: no `__saved_wbg_` alias exports. An earlier version added
-    // one per `__wbindgen*` function so a patch could import it by that
-    // name, and it broke the page: wasm-bindgen deletes the original
+    // NOTE: no alias exports (e.g. `__saved_wbg_<name>`) for the
+    // `__wbindgen*` functions. wasm-bindgen deletes the original
     // `__wbindgen_exn_store` export, then looks up "the export name for
-    // this function" to generate its JS — and found OUR alias, emitting
+    // this function" to generate its JS — and would find the alias,
+    // emitting
     //
     //     wasm.__saved_wbg___wbindgen_exn_store.command_export(idx)
     //
-    // which is not a function and threw on the first handled error, mid
+    // which is not a function and throws on the first handled error, mid
     // boot. The table is the right place for these, exactly as it is for
     // everything else: `hotpatch_patch` resolves a patch's
     // `__wbindgen_placeholder__` import through the base's table under
@@ -272,21 +271,17 @@ pub fn prepare_base_module(wasm: &[u8], flavor: Flavor) -> Result<(Vec<u8>, Base
 /// addresses, both taken before this runs (`hotpatch_aliases`). Nothing
 /// reads them from the served base, and on CrewForge they were ~150 MB of
 /// a ~300 MB base that wasm-bindgen, the stranded-import pass, the base
-/// index and every page reload each paid for. DWARF never reached the page
-/// either: the walrus pass this replaced did not re-emit it, and
-/// wasm-bindgen runs without `--keep-debug`.
+/// index and every page reload each paid for. DWARF would not reach the
+/// page anyway: wasm-bindgen runs without `--keep-debug`.
 fn keep_custom_section(name: &str) -> bool {
     name != "linking" && !name.starts_with("reloc.") && !name.starts_with(".debug_")
 }
 
 /// Fill in the two after-the-fact numbers by re-reading what we emitted.
 ///
-/// The walrus pass this replaced garbage-collected on emit and could drop
-/// every slot it had just added (a base linked without `--export-table`
-/// has no root for its table); counting the output is what made that a
-/// number instead of an unresolved import three minutes later. `append`
-/// drops nothing, so the counts now only confirm the census adds up —
-/// cheap, one streaming pass over the sections.
+/// `append` drops nothing, so the counts confirm the census adds up — a
+/// mismatch is a number in the build log instead of an unresolved import
+/// minutes later. Cheap: one streaming pass over the sections.
 fn census(out: &[u8], mut report: BasePrep) -> BasePrep {
     use wasmparser::{Parser, Payload};
     for payload in Parser::new(0).parse_all(out) {
@@ -556,11 +551,9 @@ mod tests {
 
     /// Regression: a patch calling a JS shim — `log` from an `extern
     /// "C"` block under `#[wasm_bindgen]` — was refused, because the shim
-    /// is an IMPORT in the base and imports have no table slot. The
-    /// roundtrip test caught it once the `__saved_wbg_` alias exports
-    /// (which had been covering it) were removed for breaking the page.
+    /// is an IMPORT in the base and imports have no table slot.
     ///
-    /// Each shim import now gets a forwarding body, rooted in the table
+    /// Each shim import gets a forwarding body, rooted in the table
     /// and NOT exported: an export is a name wasm-bindgen can mistake for
     /// the shim's own.
     #[test]
@@ -767,14 +760,8 @@ mod tests {
     /// wasm-bindgen emits no JS binding for
     /// `__wbindgen_placeholder__.__wbindgen_describe` — so the page died
     /// before it started with "Import #0 __wbindgen_placeholder__: module
-    /// is not an object or function".
-    ///
-    /// Deciding which functions keep it alive and leaving those out was
-    /// tried twice and does not work: one hop missed the survivors, and
-    /// walking transitively excluded a third of the module because
-    /// `Closure::wrap` calls a `describe` function — ordinary patches
-    /// then failed to link against `<u32 as Display>::fmt`. Rooting
-    /// everything and making the leftover harmless is what holds.
+    /// is not an object or function". See [`neutralize_unsupplied_imports`]
+    /// for why the trap, rather than not rooting them.
     #[test]
     fn regression_a_stranded_placeholder_import_becomes_a_trap() {
         let mut module = Module::default();

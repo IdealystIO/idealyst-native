@@ -14,11 +14,11 @@
 //! ui! { view() { for row in rows, key = row.id { Row(data = row) } } }
 //! ```
 //!
-//! Keys live **only** inside `Element::Each`, which the reactive `for …
-//! , key = …` lowering is the sole constructor of. The moment elements are
-//! collected into a `Vec<Element>` in plain Rust and splatted as children,
-//! the key information is erased before the macro ever sees them, and the
-//! walker reconciles them positionally by slot index. If the list is
+//! Keys live **only** inside `Element::Keyed`, which the reactive `for …
+//! , key = …` lowering constructs. The moment elements are collected into
+//! a `Vec<Element>` in plain Rust and splatted as children, the key
+//! information is erased before the macro ever sees them, and the scene
+//! reconciles them positionally by slot index. If the list is
 //! dynamic (reorders, grows, shrinks), per-row state — component-local
 //! signals, text-input focus, scroll position — silently attaches to the
 //! wrong row. This is the "index as key" trap, caught at edit time.

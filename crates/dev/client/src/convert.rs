@@ -219,10 +219,9 @@ fn leak_paths(paths: Vec<String>) -> &'static [&'static str] {
     Box::leak(static_paths.into_boxed_slice())
 }
 
-/// Wire → screen-options stub. Returns an opaque `Box<dyn Any>` —
-/// the runtime-core `ScreenOptions` type was removed when the
-/// navigator substrate moved out of core. The dev-client navigator
-/// path is no-op until the new SDK-driven wire format lands.
+/// Wire → screen-options stub. Returns an opaque `Box<dyn Any>`: the
+/// runtime has no typed screen-options value for the replayer to
+/// rebuild, so the wire options are ignored on the client.
 pub fn wire_screen_options(
     _w: &WireScreenOptions,
     _handler_factory: impl FnMut(HandlerId) -> Rc<dyn Fn()>,
@@ -444,7 +443,7 @@ pub fn wire_radial_extent(e: WireRadialExtent) -> RadialExtent {
 /// We don't keep the registered name on the wire side at replay
 /// time because the recording side already serialized the family
 /// name into the registered typeface; the web backend looks it up
-/// via its own [`Backend::register_typeface`] handler.
+/// via its own `AssetOps::register_typeface` handler.
 /// Reconstruct a `FontFamily` from its wire form. The `Typeface`
 /// variant rehydrates an in-memory [`Typeface`](runtime_shared::Typeface)
 /// from the wire's `(id, family_name)` pair, leaking the name into a
@@ -643,10 +642,10 @@ pub fn wire_typeface_face(f: WireTypefaceFace) -> TypefaceFace {
 /// rebuild the in-memory layout descriptor from its wire mirror. The
 /// ONE in-memory definition is
 /// `runtime_shared::primitives::virtualizer::VirtualLayout`
-/// (re-exported through `runtime_core`; both cores share it). Matches
+/// (re-exported through `runtime_core`). Matches
 /// are exhaustive so a new `WireLanes` variant fails compile here
 /// instead of silently flattening to a list. Round-trip pinned by
-/// `mock-backend/tests/wire_virtual_layout_roundtrip.rs`.
+/// `wire/tests/virtual_layout_roundtrip.rs`.
 pub fn wire_virtual_layout(
     w: wire::WireVirtualLayout,
 ) -> primitives::virtualizer::VirtualLayout {

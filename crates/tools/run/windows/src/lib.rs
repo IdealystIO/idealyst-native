@@ -25,8 +25,8 @@ pub struct RunOptions {
     /// targets can launch. One-shot `idealyst run windows` leaves this
     /// false — a foreground process the user can Ctrl-C / close.
     pub background: bool,
-    /// Cargo features to enable on the build (`idealyst dev` passes
-    /// `runtime-core/dev`).
+    /// Cargo features to enable on the build (`idealyst dev` passes the
+    /// wrapper's `dev` feature, → `runtime-core/dev`).
     pub user_features: Vec<String>,
     /// Environment variables to set on the spawned binary (e.g. the
     /// dev Robot-bridge port-file path).

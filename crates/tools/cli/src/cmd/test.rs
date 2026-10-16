@@ -21,11 +21,9 @@ use std::time::{Duration, Instant};
 /// Chromium-family browsers the parity runner will drive headlessly, in
 /// preference order. `IDEALYST_CHROME` overrides the search entirely.
 ///
-/// This used to be a single hardcoded macOS bundle path, which meant
-/// `--parity web,<anything>` on Linux always reported "no headless browser
-/// found" and left the web app waiting for a client that never dialled — the web
-/// half of a parity run simply could not start off a mac. Every candidate below
-/// takes the same `--headless=new` flags.
+/// Covers macOS and Linux installs, so the web half of a parity run can
+/// start off a mac. Every candidate below takes the same `--headless=new`
+/// flags.
 const CHROME_CANDIDATES: &[&str] = &[
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",

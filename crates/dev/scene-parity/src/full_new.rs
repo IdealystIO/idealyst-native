@@ -1,20 +1,20 @@
 //! FULL-OP harness: the vocabulary's builders + generic handlers
 //! realized against the [`FullRecorder`], which implements
-//! `runtime_scene::Host` plus all 30 `runtime_vocabulary::caps::*Ops`
-//! traits directly (see `full.rs`), with `register_builtins` installing
-//! the 13 handlers. Compared against the frozen `goldens_full/` files
-//! through the established normalization, plus the closed
+//! `runtime_scene::Host` plus every `runtime_vocabulary::caps::*Ops`
+//! trait directly (see `full.rs`), with `register_builtins` installing
+//! the builtin handlers. Compared against the frozen `goldens_full/`
+//! files through the shared normalization, plus the closed
 //! [`FULL_NEWCORE_OVERRIDES`] set for the sanctioned full-op
 //! divergences:
 //!
 //! - **Teardown release order (LIFO vs creation order).** On a subtree
-//!   swap-out the old core fires scope-level cleanups LIFO (`Scope::drop`
-//!   reverses `cleanups`), then drops effects in creation order; the new
-//!   kernel frees collected effects in creation order, running each's
-//!   cleanups as it goes. Same release SET (every `release_text_id`,
-//!   every `on_node_unstyled`), different interleaving — an ordering
-//!   artifact of the two teardown mechanisms, never a missing or extra
-//!   backend effect. Pinned by the `full_release_on_swap` override
+//!   swap-out the reference recording fired scope-level cleanups LIFO,
+//!   then dropped effects in creation order; `runtime-world` frees
+//!   collected effects in creation order, running each's cleanups as it
+//!   goes. Same release SET (every `release_text_id`, every
+//!   `on_node_unstyled`), different interleaving — an ordering artifact
+//!   of the teardown mechanism, never a missing or extra backend
+//!   effect. Pinned by the `full_release_on_swap` override
 //!   goldens (both modes).
 
 use std::cell::RefCell;
@@ -29,12 +29,12 @@ use crate::new_core::normalize;
 use crate::scenarios_full_new::full_new_scenarios;
 use crate::{serialize_steps, Mode, PNode, Recorder, Step};
 
-/// The backend the new side realizes against: the recorder itself, with
+/// The backend the scenarios realize against: the recorder itself, with
 /// no adapter layer (it implements `Host` + every caps trait directly).
 pub type Bridged = FullRecorder;
 
-/// A full-op scenario. Names/modes/labels/mutations are pinned against
-/// the frozen inventory the walker-era registry carried
+/// A full-op scenario. Names/modes are pinned against the frozen
+/// inventory the goldens were recorded for
 /// (`full_scenario_registry_matches_the_frozen_inventory`).
 pub struct FullNewScenario {
     pub name: &'static str,
@@ -42,7 +42,7 @@ pub struct FullNewScenario {
     pub run: fn(&mut FullNewCx),
 }
 
-/// New-core full-op driver: mount realizes through the vocabulary
+/// Full-op driver: mount realizes through the vocabulary
 /// registry; `step` flushes the world after the mutation.
 pub struct FullNewCx {
     rec: Recorder,
@@ -58,20 +58,20 @@ impl FullNewCx {
         self.rec.clone()
     }
 
-    /// The `nth` captured interaction-state setter — mirror of
-    /// `FullCx::state_setter` (P3c overlay-flip scenarios).
+    /// The `nth` captured interaction-state setter (overlay-flip
+    /// scenarios) — see [`FullRecorder::state_setter`].
     pub fn state_setter(&self, nth: usize) -> Rc<dyn Fn(runtime_shared::StateBits, bool)> {
         self.backend.borrow().state_setter(nth)
     }
 
-    /// The `nth` virtualizer's platform sim — mirror of
-    /// `FullCx::virt_sim`.
+    /// The `nth` virtualizer's platform sim — see
+    /// [`FullRecorder::virt_sim`].
     pub fn virt_sim(&self, nth: usize) -> Rc<crate::full::VirtSim> {
         self.backend.borrow().virt_sim(nth)
     }
 
-    /// The `nth` graphics surface's platform sim — mirror of
-    /// `FullCx::gfx_sim`.
+    /// The `nth` graphics surface's platform sim — see
+    /// [`FullRecorder::gfx_sim`].
     pub fn gfx_sim(&self, nth: usize) -> Rc<crate::full::GfxSim> {
         self.backend.borrow().gfx_sim(nth)
     }
@@ -97,7 +97,7 @@ impl FullNewCx {
     }
 }
 
-/// Run `scenario` in `mode` against the new core; returns the
+/// Run `scenario` in `mode` against the vocabulary; returns the
 /// header-less step body.
 pub fn run_full_scenario_new(scenario: &FullNewScenario, mode: Mode) -> String {
     crate::full::ensure_parity_scheduler();
@@ -129,17 +129,17 @@ pub fn run_full_scenario_new(scenario: &FullNewScenario, mode: Mode) -> String {
 ///
 /// - `full_release_on_swap`: teardown release ordering (divergence #5).
 /// - `full_graphics_lifecycle`: same #5 class — the swap-out window's
-///   `on_node_unstyled`/`release_graphics` interleaving (old LIFO, new
-///   creation order; same op set).
+///   `on_node_unstyled`/`release_graphics` interleaving (reference LIFO,
+///   runtime creation order; same op set).
 /// - `full_virtualizer_lifecycle`: #5 in the swap-out window
 ///   (`on_node_unstyled`/`release_virtualizer`) PLUS #3 — the live-row
 ///   update interleaving across sibling row effects in the shared-signal
-///   step (the old arena's subscriber order is not creation order once
-///   its swap-remove has run; `runtime-world` notifies in creation
-///   order; every live row updates exactly once on both sides).
+///   step (the reference's subscriber order was not creation order once
+///   a swap-remove had run; `runtime-world` notifies in creation order;
+///   every live row updates exactly once either way).
 /// - `full_overlay_toggle`: same #5 class — the composed overlay's
 ///   swap-out window interleaves `release_portal`/`on_node_unstyled`
-///   (old LIFO, new creation order; same op set).
+///   (reference LIFO, runtime creation order; same op set).
 /// - `full_presence_cycle` / `full_presence_bare`: divergence #6 —
 ///   presence re-expressed on the scene Dyn driver + retire hook (the
 ///   child mounts through the hole's structural path; anchored gains
@@ -157,16 +157,16 @@ pub const FULL_NEWCORE_OVERRIDES: &[(&str, Mode)] = &[
     ("full_presence_cycle", Mode::Spliced),
     ("full_presence_bare", Mode::Spliced),
     // Navigator screen-teardown windows: divergence #5 again (teardown
-    // release ordering). The old screen scope runs its scope-level
-    // cleanups (the scenario marker) BEFORE effect teardown fires
-    // on_node_unstyled; the new kernel frees realize-time effects in
-    // creation order and merges the screen's absorbed component scope
+    // release ordering). The reference ran the screen scope's
+    // scope-level cleanups (the scenario marker) BEFORE effect teardown
+    // fired on_node_unstyled; `runtime-world` frees realize-time effects
+    // in creation order and merges the screen's absorbed component scope
     // (which owns the marker probe) AFTER them. Same op set, same
     // position relative to the structural ops, interleaving only.
     ("nav_swap_dispose_evict", Mode::Spliced),
     ("nav_stack_push_pop", Mode::Spliced),
     // Divergence #8: a wired `Dismiss` backdrop carries a secondary-press
-    // fill view (FRAMEWORK-NOTES #61) — one extra create/apply_style/
+    // fill view — one extra create/apply_style/
     // insert under the backdrop pressable, later node ids shift by one.
     // (`full_overlay_toggle` is already listed above for #5.)
     ("full_overlay_static", Mode::Spliced),
@@ -176,7 +176,7 @@ fn override_path(name: &str, mode: Mode) -> PathBuf {
     full_newcore_golden_path(name, mode)
 }
 
-/// New-core full-op test entry point: normalized comparison against the
+/// Full-op test entry point: normalized comparison against the
 /// shared golden, or the explicit override for sanctioned pairs.
 /// `UPDATE_NEWCORE_GOLDENS=1` (re)writes override files only.
 pub fn check_full_new(name: &str, mode: Mode) {

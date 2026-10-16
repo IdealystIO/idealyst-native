@@ -53,7 +53,6 @@ pub struct State {
     pub confirmed: Signal<i32>,
 }
 
-/// Build the app root: the vocabulary stack navigator over the same
 /// The root screen: the primitives torture layout.
 /// Must run with the owning world ambient (`newcore::start` wraps the
 /// build in `World::enter`).
@@ -218,7 +217,7 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
         modal_branch,
         ui! { ReflowBox() },
         // A `#[method]`-bearing component: exercises robot/inspector
-        // method invocation (same placement as the old file).
+        // method invocation.
         ui! { MethodCounter(initial = 10i32) },
         button("Push detail", push).test_id("push-detail").into_element(),
         button("Components", goto_components)
@@ -254,8 +253,8 @@ fn ReflowBox() -> Element {
 
     ui! {
         view {
-            // TWO NESTED presences around the keyed list, exactly like
-            // the old file (focus_gate(presence(...Each...))).
+            // TWO NESTED presences around the keyed list — the suite
+            // pins keyed reconciliation under nested presence.
             presence(present = || true) {
                 presence(present = || true) {
                     view {
@@ -316,9 +315,6 @@ fn MethodCounter(
     initial: i32,
 ) -> Element {
     let value = signal(initial);
-    // Bodies use `set(get() + n)`: the two cores' `update` closure
-    // shapes differ, and this file's methods mirror the old file's
-    // BEHAVIOR, not its core-specific spelling.
     /// No-arg increment — the inspector's easy manual case.
     #[method]
     fn increment() {
@@ -333,8 +329,8 @@ fn MethodCounter(
         value.set(value.get() + n);
     }
 
-    // Builder-form tail like the old file; the `#[component]` macro's
-    // registration links this root view to the instance.
+    // The `#[component]` macro's registration links this root view to
+    // the instance.
     let label = text(move || format!("methods: {}", value.get()))
         .test_id("method-counter-val")
         .into_element();
@@ -421,9 +417,9 @@ pub(crate) fn components_page(nav: NavCell) -> Element {
 /// - `shadow-clipped` — shadow + `border-radius` + `overflow: hidden`. **This is
 ///   the interesting one.** CSS clips descendants but does NOT clip the
 ///   element's own `box-shadow`, so web renders a shadow here. A single
-///   CALayer can't do both — `masksToBounds` clips the shadow away — which is
-///   why the Apple backends historically dropped it and idea-ui's `Card` docs
-///   carry an "iOS caveat" telling authors to nest views by hand. Rule #7 says
+///   CALayer can't do both — `masksToBounds` clips the shadow away — so a
+///   naive Apple backend drops it (the shadow has to come from a separate,
+///   unclipped layer). Rule #7 says
 ///   one author tree renders the same everywhere, so this fixture exists to
 ///   hold the backends to that.
 ///
@@ -475,7 +471,7 @@ fn shadow_parity_row() -> Element {
 /// 48×24 PNG: left half red, right half blue. Natural size 48×24 dp.
 const PNG_DATA_URI: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAYCAIAAAAzn+mLAAAAMklEQVR4nO3OMQ0AMAgAMIzgh2v69+IEE3w0qYBGZ63I91eEkJCQkJCQkJCQkJDQrdAAHNC0jJaU5dgAAAAASUVORK5CYII=";
 
-/// Percent-encoded SVG data URI (the CrewForge `BrandLockup` shape): a
+/// Percent-encoded SVG data URI (a brand-lockup shape): a
 /// 32×16 red/blue plate with a diagonal stroke, so a blurry upscale is
 /// visible at 5×.
 const SVG_DATA_URI: &str = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2232%22%20height%3D%2216%22%3E%3Crect%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%23e11d48%22%2F%3E%3Crect%20x%3D%2216%22%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%231d4ed8%22%2F%3E%3Cpath%20d%3D%22M0%2016L32%200%22%20stroke%3D%22%23fff%22%20stroke-width%3D%221%22%2F%3E%3C%2Fsvg%3E";

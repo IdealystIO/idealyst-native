@@ -582,9 +582,6 @@ fn read_manifest(project_dir: &Path) -> Result<UserManifest> {
     })
 }
 
-// `find_workspace_root` was the legacy lax probe — replaced by
-// `build_ios::FrameworkSource` (in-tree path-dep or git fallback).
-
 fn generate_snapshot_wrapper(
     wrapper_dir: &Path,
     project_dir: &Path,
@@ -595,10 +592,6 @@ fn generate_snapshot_wrapper(
         .with_context(|| format!("create {}", wrapper_dir.display()))?;
 
     let wrapper_name = format!("{}-roku-snapshot", manifest.name);
-    // `new-core` compiles `backend_roku::newcore` (Host + all 30 caps
-    // impls, `start`, and `settle` — the embedder contract the snapshot
-    // main below implements). The feature is vacuous once backend-roku
-    // makes its contents unconditional; drop it at that point.
     let broku_dep = source.dep("crates/backend/roku", &[]);
 
     let cargo_toml = format!(
@@ -677,8 +670,7 @@ fn main() {{
     std::fs::write(&out, json)
         .expect("write ui.json");
 
-    // Explicit teardown so scope cleanups run before the process exits
-    // (the old snapshot path dropped its `Owner` at the same point).
+    // Explicit teardown so scope cleanups run before the process exits.
     app.stop();
 }}
 "#,
@@ -994,7 +986,7 @@ mod wrapper_template_tests {
 
     /// The snapshot wrapper mounts through `backend_roku::newcore::start`
     /// with the app's registry-generic `register_scene_extensions` seam,
-    /// and pins no core feature on the user crate (there is one core).
+    /// and pins no core feature on the user crate.
     #[test]
     fn wrapper_mounts_through_newcore_start_with_scene_seam() {
         let (main_rs, cargo) = generated();
@@ -1019,9 +1011,9 @@ mod wrapper_template_tests {
             "user-crate dep must be a plain path dep:\n{cargo}",
         );
         // backend-roku's scene module is unconditional. The wrapper must
-        // depend on the crate and must NOT name the deleted `new-core`
-        // feature (a generated manifest naming it fails cargo resolution
-        // before anything compiles — baseline §7.7).
+        // depend on the crate and must NOT name a `new-core` feature (a
+        // generated manifest naming an unknown feature fails cargo
+        // resolution before anything compiles).
         assert!(
             cargo.contains("crates/backend/roku"),
             "wrapper must depend on backend-roku:\n{cargo}",
@@ -1055,11 +1047,10 @@ mod wrapper_template_tests {
         );
     }
 
-    /// The wrapper carried a `runtime-core = { path =
-    /// "crates/framework/core" }` line — a pre-move path pointing at a
-    /// directory that does not exist, so every generated wrapper was
-    /// unresolvable. Nothing in the snapshot main names a framework root,
-    /// so the dep is gone rather than repaired.
+    /// Regression: a `runtime-core = { path = "crates/framework/core" }`
+    /// dep points at a directory that does not exist, so every generated
+    /// wrapper is unresolvable. Nothing in the snapshot main names a
+    /// framework root, so the wrapper carries no `runtime-core` dep at all.
     #[test]
     fn wrapper_has_no_stale_framework_core_dep() {
         let (_main, cargo) = generated();

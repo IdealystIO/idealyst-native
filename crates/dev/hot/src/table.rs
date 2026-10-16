@@ -7,12 +7,12 @@
 //! fetches and instantiates the patch, supplying it ONE import namespace
 //! (`env`, the base's exports plus `__memory_base`/`__table_base`), and
 //! then commits the jump table through a private `commit_patch`. A patch
-//! whose imports are anything but base exports therefore had to be
-//! rewritten until it needed nothing else, which is the walrus pass that
-//! cost 0.7–1.0 s of every save on CrewForge (parse and re-emit 27 MB to
+//! whose imports are anything but base exports would have to be
+//! rewritten until it needed nothing else — a walrus pass measured at
+//! 0.7–1.0 s of every save on a large app (parse and re-emit 27 MB to
 //! turn ~3,600 imports into local stubs).
 //!
-//! The page now loads the patch itself (`backend_web::hot_patch`) and
+//! So the page loads the patch itself (`backend_web::hot_patch`) and
 //! supplies every import directly — a base function as the function, a
 //! `GOT` entry as a global. That leaves the commit, which subsecond does
 //! not expose (0.7.9 or 0.8.0-alpha.1), and the lookup a hot call makes,

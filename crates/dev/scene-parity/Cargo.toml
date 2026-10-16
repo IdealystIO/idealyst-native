@@ -9,9 +9,9 @@ publish = false
 
 # Golden-record harness: a recording `runtime_scene::Host` + scenario
 # suite that pins the EXACT structural-op and full-op sequences the
-# runtime emits (see README.md). The goldens were frozen from the
-# pre-runtime-v2 walker before it was deleted and are frozen testimony —
-# they cannot be regenerated from it.
+# runtime emits (see README.md). The shared goldens are a fixed
+# reference with no generator; only the sanctioned-divergence overrides
+# in `goldens_newcore/` can be rewritten (`UPDATE_NEWCORE_GOLDENS=1`).
 #
 # Dev/test utility crate — nothing shipped depends on it.
 

@@ -15,10 +15,9 @@ use idea_ui::{
     TableCell, Tag, TableRow, Typography,
 };
 use markdown::{Markdown, MdTheme};
-// `fixed_size` / `flat_list` are only mirrored at
-// `primitives::flat_list::…` on the current author surface (the old root
-// re-exported them too — see the report note); everything else is a root
-// name.
+// `fixed_size` / `flat_list` are only exposed at
+// `primitives::flat_list::…` on the author surface; everything else is a
+// root name.
 use runtime_core::primitives::flat_list::{fixed_size, flat_list};
 use runtime_core::{
     component, effect, rx, signal, switch, ui, Color, Element, IntoElement, SafeAreaSides,
@@ -85,10 +84,9 @@ pub fn outlet_grow_style() -> StyleApplication {
 
 /// Mobile-only top strip hosting the hamburger. Mounted ONCE in the swap
 /// layout (above the outlet); the reactive `if` hides it whenever the
-/// AppShell sidebar is pinned (at/above `Lg` — the old 960-px pin width),
-/// matching the legacy per-page menu button's visibility. The hamburger
-/// opens the app-owned drawer signal the AppShell panel + scrim subscribe
-/// to.
+/// AppShell sidebar is pinned (at/above `Lg`, 960 px — see `app()`).
+/// The hamburger opens the app-owned drawer signal the AppShell panel +
+/// scrim subscribe to.
 pub fn mobile_header(drawer_open: runtime_core::Signal<bool>) -> Element {
     ui! {
         if !idea_ui_nav::sidebar_pinned(runtime_core::Breakpoint::Lg) {
@@ -173,8 +171,7 @@ pub fn sidebar(active_path: runtime_core::Signal<String>, model: Rc<CatalogModel
     let model_for_results = model.clone();
     let total = model.total();
 
-    // The sidebar owns its scroll now: the legacy drawer SDK wrapped the
-    // slot in its own `scroll_view`, but the AppShell panel is a plain
+    // The sidebar owns its scroll: the AppShell panel is a plain
     // fixed-height surface — without this wrapper the catalog's hundreds
     // of entries would overflow the panel unscrollably. The wrapper
     // carries `color-surface` (see `SidebarScroll`) so SidebarBody's
@@ -1325,8 +1322,7 @@ fn recipe_card(recipe: crate::catalog::Recipe) -> Element {
 // render_markdown — prose bodies (guide pages + component/type/scope/recipe
 // docs) go through the `markdown` SDK: one native styled-text node per
 // backend with full CommonMark/GFM (headings, lists, emphasis, links,
-// quotes, inline + fenced code), replacing the old hand-rolled block
-// renderer that dropped lists/emphasis/links. The theme follows the docs'
+// quotes, inline + fenced code). The theme follows the docs'
 // live light/dark toggle, so flipping it re-paints the prose.
 //
 // Recipe code *samples* are NOT routed here — they keep their

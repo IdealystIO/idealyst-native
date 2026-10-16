@@ -1,7 +1,7 @@
 //! CLI-side glue around `build_ios::FrameworkSource`.
 //!
 //! The CLI bakes the framework's git URL + refspec at compile time
-//! (`crates/cli/build.rs`) and is the only place that knows them.
+//! (`crates/tools/cli/build.rs`) and is the only place that knows them.
 //! When dispatching a command, we hand `FrameworkSource::detect` the
 //! defaults so it can fall back to git when no workspace is found.
 //!
@@ -149,7 +149,7 @@ pub fn resolve(project_dir: &Path) -> Result<FrameworkSource> {
 ///
 /// NOT [`FrameworkSource::cargo_target_dir`] for a registry/git project:
 /// that is `<crate dir>/target`, so two apps of one workspace each got a
-/// private copy. Measured in CrewForge (2026-10-08): `app-main` and
+/// private copy. Measured in CrewForge: `app-main` and
 /// `app-checkin` declare the SAME server package, and its dev build sat
 /// in both `crates/<app>/target/idealyst-dev-server/` (27 + 22 GB, ~11 GB
 /// live) — identical units, built twice.

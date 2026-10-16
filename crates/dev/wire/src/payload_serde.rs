@@ -14,9 +14,7 @@
 //!
 //! ## Why it lives here
 //!
-//! This registry used to sit in `runtime-core/src/external.rs`, next to
-//! the `Element::External` primitive it served. That primitive is gone;
-//! the *wire* contract it encoded is not. The registry is plain data
+//! The registry encodes a *wire* contract, not a runtime one. It is plain data
 //! plumbing — a thread-local map of closures, no runtime types in the
 //! signatures — and its only two consumers are `dev-server` (recorder
 //! side) and `dev-client` (replay side), both of which already depend on

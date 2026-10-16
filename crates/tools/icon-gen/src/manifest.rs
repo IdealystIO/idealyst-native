@@ -108,9 +108,7 @@ pub enum Background {
     /// Solid color, `#RRGGBB` or `#RRGGBBAA` (3/4-digit shorthand
     /// also accepted). Parsed by [`crate::render::parse_color`].
     Color(String),
-    /// Geometric fill. Phase 2 ships linear; radial is a Phase 3
-    /// addition (held off because the rendering math is more
-    /// involved and the user's first ask was specifically linear).
+    /// Geometric fill. Linear only — no radial variant.
     Gradient(Gradient),
     /// An image (SVG / PNG / JPEG) rasterized to fill the canvas as the
     /// backdrop — e.g. a designed background layer for an Android adaptive
