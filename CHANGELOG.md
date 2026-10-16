@@ -1513,6 +1513,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Animations on Windows ran flat out and leaked memory** (`host-win32`).
+  The scheduler ticked every `raf_loop` on every drain — and a tick
+  schedules the reactive flush, a microtask whose wake is another drain —
+  so any animation (a video, a camera preview, a spinner) ticked thousands
+  of times a second, pinning a core; each of those microtasks also leaked
+  the cancel handle `schedule_microtask` boxed and forgot. The SDK gallery
+  grew to 10.8 GB in a few hours. Rafs now tick once per 16 ms frame
+  pulse, and a microtask allocates no handle.
+
 - **Overlays work on Windows** (`backend-windows`, `host-win32`).
   `create_portal` was a placeholder: an overlay, popover, menu or toast
   rendered inline where it was written and covered nothing. A portal is now

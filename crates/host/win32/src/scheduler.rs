@@ -139,6 +139,14 @@ impl WakeLatch {
 
 static WAKE_PENDING: WakeLatch = WakeLatch::new();
 
+/// Set by the worker on each 16 ms raf pulse, taken by [`drain_due`]: raf
+/// clients tick only when a frame is due, not on every drain. A drain also
+/// runs for timers and microtasks, and a raf tick schedules the reactive
+/// flush (a microtask, so another wake): ticking rafs on every drain made
+/// every animation drive itself flat out — thousands of ticks a second,
+/// a core pinned and memory climbing (the SDK gallery reached 10.8 GB).
+static RAF_DUE: AtomicBool = AtomicBool::new(false);
+
 /// Post the wake message to the host window, unless one is already
 /// pending. Thread-safe; called from the worker thread and from async
 /// task wakers (`crate::async_executor`). A failed post
@@ -269,6 +277,82 @@ mod tests {
         }
     }
 
+    /// Live heap bytes, for the per-frame leak test (this test binary's
+    /// allocator).
+    mod counting {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::sync::atomic::{AtomicIsize, Ordering};
+        pub struct Counting;
+        pub static LIVE: AtomicIsize = AtomicIsize::new(0);
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+                LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
+                unsafe { System.alloc(l) }
+            }
+            unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+                LIVE.fetch_sub(l.size() as isize, Ordering::Relaxed);
+                unsafe { System.dealloc(p, l) }
+            }
+        }
+        #[global_allocator]
+        static A: Counting = Counting;
+    }
+
+    /// The flush driver's hook: one microtask per fire, as `schedule_flush`.
+    fn flush_like_hook() {
+        Win32Scheduler.schedule_microtask(Box::new(|| {}));
+    }
+
+    /// A raf client ticked on EVERY drain, and a tick schedules the flush
+    /// microtask whose wake is another drain — so any animation drove
+    /// itself flat out (the SDK gallery's video and camera panels: a
+    /// pinned core and, with the next bug, 10.8 GB). A raf ticks only when
+    /// the worker's frame pulse is due.
+    #[test]
+    fn regression_a_raf_ticks_once_per_frame_not_once_per_drain() {
+        backend_windows::dispatch_hook::install_dispatch_hook(flush_like_hook);
+        let sched = Win32Scheduler;
+        let ticks = Rc::new(Cell::new(0u32));
+        let t = ticks.clone();
+        let mut raf = sched.raf_loop(Box::new(move || t.set(t.get() + 1)));
+        RAF_DUE.store(true, Ordering::Release);
+        for _ in 0..100 {
+            drain_due();
+        }
+        assert_eq!(ticks.get(), 1, "one frame due, one tick — the flush's own drains don't tick it");
+        RAF_DUE.store(true, Ordering::Release);
+        drain_due();
+        assert_eq!(ticks.get(), 2, "the next pulse ticks it again");
+        raf.cancel();
+        backend_windows::dispatch_hook::clear_dispatch_hook();
+    }
+
+    /// `schedule_microtask` boxed a cancel handle per call and forgot it:
+    /// 8 bytes leaked per microtask, one per animation frame for the flush.
+    /// A frame (raf tick + its flush microtask) now keeps nothing.
+    #[test]
+    fn regression_a_frame_keeps_no_memory() {
+        use std::sync::atomic::Ordering as O;
+        backend_windows::dispatch_hook::install_dispatch_hook(flush_like_hook);
+        let mut raf = Win32Scheduler.raf_loop(Box::new(|| {}));
+        let frame = || {
+            RAF_DUE.store(true, Ordering::Release);
+            drain_due(); // tick → flush microtask scheduled
+            drain_due(); // the microtask runs
+        };
+        for _ in 0..100 {
+            frame();
+        }
+        let before = counting::LIVE.load(O::Relaxed);
+        for _ in 0..5_000 {
+            frame();
+        }
+        let grown = counting::LIVE.load(O::Relaxed) - before;
+        assert!(grown < 1_000, "5000 frames kept {grown} bytes");
+        raf.cancel();
+        backend_windows::dispatch_hook::clear_dispatch_hook();
+    }
+
     static HOOK_FIRES: AtomicUsize = AtomicUsize::new(0);
     fn count_hook() {
         HOOK_FIRES.fetch_add(1, Ordering::SeqCst);
@@ -295,6 +379,7 @@ mod tests {
 
         let before = HOOK_FIRES.load(Ordering::SeqCst);
         let mut raf = sched.raf_loop(Box::new(|| {}));
+        RAF_DUE.store(true, Ordering::Release);
         drain_due();
         assert_eq!(HOOK_FIRES.load(Ordering::SeqCst) - before, 1, "a raf tick fires the hook");
         raf.cancel();
@@ -384,6 +469,7 @@ fn worker_main(rx: mpsc::Receiver<WorkerCmd>) {
         }
 
         if raf_active && now >= next_raf {
+            RAF_DUE.store(true, Ordering::Release);
             post_wake();
             next_raf = now + RAF_PERIOD;
         }
@@ -476,10 +562,14 @@ pub(crate) fn drain_due() {
         }
     }
 
-    // Tick raf clients. Swap the Vec out so a closure can register new
+    // Tick raf clients — only when the worker's frame pulse says a frame
+    // is due (see `RAF_DUE`). Swap the Vec out so a closure can register new
     // rafs mid-tick; skip + drop entries cancelled mid-tick (reported
     // via `alive`), otherwise a re-registration would resurrect a
     // just-cancelled entry.
+    if !RAF_DUE.swap(false, Ordering::AcqRel) {
+        return;
+    }
     let mut taken: Vec<RafEntry> = MAIN_QUEUE.with(|q| std::mem::take(&mut q.borrow_mut().rafs));
     let mut ran_raf = false;
     for entry in taken.iter_mut() {
@@ -520,10 +610,10 @@ unsafe impl Sync for Win32Scheduler {}
 impl Scheduler for Win32Scheduler {
     fn schedule_microtask(&self, f: Box<dyn FnOnce() + 'static>) {
         // Run after the current synchronous stack unwinds: a 0 ms timer
-        // lands it in the next message-loop iteration. Forget the
-        // handle — microtasks are fire-and-forget; dropping it would
-        // cancel the timer the framework just scheduled.
-        std::mem::forget(enqueue_timer(0, f, true));
+        // lands it in the next message-loop iteration. No handle: a
+        // microtask can't be cancelled, and one boxed per call and never
+        // freed is what the flush driver's microtask per frame leaked.
+        enqueue(0, f, true);
     }
 
     fn after_animation_frame(&self, f: Box<dyn FnOnce() + 'static>) -> Box<dyn ScheduleHandle> {
@@ -555,6 +645,11 @@ impl Scheduler for Win32Scheduler {
 }
 
 fn enqueue_timer(delay_ms: i32, f: Box<dyn FnOnce() + 'static>, microtask: bool) -> Box<dyn ScheduleHandle> {
+    Box::new(TimerHandle { id: enqueue(delay_ms, f, microtask) })
+}
+
+/// Queue `f` to run after `delay_ms`; returns its timer id.
+fn enqueue(delay_ms: i32, f: Box<dyn FnOnce() + 'static>, microtask: bool) -> u64 {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_millis(delay_ms.max(0) as u64);
     MAIN_QUEUE.with(|q| {
@@ -565,7 +660,7 @@ fn enqueue_timer(delay_ms: i32, f: Box<dyn FnOnce() + 'static>, microtask: bool)
     if let Some(tx) = CMD_TX.lock().unwrap().clone() {
         let _ = tx.send(WorkerCmd::AfterMs { id, deadline });
     }
-    Box::new(TimerHandle { id })
+    id
 }
 
 struct TimerHandle {
