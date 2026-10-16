@@ -6426,6 +6426,7 @@ dependencies = [
  "dev-server",
  "dnd",
  "icons-lucide",
+ "idea-theme",
  "idea-theme-editor",
  "idea-ui",
  "idea-ui-nav",

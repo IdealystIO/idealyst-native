@@ -836,7 +836,7 @@ mod tests {
                     x: 0.0,
                     y: 1.0,
                     blur: 3.0,
-                    color: Color("rgba(15, 17, 21, 0.30)".into()),
+                    color: Color("rgba(15, 17, 21, 0.30)".into()).into(),
                 },
             }
         }

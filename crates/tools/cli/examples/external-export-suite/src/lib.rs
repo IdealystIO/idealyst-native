@@ -67,7 +67,7 @@ fn card_sheet() -> Rc<StyleSheet> {
         gap: Some(px(12.0)),
         min_width: Some(px(220.0)),
         max_width: Some(px(320.0)),
-        shadow: Some(Shadow { x: 0.0, y: 10.0, blur: 30.0, color: Color("rgba(17,24,39,0.10)".into()) }),
+        shadow: Some(Shadow { x: 0.0, y: 10.0, blur: 30.0, color: Color("rgba(17,24,39,0.10)".into()).into() }),
         ..Default::default()
     };
     padding(&mut r, 22.0, 20.0);
@@ -137,7 +137,7 @@ fn button_sheet() -> Rc<StyleSheet> {
         align_items: Some(AlignItems::Center),
         justify_content: Some(JustifyContent::Center),
         cursor: Some(Cursor::Pointer),
-        shadow: Some(Shadow { x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(79,70,229,0.35)".into()) }),
+        shadow: Some(Shadow { x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(79,70,229,0.35)".into()).into() }),
         ..Default::default()
     };
     padding(&mut r, 18.0, 10.0);

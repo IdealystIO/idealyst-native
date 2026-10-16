@@ -447,7 +447,7 @@ fn shadow_parity_row() -> Element {
                 x: 0.0,
                 y: 10.0,
                 blur: 24.0,
-                color: Color("rgba(0, 0, 0, 0.85)".into()),
+                color: Color("rgba(0, 0, 0, 0.85)".into()).into(),
             }),
             ..Default::default()
         }))

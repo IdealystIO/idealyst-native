@@ -105,8 +105,8 @@ fn band_sheet(edge: Edge) -> Rc<StyleSheet> {
             // Both stops start transparent; the raf-driver writes
             // the warm color into stop 1 each frame.
             stops: vec![
-                GradientStop { offset: 0.0, color: Color("rgba(255, 168, 60, 0.0)".into()) },
-                GradientStop { offset: 1.0, color: Color("rgba(255, 168, 60, 0.0)".into()) },
+                GradientStop { offset: 0.0, color: Color("rgba(255, 168, 60, 0.0)".into()).into() },
+                GradientStop { offset: 1.0, color: Color("rgba(255, 168, 60, 0.0)".into()).into() },
             ],
         }),
         ..Default::default()

@@ -2270,7 +2270,7 @@ fn resolve_gradient(g: &Gradient) -> GradientPaint {
         .stops
         .iter()
         .map(|s| {
-            let rgba = runtime_shared::color::parse_or(&s.color.0, Rgba::TRANSPARENT);
+            let rgba = runtime_shared::color::parse_or(&s.color.resolve().0, Rgba::TRANSPARENT);
             (s.offset, srgba_of(rgba))
         })
         .collect();

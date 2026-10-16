@@ -405,6 +405,25 @@ color_namespace! {
     }
 }
 
+color_namespace! {
+    /// Effect colors — the resting drop shadow, a hover glow per intent,
+    /// and the accent gradient's stops and text. See `theme::Effects`.
+    EffectTokens as "effect" on effects {
+        shadow => "effect-shadow",
+        glow_primary => "effect-glow-primary",
+        glow_secondary => "effect-glow-secondary",
+        glow_neutral => "effect-glow-neutral",
+        glow_success => "effect-glow-success",
+        glow_danger => "effect-glow-danger",
+        glow_warning => "effect-glow-warning",
+        glow_info => "effect-glow-info",
+        gradient_start => "effect-gradient-start",
+        gradient_mid => "effect-gradient-mid",
+        gradient_end => "effect-gradient-end",
+        gradient_text => "effect-gradient-text",
+    }
+}
+
 length_namespace! {
     /// The spacing scale — padding, margin, and gap steps.
     SpacingTokens as "spacing" on spacing {
@@ -539,7 +558,8 @@ pub struct PaletteTokens {
 
 /// Every token in the idea vocabulary, described as data — the whole
 /// palette an editor can offer, in declaration order (neutrals, the
-/// seven intents, the twelve palette hues, spacing, radius, typography).
+/// seven intents, the twelve palette hues, effects, spacing, radius,
+/// typography).
 ///
 /// Ungated, unlike the catalog slice: this is the enumeration a theme
 /// editor shipped inside an app walks to generate one control per
@@ -583,6 +603,7 @@ pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
         .chain(IndigoTokens::DESCRIPTORS)
         .chain(VioletTokens::DESCRIPTORS)
         .chain(PinkTokens::DESCRIPTORS)
+        .chain(EffectTokens::DESCRIPTORS)
         .chain(SpacingTokens::DESCRIPTORS)
         .chain(RadiusTokens::DESCRIPTORS)
         .chain(RadiusTokens::PILL_DESCRIPTOR)
@@ -615,6 +636,7 @@ pub struct IdeaTokens {
     pub color: ColorTokens,
     pub intent: IntentTokens,
     pub palette: PaletteTokens,
+    pub effect: EffectTokens,
     pub spacing: SpacingTokens,
     pub radius: RadiusTokens,
     pub typography: TypographyTokens,
@@ -697,6 +719,21 @@ mod tests {
             p.red, p.orange, p.amber, p.yellow, p.lime, p.green,
             p.teal, p.cyan, p.blue, p.indigo, p.violet, p.pink,
         );
+        let e = &t.effect;
+        out.extend([
+            e.shadow(),
+            e.glow_primary(),
+            e.glow_secondary(),
+            e.glow_neutral(),
+            e.glow_success(),
+            e.glow_danger(),
+            e.glow_warning(),
+            e.glow_info(),
+            e.gradient_start(),
+            e.gradient_mid(),
+            e.gradient_end(),
+            e.gradient_text(),
+        ]);
         out
     }
 
@@ -750,6 +787,7 @@ mod tests {
             IndigoTokens::NAMES,
             VioletTokens::NAMES,
             PinkTokens::NAMES,
+            EffectTokens::NAMES,
         ] {
             names.extend(ns);
         }
@@ -929,8 +967,8 @@ mod tests {
     /// codegen must skip it rather than emit an assignment.
     #[test]
     fn descriptor_field_path_points_at_a_theme_field() {
-        const GROUPS: [&str; 6] =
-            ["colors", "intents", "palette", "spacing", "radius", "typography"];
+        const GROUPS: [&str; 7] =
+            ["colors", "intents", "palette", "effects", "spacing", "radius", "typography"];
         let mut without_field = Vec::new();
         for d in token_descriptors() {
             let Some(field) = d.field_path else {
@@ -985,12 +1023,13 @@ mod tests {
     #[test]
     fn vocabulary_matches_canonical_token_lists() {
         use crate::theme::{
-            CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS,
-            CANONICAL_PALETTE_TOKENS,
+            CANONICAL_EFFECT_TOKENS, CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS,
+            CANONICAL_NEUTRAL_TOKENS, CANONICAL_PALETTE_TOKENS,
         };
         let mut canonical: Vec<&str> = CANONICAL_NEUTRAL_TOKENS.to_vec();
         canonical.extend(CANONICAL_INTENT_TOKENS);
         canonical.extend(CANONICAL_PALETTE_TOKENS);
+        canonical.extend(CANONICAL_EFFECT_TOKENS);
         canonical.extend(CANONICAL_LENGTH_TOKENS);
         canonical.sort_unstable();
 

@@ -92,6 +92,10 @@ pub enum AnimProperty {
     BorderRightColor,
     BorderBottomColor,
     BorderLeftColor,
+    /// Box-shadow color (`shadow_transition`). A shadow appearing or
+    /// disappearing tweens to/from its own color at zero alpha; offset
+    /// and blur snap.
+    ShadowColor,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

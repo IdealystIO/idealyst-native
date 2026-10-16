@@ -133,7 +133,7 @@ mod theme_runtime;
 pub use idea_theme::theme::{
     dark_theme, idea_color, idea_header, idea_theme_palette, install_idea_theme,
     install_idea_theme_reactive, install_idea_theme_schemes, light_theme, set_idea_color_scheme, set_idea_theme, Colors,
-    IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing,
+    Effects, IdeaTheme, IdeaThemeDefaults, IdeaThemeRef, IntentColors, Intents, Radius, Spacing,
 };
 // NB: `idea_theme::theme::Typography` (the typography *theme* struct) is
 // intentionally NOT re-exported at this crate root — the root `Typography`
@@ -150,7 +150,7 @@ pub use idea_theme::{
 // compile error rather than a value that silently renders its fallback.
 // See the theming guide.
 pub use idea_theme::{
-    tokens, ColorTokens, DangerTokens, IdeaTokens, InfoTokens, IntentTokens, NeutralTokens,
+    tokens, ColorTokens, DangerTokens, EffectTokens, IdeaTokens, InfoTokens, IntentTokens, NeutralTokens,
     PrimaryTokens, RadiusTokens, SecondaryTokens, SpacingTokens, SuccessTokens, TypographyTokens,
     WarningTokens,
 };
@@ -158,8 +158,8 @@ pub use idea_theme::{
 // canonical-name predicates tooling uses to validate one.
 pub use idea_theme::{
     canonical_color, canonical_length, is_canonical_color_token, is_canonical_length_token,
-    theme_color, theme_length, CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS,
-    CANONICAL_NEUTRAL_TOKENS,
+    theme_color, theme_length, CANONICAL_EFFECT_TOKENS, CANONICAL_INTENT_TOKENS,
+    CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS,
 };
 pub use idea_theme::{
     Danger, Info, Intent, IntoRcIntent, Neutral, Primary, Secondary, Success, Warning,

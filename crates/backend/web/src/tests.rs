@@ -265,8 +265,8 @@ fn apply_style_snapshots_gradient_shape_for_animation() {
         background_gradient: Some(Gradient {
             kind: GradientKind::Linear { angle_deg: 45.0 },
             stops: vec![
-                GradientStop { offset: 0.0, color: Color("#000".into()) },
-                GradientStop { offset: 1.0, color: Color("#fff".into()) },
+                GradientStop { offset: 0.0, color: Color("#000".into()).into() },
+                GradientStop { offset: 1.0, color: Color("#fff".into()).into() },
             ],
         }),
         ..Default::default()
@@ -318,8 +318,8 @@ fn apply_styled_states_snapshots_gradient_shape_for_animation() {
                 extent: runtime_shared::RadialExtent::FarthestCorner,
             },
             stops: vec![
-                GradientStop { offset: 0.0, color: Color("#fff".into()) },
-                GradientStop { offset: 1.0, color: Color("#000".into()) },
+                GradientStop { offset: 0.0, color: Color("#fff".into()).into() },
+                GradientStop { offset: 1.0, color: Color("#000".into()).into() },
             ],
         }),
         ..Default::default()

@@ -16,11 +16,11 @@ use std::rc::Rc;
 use runtime_core::{
     component, derived, effect, pressable, signal, switch, ui, Breakpoint, Color,
     Element, IntoElement, Ref, SafeAreaSides, ScrollViewHandle, Signal, StyleApplication,
-    Tokenized, ViewHandle,
+    ViewHandle,
 };
 use idea_ui::{
-    current_breakpoint, dark_theme, light_theme, set_idea_theme, typography_kind, Icon, Modal,
-    Spacer, Stack, StackGap, Switch, Typography,
+    current_breakpoint, set_idea_theme, typography_kind, Icon, Modal, Spacer, Stack, StackGap,
+    Switch, Typography,
 };
 use idea_ui::{Table, TableCell, TableRow};
 use icons_lucide::SEARCH;
@@ -28,6 +28,7 @@ use icons_lucide::SEARCH;
 use runtime_core::Route;
 
 use crate::routes::{Entry, Status, CATALOG};
+use crate::themes::DocTheme;
 use crate::styles::{
     BrandName, Callout as CalloutBox, CodePanel as CodePanelBox, CodeText, ControlsBox, DemoRow,
     DemoSurface as DemoSurfaceBox, DemoSurfaceContent, DocHeader, GroupOverline, HeaderBrand, HeaderMono, HeaderSpacer,
@@ -44,12 +45,12 @@ const VERSION: &str = "v0.1.0";
 // Header — the custom top bar, built once by the `.layout(...)` closure
 // and mounted above the outlet. Hamburger (narrow widths only) + logo +
 // name + version, a "component reference" label, the active entry's
-// token hint, and the Light/Dark segmented toggle.
+// token hint, and the Light/Dark/Cyber segmented toggle.
 // =============================================================================
 
 pub fn header(
     active_route: Signal<&'static str>,
-    is_dark: Signal<bool>,
+    doc_theme: Signal<DocTheme>,
     drawer_open: Signal<bool>,
 ) -> Element {
     // Token hint follows the active component: live text, updated in place
@@ -63,7 +64,7 @@ pub fn header(
         }
     };
 
-    let toggle = header_theme_toggle(is_dark);
+    let toggle = header_theme_toggle(doc_theme);
     ui! {
         view(style = DocHeader()) {
             menu_button(drawer_open)
@@ -82,14 +83,14 @@ pub fn header(
     }
 }
 
-/// The header's Light/Dark toggle — desktop only. Below the sidebar's
+/// The header's theme toggle — desktop only. Below the sidebar's
 /// pin breakpoint it moves into the drawer sidebar (`sidebar`), because
 /// the narrow header can't fit brand + label + hint + toggle without
 /// overflowing the viewport into a horizontal scroll.
-fn header_theme_toggle(is_dark: Signal<bool>) -> Element {
+fn header_theme_toggle(doc_theme: Signal<DocTheme>) -> Element {
     ui! {
         if idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
-            theme_toggle(is_dark)
+            theme_toggle(doc_theme)
         }
     }
 }
@@ -115,45 +116,45 @@ fn menu_button(drawer_open: Signal<bool>) -> Element {
     }
 }
 
-fn theme_toggle(is_dark: Signal<bool>) -> Element {
-    let set_light: Rc<dyn Fn()> = Rc::new(move || {
-        is_dark.set(false);
-        set_idea_theme(light_theme());
-    });
-    let set_dark: Rc<dyn Fn()> = Rc::new(move || {
-        is_dark.set(true);
-        set_idea_theme(dark_theme());
-    });
-
-    let light_btn = seg_button("Light", set_light, is_dark, true);
-    let dark_btn = seg_button("Dark", set_dark, is_dark, false);
-
+fn theme_toggle(doc_theme: Signal<DocTheme>) -> Element {
     ui! {
         view(style = SegToggle()) {
-            light_btn
-            dark_btn
+            for choice in DocTheme::ALL {
+                ThemeSegment(choice = choice, current = doc_theme)
+            }
         }
     }
 }
 
-fn seg_button(
-    label: &'static str,
-    on_press: Rc<dyn Fn()>,
-    is_dark: Signal<bool>,
-    is_light: bool,
-) -> Element {
+/// One segment of the theme toggle: highlighted while `current` is
+/// `choice`; pressing it records the choice and installs that theme.
+pub struct ThemeSegmentProps {
+    pub choice: DocTheme,
+    pub current: Signal<DocTheme>,
+}
+
+impl Default for ThemeSegmentProps {
+    fn default() -> Self {
+        Self { choice: DocTheme::default(), current: signal(DocTheme::default()) }
+    }
+}
+
+#[component]
+pub fn ThemeSegment(props: ThemeSegmentProps) -> Element {
+    let ThemeSegmentProps { choice, current } = props;
     let btn_style = SegBtn().active(derived(move || {
-        let active = if is_light { !is_dark.get() } else { is_dark.get() };
-        if active { SegBtnActive::On } else { SegBtnActive::Off }
+        if current.get() == choice { SegBtnActive::On } else { SegBtnActive::Off }
     }));
     let text_style = SegBtnText().active(derived(move || {
-        let active = if is_light { !is_dark.get() } else { is_dark.get() };
-        if active { SegBtnTextActive::On } else { SegBtnTextActive::Off }
+        if current.get() == choice { SegBtnTextActive::On } else { SegBtnTextActive::Off }
     }));
-    let label_el = ui! { text(style = text_style) { label.to_string() } };
-    runtime_core::pressable(vec![label_el], move || (on_press)())
-        .with_style(btn_style)
-        .into()
+    let label = ui! { text(style = text_style) { choice.label().to_string() } };
+    pressable(vec![label], move || {
+        current.set(choice);
+        set_idea_theme(choice.theme());
+    })
+    .with_style(btn_style)
+    .into_element()
 }
 
 // =============================================================================
@@ -166,16 +167,16 @@ fn seg_button(
 pub fn sidebar(
     active_route: Signal<&'static str>,
     q: Signal<String>,
-    is_dark: Signal<bool>,
+    doc_theme: Signal<DocTheme>,
 ) -> Element {
-    // The Light/Dark toggle's narrow-width home (the header hosts it
+    // The theme toggle's narrow-width home (the header hosts it
     // while the sidebar is pinned — see `header_theme_toggle`). The
     // sidebar serves BOTH the pinned column and the off-canvas drawer,
     // so the toggle is gated to the drawer case to avoid two toggles
     // on desktop.
     let drawer_toggle = ui! {
         if !idea_ui_nav::sidebar_pinned(Breakpoint::Lg) {
-            theme_toggle(is_dark)
+            theme_toggle(doc_theme)
         }
     };
 
@@ -752,10 +753,33 @@ const DARK_PALETTE: Palette = Palette {
     accent: "#c4b5fd",
 };
 
-fn theme_is_dark() -> bool {
-    let bg: Color =
-        Tokenized::<Color>::token("color-background", Color("#ffffff".into())).resolve();
-    is_dark_color(&bg.0)
+/// Cyber's syntax colors: acid-green strings, violet keywords.
+const NEON_PALETTE: Palette = Palette {
+    ink: "#e8fbff",
+    comment: "#7478ad",
+    string: "#39ff14",
+    accent: "#c69bff",
+};
+
+#[derive(Copy, Clone, PartialEq)]
+enum CodeScheme {
+    Light,
+    Dark,
+    Neon,
+}
+
+/// The syntax palette for the installed theme, read off its tokens so it
+/// follows a swap — and the theme editor page's live edits. A theme that
+/// lights its glows (`effect-glow-primary` visible) gets the neon palette;
+/// otherwise the background's luminance picks light or dark.
+fn code_scheme() -> CodeScheme {
+    let t = idea_ui::tokens();
+    let glow = t.effect.glow_primary().resolve();
+    if runtime_core::color::parse(&glow.0).is_ok_and(|c| c.a > 0) {
+        return CodeScheme::Neon;
+    }
+    let bg: Color = t.color.background().resolve();
+    if is_dark_color(&bg.0) { CodeScheme::Dark } else { CodeScheme::Light }
 }
 
 fn is_dark_color(s: &str) -> bool {
@@ -857,8 +881,12 @@ pub fn CodePanel(props: &CodePanelProps) -> Element {
     let panel_style = CodePanelBox();
     let src = props.src.clone();
     // idealyst-lint-disable-next-line prefer-ui-control-flow -- keyed rebuild of one shape: the code block per palette
-    let dynamic = switch(theme_is_dark, move |&is_dark| {
-        let palette = if is_dark { DARK_PALETTE } else { LIGHT_PALETTE };
+    let dynamic = switch(code_scheme, move |&scheme| {
+        let palette = match scheme {
+            CodeScheme::Light => LIGHT_PALETTE,
+            CodeScheme::Dark => DARK_PALETTE,
+            CodeScheme::Neon => NEON_PALETTE,
+        };
         let spans = highlight(&src, palette);
         let code_style = move || StyleApplication::new(CodeText::sheet());
         codeblock::code_block(spans)

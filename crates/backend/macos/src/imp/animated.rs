@@ -232,7 +232,7 @@ fn animate_layer_transform(
     let duration = transition.duration_ms as f64 / 1000.0;
     let _: () = unsafe { msg_send![&anim, setDuration: duration] };
     let name = NSString::from_str(
-        crate::transform_transition_policy::easing_to_ca_timing_name(transition.easing),
+        backend_apple_core::ca_timing::ca_timing_name(transition.easing),
     );
     let tf: Option<Retained<NSObject>> = unsafe {
         msg_send_id![objc2::class!(CAMediaTimingFunction), functionWithName: &*name]

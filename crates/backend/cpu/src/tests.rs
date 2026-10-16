@@ -466,8 +466,8 @@ fn linear_gradient_interpolates_across_axis() {
             s.background_gradient = Some(Gradient {
                 kind: GradientKind::Linear { angle_deg: 90.0 },
                 stops: vec![
-                    GradientStop { offset: 0.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()) },
-                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(0, 255, 0)".into()) },
+                    GradientStop { offset: 0.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()).into() },
+                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(0, 255, 0)".into()).into() },
                 ],
             });
         }),
@@ -514,9 +514,9 @@ fn radial_gradient_interpolates_with_distance_from_center() {
                 stops: vec![
                     GradientStop {
                         offset: 0.0,
-                        color: runtime_shared::Color("rgb(255, 255, 255)".into()),
+                        color: runtime_shared::Color("rgb(255, 255, 255)".into()).into(),
                     },
-                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(0, 0, 0)".into()) },
+                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(0, 0, 0)".into()).into() },
                 ],
             });
         }),
@@ -552,8 +552,8 @@ fn animated_gradient_stop_color_overrides_static() {
             s.background_gradient = Some(Gradient {
                 kind: GradientKind::Linear { angle_deg: 90.0 },
                 stops: vec![
-                    GradientStop { offset: 0.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()) },
-                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()) },
+                    GradientStop { offset: 0.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()).into() },
+                    GradientStop { offset: 1.0, color: runtime_shared::Color("rgb(255, 0, 0)".into()).into() },
                 ],
             });
         }),

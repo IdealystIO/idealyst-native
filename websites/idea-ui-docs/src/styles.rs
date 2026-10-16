@@ -1,9 +1,13 @@
 //! Stylesheets for the idea-ui docs chrome — sidebar, reading column,
 //! per-page demo surfaces, props table.
 //!
-//! Token names match idea-ui's theme so the installed light/dark
+//! Token names match idea-ui's theme so the installed light/dark/cyber
 //! palette drives this chrome; the fallbacks keep it legible if a
 //! token name drifts.
+//!
+//! The chrome's glows (header underglow, logo, active toggle segment)
+//! read the theme's `effect-glow-*` tokens, which are transparent in
+//! Light and Dark — they appear only under a theme that lights them.
 
 use runtime_core::stylesheet;
 use runtime_core::{
@@ -621,6 +625,8 @@ stylesheet! {
             background: t.color.surface(),
             border_bottom_width: 1.0,
             border_bottom_color: t.color.border(),
+            // A neon underglow under a theme that lights its glows.
+            shadow: runtime_core::Shadow { x: 0.0, y: 2.0, blur: 14.0, color: t.effect.glow_primary() },
         }
         transitions {
             background: 250ms EaseInOut,
@@ -645,7 +651,17 @@ stylesheet! {
             width: Length::Px(27.0),
             height: Length::Px(27.0),
             border_radius: 8.0,
-            background: t.intent.primary.solid_bg(),
+            // The theme's accent gradient over its first stop.
+            background: t.effect.gradient_start(),
+            background_gradient: runtime_core::Gradient {
+                kind: runtime_core::GradientKind::Linear { angle_deg: 135.0 },
+                stops: vec![
+                    runtime_core::GradientStop { offset: 0.0, color: t.effect.gradient_start() },
+                    runtime_core::GradientStop { offset: 0.5, color: t.effect.gradient_mid() },
+                    runtime_core::GradientStop { offset: 1.0, color: t.effect.gradient_end() },
+                ],
+            },
+            shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 12.0, color: t.effect.glow_primary() },
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
         }
@@ -655,7 +671,7 @@ stylesheet! {
 stylesheet! {
     pub LogoGlyph<IdeaThemeRef> {
         base(t) {
-            color: t.intent.primary.solid_text(),
+            color: t.effect.gradient_text(),
             font_family: "ui-monospace, SFMono-Regular, Menlo, monospace",
             font_size: 14.0,
             font_weight: FontWeight::Bold,
@@ -744,9 +760,10 @@ stylesheet! {
             off(_t) {}
             on(t) {
                 background: t.color.surface(),
+                shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 10.0, color: t.effect.glow_primary() },
             }
         }
-        transitions { background: 150ms EaseOut, }
+        transitions { background: 150ms EaseOut, shadow: 150ms EaseOut, }
     }
 }
 
@@ -1134,7 +1151,17 @@ stylesheet! {
             padding_bottom: 46.0,
             padding_horizontal: 48.0,
         }
-        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+        // Hover glow — a laser-tight halo in the theme's primary glow color
+        // (transparent in Light/Dark; violet under Cyber).
+        state hovered(t) {
+            border_color: t.color.border_hover(),
+            shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 6.0, color: t.effect.glow_primary() },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 150ms EaseOut,
+            shadow: 150ms EaseOut,
+        }
     }
 }
 
@@ -1266,7 +1293,17 @@ stylesheet! {
             padding_horizontal: 22.0,
             padding_vertical: 20.0,
         }
-        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+        // Hover glow — a laser-tight halo in the theme's primary glow color
+        // (transparent in Light/Dark; violet under Cyber).
+        state hovered(t) {
+            border_color: t.color.border_hover(),
+            shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 6.0, color: t.effect.glow_primary() },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 150ms EaseOut,
+            shadow: 150ms EaseOut,
+        }
     }
 }
 
@@ -1330,7 +1367,17 @@ stylesheet! {
             padding_horizontal: 22.0,
             padding_vertical: 20.0,
         }
-        transitions { background: 250ms EaseInOut, border_color: 250ms EaseInOut, }
+        // Hover glow — a laser-tight halo in the theme's primary glow color
+        // (transparent in Light/Dark; violet under Cyber).
+        state hovered(t) {
+            border_color: t.color.border_hover(),
+            shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 6.0, color: t.effect.glow_primary() },
+        }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 150ms EaseOut,
+            shadow: 150ms EaseOut,
+        }
     }
 }
 
@@ -1486,8 +1533,16 @@ stylesheet! {
         }
         state hovered(t) {
             border_color: t.intent.primary.fg(),
+            // A "laser" edge: a tight, near-opaque halo hugging the border
+            // rather than a soft bloom. Invisible in themes whose glows are
+            // transparent.
+            shadow: runtime_core::Shadow { x: 0.0, y: 0.0, blur: 6.0, color: t.effect.glow_primary() },
         }
-        transitions { background: 250ms EaseInOut, border_color: 150ms EaseOut, }
+        transitions {
+            background: 250ms EaseInOut,
+            border_color: 150ms EaseOut,
+            shadow: 150ms EaseOut,
+        }
     }
 }
 

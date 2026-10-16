@@ -434,7 +434,7 @@ stylesheet! {
                     x: 0.0,
                     y: 4.0,
                     blur: 16.0,
-                    color: Color("rgba(15, 17, 21, 0.10)".into()),
+                    color: t.effect.shadow(),
                 },
             }
             primary(t) {
@@ -797,7 +797,7 @@ stylesheet! {
                 x: 0.0,
                 y: 1.0,
                 blur: 3.0,
-                color: Color("rgba(15, 17, 21, 0.30)".into()),
+                color: Color("rgba(15, 17, 21, 0.30)".into()).into(),
             },
         }
         // Diameter = track height − 4 (2px inset on each edge). Mirrors
@@ -987,7 +987,7 @@ stylesheet! {
                 x: 0.0,
                 y: 8.0,
                 blur: 24.0,
-                color: runtime_core::Color("rgba(15, 17, 21, 0.18)".into()),
+                color: runtime_core::Color("rgba(15, 17, 21, 0.18)".into()).into(),
             },
         }
         transitions {
@@ -2377,7 +2377,7 @@ stylesheet! {
                 x: 0.0,
                 y: 12.0,
                 blur: 32.0,
-                color: Color("rgba(15, 17, 21, 0.25)".into()),
+                color: Color("rgba(15, 17, 21, 0.25)".into()).into(),
             },
         }
         transitions {
@@ -2402,7 +2402,7 @@ stylesheet! {
                 x: 0.0,
                 y: 6.0,
                 blur: 18.0,
-                color: Color("rgba(15, 17, 21, 0.18)".into()),
+                color: Color("rgba(15, 17, 21, 0.18)".into()).into(),
             },
         }
         transitions {
@@ -3137,7 +3137,7 @@ stylesheet! {
             // instead of running the width of the viewport.
             max_width: 260.0,
             shadow: runtime_core::Shadow {
-                x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(15, 17, 21, 0.22)".into()),
+                x: 0.0, y: 4.0, blur: 12.0, color: Color("rgba(15, 17, 21, 0.22)".into()).into(),
             },
         }
         transitions {

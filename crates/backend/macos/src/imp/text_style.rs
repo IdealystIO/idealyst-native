@@ -199,7 +199,7 @@ fn apply_text_shadow(view: &NSView, style: &StyleRules) {
             // `shadowColor` carries the alpha; `shadowOpacity` is a plain
             // enable multiplier at 1.0 (CALayer multiplies the two, so the
             // effective strength is exactly the author's color alpha).
-            let ns_color = crate::imp::color_to_nscolor(&sh.color);
+            let ns_color = crate::imp::color_to_nscolor(&sh.color.resolve());
             let cg: crate::imp::CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
             if !cg.0.is_null() {
                 let _: () = unsafe { msg_send![&layer, setShadowColor: cg] };

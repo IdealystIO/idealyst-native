@@ -353,7 +353,7 @@ pub fn gradient_kind_to_wire(k: &GradientKind) -> WireGradientKind {
 pub fn gradient_stop_to_wire(s: &GradientStop) -> WireGradientStop {
     WireGradientStop {
         offset: s.offset,
-        color: color_to_wire(&s.color),
+        color: tokenized_color(&s.color),
     }
 }
 
@@ -595,7 +595,7 @@ fn shadow_to_wire(s: &runtime_shared::style::Shadow) -> wire::WireShadow {
         x: s.x,
         y: s.y,
         blur: s.blur,
-        color: color_to_wire(&s.color),
+        color: tokenized_color(&s.color),
     }
 }
 
@@ -643,8 +643,8 @@ mod definition_tests {
         r.border_top_width = Some(Tokenized::Literal(2.0));
         r.border_left_width = Some(Tokenized::Literal(5.0));
         r.border_top_color = Some(Tokenized::Literal(Color("#102030".to_string())));
-        r.shadow = Some(Shadow { x: 0.0, y: 4.0, blur: 12.0, color: Color("#000000".to_string()) });
-        r.text_shadow = Some(Shadow { x: 1.0, y: 1.0, blur: 2.0, color: Color("#000000".to_string()) });
+        r.shadow = Some(Shadow { x: 0.0, y: 4.0, blur: 12.0, color: Color("#000000".to_string()).into() });
+        r.text_shadow = Some(Shadow { x: 1.0, y: 1.0, blur: 2.0, color: Color("#000000".to_string()).into() });
         r.cursor = Some(Cursor::Pointer);
         r.line_height = Some(Tokenized::Literal(1.5));
         r.letter_spacing = Some(Tokenized::Literal(0.4));

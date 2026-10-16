@@ -34,6 +34,18 @@ pub fn button() -> Element {
             }
         },
         ui! {
+            Section(title = "Gradient · glow".to_string()) {
+                P(content = "`variant::Gradient` fills the button with the theme's accent \
+                    gradient (`effect-gradient-*`), and a Filled or Gradient button casts its \
+                    tone's glow (`effect-glow-*`) while hovered or pressed. Light and Dark \
+                    leave the glows transparent; switch the header to Cyber to light them.".to_string())
+                DemoSurface { button_gradient_row() }
+                P(content = "Gradient is opt-in — every built-in variant multiplies each \
+                    Button's appearance arms — so an app registers it at boot:".to_string())
+                CodePanel(src = GRADIENT_OPT_IN.to_string())
+            }
+        },
+        ui! {
             Section(title = "Sizes".to_string()) {
                 P(content = "Sm / Md / Lg drive padding and font scale together.".to_string())
                 DemoSurface { button_size_row() }
@@ -102,6 +114,22 @@ fn button_variant_row() -> Element {
             Button(label = "Soft".to_string(),     on_click = on_click.clone(), tone = tone::Primary, variant = variant::Soft)
             Button(label = "Outlined".to_string(), on_click = on_click.clone(), tone = tone::Primary, variant = variant::Outlined)
             Button(label = "Ghost".to_string(),    on_click = on_click,         tone = tone::Primary, variant = variant::Ghost)
+        }
+    }
+}
+
+const GRADIENT_OPT_IN: &str = "let buttons = || ButtonSheetBuilder::new().add_variant(variant::Gradient);
+install_button_sheet(buttons().build());
+install_button_label_sheet(buttons().build_label());";
+
+fn button_gradient_row() -> Element {
+    let on_click: Rc<dyn Fn()> = Rc::new(|| {});
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
+            Button(label = "Gradient".to_string(), on_click = on_click.clone(), tone = tone::Primary, variant = variant::Gradient)
+            Button(label = "Glow".to_string(),     on_click = on_click.clone(), tone = tone::Primary, variant = variant::Filled)
+            Button(label = "Info".to_string(),     on_click = on_click.clone(), tone = tone::Info,    variant = variant::Filled)
+            Button(label = "Success".to_string(),  on_click = on_click,         tone = tone::Success, variant = variant::Filled)
         }
     }
 }

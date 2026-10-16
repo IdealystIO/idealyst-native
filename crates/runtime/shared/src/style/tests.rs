@@ -537,6 +537,33 @@ fn resolve_memoizes_same_inputs() {
 /// **The core invariant of the tokenization rework**: two
 /// stylesheets producing the same token references must hash to
 /// the same content key regardless of installed token values.
+/// Shadow and gradient-stop colors key like `background`: a token keys by
+/// NAME, so a glow minted under one theme is the same class under every
+/// theme (premint emits it as `var()` and the swap re-tints it); a literal
+/// keys by its raw value exactly as it did when the field was a plain
+/// `Color`, so existing minted class names don't move.
+#[test]
+fn shadow_and_gradient_token_colors_have_theme_stable_content_keys() {
+    let glow = |fallback: &str| StyleRules {
+        shadow: Some(Shadow { x: 0.0, y: 0.0, blur: 12.0, color: Tokenized::token("glow", Color(fallback.into())) }),
+        text_shadow: Some(Shadow { x: 0.0, y: 0.0, blur: 4.0, color: Tokenized::token("glow", Color(fallback.into())) }),
+        background_gradient: Some(Gradient {
+            kind: GradientKind::Linear { angle_deg: 90.0 },
+            stops: vec![GradientStop { offset: 0.0, color: Tokenized::token("grad", Color(fallback.into())) }],
+        }),
+        ..Default::default()
+    };
+    assert_eq!(glow("#ff00ff").content_key(), glow("#00ffff").content_key());
+
+    let literal = |c: &str| StyleRules {
+        shadow: Some(Shadow { x: 0.0, y: 0.0, blur: 12.0, color: Color(c.into()).into() }),
+        ..Default::default()
+    };
+    assert_ne!(literal("#ff00ff").content_key(), literal("#00ffff").content_key());
+    assert!(literal("#ff00ff").content_key().contains("#ff00ff;"), "literal key unchanged");
+    assert_ne!(literal("#ff00ff").content_key(), glow("#ff00ff").content_key(), "token != literal");
+}
+
 #[test]
 fn tokenized_rules_have_token_stable_content_keys() {
     let sheet_a = StyleSheet::new(|_vs: &VariantSet| StyleRules {
@@ -1190,7 +1217,7 @@ fn linear_gradient(angle_deg: f32) -> Gradient {
         kind: GradientKind::Linear { angle_deg },
         stops: vec![GradientStop {
             offset: 0.0,
-            color: Color("#000".into()),
+            color: Color("#000".into()).into(),
         }],
     }
 }
@@ -1204,7 +1231,7 @@ fn radial_gradient(radius: f32, extent: RadialExtent) -> Gradient {
         },
         stops: vec![GradientStop {
             offset: 0.0,
-            color: Color("#000".into()),
+            color: Color("#000".into()).into(),
         }],
     }
 }
@@ -1360,15 +1387,15 @@ fn content_key_differentiates_gradient_stop_offsets() {
     let g_a = Gradient {
         kind: GradientKind::Linear { angle_deg: 45.0 },
         stops: vec![
-            GradientStop { offset: 0.0, color: Color("#000".into()) },
-            GradientStop { offset: 0.5, color: Color("#fff".into()) },
+            GradientStop { offset: 0.0, color: Color("#000".into()).into() },
+            GradientStop { offset: 0.5, color: Color("#fff".into()).into() },
         ],
     };
     let g_b = Gradient {
         kind: GradientKind::Linear { angle_deg: 45.0 },
         stops: vec![
-            GradientStop { offset: 0.0, color: Color("#000".into()) },
-            GradientStop { offset: 0.8, color: Color("#fff".into()) },
+            GradientStop { offset: 0.0, color: Color("#000".into()).into() },
+            GradientStop { offset: 0.8, color: Color("#fff".into()).into() },
         ],
     };
     let a = StyleRules { background_gradient: Some(g_a), ..Default::default() };
@@ -1667,6 +1694,7 @@ fn clone_round_trips_a_fully_populated_struct() {
         border_right_color_transition: Some(Transition::new(820, Easing::EaseOut)),
         border_bottom_color_transition: Some(Transition::new(830, Easing::EaseOut)),
         border_left_color_transition: Some(Transition::new(840, Easing::EaseOut)),
+        shadow_transition: Some(Transition::new(850, Easing::EaseOut)),
         display: Some(DisplayKind::Grid),
         grid_template_columns: Some(vec![TrackSize::Fr(2.0), TrackSize::Px(40.0)]),
         // Distinct variants per axis so a crossed grid_row/grid_column
@@ -1693,12 +1721,12 @@ fn clone_round_trips_a_fully_populated_struct() {
         overscroll_behavior: Some(crate::OverscrollBehavior::Contain),
         scrollbar: Some(crate::ScrollbarVisibility::Hidden),
         object_fit: Some(ObjectFit::Cover),
-        shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#s".into()) }),
-        text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#ts".into()) }),
+        shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#s".into()).into() }),
+        text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#ts".into()).into() }),
         background_gradient: Some(Gradient {
             kind: GradientKind::Radial { center: (0.1, 0.9), radius: 1.25, extent: RadialExtent::FarthestCorner },
-            stops: vec![GradientStop { offset: 0.0, color: Color("#g0".into()) },
-                        GradientStop { offset: 1.0, color: Color("#g1".into()) }],
+            stops: vec![GradientStop { offset: 0.0, color: Color("#g0".into()).into() },
+                        GradientStop { offset: 1.0, color: Color("#g1".into()).into() }],
         }),
         transform: Some(vec![Transform::TranslateX(Length::Px(9.0)), Transform::Rotate(30.0)]),
         transform_origin: Some((Length::Px(3.0), Length::Percent(60.0))),

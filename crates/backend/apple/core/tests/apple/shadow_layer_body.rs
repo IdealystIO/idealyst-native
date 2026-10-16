@@ -422,6 +422,7 @@ pub fn run() {
 
     rasterized_shadow_checks(&mut r);
     translucent_card_tradeoff(&mut r);
+    shadow_transition_checks(&mut r);
 
     println!("\n{} checks, {} failed", r.checks, r.failures.len());
     if !r.failures.is_empty() {
@@ -634,3 +635,88 @@ fn translucent_card_tradeoff(r: &mut Report) {
             && alpha_at(&opaque_shadowed, W, 94, 150) > 0,
     );
 }
+
+/// `StyleRules::shadow_transition` on the own-layer path — the hover glow.
+/// The tweens are explicit `CABasicAnimation`s, so "is it animating" is
+/// `animationForKey:` on the real layer, and the from-value is what the
+/// animation will start from on screen.
+fn shadow_transition_checks(r: &mut Report) {
+    use runtime_shared::{Easing, Transition};
+
+    fn anim(layer: &NSObject, key_path: &str) -> *mut NSObject {
+        let key = objc2_foundation::NSString::from_str(&format!("idealyst-shadow-{key_path}"));
+        unsafe { msg_send![layer, animationForKey: &*key] }
+    }
+    fn from_f32(anim: *mut NSObject) -> f32 {
+        let from: *mut NSObject = unsafe { msg_send![anim, fromValue] };
+        unsafe { msg_send![from, floatValue] }
+    }
+    fn remove_all(layer: &NSObject) {
+        let _: () = unsafe { msg_send![layer, removeAllAnimations] };
+    }
+
+    println!("shadow transition (hover glow)");
+    let t = Transition::new(150, Easing::EaseOut);
+    let magenta = rgba_color(1.0, 0.0, 1.0, 0.6);
+    let cyan = rgba_color(0.0, 1.0, 1.0, 0.6);
+    let zero = CGSize { width: 0.0, height: 0.0 };
+
+    let parent = new_layer();
+    set_frame(&parent, rect(0.0, 0.0, 400.0, 300.0));
+    let button = new_layer();
+    set_frame(&button, rect(40.0, 40.0, 120.0, 40.0));
+    add_sublayer(&parent, &button);
+
+    // Hover in: no shadow painting → the glow fades in from opacity 0.
+    shadow_layer::apply_own_shadow(&button, Some((magenta, zero, 18.0)), Some(&t));
+    let fade_in = anim(&button, "shadowOpacity");
+    r.check("hover in on screen adds a shadowOpacity fade", !fade_in.is_null());
+    r.check("…from 0 (nothing was painting)", !fade_in.is_null() && from_f32(fade_in) == 0.0);
+    r.check("…to a model opacity of 1", shadow_opacity(&button) == 1.0);
+    let duration: f64 = if fade_in.is_null() { 0.0 } else { unsafe { msg_send![fade_in, duration] } };
+    r.check("…over the declared 150 ms", (duration - 0.15).abs() < 1e-9);
+
+    // Theme swap while hovered: a shadow is painting → morph, no fade.
+    remove_all(&button);
+    shadow_layer::apply_own_shadow(&button, Some((cyan, zero, 18.0)), Some(&t));
+    r.check(
+        "re-tinting a painting glow tweens color, blur and offset",
+        !anim(&button, "shadowColor").is_null()
+            && !anim(&button, "shadowRadius").is_null()
+            && !anim(&button, "shadowOffset").is_null(),
+    );
+    r.check("…without re-fading opacity", anim(&button, "shadowOpacity").is_null());
+
+    // Hover out: the glow fades out; the path survives the fade.
+    remove_all(&button);
+    shadow_layer::sync_own_shadow_path(&button);
+    shadow_layer::apply_own_shadow(&button, None, Some(&t));
+    let fade_out = anim(&button, "shadowOpacity");
+    r.check("hover out fades shadowOpacity", !fade_out.is_null());
+    r.check("…from the on-screen 1", !fade_out.is_null() && from_f32(fade_out) == 1.0);
+    r.check("…to a model opacity of 0", shadow_opacity(&button) == 0.0);
+    r.check("…and no longer counts as painting", !shadow_layer::is_painting_box_shadow(&button));
+    r.check("…keeping the shadowPath for the fade", !shadow_path(&button).0.is_null());
+
+    // No transition declared: snap, exactly as before.
+    remove_all(&button);
+    shadow_layer::apply_own_shadow(&button, Some((magenta, zero, 18.0)), None);
+    r.check("without shadow_transition a glow snaps on", anim(&button, "shadowOpacity").is_null());
+    shadow_layer::apply_own_shadow(&button, None, None);
+    r.check("…and snaps off", anim(&button, "shadowOpacity").is_null() && shadow_opacity(&button) == 0.0);
+
+    // Not yet inserted (a fresh view being styled): first paint never fades in.
+    let detached = new_layer();
+    set_frame(&detached, rect(0.0, 0.0, 120.0, 40.0));
+    shadow_layer::apply_own_shadow(&detached, Some((magenta, zero, 18.0)), Some(&t));
+    r.check(
+        "a layer with no superlayer snaps its shadow on (web paints a mount at once)",
+        anim(&detached, "shadowOpacity").is_null() && shadow_opacity(&detached) == 1.0,
+    );
+
+    unsafe {
+        CGColorRelease(magenta);
+        CGColorRelease(cyan);
+    }
+}
+

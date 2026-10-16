@@ -154,11 +154,12 @@ pub mod variant {
         fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
             StyleRules {
                 background: Some(ctx.theme.colors().surface_alt.clone()),
+                // The theme's `effect-shadow` token, so a swap re-tints it.
                 shadow: Some(runtime_core::Shadow {
                     x: 0.0,
                     y: 4.0,
                     blur: 16.0,
-                    color: Color("rgba(15, 17, 21, 0.10)".into()),
+                    color: ctx.theme.effects().shadow.clone(),
                 }),
                 ..Default::default()
             }

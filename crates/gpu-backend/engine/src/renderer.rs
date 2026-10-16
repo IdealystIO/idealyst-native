@@ -1523,14 +1523,20 @@ fn walk<'a>(
             // and expanded by `blur` on every side; the fragment
             // shader takes care of the soft falloff via the
             // `shadow_blur > 0` path.
-            if let Some(sh) = r.shadow.as_ref() {
+            // The color samples the `shadow_transition` tween (see
+            // `backend_impl::animate_shadow`); a fully faded-out
+            // shadow stages nothing.
+            let shadow = r.shadow.as_ref().map(|sh| {
+                let c = backend.animator.sample_color(
+                    TweenKey::new(data.layout, AnimProperty::ShadowColor),
+                    sh.color,
+                    now,
+                );
+                (sh, c)
+            });
+            if let Some((sh, c)) = shadow.filter(|(_, c)| c[3] > 0.0) {
                 let bw = sh.blur.max(0.0);
-                let shadow_color = srgb_rgba_to_linear([
-                    sh.color[0],
-                    sh.color[1],
-                    sh.color[2],
-                    sh.color[3] * node_opacity,
-                ]);
+                let shadow_color = srgb_rgba_to_linear([c[0], c[1], c[2], c[3] * node_opacity]);
                 rects.push(RectInstance {
                     rect: [
                         x + sh.offset[0] - bw,

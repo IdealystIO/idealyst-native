@@ -520,6 +520,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `canvas_vello::build_canvas` now takes `&Rc<CanvasPrim>` instead of
   `&Rc<CanvasProps>`. *Migration:* pass the scene through
   `place_textures`; build a `CanvasPrim` for `build_canvas`.
+- **Shadow and gradient-stop colors are tokens** (`runtime-shared`,
+  `css`, every backend, `idea-theme`). `Shadow::color` and
+  `GradientStop::color` are `Tokenized<Color>`, like `background`, so a
+  theme-driven shadow or gradient re-tints on a swap — on web through
+  `var()`, including premint-minted classes. Literal colors render and key
+  exactly as before. `StyleRules` gains `shadow_transition`, and the
+  `IdeaTheme` trait gains a required `effects()` (with an `effects` field on
+  `IdeaThemeDefaults`). *Migration:* write `color: Color(..).into()` in a
+  `Shadow` / `GradientStop` literal; add `shadow_transition` (or
+  `..Default::default()`) to an exhaustive `StyleRules` literal; a
+  hand-written `impl IdeaTheme` returns its `Effects` (start from
+  `light_theme().effects`). `app_theme!` forwards it for you.
 
 ### Added
 
@@ -535,6 +547,24 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `getrandom(2)`, `ProcessPrng`, `crypto.getRandomValues`) for tokens and
   keys. On web, entropy goes through web-glue, so using it keeps an app out
   of the hybrid (wasm-bindgen) build.
+
+- **Theme effects: glows, colored shadows, an accent gradient**
+  (`idea-theme`, `idea-ui`). `theme.effects` carries a resting shadow color
+  (`effect-shadow`, read by `Card` `Elevated`), a hover/press glow per intent
+  (`effect-glow-*`, cast by Filled `Button` / `IconButton` and faded in and
+  out by the new `shadow_transition`), and an accent gradient
+  (`effect-gradient-*`). The stock themes leave every glow transparent, so
+  nothing changes until a theme lights them. `variant::Gradient` (opt-in via
+  `ButtonSheetBuilder::add_variant`) paints the gradient, `Tone::glow` lets a
+  custom tone glow, and stylesheets name the tokens as `t.effect.*`. See the
+  theming guide.
+- **`shadow_transition`** (`runtime-shared`, `css`, `backend-apple-core`,
+  `render-wgpu`): `transitions { shadow: … }` animates a box shadow on web,
+  iOS, macOS and the GPU backends, fading one in from or out to transparent.
+  See `docs/styling.md`.
+- **A Cyber theme on idea-ui-docs**: a Light / Dark / Cyber header toggle;
+  Cyber is a neon theme built only from theme fields (colors, effects,
+  radius, type, a monospace font).
 
 - **Windows backend** (`backend-windows`, `host-win32`, `gpu-surface`): a
   Direct2D/DirectWrite scene renderer on a DirectComposition swapchain
@@ -1395,6 +1425,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   uses it — its wasm32 graph now has no wasm-bindgen. Other SDKs whose
   dependencies need getrandom 0.2 on web enable the same feature (and name
   the crate: `use random as _;`).
+
+- **The GPU backends kept a dropped shadow or gradient** (`render-wgpu`).
+  A restyle that removed `shadow` or `background_gradient` kept painting
+  the old one; both now clear.
 
 - **`idealyst new --lib` scaffolds a library that builds on web**
   (`idealyst-cli`). The web leaf returned `web_sys::Node`, but

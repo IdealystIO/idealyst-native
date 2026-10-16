@@ -1,7 +1,7 @@
 //! idea-ui-docs — the self-referencing component reference for idea-ui.
 //!
 //! A single [`routes::CATALOG`] table drives everything: the grouped,
-//! searchable sidebar, the custom header bar with the Light/Dark toggle,
+//! searchable sidebar, the custom header bar with the Light/Dark/Cyber toggle,
 //! and the per-screen frame (`shell::page_frame_content`, rendered
 //! inside each page's lazy chunk) with the group overline, title,
 //! status badge, lead, body, and Usage panel.
@@ -20,6 +20,7 @@
 //! - `shell.rs` — header / sidebar / `screen_frame` scroll shell /
 //!   `page_frame_content` + page-template helpers.
 //! - `styles.rs` — local stylesheets for chrome only.
+//! - `themes.rs` — the Light / Dark / Cyber choice and the Cyber theme.
 //! - `pages/*.rs` — one module per design group; each exports body-only
 //!   `pub fn name() -> Element`.
 //! - `lazy_pages.rs` — the per-page `#[component(lazy)]` chunk
@@ -36,6 +37,7 @@ mod pages;
 mod routes;
 mod shell;
 mod styles;
+mod themes;
 
 use routes::{CATALOG, DEFAULT_ROUTE};
 
@@ -122,12 +124,20 @@ pub fn route_ids() -> Vec<&'static str> {
 /// sidecar).
 pub fn app() -> Element {
     install_idea_theme(light_theme());
+    // Opt the Button pages into the accent-gradient variant. It is not a
+    // built-in variant (each one multiplies every Button's appearance
+    // arms), so an app that wants it re-installs the sheets with it added.
+    let buttons = || {
+        idea_theme::extensible::ButtonSheetBuilder::new().add_variant(idea_ui::variant::Gradient)
+    };
+    idea_theme::extensible::install_button_sheet(buttons().build());
+    idea_theme::extensible::install_button_label_sheet(buttons().build_label());
 
     // App-level state surviving navigation — created here because
     // `app` runs inside `World::enter` (the boot entry enters the world
     // around the build), so these are world-root-owned. Signals are Copy
     // handles; the layout closure captures them by value.
-    let is_dark: Signal<bool> = signal(false);
+    let doc_theme: Signal<themes::DocTheme> = signal(themes::DocTheme::Light);
     let q: Signal<String> = signal(String::new());
     let drawer_open: Signal<bool> = signal(false);
 
@@ -173,8 +183,8 @@ pub fn app() -> Element {
                 }
             });
 
-            let sidebar_el = shell::sidebar(active_route, q, is_dark);
-            let header = shell::header(active_route, is_dark, drawer_open);
+            let sidebar_el = shell::sidebar(active_route, q, doc_theme);
+            let header = shell::header(active_route, doc_theme, drawer_open);
             let body: Element = ui! {
                 view(style = shell::outlet_grow_style) {
                     { runtime_vocabulary::navigator_outlet().build() }

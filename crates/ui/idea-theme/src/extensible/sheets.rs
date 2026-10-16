@@ -262,6 +262,8 @@ impl ButtonSheetBuilder {
             border_right_color_transition: Some(Transition::new(150, Easing::EaseOut)),
             border_bottom_color_transition: Some(Transition::new(150, Easing::EaseOut)),
             border_left_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            // The Filled hover/press glow grows in and fades out (`variant_state_overlay`).
+            shadow_transition: Some(Transition::new(super::variant::GLOW_TRANSITION_MS, Easing::EaseOut)),
             ..Default::default()
         });
 
@@ -1518,6 +1520,8 @@ impl IconButtonSheetBuilder {
             border_right_color_transition: Some(Transition::new(150, Easing::EaseOut)),
             border_bottom_color_transition: Some(Transition::new(150, Easing::EaseOut)),
             border_left_color_transition: Some(Transition::new(150, Easing::EaseOut)),
+            // The Filled hover/press glow grows in and fades out (`variant_state_overlay`).
+            shadow_transition: Some(Transition::new(super::variant::GLOW_TRANSITION_MS, Easing::EaseOut)),
             ..Default::default()
         });
 
@@ -2576,7 +2580,7 @@ impl SliderSheetBuilder {
                 x: 0.0,
                 y: 1.0,
                 blur: 4.0,
-                color: runtime_core::Color("rgba(0,0,0,0.25)".into()),
+                color: runtime_core::Color("rgba(0,0,0,0.25)".into()).into(),
             }),
             ..Default::default()
         });

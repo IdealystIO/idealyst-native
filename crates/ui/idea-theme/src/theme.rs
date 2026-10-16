@@ -217,6 +217,64 @@ pub struct Colors {
     pub table_row_danger_hover: Tokenized<Color>,
 }
 
+/// The theme's **effect** colors: the resting drop shadow, a glow per intent,
+/// and an accent gradient. Same contract as [`Colors`] — every field installs
+/// under a canonical `effect-*` token and is read back canonicalized through
+/// [`IdeaThemeRef`], so a swap re-tints them (web through `var()`, natives on
+/// re-apply).
+///
+/// Components bake the GEOMETRY (offset, blur, gradient angle) and take only
+/// the colors from here. That split is what keeps one build-time stylesheet
+/// valid for every theme: a theme without glows sets the glow colors fully
+/// transparent rather than removing the shadow, so the minted class is the
+/// same and only the token value differs.
+#[derive(Clone)]
+pub struct Effects {
+    /// Resting drop-shadow color of raised surfaces (an `Elevated` Card).
+    pub shadow: Tokenized<Color>,
+    /// Glow cast by an interactive `primary` surface on hover — a blurred,
+    /// zero-offset shadow. Fully transparent in a theme without glows.
+    pub glow_primary: Tokenized<Color>,
+    /// `secondary` peer of [`glow_primary`](Self::glow_primary).
+    pub glow_secondary: Tokenized<Color>,
+    /// `neutral` peer of [`glow_primary`](Self::glow_primary).
+    pub glow_neutral: Tokenized<Color>,
+    /// `success` peer of [`glow_primary`](Self::glow_primary).
+    pub glow_success: Tokenized<Color>,
+    /// `danger` peer of [`glow_primary`](Self::glow_primary).
+    pub glow_danger: Tokenized<Color>,
+    /// `warning` peer of [`glow_primary`](Self::glow_primary).
+    pub glow_warning: Tokenized<Color>,
+    /// `info` peer of [`glow_primary`](Self::glow_primary).
+    pub glow_info: Tokenized<Color>,
+    /// First stop of the accent gradient (a `Gradient` Button / Card fill).
+    pub gradient_start: Tokenized<Color>,
+    /// Middle stop of the accent gradient.
+    pub gradient_mid: Tokenized<Color>,
+    /// Last stop of the accent gradient.
+    pub gradient_end: Tokenized<Color>,
+    /// Text and icons drawn on the accent gradient — legible on all three
+    /// stops.
+    pub gradient_text: Tokenized<Color>,
+}
+
+impl Effects {
+    /// The glow color for `intent` (a built-in intent key such as
+    /// `"primary"`), or `None` for a name with no glow slot.
+    pub fn glow(&self, intent: &str) -> Option<&Tokenized<Color>> {
+        Some(match intent {
+            "primary" => &self.glow_primary,
+            "secondary" => &self.glow_secondary,
+            "neutral" => &self.glow_neutral,
+            "success" => &self.glow_success,
+            "danger" => &self.glow_danger,
+            "warning" => &self.glow_warning,
+            "info" => &self.glow_info,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Spacing {
     pub xs: f32,
@@ -279,6 +337,8 @@ pub trait IdeaTheme: Any + 'static {
     fn intents(&self) -> &Intents;
     /// The general-purpose hues — see [`Palette`].
     fn palette(&self) -> &Palette;
+    /// Shadow, glow and gradient colors — see [`Effects`].
+    fn effects(&self) -> &Effects;
     fn spacing(&self) -> &Spacing;
     fn radius(&self) -> &Radius;
     fn typography(&self) -> &Typography;
@@ -342,6 +402,8 @@ pub struct IdeaThemeRef {
     intents: Intents,
     /// Same treatment for the twelve general-purpose hues.
     palette: Palette,
+    /// Same treatment for the effect colors.
+    effects: Effects,
 }
 
 impl IdeaThemeRef {
@@ -353,7 +415,8 @@ impl IdeaThemeRef {
         let colors = canonicalize_colors(inner.colors());
         let intents = canonicalize_intents(inner.intents());
         let palette = canonicalize_palette(inner.palette());
-        Self { inner, colors, intents, palette }
+        let effects = canonicalize_effects(inner.effects());
+        Self { inner, colors, intents, palette, effects }
     }
 
     /// The theme as the author wrote it — colors NOT canonicalized.
@@ -373,6 +436,9 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn palette(&self) -> &Palette {
         &self.palette
+    }
+    fn effects(&self) -> &Effects {
+        &self.effects
     }
     fn spacing(&self) -> &Spacing {
         self.inner.spacing()
@@ -458,6 +524,25 @@ fn canonicalize_colors(c: &Colors) -> Colors {
         table_row_warning_hover: canonicalize_color("color-table-row-warning-hover", &c.table_row_warning_hover),
         table_row_danger: canonicalize_color("color-table-row-danger", &c.table_row_danger),
         table_row_danger_hover: canonicalize_color("color-table-row-danger-hover", &c.table_row_danger_hover),
+    }
+}
+
+/// [`canonicalize_color`] over every [`Effects`] field, under the
+/// [`CANONICAL_EFFECT_TOKENS`] names.
+fn canonicalize_effects(e: &Effects) -> Effects {
+    Effects {
+        shadow: canonicalize_color("effect-shadow", &e.shadow),
+        glow_primary: canonicalize_color("effect-glow-primary", &e.glow_primary),
+        glow_secondary: canonicalize_color("effect-glow-secondary", &e.glow_secondary),
+        glow_neutral: canonicalize_color("effect-glow-neutral", &e.glow_neutral),
+        glow_success: canonicalize_color("effect-glow-success", &e.glow_success),
+        glow_danger: canonicalize_color("effect-glow-danger", &e.glow_danger),
+        glow_warning: canonicalize_color("effect-glow-warning", &e.glow_warning),
+        glow_info: canonicalize_color("effect-glow-info", &e.glow_info),
+        gradient_start: canonicalize_color("effect-gradient-start", &e.gradient_start),
+        gradient_mid: canonicalize_color("effect-gradient-mid", &e.gradient_mid),
+        gradient_end: canonicalize_color("effect-gradient-end", &e.gradient_end),
+        gradient_text: canonicalize_color("effect-gradient-text", &e.gradient_text),
     }
 }
 
@@ -652,6 +737,9 @@ pub fn is_canonical_token(name: &str) -> bool {
     if CANONICAL_PALETTE_TOKENS.contains(&name) {
         return true;
     }
+    if CANONICAL_EFFECT_TOKENS.contains(&name) {
+        return true;
+    }
     // Spacing / radius / typography length tokens.
     CANONICAL_LENGTH_TOKENS.contains(&name)
 }
@@ -719,6 +807,23 @@ pub const CANONICAL_PALETTE_TOKENS: [&str; 72] = {
     )
 };
 
+/// Canonical effect color token names, in [`Effects`] field order. Backs
+/// [`is_canonical_color_token`] for the effect group.
+pub const CANONICAL_EFFECT_TOKENS: [&str; 12] = [
+    "effect-shadow",
+    "effect-glow-primary",
+    "effect-glow-secondary",
+    "effect-glow-neutral",
+    "effect-glow-success",
+    "effect-glow-danger",
+    "effect-glow-warning",
+    "effect-glow-info",
+    "effect-gradient-start",
+    "effect-gradient-mid",
+    "effect-gradient-end",
+    "effect-gradient-text",
+];
+
 /// Canonical length token names — spacing, radius, and typography size
 /// tokens, in [`ThemeTokens::tokens`] emission order. Backs
 /// [`is_canonical_length_token`].
@@ -774,6 +879,13 @@ pub const fn is_canonical_color_token(name: &str) -> bool {
             return true;
         }
         k += 1;
+    }
+    let mut e = 0;
+    while e < CANONICAL_EFFECT_TOKENS.len() {
+        if const_str_eq(CANONICAL_EFFECT_TOKENS[e], name) {
+            return true;
+        }
+        e += 1;
     }
     false
 }
@@ -969,6 +1081,16 @@ impl ThemeTokens for IdeaThemeRef {
             }
         }
 
+        // Effects: one color token per Effects field, in field order.
+        let e = self.effects();
+        for (name, t) in CANONICAL_EFFECT_TOKENS.iter().zip([
+            &e.shadow, &e.glow_primary, &e.glow_secondary, &e.glow_neutral,
+            &e.glow_success, &e.glow_danger, &e.glow_warning, &e.glow_info,
+            &e.gradient_start, &e.gradient_mid, &e.gradient_end, &e.gradient_text,
+        ]) {
+            out.push(entry(*name, t));
+        }
+
         // Spacing: one length token per Spacing field.
         out.push(len("spacing-xs", s.xs));
         out.push(len("spacing-sm", s.sm));
@@ -1013,6 +1135,8 @@ pub struct IdeaThemeDefaults {
     pub colors: Colors,
     pub intents: Intents,
     pub palette: Palette,
+    /// Shadow, glow and gradient colors — see [`Effects`].
+    pub effects: Effects,
     pub spacing: Spacing,
     pub radius: Radius,
     pub typography: Typography,
@@ -1032,6 +1156,9 @@ impl IdeaTheme for IdeaThemeDefaults {
     }
     fn palette(&self) -> &Palette {
         &self.palette
+    }
+    fn effects(&self) -> &Effects {
+        &self.effects
     }
     fn spacing(&self) -> &Spacing {
         &self.spacing
@@ -1175,6 +1302,30 @@ fn dark_palette() -> Palette {
     }
 }
 
+/// The built-in themes' effects: no glow (every glow slot fully transparent —
+/// the components still declare the glow, so a theme that sets these colors
+/// lights it up without a different stylesheet), the soft neutral drop
+/// shadow an `Elevated` Card has always cast, and an indigo → violet → pink
+/// accent gradient on the 600 shades, each of which carries white text at
+/// WCAG AA (pinned by `effect_gradient_text_meets_wcag_aa`).
+fn default_effects() -> Effects {
+    const NO_GLOW: &str = "rgba(0, 0, 0, 0)";
+    Effects {
+        shadow: tok("effect-shadow", "rgba(15, 17, 21, 0.10)"),
+        glow_primary: tok("effect-glow-primary", NO_GLOW),
+        glow_secondary: tok("effect-glow-secondary", NO_GLOW),
+        glow_neutral: tok("effect-glow-neutral", NO_GLOW),
+        glow_success: tok("effect-glow-success", NO_GLOW),
+        glow_danger: tok("effect-glow-danger", NO_GLOW),
+        glow_warning: tok("effect-glow-warning", NO_GLOW),
+        glow_info: tok("effect-glow-info", NO_GLOW),
+        gradient_start: tok("effect-gradient-start", "#4f46e5"),
+        gradient_mid: tok("effect-gradient-mid", "#7c3aed"),
+        gradient_end: tok("effect-gradient-end", "#db2777"),
+        gradient_text: tok("effect-gradient-text", "#ffffff"),
+    }
+}
+
 pub fn light_theme() -> IdeaThemeDefaults {
     IdeaThemeDefaults {
         colors: Colors {
@@ -1256,6 +1407,7 @@ pub fn light_theme() -> IdeaThemeDefaults {
             ),
         },
         palette: light_palette(),
+        effects: default_effects(),
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
         typography: DEFAULT_TYPOGRAPHY.clone(),
@@ -1339,6 +1491,7 @@ pub fn dark_theme() -> IdeaThemeDefaults {
             ),
         },
         palette: dark_palette(),
+        effects: default_effects(),
         spacing: DEFAULT_SPACING.clone(),
         radius: DEFAULT_RADIUS.clone(),
         typography: DEFAULT_TYPOGRAPHY.clone(),
@@ -2022,11 +2175,18 @@ mod tests {
             lime: intent(), green: intent(), teal: intent(), cyan: intent(),
             blue: intent(), indigo: intent(), violet: intent(), pink: intent(),
         };
+        t.effects = Effects {
+            shadow: lit(),
+            glow_primary: lit(), glow_secondary: lit(), glow_neutral: lit(),
+            glow_success: lit(), glow_danger: lit(), glow_warning: lit(), glow_info: lit(),
+            gradient_start: lit(), gradient_mid: lit(), gradient_end: lit(), gradient_text: lit(),
+        };
 
         let r = IdeaThemeRef::new(t);
         let c = r.colors();
         let i = r.intents();
         let p = r.palette();
+        let e = r.effects();
 
         let mut read_names: Vec<&str> = Vec::new();
         for (label, field) in [
@@ -2077,6 +2237,21 @@ mod tests {
                 );
                 read_names.push(name);
             }
+        }
+        for (label, field) in [
+            ("shadow", &e.shadow),
+            ("glow_primary", &e.glow_primary), ("glow_secondary", &e.glow_secondary),
+            ("glow_neutral", &e.glow_neutral), ("glow_success", &e.glow_success),
+            ("glow_danger", &e.glow_danger), ("glow_warning", &e.glow_warning),
+            ("glow_info", &e.glow_info),
+            ("gradient_start", &e.gradient_start), ("gradient_mid", &e.gradient_mid),
+            ("gradient_end", &e.gradient_end), ("gradient_text", &e.gradient_text),
+        ] {
+            let name = field.name().unwrap_or_else(|| {
+                panic!("Effects::{label} read back as a literal — add it to canonicalize_effects")
+            });
+            assert!(is_canonical_token(name), "Effects::{label} → non-canonical '{name}'");
+            read_names.push(name);
         }
         read_names.sort_unstable();
 

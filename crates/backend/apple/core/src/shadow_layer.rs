@@ -74,6 +74,8 @@ use objc2::{class, msg_send, msg_send_id};
 use objc2_foundation::{CGFloat, CGPoint, CGRect, CGSize, NSString};
 
 use crate::cg::{CGColorRef, CGPathRef};
+use crate::shadow::{shadow_tween, ShadowTween};
+use runtime_shared::Transition;
 
 /// Marks a layer as carrying a BOX shadow, so [`sync_own_shadow_path`] knows it
 /// may trace a rectangular path over it, and so the clearing paths know the
@@ -107,6 +109,8 @@ extern "C" {
     ) -> CGPathRef;
     fn CGPathRelease(path: CGPathRef);
     fn CGColorGetAlpha(color: CGColorRef) -> CGFloat;
+    fn CGColorRetain(color: CGColorRef) -> CGColorRef;
+    fn CGColorRelease(color: CGColorRef);
 }
 
 use crate::implicit_animations::NoImplicitAnimations;
@@ -168,6 +172,152 @@ pub fn clear_own_shadow(layer: &NSObject) {
         let _: () = msg_send![layer, setShadowPath: CGPathRef(std::ptr::null())];
     }
     set_box_shadow_flag(layer, false);
+}
+
+/// Apply — or clear — the box shadow on a view's OWN layer, animating the
+/// change per `transition` (`StyleRules::shadow_transition`) the way CSS
+/// `transition: box-shadow` does. `shadow` is `(color, offset, blur)` with the
+/// backend's toolkit conversions already done; `None` clears.
+///
+/// The decision is [`shadow_tween`]; this is its CoreAnimation half. Layer-
+/// backed views do not animate implicitly, so each tween is an explicit
+/// `CABasicAnimation` whose `fromValue` is the PRESENTATION layer's current
+/// value: a hover that leaves mid-fade reverses from where the glow is on
+/// screen instead of jumping. Each key path has one animation key, so a new
+/// tween replaces the one in flight.
+///
+/// Sibling-layer shadows (a clipped view, see [`crate::shadow`]) are written
+/// with [`write_shadow_props`] and snap: the sibling is created and parented
+/// across the layout pass, which an in-apply tween cannot span.
+pub fn apply_own_shadow(
+    layer: &NSObject,
+    shadow: Option<(CGColorRef, CGSize, f32)>,
+    transition: Option<&Transition>,
+) {
+    let superlayer: *mut NSObject = unsafe { msg_send![layer, superlayer] };
+    let tween = shadow_tween(
+        transition.is_some(),
+        !superlayer.is_null(),
+        is_painting_box_shadow(layer),
+        shadow.is_some(),
+    );
+    let Some((color, offset, blur)) = shadow else {
+        match (tween, transition) {
+            (ShadowTween::FadeOut, Some(t)) => {
+                let from = on_screen(layer, |src| unsafe {
+                    let o: f32 = msg_send![src, shadowOpacity];
+                    o
+                });
+                unsafe {
+                    let _: () = msg_send![layer, setShadowOpacity: 0.0f32];
+                }
+                // The `shadowPath` stays for the fade: without it CoreAnimation
+                // re-derives the shape offscreen on every frame of the fade.
+                // The next write re-traces it.
+                set_box_shadow_flag(layer, false);
+                add_tween(layer, "shadowOpacity", &number_f32(from), t);
+            }
+            _ => clear_own_shadow(layer),
+        }
+        return;
+    };
+    match (tween, transition) {
+        (ShadowTween::Morph, Some(t)) => {
+            // Capture BEFORE the write replaces the model values. The color is
+            // retained because the write may drop the layer's last reference.
+            let (from_color, from_radius, from_offset) = on_screen(layer, |src| unsafe {
+                let c: CGColorRef = msg_send![src, shadowColor];
+                let r: CGFloat = msg_send![src, shadowRadius];
+                let o: CGSize = msg_send![src, shadowOffset];
+                (CGColorRetain(c), r, o)
+            });
+            write_shadow_props(layer, color, offset, blur);
+            if !from_color.0.is_null() {
+                // A CGColor is a CF type, toll-free usable as an `id` value.
+                let from = from_color.0 as *const NSObject;
+                add_tween(layer, "shadowColor", unsafe { &*from }, t);
+                unsafe { CGColorRelease(from_color) };
+            }
+            add_tween(layer, "shadowRadius", &number_f64(from_radius as f64), t);
+            add_tween(layer, "shadowOffset", &size_value(from_offset), t);
+        }
+        (ShadowTween::FadeIn, Some(t)) => {
+            // From the on-screen opacity, not 0: a glow re-entered mid fade-out
+            // continues from where it is.
+            let from = on_screen(layer, |src| unsafe {
+                let o: f32 = msg_send![src, shadowOpacity];
+                o
+            });
+            write_shadow_props(layer, color, offset, blur);
+            add_tween(layer, "shadowOpacity", &number_f32(from), t);
+        }
+        _ => write_shadow_props(layer, color, offset, blur),
+    }
+}
+
+/// True if this layer is visibly painting a box shadow we installed (the
+/// model value — a fade-out in flight already counts as not painting).
+pub fn is_painting_box_shadow(layer: &NSObject) -> bool {
+    if !has_box_shadow(layer) {
+        return false;
+    }
+    let opacity: f32 = unsafe { msg_send![layer, shadowOpacity] };
+    opacity > 0.0
+}
+
+/// Read a value off what is on screen: the presentation layer while an
+/// animation is in flight, else the model layer.
+fn on_screen<R>(layer: &NSObject, read: impl Fn(&NSObject) -> R) -> R {
+    let pres: *mut NSObject = unsafe { msg_send![layer, presentationLayer] };
+    if pres.is_null() {
+        read(layer)
+    } else {
+        read(unsafe { &*pres })
+    }
+}
+
+/// Attach a `CABasicAnimation(keyPath)` from `from` to the layer's (already
+/// written) model value — `toValue` stays nil, which means "the model value".
+fn add_tween(layer: &NSObject, key_path: &str, from: &NSObject, t: &Transition) {
+    let kp = NSString::from_str(key_path);
+    let anim: Option<Retained<NSObject>> =
+        unsafe { msg_send_id![class!(CABasicAnimation), animationWithKeyPath: &*kp] };
+    let Some(anim) = anim else { return };
+    let name = NSString::from_str(crate::ca_timing::ca_timing_name(t.easing));
+    let timing: Option<Retained<NSObject>> =
+        unsafe { msg_send_id![class!(CAMediaTimingFunction), functionWithName: &*name] };
+    let key = NSString::from_str(&format!("idealyst-shadow-{key_path}"));
+    unsafe {
+        let _: () = msg_send![&anim, setFromValue: from];
+        let _: () = msg_send![&anim, setDuration: t.duration_ms as f64 / 1000.0];
+        if let Some(timing) = timing {
+            let _: () = msg_send![&anim, setTimingFunction: &*timing];
+        }
+        let _: () = msg_send![layer, addAnimation: &*anim, forKey: &*key];
+    }
+}
+
+fn number_f32(v: f32) -> Retained<NSObject> {
+    unsafe { msg_send_id![class!(NSNumber), numberWithFloat: v] }
+}
+
+fn number_f64(v: f64) -> Retained<NSObject> {
+    unsafe { msg_send_id![class!(NSNumber), numberWithDouble: v] }
+}
+
+/// A `CGSize` boxed in an `NSValue`. `valueWithBytes:objCType:` because the
+/// named constructors differ by toolkit (`valueWithCGSize:` is UIKit-only,
+/// `valueWithSize:` AppKit-only).
+fn size_value(size: CGSize) -> Retained<NSObject> {
+    let encoding = std::ffi::CString::new(<CGSize as objc2::Encode>::ENCODING.to_string())
+        .expect("a type encoding has no NUL");
+    unsafe {
+        msg_send_id![
+            class!(NSValue),
+            valueWithBytes: &size as *const CGSize as *const std::ffi::c_void,
+            objCType: encoding.as_ptr()
+        ]
+    }
 }
 
 /// Give a box shadow an explicit `shadowPath` tracing `bounds` at `radius`.

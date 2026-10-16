@@ -131,6 +131,14 @@ pub trait Tone: 'static {
 
     /// Color of the focus ring around the component when keyboard-focused.
     fn focus_ring(&self, theme: &dyn IdeaTheme) -> Tokenized<Color>;
+
+    /// Glow a Filled surface of this tone casts while hovered or pressed —
+    /// see [`Effects`](crate::theme::Effects). `None` (the default) casts
+    /// none: the seven semantic tones return their intent's glow, the
+    /// palette hues and custom tones opt in by overriding this.
+    fn glow(&self, _theme: &dyn IdeaTheme) -> Option<Tokenized<Color>> {
+        None
+    }
 }
 
 /// Typed handle wrapping `Rc<dyn Tone>` so prop fields accept
@@ -794,7 +802,7 @@ mod tests {
                         x: 0.0,
                         y: 2.0,
                         blur: 8.0,
-                        color: Color("rgba(0,0,0,0.18)".into()),
+                        color: Color("rgba(0,0,0,0.18)".into()).into(),
                     }),
                     ..Default::default()
                 }

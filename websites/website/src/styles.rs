@@ -659,11 +659,11 @@ pub fn hero_glare_sheet() -> std::rc::Rc<runtime_core::StyleSheet> {
                 extent: RadialExtent::ClosestSide,
             },
             stops: vec![
-                GradientStop { offset: 0.0,  color: Color("#fff6d8".into()) },
-                GradientStop { offset: 0.30, color: Color("rgba(255, 210, 110, 0.55)".into()) },
-                GradientStop { offset: 0.60, color: Color("rgba(255, 168, 60, 0.18)".into()) },
-                GradientStop { offset: 0.85, color: Color("rgba(255, 168, 60, 0.04)".into()) },
-                GradientStop { offset: 1.0,  color: Color("rgba(255, 168, 60, 0.0)".into()) },
+                GradientStop { offset: 0.0,  color: Color("#fff6d8".into()).into() },
+                GradientStop { offset: 0.30, color: Color("rgba(255, 210, 110, 0.55)".into()).into() },
+                GradientStop { offset: 0.60, color: Color("rgba(255, 168, 60, 0.18)".into()).into() },
+                GradientStop { offset: 0.85, color: Color("rgba(255, 168, 60, 0.04)".into()).into() },
+                GradientStop { offset: 1.0,  color: Color("rgba(255, 168, 60, 0.0)".into()).into() },
             ],
         }),
         ..Default::default()

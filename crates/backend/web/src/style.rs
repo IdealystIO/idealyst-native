@@ -631,7 +631,7 @@ impl WebBackend {
             a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
         });
         let offsets: Vec<f32> = stops.iter().map(|s| s.offset).collect();
-        let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+        let colors: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color.resolve())).collect();
         let shape = crate::animated::GradientShape {
             kind: match g.kind {
                 runtime_shared::GradientKind::Linear { angle_deg } => {

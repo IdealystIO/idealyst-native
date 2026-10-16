@@ -98,11 +98,11 @@ fn anchor_sheet() -> Rc<StyleSheet> {
             // Each ring's alpha is roughly half the previous so the
             // perceived brightness ramp is even.
             stops: vec![
-                GradientStop { offset: 0.0, color: Color(COLOR_SUN_CORE.into()) },
-                GradientStop { offset: 0.30, color: Color("rgba(255, 210, 110, 0.70)".into()) },
-                GradientStop { offset: 0.55, color: Color("rgba(255, 168, 60, 0.22)".into()) },
-                GradientStop { offset: 0.80, color: Color("rgba(255, 168, 60, 0.06)".into()) },
-                GradientStop { offset: 1.0, color: Color("rgba(255, 168, 60, 0.0)".into()) },
+                GradientStop { offset: 0.0, color: Color(COLOR_SUN_CORE.into()).into() },
+                GradientStop { offset: 0.30, color: Color("rgba(255, 210, 110, 0.70)".into()).into() },
+                GradientStop { offset: 0.55, color: Color("rgba(255, 168, 60, 0.22)".into()).into() },
+                GradientStop { offset: 0.80, color: Color("rgba(255, 168, 60, 0.06)".into()).into() },
+                GradientStop { offset: 1.0, color: Color("rgba(255, 168, 60, 0.0)".into()).into() },
             ],
         }),
         ..Default::default()

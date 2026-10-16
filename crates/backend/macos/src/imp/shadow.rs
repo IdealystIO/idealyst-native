@@ -67,15 +67,18 @@ pub(crate) fn apply_box_shadow(view: &NSView, style: &StyleRules) {
     match shadow_placement(style) {
         ShadowPlacement::None => {
             // Clear whatever a previous apply left, so a reactively removed
-            // shadow actually stops painting.
-            shadow_layer::clear_own_shadow(layer);
+            // shadow actually stops painting (fading out under a declared
+            // `shadow_transition`).
+            shadow_layer::apply_own_shadow(layer, None, style.shadow_transition.as_ref());
             shadow_layer::drop_sibling(layer);
         }
         ShadowPlacement::OwnLayer => {
             // A style may have flipped from clipped to unclipped; the sibling
             // would otherwise double the shadow.
             shadow_layer::drop_sibling(layer);
-            write(view, layer, style);
+            with_shadow(view, style, |shadow| {
+                shadow_layer::apply_own_shadow(layer, shadow, style.shadow_transition.as_ref())
+            });
             shadow_layer::sync_own_shadow_path(layer);
         }
         ShadowPlacement::Sibling => {
@@ -83,7 +86,11 @@ pub(crate) fn apply_box_shadow(view: &NSView, style: &StyleRules) {
             // clip its shadow away — paint on the peer instead.
             shadow_layer::clear_own_shadow(layer);
             let sib = shadow_layer::ensure_sibling(layer);
-            write(view, &sib, style);
+            with_shadow(view, style, |shadow| {
+                if let Some((color, offset, blur)) = shadow {
+                    shadow_layer::write_shadow_props(&sib, color, offset, blur);
+                }
+            });
             // Parents it if the view is already in the hierarchy; the layout
             // pass calls `sync_shadow_path` again once it has a real frame.
             shadow_layer::sync_sibling(layer);
@@ -91,15 +98,21 @@ pub(crate) fn apply_box_shadow(view: &NSView, style: &StyleRules) {
     }
 }
 
-/// Push the authored shadow's appearance onto `target`, converting the color
-/// through `NSColor` and the offset through the flipped-ness rule.
-fn write(view: &NSView, target: &NSObject, style: &StyleRules) {
-    let Some(shadow) = &style.shadow else { return };
-    let ns_color = color_to_nscolor(&shadow.color);
+/// Run `f` with the authored shadow as CALayer values — the color converted
+/// through `NSColor`, the offset through the flipped-ness rule — or `None`
+/// when the style has no shadow. A closure rather than a return value: the
+/// `CGColor` belongs to the `NSColor`, which must outlive every use of it.
+fn with_shadow<R>(
+    view: &NSView,
+    style: &StyleRules,
+    f: impl FnOnce(Option<(super::CGColorRef, CGSize, f32)>) -> R,
+) -> R {
+    let Some(shadow) = &style.shadow else { return f(None) };
+    let ns_color = color_to_nscolor(&shadow.color.resolve());
     let cg: super::CGColorRef = unsafe { msg_send![&*ns_color, CGColor] };
     let is_flipped: bool = unsafe { msg_send![view, isFlipped] };
     let (width, height) = box_shadow_offset(shadow.x, shadow.y, is_flipped);
-    shadow_layer::write_shadow_props(target, cg, CGSize { width, height }, shadow.blur);
+    f(Some((cg, CGSize { width, height }, shadow.blur)))
 }
 
 /// Re-trace the box shadow against the view's current bounds and corner radius,

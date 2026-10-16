@@ -277,24 +277,21 @@ impl RenderStyle {
         // on the rules; we project to RGBA + concrete f32s so the
         // renderer can stage a shadow rect instance without
         // touching the framework's `Tokenized` types on the hot
-        // path. Absence collapses to `None`; once set, fields
-        // without an explicit per-frame update keep their resolved
-        // values (same merge-into-self pattern the rest of this
-        // function uses).
-        if let Some(sh) = rules.shadow.as_ref() {
-            self.shadow = Some(ResolvedShadow {
-                offset: [sh.x, sh.y],
-                blur: sh.blur,
-                color: parse_color(&sh.color),
-            });
-        }
+        // path. Absence CLEARS it, unlike the keep-previous fields
+        // above: `apply_style` hands over the node's full merged
+        // rules every time, so an absent shadow means the style
+        // dropped it (a hover glow leaving), not "unchanged".
+        self.shadow = rules.shadow.as_ref().map(|sh| ResolvedShadow {
+            offset: [sh.x, sh.y],
+            blur: sh.blur,
+            color: parse_color(&sh.color.resolve()),
+        });
 
         // Background gradient. Resolved into rect-fraction-space so
         // the shader's per-fragment math doesn't need the pixel
         // size — clamp / project happens in 0..1 across the box.
-        if let Some(g) = rules.background_gradient.as_ref() {
-            self.gradient = resolve_gradient(g);
-        }
+        // Absence clears, for the same reason as the shadow.
+        self.gradient = rules.background_gradient.as_ref().and_then(resolve_gradient);
 
         // Static transform — `TranslateX(50%)` etc. from the
         // stylesheet. Percent values are stored with an `is_percent`
@@ -397,7 +394,7 @@ fn resolve_gradient(g: &Gradient) -> Option<ResolvedGradient> {
     let mut stops = [[0.0_f32; 4]; 5];
     let mut offsets = [1.0_f32; 5];
     for (i, s) in g.stops.iter().take(n).enumerate() {
-        stops[i] = parse_color(&s.color);
+        stops[i] = parse_color(&s.color.resolve());
         offsets[i] = s.offset.clamp(0.0, 1.0);
     }
     // Pad trailing slots with the last real color. The shader uses

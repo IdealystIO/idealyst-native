@@ -66,6 +66,43 @@ pub fn shadow_placement(style: &StyleRules) -> ShadowPlacement {
     }
 }
 
+/// How a box-shadow write moves from what is on screen to what the style asks
+/// for. The CSS rule, held identically by iOS and macOS: a declared
+/// `shadow_transition` animates a *change* on a view that is already on
+/// screen; a first paint, and anything without a transition, snaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowTween {
+    /// Write the new values; nothing animates.
+    Snap,
+    /// A shadow is painting and the style keeps one: tween color, blur and
+    /// offset from their on-screen values.
+    Morph,
+    /// No shadow is painting and the style adds one: fade `shadowOpacity` in.
+    /// This is how a hover glow grows out of nothing, matching CSS, which
+    /// interpolates `box-shadow: none` as a transparent shadow.
+    FadeIn,
+    /// A shadow is painting and the style drops it: fade `shadowOpacity` out.
+    FadeOut,
+}
+
+/// Decide the [`ShadowTween`] for one apply.
+///
+/// `on_screen` is "the layer has a superlayer": styles are applied to freshly
+/// created views before insertion, so this is what keeps a mount from fading
+/// its shadow in (web paints a mounted element's shadow at once).
+/// `painting` is "a box shadow is currently visible on the layer".
+pub fn shadow_tween(has_transition: bool, on_screen: bool, painting: bool, wants: bool) -> ShadowTween {
+    if !has_transition || !on_screen {
+        return ShadowTween::Snap;
+    }
+    match (painting, wants) {
+        (true, true) => ShadowTween::Morph,
+        (false, true) => ShadowTween::FadeIn,
+        (true, false) => ShadowTween::FadeOut,
+        (false, false) => ShadowTween::Snap,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,7 +113,7 @@ mod tests {
             x: 0.0,
             y: 4.0,
             blur: 12.0,
-            color: Color::from("rgba(0,0,0,0.25)"),
+            color: Color::from("rgba(0,0,0,0.25)").into(),
         })
     }
 
@@ -149,5 +186,26 @@ mod tests {
             }),
             ShadowPlacement::OwnLayer,
         );
+    }
+
+    /// A hover glow: no shadow at rest, one on hover, `shadow_transition`
+    /// declared. Entering hover must fade in and leaving must fade out — the
+    /// CSS `box-shadow: none` ↔ shadow interpolation — on a view on screen.
+    #[test]
+    fn hover_glow_fades_in_and_out_on_screen() {
+        assert_eq!(shadow_tween(true, true, false, true), ShadowTween::FadeIn);
+        assert_eq!(shadow_tween(true, true, true, false), ShadowTween::FadeOut);
+        assert_eq!(shadow_tween(true, true, true, true), ShadowTween::Morph);
+    }
+
+    /// Styles land on a new view before it is inserted. Animating then would
+    /// fade every shadowed card in on mount, which web never does.
+    #[test]
+    fn first_paint_and_undeclared_changes_snap() {
+        for (painting, wants) in [(false, true), (true, false), (true, true)] {
+            assert_eq!(shadow_tween(true, false, painting, wants), ShadowTween::Snap);
+            assert_eq!(shadow_tween(false, true, painting, wants), ShadowTween::Snap);
+        }
+        assert_eq!(shadow_tween(true, true, false, false), ShadowTween::Snap);
     }
 }

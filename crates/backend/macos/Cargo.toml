@@ -176,6 +176,13 @@ harness = false
 name = "portal_click_through"
 harness = false
 
+# Real-AppKit test of a token-colored box shadow: a token swap + re-apply of
+# the same rules repaints the layer's `shadowColor` with the new token value.
+# Main-thread only, for the same reason as `focus_attach`.
+[[test]]
+name = "theme_shadow_token"
+harness = false
+
 # Real-AppKit test of the robot's visibility read (`IntrospectionOps::is_shown`):
 # window membership, hidden ancestors, alpha and layer opacity. Main-thread only.
 [[test]]

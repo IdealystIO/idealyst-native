@@ -337,7 +337,7 @@ pub fn wire_shadow(s: wire::WireShadow) -> runtime_shared::style::Shadow {
         x: s.x,
         y: s.y,
         blur: s.blur,
-        color: wire_color_to_color(s.color),
+        color: wire_color_to_color(s.color).into(),
     }
 }
 
@@ -420,7 +420,7 @@ pub fn wire_gradient_kind(k: WireGradientKind) -> GradientKind {
 pub fn wire_gradient_stop(s: WireGradientStop) -> GradientStop {
     GradientStop {
         offset: s.offset,
-        color: wire_color_to_color(s.color),
+        color: wire_color_to_color(s.color).into(),
     }
 }
 

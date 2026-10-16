@@ -1224,7 +1224,11 @@ pub struct Shadow {
     pub x: f32,
     pub y: f32,
     pub blur: f32,
-    pub color: Color,
+    /// Tokenized like `background`, so a theme-driven shadow (a glow)
+    /// re-tints on a theme swap. Web emits `var(--name, fallback)`, which
+    /// keeps a build-time-minted (premint) class live; native backends
+    /// resolve it at apply time.
+    pub color: Tokenized<Color>,
 }
 
 /// Gradient fill for a view's background. Sits alongside the
@@ -1254,7 +1258,8 @@ pub struct GradientStop {
     /// Offset along the gradient's axis (linear) or radius (radial),
     /// in normalized 0..=1 space.
     pub offset: f32,
-    pub color: Color,
+    /// Tokenized for the same reason as [`Shadow::color`].
+    pub color: Tokenized<Color>,
 }
 
 /// The shape of a gradient — linear or radial. Each variant carries
@@ -1660,6 +1665,12 @@ pub struct StyleRules {
     pub border_right_color_transition: Option<Transition>,
     pub border_bottom_color_transition: Option<Transition>,
     pub border_left_color_transition: Option<Transition>,
+    /// Box-shadow transition (`shadow`; not `text_shadow`). Interpolates
+    /// the shadow's color, offset and blur; a shadow appearing or
+    /// disappearing fades from/to transparent, which is what lets a
+    /// hover state grow a glow out of nothing. Backends that render no
+    /// box shadow ignore it.
+    pub shadow_transition: Option<Transition>,
 }
 
 // `Clone` is written by hand ONLY to carry `#[inline(never)]`: the derived
@@ -1786,6 +1797,7 @@ impl Clone for StyleRules {
             border_right_color_transition: self.border_right_color_transition.clone(),
             border_bottom_color_transition: self.border_bottom_color_transition.clone(),
             border_left_color_transition: self.border_left_color_transition.clone(),
+            shadow_transition: self.shadow_transition.clone(),
         }
     }
 }
@@ -1837,6 +1849,7 @@ macro_rules! with_style_rule_fields {
                 border_bottom_width_transition, border_left_width_transition,
                 border_top_color_transition, border_right_color_transition,
                 border_bottom_color_transition, border_left_color_transition,
+                shadow_transition,
             ]
         );
     };
@@ -2047,7 +2060,7 @@ impl StyleRules {
             push_u32_hex(&mut s, sh.x.to_bits());
             push_u32_hex(&mut s, sh.y.to_bits());
             push_u32_hex(&mut s, sh.blur.to_bits());
-            s.push_str(&sh.color.0);
+            push_tokenized_color_key(&mut s, &sh.color);
             s.push(';');
         }
         if let Some(sh) = &self.text_shadow {
@@ -2055,7 +2068,7 @@ impl StyleRules {
             push_u32_hex(&mut s, sh.x.to_bits());
             push_u32_hex(&mut s, sh.y.to_bits());
             push_u32_hex(&mut s, sh.blur.to_bits());
-            s.push_str(&sh.color.0);
+            push_tokenized_color_key(&mut s, &sh.color);
             s.push(';');
         }
         if let Some(g) = &self.background_gradient {
@@ -2078,7 +2091,7 @@ impl StyleRules {
             }
             for stop in &g.stops {
                 push_u32_hex(&mut s, stop.offset.to_bits());
-                s.push_str(&stop.color.0);
+                push_tokenized_color_key(&mut s, &stop.color);
                 s.push(',');
             }
             s.push(';');
@@ -2154,6 +2167,7 @@ impl StyleRules {
         tr!("tbcr", border_right_color_transition);
         tr!("tbcb", border_bottom_color_transition);
         tr!("tbcl", border_left_color_transition);
+        tr!("tsh", shadow_transition);
 
         s
     }
@@ -2205,6 +2219,20 @@ fn write_str(out: &mut String, label: &str, v: Option<&str>) {
 // distinct override sets still produce distinct keys: the field
 // labels in `Some` writes are unique, and unset fields contribute
 // nothing rather than contributing a fixed prefix.
+
+/// Content-key fragment for a shadow / gradient-stop color. A literal
+/// writes its raw value (the key it had as a plain `Color`, so existing
+/// premint class names are unchanged); a token writes `T:<name>`, so the
+/// key is theme-stable like [`write_tokenized_color`]'s.
+fn push_tokenized_color_key(out: &mut String, c: &Tokenized<Color>) {
+    match c {
+        Tokenized::Literal(c) => out.push_str(&c.0),
+        Tokenized::Token { name, .. } => {
+            out.push_str("T:");
+            out.push_str(name);
+        }
+    }
+}
 
 fn write_tokenized_color(out: &mut String, label: &str, c: &Option<Tokenized<Color>>) {
     let Some(t) = c else { return };

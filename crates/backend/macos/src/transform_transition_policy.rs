@@ -4,7 +4,9 @@
 //! Un-gated (compiles on any host) so the regression tests run from
 //! any platform — same pattern as this crate's `portal_policy` /
 //! `layout_policy`. The AppKit half (`CABasicAnimation` on the
-//! layer) lives in `imp/animated.rs` and consumes these.
+//! layer) lives in `imp/animated.rs` and consumes this; the easing →
+//! timing-function name is `backend_apple_core::ca_timing`, shared with
+//! the box-shadow transition.
 //!
 //! Why this exists: web animates `transform` changes via CSS
 //! `transition` (the `ttr` emission), but the macOS backend snapped
@@ -13,8 +15,6 @@
 //! but converge in output (CLAUDE.md §7).
 
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
-use runtime_shared::Easing;
 
 /// Should this static-transform apply animate rather than snap?
 /// Mirrors `backend-ios-mobile::transform_transition_policy` — the
@@ -28,23 +28,6 @@ pub(crate) fn should_animate_static_transform(
     changed: bool,
 ) -> bool {
     seen_before && has_transition && changed
-}
-
-/// Map the framework easing to a `CAMediaTimingFunction` name — the
-/// documented values behind `kCAMediaTimingFunction*`. `Ease` maps to
-/// "default" (Core Animation's ease, closest to CSS `ease`);
-/// `CubicBezier` approximates to ease-in-ease-out — the
-/// `functionWithControlPoints::::` exact path needs a 4-anonymous-arg
-/// selector `msg_send!` can't express cleanly; revisit if an author
-/// bezier ever visibly diverges on a sub-300ms UI slide.
-pub(crate) fn easing_to_ca_timing_name(easing: Easing) -> &'static str {
-    match easing {
-        Easing::Linear => "linear",
-        Easing::EaseIn => "easeIn",
-        Easing::EaseOut => "easeOut",
-        Easing::EaseInOut | Easing::CubicBezier(..) => "easeInEaseOut",
-        Easing::Ease => "default",
-    }
 }
 
 #[cfg(test)]
@@ -62,14 +45,5 @@ mod tests {
         // No transition declared / no actual change: snap.
         assert!(!should_animate_static_transform(true, false, true));
         assert!(!should_animate_static_transform(true, true, false));
-    }
-
-    #[test]
-    fn easing_maps_to_documented_ca_names() {
-        assert_eq!(easing_to_ca_timing_name(Easing::Linear), "linear");
-        assert_eq!(easing_to_ca_timing_name(Easing::EaseIn), "easeIn");
-        assert_eq!(easing_to_ca_timing_name(Easing::EaseOut), "easeOut");
-        assert_eq!(easing_to_ca_timing_name(Easing::EaseInOut), "easeInEaseOut");
-        assert_eq!(easing_to_ca_timing_name(Easing::Ease), "default");
     }
 }

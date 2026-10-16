@@ -358,6 +358,9 @@ macro_rules! app_theme {
             fn palette(&self) -> &$crate::theme::Palette {
                 <$idea_ty as $crate::theme::IdeaTheme>::palette(&self.idea)
             }
+            fn effects(&self) -> &$crate::theme::Effects {
+                <$idea_ty as $crate::theme::IdeaTheme>::effects(&self.idea)
+            }
             fn spacing(&self) -> &$crate::theme::Spacing {
                 <$idea_ty as $crate::theme::IdeaTheme>::spacing(&self.idea)
             }

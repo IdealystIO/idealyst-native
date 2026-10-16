@@ -361,7 +361,7 @@ pub(crate) fn apply_rules(
         // only paints when radius > 0).
         match &rules.text_shadow {
             Some(sh) => {
-                let packed = parse_color(&sh.color.0).unwrap_or(0);
+                let packed = parse_color(&sh.color.resolve().0).unwrap_or(0);
                 let _ = env.call_method(
                     &view,
                     "setShadowLayer",
@@ -1353,7 +1353,7 @@ fn apply_gradient_to_drawable(
     // state. Per-frame `set_animated_color(GradientStopColor(idx))`
     // mutates `state.gradient_stops[idx]` and re-emits the ARGB int
     // array without re-resolving the stylesheet.
-    let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+    let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color.resolve())).collect();
     let offsets: Vec<f32> = stops.iter().map(|s| s.offset.clamp(0.0, 1.0)).collect();
     state.gradient_stops = stops_srgb;
     state.gradient_offsets = offsets;

@@ -48,8 +48,13 @@ NOT an idea-ui-only facility:
   `indigo`, `violet`, `pink`), each an `IntentColors` with the same six slots.
   For color that *categorizes* rather than means something — see
   [Palette hues](#palette-hues) below.
+- `effects` — the colors of shadows, glows and the accent gradient: `shadow`
+  (raised surfaces), `glow_<intent>` for each of the seven intents, and
+  `gradient_start` / `gradient_mid` / `gradient_end` / `gradient_text`. See
+  [Effects](#effects--glows-colored-shadows-the-accent-gradient).
 - `spacing` — `xs`/`sm`/`md`/`lg`/`xl`/`xxl` (`f32`).
-- `radius` — `sm`/`md`/`lg`/`pill` (`f32`).
+- `radius` — `sm`/`md`/`lg` (`f32`). There is no `pill` field: the
+  `radius-pill` token is "fully round", resolved against each box.
 - `typography` — per-variant font sizes (`body_size`, `h1_size`, …), all `f32`.
 - `font` — the default body `FontFamily`.
 
@@ -292,6 +297,59 @@ A tone missing from a sheet renders that component's default appearance.
 Override a hue like any other field: `theme.palette.blue.solid_bg = …`. From a
 `stylesheet!`, the tokens are `t.palette.<hue>.<slot>()` (token names
 `palette-<hue>-<slot>`).
+
+## Effects — glows, colored shadows, the accent gradient
+
+`theme.effects` holds the colors of everything that glows or casts. Components
+own the *geometry* (offset, blur, gradient angle) and take only the *colors*
+from the theme, as tokens:
+
+| Field | Token | Used by |
+| --- | --- | --- |
+| `shadow` | `effect-shadow` | The resting drop shadow of raised surfaces (`Card` `Elevated`) |
+| `glow_primary` … `glow_info` | `effect-glow-<intent>` | The glow a Filled (or Gradient) `Button`/`IconButton` casts while hovered or pressed, by tone |
+| `gradient_start`, `gradient_mid`, `gradient_end` | `effect-gradient-*` | The accent gradient: `variant::Gradient`, or your own sheets |
+| `gradient_text` | `effect-gradient-text` | Text drawn on the gradient |
+
+The stock themes set every glow **fully transparent**. The glow is still
+declared on the components, so the stylesheet is identical across themes and
+only the token value changes. A theme lights the glows by giving them a color:
+
+```rust
+let mut theme = dark_theme();
+theme.effects.glow_primary = Color("rgba(255, 43, 214, 0.95)".into()).into();
+theme.effects.shadow = Color("rgba(255, 43, 214, 0.28)".into()).into();
+install_idea_theme(theme);
+```
+
+The glow fades in and out (`shadow_transition` on the button sheets). Only
+Filled and Gradient surfaces glow: their opaque fill hides the shadow's
+interior on every backend. The seven semantic tones map to their intent's glow;
+the palette hues and custom tones cast none unless the tone overrides
+`Tone::glow`.
+
+**`variant::Gradient`** paints the accent gradient with `gradient_text` on top.
+It is opt-in rather than built in, for the same CSS-size reason as the palette
+hues. Add it to the sheets that should offer it:
+
+```rust
+let buttons = || ButtonSheetBuilder::new().add_variant(variant::Gradient);
+install_button_sheet(buttons().build());
+install_button_label_sheet(buttons().build_label());
+// …then: Button(label = "Launch".into(), variant = variant::Gradient, …)
+```
+
+From a `stylesheet!`, the tokens are `t.effect.<field>()`: a `Shadow` or
+`GradientStop` color can be a token like any other color, and it follows a
+theme swap.
+
+```rust
+shadow: Shadow { x: 0.0, y: 0.0, blur: 12.0, color: t.effect.glow_primary() },
+```
+
+Box shadows render on web, iOS, macOS and the GPU backends; Android, Windows
+and Linux draw none, so a glow there is simply absent while every color still
+re-themes.
 
 ## Custom tones and variants
 

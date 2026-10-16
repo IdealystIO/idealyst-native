@@ -123,6 +123,11 @@ pub mod clip;
 /// (Rule #7).
 pub mod shadow;
 
+/// The `CAMediaTimingFunction` name for a stylesheet `Easing`, shared by every
+/// explicit `CABasicAnimation` the Apple backends attach. Cross-target and
+/// host-tested.
+pub mod ca_timing;
+
 /// Suppresses CoreAnimation's implicit actions on layers the backend creates
 /// itself (no view delegate), so sublayers track their box instead of easing
 /// toward it.

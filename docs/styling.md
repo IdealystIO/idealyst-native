@@ -864,6 +864,31 @@ offset is positive-**down** on every backend — the coordinate flips
 (AppKit's y-up layer, UIKit's y-down) are absorbed by the backend so a
 `shadow { y: 2 }` lands below the glyphs everywhere.
 
+### Theme-driven shadow colors
+
+`Shadow::color` (and a gradient's `GradientStop::color`) is a
+`Tokenized<Color>`, like `background`. A token color emits
+`var(--name, fallback)` on web and SSR, so a class minted at build time
+(premint) still re-tints when the theme swaps; native backends resolve it
+on each apply, and the theme cohort re-applies on every swap. The content
+key hashes a token color by NAME, so a glow is one class under every
+theme. A literal color keys and renders exactly as before.
+
+### Animating a shadow: `shadow_transition`
+
+`transitions { shadow: 180ms EaseOut }` sets `shadow_transition` and
+animates the box shadow's color, offset and blur. A shadow that appears or
+disappears fades from or to transparent, the way CSS interpolates
+`box-shadow: none`, which is what lets a hover state grow a glow from
+nothing. Like CSS, the first paint never animates.
+
+| Backend | Mechanism |
+| --- | --- |
+| Web / SSR | `transition: box-shadow` |
+| iOS / macOS | `CABasicAnimation` on `shadowColor` / `shadowRadius` / `shadowOffset`, or a `shadowOpacity` fade when the shadow appears or goes (`backend_apple_core::shadow_layer::apply_own_shadow`). A shadow on the clipped-view sibling layer (below) snaps. |
+| GPU (wgpu) | A color tween; offset and blur snap |
+| Android / Windows / Linux | No box shadow is rendered, so nothing to animate |
+
 ### `shadow` together with `overflow: hidden`
 
 CSS clips an element's descendants with `overflow` but never clips the

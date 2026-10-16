@@ -996,7 +996,7 @@ pub fn gradient_css(g: &runtime_shared::Gradient) -> String {
     let stops: Vec<String> = g
         .stops
         .iter()
-        .map(|s| format!("{} {}%", s.color.0, css_num(s.offset * 100.0)))
+        .map(|s| format!("{} {}%", tokenized_color_css(&s.color), css_num(s.offset * 100.0)))
         .collect();
     let stops_joined = stops.join(", ");
     match g.kind {
@@ -1663,13 +1663,13 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         ("scrollbar-width", V::Kw(rules.scrollbar.map(scrollbar_css))),
         ("object-fit", V::Kw(rules.object_fit.map(object_fit_css))),
         ("box-shadow", V::Owned(rules.shadow.as_ref().map(|sh| {
-            format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)
+            format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), tokenized_color_css(&sh.color))
         }))),
         // `text-shadow` shares the `<x> <y> <blur> <color>` grammar
         // (neither carries spread); one field per property, no node-kind
         // dispatch.
         ("text-shadow", V::Owned(rules.text_shadow.as_ref().map(|sh| {
-            format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), sh.color.0)
+            format!("{}px {}px {}px {}", css_num(sh.x), css_num(sh.y), css_num(sh.blur), tokenized_color_css(&sh.color))
         }))),
         ("transform", V::Owned(rules.transform.as_deref().filter(|xs| !xs.is_empty()).map(|xs| {
             xs.iter().map(transform_css).collect::<Vec<_>>().join(" ")
@@ -1768,9 +1768,10 @@ pub fn rules_to_css_resolved(rules: &StyleRules, tokens: &[runtime_shared::Token
 
 /// Clone `rules`, replacing every `Tokenized::Token` field with a
 /// `Tokenized::Literal` holding the token's resolved value. The field lists
-/// enumerate every tokenized field of `StyleRules` by value type; a new
-/// tokenized field must be added to the matching list (guarded by
-/// `resolve_style_tokens_bakes_every_token_type`). See [`rules_to_css_resolved`].
+/// enumerate every tokenized field of `StyleRules` by value type, and the
+/// colors nested in shadows and gradient stops are resolved after them; a new
+/// tokenized field must be added here too (the `rules_to_css_resolved_*`
+/// tests pin each kind). See [`rules_to_css_resolved`].
 fn resolve_style_tokens(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry]) -> StyleRules {
     let mut r = rules.clone();
     macro_rules! resolve {
@@ -1793,6 +1794,15 @@ fn resolve_style_tokens(rules: &StyleRules, tokens: &[runtime_shared::TokenEntry
         flex_grow, flex_shrink, opacity,
         border_top_width, border_right_width, border_bottom_width, border_left_width,
         line_height, letter_spacing);
+    // Colors nested inside composite values.
+    for sh in [r.shadow.as_mut(), r.text_shadow.as_mut()].into_iter().flatten() {
+        sh.color = resolve_color(&sh.color, tokens);
+    }
+    if let Some(g) = r.background_gradient.as_mut() {
+        for stop in &mut g.stops {
+            stop.color = resolve_color(&stop.color, tokens);
+        }
+    }
     r
 }
 
@@ -1860,7 +1870,7 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
     // (name, field) table + one loop, NOT a per-field macro: an inline
     // `format!` per field would stamp out 35 copies of the `Arguments`
     // marshalling (~4 KB of wasm) where this shape emits it once.
-    let fields: [(&str, &Option<runtime_shared::Transition>); 35] = [
+    let fields: [(&str, &Option<runtime_shared::Transition>); 36] = [
         ("background", &rules.background_transition),
         ("color", &rules.color_transition),
         ("caret-color", &rules.caret_color_transition),
@@ -1896,6 +1906,7 @@ fn collect_transitions(rules: &StyleRules) -> Vec<String> {
         ("border-right-color", &rules.border_right_color_transition),
         ("border-bottom-color", &rules.border_bottom_color_transition),
         ("border-left-color", &rules.border_left_color_transition),
+        ("box-shadow", &rules.shadow_transition),
     ];
     let mut out: Vec<String> = Vec::new();
     for (name, t) in fields {
@@ -2303,8 +2314,8 @@ mod tests {
     fn shadow_and_text_shadow_lower_to_their_own_properties() {
         use runtime_shared::{Shadow, StyleRules};
         let css = rules_to_css(&StyleRules {
-            shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: runtime_shared::Color("#000000".into()) }),
-            text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: runtime_shared::Color("#111111".into()) }),
+            shadow: Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: runtime_shared::Color("#000000".into()).into() }),
+            text_shadow: Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: runtime_shared::Color("#111111".into()).into() }),
             ..Default::default()
         });
         assert!(css.contains("box-shadow: 1px 2px 3px #000000"), "got: {css}");
@@ -2997,6 +3008,75 @@ mod tests {
         let out = rules_to_css_resolved(&rules, &[]); // nothing installed
         assert!(out.contains("color: #333333"), "got: {out}");
         assert!(!out.contains("var("), "got: {out}");
+    }
+
+    // Shadow and gradient-stop colors are tokenized so a theme-driven glow
+    // follows a theme swap through the `var()` cascade — including a class
+    // minted at build time (premint), which no re-apply ever touches.
+    #[test]
+    fn token_shadow_and_gradient_colors_emit_var() {
+        use runtime_shared::{Gradient, GradientKind, GradientStop, Shadow, Tokenized};
+        let rules = StyleRules {
+            shadow: Some(Shadow {
+                x: 0.0,
+                y: 0.0,
+                blur: 12.0,
+                color: Tokenized::token("glow-primary", Color("#ff00ff".into())),
+            }),
+            text_shadow: Some(Shadow {
+                x: 0.0,
+                y: 0.0,
+                blur: 4.0,
+                color: Tokenized::token("glow-info", Color("#00ffff".into())),
+            }),
+            background_gradient: Some(Gradient {
+                kind: GradientKind::Linear { angle_deg: 90.0 },
+                stops: vec![
+                    GradientStop { offset: 0.0, color: Tokenized::token("gradient-start", Color("#ff00ff".into())) },
+                    GradientStop { offset: 1.0, color: Color("#00ffff".into()).into() },
+                ],
+            }),
+            ..Default::default()
+        };
+        let css = rules_to_css(&rules);
+        assert!(css.contains("box-shadow: 0px 0px 12px var(--glow-primary, #ff00ff)"), "got: {css}");
+        assert!(css.contains("text-shadow: 0px 0px 4px var(--glow-info, #00ffff)"), "got: {css}");
+        assert!(
+            css.contains("linear-gradient(90deg, var(--gradient-start, #ff00ff) 0%, #00ffff 100%)"),
+            "got: {css}"
+        );
+    }
+
+    // The email path bakes the colors nested inside shadows and gradient
+    // stops like every top-level token — no `var()` may survive.
+    #[test]
+    fn rules_to_css_resolved_bakes_shadow_and_gradient_tokens() {
+        use runtime_shared::{Gradient, GradientKind, GradientStop, Shadow, Tokenized};
+        let rules = StyleRules {
+            shadow: Some(Shadow {
+                x: 0.0,
+                y: 2.0,
+                blur: 8.0,
+                color: Tokenized::token("shadow-color", Color("#000000".into())),
+            }),
+            background_gradient: Some(Gradient {
+                kind: GradientKind::Linear { angle_deg: 180.0 },
+                stops: vec![
+                    GradientStop { offset: 0.0, color: Tokenized::token("gradient-start", Color("#111111".into())) },
+                    GradientStop { offset: 1.0, color: Tokenized::token("gradient-end", Color("#222222".into())) },
+                ],
+            }),
+            ..Default::default()
+        };
+        let tokens = vec![
+            TokenEntry { name: "shadow-color", value: TokenValue::Color(Color("#ff2bd6".into())) },
+            TokenEntry { name: "gradient-start", value: TokenValue::Color(Color("#00f0ff".into())) },
+        ];
+        let out = rules_to_css_resolved(&rules, &tokens);
+        assert!(out.contains("box-shadow: 0px 2px 8px #ff2bd6"), "got: {out}");
+        // Installed token baked; uninstalled one falls back to its default.
+        assert!(out.contains("#00f0ff 0%, #222222 100%"), "got: {out}");
+        assert!(!out.contains("var("), "email CSS must carry no var(); got: {out}");
     }
 
     // A literal (non-token) style is unchanged by resolution — the resolved

@@ -1094,9 +1094,9 @@ mod tests {
         use runtime_shared::Shadow;
         let mut b = SsrBackend::new();
         let mut rules = StyleRules::default();
-        rules.shadow = Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#000000".into()) });
+        rules.shadow = Some(Shadow { x: 1.0, y: 2.0, blur: 3.0, color: Color("#000000".into()).into() });
         rules.text_shadow =
-            Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#111111".into()) });
+            Some(Shadow { x: 4.0, y: 5.0, blur: 6.0, color: Color("#111111".into()).into() });
         let rules = Rc::new(rules);
 
         let txt = b.create_text("hi", &AccessibilityProps::default());

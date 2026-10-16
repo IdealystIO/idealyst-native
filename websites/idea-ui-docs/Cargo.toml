@@ -67,6 +67,9 @@ idealyst = { workspace = true }
 # (`RefBuiltins: PartialEq`, pointer-identity impls in idea-theme).
 # `table` (a default) powers PropsTable on every component page.
 idea-ui = { workspace = true, features = ["docs"] }
+# The sheet builders, to opt the Button pages into the accent-gradient
+# variant (`ButtonSheetBuilder::add_variant`) at boot.
+idea-theme = { workspace = true }
 # The author-surface alias target (`extern crate runtime_core as
 # runtime_core;` in lib.rs) + the vocabulary nav/scene surface the
 # retargeted `ui!` emission and `app()`'s navigator builder name

@@ -1917,6 +1917,9 @@ impl WgpuBackend {
                 style.border_left_color_transition.as_ref(),
                 now,
             );
+            if let Some(t) = style.shadow_transition.as_ref() {
+                animate_shadow(&mut self.animator, node, layout, old_render.shadow, new_render.shadow, t, now);
+            }
         }
 
         // Position::Sticky → register against the enclosing
@@ -2327,6 +2330,43 @@ fn maybe_animate_color(
         t.easing,
         now,
     );
+}
+
+/// Tween a box shadow's color across one apply, the way CSS
+/// `transition: box-shadow` does, which interpolates `none` as a
+/// transparent shadow:
+///
+/// - kept: from the on-screen (sampled) color to the new one;
+/// - added: from the new color at zero alpha, so a hover glow grows in;
+/// - dropped: the old geometry is put back with a transparent rest color
+///   and tweens out to it, so the glow fades rather than vanishing.
+///
+/// The from-value is SAMPLED, not the old rest value, so a hover that
+/// leaves mid-fade reverses from where the glow is on screen.
+fn animate_shadow(
+    animator: &mut Animator,
+    node: &WgpuNode,
+    layout: LayoutNode,
+    old: Option<crate::style_convert::ResolvedShadow>,
+    new: Option<crate::style_convert::ResolvedShadow>,
+    transition: &runtime_shared::Transition,
+    now: Instant,
+) {
+    let clear = |c: [f32; 4]| [c[0], c[1], c[2], 0.0];
+    let key = TweenKey::new(layout, AnimProperty::ShadowColor);
+    let (from_rest, to) = match (old, new) {
+        (Some(o), Some(n)) => (o.color, n.color),
+        (None, Some(n)) => (clear(n.color), n.color),
+        (Some(o), None) => {
+            let faded = clear(o.color);
+            node.borrow_mut().render.shadow =
+                Some(crate::style_convert::ResolvedShadow { color: faded, ..o });
+            (o.color, faded)
+        }
+        (None, None) => return,
+    };
+    let from = animator.sample_color(key, from_rest, now);
+    maybe_animate_color(animator, layout, AnimProperty::ShadowColor, from, to, Some(transition), now);
 }
 
 /// Cheap check used to short-circuit the `defaults.merge(...)` +
@@ -3113,6 +3153,60 @@ mod a11y_tests {
             b.presence_tweens.contains_key(&key),
             "Some(transition) must enroll a presence tween for this node"
         );
+    }
+
+    fn glow_rules(color: Option<&str>, transition: bool) -> Rc<StyleRules> {
+        Rc::new(StyleRules {
+            background: Some(runtime_shared::Color("#101010".into()).into()),
+            shadow: color.map(|c| runtime_shared::Shadow {
+                x: 0.0,
+                y: 0.0,
+                blur: 18.0,
+                color: runtime_shared::Color(c.into()).into(),
+            }),
+            shadow_transition: transition
+                .then(|| runtime_shared::Transition::new(150, runtime_shared::Easing::Linear)),
+            ..Default::default()
+        })
+    }
+
+    /// Regression: `RenderStyle::apply` only ever SET the shadow, so a
+    /// style that dropped it (a hover glow leaving) kept painting the old
+    /// one forever on the GPU backends, while web and Apple cleared it.
+    #[test]
+    fn regression_wgpu_dropped_shadow_stops_painting() {
+        let mut b = make_backend();
+        let node = b.create_view_impl(&AccessibilityProps::default());
+        b.apply_style_impl(&node, &glow_rules(Some("#ff00ff"), false));
+        assert!(node.borrow().render.shadow.is_some());
+        b.apply_style_impl(&node, &glow_rules(None, false));
+        assert!(node.borrow().render.shadow.is_none(), "a dropped shadow must stop painting");
+    }
+
+    /// `shadow_transition` on the hover glow: leaving fades the glow out
+    /// from its color to transparent (keeping its geometry for the fade),
+    /// and re-entering fades it back in — CSS's `box-shadow: none` ↔
+    /// shadow interpolation.
+    #[test]
+    fn shadow_transition_fades_a_glow_out_and_back_in() {
+        let mut b = make_backend();
+        let node = b.create_view_impl(&AccessibilityProps::default());
+        let layout = node.borrow().layout;
+        let key = TweenKey::new(layout, AnimProperty::ShadowColor);
+        b.apply_style_impl(&node, &glow_rules(Some("#ff00ff"), true));
+
+        b.apply_style_impl(&node, &glow_rules(None, true));
+        let start = Instant::now();
+        let rest = node.borrow().render.shadow.expect("the fading glow keeps its geometry");
+        assert_eq!(rest.color[3], 0.0, "it rests transparent");
+        assert!(b.animator.sample_color(key, rest.color, start)[3] > 0.9, "…but starts from the visible glow");
+        let done = start + std::time::Duration::from_secs(1);
+        assert_eq!(b.animator.sample_color(key, rest.color, done)[3], 0.0, "…and ends invisible");
+
+        b.apply_style_impl(&node, &glow_rules(Some("#ff00ff"), true));
+        let back = node.borrow().render.shadow.expect("the glow is back");
+        let later = Instant::now() + std::time::Duration::from_secs(1);
+        assert_eq!(b.animator.sample_color(key, back.color, later), [1.0, 0.0, 1.0, 1.0], "it fades back in fully");
     }
 
     /// Regression: before this landed, `create_text_area` hit the

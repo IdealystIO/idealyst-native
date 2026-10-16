@@ -203,8 +203,8 @@ fn newcore_styled_view_tree_pixel_parity() {
             s.background_gradient = Some(Gradient {
                 kind: GradientKind::Linear { angle_deg: 90.0 },
                 stops: vec![
-                    GradientStop { offset: 0.0, color: Color("rgb(255, 0, 0)".into()) },
-                    GradientStop { offset: 1.0, color: Color("rgb(0, 255, 0)".into()) },
+                    GradientStop { offset: 0.0, color: Color("rgb(255, 0, 0)".into()).into() },
+                    GradientStop { offset: 1.0, color: Color("rgb(0, 255, 0)".into()).into() },
                 ],
             });
         })

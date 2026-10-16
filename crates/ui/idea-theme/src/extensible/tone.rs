@@ -32,6 +32,15 @@ use crate::theme::IdeaTheme;
 // and `$block` the field on it.
 macro_rules! builtin_tone {
     ($(#[$doc:meta])* $name:ident, $key:literal, $group:ident . $block:ident) => {
+        builtin_tone!($(#[$doc])* $name, $key, $group . $block, |_theme| None);
+    };
+    ($(#[$doc:meta])* $name:ident, $key:literal, $group:ident . $block:ident, glow = $glow:ident) => {
+        builtin_tone!(
+            $(#[$doc])* $name, $key, $group . $block,
+            |theme| Some(theme.effects().$glow.clone())
+        );
+    };
+    ($(#[$doc:meta])* $name:ident, $key:literal, $group:ident . $block:ident, |$theme:ident| $glow:expr) => {
         $(#[$doc])*
         #[derive(Copy, Clone, Default, IdealystSchema)]
         #[schema(value_of = "ToneRef", via = "idea_ui::tone")]
@@ -70,6 +79,10 @@ macro_rules! builtin_tone {
             fn focus_ring(&self, theme: &dyn IdeaTheme) -> Tokenized<Color> {
                 theme.colors().focus_ring.clone()
             }
+            #[allow(unused_variables)]
+            fn glow(&self, $theme: &dyn IdeaTheme) -> Option<Tokenized<Color>> {
+                $glow
+            }
         }
 
         // Reactive-prop coercion: `tone = tone::Primary` into a
@@ -105,13 +118,13 @@ macro_rules! builtin_tone {
     };
 }
 
-builtin_tone!(/** Built-in semantic tone. */ Primary, "primary", intents.primary);
-builtin_tone!(/** Built-in semantic tone. */ Secondary, "secondary", intents.secondary);
-builtin_tone!(/** Built-in semantic tone. */ Neutral, "neutral", intents.neutral);
-builtin_tone!(/** Built-in semantic tone. */ Success, "success", intents.success);
-builtin_tone!(/** Built-in semantic tone. */ Danger, "danger", intents.danger);
-builtin_tone!(/** Built-in semantic tone. */ Warning, "warning", intents.warning);
-builtin_tone!(/** Built-in semantic tone. */ Info, "info", intents.info);
+builtin_tone!(/** Built-in semantic tone. */ Primary, "primary", intents.primary, glow = glow_primary);
+builtin_tone!(/** Built-in semantic tone. */ Secondary, "secondary", intents.secondary, glow = glow_secondary);
+builtin_tone!(/** Built-in semantic tone. */ Neutral, "neutral", intents.neutral, glow = glow_neutral);
+builtin_tone!(/** Built-in semantic tone. */ Success, "success", intents.success, glow = glow_success);
+builtin_tone!(/** Built-in semantic tone. */ Danger, "danger", intents.danger, glow = glow_danger);
+builtin_tone!(/** Built-in semantic tone. */ Warning, "warning", intents.warning, glow = glow_warning);
+builtin_tone!(/** Built-in semantic tone. */ Info, "info", intents.info, glow = glow_info);
 
 // The twelve palette hues — color with no semantic meaning, for
 // categorization (avatars, user-colored tags, per-project badges). They
@@ -284,5 +297,23 @@ mod tests {
         }
         check("light", light_theme());
         check("dark", dark_theme());
+    }
+
+    /// The accent gradient's text must read on every stop, in both
+    /// built-in themes — it is drawn across the whole fill.
+    #[test]
+    fn effect_gradient_text_meets_wcag_aa() {
+        for (label, theme) in [("light", light_theme()), ("dark", dark_theme())] {
+            let e = &theme.effects;
+            let text = parse(&e.gradient_text.value().0).unwrap();
+            for (stop, c) in [
+                ("start", &e.gradient_start),
+                ("mid", &e.gradient_mid),
+                ("end", &e.gradient_end),
+            ] {
+                let ratio = contrast(text, parse(&c.value().0).unwrap());
+                assert!(ratio >= 4.5, "{label} gradient {stop}: {ratio:.2} < 4.5");
+            }
+        }
     }
 }

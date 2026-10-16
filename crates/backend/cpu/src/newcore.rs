@@ -1064,7 +1064,7 @@ impl caps::StyleOps for CpuBackend {
             let stops: Vec<(f32, Rgba)> = g
                 .stops
                 .iter()
-                .map(|s| (s.offset, parse_or(&s.color.0, Rgba::TRANSPARENT)))
+                .map(|s| (s.offset, parse_or(&s.color.resolve().0, Rgba::TRANSPARENT)))
                 .collect();
             let animated_stops = vec![None; stops.len()];
             ResolvedGradient { kind: g.kind.clone(), stops, animated_stops }

@@ -62,7 +62,7 @@ pub fn resolve(g: &Gradient) -> GradientPaint {
     let stops = g
         .stops
         .iter()
-        .map(|s| (s.offset, color::to_srgb(&s.color)))
+        .map(|s| (s.offset, color::to_srgb(&s.color.resolve())))
         .collect();
     GradientPaint { kind, stops }
 }
@@ -214,11 +214,11 @@ mod tests {
             stops: vec![
                 GradientStop {
                     offset: 0.0,
-                    color: Color("#ffffff".into()),
+                    color: Color("#ffffff".into()).into(),
                 },
                 GradientStop {
                     offset: 1.0,
-                    color: Color("#ffffff00".into()),
+                    color: Color("#ffffff00".into()).into(),
                 },
             ],
         };

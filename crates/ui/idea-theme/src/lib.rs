@@ -126,8 +126,8 @@ pub mod theme;
 pub mod tokens;
 
 pub use tokens::{
-    token_descriptors, tokens, ColorTokens, DangerTokens, IdeaTokens, InfoTokens, IntentTokens,
-    NeutralTokens, PaletteTokens, PrimaryTokens, RadiusTokens, SecondaryTokens, SpacingTokens,
+    token_descriptors, tokens, ColorTokens, DangerTokens, EffectTokens, IdeaTokens, InfoTokens,
+    IntentTokens, NeutralTokens, PaletteTokens, PrimaryTokens, RadiusTokens, SecondaryTokens, SpacingTokens,
     SuccessTokens, TokenDescriptor, TokenKind, TypographyTokens, WarningTokens,
 };
 
@@ -146,9 +146,9 @@ pub use theme_runtime::{
 pub use theme::{
     canonical_color, canonical_length, dark_theme, idea_color, idea_header, install_idea_theme,
     is_canonical_color_token, is_canonical_length_token, is_canonical_token, light_theme,
-    set_idea_theme, theme_color, theme_length, Colors, IdeaTheme, IdeaThemeDefaults, IdeaThemeRef,
-    IntentColors, Intents, Palette, Radius, Spacing, Typography, CANONICAL_INTENT_TOKENS,
-    CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS, CANONICAL_PALETTE_TOKENS,
+    set_idea_theme, theme_color, theme_length, Colors, Effects, IdeaTheme, IdeaThemeDefaults,
+    IdeaThemeRef, IntentColors, Intents, Palette, Radius, Spacing, Typography,
+    CANONICAL_EFFECT_TOKENS, CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS, CANONICAL_PALETTE_TOKENS,
     DEFAULT_FONT_STACK, INTENT_NAMES, INTENT_SLOTS, PALETTE_NAMES,
 };
 

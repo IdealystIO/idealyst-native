@@ -169,7 +169,7 @@ fn chassis_sheet() -> Rc<StyleSheet> {
             x: 0.0,
             y: 18.0,
             blur: 48.0,
-            color: Color("rgba(15, 17, 30, 0.28)".into()),
+            color: Color("rgba(15, 17, 30, 0.28)".into()).into(),
         }),
         flex_shrink: Some(0.0_f32.into()),
         ..Default::default()

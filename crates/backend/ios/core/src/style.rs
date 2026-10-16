@@ -199,7 +199,7 @@ fn build_gradient_layer(
     stops.sort_by(|a, b| {
         a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+    let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color.resolve())).collect();
 
     let gradient_class = objc2::class!(CAGradientLayer);
     let gradient_layer: Retained<NSObject> =
@@ -399,23 +399,24 @@ pub fn sync_corner_radius(view: &UIView) {
     }
 }
 
-/// Push the authored shadow's appearance onto `target` — the view's own layer,
-/// or its sibling shadow layer. UIKit contributes only the `Color → CGColor`
-/// conversion; the property writes (and the CSS-blur → `shadowRadius` halving)
-/// are shared with macOS.
+/// Run `f` with the authored shadow as CALayer values, or `None` when the style
+/// has none. UIKit contributes only the `Color → CGColor` conversion; the
+/// property writes, the tween and the CSS-blur → `shadowRadius` halving are
+/// shared with macOS. A closure rather than a return value: the `CGColor`
+/// belongs to the `UIColor`, which must outlive every use of it.
 ///
 /// Note there is no flipped-ness question on iOS: `UIView` is always y-down, so
 /// `Shadow`'s web-semantics `+y` (cast DOWNWARD) passes through unchanged. The
 /// macOS twin has to branch on `isFlipped`; see `backend_macos::imp::shadow`.
-fn write_shadow(target: &NSObject, style: &StyleRules) {
-    let Some(shadow) = &style.shadow else { return };
-    let shadow_color = color_to_uicolor(&shadow.color);
+fn with_shadow<R>(style: &StyleRules, f: impl FnOnce(Option<(CGColorRef, CGSize, f32)>) -> R) -> R {
+    let Some(shadow) = &style.shadow else { return f(None) };
+    let shadow_color = color_to_uicolor(&shadow.color.resolve());
     let cg: CGColorRef = unsafe { msg_send![&shadow_color, CGColor] };
     let offset = CGSize {
         width: shadow.x as CGFloat,
         height: shadow.y as CGFloat,
     };
-    shadow_layer::write_shadow_props(target, cg, offset, shadow.blur);
+    f(Some((cg, offset, shadow.blur)))
 }
 
 /// Re-trace the box shadow against the view's current bounds and corner radius,
@@ -881,15 +882,18 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             // Without this a reactively-removed shadow keeps painting AND keeps
             // costing its composite. (The `text_shadow` branch in
             // `apply_text_style` owns glyph shadows and is untouched: it never
-            // sets the box-shadow marker.)
-            shadow_layer::clear_own_shadow(&layer);
+            // sets the box-shadow marker.) A declared `shadow_transition`
+            // fades it out instead.
+            shadow_layer::apply_own_shadow(&layer, None, style.shadow_transition.as_ref());
             shadow_layer::drop_sibling(&layer);
         }
         ShadowPlacement::OwnLayer => {
             // A style may have flipped from clipped to unclipped; a leftover
             // sibling would double the shadow.
             shadow_layer::drop_sibling(&layer);
-            write_shadow(&layer, style);
+            with_shadow(style, |shadow| {
+                shadow_layer::apply_own_shadow(&layer, shadow, style.shadow_transition.as_ref())
+            });
             // `OwnLayer` means this view is NOT `overflow: hidden`, so an
             // inherited `clipsToBounds` from an earlier apply would clip the
             // shadow away for no reason. The overflow branch below only writes
@@ -902,7 +906,11 @@ pub fn apply_style_to_view(view: &UIView, style: &StyleRules) {
             // the shadow moves to a peer layer in the parent that nothing masks.
             shadow_layer::clear_own_shadow(&layer);
             let sib = shadow_layer::ensure_sibling(&layer);
-            write_shadow(&sib, style);
+            with_shadow(style, |shadow| {
+                if let Some((color, offset, blur)) = shadow {
+                    shadow_layer::write_shadow_props(&sib, color, offset, blur);
+                }
+            });
             // Parents it if the view is already in the hierarchy; the layout
             // pass calls `sync_shadow_path` again once it has a real frame.
             shadow_layer::sync_sibling(&layer);
@@ -1068,7 +1076,7 @@ pub fn apply_text_style(
     let layer = unsafe { view.layer() };
     match &style.text_shadow {
         Some(sh) => {
-            let shadow_color = color_to_uicolor(&sh.color);
+            let shadow_color = color_to_uicolor(&sh.color.resolve());
             let cg: CGColorRef = unsafe { msg_send![&shadow_color, CGColor] };
             if !cg.0.is_null() {
                 let _: () = unsafe { msg_send![&layer, setShadowColor: cg] };

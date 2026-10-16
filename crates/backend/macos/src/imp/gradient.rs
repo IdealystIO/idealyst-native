@@ -69,7 +69,7 @@ pub(crate) fn install_gradient(view: &NSView, gradient: &Gradient) -> Option<Gra
 
     // Snapshot the resolved sRGB colors so animated-stop writes can
     // mutate one entry and re-apply without re-parsing colors.
-    let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color)).collect();
+    let stops_srgb: Vec<[f32; 4]> = stops.iter().map(|s| color_to_srgb(&s.color.resolve())).collect();
 
     let gradient_class = objc2::class!(CAGradientLayer);
     let gradient_layer: Retained<NSObject> =

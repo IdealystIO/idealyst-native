@@ -16,7 +16,15 @@
 //! | [`Outlined`]| transparent | tone's `stroke_color` (1px) | tone's `stroke_fg` |
 //! | [`Ghost`]   | transparent | none (width=0) | tone's `ghost_fg` |
 
-use runtime_core::{Color, IdealystSchema, StyleRules, Tokenized};
+use runtime_core::{Color, IdealystSchema, Shadow, StyleRules, Tokenized};
+
+/// Blur of the hover/press glow a Filled surface casts. Geometry lives here,
+/// the color in the theme's `Effects`, so one stylesheet serves every theme.
+pub const GLOW_BLUR: f32 = 18.0;
+
+/// How long a glow takes to grow in or fade out (`shadow_transition` on the
+/// clickable sheets' base).
+pub const GLOW_TRANSITION_MS: u32 = 180;
 
 use super::{ResolutionCtx, Variant};
 
@@ -62,13 +70,23 @@ pub fn variant_state_overlay(
             }
         }
         // filled, soft, and any custom variant: a tone-preserving opacity dim.
+        // Filled and Gradient also cast the tone's glow (transparent unless
+        // the theme lights it — see `Effects`). Only those two: their opaque
+        // fill hides the shadow's interior on every backend, where a
+        // translucent Soft fill would show it through on Apple/GPU but not on
+        // web (`box-shadow` paints outside the border box only).
         _ => {
             let o = match state {
                 InteractState::Hover => 0.92,
                 InteractState::Press => 0.85,
             };
+            let glow = matches!(variant_key, "filled" | "gradient")
+                .then(|| ctx.tone.glow(ctx.theme))
+                .flatten()
+                .map(|color| Shadow { x: 0.0, y: 0.0, blur: GLOW_BLUR, color });
             StyleRules {
                 opacity: Some(Tokenized::Literal(o)),
+                shadow: glow,
                 ..Default::default()
             }
         }
@@ -183,6 +201,45 @@ impl Variant for Ghost {
     }
 }
 
+/// Angle of the accent gradient a [`Gradient`] surface paints, CSS
+/// convention (135° = top-left → bottom-right).
+pub const GRADIENT_ANGLE_DEG: f32 = 135.0;
+
+/// Gradient — the theme's accent gradient (`Effects::gradient_*`) as the
+/// fill, its `gradient_text` on top. Tone-independent in color, but a
+/// semantic tone still picks the hover glow.
+///
+/// Opt-in, not one of [`VariantRef::builtins`](super::VariantRef::builtins):
+/// every built-in variant multiplies the appearance arms of every tone ×
+/// variant sheet, so an app that wants it registers it on the builders it
+/// uses — `ButtonSheetBuilder::new().add_variant(variant::Gradient)`.
+#[derive(Copy, Clone, Default, IdealystSchema)]
+#[schema(value_of = "VariantRef", via = "idea_ui::variant")]
+pub struct Gradient;
+
+impl Variant for Gradient {
+    fn key(&self) -> &'static str {
+        "gradient"
+    }
+    fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
+        let e = ctx.theme.effects();
+        let mut s = no_border();
+        // Solid fallback under the gradient: what shows if a backend can't
+        // paint the gradient, and the color text contrast is checked against.
+        s.background = Some(e.gradient_start.clone());
+        s.background_gradient = Some(runtime_core::Gradient {
+            kind: runtime_core::GradientKind::Linear { angle_deg: GRADIENT_ANGLE_DEG },
+            stops: vec![
+                runtime_core::GradientStop { offset: 0.0, color: e.gradient_start.clone() },
+                runtime_core::GradientStop { offset: 0.5, color: e.gradient_mid.clone() },
+                runtime_core::GradientStop { offset: 1.0, color: e.gradient_end.clone() },
+            ],
+        });
+        s.color = Some(e.gradient_text.clone());
+        s
+    }
+}
+
 // Reactive-prop coercion for the built-in variants: lets a `ui!` call site
 // pass a bare marker (`variant = variant::Filled`) to a `#[props]`-wrapped
 // `Reactive<VariantRef>` field. The marker → ref → `Reactive` chain can't go
@@ -196,10 +253,63 @@ macro_rules! variant_reactive_coercion {
         }
     )* };
 }
-variant_reactive_coercion!(Filled, Soft, Outlined, Ghost);
+variant_reactive_coercion!(Filled, Soft, Outlined, Ghost, Gradient);
 
 // A remote bundle names these by key (see `crate::__remote_marker!`).
 crate::__remote_marker!(super::VariantRef, Filled);
 crate::__remote_marker!(super::VariantRef, Soft);
 crate::__remote_marker!(super::VariantRef, Outlined);
 crate::__remote_marker!(super::VariantRef, Ghost);
+crate::__remote_marker!(super::VariantRef, Gradient);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extensible::tone;
+    use crate::theme::{light_theme, IdeaThemeRef};
+
+    fn overlay(variant: &str, t: &dyn super::super::Tone, state: InteractState) -> StyleRules {
+        let theme = IdeaThemeRef::new(light_theme());
+        variant_state_overlay(variant, &ResolutionCtx { theme: &theme, tone: t }, state)
+    }
+
+    /// A Filled surface of a semantic tone glows on hover AND press (touch
+    /// has no hover), with the intent's `effect-glow-*` TOKEN — never a baked
+    /// color, or a build-time stylesheet could not follow a theme swap.
+    #[test]
+    fn filled_semantic_tone_glows_with_its_intent_token() {
+        for state in [InteractState::Hover, InteractState::Press] {
+            let sh = overlay("filled", &tone::Primary, state).shadow.expect("filled primary glows");
+            assert_eq!(sh.color.name(), Some("effect-glow-primary"));
+            assert_eq!((sh.x, sh.y, sh.blur), (0.0, 0.0, GLOW_BLUR));
+        }
+        let danger = overlay("filled", &tone::Danger, InteractState::Hover).shadow.unwrap();
+        assert_eq!(danger.color.name(), Some("effect-glow-danger"));
+    }
+
+    /// The opt-in Gradient variant paints the theme's accent gradient by
+    /// TOKEN (so it follows a swap) and glows like Filled.
+    #[test]
+    fn gradient_variant_paints_the_theme_accent_gradient() {
+        let theme = IdeaThemeRef::new(light_theme());
+        let rules = Gradient.render(&ResolutionCtx { theme: &theme, tone: &tone::Primary });
+        let g = rules.background_gradient.expect("gradient fill");
+        let names: Vec<_> = g.stops.iter().map(|s| s.color.name()).collect();
+        assert_eq!(
+            names,
+            [Some("effect-gradient-start"), Some("effect-gradient-mid"), Some("effect-gradient-end")]
+        );
+        assert_eq!(rules.color.and_then(|c| c.name()), Some("effect-gradient-text"));
+        assert!(overlay("gradient", &tone::Primary, InteractState::Hover).shadow.is_some());
+    }
+
+    /// Only Filled glows: a translucent Soft fill would show the shadow's
+    /// interior on Apple/GPU but not on web. Palette hues have no glow slot.
+    #[test]
+    fn soft_ghost_and_palette_tones_cast_no_glow() {
+        assert!(overlay("soft", &tone::Primary, InteractState::Hover).shadow.is_none());
+        assert!(overlay("ghost", &tone::Primary, InteractState::Hover).shadow.is_none());
+        assert!(overlay("outlined", &tone::Primary, InteractState::Hover).shadow.is_none());
+        assert!(overlay("filled", &tone::Red, InteractState::Hover).shadow.is_none());
+    }
+}

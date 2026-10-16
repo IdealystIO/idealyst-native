@@ -1224,8 +1224,8 @@ mod tests {
             let a11y = AccessibilityProps::default();
             let stops = |a: &str, z: &str| {
                 vec![
-                    GradientStop { offset: 0.0, color: Color::from(a) },
-                    GradientStop { offset: 1.0, color: Color::from(z) },
+                    GradientStop { offset: 0.0, color: Color::from(a).into() },
+                    GradientStop { offset: 1.0, color: Color::from(z).into() },
                 ]
             };
             let grads = vec![

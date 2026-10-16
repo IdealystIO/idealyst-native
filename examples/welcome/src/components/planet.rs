@@ -105,10 +105,10 @@ fn sheet(idx: usize, size_dp: f32, color: &'static str) -> Rc<StyleSheet> {
                 extent: RadialExtent::ClosestSide,
             },
             stops: vec![
-                GradientStop { offset: 0.0, color: Color(color.into()) },
-                GradientStop { offset: 0.60, color: Color(color.into()) },
-                GradientStop { offset: 0.80, color: Color(mid_color.into()) },
-                GradientStop { offset: 1.0, color: Color(edge_color.into()) },
+                GradientStop { offset: 0.0, color: Color(color.into()).into() },
+                GradientStop { offset: 0.60, color: Color(color.into()).into() },
+                GradientStop { offset: 0.80, color: Color(mid_color.into()).into() },
+                GradientStop { offset: 1.0, color: Color(edge_color.into()).into() },
             ],
         }),
         // Raf-driver writes the real opacity once Act 2 starts.
