@@ -1,15 +1,8 @@
-//! Fallback share backend for targets with no uniform native share surface
-//! (Windows and any other non-mobile / non-web / non-Linux target).
-//!
-//! Windows has the Data Transfer Manager
-//! (`Windows.ApplicationModel.DataTransfer`) but no backend for it yet. Rather
-//! than silently no-op — which would make a share button look broken — we
-//! return [`ShareError::NotSupported`] so the caller can hide or relabel the
-//! affordance on these targets. A real Windows backend is a later layer; this
-//! is an honest "not here yet", not a degraded share.
-//!
-//! Linux is *no longer* a stub target: it drives the XDG desktop portal via
-//! `ashpd` (see `linux.rs`).
+//! Fallback share backend for targets with no native share surface (not web,
+//! Android, Apple, Linux or Windows). Rather than silently no-op — which
+//! would make a share button look broken — it returns
+//! [`ShareError::NotSupported`] so the caller can hide or relabel the
+//! affordance.
 
 use crate::{ShareContent, ShareError, ShareOutcome};
 

@@ -11172,6 +11172,7 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",
+ "share",
  "svg",
  "video",
  "webview",
@@ -11520,17 +11521,21 @@ name = "share"
 version = "1.6.2"
 dependencies = [
  "ashpd",
+ "async-channel",
  "block2 0.5.1",
  "futures-channel",
  "jni 0.21.1",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
+ "windows-collections",
 ]
 
 [[package]]

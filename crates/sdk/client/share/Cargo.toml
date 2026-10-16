@@ -39,6 +39,16 @@ catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
 # (macOS) through the Obj-C runtime, the same posture `file-export` takes. We
 # bridge the iOS completion handler to async via a oneshot, like file-export's
 # document-picker delegate.
+# Windows: the share sheet (`DataTransferManager` through
+# `IDataTransferManagerInterop` for the app's window).
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+windows = { version = "0.62", features = ["ApplicationModel_DataTransfer", "Foundation", "Foundation_Collections", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+windows-collections = "0.3"
+async-channel = "2"
+
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+pollster = "0.4"
+
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSURL"] }

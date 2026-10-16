@@ -28,6 +28,7 @@ pub fn app() -> Element {
                 VideoPanel()
                 AudioPanel()
                 LocationPanel()
+                SharePanel()
             }
         }
     }
@@ -234,6 +235,31 @@ pub fn WebViewPanel() -> Element {
                 .with_style(styles::WebFill())
                 .bind(handle.clone())
                 .into_element() }
+            }
+            Status(line = rx!(status.get()))
+        }
+    }
+}
+
+/// `share` — the platform share sheet with text and a link.
+#[component]
+pub fn SharePanel() -> Element {
+    let status = signal("Not shared yet.".to_string());
+    let go = Rc::new(move || {
+        spawn_async(async move {
+            let content = share::ShareContent::text("Shared from the idealyst SDK gallery")
+                .with_url("https://example.com")
+                .with_title("SDK gallery");
+            status.set(match share::share(content).await {
+                Ok(outcome) => format!("{outcome:?}"),
+                Err(e) => format!("Failed: {e}"),
+            });
+        });
+    }) as Rc<dyn Fn()>;
+    ui! {
+        Panel(title = "share".to_string()) {
+            view(style = styles::Row()) {
+                Button(label = "Share".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = go)
             }
             Status(line = rx!(status.get()))
         }

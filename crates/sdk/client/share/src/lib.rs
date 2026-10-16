@@ -62,9 +62,10 @@ mod recipes;
 // ---------------------------------------------------------------------------
 // Backend selector. Exactly one compiles per target; each supplies an `imp`
 // module with `async fn share(&ShareContent) -> Result<ShareOutcome, ShareError>`.
-// Linux drives the XDG desktop portal; Windows (and any other target with no
-// uniform native share surface) falls through to the `stub`, which returns
-// `NotSupported` — silently degrading would hide that.
+// Linux drives the XDG desktop portal, Windows the share sheet
+// (`DataTransferManager`); any other target with no native share surface
+// falls through to the `stub`, which returns `NotSupported` — silently
+// degrading would hide that.
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -83,12 +84,17 @@ mod imp;
 #[path = "linux.rs"]
 mod imp;
 
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+#[path = "windows.rs"]
+mod imp;
+
 #[cfg(not(any(
     target_arch = "wasm32",
     target_os = "android",
     target_os = "ios",
     target_os = "macos",
-    target_os = "linux"
+    target_os = "linux",
+    target_os = "windows"
 )))]
 #[path = "stub.rs"]
 mod imp;

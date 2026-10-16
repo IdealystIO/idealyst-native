@@ -62,7 +62,8 @@ subscribe to, so they report `Completed` once the share UI has run. Treat
 | Android | `Intent.ACTION_SEND` wrapped in `Intent.createChooser`, `startActivity` (JNI) | ⚠️ compile-checked only; text/url only — see below |
 | web (wasm32) | `navigator.share({ title, text, url })` (Web Share API) | needs a user gesture + secure context; `files` ignored |
 | Linux | XDG desktop portal via `ashpd`: `OpenURI` app chooser for a lone URL, else `Email`/`ComposeEmail` for body + subject + files | ⚠️ routing unit-tested; portal round-trip needs a live session |
-| Windows / other native | `ShareError::NotSupported` | no backend yet (Data Transfer Manager is a later layer) |
+| Windows | the share sheet: `DataTransferManager` via `IDataTransferManagerInterop` for the app's window — title, text, web link, files as storage items; `ShareCompleted` → `Completed`, `ShareCanceled` → `Dismissed` (Windows 11; Windows 10 resolves `Completed` once the sheet opens) | verified on a Windows 11 VM |
+| other native | `ShareError::NotSupported` | no native share surface |
 
 The iOS, macOS, and Android backends are **compile-checked only** — the share
 UI resolves at runtime on a real device/desktop session (the same posture as
