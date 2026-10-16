@@ -61,6 +61,12 @@
 
 mod engine;
 
+// Links `random`'s getrandom 0.2 backend into wasm builds (see Cargo.toml):
+// rustc drops a dependency nothing names, and tract's `getrandom` would
+// then fail to link.
+#[cfg(target_arch = "wasm32")]
+use random as _;
+
 use engine::{Config, Weights};
 
 pub use media_stream::AudioStream;

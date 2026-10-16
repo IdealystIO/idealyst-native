@@ -30,8 +30,18 @@ getrandom = "0.3"
 # (src/entropy/web.rs) — the framework's own JS boundary, no wasm-bindgen.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-glue = { workspace = true }
+# Only with `getrandom-0-2` (see [features]).
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"], optional = true }
 
 [features]
+# Back `getrandom` 0.2 on wasm32 with this crate's web-glue entropy, for SDKs
+# whose dependencies need it (denoise → tract → rand 0.8). Without it, such
+# an SDK has to enable getrandom's `js` feature, which links wasm-bindgen
+# and forces the hybrid build. getrandom allows ONE custom registration per
+# binary, so it lives here, once: an SDK turns this feature on rather than
+# registering its own — and must name the crate (`use random as _;`), since
+# rustc does not link a dependency nothing references.
+getrandom-0-2 = ["dep:getrandom02"]
 # Compile + register the `recipe!` usage examples (off in production builds).
 catalog = ["dep:runtime-core", "dep:runtime-vocabulary", "runtime-core/catalog"]
 

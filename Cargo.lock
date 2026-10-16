@@ -3409,11 +3409,13 @@ dependencies = [
  "media-stream",
  "ndarray",
  "pollster 0.3.0",
+ "random",
  "thiserror 2.0.18",
  "tract-core",
  "tract-hir",
  "tract-onnx",
  "tract-pulse",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -10069,6 +10071,7 @@ dependencies = [
 name = "random"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
  "getrandom 0.3.4",
  "rand_core 0.6.4",
  "rand_xoshiro",

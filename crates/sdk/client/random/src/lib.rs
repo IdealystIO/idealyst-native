@@ -52,6 +52,23 @@ mod entropy;
 #[path = "entropy/native.rs"]
 mod entropy;
 
+/// `getrandom` 0.2's custom backend on wasm32, fed by [`secure_bytes`] (the
+/// `getrandom-0-2` feature). The macro defines one global `#[no_mangle]`
+/// symbol, which is why exactly one crate — this one — may register it.
+/// Native targets ignore a custom backend and use the OS directly.
+///
+/// A crate enabling the feature must also name this crate (`use random as
+/// _;`): rustc links only dependencies something references, and an
+/// unlinked registration leaves `__getrandom_custom` undefined at link time.
+#[cfg(all(feature = "getrandom-0-2", target_arch = "wasm32", target_os = "unknown"))]
+mod getrandom02_backend {
+    fn fill(buf: &mut [u8]) -> Result<(), getrandom02::Error> {
+        crate::secure_bytes(buf);
+        Ok(())
+    }
+    getrandom02::register_custom_getrandom!(fill);
+}
+
 /// Fill `buf` from the OS cryptographic entropy source.
 ///
 /// Panics if the source fails — it cannot on any supported platform (every

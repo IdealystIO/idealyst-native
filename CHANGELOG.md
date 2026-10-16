@@ -1387,6 +1387,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`denoise` no longer forces the hybrid web build** (`denoise`, `random`).
+  tract reaches getrandom 0.2, which has no default wasm backend; denoise
+  enabled getrandom's `js` backend, which links wasm-bindgen, so every app
+  using denoise built in hybrid mode. `random`'s new `getrandom-0-2` feature
+  registers a getrandom 0.2 backend fed by web-glue entropy, and denoise
+  uses it — its wasm32 graph now has no wasm-bindgen. Other SDKs whose
+  dependencies need getrandom 0.2 on web enable the same feature (and name
+  the crate: `use random as _;`).
+
 - **`idealyst new --lib` scaffolds a library that builds on web**
   (`idealyst-cli`). The web leaf returned `web_sys::Node`, but
   `WebBackend`'s node is `web_glue::dom::Node`, so a fresh library failed

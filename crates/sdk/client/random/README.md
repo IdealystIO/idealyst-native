@@ -48,6 +48,16 @@ Web entropy goes through `web-glue` (the framework's own JS boundary), not
 using this crate into the hybrid build. `tests/no_wasm_bindgen.rs` pins
 that.
 
+### `getrandom` 0.2 for dependencies (`getrandom-0-2` feature)
+
+Some dependencies reach `getrandom` 0.2 (e.g. `rand` 0.8 inside `tract`),
+which has no default wasm backend; its `js` backend links wasm-bindgen. Enable
+`random`'s `getrandom-0-2` feature instead: it registers a custom backend fed
+by the web-glue entropy above. getrandom allows one registration per binary,
+so SDKs enable this feature rather than registering their own — and must name
+the crate (`use random as _;`), because rustc does not link a dependency
+nothing references. `denoise` is the example.
+
 ## Tests
 
 - `tests/determinism.rs` — reference xoshiro256++ vectors, a 10,000-draw
@@ -57,3 +67,5 @@ that.
   `getRandomValues` chunking past its 65,536-byte limit. Run with
   `cargo test -p random --target wasm32-unknown-unknown` and a `CHROMEDRIVER`
   matching your Chrome.
+- `tests/web_getrandom02.rs` — with `--features getrandom-0-2`, getrandom 0.2
+  in the browser draws from the registered backend.

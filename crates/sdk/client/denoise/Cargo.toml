@@ -100,11 +100,21 @@ rev = "978576aa8400552a4ce9730838c635aa30db5e61" # v0.5.6
 default-features = false
 features = ["tract"]
 
-# Web (wasm32): tract's transitive `getrandom` needs its JS backend selected
-# explicitly, or the wasm build fails to link a randomness source.
+# Web (wasm32): tract's transitive `getrandom` 0.2 has no default wasm
+# backend. `random`'s `getrandom-0-2` registers one fed by web-glue entropy —
+# getrandom's own `js` backend would link wasm-bindgen and put every app
+# using this SDK into the hybrid build. src/lib.rs names `random` so the
+# registration is linked.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+random = { workspace = true, features = ["getrandom-0-2"] }
 
 [dev-dependencies]
 # Drives the async `process` in unit tests without pulling a full runtime.
 pollster = "0.3"
+
+# tests/web_entropy.rs calls getrandom 0.2 — the version tract reaches — to
+# prove it resolves to `random`'s web-glue backend in this SDK's graph. No
+# features: `custom` arrives through `random`, and `js` must not.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+getrandom = "0.2"
+wasm-bindgen-test = "0.3"
