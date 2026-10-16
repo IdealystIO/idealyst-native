@@ -29,6 +29,9 @@ description = "Cross-platform table SDK — real <table> on web, shared-track CS
 crate-type = ["rlib"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The scene Element/Registry/item + the vocabulary glue (view builder,
 # style attach, caps traits) both lowerings are expressed over.
 runtime-vocabulary = { workspace = true }

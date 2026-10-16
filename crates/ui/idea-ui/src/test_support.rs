@@ -210,7 +210,7 @@ mod imp {
     use runtime_vocabulary::prims::{self, PrimCell};
     use std::cell::RefCell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// Peeled component `Owned` scopes, retained so reactive style
         /// closures extracted from a classified subtree can still read
         /// the component body's signals. Entries become inert when the

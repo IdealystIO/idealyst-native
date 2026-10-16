@@ -89,7 +89,7 @@ struct State {
     legacy: Option<KeyListener>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
 

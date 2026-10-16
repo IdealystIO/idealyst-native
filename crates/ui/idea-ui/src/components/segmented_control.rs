@@ -77,7 +77,7 @@ fn segment_icon_px(size: ControlSize) -> f32 {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static SEG_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
         const { std::cell::RefCell::new(None) };
 }

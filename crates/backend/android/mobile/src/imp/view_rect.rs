@@ -59,7 +59,7 @@ pub(crate) fn view_screen_rect(
     })
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The Activity root the app tree and every portal overlay mount in —
     /// the "viewport" of `ViewportRect`. Set by `AndroidBackend::new`; read
     /// by [`view_viewport_rect`], which runs inside handle ops (`rect()`)

@@ -102,7 +102,7 @@ struct VideoEntry {
     loop_observer: Option<Retained<NSObject>>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// view-pointer → AVPlayer side-table. Populated by `build_video` at mount;
     /// entries are never removed (the iOS module's leak model; an Obj-C
     /// associated object that releases on dealloc would fix it).

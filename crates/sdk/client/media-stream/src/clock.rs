@@ -35,7 +35,7 @@ pub fn now_micros() -> u64 {
 #[cfg(target_arch = "wasm32")]
 pub fn now_micros() -> u64 {
     use std::cell::Cell;
-    thread_local! {
+    runtime_tls::thread_local! {
         static EPOCH_MS: Cell<Option<f64>> = const { Cell::new(None) };
     }
     let now = web_glue::dom::date_now();

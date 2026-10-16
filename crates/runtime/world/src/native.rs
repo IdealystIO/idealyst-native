@@ -138,7 +138,7 @@ impl Drop for Tls {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static TLS: RefCell<Tls> = RefCell::new(Tls {
         worlds: FxHashMap::default(),
         next_world: 1,

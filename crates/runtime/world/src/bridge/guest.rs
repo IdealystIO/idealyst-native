@@ -106,7 +106,7 @@ impl LocalState {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LOCAL: RefCell<LocalState> = RefCell::new(LocalState::default());
 }
 

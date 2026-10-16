@@ -29,7 +29,7 @@ use runtime_shared::LayoutSubscription;
 
 type LayoutCallback = Rc<dyn Fn(f32, f32)>;
 
-thread_local! {
+runtime_tls::thread_local! {
     static LAYOUT_SUBS: RefCell<Vec<(usize, LayoutCallback)>> =
         const { RefCell::new(Vec::new()) };
 }
@@ -81,7 +81,7 @@ mod tests {
     use crate::dispatch_hook::{clear_dispatch_hook, install_dispatch_hook};
     use std::cell::Cell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static FLUSHES: Cell<u32> = const { Cell::new(0) };
     }
 

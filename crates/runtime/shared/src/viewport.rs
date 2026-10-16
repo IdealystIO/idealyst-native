@@ -53,7 +53,7 @@ impl ViewportSize {
 // Reactive viewport-size signal
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The framework's authoritative viewport-size signal. Lazily
     /// initialized to `ViewportSize::ZERO` on first access; backends
     /// overwrite it as the platform reports changes.

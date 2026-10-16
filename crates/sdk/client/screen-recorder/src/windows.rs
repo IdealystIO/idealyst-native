@@ -372,7 +372,7 @@ mod tests {
         }
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// The backend the test window paints.
         static PAINTS: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<backend_windows::WindowsBackend>>>> =
             const { std::cell::RefCell::new(None) };

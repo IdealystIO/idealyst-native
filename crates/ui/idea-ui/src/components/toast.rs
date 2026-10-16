@@ -121,7 +121,7 @@ impl Default for ToastEntry {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -153,7 +153,7 @@ fn queue() -> Signal<Vec<ToastEntry>> {
     sig
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The queue handle from the most recent in-world [`queue`] call
     /// (`ToastHost`'s build parks it here). Exists because the imperative
     /// `push_toast*`/`dismiss_toast` API is documented as callable "from

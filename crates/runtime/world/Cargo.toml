@@ -43,6 +43,9 @@ loopback-engine = ["bridge"]
 bridge = []
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Fast FxHash for the kernel's maps (world registry, per-world context).
 # Keys are internal world ids / TypeIds — never attacker-controlled — so the
 # default SipHash's cryptographic resistance is wasted cost on the hottest

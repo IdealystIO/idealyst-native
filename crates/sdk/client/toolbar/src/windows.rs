@@ -347,7 +347,7 @@ impl PendingState {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LAST_TOOLBAR_STATE: RefCell<PendingState> = RefCell::new(PendingState {
         next_id: 40_000,
         pending: Vec::new(),

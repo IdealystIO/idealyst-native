@@ -811,7 +811,7 @@ fn regression_stale_handle_panic_releases_the_arena_borrow_before_panicking() {
     // the hook carries no captures: it re-resolves the arena through the
     // crate's own TLS lookup, which answers `None` on any other thread —
     // making this safe against the suite's concurrently-panicking tests.
-    thread_local! {
+    runtime_tls::thread_local! {
         static BORROW_WAS_FREE: Cell<Option<bool>> = const { Cell::new(None) };
     }
     static PROBE_WORLD: AtomicU32 = AtomicU32::new(0);
@@ -2978,7 +2978,7 @@ fn regression_world_dropped_during_thread_teardown_is_quiet() {
     let cleaned = std::sync::Arc::new(AtomicU32::new(0));
     let c2 = cleaned.clone();
     let joined = std::thread::spawn(move || {
-        thread_local! {
+        runtime_tls::thread_local! {
             static HOLD: RefCell<Option<(World, Signal<u32>)>> = const { RefCell::new(None) };
         }
         HOLD.with(|_| {}); // register the holder's destructor before the kernel's

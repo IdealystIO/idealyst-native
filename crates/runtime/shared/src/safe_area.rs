@@ -122,7 +122,7 @@ impl std::ops::BitAnd for SafeAreaSides {
 // Reactive insets signal
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The framework's authoritative safe-area-insets signal. Lazily
     /// initialized to `EdgeInsets::ZERO` on first access; backends
     /// overwrite it as the platform reports changes.

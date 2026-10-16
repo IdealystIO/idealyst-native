@@ -23,7 +23,7 @@ static FAKE: Mutex<Option<Connectivity>> = Mutex::new(None);
 /// real one from the platform's thread never run it at once.
 type Shared = Arc<Mutex<WatchCallback>>;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Every watch installed on this (the UI) thread. Weak: the watch owns
     /// its callback.
     static WATCHES: RefCell<Vec<Weak<Mutex<WatchCallback>>>> = const { RefCell::new(Vec::new()) };

@@ -104,7 +104,7 @@ pub struct ScrollContext {
 // pop) similar to [`AmbientNavGuard`](super::AmbientNavGuard) if
 // patterns demand it.
 
-thread_local! {
+runtime_tls::thread_local! {
     static AMBIENT: RefCell<Option<ScrollContext>> = const { RefCell::new(None) };
 }
 

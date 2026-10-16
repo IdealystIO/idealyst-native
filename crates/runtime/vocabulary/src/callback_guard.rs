@@ -72,7 +72,7 @@ use std::rc::Rc;
 
 use runtime_world::{current_effect, effect_depth, in_collector, on_owned_drop, Effect};
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Stack of tokens whose guarded callbacks are currently running,
     /// each paired with the [`effect_depth`] observed when it was pushed.
     /// [`ScopeAlive::current`] consults it so a token acquired *during* a

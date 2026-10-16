@@ -339,7 +339,7 @@ impl Registry {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     pub static REGISTRY: RefCell<Registry> = RefCell::new(Registry::new());
     /// Stack of parent element IDs. The mount path pushes before building
     /// children and pops after. Children peek the top to set their

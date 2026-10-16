@@ -51,7 +51,7 @@ pub struct SafeAreaCtx {
     insets: Signal<EdgeInsets>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The platform's most recent report. Seeds every ctx created after
     /// it (see the module docs).
     static LATEST: Cell<EdgeInsets> = const { Cell::new(EdgeInsets::ZERO) };

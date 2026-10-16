@@ -383,7 +383,7 @@ fn thumb_icon(
         .into_element()
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static SLIDER_CONTAINER_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
         const { std::cell::RefCell::new(None) };
 }

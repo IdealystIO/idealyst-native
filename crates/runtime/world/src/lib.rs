@@ -662,7 +662,7 @@ struct Diag {
 }
 
 #[cfg(debug_assertions)]
-thread_local! {
+runtime_tls::thread_local! {
     static DIAG: RefCell<Diag> = RefCell::new(Diag {
         seen: rustc_hash::FxHashSet::default(),
         log: Vec::new(),

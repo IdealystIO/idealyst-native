@@ -61,11 +61,11 @@ struct Table {
     sheets: HashMap<*const StyleSheet, Cb>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static TABLE: RefCell<Table> = RefCell::new(Table::default());
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The crossings being recorded — a tree being encoded ([`tree`]), an
     /// app component's props being sent ([`__props_begin`]) — innermost
     /// last, each with the first id it will register: everything

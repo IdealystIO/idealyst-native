@@ -106,7 +106,7 @@ pub(crate) fn recover(erased: &Rc<dyn Any>) -> Option<Rebuilder> {
     erased.downcast_ref::<Rebuilder>().cloned()
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Scopes owned by subtrees a patch swapped in, keyed by the
     /// instance they replaced.
     ///

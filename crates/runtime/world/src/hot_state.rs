@@ -156,7 +156,7 @@ struct Tls {
     world_lifetime: u32,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static TLS: RefCell<Tls> = RefCell::new(Tls::default());
 }
 

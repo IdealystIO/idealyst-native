@@ -49,7 +49,7 @@ pub(crate) static OPS: &dyn SvgOps = &AndroidSvgOps;
 // Per-view intrinsic-size side table — keyed by GlobalRef raw
 // pointer. Same leak caveat as the iOS impl (no Drop hook on the
 // Java side); same "doesn't matter in practice" verdict.
-thread_local! {
+runtime_tls::thread_local! {
     static INTRINSIC_SIZES: RefCell<HashMap<usize, (f32, f32)>> =
         RefCell::new(HashMap::new());
 }

@@ -26,6 +26,9 @@ license.workspace = true
 # backend ships them across the worker boundary; native clones them).
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 # `#[offload::job]` — a no-op marker attribute on every target.

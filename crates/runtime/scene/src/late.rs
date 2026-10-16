@@ -44,7 +44,7 @@ use std::rc::Rc;
 use crate::host::Host;
 use crate::registry::Registry;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// `(host TypeId, Box<dyn FnOnce(&Rc<Registry<H>>)> erased as Any)`,
     /// in submission order.
     static PENDING: RefCell<Vec<(TypeId, Box<dyn Any>)>> = const { RefCell::new(Vec::new()) };

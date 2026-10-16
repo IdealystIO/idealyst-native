@@ -97,7 +97,7 @@ pub(crate) static OPS: &dyn VideoOps = &WindowsVideoOps;
 /// Control bar height, in logical pixels.
 const BAR_H: f32 = 36.0;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// node id → player, for the imperative ops.
     static PLAYERS: RefCell<HashMap<u64, Rc<RefCell<Player>>>> = RefCell::new(HashMap::new());
 }

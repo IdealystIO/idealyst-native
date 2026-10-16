@@ -455,7 +455,7 @@ pub(crate) mod report {
     use super::{resolve_style, StyleApplication, StyleProp};
     use std::cell::RefCell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static SEEN: RefCell<std::collections::BTreeSet<String>> =
             RefCell::new(std::collections::BTreeSet::new());
     }

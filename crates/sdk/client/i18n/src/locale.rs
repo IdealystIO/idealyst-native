@@ -51,7 +51,7 @@ pub(crate) struct I18nCtx {
     epoch: Signal<u64>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The most recent ambient world's ctx — the HANDLER fallback, refreshed
     /// on every ambient lookup and consulted only when no world is entered.
     /// Safe when stale: handles route to their own world and dead-world

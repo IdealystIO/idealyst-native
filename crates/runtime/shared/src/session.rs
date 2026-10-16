@@ -45,7 +45,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use rustc_hash::FxHashMap;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Per-session-thread registry STACK. `&'static str` keys keep
     /// lookup allocation-free; values are heap-boxed `Any` so each
     /// call site can stash a different type.

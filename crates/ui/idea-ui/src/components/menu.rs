@@ -482,7 +482,7 @@ impl SubMenuSlot {
 // SubMenu flyout: level coordination + hover-out policy
 // =============================================================================
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The submenu flyout currently open on the menu level, if any.
     ///
     /// A `Menu`'s children are constructed by the CALLER before `Menu` itself

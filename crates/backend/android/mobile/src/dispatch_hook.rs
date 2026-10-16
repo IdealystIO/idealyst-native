@@ -49,17 +49,9 @@
 //!   (`scheduler::schedule_frame_callback`): it only runs the
 //!   backend's own Taffy pass, no author code.
 //!
-//! # TLS note (bionic 128-key budget)
-//!
-//! `Cell<Option<fn()>>` with a `const` initializer has no destructor,
-//! so this `thread_local!` lowers to a plain `#[thread_local]` ELF-TLS
-//! slot — it does NOT consume one of bionic's 128 pthread TLS keys
-//! (only dtor-bearing thread-locals register a key, and exhausting them
-//! aborts the process).
-
 use std::cell::Cell;
 
-thread_local! {
+runtime_tls::thread_local! {
     static HOOK: Cell<Option<fn()>> = const { Cell::new(None) };
 }
 
@@ -89,7 +81,7 @@ mod tests {
     use super::*;
     use std::cell::Cell as StdCell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static FIRED: StdCell<u32> = const { StdCell::new(0) };
     }
 

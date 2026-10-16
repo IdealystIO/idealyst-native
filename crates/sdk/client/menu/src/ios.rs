@@ -83,7 +83,7 @@ pub fn force_rebuild() {
     let _: () = unsafe { msg_send![main_system, setNeedsRebuild] };
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The most-recently-installed MenuBarSpec. Read from
     /// [`apply_to_builder`] when UIKit calls back through the host's
     /// AppDelegate. Replaced atomically on each `install` call.

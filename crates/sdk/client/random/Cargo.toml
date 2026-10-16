@@ -12,6 +12,9 @@ description = "Random numbers for Idealyst apps: OS entropy for secrets, and a s
 #     identical sequence on every backend.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Recipes (compile-checked usage examples) compile only under `catalog`;
 # `runtime-vocabulary` because the `ui!` emission inside them spells
 # absolute `::runtime_vocabulary::glue::…` paths. Without `catalog` this

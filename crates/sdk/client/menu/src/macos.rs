@@ -178,7 +178,7 @@ fn install_impl(backend: &mut MacosBackend, spec: MenuBarSpec) {
     });
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Process-lifetime anchor for the most recently installed
     /// `MenuActionTarget`. Holds a `Retained<MenuActionTarget>` so
     /// the per-NSMenuItem weak `target` refs survive. A new

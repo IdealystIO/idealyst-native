@@ -208,7 +208,7 @@ struct Pool {
     max: usize,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static POOL: RefCell<Pool> = RefCell::new(Pool::default());
 }
 

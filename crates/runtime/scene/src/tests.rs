@@ -2190,7 +2190,7 @@ fn regression_deferred_drain_after_earlier_region_grew() {
 // Region context
 // ============================================================================
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Stand-in for a consumer's ambient mount state (the robot's parent
     /// stack): set around the initial mount only, so any LATER realize
     /// sees it only if the region carried it.

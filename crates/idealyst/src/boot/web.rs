@@ -95,7 +95,7 @@ fn start_runtime_server<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// The `WebClientHandle` owns the WebSocket, the event closures
         /// and the raf pump; dropping it tears the connection down, so
         /// it has to outlive this function.

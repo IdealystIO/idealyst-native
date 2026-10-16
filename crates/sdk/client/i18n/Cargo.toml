@@ -39,6 +39,9 @@ catalog = ["runtime-core/catalog"]
 lazy-fetch = ["dep:net", "runtime-core/async-driver", "dep:web-glue"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The author surface, aliased to `runtime_core` at the crate root (see
 # src/lib.rs): the per-world `Signal` + `provide`/`inject` the locale ctx is
 # built from, `Reactive` (re-exported for generated message fns), and the

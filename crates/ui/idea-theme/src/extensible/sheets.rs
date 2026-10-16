@@ -140,7 +140,7 @@ fn add_selected_overlay_compounds(
 // `installed_<component>_sheet()`. Re-installation replaces the prior
 // sheet (supports hot-reload + per-app overrides).
 
-thread_local! {
+runtime_tls::thread_local! {
     static BUTTON_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
 }
 
@@ -423,7 +423,7 @@ pub fn install_default_button_sheet() {
 // base StyleRules). One internal helper builds the sheet from a
 // caller-supplied base.
 
-thread_local! {
+runtime_tls::thread_local! {
     static BADGE_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
     static TAG_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
     static ALERT_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
@@ -908,7 +908,7 @@ impl Default for AvatarSheetBuilder {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static AVATAR_SHEETS: RefCell<Option<Rc<AvatarSheets>>> = const { RefCell::new(None) };
 }
 
@@ -1212,7 +1212,7 @@ struct TextSheetSlots {
     tag: Option<Rc<TagTextSheets>>,
     button_label: Option<Rc<StyleSheet>>,
 }
-thread_local! {
+runtime_tls::thread_local! {
     static TEXT_SHEETS: RefCell<TextSheetSlots> = RefCell::new(TextSheetSlots::default());
 }
 
@@ -1257,7 +1257,7 @@ pub fn installed_tag_text_sheets() -> Rc<TagTextSheets> {
 // muted) and tone-driven values (one arm per tone). The align axis
 // maps onto the four TextAlign variants.
 
-thread_local! {
+runtime_tls::thread_local! {
     static TYPOGRAPHY_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
 }
 
@@ -1467,7 +1467,7 @@ pub fn install_default_typography_sheet() {
 // hardcoded (not trait-driven) — square dimensions aren't part of the
 // `ButtonSize` slot vocabulary.
 
-thread_local! {
+runtime_tls::thread_local! {
     static ICON_BUTTON_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
 }
 
@@ -1818,7 +1818,7 @@ fn add_background_fill_arms(
 // idea-ui-local stylesheet — and its horizontal position is animated
 // by the component via `AnimProp::TranslateX`.
 
-thread_local! {
+runtime_tls::thread_local! {
     static SWITCH_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
 }
 
@@ -1964,7 +1964,7 @@ pub fn install_default_switch_sheet() {
 //     the glyph's `color` to the variant foreground; rendered only
 //     while checked, so it never needs an off arm.
 
-thread_local! {
+runtime_tls::thread_local! {
     static CHECKBOX_SHEETS: RefCell<Option<CheckboxSheets>> = const { RefCell::new(None) };
 }
 
@@ -2107,7 +2107,7 @@ pub fn install_default_checkbox_sheet() {
 // view's `background` to the variant foreground (rendered only while
 // selected).
 
-thread_local! {
+runtime_tls::thread_local! {
     static RADIO_SHEETS: RefCell<Option<RadioSheets>> = const { RefCell::new(None) };
 }
 
@@ -2299,7 +2299,7 @@ pub fn install_default_radio_sheet() {
 //     to the variant fill; the component sets `width` (the value%)
 //     via a `with_computed` layer.
 
-thread_local! {
+runtime_tls::thread_local! {
     static PROGRESS_SHEETS: RefCell<Option<ProgressSheets>> = const { RefCell::new(None) };
 }
 
@@ -2481,7 +2481,7 @@ pub fn install_default_progress_sheet() {
 //     arms tint `color` with the variant foreground, so the glyph reads on
 //     the thumb fill the way a Button label reads on its background.
 
-thread_local! {
+runtime_tls::thread_local! {
     static SLIDER_SHEETS: RefCell<Option<SliderSheets>> = const { RefCell::new(None) };
 }
 

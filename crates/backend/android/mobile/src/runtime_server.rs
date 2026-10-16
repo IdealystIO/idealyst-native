@@ -84,7 +84,7 @@ fn sample_viewport<'l>(
     })
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The runtime-server shell lives on the UI thread for the lifetime of the
     /// hosting Activity. Held across JNI calls so [`drain`] can
     /// reach the same shell every tick. `RefCell` because both

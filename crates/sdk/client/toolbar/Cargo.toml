@@ -16,6 +16,9 @@ license.workspace = true
 # `crates/sdk/webview/Cargo.toml`).
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The scene registry + the vocabulary caps the generic placeholder
 # handler drives (`ExternalOps::create_external`) + `style_attach` for
 # the author-style channel + `runtime_world::effect` for the

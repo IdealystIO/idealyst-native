@@ -28,6 +28,9 @@ license.workspace = true
 # own runtime sources.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The scene registry + the vocabulary caps the handlers drive
 # (`ExternalOps::create_external` placeholder path) + `style_attach` for
 # the author-style channel + `runtime_world::effect` for the

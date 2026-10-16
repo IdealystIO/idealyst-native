@@ -78,7 +78,7 @@ pub use live::{apply_live, apply_live_to};
 pub use rebuild::{OverlayProps, Probe, Rebuilder, ViaClone, ViaFallback};
 pub use construct::{ctor_count, register_ctor, ComponentCtor};
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Patches staged against sites, by the key the macro spells into
     /// each tag — so a tagged `Element` finds its edits without
     /// reconstructing a `SiteId`.
@@ -157,7 +157,7 @@ pub fn reset() {
     construct::clear_ctors();
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The `ui!` (site, node) whose component is being built, innermost
     /// last.
     ///

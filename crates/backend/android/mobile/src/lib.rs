@@ -47,8 +47,7 @@ mod logger;
 /// async-executor fire after invoking a callback that may run author
 /// code. No-op default; `newcore::start` installs the flush driver
 /// here. Mirrors `backend-web/src/dispatch_hook.rs` — the slot is a
-/// const-init no-dtor `Cell`: one thread-local read per fire site and
-/// zero bionic pthread TLS keys.
+/// const-init `Cell`: one thread-local read per fire site.
 pub mod dispatch_hook;
 
 /// `runtime_scene::Host` + the `runtime_vocabulary::caps` traits on

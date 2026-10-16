@@ -480,7 +480,7 @@ struct RegionOrder {
     next: std::cell::Cell<u64>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static REGISTRY: RefCell<Registry> = RefCell::new(Registry::new());
     /// Parent stack: [`register_mount`] pushes before the handler
     /// realizes children; the guard pops on drop. Children peek the top
@@ -868,7 +868,7 @@ struct NavRegistry {
     active: Option<NavId>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static NAV_REGISTRY: RefCell<NavRegistry> = RefCell::new(NavRegistry::default());
 }
 
@@ -1219,7 +1219,7 @@ fn state_of(id: ElementId) -> Option<ElementState> {
     Some(f())
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Set by a platform boot that learns an external driver owns the app
     /// another way than the environment (web: a page global).
     static TEST_DRIVEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -1958,7 +1958,7 @@ struct DriverEnv {
     settle: Rc<dyn Fn()>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static DRIVER_ENV: RefCell<Option<DriverEnv>> = const { RefCell::new(None) };
 }
 

@@ -41,6 +41,9 @@ frameworks = ["Network"]
 catalog = ["runtime-core/catalog"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Used by the recipe `ui!` examples (and the recipe! macro). With `catalog`
 # off the recipes expand to nothing, but the dep stays present for the macro.
 # The author surface, aliased to `runtime_core` at the crate root (see

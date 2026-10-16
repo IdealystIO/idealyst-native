@@ -163,7 +163,7 @@ pub fn register_navigator<H: NavCaps + 'static>(registry: &mut Registry<H>) {
 // Outlet capture
 // ===========================================================================
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Innermost-last stack of outlet-capture cells. Each navigator
     /// pushes a typed cell around its author-layout build; the outlet
     /// handler writes its node into the TOP cell. A stack (not one
@@ -689,7 +689,7 @@ pub mod url_sync {
         fn deregister(&self, id: u64);
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static SERVICE: RefCell<Option<Rc<dyn UrlSyncService>>> =
             const { RefCell::new(None) };
     }
@@ -758,7 +758,7 @@ pub mod inbound {
         pub(super) dispatch: Rc<dyn Fn(NavCommand, Option<Rc<str>>)>,
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static LIVE: RefCell<Vec<(u64, Rc<LiveNav>)>> = const { RefCell::new(Vec::new()) };
         static NEXT_ID: Cell<u64> = const { Cell::new(0) };
         static LINK_PATH: RefCell<Option<Rc<str>>> = const { RefCell::new(None) };
@@ -931,7 +931,7 @@ pub mod native_push {
         fn attach(&self, outlet: Rc<dyn Any>) -> Option<NativePushHandle>;
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static PRESENTER: RefCell<Option<Rc<dyn StackPresenter>>> =
             const { RefCell::new(None) };
     }

@@ -97,7 +97,7 @@ mod real {
         pub props: Vec<PropEntry>,
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         pub(super) static COMPONENTS: RefCell<HashMap<u32, ComponentEntry>> =
             RefCell::new(HashMap::new());
         pub(super) static NEXT_ID: Cell<u32> = const { Cell::new(1) };

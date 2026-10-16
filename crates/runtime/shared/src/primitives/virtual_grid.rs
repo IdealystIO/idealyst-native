@@ -751,7 +751,7 @@ mod tests {
 
     use std::cell::RefCell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// What the fake backend reports, and the delivery it holds.
         static PORT: std::cell::Cell<Option<Scrollport>> = const { std::cell::Cell::new(None) };
         static DELIVER: RefCell<Option<Box<dyn Fn(Scrollport)>>> = const { RefCell::new(None) };

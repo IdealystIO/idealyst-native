@@ -66,6 +66,9 @@ async-driver = ["dep:pollster", "dep:log"]
 embed-font-bytes = []
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Bitflags for `AccessibilityTraits` (one u16 of orthogonal a11y flags

@@ -50,7 +50,7 @@ use runtime_core::{Color, Length, TokenVocabulary, Tokenized};
 
 use crate::theme::{light_theme, IdeaThemeDefaults, IdeaThemeRef};
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The base palette every accessor's fallback comes from, built once
     /// per thread.
     ///

@@ -160,7 +160,7 @@ mod tests {
 
     type Task = Pin<Box<dyn Future<Output = ()>>>;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static TASKS: RefCell<Vec<Task>> = RefCell::new(Vec::new());
     }
 

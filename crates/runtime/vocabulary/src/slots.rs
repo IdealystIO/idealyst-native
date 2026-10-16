@@ -213,7 +213,7 @@ impl<S: Slot> Clone for SlotFeed<S> {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static NEXT_SEQ: Cell<u64> = const { Cell::new(0) };
 }
 

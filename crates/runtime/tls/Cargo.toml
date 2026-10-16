@@ -1,0 +1,17 @@
+# runtime-tls — `thread_local!` that costs Android one pthread key in total.
+#
+# On Android, Rust's std has no native thread-locals (the target's TLS
+# model is emulated), so every `thread_local!` static takes one of bionic's
+# 128 pthread keys the first time it is touched, and an app past the limit
+# aborts. This crate's `thread_local!` is std's everywhere else and, on
+# Android, a slot in one per-thread table. No dependencies: it sits under
+# every framework crate.
+
+[package]
+name = "runtime-tls"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "A drop-in thread_local! that spends one pthread key per process on Android instead of one per static."
+
+[dependencies]

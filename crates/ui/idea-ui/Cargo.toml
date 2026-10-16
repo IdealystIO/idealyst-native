@@ -63,6 +63,9 @@ table = ["dep:table"]
 # author-facing gate here would be built from.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The framework author surface, reached as `runtime_core` via the crate-root `extern crate runtime_core as runtime_core;`
 # alias in lib.rs (see the note there).
 runtime-core = { workspace = true }

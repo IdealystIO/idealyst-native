@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// code -> (message name -> template). One entry per installed pack.
     static PACKS: RefCell<HashMap<String, HashMap<String, String>>> =
         RefCell::new(HashMap::new());

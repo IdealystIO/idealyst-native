@@ -236,7 +236,7 @@ impl Platform {
 // value it returns (e.g. `Custom("Sim")`), so there's just one
 // thing for authors to read.
 
-thread_local! {
+runtime_tls::thread_local! {
     static CURRENT_PLATFORM: std::cell::Cell<Platform> =
         const { std::cell::Cell::new(Platform::Custom("")) };
 }
@@ -268,7 +268,7 @@ pub fn install_current_platform(platform: Platform) {
 // Color scheme
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static CURRENT_COLOR_SCHEME: std::cell::Cell<ColorScheme> =
         const { std::cell::Cell::new(ColorScheme::Auto) };
 }
@@ -313,7 +313,7 @@ pub fn install_current_color_scheme(scheme: ColorScheme) {
 // `NSWorkspace.open`); it captures only the platform handles the
 // backend needs, never the view tree.
 
-thread_local! {
+runtime_tls::thread_local! {
     static URL_OPENER: std::cell::RefCell<Option<Rc<dyn Fn(&str)>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -366,7 +366,7 @@ pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
     URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static FULLSCREEN_SETTER: std::cell::RefCell<Option<Rc<dyn Fn(bool)>>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -432,7 +432,7 @@ pub fn install_fullscreen_setter(setter: Option<Rc<dyn Fn(bool)>>) {
 // Accessibility announcements
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static ANNOUNCER: std::cell::RefCell<
         Option<Rc<dyn Fn(&str, crate::accessibility::LiveRegionPriority)>>,
     > = const { std::cell::RefCell::new(None) };

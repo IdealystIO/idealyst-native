@@ -43,7 +43,7 @@ struct AppStateCtx {
     pointer_locked: Signal<bool>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Handler fallback (same rationale as `viewport::LAST_CTX`): author
     /// code reading these from an event handler runs outside `enter`.
     static LAST_CTX: RefCell<Option<AppStateCtx>> = const { RefCell::new(None) };

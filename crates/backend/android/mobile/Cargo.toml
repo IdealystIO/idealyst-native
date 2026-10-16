@@ -39,6 +39,9 @@ debug-stats = ["runtime-shared/debug-stats"]
 robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # `embed-font-bytes`: Android loads fonts by writing the raw bytes to
 # the cache dir and calling `Typeface.createFromFile`, so it needs the
 # bytes embedded. See `runtime_shared::assets`.

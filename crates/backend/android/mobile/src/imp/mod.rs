@@ -489,7 +489,7 @@ pub(crate) fn density_of(env: &mut JNIEnv, view: &JObject) -> Option<f32> {
     Some(density)
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Cached `android.widget.TextView` class. Used by `is_text_view`
     /// (apply_style's padding + text-styling branches), which fires
     /// once per styled view per apply pass — easily the busiest
@@ -2088,7 +2088,7 @@ pub(crate) static ANDROID_VIRTUAL_GRID_OPS: AndroidVirtualGridOps = AndroidVirtu
 // `Rc<RefCell<AndroidBackend>>` through every closure.
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     pub(crate) static ANDROID_BACKEND_SELF: std::cell::RefCell<Option<std::rc::Weak<std::cell::RefCell<AndroidBackend>>>> =
         const { std::cell::RefCell::new(None) };
 }

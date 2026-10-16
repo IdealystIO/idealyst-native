@@ -301,7 +301,7 @@ pub extern "C" fn idealyst_kernel_drop_context(ctx: i64) {
     Local::drop_context(ctx as Id)
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The last promotion's encoding, read by the host right after the call.
     static PROMOTED: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }

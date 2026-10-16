@@ -46,7 +46,7 @@ pub struct ComponentEntry {
     pub methods: Vec<Method>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static COMPONENTS: RefCell<FxHashMap<ComponentInstanceId, ComponentEntry>> =
         RefCell::new(FxHashMap::default());
     static NEXT_ID: RefCell<u32> = const { RefCell::new(1) };

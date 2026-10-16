@@ -232,7 +232,7 @@ pub fn with_tag(element: Element, tag: NodeTag) -> Element {
 // construction and exists purely to make a crash legible.
 
 #[cfg(debug_assertions)]
-thread_local! {
+runtime_tls::thread_local! {
     static PAYLOAD_NAMES: std::cell::RefCell<std::collections::HashMap<TypeId, &'static str>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }

@@ -96,7 +96,7 @@ pub enum AppStateChange {
 
 type Observer = Rc<dyn Fn(&AppState)>;
 
-thread_local! {
+runtime_tls::thread_local! {
     static STATE: RefCell<AppState> = RefCell::new(AppState::default());
     static OBSERVERS: RefCell<Vec<Observer>> = const { RefCell::new(Vec::new()) };
     /// Whether activation has been observed as `true` after a boot-time

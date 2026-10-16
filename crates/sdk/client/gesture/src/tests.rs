@@ -297,7 +297,7 @@ fn long_press_cancelled_by_competing_pan_before_timer() {
 
 struct TestScheduler;
 
-thread_local! {
+runtime_tls::thread_local! {
     static QUEUE: RefCell<Vec<TimerEntry>> = RefCell::new(Vec::new());
     static NOW_MS: Cell<u64> = const { Cell::new(0) };
     static NEXT_ID: Cell<u64> = const { Cell::new(0) };

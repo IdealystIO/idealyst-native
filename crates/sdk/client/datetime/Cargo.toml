@@ -43,6 +43,9 @@ description = "Current wall-clock time and the local UTC offset / IANA zone on e
 chrono = ["dep:chrono"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 chrono = { version = "0.4", default-features = false, optional = true }
 
 # The chrono-feature integration tests (`tests/portable.rs`) name chrono

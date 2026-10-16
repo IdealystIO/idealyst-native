@@ -32,6 +32,9 @@ license.workspace = true
 ui-overlay = []
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 runtime-world = { workspace = true }
 # Registry map keyed by payload TypeId — internal, never attacker-controlled
 # (same rationale as runtime-world's use).

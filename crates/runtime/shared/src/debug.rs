@@ -163,7 +163,7 @@ pub struct PhaseCounter {
 // Public API — readers
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static EVENT_LOG: RefCell<Vec<DebugEvent>> = const { RefCell::new(Vec::new()) };
     static EVENT_LIMIT: RefCell<Option<usize>> = const { RefCell::new(None) };
     static START_MICROS: RefCell<Option<u64>> = const { RefCell::new(None) };
@@ -404,7 +404,7 @@ pub struct EffectDebug {
     pub label: Option<String>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static SIGNAL_DEBUG: RefCell<HashMap<u32, &'static Location<'static>>> =
         RefCell::new(HashMap::new());
     static EFFECT_DEBUG: RefCell<HashMap<u32, EffectDebug>> =

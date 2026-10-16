@@ -22,7 +22,7 @@ use runtime_shared::primitives::text_input::{FocusRequest, PendingFocus};
 
 use crate::imp::with_env;
 
-thread_local! {
+runtime_tls::thread_local! {
     static PENDING: RefCell<PendingFocus<GlobalRef>> = const { RefCell::new(PendingFocus::new()) };
 }
 

@@ -86,7 +86,7 @@ mod active_slot {
     #[derive(Clone)]
     struct ActiveTheme(Signal<ThemeSlot>);
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// The last-installed slot's HANDLE — the handler fallback.
         /// Platform event handlers run OUTSIDE `World::enter`, where the
         /// context `inject` panics — so `set_theme` from a button
@@ -122,7 +122,7 @@ mod active_slot {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Owns [`install_themes`]'s theme-variant `watch` for the process
     /// lifetime. `install_themes` runs at app boot, outside any render
     /// scope, so the subscription is caller-owned and this is the caller.

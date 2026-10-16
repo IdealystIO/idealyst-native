@@ -65,7 +65,7 @@ use crate::prims::{ButtonPrim, PrimCell, TextInputPrim, TextPrim};
 
 use super::apply::Outcome;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Reactive scopes owned by subtrees a patch inserted.
     ///
     /// A realized subtree's `Realized` IS its scope: dropping it unmounts.

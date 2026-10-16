@@ -1098,7 +1098,7 @@ mod native_styles {
         TrackSize::Auto
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         // Cache one grid sheet per column count — the style resolver
         // dedups applications by sheet pointer, so reusing a sheet
         // across same-width tables keeps the class table small.

@@ -111,6 +111,9 @@ remote-loopback = ["remote", "runtime-world/loopback-engine"]
 remote-inline = ["remote"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The shared prop/data types (StyleRules, AccessibilityProps, handler
 # aliases, primitives::* payloads, robot bridge, host slots) live in
 # runtime-shared — the shared substrate. This crate has NO dependency

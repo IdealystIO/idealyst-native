@@ -190,7 +190,7 @@ impl Default for Breakpoints {
 // Installed breakpoint table + memoized signal
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     /// App-supplied threshold table. `None` => use [`Breakpoints::DEFAULT`].
     /// Thread-local because the reactive runtime is single-threaded
     /// and this matches the safe-area / viewport pattern in this crate.

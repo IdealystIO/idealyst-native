@@ -381,7 +381,7 @@ impl Default for FieldProps {
 // Programmatic Field input + help stylesheets (lazily installed)
 // -----------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static FIELD_INPUT_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
     static FIELD_HELP_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
 }

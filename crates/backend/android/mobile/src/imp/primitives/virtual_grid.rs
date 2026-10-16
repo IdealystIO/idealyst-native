@@ -205,7 +205,7 @@ struct TeardownJob {
     release_cell: Option<Rc<dyn Fn(u64)>>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Work that must run with NO backend borrow held.
     ///
     /// `mount_cell` realizes a subtree and `release_cell` drops one, and

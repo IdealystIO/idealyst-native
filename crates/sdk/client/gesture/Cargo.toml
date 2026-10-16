@@ -25,6 +25,9 @@ license.workspace = true
 # No permissions required.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The touch substrate only: `Recognizer` / `RecognizerCtx` / `TouchEvent` /
 # `TouchHandler` are permanent-substrate types, and this crate never touches
 # the author surface (no `ui!`, no `Element`, no signals) — so it depends on

@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 #[cfg(target_os = "windows")]
-thread_local! {
+runtime_tls::thread_local! {
     /// The staged installer path recorded by [`apply`], consumed by [`relaunch`].
     static STAGED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }

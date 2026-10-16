@@ -114,7 +114,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static ORDER: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
     }
 

@@ -274,7 +274,7 @@ pub(crate) fn register_context(name: &str, fetch: ContextFetch) -> ExportGuard {
     ExportGuard { kind: GuardKind::Context(name.to_string(), token) }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     // A thread-local of its own rather than a field of the native `Tls`:
     // it is touched only when a bundle is bridged, and `thread_local!`
     // claims a key lazily on first access, so apps without remote

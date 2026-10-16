@@ -25,6 +25,9 @@ license.workspace = true
 description = "Third-party Video SDK — <video> on web, AVPlayer on Apple, VideoView on Android."
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # A `Video` can display a live `MediaStream` (from `camera` /
 # `screen-recorder`), not just a URL `src`.
 media-stream = { workspace = true }

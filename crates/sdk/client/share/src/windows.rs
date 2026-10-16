@@ -60,7 +60,7 @@ fn app_window() -> HWND {
     found
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Whether a share sheet from this (UI) thread is open.
     static OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

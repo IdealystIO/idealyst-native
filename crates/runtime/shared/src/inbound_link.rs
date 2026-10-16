@@ -55,7 +55,7 @@ struct Ingress {
     next_id: u64,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static INGRESS: RefCell<Ingress> = RefCell::new(Ingress::default());
 }
 

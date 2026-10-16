@@ -31,7 +31,7 @@ use crate::{SvgOps, SvgProps};
 
 pub(crate) static OPS: &dyn SvgOps = &WindowsSvgOps;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Intrinsic size of each mounted `Svg`, by node id, from its last
     /// successful parse. The handle reads it; teardown removes it.
     static INTRINSIC: RefCell<HashMap<u64, (f32, f32)>> = RefCell::new(HashMap::new());

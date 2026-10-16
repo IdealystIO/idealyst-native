@@ -121,7 +121,7 @@ mod frame_paintable {
 
 use frame_paintable::FramePaintable;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// node id → live `gtk::Video`. Populated by [`build_video`] at mount,
     /// cleared by the `on_cleanup` it installs (so a popped screen stops
     /// decoding). The imperative [`VideoOps`] look their target up here by

@@ -38,7 +38,7 @@ pub const DEFAULT_PORT: u16 = 9718;
 /// string that becomes the `err` field).
 pub type CommandHandler = Rc<dyn Fn(&serde_json::Value) -> Result<String, String>>;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Verbs registered by dev-mode tooling that `runtime-core` can't
     /// implement itself (it can't see the renderer, the wire layer,
     /// etc.). The canonical example is `"screenshot"`: a dev-server /
@@ -100,7 +100,7 @@ fn try_custom_command(cmd: &str, args: &serde_json::Value) -> Option<Result<Stri
 /// `robot_transport::dispatch_verb`.
 pub type VerbRouter = Rc<dyn Fn(&str, &serde_json::Value) -> Option<Result<String, String>>>;
 
-thread_local! {
+runtime_tls::thread_local! {
     static VERB_ROUTER: RefCell<Option<VerbRouter>> = const { RefCell::new(None) };
 }
 
@@ -186,7 +186,7 @@ pub struct AppIdentity {
     pub project_root: Option<String>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Per-process project identity for the bridge advertisement.
     /// Set via [`set_app_identity`] before `mount()`; the bridge
     /// reads from here when binding + advertising.

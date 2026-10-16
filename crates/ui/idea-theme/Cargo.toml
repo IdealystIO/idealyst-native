@@ -9,6 +9,9 @@ description = "Theming abstraction + extensibility for the idealyst design syste
 crate-type = ["rlib"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The framework author surface. `lib.rs` declares `extern crate
 # runtime_core as runtime_core;` at its root, which shadows the
 # extern-prelude for the whole crate — so every `runtime_core::X` path

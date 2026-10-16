@@ -208,52 +208,27 @@ mod real {
 
     type Outcome = Rc<RefCell<Option<Result<serde_json::Value, String>>>>;
 
-    /// The registry: functions by name, and async calls not yet collected
-    /// by `poll_function` (their result slot, filled when the future
-    /// completes).
-    #[derive(Default)]
-    struct State {
-        functions: RefCell<BTreeMap<&'static str, RobotFunction>>,
-        pending: RefCell<HashMap<u64, Outcome>>,
-        next_call: Cell<u64>,
-    }
-
-    thread_local! {
-        /// Leaked once per thread that registers (the UI thread) and kept
-        /// for the process: a `const`, destructor-free slot is plain ELF
-        /// TLS, where a `RefCell<BTreeMap>` thread-local would spend one of
-        /// bionic's 128 pthread keys — and an Android app past that limit
-        /// aborts on whichever thread-local reaches for the next key (a
-        /// real touch's `user_activity` listener did).
-        static STATE: Cell<Option<&'static State>> = const { Cell::new(None) };
-    }
-
-    fn state() -> &'static State {
-        STATE.with(|slot| match slot.get() {
-            Some(s) => s,
-            None => {
-                let s: &'static State = Box::leak(Box::default());
-                s.next_call.set(1);
-                slot.set(Some(s));
-                s
-            }
-        })
+    runtime_tls::thread_local! {
+        static FUNCTIONS: RefCell<BTreeMap<&'static str, RobotFunction>> =
+            const { RefCell::new(BTreeMap::new()) };
+        /// Async calls not yet collected by `poll_function`: their result
+        /// slot, filled when the future completes.
+        static PENDING: RefCell<HashMap<u64, Outcome>> = RefCell::new(HashMap::new());
+        static NEXT_CALL: Cell<u64> = const { Cell::new(1) };
     }
 
     pub(super) fn register(function: RobotFunction) {
-        state().functions.borrow_mut().insert(function.name, function);
+        FUNCTIONS.with(|f| f.borrow_mut().insert(function.name, function));
     }
 
     pub(super) fn unregister(name: &str) {
-        state().functions.borrow_mut().remove(name);
+        FUNCTIONS.with(|f| f.borrow_mut().remove(name));
     }
 
     /// `list_functions`: every registered function, by name.
     pub(crate) fn list_json() -> String {
-        let items: Vec<serde_json::Value> = {
-            state()
-                .functions
-                .borrow()
+        let items: Vec<serde_json::Value> = FUNCTIONS.with(|f| {
+            f.borrow()
                 .values()
                 .map(|fun| {
                     serde_json::json!({
@@ -265,7 +240,7 @@ mod real {
                     })
                 })
                 .collect()
-        };
+        });
         serde_json::Value::Array(items).to_string()
     }
 
@@ -277,8 +252,8 @@ mod real {
     pub(crate) fn call_json(name: &str, args: &serde_json::Value) -> Result<String, String> {
         // Cloned out under a short borrow: the function may register or
         // unregister functions itself.
-        let call = {
-            let f = state().functions.borrow();
+        let call = FUNCTIONS.with(|f| {
+            let f = f.borrow();
             match f.get(name) {
                 Some(fun) => fun
                     .call
@@ -289,7 +264,7 @@ mod real {
                     f.keys().copied().collect::<Vec<_>>().join(", ")
                 )),
             }
-        }?;
+        })?;
         let reply = call(args);
         crate::robot::settle();
         match reply? {
@@ -307,10 +282,12 @@ mod real {
                 if let Some(out) = slot.borrow_mut().take() {
                     return out.map(done);
                 }
-                let st = state();
-                let id = st.next_call.get();
-                st.next_call.set(id + 1);
-                st.pending.borrow_mut().insert(id, slot);
+                let id = NEXT_CALL.with(|n| {
+                    let id = n.get();
+                    n.set(id + 1);
+                    id
+                });
+                PENDING.with(|p| p.borrow_mut().insert(id, slot));
                 Ok(serde_json::json!({"done": false, "call": id}).to_string())
             }
         }
@@ -319,17 +296,14 @@ mod real {
     /// `poll_function {call}`: `{"done": false}` while the call runs; its
     /// result (or failure) once, after which the call is forgotten.
     pub(crate) fn poll_json(call: u64) -> Result<String, String> {
-        let slot = state()
-            .pending
-            .borrow()
-            .get(&call)
-            .cloned()
+        let slot = PENDING
+            .with(|p| p.borrow().get(&call).cloned())
             .ok_or_else(|| format!("no pending call {call} (already collected, or never started)"))?;
         let out = slot.borrow_mut().take();
         match out {
             None => Ok(r#"{"done":false}"#.into()),
             Some(out) => {
-                state().pending.borrow_mut().remove(&call);
+                PENDING.with(|p| p.borrow_mut().remove(&call));
                 out.map(done)
             }
         }

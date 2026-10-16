@@ -30,7 +30,7 @@ struct ActivityCtx {
     _feed: Rc<UserActivityListener>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Handler fallback (same rationale as `viewport::LAST_CTX`): author
     /// code reading the signal from an event handler runs outside `enter`.
     static LAST_CTX: RefCell<Option<ActivityCtx>> = const { RefCell::new(None) };

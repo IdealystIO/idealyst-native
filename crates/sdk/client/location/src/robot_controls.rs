@@ -21,7 +21,7 @@ static FAKE: Mutex<Option<Position>> = Mutex::new(None);
 
 type Shared = Arc<Mutex<BoxedCallback>>;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Every watch installed on this (the UI) thread, so a fake reaches the
     /// ones alive when it is set. Weak: the watch owns its callback.
     static WATCHES: RefCell<Vec<Weak<Mutex<BoxedCallback>>>> = const { RefCell::new(Vec::new()) };

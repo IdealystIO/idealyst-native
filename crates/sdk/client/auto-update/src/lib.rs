@@ -442,7 +442,7 @@ impl Updater {
 // state.
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static INSTALLED: RefCell<Option<Updater>> = const { RefCell::new(None) };
 }
 

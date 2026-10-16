@@ -107,7 +107,7 @@ struct Leaf {
     pending: Option<String>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// node id → leaf, for the imperative ops.
     static LEAVES: RefCell<HashMap<u64, Rc<RefCell<Leaf>>>> = RefCell::new(HashMap::new());
     /// host window → leaf, for `WM_SIZE`.

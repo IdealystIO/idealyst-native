@@ -308,7 +308,7 @@ impl Clock for FixedClock {
 static GLOBAL_SET: AtomicBool = AtomicBool::new(false);
 static GLOBAL: RwLock<Option<Arc<dyn Clock>>> = RwLock::new(None);
 
-thread_local! {
+runtime_tls::thread_local! {
     static SCOPED: RefCell<Vec<Arc<dyn Clock>>> = const { RefCell::new(Vec::new()) };
 }
 

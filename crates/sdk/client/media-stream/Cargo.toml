@@ -24,6 +24,9 @@ license.workspace = true
 # consumer is possible — the abstraction doesn't preclude it.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 
 # Native `screenshot()` bridges the one-shot frame out of the `subscribe`
 # callback (a capture-thread `Send` closure) to the awaiting caller.

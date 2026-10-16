@@ -51,7 +51,7 @@ struct WatchEntry {
     reader: Rc<dyn Fn() -> Value>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Raw `SignalId` (slot index, `u32`) → entry. At most one watch per
     /// slot; re-registration on the same slot overwrites (the macro path
     /// can re-mark a recycled slot with a fresh generation).

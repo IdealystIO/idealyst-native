@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
-thread_local! {
+runtime_tls::thread_local! {
     /// `(downloaded_new_image, target_appimage)` staged by [`apply`].
     static STAGED: RefCell<Option<(PathBuf, PathBuf)>> = const { RefCell::new(None) };
 }

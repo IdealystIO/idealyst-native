@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-thread_local! {
+runtime_tls::thread_local! {
     static HOSTED: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
 }
 

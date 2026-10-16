@@ -36,6 +36,9 @@ license.workspace = true
 capabilities = ["location"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The shared runtime-permission substrate. The location-permission grant goes
 # through here (Permission::LocationWhenInUse) rather than re-implemented. Path
 # dep (no workspace.dependencies entry yet) — functionally identical.

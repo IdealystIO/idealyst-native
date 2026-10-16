@@ -28,7 +28,7 @@ use std::rc::Rc;
 use runtime_core::{watch, Color, FontFamily, Length, Subscription, Tokenized};
 use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Owns [`install_idea_theme_reactive`]'s theme `watch` for the process
     /// lifetime. The install runs outside any render scope (app boot, tests,
     /// top-level binaries), so the subscription is caller-owned and this is

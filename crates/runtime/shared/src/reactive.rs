@@ -49,7 +49,7 @@ struct EffectId(u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 struct RefId(u32);
 
-thread_local! {
+runtime_tls::thread_local! {
     static ARENA: RefCell<Arena> = RefCell::new(Arena::new());
     static CURRENT: RefCell<Option<EffectId>> = const { RefCell::new(None) };
     /// Effects currently on the run-stack. When a signal write inside
@@ -1102,7 +1102,7 @@ pub fn untrack_for_build<R, F: FnOnce() -> R>(f: F) -> R {
 // MobX's `observableRequiresReaction` and Leptos's outside-tracking
 // warning. Debug builds only; release compiles to nothing.
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Depth of user-intent [`untrack`] calls (also bumped by internal
     /// read paths that use `untrack` — those are intentional untracked
     /// reads too). Not bumped by `untrack_for_build`.
@@ -1110,7 +1110,7 @@ thread_local! {
 }
 
 #[cfg(any(debug_assertions, feature = "debug-stats"))]
-thread_local! {
+runtime_tls::thread_local! {
     /// Names of `#[component]` bodies currently executing (innermost
     /// last). Pushed/popped by [`ComponentBuildProbe`]. Compiled in debug
     /// builds (for the hoisted-snapshot diagnostic) AND under `debug-stats`
@@ -1121,7 +1121,7 @@ thread_local! {
 }
 
 #[cfg(debug_assertions)]
-thread_local! {
+runtime_tls::thread_local! {
     /// Dedup + test-observation record: (component name, signal id)
     /// pairs already warned this thread.
     static SNAPSHOT_WARNINGS: RefCell<(
@@ -1270,7 +1270,7 @@ pub(crate) fn unscope<R, F: FnOnce() -> R>(f: F) -> R {
 // Debug-only: the warning it guards is itself debug-only, so this carries
 // zero cost in release.
 #[cfg(debug_assertions)]
-thread_local! {
+runtime_tls::thread_local! {
     static UNSCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -3336,7 +3336,7 @@ impl Drop for Scope {
 // Active-scope registration
 // =============================================================================
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The currently-active scope, if any. `Signal::new` and `Effect::new`
     /// register their IDs here so the scope can free them on drop.
     static ACTIVE_SCOPE: RefCell<Vec<*mut Scope>> = const { RefCell::new(Vec::new()) };
@@ -3364,7 +3364,7 @@ pub fn with_scope<R>(scope: &mut Scope, f: impl FnOnce() -> R) -> R {
 // every add/delete cycle with nothing telling the author). Silenceable via
 // IDEALYST_NO_UNOWNED_SIGNAL_WARN=1 for intentional-leak test harnesses.
 #[cfg(debug_assertions)]
-thread_local! {
+runtime_tls::thread_local! {
     /// Count of unowned-signal warnings actually emitted on this thread (after
     /// every suppression check). Test hook only — see
     /// [`__unowned_signal_warn_count`].
@@ -3390,7 +3390,7 @@ fn warn_unowned_signal(loc: &'static std::panic::Location<'static>) {
     if in_unscope() {
         return;
     }
-    thread_local! {
+    runtime_tls::thread_local! {
         static WARNED: RefCell<HashSet<(&'static str, u32)>> = RefCell::new(HashSet::new());
         static SILENCED: bool = std::env::var_os("IDEALYST_NO_UNOWNED_SIGNAL_WARN").is_some();
     }

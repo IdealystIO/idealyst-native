@@ -169,7 +169,7 @@ pub struct ThemeCtx {
     version: Signal<u64>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The most recent ambient world's `ThemeCtx` — the HANDLER fallback.
     /// Platform event handlers run OUTSIDE `World::enter` (the flush
     /// driver commits afterwards), so the ambient free fns below cannot
@@ -185,7 +185,7 @@ thread_local! {
     static LAST_CTX: RefCell<Option<ThemeCtx>> = const { RefCell::new(None) };
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static TOKEN_READ_HOOK_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

@@ -81,7 +81,7 @@ static EMPTY_ABSOLUTE_SHEET: PremintSheet = PremintSheet {
 // the identity, so a reinstall of identical content collapses to one
 // rule set.
 
-thread_local! {
+runtime_tls::thread_local! {
     static ASSEMBLED: std::cell::RefCell<Vec<Rc<StyleSheet>>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -114,7 +114,7 @@ pub fn assembled_sheets() -> Vec<Rc<StyleSheet>> {
 // asset. Deduped by class at dump time: content-equal sheets share one
 // class by construction, and one rule serves them all.
 
-thread_local! {
+runtime_tls::thread_local! {
     static STATIC_RULES: std::cell::RefCell<Vec<(Rc<str>, crate::StyleRules)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }

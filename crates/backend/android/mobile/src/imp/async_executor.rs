@@ -40,7 +40,7 @@ use runtime_shared::driver::AsyncExecutor;
 use super::with_env;
 use crate::imp::scheduler::post_async_poll_to_main;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Pending futures keyed by id. Lives on the main thread only — `spawn`
     /// and `poll_task` both run on the JVM main (`Looper`) thread, so the
     /// `!Send` futures never cross a thread boundary; the waker carries only

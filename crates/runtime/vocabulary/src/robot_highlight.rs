@@ -108,7 +108,7 @@ fn ctx() -> HighlightCtx {
     c
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static SUPPRESS: Cell<u32> = const { Cell::new(0) };
     /// Set while arming the refresh timer: with no scheduler installed
     /// `after_ms` runs its callback synchronously, and a self-rearming

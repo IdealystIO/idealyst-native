@@ -99,7 +99,7 @@ pub fn install(backend: &mut WindowsBackend, spec: MenuBarSpec) {
     });
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Anchor for the last-installed HMENU so the next `install` can
     /// `DestroyMenu` it cleanly. Holding the HMENU here also ensures
     /// the OS resource lifetime matches our intent (alive while the

@@ -13,7 +13,7 @@ use std::rc::Rc;
 use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
 use runtime_core::{component, Element, IdealystSchema, IntoElement, StyleSheet, VariantEnum};
 
-thread_local! {
+runtime_tls::thread_local! {
     static SPINNER_HUG_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
 }
 

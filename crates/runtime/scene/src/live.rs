@@ -84,7 +84,7 @@ struct Entry {
     origin: Weak<dyn Any>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LIVE: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
 }
 

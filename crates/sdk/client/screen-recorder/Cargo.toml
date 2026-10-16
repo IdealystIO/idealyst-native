@@ -52,6 +52,9 @@ capabilities = ["screen_capture"]
 frameworks = ["ReplayKit", "CoreMedia", "CoreVideo"]
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Only needed for the `private_layer` surface: the scene registry + the
 # vocabulary caps its handlers drive (`ExternalOps::create_external` +
 # scope-tied teardown) + `runtime-shared` for

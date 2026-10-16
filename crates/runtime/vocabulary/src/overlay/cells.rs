@@ -84,7 +84,7 @@ struct Cell {
     alive: Box<dyn Fn() -> bool>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Every registered cell. Thread-local for the same reason the scene's
     /// live-instance registry is: a scene is single-threaded, and in the
     /// dev sidecar one thread is one session.

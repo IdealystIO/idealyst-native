@@ -25,6 +25,9 @@ license.workspace = true
 # See `manifest.rs`.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Reactive state: `Updater` exposes a `Signal<UpdateState>` author UI binds
 # to (a banner / toast), so the whole check→download→relaunch lifecycle is
 # rendered once and behaves identically on every backend. `async-driver`

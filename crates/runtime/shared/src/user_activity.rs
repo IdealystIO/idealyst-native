@@ -44,7 +44,7 @@ pub const MIN_TICK_INTERVAL_MICROS: u64 = 16_667;
 
 type Handler = Rc<dyn Fn(u64)>;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Ticks so far. Monotonic for the thread's life.
     static COUNT: Cell<u64> = const { Cell::new(0) };
     /// Clock reading of the last tick; `None` before the first.

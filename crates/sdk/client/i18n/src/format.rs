@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::fmt::Display;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Optional app-installed formatter. When set, [`format`] delegates to
     /// it instead of the built-in substitutor. Thread-local because the
     /// reactive runtime is single-threaded (UI thread).

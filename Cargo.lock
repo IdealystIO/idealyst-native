@@ -788,6 +788,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
+ "runtime-tls",
  "semver",
  "serde",
  "serde_json",
@@ -1381,6 +1382,7 @@ dependencies = [
  "runtime-scene",
  "runtime-server-shell-native",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
 ]
@@ -2792,6 +2794,7 @@ dependencies = [
  "ndk-context",
  "objc2 0.5.2",
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
  "wasm-bindgen-test",
  "web-glue",
@@ -3320,6 +3323,7 @@ version = "1.6.0"
 dependencies = [
  "chrono",
  "iana-time-zone",
+ "runtime-tls",
  "wasm-bindgen-test",
  "web-glue",
  "zone-offset",
@@ -3730,6 +3734,7 @@ dependencies = [
  "host-mock",
  "runtime-core",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 
@@ -4725,6 +4730,7 @@ name = "gesture"
 version = "2.0.0"
 dependencies = [
  "runtime-shared",
+ "runtime-tls",
 ]
 
 [[package]]
@@ -6170,6 +6176,7 @@ dependencies = [
  "net",
  "runtime-core",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "serde_json",
  "trybuild",
@@ -6380,6 +6387,7 @@ version = "3.1.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 
@@ -6408,6 +6416,7 @@ dependencies = [
  "runtime-layout",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "table",
 ]
@@ -6502,6 +6511,7 @@ dependencies = [
  "lol_alloc",
  "runtime-core",
  "runtime-scene",
+ "runtime-tls",
  "runtime-vocabulary",
  "web-glue",
 ]
@@ -7454,6 +7464,7 @@ dependencies = [
  "permissions",
  "pollster 0.4.0",
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
@@ -7744,6 +7755,7 @@ name = "media-stream"
 version = "1.8.0"
 dependencies = [
  "futures-channel",
+ "runtime-tls",
  "wasm-bindgen-test",
  "web-glue",
 ]
@@ -7829,6 +7841,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "runtime-core",
+ "runtime-tls",
  "windows 0.62.2",
 ]
 
@@ -8857,6 +8870,7 @@ dependencies = [
  "offload-macro",
  "pollster 0.3.0",
  "postcard",
+ "runtime-tls",
  "serde",
  "thiserror 2.0.18",
  "wasm-bindgen-test",
@@ -10077,6 +10091,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rand_xoshiro",
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
  "wasm-bindgen-test",
  "web-glue",
@@ -10747,6 +10762,7 @@ dependencies = [
 name = "runtime-scene"
 version = "1.10.0"
 dependencies = [
+ "runtime-tls",
  "runtime-world",
  "rustc-hash 2.1.2",
 ]
@@ -10775,6 +10791,7 @@ dependencies = [
  "mcp-catalog",
  "pollster 0.4.0",
  "raw-window-handle",
+ "runtime-tls",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
@@ -10793,6 +10810,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-tls"
+version = "0.1.0"
+
+[[package]]
 name = "runtime-vocabulary"
 version = "3.1.0"
 dependencies = [
@@ -10806,6 +10827,7 @@ dependencies = [
  "runtime-scene",
  "runtime-shared",
  "runtime-template",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
  "serde",
@@ -10815,6 +10837,7 @@ dependencies = [
 name = "runtime-world"
 version = "1.8.1"
 dependencies = [
+ "runtime-tls",
  "rustc-hash 2.1.2",
 ]
 
@@ -11131,6 +11154,7 @@ dependencies = [
  "pollster 0.4.0",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "thiserror 2.0.18",
  "tokio",
@@ -11564,6 +11588,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "pollster 0.4.0",
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
@@ -12344,6 +12369,7 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
  "tiny-skia",
@@ -12744,6 +12770,7 @@ dependencies = [
  "backend-ssr",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
 ]
@@ -13209,6 +13236,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
  "windows 0.62.2",
@@ -14037,6 +14065,7 @@ dependencies = [
  "runtime-core",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen-test",
@@ -14709,6 +14738,7 @@ dependencies = [
  "objc2-ui-kit",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen-test",

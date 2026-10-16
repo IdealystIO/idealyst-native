@@ -949,7 +949,7 @@ mod depth {
     /// module docs for how the number was chosen.
     pub const MAX_DEPTH: usize = 512;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static DEPTH: Cell<usize> = const { Cell::new(0) };
     }
 

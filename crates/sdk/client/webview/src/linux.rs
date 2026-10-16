@@ -55,7 +55,7 @@ use webkit6::prelude::*;
 
 pub(crate) static OPS: &dyn WebViewOps = &LinuxWebViewOps;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// node id → live `webkit6::WebView`. Populated by [`build_web_view`]
     /// at mount, cleared by the `on_cleanup` it installs (so a popped
     /// screen stops the engine). The imperative [`WebViewOps`] look their

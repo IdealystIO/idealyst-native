@@ -40,7 +40,7 @@ use super::with_env;
 // construction — no leaked pointers, no double-free. (Not a raw
 // `Box::into_raw` pointer handed to both sides: cancel-after-fire then
 // double-frees and SIGSEGVs.)
-thread_local! {
+runtime_tls::thread_local! {
     static CALLBACKS: RefCell<HashMap<i64, Box<dyn FnOnce() + 'static>>> =
         RefCell::new(HashMap::new());
     static NEXT_ID: Cell<i64> = const { Cell::new(1) };
@@ -166,7 +166,7 @@ impl Scheduler for AndroidScheduler {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Coalescing flag: set when a layout pass is queued (via
     /// `Handler.postDelayed`) and cleared at the start of the queued
     /// pass. Mirrors the iOS `LAYOUT_PASS_QUEUED` pattern. Without coalescing,

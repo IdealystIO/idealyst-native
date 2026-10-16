@@ -91,6 +91,9 @@ hydrate = ["backend-web/hydrate"]
 # actually has.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 idealyst-macros = { path = "../idealyst-macros", version = "1.5.2", registry = "idealyst" }
 # `async-driver` here is the other half: it forwards to the
 # vocabulary so `driver::spawn_async` / `render_loop` resolve.

@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use super::bundle::{invoke, release};
 use super::Cb;
 
-thread_local! {
+runtime_tls::thread_local! {
     static ARGS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static REPLY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
@@ -91,7 +91,7 @@ pub extern "C" fn idealyst_ui_live_callbacks() -> u32 {
     super::bundle::live_callbacks() as u32
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LAST_PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -140,7 +140,7 @@ mod executor {
 
     type Task = Pin<Box<dyn Future<Output = ()>>>;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static TASKS: RefCell<HashMap<u64, Task>> = RefCell::new(HashMap::new());
         static READY: RefCell<VecDeque<u64>> = const { RefCell::new(VecDeque::new()) };
         static RUNNING: Cell<bool> = const { Cell::new(false) };

@@ -124,7 +124,7 @@ impl ImageState {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Image views whose natural size changed since the last layout pass.
     /// `run_layout_pass` drains it and `mark_dirty`s their Taffy nodes —
     /// Taffy caches leaf measurements, so without the dirty mark an image

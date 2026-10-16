@@ -607,7 +607,7 @@ fn lookup_player(node: &dyn Any) -> Option<Retained<NSObject>> {
     PLAYER_TABLE.with(|t| t.borrow().get(&key).map(|e| e.player.clone()))
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// view-pointer → AVPlayer side-table. Populated by `build_video`
     /// at mount; entries are never removed (see file-level docs for
     /// the leak rationale).

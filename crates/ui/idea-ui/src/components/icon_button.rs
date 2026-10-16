@@ -44,7 +44,7 @@ fn icon_px_for(size: IconButtonSize) -> f32 {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static ICON_BUTTON_ICON_SHEETS: std::cell::RefCell<
         std::collections::HashMap<u32, Rc<StyleSheet>>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());

@@ -323,7 +323,7 @@ impl TokenVocabulary for () {
 // name only: an idea-ui icon's tint (`.color(move || tok.resolve())`)
 // keeps the first theme's color through every swap.
 
-thread_local! {
+runtime_tls::thread_local! {
     static TOKEN_READ_HOOK: RefCell<Option<std::rc::Rc<dyn Fn()>>> = const { RefCell::new(None) };
 }
 
@@ -2393,7 +2393,7 @@ pub fn premint_class_name(identity: &str) -> String {
     format!("iy-{:012x}", h & 0xffff_ffff_ffff)
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The set of premint base classes the LOADED CSS asset actually
     /// contains — `None` until (unless) a backend installs it. See
     /// [`install_minted_classes`].
@@ -2461,7 +2461,7 @@ pub fn scan_minted_classes(css_text: &str) -> Vec<String> {
     out
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static UNMINTED_WARNED: std::cell::RefCell<rustc_hash::FxHashSet<String>> =
         std::cell::RefCell::new(rustc_hash::FxHashSet::default());
     static UNMINTED_WARN_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -2573,7 +2573,7 @@ pub struct CompoundVariant {
     pub rules: RulesFn,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Single shared per-sheet cache backing every `stylesheet!`-generated
     /// `*_style()` constructor. Each generated fn passes a process-unique
     /// key (the address of a function-local `static`) and its built
@@ -4133,7 +4133,7 @@ pub enum TokenValue {
 // Global token state & resolution cache
 // ----------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Per-token reactive registry. Each token name maps to a
     /// `Signal<TokenValue>` carrying the current value. `install_tokens`
     /// creates entries; `update_tokens` calls `.set(..)` on existing
@@ -4418,7 +4418,7 @@ pub fn subscribe_to_all_token_signals() {
     });
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Monotone tokens VERSION, bumped once per `update_tokens` /
     /// `install_tokens` batch. Style effects subscribe to THIS signal
     /// (via [`tokens_version_signal`]) instead of relying on the

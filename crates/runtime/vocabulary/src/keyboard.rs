@@ -42,7 +42,7 @@ pub struct KeyboardCtx {
     inset: Signal<KeyboardInset>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The platform's most recent report. Seeds every ctx created after
     /// it (see the module docs).
     static LATEST: Cell<KeyboardInset> = const { Cell::new(KeyboardInset::HIDDEN) };

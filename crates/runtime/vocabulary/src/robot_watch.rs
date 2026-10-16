@@ -129,7 +129,7 @@ struct WatchEntry {
     writer: Option<Writer>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Slot id (u32, the wire id) → entry. At most one watch per slot;
     /// re-registration on the same slot overwrites (last-wins).
     static WATCHED: RefCell<HashMap<u32, WatchEntry>> = RefCell::new(HashMap::new());

@@ -29,7 +29,7 @@ pub type RegionScope = Rc<dyn Fn(&mut dyn FnMut())>;
 
 type Provider = Rc<dyn Fn() -> RegionScope>;
 
-thread_local! {
+runtime_tls::thread_local! {
     static PROVIDERS: RefCell<Vec<Provider>> = const { RefCell::new(Vec::new()) };
 }
 

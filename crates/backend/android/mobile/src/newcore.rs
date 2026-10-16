@@ -102,24 +102,15 @@
 //! re-entrant flushes (`world.is_flushing()`) — belt and braces; a posted
 //! looper message can't actually preempt a synchronous flush.
 //!
-//! # TLS budget (bionic's 128 pthread-key limit)
+//! # Thread-locals (bionic's 128 pthread-key limit)
 //!
-//! Every dtor-bearing `thread_local!` spends one bionic pthread TLS key,
-//! and running out aborts the process. This module spends:
-//!
-//! - [`FLUSH`]: ONE dtor-bearing `thread_local!` (`RefCell<Option<World>>`
-//!   + dedup flag folded into a single slot struct precisely to spend one
-//!   key, not two).
-//! - `APP` (android-gated): ONE dtor-bearing `thread_local!` (kept
-//!   separate from `FLUSH` because a flush may run while the app value is
-//!   mid-construction inside [`start`]).
-//! - `crate::dispatch_hook::HOOK`: `Cell<Option<fn()>>`, const-init, no
-//!   destructor → plain ELF-TLS, **zero** pthread keys.
-//!
-//! Net: **+2 pthread TLS keys** (the kernel adds one more: `runtime-world`
-//! owns exactly one world-registry key). The vocabulary's handler statics
-//! (`navigator` queue/tick, robot registry under the `robot` feature) add
-//! ≤4 more; nothing here introduces a per-sheet or per-node thread-local.
+//! Rust's Android target has no native thread-locals, so std gives every
+//! `thread_local!` static its own pthread key, and bionic aborts the
+//! process past 128 — `const` and destructor-free ones included. Every
+//! thread-local here (and in the framework crates an app links) is
+//! declared with `runtime_tls::thread_local!`, which on Android is a slot
+//! in one per-thread table: two pthread keys for the whole process,
+//! however many statics there are.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -132,10 +123,8 @@ use runtime_world::World;
 // platform via `cargo test -p backend-android-mobile`)
 // ===========================================================================
 
-/// The flush driver's per-thread state. World handle + dedup flag are
-/// folded into ONE `thread_local!` on purpose: each dtor-bearing
-/// thread-local costs a bionic pthread TLS key (module docs, "TLS
-/// audit"), and the two fields are only ever touched together.
+/// The flush driver's per-thread state: world handle + dedup flag, which
+/// are only ever touched together.
 struct FlushSlot {
     /// The world the flush driver commits. Kept out of the `APP`
     /// slot's custody so [`schedule_flush`] never touches app state (a
@@ -146,7 +135,7 @@ struct FlushSlot {
     queued: Cell<bool>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static FLUSH: FlushSlot = const {
         FlushSlot {
             world: RefCell::new(None),
@@ -232,13 +221,9 @@ pub fn flush_sync() {
 // boot CAPTURES the world's signal handle — capture, don't inject —
 // and the push stages through the handle (routes to its own world,
 // equality-guarded) then rides one deduped [`schedule_flush`].
-//
-// TLS audit note: [`VIEWPORT_SINK`] is a const-init `Cell` of a `Copy`
-// handle — no destructor, so it lowers to plain ELF-TLS and spends
-// ZERO bionic pthread keys (same class as `dispatch_hook::HOOK`; the
-// module-docs "+2 keys" budget is unchanged).
 
-thread_local! {
+
+runtime_tls::thread_local! {
     /// The mounted world's viewport signal (`Copy` handle). `None`
     /// before [`start`] / after [`stop`], so the resize seam costs one
     /// TLS read and nothing else when no app is mounted.
@@ -503,13 +488,13 @@ mod native {
     // Boot path
     // -----------------------------------------------------------------------
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// The mounted app: dropping this tears everything
         /// down (Realized first — unmount — then the World). Process-
         /// lifetime unless the wrapper's `detach` calls [`stop`]; same
         /// retention convention as `backend-web`'s `APP`. Separate
-        /// from [`super::FLUSH`] (module docs, "TLS budget": this is
-        /// the second — and last — pthread key this module spends).
+        /// from [`super::FLUSH`] because a flush may run while the app
+        /// value is mid-construction inside [`start`].
         static APP: RefCell<Option<App>> = const { RefCell::new(None) };
     }
 
@@ -1695,7 +1680,7 @@ mod tests {
     // isolated). Installed process-wide (first install wins) — fine:
     // every test in this crate that schedules anything drains
     // explicitly via `pump`.
-    thread_local! {
+    runtime_tls::thread_local! {
         static QUEUE: std::cell::RefCell<VecDeque<Box<dyn FnOnce() + 'static>>> =
             std::cell::RefCell::new(VecDeque::new());
     }

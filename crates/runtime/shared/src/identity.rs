@@ -209,7 +209,7 @@ fn mix(salt: u64, parent: u64, slot: u32, branch: Option<u32>, key: Option<u64>)
 // Thread-local current-identity context
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Identity the mount path is currently emitting under, set via
     /// [`with_current_identity`] around a `create_*` call; backends that
     /// care (a wire-recording backend dedups `NodeId`s across sidecar

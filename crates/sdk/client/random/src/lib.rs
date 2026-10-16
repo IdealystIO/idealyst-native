@@ -85,7 +85,7 @@ pub fn secure_u64() -> u64 {
     u64::from_le_bytes(b)
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static THREAD_RNG: RefCell<Option<Rng>> = const { RefCell::new(None) };
 }
 

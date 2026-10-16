@@ -49,7 +49,7 @@ use std::rc::Rc;
 
 use runtime_shared::scheduling::{after_ms, raf_loop};
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Stack of anchors whose deferred bodies are currently running —
     /// the "re-enter the registering scope" channel for nested
     /// `*_scoped` calls.

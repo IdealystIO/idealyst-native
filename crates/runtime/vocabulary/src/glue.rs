@@ -771,7 +771,7 @@ pub fn __with_fresh_world<R>(f: impl FnOnce() -> R) -> R {
     r
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The stack of live [`__with_fresh_world`] worlds (nested test
     /// helpers), so [`__flush_test_world`] can commit mid-test.
     /// Test-support only — never touched by production mounts, so its
@@ -3732,7 +3732,7 @@ impl GlueIcon {
     pub fn size(self, size: f32) -> Self {
         use std::cell::RefCell;
         use std::collections::HashMap;
-        thread_local! {
+        runtime_tls::thread_local! {
             static ICON_SIZE_SHEETS: RefCell<HashMap<u32, Rc<StyleSheet>>> =
                 RefCell::new(HashMap::new());
         }

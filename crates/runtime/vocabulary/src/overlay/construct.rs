@@ -49,7 +49,7 @@ use runtime_template::{LiteralValue, NewNode, PropValue};
 /// apply nothing.
 pub type ComponentCtor = fn(&[(&str, &LiteralValue)], Vec<Element>) -> Option<Element>;
 
-thread_local! {
+runtime_tls::thread_local! {
     static CTORS: RefCell<HashMap<&'static str, ComponentCtor>> =
         RefCell::new(HashMap::new());
 }

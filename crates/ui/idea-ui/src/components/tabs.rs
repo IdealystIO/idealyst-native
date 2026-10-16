@@ -63,7 +63,7 @@ impl VariantEnum for TabIndicator {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static TAB_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
         const { std::cell::RefCell::new(None) };
 }

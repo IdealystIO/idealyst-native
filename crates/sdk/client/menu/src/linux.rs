@@ -133,7 +133,7 @@ struct InstallState {
     menubar: Option<gtk4::Widget>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LAST_MENUBAR: RefCell<InstallState> = RefCell::new(InstallState {
         vbox: None,
         menubar: None,

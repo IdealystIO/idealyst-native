@@ -44,7 +44,7 @@ use super::query::{QueryParams, ScreenState};
 // Ambient navigator stack — Link primitives find their navigator here
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static AMBIENT_NAV: RefCell<Vec<Rc<NavigatorControl>>> =
         const { RefCell::new(Vec::new()) };
 }
@@ -121,7 +121,7 @@ struct NavRegEntry {
 }
 
 #[cfg(feature = "robot")]
-thread_local! {
+runtime_tls::thread_local! {
     static NAV_REGISTRY: RefCell<NavRegistry> = RefCell::new(NavRegistry::default());
 }
 
@@ -458,7 +458,7 @@ mod nav_registry_tests {
 // down it (`match_prefix`). A single root navigator (base "") is unaffected:
 // `join_path("", p) == p`, so existing apps behave identically.
 
-thread_local! {
+runtime_tls::thread_local! {
     static NAV_BASE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -1396,7 +1396,7 @@ pub enum NavCommand {
 // `screen_state::<S>()` / `screen_query()`.
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static SCREEN_STATE: RefCell<Vec<QueryParams>> =
         const { RefCell::new(Vec::new()) };
 }
@@ -1457,7 +1457,7 @@ pub fn screen_state<S: ScreenState>() -> Option<S> {
 // without plumbing the name through every component.
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static SCREEN_ROUTE: RefCell<Vec<&'static str>> =
         const { RefCell::new(Vec::new()) };
 }
@@ -1583,7 +1583,7 @@ pub fn use_can_go_back() -> impl Fn() -> bool + 'static {
 // the SDK handler layer.
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static INITIAL_PATH: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -1624,7 +1624,7 @@ pub fn peek_initial_path() -> Option<String> {
 // Live backends never enable this; when no collector is set the hook is a
 // thread-local borrow + branch, no allocation.
 
-thread_local! {
+runtime_tls::thread_local! {
     static ROUTE_COLLECTOR: RefCell<Option<Vec<&'static str>>> =
         const { RefCell::new(None) };
 }

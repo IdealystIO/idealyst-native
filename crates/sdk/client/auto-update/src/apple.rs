@@ -30,7 +30,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
-thread_local! {
+runtime_tls::thread_local! {
     /// The staged swap recorded by [`apply`]: `(target_bundle, new_bundle)`.
     /// Consumed by [`relaunch`].
     static STAGED: RefCell<Option<(PathBuf, PathBuf)>> = const { RefCell::new(None) };

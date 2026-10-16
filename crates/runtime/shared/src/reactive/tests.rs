@@ -1465,7 +1465,7 @@ fn install_drop_deferral_routes_effects_and_guards_not_signals() {
     use std::rc::Rc;
 
     // Capture every box the policy receives so we can introspect.
-    thread_local! {
+    runtime_tls::thread_local! {
         static DEFERRED: RefCell<Vec<Box<dyn std::any::Any>>> =
             RefCell::new(Vec::new());
     }

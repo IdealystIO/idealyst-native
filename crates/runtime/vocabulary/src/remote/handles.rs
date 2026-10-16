@@ -133,7 +133,7 @@ mod bundle_side {
     use super::HandleCall;
     use crate::remote::{from_bytes, to_bytes, Cb};
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// The app's [`HANDLE_CALL_LEVEL`](super::HANDLE_CALL_LEVEL), as its
         /// handle fills report it — one app per bundle, so one value.
         static APP_LEVEL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -391,7 +391,7 @@ mod bundle_side {
     impl PortalOps for RemoteOps {}
     impl PresenceOps for RemoteOps {}
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// The navigator handles this bundle received from the app, by
         /// identity — so handing one back (to an app component) sends the
         /// app's id, not a new proxy.
@@ -561,7 +561,7 @@ mod host_side {
         subs: HashMap<u32, LayoutSubscription>,
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static HANDLES: RefCell<HashMap<u32, Entry>> = RefCell::new(HashMap::new());
         static NEXT: Cell<u32> = const { Cell::new(0) };
     }

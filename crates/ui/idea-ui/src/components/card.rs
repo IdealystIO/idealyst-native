@@ -173,7 +173,7 @@ pub mod variant {
     card_variant_reactive!(Regular, Outline, Flat, Elevated);
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static CARD_SHEET: RefCell<Option<Rc<StyleSheet>>> = const { RefCell::new(None) };
     #[cfg(debug_assertions)]
     static WARNED_CARD_VARIANTS: RefCell<std::collections::HashSet<String>> =

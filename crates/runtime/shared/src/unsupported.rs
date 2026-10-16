@@ -37,7 +37,7 @@ mod imp {
     use std::cell::RefCell;
     use std::collections::HashSet;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         static SEEN: RefCell<HashSet<&'static str>> = RefCell::new(HashSet::new());
     }
 

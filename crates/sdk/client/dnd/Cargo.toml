@@ -42,6 +42,9 @@ license.workspace = true
 # No permissions required.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Pure Rust on top of the framework's touch recognizer + animation + geometry
 # primitives — no platform crates.
 #

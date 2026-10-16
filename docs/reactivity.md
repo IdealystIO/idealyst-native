@@ -47,9 +47,11 @@ serializing (`crates/backend/ssr/tests/newcore_isolation.rs`), and what
 lets an embedded app mounted inside a host page write into the host's
 world.
 
-A single `thread_local!` holds the whole registry (`world id → arena`)
-plus every transient stack. One TLS key matters on Android, where bionic
-caps pthread TLS keys at 128.
+A single thread-local holds the whole registry (`world id → arena`)
+plus every transient stack. Like every framework thread-local it is
+declared with `runtime_tls::thread_local!`: on Android, where std gives
+each `thread_local!` its own pthread key and bionic aborts past 128, that
+macro puts all of them in one per-thread table (`crates/runtime/tls`).
 
 Slots are **generational**: freeing a slot bumps its generation, so a
 stale `Copy` handle whose scope was dropped can never alias the slot's

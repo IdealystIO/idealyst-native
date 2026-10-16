@@ -896,7 +896,7 @@ mod tests {
         })
     }
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// Peeled row scopes, retained for the test's lifetime — a
         /// clickable row's marker arrives `Owned`-wrapped around the
         /// shared hover signal, and dropping the scope here would

@@ -232,7 +232,7 @@ impl PointerModifiers {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static POINTER_MODIFIERS: std::cell::Cell<PointerModifiers> =
         const { std::cell::Cell::new(PointerModifiers { shift: false, ctrl: false, alt: false, meta: false }) };
 }
@@ -318,7 +318,7 @@ impl PointerButton {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static POINTER_BUTTON: std::cell::Cell<PointerButton> =
         const { std::cell::Cell::new(PointerButton::Primary) };
 }
@@ -337,7 +337,7 @@ pub fn pointer_button() -> PointerButton {
     POINTER_BUTTON.with(|c| c.get())
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static ACTIVE_TOUCH_CLAIM: std::cell::RefCell<Option<Rc<dyn Fn()>>> =
         const { std::cell::RefCell::new(None) };
 }

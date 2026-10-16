@@ -213,7 +213,7 @@ pub fn after_ms<F: FnOnce() + 'static>(delay_ms: i32, f: F) -> ScheduledTask {
     ScheduledTask { inner: None }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Parking lot for tasks handed to the runtime via
     /// [`after_ms_detached`]. Each slot holds the [`ScheduledTask`] so its
     /// cancel-on-`Drop` doesn't fire, plus a `done` flag the task sets when
@@ -308,7 +308,7 @@ impl RafLoop {
 // rather than `driver` so it's accessible without the `async-driver`
 // feature, which not every embed turns on.
 
-thread_local! {
+runtime_tls::thread_local! {
     static FRAME_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
@@ -344,7 +344,7 @@ pub fn set_frame_active(active: bool) {
 // boundaries without a per-platform dep at the call site.
 // ---------------------------------------------------------------------------
 
-thread_local! {
+runtime_tls::thread_local! {
     static DEBUG_LOG: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> =
         const { std::cell::RefCell::new(None) };
 }

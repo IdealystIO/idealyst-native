@@ -26,7 +26,7 @@ use runtime_core::{signal, Element, Ref, Signal, TouchPoint, ViewHandle, Viewpor
 /// preview" / ghost). Snapshotted once at drag start.
 pub(crate) type PreviewBuilder = Rc<dyn Fn() -> Element>;
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Process-wide monotonic id source for droppables. Not time/random, so
     /// it is safe in workflow/replay contexts.
     static NEXT_DROPPABLE_ID: Cell<u64> = const { Cell::new(1) };

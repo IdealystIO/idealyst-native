@@ -1483,6 +1483,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Android apps aborted once they had touched enough of the framework**
+  (`runtime-tls` new; `runtime-world`, `runtime-shared`, `runtime-scene`,
+  `runtime-vocabulary`, `backend-android-mobile`, `idea-theme`, `idea-ui`,
+  `idealyst` and 18 client SDKs). Rust's Android target has no native
+  thread-locals, so std gives every `thread_local!` static its own pthread
+  key — `const`, destructor-free ones too — and bionic aborts the process
+  past 128. The framework declares about 250; the robot-e2e demo aborted
+  on its first real touch. Every framework thread-local is now declared
+  with `runtime_tls::thread_local!`: std's off Android, and on Android a
+  slot in one per-thread table (two keys in all). A test fails on a std
+  `thread_local!` in any Android-linked crate. *Migration:* an SDK or app
+  crate that declares its own thread-locals for Android should do the
+  same (`runtime-tls = { … }`, `runtime_tls::thread_local! { … }`).
+
 - **`idealyst test --web` could test code that was no longer the source**
   (`idealyst-cli`). The launched dev session resumed the last session's
   bundle and replayed its hot patches, and a patch only reaches code the

@@ -73,7 +73,7 @@ pub struct UrlProvider {
     pub history_back: Box<dyn Fn()>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static PROVIDER: RefCell<Option<UrlProvider>> = const { RefCell::new(None) };
     /// Live per-navigator sync entries (weak controls; pruned lazily).
     static REGISTRY: RefCell<Vec<Rc<NavEntry>>> = const { RefCell::new(Vec::new()) };

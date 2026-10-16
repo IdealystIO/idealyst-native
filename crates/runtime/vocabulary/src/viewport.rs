@@ -91,7 +91,7 @@ pub struct ViewportCtx {
     breakpoint: Memo<Breakpoint>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The most recent ambient world's ctx — the HANDLER fallback.
     /// Refreshed on every ambient [`viewport_ctx`] call; consulted only
     /// when no world is entered (see the module docs' capture-don't-

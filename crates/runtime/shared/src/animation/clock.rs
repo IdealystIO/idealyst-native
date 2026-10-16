@@ -70,7 +70,7 @@ impl ClockState {
     }
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static CLOCK: RefCell<ClockState> = RefCell::new(ClockState::new());
 }
 
@@ -341,7 +341,7 @@ mod teardown_tests {
     use super::*;
     use std::cell::RefCell;
 
-    thread_local! {
+    runtime_tls::thread_local! {
         /// Touched BEFORE the clock, so its destructor runs after the
         /// clock's: it drops a registration once `CLOCK` is gone.
         static HOLDER: RefCell<Option<TickRegistration>> = const { RefCell::new(None) };

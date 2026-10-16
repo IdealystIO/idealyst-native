@@ -28,7 +28,7 @@ pub struct PageMetadata {
     pub canonical_url: Option<String>,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static PENDING: RefCell<Option<PageMetadata>> = const { RefCell::new(None) };
 }
 

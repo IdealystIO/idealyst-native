@@ -189,7 +189,7 @@ pub fn decode(link: Rc<dyn Link>, bytes: &[u8]) -> Result<Element, DecodeError> 
     Ok(runtime_scene::owned(element, owned))
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LIVE_TREES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -214,7 +214,7 @@ fn decode_failed(e: &DecodeError) -> Element {
     crate::builders::text().content(format!("⚠ remote component: {e}")).build()
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// The copies each tree being built has claimed, innermost last (see
     /// [`build_tree`]).
     static CLAIMS: RefCell<Vec<Claims>> = const { RefCell::new(Vec::new()) };
@@ -1084,7 +1084,7 @@ pub(crate) fn intern_name(s: &str) -> &'static str {
 
 type ImportFn = Rc<dyn Fn(&[u8], Vec<Element>) -> Result<Element, String>>;
 
-thread_local! {
+runtime_tls::thread_local! {
     static IMPORTS: RefCell<HashMap<String, ImportFn>> = RefCell::new(HashMap::new());
 }
 
@@ -1142,7 +1142,7 @@ pub trait Loader: 'static {
     fn mount(&self, component: &str, args: &[u8]) -> Result<Element, String>;
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static LOADER: RefCell<Option<Rc<dyn Loader>>> = const { RefCell::new(None) };
 }
 
@@ -1152,7 +1152,7 @@ pub fn install_loader(loader: Rc<dyn Loader>) {
     export_contexts();
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     static EXPORTED_CONTEXTS: RefCell<Option<Vec<Box<dyn std::any::Any>>>> = const { RefCell::new(None) };
 }
 
@@ -1219,7 +1219,7 @@ pub struct AppComponent {
 pub static APP_COMPONENTS: [AppComponent];
 
 fn app_component(name: &str) -> Option<&'static AppComponent> {
-    thread_local! {
+    runtime_tls::thread_local! {
         static BY_NAME: HashMap<&'static str, &'static AppComponent> =
             APP_COMPONENTS.iter().map(|c| (c.name, c)).collect();
     }
@@ -1309,7 +1309,7 @@ pub static KEYED: [KeyedEntry];
 /// The app's `T` registered under `key`, if any.
 pub fn by_key<T: 'static>(key: &str) -> Option<T> {
     type Make = fn() -> Box<dyn std::any::Any>;
-    thread_local! {
+    runtime_tls::thread_local! {
         static BY_KEY: HashMap<(std::any::TypeId, &'static str), Make> =
             KEYED.iter().map(|e| (((e.ty)(), (e.key)()), e.make)).collect();
     }

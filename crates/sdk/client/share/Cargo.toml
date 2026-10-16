@@ -20,6 +20,9 @@ license.workspace = true
 # platform.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The catalog feature pulls in `recipe!` for the compile-checked usage examples.
 # The author surface, aliased to `runtime_core` at the crate root (see
 # src/lib.rs). `runtime-vocabulary` is a direct dep because the `ui!`

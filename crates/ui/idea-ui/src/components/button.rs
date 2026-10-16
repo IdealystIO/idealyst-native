@@ -159,7 +159,7 @@ impl Default for ButtonProps {
 /// centered row.
 const BUTTON_ICON_PX: f32 = 16.0;
 
-thread_local! {
+runtime_tls::thread_local! {
     static BUTTON_ICON_SHEET: std::cell::RefCell<Option<Rc<runtime_core::StyleSheet>>> =
         const { std::cell::RefCell::new(None) };
 }
