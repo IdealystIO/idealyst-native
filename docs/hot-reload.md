@@ -1861,7 +1861,7 @@ The whole substrate is behind one cargo feature,
 
 Off by default. Two things turn it on: `idealyst dev`'s generated
 sidecar, and `idealyst dev --web --local` (the `hot-reload` framework
-feature, which the `idealyst` facade forwards to the same crates plus
+feature, which the `idealyst` entry crate forwards to the same crates plus
 `backend-web`'s patch applier) unless `--split` is given. A production
 build — `idealyst build` — carries none of it, and `runtime-macros`
 emits the author's function verbatim.

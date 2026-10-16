@@ -47,7 +47,7 @@ implementation.
 | --- | --- | --- |
 | Contract | [`api/`](./api) | `EventSink`, `DeviceProfile`, input vocabulary — the small contract crate that lets any Host pair with any Engine without either knowing the other's internals. |
 | Engine | [`engine/`](./engine) | The wgpu renderer itself. Implements `runtime_scene::Host` + the `runtime_vocabulary::caps` traits + `render_api::EventSink`. Owns the surface, pipeline, frame management, text shaping. Knows nothing about specific primitives — delegates to the Painter. |
-| Host | [`host/`](./host) | Platform integration. Owns window + drawing surface + event source; translates platform events into the api vocabulary. One crate per platform: `winit`, `appkit`, `web`, `terminal`, `wgpu-accesskit` (the accessibility bridge). |
+| Host | [`host/`](./host) | Platform integration. Owns window + drawing surface + event source; translates platform events into the api vocabulary. Window hosts: `winit`, `appkit`, `web`, `terminal`, plus `wgpu-accesskit` (the accessibility bridge). Embedding hosts that mount a live GPU preview inside a native idealyst app's `graphics` primitive: `ios-mobile`, `android-mobile`, `macos-desktop`, `linux-desktop`, `windows-desktop`, and `wgpu` (picks the right one for the target). |
 | Painter | [`painter/`](./painter) | Per-primitive look. The Engine receives `create_button` from the capability traits and asks the Painter what a button looks like. Sub-crates: `ios-sim`, `android-sim`. Each defines the platform's chrome. |
 | Variant | [`variant/`](./variant) | Form-factor bundles. `phone`, `tablet`, `tv` — each picks a (host, painter, profile) trio and exposes one `run(...)` entry point. |
 
@@ -59,13 +59,8 @@ it into Engine + Painter + Host means each piece is small enough to
 swap independently. Swap the Painter to change the look. Swap the
 Host to change the platform. The Engine and api stay the same.
 
-`host-uikit` and `host-android-native` are planned so GPU-rendered
-apps can target iOS and Android directly — that's the future of
-this slot.
+## Naming
 
-## Renames in flight
-
-The Painter layer was previously called *Skin* (`crates/skin/`).
-The trait inside `engine/` is now `Painter`; the crate-level
-identifier may still mention the old name in places — those are
-follow-up cleanups, not blockers.
+The trait inside `engine/` is `Painter`; the concrete painters live in
+`painter/` (`ios-sim`, `android-sim`). Some identifiers still say *skin*
+(`NativeSkin`, `HeadlessSkin`) — the same concept.

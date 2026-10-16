@@ -273,8 +273,9 @@ Both halves fail loudly rather than silently, by design:
 - A stale `features = ["prim-…"]` entry is a cargo resolve error
   (*"does not have these features"*) — the manifest will not build until
   you delete it.
-- `idealyst build --web --primitives=…` is a hard CLI error naming this
-  guide (`crates/tools/cli/src/removed_flags.rs`), the same treatment
+- `idealyst build --web --primitives=…` is a hard CLI error pointing at the
+  manifest's `[package.metadata.idealyst.app] primitives` key (rejected in
+  `build_web::build`, `crates/tools/build/web/src/lib.rs`), the same treatment
   `--old-core` gets. Accepting it as a no-op would let a size-tuned
   release pipeline keep "succeeding" while quietly producing the
   all-families bundle it was written to avoid.
@@ -579,7 +580,7 @@ dispose call.
 
 On the old core, `on_cleanup(f)` in a component body attached to the
 surrounding scope, and outside any context it was silently dropped
-(`crates/runtime/core/src/reactive.rs::on_cleanup` docs). On runtime v2
+(the old core's `reactive::on_cleanup` docs). On runtime v2
 it requires a **running effect** and panics otherwise:
 `"on_cleanup called outside an effect"`
 (`crates/runtime/world/src/lib.rs::on_cleanup`). Two migration shapes:

@@ -1,6 +1,12 @@
 # Catalog Scopes & Unified Documentation — Design Spec
 
-> Status: draft / pre-implementation. Author: Nicho. Date: 2026-06-02.
+> **Status: implemented.** `doc_scope!` (`crates/runtime/macros-expand/src/scope_emit.rs`),
+> the ambient join and generalized resolver (`crates/mcp/catalog/src/resolve.rs`,
+> `scopes.rs`), the `CatalogSlice` trait (`crates/mcp/catalog/src/slice.rs`),
+> the `--check` / `--strict-scopes` lint (`crates/mcp/server/src/lint.rs`, wired
+> into `idealyst mcp` in `crates/tools/cli/src/cmd/mcp.rs`), and the
+> `list_scopes` / `describe_scope` tools all ship. Scopes are flat: the
+> hierarchy an earlier draft had was dropped. Author: Nicho.
 >
 > Companion to [`framework-mcp-spec.md`](framework-mcp-spec.md). That spec
 > defines *what* the catalog extracts (components, primitives, utilities,
@@ -69,7 +75,7 @@ Three node kinds and one resolver:
   tree. Hierarchy was dropped deliberately: it added cycle/dangling-parent
   validation and a marker-type compile-time system for speculative benefit
   (navigation breadcrumbs), while the one valuable behavior — ambient
-  assignment — never depended on it. See §13.
+  assignment — never depended on it.
 - **Entity** — anything documentable: component, primitive, utility, tool, type,
   method, animation. Each has a stable ref `(kind, module_path, name)`.
 - **Attachment** — recipes and anchored prose notes, attached to an entity
@@ -177,14 +183,14 @@ Every rule sorts by a single question: **does it need the whole graph?**
   behavior, unchanged).
 
 That's the only scope-related compile-time fact. **Scopes have no other rustc
-enforcement, by design.** Once hierarchy was dropped (§13) there is no parent
+enforcement, by design.** Without a hierarchy there is no parent
 graph to validate, so the only remaining facts are "this crate has ≥1 scope"
 (a marginal backstop `--check` already subsumes — a scope-less crate has *every*
 component unscoped) and "this component is covered by a scope" (whole-graph,
 inherently impossible as a rustc error — the macro is per-item and never sees
 the assembled crate). Both are handled at build-time. There is no sentinel, no
-marker-type system — those existed only to serve a hierarchy that no longer
-exists.
+marker-type system — those would only serve a hierarchy, and there is
+none.
 
 ### 7.2 Build-time (`mcp --check`) — whole-graph facts
 
@@ -207,8 +213,8 @@ decision splits across tiers, and only the maximal variant is a Cargo feature
 | unscoped valid (warns) | `mcp --check` default | first-party warnings |
 | unscoped invalid (errors) | `mcp --check --strict-scopes` (CLI flag) | **first-party only**; deps stay lenient |
 
-**Status:** both rows are **implemented** (`LintOptions { strict_scopes,
-first_party_crates }` + `idealyst mcp --check [--strict-scopes]`). There is no
+Both rows are `LintOptions { strict_scopes, first_party_crates }` +
+`idealyst mcp --check [--strict-scopes]`. There is no
 "won't-compile-without-a-scope" rustc tier — see §7.1.
 
 The unscoped-component policy lives in `--check`, deliberately *not* as a Cargo
@@ -267,35 +273,17 @@ boundary.
 1. **Default scope identity** — one synthesized `Uncategorized` per crate, or
    the crate-root `doc_scope!` when present? (Affects the `--check` warning
    message and whether root-level placement is "real" or "fallback.")
-2. ~~**Scope id stability**~~ — **decided (§4.1)**: identity is a stable slug
-   (default = marker ident, overridable via `slug:`), independent of module
-   path; `module_path` drives only the ambient join, not identity.
-3. **Anchored-prose body source** — inline string literal vs
+2. **Anchored-prose body source** — inline string literal vs
    `include_str!("notes/foo.md")` vs a doc-comment-carrying marker item. Long
    prose wants a file; short notes want inline.
-4. ~~**`parent:` ergonomics**~~ — **moot:** hierarchy was dropped (§13), so
-   scopes have no `parent`.
 
-## 13. Phasing
+## 13. Framework adoption
 
-1. ✅ `CatalogSlice` trait + migrate existing slices to it (no behavior change).
-2. ✅ `ScopeEntry` + `doc_scope!` item macro + ambient module-proximity join.
-3. ✅ Generalize the resolver to all entity kinds; generalize `recipe!` target
-   (`component` → `target`, `recipes_for`, `resolve_entity`/`EntityKind`).
-4. ✅ `--check` tier: unscoped-component warning + `--strict-scopes` first-party
-   gate (`LintOptions` + CLI flag). *(Cycle/dangling-parent checks existed
-   briefly, then were removed with hierarchy.)*
-5. ⛔ **Dissolved — hierarchy dropped.** Phase 5 was the compile-time scope
-   guarantee; with flat scopes there is no parent graph to enforce and the only
-   remaining facts are handled at build-time (§7). No sentinel, no marker types.
-6. ✅ MCP tools: `list_scopes` / `describe_scope`; fold `scope` + cross-kind
-   recipes into `describe_component` / `describe_utility`.
-7. ◐ Framework crates declare their scopes (flat). idea-ui declares a
-   `components` scope (`components/mod.rs`) that every component resolves to by
-   ambient proximity; mcp-catalog ships a `core` scope for the `runtime_core`
-   utilities (a table there, not `doc_scope!`, since `runtime-core` can't
-   self-reference `::runtime_core::__mcp`). Verified by `catalog-docs`'s
-   `every_idea_ui_component_is_scoped` test — `--check --strict-scopes` passes
-   for idea-ui. **Follow-up:** finer scopes (Inputs/Layout/Feedback/…) need the
-   flat `components` modules grouped into category submodules — deferred
-   (a ~36-file move + taxonomy decision).
+idea-ui declares a single `components` scope (`crates/ui/idea-ui/src/components/mod.rs`)
+that every component resolves to by ambient proximity; mcp-catalog ships a
+`core` scope for the `runtime_core` utilities (a table in `scopes.rs`, not
+`doc_scope!`, since `runtime-core` can't self-reference `::runtime_core::__mcp`).
+`every_idea_ui_component_is_scoped` (`crates/tools/docs-app/src/catalog.rs`)
+pins it, and `--check --strict-scopes` passes for idea-ui. Finer idea-ui scopes
+(Inputs / Layout / Feedback / …) need the flat `components` modules grouped
+into category submodules first — open work, not yet scheduled.

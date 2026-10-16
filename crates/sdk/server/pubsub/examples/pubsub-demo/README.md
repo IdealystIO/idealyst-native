@@ -1,6 +1,6 @@
 # pubsub-demo
 
-Decentralized WebSocket fan-out on the [`pubsub`](../../crates/sdk/server/pubsub) SDK.
+Decentralized WebSocket fan-out on the [`pubsub`](../..) SDK.
 
 - [`src/lib.rs`](src/lib.rs) — a `#[server] say(from, text)` that publishes a
   `ChatMsg` to the `"room"` topic, a `#[subscription] room_feed()` that bridges

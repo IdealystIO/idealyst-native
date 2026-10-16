@@ -1,29 +1,18 @@
 This is a temporary list of todos so I don't forget.
 
-1. Review size of files in the framework - particularily "walker.rs" has become really large
-2. Decide what needs to be explicitly defined in the Backend vs optionally
-3. revisit install theme requirements
-4. Text component macro confusion: text! renders a primitive, not string
+1. Revisit install theme requirements
 
-## Carried over from a11y workstream
+## Open gaps
 
-### Bigger feedback items still pending
-- **Testing parity** across backends — backend impls have uneven test coverage; need a shared per-backend conformance harness
-- **Stylesheet cache** — design / implementation pending
-- **macOS gap fill-in** — backend has stub-shaped `create_button` and friends; a11y wiring is in place but the underlying NSButton/NSImageView/etc. impls are still placeholders
+- **macOS button icons** — `create_button_impl` (`crates/backend/macos/src/imp/mod.rs`) builds a real `NSButton` but ignores `leading_icon` / `trailing_icon`; NSButton's single image slot needs a custom container to composite icon + label.
+- **Remote (wire) replay of virtualizers** — `apply_create_virtualizer` in `crates/dev/client/src/lib.rs` is a stub, so a `flat_list` / virtualizer in a non-`--local` `idealyst dev` session never registers its node. Since `ac621e29` the client skips the resulting `UnknownNode` commands (logged once) instead of blanking the app, so the symptom is "the virtualized list is missing". `--local` mode is unaffected.
 
-### A11y polish (not blocking; intentional gaps documented)
-- Per-backend a11y integration tests for web / iOS / Android / macOS (today only framework-core + wgpu + wire have dedicated tests; widget backends rely on wire-roundtrip + build-as-smoke-test)
-- Wire the `crates/host/wgpu-accesskit` bridge into an example wgpu app so it gets exercised in practice
-- `default_role` exhaustiveness test that asserts every `PrimitiveKind` arm exists
-- AccessibilityAction handlers cross the wire as `HandlerId` trampolines — works, but no example app demonstrates AT-triggered actions yet
+## A11y
 
-### A11y intentional gaps (forward-compat by design — leave alone unless requirements change)
-- Future `Role` variants surface as `WireRole::Unknown` on older replayers → `None`
-- No standalone iOS-shell / AT-SPI bridges (AccessKit covers UIA/AT-SPI/macOS-AX through one API, so wgpu+winit is end-to-end via `crates/host/wgpu-accesskit`)
+### Polish (not blocking)
+- Per-backend a11y integration tests for web / iOS / Android / macOS. The shared tables (`runtime_shared::accessibility`), the wire round-trip, and the wgpu/AccessKit path have dedicated tests; the widget backends mostly rely on wire round-trip + build-as-smoke-test.
+- `AccessibilityAction` handlers cross the wire as `HandlerId` trampolines and work, but no example app demonstrates an AT-triggered action yet.
 
-### Pre-existing breakage noticed in passing (not from a11y work)
-- `port-preview` — `discover_framework_core` import unresolved
-- `idea-ui-docs` — missing `icon_button!` macro
-- `idealyst dev --macos` (remote/wire mode, non-`--local`) — native shell renders BLANK on every page: `[runtime-server-shell] replay error after N cmds: UnknownNode(NodeId(..))` aborts each batch, starting with the very first home-page replay (before any navigation, no `flat_list` involved — observed 2026-07-19 on the website app while verifying the macOS virtualizer fix). Robot tree + navigator state are fine over the bridge; only replay-to-native-views dies. Likely fallout of the swap-navigator wire work in `crates/dev/client/src/navigators.rs`. `--local` mode is unaffected.
-- `cargo test -p server` (client mode, macOS host) — the *test binaries* fail to compile in `net`'s darwin HTTP arm: `NonNull<Block<dyn Fn(*mut NSData, …)>>` / `*const UnsafeCell<()>` not `Send` where the client-mode e2e `tokio::spawn`s a stub call. Verified pre-existing at clean HEAD 94054a04 (worktree check, 2026-07-19, during the server-fn hook refactor); the `server` lib itself compiles fine in client mode — only `--tests` breaks, so client-mode e2e coverage is dark on darwin until `net`'s Apple completion block is made `Send`.
+### Intentional gaps (forward-compat by design — leave alone unless requirements change)
+- Future `Role` variants surface as `WireRole::Unknown` on older replayers → `None`.
+- No standalone iOS-shell / AT-SPI bridges: AccessKit covers UIA / AT-SPI / macOS AX through one API, so the GPU desktop path (`crates/gpu-backend/host/winit` with `crates/gpu-backend/host/wgpu-accesskit`) is end-to-end.

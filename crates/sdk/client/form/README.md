@@ -27,7 +27,7 @@ let on_submit: std::rc::Rc<dyn Fn()> = {
 
 ui! {
     Form(on_submit = Some(on_submit.clone())) {
-        TextInput(value = name.clone())
+        text_input(value = name)
         Button(label = "Save", on_click = on_submit.clone())
     }
 }

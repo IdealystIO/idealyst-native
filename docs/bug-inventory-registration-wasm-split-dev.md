@@ -46,10 +46,9 @@ The panic aborts the mount, so `#app` stays empty. (Reproduced with
 Navigator and external SDKs self-register with the web backend via `inventory`:
 
 - An SDK's web module `inventory::submit!`s a `WebNavigatorRegistrar`
-  (carrying a `fn(&mut WebBackend)`) — e.g.
-  `crates/sdk/client/navigators/stack/src/web.rs:172`.
-- `WebBackend::new` → `drain_self_registrars()`
-  (`crates/backend/web/src/lib.rs:981`) iterates
+  (carrying a `fn(&mut WebBackend)`) — e.g. the stack navigator's web
+  module at the time.
+- `WebBackend::new` → `drain_self_registrars()` iterates
   `inventory::iter::<WebNavigatorRegistrar>` and calls each registrar to
   populate `navigator_handlers`.
 
@@ -126,8 +125,9 @@ its linked-list node static) does not take effect in the
 Candidates:
 
 - The neutralize pass strips the ctor call that links the registrar node into
-  inventory's global list (it deliberately *spares* `main` / `host_reserve`,
-  `crates/tools/wasm-split/wasm-split-cli/src/lib.rs:79-83`, but the SDK
+  inventory's global list (it deliberately *spares* `main` / `host_reserve` —
+  today `neutralize_command_export_wrappers` in
+  `crates/tools/wasm-split/wasm-carve/src/neutralize.rs` — but the SDK
   registrar ctors may be getting gutted along with the command-export wrappers).
 - wasm-split relocates the registrar's initializer into a chunk that isn't
   executed at startup.

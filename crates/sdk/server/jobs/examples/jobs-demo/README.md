@@ -1,6 +1,6 @@
 # jobs-demo
 
-Full-stack background jobs on the [`jobs`](../../crates/sdk/server/jobs) SDK.
+Full-stack background jobs on the [`jobs`](../..) SDK.
 
 - [`src/lib.rs`](src/lib.rs) — a `#[job] send_welcome_email` (injects
   `State<Mailer>`), a `#[server] signup` fn that enqueues it, and the client UI

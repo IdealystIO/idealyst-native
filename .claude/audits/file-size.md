@@ -2,13 +2,17 @@
 name: file-size
 description: Source files stay at a reasonable size; large files are split along natural structural seams (modules, impl blocks, related primitives) rather than living as monoliths.
 targets:
-  - crates/runtime/core
-  - crates/runtime/macros
+  - crates/runtime/world
+  - crates/runtime/scene
+  - crates/runtime/vocabulary
+  - crates/runtime/shared
+  - crates/runtime/macros-expand
+  - crates/runtime/macros-parse
   - crates/dev/wire
   - crates/dev/client
   - crates/runtime/layout
   - crates/backend/ios/mobile
-  - crates/backend/ios-stack
+  - crates/backend/macos
   - crates/backend/android/mobile
   - crates/backend/web
   - crates/backend/roku
@@ -67,7 +71,7 @@ For each file in the target crate exceeding the threshold above:
       FooSlider`, `impl FooSwitch` all in one `primitives.rs` is the
       canonical example.
 - [ ] **Per-primitive / per-variant sections** — does the file have a
-      large `match` over a `Element` / wire / scene enum where each arm
+      large `match` over a scene `Element` / wire / primitive-kind enum where each arm
       is a sizable block of logic? Each arm is usually a candidate for its
       own submodule, with `mod.rs` left as a thin dispatcher.
 - [ ] **Stratified concerns inside one file** — does the file mix layers

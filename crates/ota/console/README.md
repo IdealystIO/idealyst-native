@@ -77,7 +77,7 @@ watch the window switch to the release before it within 5 seconds.
 
 **A fleet to look at:** `IDEALYST_FLEET_OUT=/tmp/fleet cargo test -p
 remote-showcase --test fleet` writes a location with four app versions and
-six releases (`tests/fleet.rs`). Then run
+six releases (`crates/streaming/showcase/app/tests/fleet.rs`). Then run
 `OTA_CONSOLE_LOCATION=/tmp/fleet crates/ota/console/dev.sh` to see a grid
 with every kind of mismatch.
 

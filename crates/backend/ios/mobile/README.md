@@ -22,7 +22,7 @@ backend_ios_mobile::install_global_self(&backend); // for AnimatedValue::bind
 
 ### Boot
 
-`src/newcore.rs` implements `runtime_scene::Host` + all 30
+`src/newcore.rs` implements `runtime_scene::Host` + all 31
 `runtime_vocabulary::caps` traits directly on `IosBackend` (each method
 delegates to the inherent `*_impl` body that owns the UIKit mechanism
 code in `src/imp/`) and provides the boot entry,
@@ -85,7 +85,7 @@ handlers or in author code), stop. The fix belongs in this backend. See
 
 ## Primitive coverage status
 
-All 30 capability traits are implemented (see `src/newcore.rs`), including
+All 31 capability traits are implemented (see `src/newcore.rs`), including
 `create_virtualizer` — a `UICollectionView` + flow layout with real cell
 recycling (`src/imp/virtualizer.rs`).
 

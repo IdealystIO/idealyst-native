@@ -371,7 +371,7 @@ enters or leaves the chart. An `if` with no `else` inside `ui!` already emits
 an out-of-flow placeholder; if you write an `else`, give it
 `position: absolute` too.
 
-`examples/charts-demo` implements all three placements on one callback, with
+`crates/sdk/client/charts/examples/charts-demo` implements all three placements on one callback, with
 both traps handled, and is the reference.
 
 ### The hit index stores shapes, not points

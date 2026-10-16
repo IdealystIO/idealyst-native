@@ -89,7 +89,7 @@ behavior, hit testing, accessibility, and layout — exactly the
 "this is a button" feel you want — at the cost of a one-time
 rasterization per icon.
 
-Standalone `Icon { ... }` invocations still go through the
+Standalone `icon { ... }` invocations still go through the
 vector path. The rasterization is a `Button`-only adaptation,
 not a global mode.
 

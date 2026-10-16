@@ -9,11 +9,11 @@ Roku.
 This page is the author-facing guide: what you get for free, the data
 model, and how to override it. For the per-platform mapping tables and
 the design rationale, see
-[`accessibility-design.md`](./accessibility-design.md) — note that its
-implementation plan predates runtime v2 and describes the old
-`Backend`-trait surface; the capability that carries a11y today is
-`runtime_vocabulary::caps::A11yOps` (`update_accessibility`,
-`announce_for_accessibility`, `dump_accessibility_tree`).
+[`accessibility-design.md`](./accessibility-design.md). The backend
+capability that carries a11y is `runtime_vocabulary::caps::A11yOps`
+(`update_accessibility`, `announce_for_accessibility`,
+`dump_accessibility_tree`), plus an `&AccessibilityProps` on every
+`create_*`.
 
 > **Status.** Shipped end-to-end. Every primitive carries an
 > `AccessibilityProps`, every native backend applies it, and the
@@ -253,8 +253,7 @@ The exact attribute-by-attribute tables live in
 ## See also
 
 - [`accessibility-design.md`](./accessibility-design.md) — internals:
-  the `Role`/trait mapping tables, the GPU-backend semantics tree, and
-  open design questions. Its trait signatures and phase plan describe
-  the pre-runtime-v2 `Backend` trait.
+  the `Role`/trait mapping tables, the backend surface, the GPU-backend
+  semantics tree, and open design questions.
 - The **Accessibility** track in the tutorial app — the same material,
   hands-on.

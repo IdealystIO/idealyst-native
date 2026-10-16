@@ -274,7 +274,7 @@ The full set of Robot MCP tools mirrors the bridge surface above:
 
 - **Single thread, single arena.** Robot reads from the same
   thread the app runs on. Queries are synchronous and serialized
-  with the render walker.
+  with rendering.
 - **The bridge is dev-mode.** There's no auth on port `9718`. Don't
   ship a Robot-enabled binary to end users. Leaving the feature
   off (the default) is the production posture.
@@ -282,10 +282,9 @@ The full set of Robot MCP tools mirrors the bridge surface above:
   subset of what runtime backends provide — geometry queries in
   particular depend on what the device-side runtime exposes. Web,
   iOS, and Android have the full surface.
-- **Custom primitives are visible.** Anything that flows through
-  the standard `Backend` create/insert/update calls shows up in
-  Robot's queries automatically. There's no separate registration
-  step for new primitives.
+- **Custom primitives are visible.** Builtin primitives register with
+  Robot at mount; a third-party primitive's handler registers its node with
+  `runtime_vocabulary::robot_ext::register_extension_node`.
 
 ## Where to read more
 

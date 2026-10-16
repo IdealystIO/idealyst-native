@@ -1,228 +1,215 @@
-# Backend → capability-trait coverage (P2a)
+# Backend capability coverage
 
-Every method of `runtime_core::backend::Backend` (crates/runtime/core/src/backend.rs,
-159 trait methods at the time of the split) accounted for. Grouping was derived
-mechanically from which walker module calls which method (grep over
-`crates/runtime/core/src/walker*`); each trait's rustdoc names its callers.
+A backend is `runtime_scene::Host` (the structural seam:
+[`crates/runtime/scene/src/host.rs`](../scene/src/host.rs)) plus the
+capability traits in [`src/caps/`](src/caps). This file lists every
+capability trait and its methods. Methods marked **(required)** have no
+default; every other method has one, and the defaults degrade rather than
+crash:
 
-**Totals: 159 / 159 accounted. 152 methods on 30 Ops traits + 7 methods absorbed
-by the P1 `runtime_scene::Host` seam. 0 deferred, 0 excluded** — methods expected
-to retire in later phases are still assigned a trait now (flagged ⏳ below) so the
-`LegacyBridge` surface is total and nothing is silently unaccounted for.
+- the `create_*` method of a widget trait declared `: ExternalOps`
+  (`image`, `icon`, `text_input`, `toggle`, `slider`,
+  `activity_indicator`, `virtualizer`, `virtual_grid`, `graphics`, `portal`)
+  defaults to `ExternalOps::missing_primitive_placeholder` — a visible,
+  labeled "unsupported" box;
+- a container trait declared `: ViewOps` (`pressable`, `link`, presence
+  placeholders, `DocumentOps::create_element`) defaults to `create_view`;
+- `ButtonOps::update_button_label` defaults to `TextOps::update_text`, and
+  `BatchOps::execute_batch_with_attach` to `execute_batch` +
+  `Host::insert_many`.
 
-## Absorbed by `runtime_scene::Host` (P1 seam — NOT redeclared in caps)
+`caps::AllCaps` (in [`src/caps/mod.rs`](src/caps/mod.rs)) is the bound the
+builtin handlers need — every trait below. Each backend implements them in
+its `src/newcore.rs`; `tests/caps_conformance.rs` and
+`tests/builtin_surface.rs` pin the surface.
 
-| Backend method | Host method | Note |
-|---|---|---|
-| `insert` | `insert` | identical |
-| `insert_many` | `insert_many` | identical (bridge delegates to Backend's default/override, not Host's default) |
-| `insert_at` | `insert_at` | identical |
-| `remove_child` | `remove_child` | identical |
-| `clear_children` | `clear_children` | identical |
-| `create_reactive_anchor` | `create_anchor` | renamed in the P1 extraction |
-| `supports_child_splice` | `supports_splice` | renamed in the P1 extraction |
+Free functions and boot-time installs (`install_scheduler`, the time
+source, `open_url`, `announce`, …) are not trait methods: they live in
+[`src/backend.rs`](src/backend.rs) (the one-stop backend-author import)
+and `runtime_shared::backend`, which documents the required boot order.
 
-## `caps::AppEnvOps` (8) — mount-time environment + app chrome
+## `caps::AppEnvOps` (11) — `: Host`
 
-`color_scheme`, `platform`, `url_opener`, `fullscreen_setter`,
-`set_page_metadata`, `set_app_background`, `set_scrollbar_theme`,
-`set_app_key_handler`
+Mount-time app environment: platform identity, appearance, the self-contained closures `mount(...)` stashes in thread-locals (`open_url` / `set_fullscreen`), and app-level chrome (page metadata, host-surface background, scrollbar theme, app keyboard sink).
 
-## `caps::LifecycleOps` (5) — build/flush lifecycle + policy flags
+`color_scheme`, `platform`, `url_opener`, `fullscreen_setter`, `set_page_metadata`, `set_app_background`, `set_scrollbar_theme`, `set_keyboard_sink`, `set_pointer_sink`, `set_pointer_lock`, `set_cursor_hidden`
 
-`finish`, `run_layout`, `schedule_layout_pass` (no `self`; stays an associated
-fn so the navigator walker's `|| B::schedule_layout_pass()` hook shape is
-preserved), `is_hydrating` ⏳ (web hydration policy — expected to fold into the
-P3 web driver; assigned here so the bridge stays total), `renders_lazy_chunks`
+## `caps::LifecycleOps` (8) — `: Host`
 
-Since grown by three no-op-default methods that are NOT part of the 159-method
-mapping above (new surface, no old-`Backend` counterpart):
-`annotate_nav_outlet` (SSR stamps `data-iy-nav-outlet` so a hydrating client
-can find the server's outlet) and `hydrate_nav_screen_begin` /
-`hydrate_nav_screen_end` (web steers the adoption cursor across the
-navigator's screen-before-outlet build order). They live here so the navigator
-handlers stay backend-agnostic while SSR and web cooperate on hydration — see
-`backend/web/src/newcore_hydrate.rs`.
+Build/flush lifecycle: the end-of-build commit, layout scheduling, and the hydration / lazy-chunk policy flags the mount handlers consult.
 
-## `caps::ViewOps` (2)
+`finish` **(required)**, `run_layout`, `schedule_layout_pass`, `is_hydrating`, `renders_lazy_chunks`, `annotate_nav_outlet`, `hydrate_nav_screen_begin`, `hydrate_nav_screen_end`
 
-`create_view`, `make_view_handle`
+## `caps::ViewOps` (2) — `: Host`
 
-## `caps::InputOps` (6) — shared by view, pressable, AND external walkers
+The `view` primitive — the container every other default lowers to.
 
-`install_touch_handler`, `claim_touch`, `install_wheel_handler`,
-`install_hover_handler`, `mark_preserves_focus`, `install_file_drop_handler`
+`create_view` **(required)**, `make_view_handle`
 
-## `caps::PressableOps` (2) — `: ViewOps` (default lowers to `create_view`)
+## `caps::InputOps` (6) — `: Host`
+
+Raw input channels installed on already-created nodes: touch, wheel, hover, OS file drag-and-drop, and the focus-preservation mark.
+
+`install_touch_handler`, `claim_touch`, `install_wheel_handler`, `install_hover_handler`, `mark_preserves_focus`, `install_file_drop_handler`
+
+## `caps::PressableOps` (2) — `: ViewOps`
+
+The `pressable` primitive — a tappable container.
 
 `create_pressable`, `make_pressable_handle`
 
-## `caps::TextOps` (11)
+## `caps::TextOps` (12) — `: Host`
 
-`create_text`, `create_styled_text`, `update_styled_text`, `update_text`,
-`create_text_with_id`, `update_text_by_id`, `release_text_id`,
-`supports_js_text_bindings`, `register_reactive_text_binding`,
-`release_reactive_text_binding`, `make_text_handle`
+The `text` primitive: plain and styled-run creation/update, the batched `*_by_id` FFI fast path, and backend-side reactive text bindings.
 
-## `caps::ButtonOps` (3) — `: TextOps` (`update_button_label` default lowers to `update_text`)
+`create_text` **(required)**, `create_styled_text`, `update_styled_text`, `update_text` **(required)**, `create_text_with_id`, `update_text_by_id`, `release_text_id`, `supports_js_text_bindings`, `register_reactive_text_binding`, `release_reactive_text_binding`, `notify_signal_text_js`, `make_text_handle`
 
-`create_button`, `update_button_label`, `make_button_handle`
+## `caps::ButtonOps` (3) — `: TextOps`
 
-## `caps::ImageOps` (6) — `: ExternalOps` (placeholder default)
+The `button` primitive.
 
-`create_image`, `update_image_src`, `update_image_alt`,
-`install_image_load_handler`, `install_image_error_handler`, `make_image_handle`
+`create_button` **(required)**, `update_button_label`, `make_button_handle`
+
+## `caps::ImageOps` (6) — `: ExternalOps`
+
+The `image` primitive.
+
+`create_image`, `update_image_src`, `update_image_alt`, `install_image_load_handler`, `install_image_error_handler`, `make_image_handle`
 
 ## `caps::IconOps` (6) — `: ExternalOps`
 
-`create_icon`, `update_icon_color`, `update_icon_data`, `update_icon_stroke`,
-`animate_icon_stroke`, `make_icon_handle`
+The `icon` primitive (vector path data + stroke animation).
 
-## `caps::LinkOps` (3) — `: ViewOps` (default degrades to a container)
+`create_icon`, `update_icon_color`, `update_icon_data`, `update_icon_stroke`, `animate_icon_stroke`, `make_icon_handle`
+
+## `caps::LinkOps` (3) — `: ViewOps`
+
+The `link` primitive (in-app navigation container).
 
 `create_link`, `update_link_url`, `make_link_handle`
 
-## `caps::TextInputOps` (9) — `: ExternalOps`; input + area share a walker
+## `caps::TextInputOps` (10) — `: ExternalOps`
 
-`create_text_input`, `update_text_input_value`, `update_text_input_secure`,
-`set_text_input_focus_handler`, `update_text_input_placeholder`,
-`create_text_area`, `update_text_area_value`, `make_text_input_handle`,
-`make_text_area_handle`
+The `text_input` + `text_area` primitives (single- and multi-line editors share a handler and a controlled-value pattern).
+
+`create_text_input`, `update_text_input_value`, `update_text_input_secure`, `update_text_input_keyboard`, `set_text_input_focus_handler`, `update_text_input_placeholder`, `create_text_area`, `update_text_area_value`, `make_text_input_handle`, `make_text_area_handle`
 
 ## `caps::ToggleOps` (3) — `: ExternalOps`
+
+The `toggle` primitive (switch / checkbox).
 
 `create_toggle`, `update_toggle_value`, `make_toggle_handle`
 
 ## `caps::SliderOps` (3) — `: ExternalOps`
 
+The `slider` primitive.
+
 `create_slider`, `update_slider_value`, `make_slider_handle`
 
 ## `caps::ActivityIndicatorOps` (3) — `: ExternalOps`
 
-`create_activity_indicator`, `update_activity_indicator_size`,
-`make_activity_indicator_handle`
+The `activity_indicator` primitive (loading spinner).
 
-## `caps::ScrollOps` (4)
+`create_activity_indicator`, `update_activity_indicator_size`, `make_activity_indicator_handle`
 
-`create_scroll_view`, `node_scroll`, `set_node_scroll`,
-`make_scroll_view_handle` — the generic offset pair lives here (not on
-NavigatorOps) because it is scroll semantics on arbitrary nodes; the navigator
-URL-sync is just its current caller.
+## `caps::ScrollOps` (8) — `: Host`
 
-## `caps::SafeAreaOps` (2)
+The `scroll_view` primitive plus generic node scroll-offset access (the navigator substrate's URL-sync scroll snapshot/restore reads any node's offset, so `node_scroll`/`set_node_scroll` live here with the scrolling capability rather than on the navigator).
 
-`apply_safe_area_padding`, `apply_scroll_view_safe_area_inset` (default falls
-back to the padding path, same trait)
+`create_scroll_view`, `observe_scroll_end`, `node_scroll`, `set_node_scroll`, `apply_scroll_view_bounces`, `apply_scroll_view_always_bounce`, `apply_virtualizer_safe_area_inset`, `make_scroll_view_handle`
+
+## `caps::SafeAreaOps` (3) — `: Host`
+
+Safe-area treatment for opted-in containers (`.safe_area(...)`).
+
+`apply_safe_area_padding`, `apply_scroll_view_safe_area_inset`, `mark_keyboard_avoiding`
 
 ## `caps::VirtualizerOps` (4) — `: ExternalOps`
 
-`create_virtualizer`, `virtualizer_data_changed`, `release_virtualizer`,
-`make_virtualizer_handle`
+The `flat_list` / `virtualizer` primitive — backend-owned windowed rendering over framework-mounted rows.
 
-## `caps::GraphicsOps` (3) — `: ExternalOps`
+`create_virtualizer`, `virtualizer_data_changed`, `release_virtualizer`, `make_virtualizer_handle`
 
-`create_graphics`, `release_graphics`, `make_graphics_handle`
+## `caps::GridOps` (4) — `: ExternalOps`
+
+The `virtual_grid` primitive — backend-owned windowed rendering over a TWO-axis grid.
+
+`create_virtual_grid`, `virtual_grid_data_changed`, `release_virtual_grid`, `make_virtual_grid_handle`
 
 ## `caps::PortalOps` (4) — `: ExternalOps`
 
+The `overlay` / portal primitive — render children at a window-level target, escaping layout and clipping.
+
 `create_portal`, `release_portal`, `set_portal_hidden`, `make_portal_handle`
 
-## `caps::PresenceOps` (3) — `: ViewOps` (placeholder default is a plain view)
+## `caps::PresenceOps` (3) — `: ViewOps`
+
+The `presence` primitive — enter/exit transforms around mount and deferred unmount.
 
 `create_presence_placeholder`, `apply_presence`, `make_presence_handle`
 
-## `caps::NavigatorOps` (5) — `: ExternalOps`
+## `caps::NavigatorOps` (4) — `: ExternalOps`
 
-`create_navigator`, `release_navigator`, `apply_navigator_slot_style`,
-`make_navigator_handle`, `navigator_attach_initial`
+Navigator hooks for the registry-dispatched stack and swap navigators: release, slot styling, the imperative handle, and attaching the initial screen.
 
-## `caps::ExternalOps` (3) ⏳ — kept during transition; dissolves into the scene Registry contract at P7
+`release_navigator`, `apply_navigator_slot_style`, `make_navigator_handle`, `navigator_attach_initial`
+
+## `caps::GraphicsOps` (3) — `: ExternalOps`
+
+The `graphics` primitive — a raw GPU-drawable surface.
+
+`create_graphics`, `release_graphics`, `make_graphics_handle`
+
+## `caps::ExternalOps` (3) — `: Host`
+
+Third-party primitives mounted through the scene `Registry` (`create_external` / `release_external`), and `missing_primitive_placeholder` — the labeled "unsupported" box every `create_*` default on an `: ExternalOps` trait degrades to, uniformly, instead of panicking.
 
 `create_external`, `release_external`, `missing_primitive_placeholder`
-(`#[doc(hidden)]`, default delegates to `create_external` in-trait; the
-supertrait target for every `prim-*` placeholder default)
 
-## `caps::DocumentOps` (5) — `: ViewOps` (`create_element` default is a container)
+## `caps::DocumentOps` (7) — `: ViewOps`
 
-`create_element`, `attach_html_id`, `attach_html_class`, `attach_html_style`,
-`register_raw_css`
+Document-backed structural affordances: real HTML tags, id/class/ inline-declaration stamping, and raw CSS registration.
 
-## `caps::StyleOps` (20)
+`create_element`, `attach_html_id`, `attach_html_class`, `detach_html_class`, `attach_html_style`, `attach_html_attribute`, `register_raw_css`
 
-`apply_style`, `mint_style_class`, `mint_class_for_app`, `apply_styled_states`
-(default → `apply_style`, in-trait), `apply_styled_variants` (default →
-`apply_styled_states`, in-trait), `mark_container`, `handles_states_natively`,
-`token_updates_propagate_via_cascade`, `register_stylesheet`,
-`unregister_stylesheet`, `install_tokens`, `update_tokens`, `on_node_unstyled`,
-`attach_states`, `set_disabled`, `supports_preminted_styles`,
-`apply_default_text_font`, `supports_js_class_bindings`,
-`register_reactive_class_binding`, `release_reactive_class_binding`
+## `caps::StyleOps` (23) — `: Host`
 
-Since grown by one no-op-default method outside the 159-method mapping
-(new surface, no old-`Backend` counterpart): `install_theme_palettes` —
-declares every switchable palette, not just the active one, so a STATIC
-render can emit `prefers-color-scheme` / `[data-theme]` rules and paint
-the reader's theme on the first frame. Live backends ignore it; they
-keep receiving the active palette through `install_tokens`.
+The style engine's backend surface: applying resolved rules, class minting for the batched/signal-class paths, declarative state + breakpoint + container overlays, token variables, interaction-state wiring, and per-node style teardown.
 
-## `caps::AssetOps` (4)
+`apply_style` **(required)**, `apply_inline_style`, `mint_style_class`, `mint_class_for_app`, `apply_styled_states`, `apply_styled_variants`, `mark_container`, `handles_states_natively`, `token_updates_propagate_via_cascade`, `register_stylesheet`, `unregister_stylesheet`, `install_tokens`, `update_tokens`, `install_theme_palettes`, `on_node_unstyled`, `attach_states`, `set_disabled`, `supports_preminted_styles`, `apply_default_text_font`, `supports_js_class_bindings`, `register_reactive_class_binding`, `release_reactive_class_binding`, `notify_signal_value_js`
+
+## `caps::AssetOps` (4) — `: Host`
+
+Static assets (fonts, images) and typeface families.
 
 `register_asset`, `unregister_asset`, `register_typeface`, `unregister_typeface`
 
-## `caps::A11yOps` (3)
+## `caps::A11yOps` (3) — `: Host`
+
+The accessibility surface that does NOT live on `create_*` prop bags: reactive prop-bag replacement, live-region announcements, and the GPU-backend parallel semantics tree.
 
 `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree`
 
-## `caps::AnimationOps` (2)
+## `caps::AnimationOps` (2) — `: Host`
 
-`set_animated_f32`, `set_animated_color`
+Per-frame animated property writes from `AnimatedValue` listeners.
 
-## `caps::IntrospectionOps` (8) — dev/robot geometry + native reads + screenshots
+`set_animated_f32`, `set_animated_color` **(required)**
 
-`frame`, `absolute_frame`, `device_frame`, `supports_native_introspection`,
-`introspect_native`, `note_introspection_root`, `supports_screenshot`,
-`capture_screenshot`
+## `caps::IntrospectionOps` (8) — `: Host`
 
-## `caps::BatchOps` (3)
+Dev/robot-facing geometry and introspection: frames in three coordinate systems, native render-tree reads, and real-surface screenshots.
+
+`frame`, `absolute_frame`, `device_frame`, `supports_native_introspection`, `introspect_native`, `note_introspection_root`, `supports_screenshot`, `capture_screenshot`
+
+## `caps::BatchOps` (3) — `: Host`
+
+Batched materialization of static View+Text repeat rows.
 
 `supports_batched_repeat`, `execute_batch`, `execute_batch_with_attach`
-(default → `execute_batch` + `Host::insert_many`, via the Host supertrait)
 
-## `caps::WireBindingOps` (9) ⏳ — declarative wire/generator backends only; expected to retire with the adopt-sentinel (design §8)
+## `caps::WireBindingOps` (9) — `: Host`
 
-`note_text_binding`, `note_signal_initial`, `note_when_binding`,
-`note_switch_binding`, `note_repeat_binding`, `note_virtualizer_binding`
-(default → `note_repeat_binding`, in-trait), `supports_lazy_slot_capture`,
-`begin_slot_capture`, `end_slot_capture`
+Declarative binding metadata for generator / wire backends (Roku, remote renderers): text, `when` / `switch`, and repeat / virtualizer binding notes plus lazy slot capture. Effect-driven backends leave every default no-op in place.
 
-## Not trait methods (out of scope, listed for completeness)
-
-- Free functions and installers in `backend.rs` (`platform()`, `open_url`,
-  `set_fullscreen`, `announce`, `install_*`) — thread-local plumbing around the
-  trait, not part of it; they move with the flush-driver work, not the split.
-- `Platform` inherent methods (`is_apple`, `canonical`, …) — data-type methods.
-- The private `Noop*Ops` handle ZSTs — copied into `caps::noop` (they back the
-  frozen `make_*_handle` defaults and were not exported by runtime-core).
-
-## Judgment calls on defaults (cross-trait delegation)
-
-Frozen defaults that call other Backend methods were kept as defaults by
-declaring the dependency as a supertrait (never moved to the bridge, so future
-direct implementors keep today's behavior):
-
-1. Placeholder defaults (`create_image`, `create_icon`, `create_text_input`,
-   `create_text_area`, `create_toggle`, `create_slider`,
-   `create_activity_indicator`, `create_virtualizer`, `create_graphics`,
-   `create_portal`, `create_navigator`) → `: ExternalOps` for
-   `missing_primitive_placeholder`.
-2. Container-degradation defaults (`create_pressable`, `create_link`,
-   `create_presence_placeholder`, `create_element`) → `: ViewOps`.
-3. `update_button_label` → `: TextOps` on `ButtonOps` (heaviest coupling in the
-   split; accepted because every real backend implements both and the
-   alternative — dropping the frozen default — would change direct-implementor
-   behavior).
-4. `execute_batch_with_attach` uses `Host::insert_many` through the universal
-   `: Host` supertrait.
-5. `missing_primitive_placeholder`'s local `MissingPrimitive` TypeId differs
-   from runtime-core's private one; both are registry-unknown, so dispatch
-   behavior is identical (documented at the trait).
+`note_text_binding`, `note_signal_initial`, `note_when_binding`, `note_switch_binding`, `note_repeat_binding`, `note_virtualizer_binding`, `supports_lazy_slot_capture`, `begin_slot_capture`, `end_slot_capture`

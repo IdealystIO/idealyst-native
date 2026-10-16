@@ -12,7 +12,7 @@ longer exists, so they cannot be regenerated: a re-baseline can only
 record the CURRENT implementation's output, permanently discarding the
 old core's record. See "Regenerating goldens" below.
 
-"Structural ops" means the 7-method `Host` seam:
+"Structural ops" means the `Host` seam:
 
 | golden line                      | `Host` call       |
 |----------------------------------|-------------------|
@@ -402,10 +402,12 @@ same override machinery). ONE new full-op divergence:
   the new core is divergence #6).
 - **Hydration-mode `when`/`switch`** — needs the web backend's
   hydration cursor (`is_hydrating` + adopt semantics); pinned separately
-  by `crates/runtime/core/tests/walker/hydration.rs` and gated at P3.
+  by the web backend's hydration path (`crates/backend/web/src/newcore_hydrate.rs`)
+  and the SSR byte-identity tests (`crates/backend/ssr/tests/newcore_byte_identity.rs`).
 - **Batched-Repeat fast path** (`execute_batch_with_attach`) — an
   optimization contract of the batching seam, not of the 7 structural
-  ops; covered by `crates/runtime/core/tests/walker/batched_repeat.rs`.
+  ops; covered by the `batched_repeat_*` / `batched_row*` tests in
+  `crates/runtime/vocabulary/tests/vocab.rs`.
 - **Virtualizer (STRUCTURAL suite only)** — row mount/release is driven
   by the platform from scroll/rAF, outside the structural walker. Its
   capability contract (plan §11) IS pinned by the FULL-OP suite: the

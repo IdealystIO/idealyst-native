@@ -4,14 +4,17 @@ A Rust-based cross-platform UI ecosystem. Write your app once (UI tree, styles,
 state, and client-side logic) and let a **backend** decide what "running on a
 platform" actually means.
 
-The ecosystem ships backends for **web** (WASM + DOM), **Android** (JNI + native
-View hierarchy), **iOS** (UIKit via objc2), **macOS** (AppKit via objc2), and
-**Roku** (BrightScript / SceneGraph transpile), plus an in-progress
-custom-renderer family on top of [wgpu](https://wgpu.rs/). The backend seam is
-two traits deep: `runtime_scene::Host` (seven structural operations) plus the
-per-primitive capability traits a backend chooses to implement, every one of
-which has a documented default. You can target anything you can drive from Rust
-(a custom renderer, a TUI, an embedded display) without touching app code.
+The ecosystem ships native backends for **web** (WASM + DOM), **iOS** (UIKit via
+objc2), **Android** (JNI + native View hierarchy), **macOS** (AppKit via objc2),
+**Linux** (GTK4), **Windows** (Win32), and **Roku** (BrightScript / SceneGraph
+transpile); headless backends for **SSR / SSG**, **email** HTML, a **terminal**
+character grid, and a **CPU** software rasterizer; and a custom renderer on top
+of [wgpu](https://wgpu.rs/) that paints its own pixels. The backend seam is two
+traits deep: `runtime_scene::Host` (a handful of structural tree operations)
+plus the per-primitive capability traits (`runtime_vocabulary::caps::*Ops`), every
+method of which has a documented default. You can target anything you can drive
+from Rust (a custom renderer, a TUI, an embedded display) without touching app
+code.
 
 > **Status: under construction.** APIs are still under development and may change, use at your own risk.
 > See the [Roadmap](#roadmap) for what's implemented per backend.
@@ -182,7 +185,7 @@ summarised in the matrix further down.
 | Robot automation + MCP server: introspection registry, `#[component]` + `#[method]`, agent control | Working |
 | Hot reload: dev server + runtime-server (Application-as-a-Service) shell + wire protocol | Working |
 | Server-driven UI: wire protocol + `SceneModel` snapshot | Working |
-| Custom rendering: `render-wgpu` (core, phone, tablet, tv skins) | In progress |
+| Custom rendering: `render-wgpu` GPU engine (phone / tablet / tv variants, Android / iOS painters) | In progress |
 | Native backend: interactions / media / OS integration | In progress |
 | Async data: `resource` / `mutation` (`runtime_vocabulary::async_reactive`) | Working |
 | Accessibility: `AccessibilityProps` on every primitive + `caps::A11yOps` per backend | Working |
@@ -192,50 +195,44 @@ summarised in the matrix further down.
 
 | Backend | Status | Notes |
 | --- | --- | --- |
-| `backend-web` (WASM + DOM) | Working | Reference backend. Most complete primitive coverage. |
-| `backend-android-mobile` (JNI + Views) | Working | Phone form factor. `tv` variant is a stub. |
-| `backend-ios-mobile` (UIKit via objc2) | Working | Phone form factor. `tv` variant is a stub. |
-| `backend-macos` (AppKit via objc2) | Early | Window shell + basics. Many primitives unimplemented (see matrix). |
-| `backend-roku` (BrightScript / SceneGraph transpile) | Working | Theme switching temporarily disabled (token refactor); panics on theme update. |
-| `render-wgpu` (custom renderer, embeddable) | In progress | Implements the same `Host` + capability traits over a GPU pipeline; `host-winit` / `host-web` wire it to OS windows. |
+| `backend-web` (WASM + DOM) | Working | Reference backend. CSR, hydration, and the framework-owned `web-glue` JS boundary. |
+| `backend-ios-mobile` (UIKit via objc2) | Working | Phone form factor. `backend-ios-tv` is an empty skeleton. |
+| `backend-android-mobile` (JNI + Views) | Working | Phone form factor. `backend-android-tv` is an empty skeleton. |
+| `backend-macos` (AppKit via objc2) | Working | Implements `Host` + every capability trait over AppKit views. |
+| `backend-linux` (GTK4) | Working | Real GTK4 widgets; `host-gtk` is the shell. |
+| `backend-windows` (Win32) | Working | Painted scene (GDI+ or Direct2D) with native child HWNDs for interactive controls; `host-win32` is the shell. See [`docs/windows.md`](docs/windows.md). |
+| `backend-roku` (BrightScript / SceneGraph transpile) | Working | Generator backend; tokens resolve to literals at apply time, so `update_tokens` re-applies styles. |
+| `backend-ssr` / `backend-email` | Working | Headless HTML: SSR / SSG with hydration, and email-safe HTML. |
+| `backend-terminal` / `backend-cpu` | Working | Character-grid TUI, and a pure-Rust software rasterizer behind a `Surface` trait. |
+| `render-wgpu` (custom renderer, embeddable) | In progress | Implements the same `Host` + capability traits over a GPU pipeline; `host-winit` / `host-web` / `host-appkit` / the desktop hosts wire it to OS windows. |
 
 ### Per-backend primitive coverage
 
-A blank cell means the backend inherits the capability trait's default. Those
+Every backend implements every capability trait; a blank cell means that
+backend leaves the primitive's `create_*` method on the trait default. Those
 defaults degrade rather than crash: a missing widget renders the
 `ExternalOps::missing_primitive_placeholder` box, and a missing container
 lowers to a plain view. What *does* panic is an unregistered third-party
 payload — see the registration seam below.
 
-| Element | web | iOS-mobile | Android-mobile | macOS | Roku | wgpu |
-|---|---|---|---|---|---|---|
-| View / Text / Button (core) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Image | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| TextInput | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| ScrollView | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| Slider | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| Toggle | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| Icon | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| ActivityIndicator | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| Graphics | ✓ | ✓ | ✓ |  | ✓ | ✓ |
-| Link | ✓ | ✓ | ✓ |  |  | ✓ |
-| Video | ✓ |  | ✓ |  |  | ✓ |
-| Virtualizer / FlatList | ✓ |  | ✓ |  |  | ✓ |
-| Third-party primitives (SDK payload + registered handler) | ✓ | partial | partial | partial | partial | partial |
+| Primitive | web | iOS | Android | macOS | Linux | Windows | Roku | terminal | CPU | SSR | wgpu |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| view / text / button | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| image / icon / text_input / toggle / activity_indicator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| scroll_view | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| text area (multiline text_input) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | ✓ |
+| slider | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ | ✓ | ✓ |
+| graphics | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ | ✓ | ✓ |
+| link | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ |  | ✓ | ✓ |
+| virtualizer / flat_list | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | ✓ |
+| virtual grid | ✓ | ✓ | ✓ | ✓ |  |  |  |  |  |  |  |
+| overlay / portal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-Web and Android-mobile are the most complete. iOS-mobile is catching up but
-missing `Video` and `Virtualizer`. macOS is a structural skeleton that
-needs the same UIKit-style primitive work iOS already has. Roku is locked
-behind the theme-refactor regression noted above. The wgpu renderer implements
-the full capability surface but is still in active development on the
-rendering side. Per-SDK host coverage — which third-party primitives have a
-real handler on which backend, and which fall back to the placeholder — is
-tabulated in
-[`docs/migrating-to-runtime-v2.md`](docs/migrating-to-runtime-v2.md#external-sdks-the-third-party-primitive-layer).
-The short version: the caps-generic SDKs (`markdown`, `table`, `codeblock`)
-work on every host from one handler, the DOM-shaped ones (`maps`, `webview`,
-`canvas`, `svg`, `video`, `form`) are web-first with a placeholder elsewhere,
-and `toolbar` has a real macOS `NSToolbar` leg.
+Third-party primitives (an SDK payload type plus a handler registered on the
+scene `Registry`) are covered per SDK, per backend: some SDKs lower to builtin
+primitives on every host, others ship a handler per platform (`video`, `svg`, `codeblock`, `toolbar`, `webview`, …) and
+fall back to the placeholder box where no handler exists. Each SDK's README
+lists the hosts it supports.
 
 ## The shape of an app
 
@@ -297,10 +294,11 @@ backend contract live alongside it under [`docs/`](docs/).
 └──────────────────────────────────────────────────────────┘
                             │
                             ▼  (Host + caps::*Ops)
-        ┌───────┬───────┬───────┬───────┬───────┬───────┐
-        ▼       ▼       ▼       ▼       ▼       ▼       ▼
-       web   Android   iOS    macOS   Roku   wgpu     (yours)
-       DOM   JNI/View  UIKit  AppKit  BrS    GPU
+   ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐
+   ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
+  web    iOS  Android macOS  Linux Windows Roku  headless  wgpu  (yours)
+  DOM   UIKit JNI/View AppKit GTK4  Win32  BrS  SSR/email/  GPU
+                                                term/CPU
 ```
 
 The framework controls **what** to render and **when** to update. The backend
@@ -355,35 +353,43 @@ Cargo crate.
 ```
 crates/
   runtime/              # The framework itself
+    core/               # runtime-core: the `runtime_core::…` author surface — re-exports glue + the macro set
     world/              # Reactive kernel: per-world arenas, Copy handles, staged-commit flush
     scene/              # Element, Host, Registry, realize + structural drivers
     vocabulary/         # Primitives (payloads + handlers), caps::*Ops traits, glue (author surface)
-    shared/             # Permanent substrate: styles, colors, assets/fonts, animation, events,
+    shared/             # Substrate: styles, colors, assets/fonts, animation, events,
                         #   scheduling, robot registry, introspection, per-primitive handles
-    facade/             # The `runtime_core::…` spelling — re-exports glue::* + the macro set
     macros/             # #[component], ui!, jsx!, stylesheet! proc-macros
-    layout/             # Taffy-based flex layout helper for native backends
-    core/               # The pre-runtime-v2 walker half — being deleted
-    reactive/           # arena/ + refs/ allocators used by the shared substrate
+    macros-parse/ macros-expand/   # ui! front end (shared with the CLI) + expansion library
+    template/           # A ui! site as data: descriptors + patch validation (hot reload)
+    layout/             # Taffy-based flex/grid layout helper for native backends
+    web-glue/           # Framework-owned wasm ⇄ JS boundary
+    zone-offset/        # Local UTC offset from the OS zone database
 
   css/                  # StyleRules → CSS, shared by the web and SSR backends
 
-  backend/              # Host implementations (Host + caps::*Ops + a newcore boot entry)
+  backend/              # Host implementations (Host + caps::*Ops in each crate's newcore.rs)
     web/                # WASM + DOM (the reference backend)
-    ssr/                # Server-side render / SSG / SSR server
-    ios/{core,mobile,tv}        android/{core,mobile,tv}
-    macos/  apple/core/         # AppKit + shared objc2 helpers
-    terminal/  cpu/  roku/  email/  linux/  windows/
+    ssr/  email/        # Server-side render / SSG / SSR server; email-safe HTML
+    ios/{core,mobile,tv,rs-shell}   android/{core,mobile,tv}
+    macos/  apple/core/ # AppKit + shared objc2 helpers
+    linux/  windows/    # GTK4, Win32
+    terminal/  cpu/  roku/
+    image-source/       # Shared image-source decoding helpers
+
+  host/                 # Native desktop shells: gtk/ (Linux), win32/ (Windows)
 
   gpu-backend/          # Custom rendering on a GPU pipeline
     engine/             # render-wgpu
-    api/  painter/
-    host/               # Per-OS shells (appkit, winit, web, macos-desktop, ios-mobile, …)
+    api/                # Shared engine API types
+    painter/            # android-sim/ ios-sim/ — per-look primitive geometry
+    host/               # Per-OS shells (appkit, winit, web, macos-desktop, ios-mobile, wgpu-accesskit, …)
     variant/            # phone/ tablet/ tv — pre-wired form factors
 
   ui/                   # User-facing component libraries
     idea-ui/            # Cross-platform component library (Card, Modal, Popover, Field, …)
     idea-theme/         # Token/theme model idea-ui builds on
+    idea-theme-editor/  # Live theme editor
     idea-ui-nav/        # Navigation chrome (TabBar, Drawer, StackHeader)
     idea-ui-mail/       # Email-safe component set for backend-email
     icons-lucide/       # Lucide icon pack; tree-shakeable
@@ -391,31 +397,38 @@ crates/
 
   sdk/                  # Third-party-style extensions: a payload type + a registered handler
     client/             # maps, webview, canvas, svg, video, markdown, table, codeblock, form,
-                        #   navigators, storage, net, i18n, gesture/pan/dnd, media, … (~40 crates)
-    server/             # jobs, pubsub, email, config
+                        #   navigators, storage, net, i18n, gesture/pan/dnd, media, …
+    server/             # jobs, pubsub, email, cache, config
 
   api/                  # Full-stack server layer: #[server] fns, server-kit, AWS adapter
 
+  streaming/            # Remote components: wasm bundles run on-device (wasmi)
+  ota/                  # Over-the-air delivery of remote components
+
+  idealyst/  idealyst-macros/   # Build and run an app with plain `cargo build`
+
   dev/                  # Dev-mode + test infrastructure
-    server/ client/ http/ reload/ web-host/ wire/   # hot reload + wire protocol
-    scene-parity/ parity-goldens/ mock-backend/     # golden op-sequence parity harness
+    server/ client/ http/ reload/ web-host/ wire/ hot/   # hot reload + wire protocol
+    scene-parity/ parity-goldens/ mock-backend/ host-mock/  # golden op-sequence parity harness
     robot-e2e/ robot-test/ robot-relay/             # cross-platform robot suites
+    inspector-server/ inspector-protocol/           # `idealyst inspect`
     newcore-app/ newcore-*-smoke/                   # per-platform runtime smoke apps
 
   tools/
     cli/                # idealyst CLI: new, dev, build, run, test, doctor, configure, export
     build/  run/        # Per-target build + run orchestration
-    lint/ configure/ port/ premint-dump/ wasm-split/ icon-gen/ dev-tui/ docs-app/
+    lint/ configure/ port/ premint-dump/ wasm-split/ icon-gen/ dev-tui/ docs-app/ js-min/ registry/
 
   mcp/                  # Stdio MCP server (`idealyst mcp`): component catalog + Robot tools
-    catalog/ server/
+    catalog/ catalog-scan/ server/
 ```
 
 Where a crate has non-obvious wiring, runtime requirements, or behavioural
 quirks, it has its own `README.md`. The most useful entry points:
 
 - [`crates/runtime/README.md`](crates/runtime/README.md): how the runtime
-  crates fit together — kernel, scene, vocabulary, shared substrate, facade.
+  crates fit together — kernel, scene, vocabulary, shared substrate, and the
+  `runtime-core` author surface.
 - [`crates/runtime/vocabulary/COVERAGE.md`](crates/runtime/vocabulary/COVERAGE.md):
   every capability trait, its methods, and its defaults.
 - [`crates/dev/scene-parity/README.md`](crates/dev/scene-parity/README.md):
@@ -432,9 +445,9 @@ quirks, it has its own `README.md`. The most useful entry points:
 - [`crates/backend/android/mobile/README.md`](crates/backend/android/mobile/README.md):
   Kotlin runtime requirements; JNI integration.
 - [`crates/backend/macos/README.md`](crates/backend/macos/README.md):
-  what's implemented vs. still missing on the AppKit backend.
+  bootstrap and the AppKit-vs-UIKit differences the backend works around.
 - [`crates/backend/roku/README.md`](crates/backend/roku/README.md):
-  theme-switching regression status, generator backend caveats.
+  how token updates reach a generator backend, and its caveats.
 - [`crates/gpu-backend/README.md`](crates/gpu-backend/README.md):
   the GPU rendering pipeline, host requirements, debug-stats feature.
 - [`crates/tools/port/README.md`](crates/tools/port/README.md): source-porter

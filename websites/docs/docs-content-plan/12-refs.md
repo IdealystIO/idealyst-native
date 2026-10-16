@@ -67,8 +67,8 @@ pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
     }
 
     ui! {
-        View {
-            Text { format!("Count: {}", value.get()) }
+        view {
+            text { format!("Count: {}", value.get()) }
         }
     }
 }
@@ -225,7 +225,7 @@ rect:
 let row: Ref<ViewHandle> = Ref::new();
 
 ui! {
-    View { /* content */ }.bind(row)
+    view { /* content */ }.bind(row)
 
     Button(label = "Where am I?", on_click = move || {
         if let Some(rect) = row.with(|h| h.frame()).flatten() {
@@ -302,9 +302,9 @@ Every primitive's builder and every `Bindable<H>`-returning
 component exposes `.bind(ref)`:
 
 ```rust
-View { ... }.bind(view_ref)
+view { ... }.bind(view_ref)
 Button(label = "...", on_click = ...).bind(button_ref)
-ScrollView { ... }.bind(scroll_ref)
+scroll_view { ... }.bind(scroll_ref)
 counter(initial = 0).bind(counter_ref)
 Navigator::new(&HOME).screen(...).bind(nav_ref)
 ```

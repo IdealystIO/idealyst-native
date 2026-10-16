@@ -1,28 +1,29 @@
 # mcp-catalog
 
-Phase 1 prototype of the framework's component catalog: the data layer that
-backs tooling like `cargo idealyst mcp --json-catalog`, the stdio MCP server
-in [`../../mcp-server`](../../mcp-server), and AI-assisted authoring.
+The framework's catalog: the data layer behind `idealyst mcp` (the stdio MCP
+server in [`../server`](../server)), `idealyst catalog-json`, the VS Code
+extension's completions, and AI-assisted authoring. Design:
+[`docs/framework-mcp-spec.md`](../../../docs/framework-mcp-spec.md) and
+[`docs/catalog-scopes-spec.md`](../../../docs/catalog-scopes-spec.md).
 
 ## What this crate provides
 
-- **`ComponentEntry`**: one record per `#[component]` in the workspace.
-  Captures the component's name, file/line, prop list (name + pretty-printed
-  type), and `composes` edges (other components called from its body).
-- **`inventory` distributed slice**: `#[component]` (under the
-  `runtime-macros/mcp` feature) emits an `inventory::submit!` for each
-  component. `entries()` walks them.
-- **`dump_catalog_json`**: serialises every registered entry to JSON on
-  stdout. The minimum surface for a CLI subcommand to wire up.
-- **`resolve` module**: phase 2 work that turns the bare idents recorded
-  in `composes` edges into fully-qualified `EntryRef`s
-  (same-module-first → closest ancestor → workspace-wide).
-
-## Status
-
-Phase 1 emits the flat catalog with `composes` edges as bare idents. Phase 2
-(resolution) is in `resolve.rs`. Phase 3+ (richer prop metadata, slots,
-example bundles) is sketched in `docs/mcp-catalog-spec.md`.
+- **Entry types** — `ComponentEntry` (one per `#[component]`: name,
+  file/line, props, `composes` edges), plus the tool, type, value, recipe
+  and scope entries the other catalog macros emit, and the locked
+  framework tables (primitives, utilities, macros, states, guides, SDKs)
+  only this crate can construct.
+- **`inventory` distributed slices** — the catalog macros (under the
+  `catalog` feature) emit an `inventory::submit!` per entry. `entries()`
+  walks the components.
+- **`catalog_json()` / `dump_catalog_json()`** — serialise everything
+  registered (schema `catalog_version: 2`); `CatalogParts` reads a catalog
+  back from JSON and merges catalogs from several sources (compiled
+  dependencies + the source scan in [`../catalog-scan`](../catalog-scan)).
+- **`resolve` module** — turns the bare idents recorded in `composes` edges
+  into fully-qualified refs (same-module-first → closest ancestor →
+  workspace-wide).
+- **`guides/`** — the bundled framework guides `read_guide` serves.
 
 ## What this crate is *not*
 

@@ -1,61 +1,48 @@
 # Accessibility Design — idealyst-native
 
 
-> **Status note (2026-07-29, runtime-v2).** The a11y *model* in this
-> document shipped and is current: `Role`, `AccessibilityTraits`,
-> `AccessibilityProps`, `AccessibilityAction`, `LiveRegionPriority`, the
-> per-platform mapping tables, and the GPU semantics tree all describe
-> today's behavior. The *implementation plan* does not: it is written
-> against the pre-runtime-v2 `Backend` mega-trait, the `Element` enum, and
-> the render walker, none of which exist. Today the a11y capability is
-> `runtime_vocabulary::caps::A11yOps` (`update_accessibility`,
-> `announce_for_accessibility`, `dump_accessibility_tree`), every primitive
-> payload in `crates/runtime/vocabulary/src/prims/` carries an
-> `a11y: AccessibilityProps` field, and each primitive's mount handler
-> passes it to the backend's `create_*` call. Read §§ on roles, traits, and
-> platform mappings; read the phase table as history. Author-facing guide:
-> [`accessibility.md`](accessibility.md).
+> **Status: implemented.** The types live in `runtime_shared::accessibility`
+> (`crates/runtime/shared/src/accessibility.rs`, re-exported as
+> `runtime_core::…`). Every node primitive's payload in
+> `crates/runtime/vocabulary/src/prims/` carries an `a11y: AccessibilityProps`
+> field; its mount handler (`crates/runtime/vocabulary/src/handlers/`) passes
+> it to the backend's `create_*` call; and the rest of the surface is the
+> `caps::A11yOps` capability (`crates/runtime/vocabulary/src/caps/a11y.rs`).
+> Author-facing guide: [`accessibility.md`](accessibility.md). The
+> `accessibility-completeness` audit (`.claude/audits/`) keeps the surface in
+> lockstep across backends.
 
-Status: **shipped** — phases 1-6 + wire-protocol plumbing landed.
-Owner: framework team. Reviewers: every backend maintainer + idea-ui.
-
-This document defined (and now records) the cross-platform accessibility
-(a11y) surface for idealyst-native. Before this work the framework
-exposed only `Image.accessibilityLabel` and `Link`'s native role; every
-other primitive shipped with **no a11y**. Retrofitting after more
-primitives ship would have been exponentially more expensive — every new
-`create_*` adds another retrofit point across every backend — so the
-surface landed before the primitive count grew further.
+This document defines the cross-platform accessibility (a11y) surface for
+idealyst-native: one `Role` taxonomy, one `AccessibilityTraits` bitfield,
+one `AccessibilityProps` struct, and the mapping each backend applies to its
+native AX system.
 
 ## Implementation status
 
 | Component | Status | Notes |
 |---|---|---|
-| `runtime_core::accessibility` module | ✅ | `Role`, `AccessibilityProps`, `AccessibilityTraits`, `LiveRegionPriority`, `AccessibilityAction`, `AccessibilityTree`, `AccessibilityNode`, `AccessibilityRect`, `PrimitiveKind`, `default_role()` — 7 unit tests |
-| `Backend` trait: `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` | ✅ | No-op defaults; every `create_*` takes `&AccessibilityProps` |
-| `Element` variants carry `accessibility: AccessibilityProps` | ✅ | 19 variants (control-flow `When`/`Switch`/`Repeat` excluded) |
-| Walker plumbs a11y through every primitive build | ✅ | |
-| **Web backend** | ✅ | ARIA attributes, `aria-live` announcer, `update_accessibility` reapplies idempotently |
+| `runtime_shared::accessibility` | ✅ | `Role`, `AccessibilityProps`, `AccessibilityTraits`, `LiveRegionPriority`, `AccessibilityAction`, `AccessibilityTree`, `AccessibilityNode`, `AccessibilityRect`, `PrimitiveKind`, `default_role()` |
+| `caps::A11yOps`: `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` | ✅ | No-op defaults; every `create_*` capability method takes `&AccessibilityProps` |
+| Primitive payloads carry `a11y: AccessibilityProps`; handlers pass it to `create_*` | ✅ | Control flow (`when` / `switch` / keyed lists / fragments) has none |
+| **Web backend** | ✅ | ARIA attributes, `aria-live` announcer, `update_accessibility` reapplies idempotently (`crates/backend/web/src/a11y.rs`) |
 | **iOS-mobile backend** | ✅ | `UIAccessibility*` setters + `UIAccessibility.post(.announcement)`. State flags without UIKit traits (CHECKED, EXPANDED, MIXED) ride `accessibilityValue`. iOS 17+ uses `UIAccessibilitySpeechAttributeAnnouncementPriority` on an `NSAttributedString` (Polite→Default, Assertive→High); older iOS falls back to a plain `NSString`. Runtime-gated via `NSProcessInfo.isOperatingSystemAtLeastVersion:`. |
 | **Android backend** | ✅ | `setContentDescription` / `setTooltipText` / `setAccessibilityLiveRegion` + `announceForAccessibility`. State flags without direct API ride a `contentDescription` tail (TalkBack still announces). |
 | **macOS backend** | ✅ | `NSAccessibility*` setters + `postNotificationWithUserInfo` (Polite→Medium, Assertive→High). `BUSY` trait unmapped (no AppKit equivalent). |
 | **Roku backend** | ✅ no-op | Roku SceneGraph has no AT API; props dropped at the `_a11y` boundary. Audit rule `backend-roku-a11y.md` nudges plumbing when an SDK exposes it. |
-| **wgpu backend** | ✅ | Per-node `accessibility` storage; `dump_accessibility_tree` builds the parallel semantics tree; `pending_announcements` queue drained by the host shell. 5 dedicated tests. |
-| **Wire protocol** | ✅ | `WireAccessibilityProps` + `WireRole` (`#[serde(other)] Unknown` for forward-compat) + `WireLiveRegionPriority` + `WireAccessibilityAction` (name + `HandlerId` trampoline). Every `Create*` carries a11y; new `UpdateAccessibility` + `AnnounceForAccessibility` commands; `WIRE_VERSION=4`. SceneModel snapshot replays per-node a11y so late-joining runtime-server clients see current state. AX action handlers cross the wire as reverse-channel `HandlerId`s — same trampoline mechanism as `on_click` / `on_change`. |
+| **GPU backend** | ✅ | Per-node `accessibility` storage; `dump_accessibility_tree` builds the parallel semantics tree; `pending_announcements` queue drained by the host shell. `crates/gpu-backend/host/wgpu-accesskit` projects the tree into the platform AX layer through AccessKit (wired in `host-winit`). |
+| **Wire protocol** | ✅ | `WireAccessibilityProps` + `WireRole` (`#[serde(other)] Unknown` for forward-compat) + `WireLiveRegionPriority` + `WireAccessibilityAction` (name + `HandlerId` trampoline). Every `Create*` carries a11y; `UpdateAccessibility` + `AnnounceForAccessibility` commands. SceneModel snapshot replays per-node a11y so late-joining runtime-server clients see current state. AX action handlers cross the wire as reverse-channel `HandlerId`s — same trampoline mechanism as `on_click` / `on_change`. |
 
-Documented gaps (intentional):
-- Future `Role` variants surface as `WireRole::Unknown` on older replayers → `None` (no role override).
-- wgpu's host-shell consumer crate that projects `AccessibilityTree` into the platform AX layer (winit / AT-SPI / shell-iOS) doesn't exist yet — design contract is recorded; the consumer is the next chunk of work.
-
-See `.claude/audits/accessibility-completeness.md` for the audit that keeps the surface in lockstep across backends.
+Documented gap (intentional): future `Role` variants surface as
+`WireRole::Unknown` on older replayers → `None` (no role override).
 
 The design follows the framework's two governing rules:
 
 - **Rule 3 (core stays minimal)** — a11y types live in
-  `runtime_core::accessibility` and the Backend trait grows the
-  smallest possible surface. Per-role authoring helpers (e.g.
-  `aria-current="page"` shortcuts, named "landmark" components) belong
-  outside core, on top of these primitives.
+  `runtime_shared::accessibility` and the capability surface is the
+  smallest possible (`A11yOps`'s three methods plus a parameter on each
+  `create_*`). Per-role authoring helpers (e.g. `aria-current="page"`
+  shortcuts, named "landmark" components) belong outside core, on top of
+  these primitives.
 - **Rule 7 (backend determines how things render, implementations
   converge in behavior)** — one `Role` taxonomy, one `AccessibilityTraits`
   bitfield, one `AccessibilityProps` struct. Each backend maps to its
@@ -253,7 +240,7 @@ pub struct AccessibilityProps {
     /// Author-supplied a11y name. `None` means "derive from the
     /// primitive's natural content" (Button's label, Text's content,
     /// Image's alt, etc.). The backend implements derivation; the
-    /// walker doesn't pre-fill.
+    /// framework doesn't pre-fill.
     pub label: Option<String>,
 
     /// Longer description ("Double tap to open menu"). Maps to
@@ -326,20 +313,19 @@ field exactly and avoids re-inventing reactivity.
 
 **`role: Option<Role>`, with backend-side inference when `None`.** Every
 primitive has a hard-coded default role (`Button` → `Role::Button`,
-`Pressable` → `Role::Button`, `Text` → `Role::Text`, …). The walker
-passes the inferred default in `props.role`'s slot only when the author
-didn't override; the backend then doesn't have to know which primitive
-it's working with to find the right role — it just reads
-`props.role.unwrap_or(default_for_primitive)`. Default-role table lives
-in `runtime_core::accessibility::default_role()` and is documented in
-the primitive index.
+`Pressable` → `Role::Button`, `Text` → `Role::Text`, …). The resolved
+role is `props.role.unwrap_or(default_role(kind))`, so an author override
+always wins. The default-role table lives in
+`runtime_shared::accessibility::default_role()` (re-exported as
+`runtime_core::accessibility::default_role`) and is documented in the
+primitive index.
 
 **`actions: Vec<AccessibilityAction>` belongs in core.** Custom AX
 actions are not a peripheral feature — VoiceOver / TalkBack expose them
 as the rotor menu, and any moderately complex list ("delete row",
 "archive row" without showing the buttons) needs them. Cost is one
 `Vec` per primitive (typically empty); the indirection is a single
-non-null check in the walker and the backend.
+non-null check in the backend.
 
 **No `accessible_children` field.** Considered: a manual child-override
 that lets a group primitive re-flatten its visual children into a
@@ -358,119 +344,53 @@ e2e id leaking into your shipped accessibility tree.
 
 ---
 
-## 4. `Backend` trait changes
+## 4. The backend surface
 
-The trait grows three new methods + an `AccessibilityProps` parameter on
-every existing `create_*`. The new methods all have no-op defaults so
-backends can land them incrementally.
+Every `create_*` capability method takes the node's props as
+`a11y: &AccessibilityProps`, borrowed: the mount handler has the payload in
+hand and lends it for the duration of the call. Each backend either ignores
+it (Roku), maps it to per-attribute setter calls (no retention), or — where
+it needs the props later (the GPU backend's semantics tree) — clones the parts
+it needs into its own state. This matches how `&Rc<StyleRules>` flows through
+`apply_style`.
 
-### Existing signatures: `&AccessibilityProps` added
-
-```rust
-fn create_view(&mut self, a11y: &AccessibilityProps) -> Self::Node;
-fn create_text(&mut self, content: &str, a11y: &AccessibilityProps) -> Self::Node;
-fn create_button(
-    &mut self,
-    label: &str,
-    on_click: &crate::derive::Action,
-    leading_icon: Option<&IconData>,
-    trailing_icon: Option<&IconData>,
-    a11y: &AccessibilityProps,
-) -> Self::Node;
-// ... and every other create_*: create_image, create_pressable,
-// create_text_input, create_text_area, create_toggle, create_slider,
-// create_scroll_view, create_activity_indicator,
-// create_virtualizer, create_link, create_navigator, create_portal,
-// create_external — all grow the parameter.
-```
-
-### New methods
+The rest of the surface is `caps::A11yOps`, all three methods with no-op
+defaults:
 
 ```rust
-/// Replace the a11y props on an already-created node. Called by the
-/// walker's reactive a11y Effect when any field of the prop changes
-/// (e.g. `traits` flips `SELECTED`, `label` updates).
-///
-/// Backends translate to per-attribute setter calls
-/// (`accessibilityLabel = ...`, `setAttribute('aria-label', ...)`,
-/// `setContentDescription(...)`).
-fn update_accessibility(
-    &mut self,
-    node: &Self::Node,
-    a11y: &AccessibilityProps,
-) {
-    // default: no-op (backends without a11y still render)
-}
+pub trait A11yOps: Host {
+    /// Replace the accessibility prop bag on an existing node.
+    /// `inferred_role` is the primitive's default role, so update
+    /// resolves the same role as create.
+    fn update_accessibility(&mut self, node: &Self::Node, a11y: &AccessibilityProps,
+                            inferred_role: Option<Role>) {}
 
-/// Post a one-shot announcement to the platform's a11y subsystem.
-/// Independent of any node — used for transient feedback ("Form
-/// submitted", "Loading complete") that doesn't have a stable
-/// focus target.
-///
-/// - iOS: `UIAccessibility.post(notification: .announcement, argument: msg)`
-/// - Android: `View.announceForAccessibility(msg)` on the root view,
-///   priority controls `AccessibilityEvent.TYPE_ANNOUNCEMENT` vs
-///   `setLiveRegion` on a hidden live-region node
-/// - Web: write `msg` into a hidden `<div aria-live="polite|assertive">`
-///   that the screen reader observes
-/// - macOS: post `NSAccessibilityAnnouncementRequestedNotification`
-///   with a `NSAccessibilityAnnouncementKey` + priority key
-fn announce_for_accessibility(
-    &mut self,
-    msg: &str,
-    priority: LiveRegionPriority,
-) {
-    // default: no-op
-}
+    /// Post a one-shot live-region announcement (no focus target).
+    fn announce_for_accessibility(&mut self, msg: &str, priority: LiveRegionPriority) {}
 
-/// GPU-backend semantics-tree dump. Native widget backends return
-/// `None`: their AX data lives on the native widget already, the
-/// platform AX walker traverses it directly.
-///
-/// The wgpu / future canvas backends override to return their
-/// parallel semantics tree. The host crate (winit shell, AppKit
-/// app delegate) reads the tree on every layout commit and
-/// projects it into the host platform's AX API.
-fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> {
-    None
+    /// GPU/canvas backends: snapshot the parallel semantics tree.
+    /// Native widget backends return `None`.
+    fn dump_accessibility_tree(&self) -> Option<AccessibilityTree> { None }
 }
 ```
 
-### Ownership / borrowing decisions
+`announce_for_accessibility` maps to:
 
-**`&AccessibilityProps`, borrowed.** The walker has the prop in hand
-from the `Element` it's expanding; it can lend it to `create_*` for
-the duration of the call. No `Rc` needed at the trait boundary — each
-backend either ignores the prop (no allocation), maps it to per-attribute
-setter calls (no retention), or for backends that need the prop later
-(web's reactive a11y binding, GPU's semantics-tree node) clones the
-parts it needs into its own state. This matches how `&Rc<StyleRules>`
-flows through `apply_style` today.
+- iOS: `UIAccessibility.post(notification: .announcement, argument: msg)`
+- Android: `View.announceForAccessibility(msg)` on the root view
+- Web: `msg` written into a hidden `<div aria-live="polite|assertive">`
+- macOS: `NSAccessibilityAnnouncementRequestedNotification` with an
+  announcement key + priority
 
-**`Element` enum grows an `accessibility: AccessibilityProps` field on
-each variant — not a derived-from-other-props computation.** Reasoning:
-the prop has fields (`hint`, `actions`, `identifier`, custom `role`)
-that have no analog in the primitive-specific props; trying to compute
-them post-hoc means inventing a parallel a11y-spec layer in core. Adding
-the field directly is what every other prop system does (Flutter's
+The author-side `runtime_core::announce(...)` reaches it through the
+announcer the boot path installs (`crates/runtime/vocabulary/src/backend.rs`).
+
+**The props are a field on each payload, not derived from other props.**
+`AccessibilityProps` has fields (`hint`, `actions`, `identifier`, a custom
+`role`) with no analog in the primitive-specific props; computing them
+post-hoc would mean a parallel a11y-spec layer in core. Adding the field
+directly is what every other prop system does (Flutter's
 `SemanticsConfiguration`, React Native's `accessibilityProps`).
-
-**Relationship to existing reactive updates.** When the author changes a
-button's *visible* label (the existing `update_button_label` Effect),
-the framework also re-fires `update_accessibility` if and only if
-`props.label.is_none()` (i.e. the a11y label is derived from the
-visible label). When `props.label.is_some()`, the a11y label is decoupled
-and only changes when the *a11y prop itself* changes. Default-derivation
-keeps the common case zero-config; explicit-prop is the escape hatch.
-
-The walker has a single `Effect` per node that observes the
-`AccessibilityProps` for that primitive and fires `update_accessibility`
-when any field of the prop changes. Other primitive-specific update paths
-(e.g. `update_text`) **do not** fire `update_accessibility` — they only
-fire it when the *derived label* changes, by re-running the a11y prop
-Effect.
-
----
 
 ## 5. GPU-backend semantics tree
 
@@ -629,44 +549,9 @@ node carrying the changing value; the backend re-announces on update.
 
 ---
 
-## 7. Migration plan
+## 7. Open design questions
 
-Eight phases. Phases 1-3 can land in a single PR (no behavior change on
-any backend). Phase 4 is the breaking-trait change. Phases 6a-6f land
-sequentially per backend; only 6a (web) and 6b (iOS) gate the v1 launch.
-
-| Phase | Scope | Files | Effort | Parallelizable |
-|-------|-------|-------|--------|----------------|
-| **1. Core types** | `Role`, `AccessibilityTraits`, `AccessibilityProps`, `AccessibilityAction`, `LiveRegionPriority`, `AccessibilityNode`, `AccessibilityTree`. Add `runtime_core::accessibility` module. Unit tests for default values + `Role`/trait mapping helpers. | `crates/framework/core/src/accessibility.rs` (new), `crates/framework/core/src/lib.rs` (re-export). | ~1d | No (foundation) |
-| **2. Backend trait additions** | Add `update_accessibility`, `announce_for_accessibility`, `dump_accessibility_tree` to `Backend` trait — **all with no-op defaults**. No existing-method changes yet. | `crates/framework/core/src/backend.rs` | ~0.5d | No (gates phases 4+) |
-| **3. Element enum field** | Add `accessibility: AccessibilityProps` field to every `Element::*` variant. Builder methods (`.label(...)`, `.hint(...)`, `.role(...)`, `.traits(...)`, `.identifier(...)`, etc.) on every primitive's builder. Default `AccessibilityProps::default()` so existing call sites keep compiling. | `crates/framework/core/src/primitive.rs`, every builder in `crates/framework/core/src/primitives/*.rs`, macros in `crates/framework/macros/src/ui.rs` if needed for shorthand. | ~2d | Yes (per primitive) |
-| **4. Walker plumbing** | Every `walker::build_*` function reads its primitive's `accessibility` field and passes it to the backend's `create_*` call. Every `create_*` call site updated to pass `&primitive.accessibility`. | `crates/framework/core/src/walker/*.rs` | ~1d | No (depends on phase 3) |
-| **5. Breaking `Backend` trait change** | Add `a11y: &AccessibilityProps` parameter to every `create_*` method on the trait. All current backends update signatures with no behavior change (ignore the new param). | `crates/framework/core/src/backend.rs` + every backend's matching `impl Backend`. | ~1d | No (gates phases 6) |
-| **6a. Web backend** | Apply `aria-label`, `aria-describedby`, `role`, `aria-*` state attrs in `create_*` and `update_accessibility`. Implement `announce_for_accessibility` via a hidden polite/assertive live region pair appended to `<body>` once. | `crates/backend/web/src/*.rs` | ~3d | Yes (parallel with 6b–6f) |
-| **6b. iOS backend** | Set `accessibilityLabel`/`Hint`/`Traits`/`Value`/`Identifier` on each `UIView` in `create_*` and `update_accessibility`. Map `Role` → trait bag per the table. Wire `announce_for_accessibility` to `UIAccessibility.post(.announcement, …)`. | `crates/backend/ios/mobile/src/*.rs` | ~4d | Yes |
-| **6c. Android backend** | Call `setContentDescription`/`setRoleDescription`/`setCheckable`/`setChecked`/`setEnabled`/`setLiveRegion` in `create_*` and `update_accessibility`. Map `Role` → `setClassName(...)`. Wire `announce_for_accessibility` to `rootView.announceForAccessibility(msg)` (Polite) or hidden live-region path (Assertive). | `crates/backend/android/mobile/src/*.rs` | ~4d | Yes |
-| **6d. macOS backend** | NSAccessibility protocol overrides on every NSView subclass: `accessibilityLabel`, `accessibilityRole`, `accessibilityHelp` (= hint), `accessibilityChildren` override only when `accessible_children`-style behavior needed (currently never). Wire announcement to `NSAccessibility.post(.announcementRequested, …)`. | `crates/backend/macos/src/*.rs` | ~3d | Yes |
-| **6e. Roku backend** | Roku SceneGraph has no first-class a11y model. Document `update_accessibility` and `announce_for_accessibility` as no-ops. Mark in CLAUDE.md and add a single-test that asserts the no-op compiles, so the trait change doesn't silently regress. | `crates/backend/roku/src/lib.rs` | ~0.5d | Yes |
-| **6f. wgpu backend (GPU)** | Build the parallel semantics tree. Implement `create_*` to attach `AccessibilityProps` + bounds to a new `SemanticsNode` keyed by primitive id. Implement `update_accessibility` to patch the node. Implement `dump_accessibility_tree`. Host crate (wgpu-shell) writes the tree into the host platform AX layer (NSAccessibility on macOS, UIAccessibilityElement array on iOS, AT-SPI on Linux). | `crates/render/wgpu/src/*.rs` + new `crates/render/wgpu/src/accessibility.rs`. Host wgpu-shell crate(s). | ~7d | Yes (parallel with 6a-6e) |
-| **7. End-to-end test coverage** | Per-backend tests: for each primitive, build it with non-default `AccessibilityProps` and assert the backend wrote the corresponding native attribute. Web uses jsdom; iOS/Android use snapshot tests on `accessibilityLabel`-equivalent string capture from the FFI layer; wgpu reads back via `dump_accessibility_tree`. | tests under each backend crate. | ~2d | Yes |
-| **8. Docs + examples** | Add `accessibility.md` user-facing doc. Update `primitives.md` to list each primitive's default role. Audit-rule under `.claude/audits/` that flags new primitives missing default-role registration. | `docs/accessibility.md`, `docs/primitives.md`, `.claude/audits/*.md`. | ~1d | After phase 6 |
-
-**Total**: ~22-28 engineer-days (single-stream). With phases 6a-6f
-fanned out across backend maintainers in parallel, the critical path is
-phase 1 → 2 → 3 → 4 → 5 → (6a + 6b) → 7 + 8, roughly 12-15 calendar
-days.
-
-**Phase ordering note.** Phases 1-5 land in a single PR with no
-behavior change on any backend. Phase 6a + 6b are the v1 launch (web +
-iOS get real a11y). 6c-6f land independently after. This sequencing
-matches the framework's tradition of growing the Backend trait first
-with no-op defaults, then filling in per-backend implementations.
-
----
-
-## 8. Open design questions
-
-Five items the team needs to resolve before phase-1 lands:
+Open items:
 
 1. **Reading current focus programmatically.** Does author code need to
    query "what AX element is currently focused" and/or
@@ -682,26 +567,9 @@ Five items the team needs to resolve before phase-1 lands:
    that *also* announce a focus-change to the AX layer, or are
    keyboard-focus and AX-focus separate concerns? On iOS they're
    already separate (keyboard focus vs. VoiceOver cursor); on web
-   they're tied. Need a decision before `update_accessibility` lands.
+   they're tied. Undecided; today they are separate.
 
-3. **`AccessibilityProps: Clone` or borrowed-only?** Marked `Clone` in
-   the strawman. The wgpu backend needs an owned copy to put in its
-   semantics tree; other backends only need a borrowed pass-through.
-   `Clone` costs us String + Vec clones per node on the wgpu path —
-   non-negligible at 1k+ nodes. Alternative: backend-specific
-   conversion to a leaner `AccessibilityNodeProps` form at tree-build
-   time. Recommendation: ship `Clone` for now, profile, optimize
-   later.
-
-4. **Per-primitive default-role table location.** Should `default_role()`
-   live as a method on `Element`, a free function in
-   `runtime_core::accessibility`, or be inlined into each `build_*`
-   walker call? The macros / ui-layer may want to query it for
-   compile-time validation ("you set `role: Role::Slider` on a
-   `Button`; that's almost certainly wrong"). If we want that, the
-   table needs to be a stable, documented API surface (own module).
-
-5. **Live regions and the reactive system — composability.** When a
+3. **Live regions and the reactive system — composability.** When a
    `Status` primitive has `live_region: Some(Polite)` and the inner
    text reactively changes, the backend needs to be told both about
    the new text *and* that this constitutes a live-region update worth
@@ -711,7 +579,7 @@ Five items the team needs to resolve before phase-1 lands:
    "only when `AccessibilityProps.label` itself changes (computed or
    raw); not when the primitive's visible text changes." But that
    means the `update_text` path can't auto-derive the a11y label, or
-   we re-announce on every keystroke. Resolve before phase 6 lands.
+   we re-announce on every keystroke. Unresolved.
 
 ---
 

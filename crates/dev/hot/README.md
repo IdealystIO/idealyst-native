@@ -36,7 +36,7 @@ upstream API surface.
 ## How `#[component]` uses it
 
 Under `runtime-core/hot-reload`, the `#[component]` macro
-(`runtime-macros/src/hot_split.rs`) rewrites:
+(`crates/runtime/macros-expand/src/hot_split.rs`) rewrites:
 
 ```rust
 pub fn Counter(props: &CounterProps) -> Element { /* body */ }

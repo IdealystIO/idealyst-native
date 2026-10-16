@@ -1,18 +1,14 @@
 # Native touch & gesture system
 
-> **Status note (2026-07-29, runtime-v2).** The design here shipped and the
-> per-platform mechanics are still the reference. One rename: the methods this
-> doc spells `Backend::install_touch_handler` / `claim_touch` /
-> `install_wheel_handler` / `install_file_drop_handler` are no longer on a
-> `Backend` mega-trait — that trait is gone. They live, unchanged in name and
-> signature and still defaulting to no-ops, on the capability trait
-> `runtime_vocabulary::caps::InputOps` (`crates/runtime/vocabulary/src/caps/input.rs`),
-> which a backend implements over the `runtime_scene::Host` seam. Read every
-> "Backend trait" below as "the `InputOps` capability". The core types moved
-> too: `TouchEvent` / `TouchPhase` / `TouchId` / `TouchResponse` and the stock
-> recognizers now live in `runtime_shared::touch` (re-exported flat as
-> `runtime_core::{tap, long_press, pan, pinch, …}`); the `runtime_core::touch`
-> module path no longer resolves.
+> **Status: implemented.** The types (`TouchEvent`, `TouchPhase`, `TouchId`,
+> `TouchResponse`) and the stock recognizers live in `runtime_shared::touch`
+> (`crates/runtime/shared/src/touch/`, re-exported flat as
+> `runtime_core::{tap, long_press, pan, pinch, …}`). The backend surface is
+> the `runtime_vocabulary::caps::InputOps` capability
+> (`crates/runtime/vocabulary/src/caps/input.rs`), every method defaulting to
+> a no-op. The recognizer arbitration layer is
+> [`gesture-arbiter-plan.md`](gesture-arbiter-plan.md); the iOS / Android
+> mechanics are [`native-touch-backends-plan.md`](native-touch-backends-plan.md).
 
 A raw-touch event pipeline owned by the framework. All gesture recognition
 (tap, long-press, pan, swipe, pinch, custom) runs in Rust against the
@@ -72,10 +68,10 @@ its own `TouchId → state` map. UIKit's `Set<UITouch>` and Android's
 `getPointerCount()` get normalized into one call per touch per phase
 change in the backend layer.
 
-## Element surface
+## View surface
 
-Add an `on_touch` slot to `Element::View` (and other primitives that
-can carry interactivity — `Pressable`, `ScrollView`, etc.):
+`view(...).on_touch(handler)` sets the `on_touch` slot on the view payload;
+the view handler installs it at mount:
 
 ```rust
 on_touch: Option<Rc<dyn Fn(&TouchEvent) -> TouchResponse>>,
@@ -91,19 +87,10 @@ for the built-in widget actions. Rebuilding the widgets would create
 regression surface (slop tuning, focus-ring, accessibility double-tap)
 for no gain.
 
-Framework auto-flips `StateBits::PRESSED` while ≥1 touch is active on a
-subscribed view; clears on Ended/Cancelled. No author code needed.
-
-## Backend trait
+## Capability: `caps::InputOps`
 
 ```rust
-fn install_touch_handler(
-    &mut self,
-    node: &Self::Node,
-    h: Rc<dyn Fn(&TouchEvent) -> TouchResponse>,
-);
-
-fn remove_touch_handler(&mut self, node: &Self::Node);
+fn install_touch_handler(&mut self, node: &Self::Node, handler: TouchHandler);
 
 /// Called by core when a handler returns `TouchResponse { claim: true }`.
 /// Backend decides locally how to suppress competing native consumers
@@ -134,7 +121,7 @@ nothing on its own; the claim protocol below is separate.
 When a row inside a vertical `ScrollView` wants to recognize a horizontal
 pan, the scroll view will start scrolling at the same moment. Native
 recognizers solve this with `requireToFail`. With raw touch we need an
-explicit protocol expressed entirely at the Backend trait surface — core
+explicit protocol expressed entirely at the capability surface — core
 defines the contract, each backend implements it in native terms.
 
 **Core's view (no platform knowledge):**
@@ -142,7 +129,7 @@ defines the contract, each backend implements it in native terms.
 1. Handler returns `TouchResponse { claim: true }` at the moment it
    decides "this gesture is mine" (e.g. after 8px horizontal movement).
 2. Core forwards the decision to the backend via a trait method, e.g.
-   `Backend::claim_touch(node, touch_id)`. That's the whole contract
+   `InputOps::claim_touch(node, touch_id)`. That's the whole contract
    core knows about.
 3. Subsequent events for the same `TouchId` continue flowing to the
    claiming handler regardless of native interference.
@@ -160,43 +147,21 @@ observe the same touch and steal it. When that happens, the platform
 delivers `Cancelled` to our handler — which is one reason `Cancelled`
 is first-class and distinct from `Ended`.
 
-This protocol shape is the v1 design goal, not a v2 cleanup. The API
-isn't pleasant unless this works.
+The API isn't pleasant unless this works, which is why the claim protocol
+was part of the first design rather than a later cleanup.
 
-## Open questions
+## Dispatch decisions
 
-- **Bubbling semantics.** Does an unconsumed Began event bubble immediately,
-  or does the framework wait until all phases are observed before deciding
-  the chain? UIKit's responder chain commits the responder at Began.
-  Android's `dispatchTouchEvent` commits per-event. Suggest: commit at
-  Began (topmost subscribed view at hit point), keep all subsequent events
-  for the same `TouchId` flowing to it. If it returns `consumed: false`
-  on Began, retry one ancestor up — same touch can't change owner mid-flight.
-- **State bits on bubble.** If a handler returns unconsumed on Began,
-  does `PRESSED` flip on the actual receiving ancestor only, or all
-  candidates? Suggest: only the final receiver.
-- **Force / pressure on platforms without it.** Default `None` — handlers
-  should branch on `Option<f32>` not assume.
+- **Bubbling.** Delivery is deepest-view-first, then bubbles to ancestors:
+  if the deepest subscribed view returns unconsumed on `Began`, the next
+  ancestor handler is asked, and so on. The ancestor that consumes the
+  `Began` keeps every later event for that `TouchId` — a touch never changes
+  owner mid-flight. (`crates/runtime/shared/src/touch/mod.rs` documents the
+  model and its footguns.)
+- **Force / pressure on platforms without it.** `None` — handlers branch on
+  `Option<f32>` rather than assume.
 
-## Build order
-
-1. **Core types** in runtime-core: `TouchEvent`, `TouchPhase`,
-   `TouchId`, `TouchResponse`, `Vec2`. Add `on_touch` slot to View.
-2. **Backend trait** methods (default no-op).
-3. **wgpu first** — fastest iteration, dispatcher already hit-tests for
-   clicks. Implement bubble + claim entirely in the renderer.
-4. **Rust tap/long-press recognizers** as standalone modules in
-   `runtime_core::touch::recognizers`. Author-facing building
-   blocks; existing widget primitives (`Pressable`, `Button`) keep
-   their native event paths — see above.
-5. **Backend implementations** — all four (web, Android, iOS, wgpu)
-   are equal-priority. wgpu is done; the rest are independent of
-   each other and can be picked up in any order.
-6. **Motion-value layer** on top — still useful for skipping the
-   style-recompute path during pans, even with Rust in the per-frame
-   loop. Separate plan doc when we get there.
-
-## Zoom: pinch + the desktop wheel/magnify channel (landed)
+## Zoom: pinch + the desktop wheel/magnify channel
 
 Zoom is the first gesture that needs **two** input families, and it shows how
 they stay decoupled:
@@ -211,7 +176,7 @@ they stay decoupled:
   a tap/pan on the same chain still sees it; once active it `CLAIM`s.
 
 - **Trackpad pinch + scroll-wheel** are *not* touches, so they get a separate
-  channel: `Backend::install_wheel_handler` + an `on_wheel` slot on View,
+  channel: `InputOps::install_wheel_handler` + an `on_wheel` slot on `view`,
   delivering `runtime_core::WheelEvent` (`WheelKind::Zoom | Scroll`). The
   desktop backends source it — **web** (`wheel`; `ctrlKey` ⇒ Zoom, the rest
   Scroll) and **macOS** (`magnify:` ⇒ Zoom, `scrollWheel:` ⇒ Scroll). Each
@@ -226,7 +191,7 @@ The two converge in the `zoom` SDK (`crates/sdk/client/zoom`), which drives one
 
 - **OS file drag-and-drop** (dragging files from Finder / the desktop / another
   browser tab onto a view) is a third such channel, built the same way:
-  `Backend::install_file_drop_handler` + an `on_file_drop` slot on View,
+  `InputOps::install_file_drop_handler` + an `on_file_drop` slot on `view`,
   delivering `runtime_core::FileDropEvent` (`Entered | Exited | Dropped(files)`).
   The desktop-class backends source it — **web** (HTML5 `DataTransfer`:
   `dragenter`/`dragover`/`dragleave`/`drop`), **macOS**

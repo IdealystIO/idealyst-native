@@ -1,11 +1,13 @@
 ---
 name: accessibility-completeness
-description: The a11y surface (Role, PrimitiveKind, AccessibilityProps, WireAccessibilityProps, default_role) stays in lockstep across framework-core, every backend, and the wire protocol.
+description: The a11y surface (Role, PrimitiveKind, AccessibilityProps, WireAccessibilityProps, default_role) stays in lockstep across runtime-shared, the vocabulary's author surface and handlers, every backend, and the wire protocol.
 targets:
-  - crates/runtime/core/src/accessibility.rs
-  - crates/runtime/core/src/backend.rs
-  - crates/runtime/core/src/element.rs
-  - crates/runtime/core/src/builder.rs
+  - crates/runtime/shared/src/accessibility.rs
+  - crates/runtime/vocabulary/src/caps/a11y.rs
+  - crates/runtime/vocabulary/src/glue.rs
+  - crates/runtime/vocabulary/src/handlers
+  - crates/runtime/vocabulary/src/backend.rs
+  - crates/runtime/macros-parse/src/ast.rs
   - crates/runtime/macros-expand/src/ui.rs
   - crates/runtime/macros-expand/src/jsx.rs
   - crates/dev/wire/src/lib.rs
@@ -23,12 +25,15 @@ severity: high
 
 ## Background
 
-The a11y surface lives in `framework_core::accessibility` and threads
-through every primitive, every backend, and the dev/app wire protocol.
-A new `Role` variant, a new `Element` variant, a new `create_*`
-method, or a new backend impl all have to update several files at
-once or assistive technology silently breaks for the affected
-primitive. This audit catches drift.
+The a11y types live in `runtime_shared::accessibility`
+(`crates/runtime/shared/src/accessibility.rs`: `Role`, `PrimitiveKind`,
+`AccessibilityProps`, `default_role`) and thread through every primitive
+payload, every mount handler, the `caps::A11yOps` capability
+(`crates/runtime/vocabulary/src/caps/a11y.rs`), every backend's
+`src/newcore.rs`, and the dev/app wire protocol. A new `Role` variant, a new
+primitive, a new `create_*` capability method, or a new backend impl all
+have to update several files at once or assistive technology silently
+breaks for the affected primitive. This audit catches drift.
 
 See `docs/accessibility-design.md` for the cross-platform mapping
 tables that authoritatively define what each `Role` should map to per
@@ -49,56 +54,51 @@ does NOT flag Roku's `_a11y` discipline.
 ### Core surface
 
 - [ ] **Every `PrimitiveKind` has a `default_role` arm.** `default_role`
-      lives in `framework_core::accessibility`. Open the function, list
+      lives in `runtime_shared::accessibility`. Open the function, list
       every `PrimitiveKind::*` variant, and confirm each one has an
       explicit `=>` arm (no wildcard `_ =>` swallowing new variants).
       A missing arm means the primitive ships with no inferred role on
       any backend.
-- [ ] **`PrimitiveKind` covers every `Element` variant** that
-      represents a node (skip `When` / `Switch` / `Repeat` — they're
-      control-flow only). Grep `enum Element` and `enum PrimitiveKind`;
-      anything in the former whose `accessibility:` field exists must
-      have a matching `PrimitiveKind` variant.
-- [ ] **Every `Element` node variant carries `accessibility: AccessibilityProps`.**
-      Grep `enum Element { ... }` for variants without an
-      `accessibility:` field. The constructors / `ui!` macros must also
-      default-initialize the field.
+- [ ] **`PrimitiveKind` covers every node primitive.** Every builtin
+      primitive payload in `crates/runtime/vocabulary/src/prims/` that
+      mounts a node (skip control flow: `when` / `switch` / keyed lists /
+      fragments) has a matching `PrimitiveKind` variant.
+- [ ] **Every node primitive's payload carries an `a11y:
+      AccessibilityProps` field**, and its mount handler
+      (`crates/runtime/vocabulary/src/handlers/*.rs`) passes it to the
+      `create_*` capability method (`backend.create_view(&prim.a11y)` is
+      the shape). A handler that builds the node without it drops the
+      author's a11y props on every backend.
 
 ### Author surface
 
-The setter surface is the single chokepoint `Element::accessibility_mut`
-(in `element.rs`); the `Bound<H>` setters (`builder.rs`) and the `ui!` /
-`jsx!` `a11y_*` attributes all write through it. The three lists below
-must stay in lockstep with the `AccessibilityProps` fields.
+The author-facing setters live on the glue wrappers in
+`crates/runtime/vocabulary/src/glue.rs` (the `glue_wrapper_common!`
+expansion, plus the hand-written wrappers such as presence): the
+whole-struct `accessibility(props)` and one granular setter per writable
+field. The `ui!` / `jsx!` `a11y_*` attributes lower to those setters.
 
-- [ ] **`Element::accessibility_mut` covers every node variant.** Its
-      `match` must list the same variants `with_style` lists (every
-      `Element` variant whose `accessibility:` field exists), returning
-      `Some`; control-flow variants (`When`/`Switch`/`Each`/`Repeat`/
-      `Fragment`) and the robot `Component` wrapper return `None`. A node
-      variant missing from the `Some(...)` arm silently can't be set from
-      author code.
-- [ ] **`Element::with_accessibility` forwards through the robot
-      `Component` wrapper**, mirroring `with_style`, so
-      `Component(..).accessibility(..)` lands on the wrapped root.
-- [ ] **`Bound<H>` exposes one granular setter per writable
-      `AccessibilityProps` field**, plus the whole-struct
-      `accessibility(props)` (`builder.rs`). Today: `a11y_label`,
-      `a11y_hint`, `a11y_role`, `a11y_hidden`, `a11y_traits`,
-      `live_region`. A new author-writable field on `AccessibilityProps`
-      needs a matching setter here. `LazyBuilder` carries the same set.
+- [ ] **Every glue wrapper exposes the same a11y setter set**:
+      `accessibility`, `a11y_label`, `a11y_hint`, `a11y_role`,
+      `a11y_hidden`, `a11y_traits`, `live_region` (check against the
+      writable `AccessibilityProps` fields). A wrapper missing one makes
+      that attribute a compile error on that primitive only. A new
+      author-writable field on `AccessibilityProps` needs a setter on
+      every wrapper.
 - [ ] **The macro attr list matches the setters.** `is_a11y_attr` in
-      `crates/runtime/macros-expand/src/ui.rs` is the single source of truth both
-      `ui!` and `jsx!` consult; each recognized name must equal a
-      `Bound` setter name (the macros emit `.<name>(<value>)`). A setter
+      `crates/runtime/macros-parse/src/ast.rs` is the single source of
+      truth both `ui!` and `jsx!` consult; each recognized name must equal
+      a glue setter name (the macros emit `.<name>(<value>)`). A setter
       added without updating `is_a11y_attr` is unreachable from the
       macros; a name in `is_a11y_attr` with no matching setter is a
       compile error at the call site.
-- [ ] **`announce` is installed at mount.** `walker.rs::mount` must call
-      `install_announcer(...)` with a closure forwarding to the active
-      backend's `announce_for_accessibility`, alongside the
-      `install_url_opener` / `install_fullscreen_setter` calls. Without
-      it, `runtime_core::announce(...)` is a silent no-op in real apps.
+- [ ] **`announce` is installed at boot.** The boot path in
+      `crates/runtime/vocabulary/src/backend.rs` must call
+      `runtime_shared::host::install_announcer(...)` with a closure
+      forwarding to the active backend's
+      `A11yOps::announce_for_accessibility`, alongside the URL-opener /
+      fullscreen installs. Without it, `runtime_core::announce(...)` is a
+      silent no-op in real apps.
 
 ### Backend coverage
 
@@ -107,10 +107,11 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
 `crates/gpu-backend/engine` — separately:
 
 - [ ] **No `_a11y` parameters in `create_*` methods** (Roku excluded).
-      Grep `_a11y: &framework_core::accessibility::AccessibilityProps`
-      inside `impl Backend for`. A finding means the backend accepts
-      the prop bag but drops it on the floor — the node renders with
-      no semantic info.
+      Grep `_a11y: &` (an `AccessibilityProps` parameter) inside the
+      backend's `caps::*Ops` impls in `src/newcore.rs` and the `imp/`
+      code it delegates to. A finding means the backend accepts the prop
+      bag but drops it on the floor — the node renders with no semantic
+      info.
 - [ ] **Each `create_*` calls `a11y::apply(...)`** (or the equivalent
       per-node setter for wgpu's `init_node_a11y`). Grep each backend's
       `create_*` body and verify the call is present, with an
@@ -175,13 +176,11 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
       `handler` field (or a replayer that synthesizes no-op handlers
       instead of trampolines) means AT-triggered AX actions on the
       app side never reach the dev-side closure.
-- [ ] **`WIRE_VERSION` bumped** when any of the above wire-shape
-      changes land. Check `crates/dev/wire/src/lib.rs` for the
-      current version; the design doc records v4 as the latest
-      a11y-complete version (v3 added the props envelope; v4 added
-      `HandlerId`-trampolined `AccessibilityAction` handlers). A
-      WireAccessibilityProps schema change without a version bump is
-      a finding.
+- [ ] **`PROTOCOL_VERSION` bumped** (`WIRE_VERSION` is an alias) when
+      any of the above wire-shape changes land. Check
+      `crates/dev/wire/src/lib.rs` for the current version. A
+      `WireAccessibilityProps` schema change without a version bump is a
+      finding.
 
 ### Tests
 
@@ -194,11 +193,13 @@ For each of `crates/backend/web`, `crates/backend/ios/mobile`,
       regressions in the mapping are caught (the cross-platform
       contract is the value-add of `Role`; a mapping bug is a
       cross-cutting break).
-- [ ] **The author surface has setter + macro tests.**
-      `builder.rs::a11y_builder_tests` covers the `Bound` setters and the
-      bag; `crates/runtime/core/tests/a11y_macro.rs` covers `ui!` / `jsx!`
-      attribute lowering; `backend.rs` covers `announce` dispatch + no-op.
-      A new setter / attr should extend these.
+- [ ] **The author surface has setter + macro tests.** Something must
+      pin that each `a11y_*` attribute in `ui!` / `jsx!` lands in the
+      payload's `AccessibilityProps` and reaches `create_*`
+      (`crates/runtime/vocabulary/tests/caps_conformance.rs` and
+      `glue_host_surface.rs` are the nearest existing coverage — the
+      latter pins the announcer install). A setter or attr with no test
+      reaching it is a finding.
 
 ## Output format
 

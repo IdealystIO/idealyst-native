@@ -1,6 +1,6 @@
 ---
 name: mcp-catalog-drift
-description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `MacroEntry`, `StateEntry`, `GuideEntry`, `SdkEntry`) against their underlying truth — the `Element` enum, the framework's utility surface, the authoring-macro definitions, the `stylesheet!` parser's state whitelist, the guides directory, and the `crates/{sdk,api,ui}/*` crate roster.
+description: Check the locked MCP catalog tables (`PrimitiveEntry`, `UtilityEntry`, `MacroEntry`, `StateEntry`, `GuideEntry`, `SdkEntry`) against their underlying truth — the builtin primitive set, the framework's utility surface, the authoring-macro definitions, the `stylesheet!` parser's state whitelist, the guides directory, and the `crates/{sdk,api,ui}/*` crate roster.
 targets:
   - crates/mcp/catalog/src/primitives.rs
   - crates/mcp/catalog/src/utilities.rs
@@ -8,8 +8,9 @@ targets:
   - crates/mcp/catalog/src/states.rs
   - crates/mcp/catalog/src/sdks.rs
   - crates/mcp/catalog/guides
-  - crates/runtime/core/src/element.rs
-  - crates/runtime/core/src/lib.rs
+  - crates/runtime/macros-parse/src/primitives.rs
+  - crates/runtime/vocabulary/src/handlers/mod.rs
+  - crates/runtime/vocabulary/src/lib.rs
   - crates/runtime/macros/src/lib.rs
   - crates/runtime/macros-expand/src/stylesheet.rs
 severity: medium
@@ -23,9 +24,9 @@ The framework's MCP catalog ships six **locked** slices — only `mcp-catalog` c
 
 Five drift surfaces matter:
 
-1. **Primitive tables vs. the `Element` enum.** Adding a variant to `crates/runtime/core/src/element.rs` without a corresponding `inventory::submit!` in `crates/mcp/catalog/src/primitives.rs` means the new primitive is invisible to AI/idea-ui/the doc-site. The `tests/registers_component.rs::primitives_table_includes_core_set` test catches missing core entries but isn't exhaustive over every variant.
+1. **Primitive tables vs. the builtin primitive set.** The primitives are the snake_case tags `canonical_primitive` recognizes (`crates/runtime/macros-parse/src/primitives.rs`), each backed by a payload in `crates/runtime/vocabulary/src/prims/` and a handler `register_builtins` installs (`crates/runtime/vocabulary/src/handlers/mod.rs`). Adding one without a corresponding `inventory::submit!` in `crates/mcp/catalog/src/primitives.rs` means the new primitive is invisible to AI/idea-ui/the doc-site. `primitives_table_includes_core_set` (`crates/dev/newcore-catalog/tests/shared/catalog_emission.rs`) catches missing core entries but isn't exhaustive.
 
-2. **Macro table vs. the actual macro definitions.** `crates/mcp/catalog/src/macros.rs` hand-curates one `MacroEntry` per authoring macro. The truth is the `macro_rules!` set in `crates/runtime/core/src/lib.rs` and the proc-macros in `crates/runtime/macros/src/lib.rs`. Adding/renaming/removing a macro without updating the table means the catalog documents a macro that doesn't exist (misleads AI authors) or omits one that does (the gap this slice was created to close — `effect!` was invisible, so authors fell back to a bare `Effect::new`). The `expansion` field must also still match what the macro lowers to.
+2. **Macro table vs. the actual macro definitions.** `crates/mcp/catalog/src/macros.rs` hand-curates one `MacroEntry` per authoring macro. The truth is the `macro_rules!` set the author surface re-exports (`effect!`, `rx!`, … in `crates/runtime/vocabulary/src/lib.rs`, re-exported through `runtime_core`) and the proc-macros in `crates/runtime/macros/src/lib.rs` (shims over `crates/runtime/macros-expand`). Adding/renaming/removing a macro without updating the table means the catalog documents a macro that doesn't exist (misleads AI authors) or omits one that does (the gap this slice was created to close — `effect!` was invisible, so authors fell back to a bare `Effect::new`). The `expansion` field must also still match what the macro lowers to.
 
 3. **State table vs. the `stylesheet!` parser whitelist.** `crates/runtime/macros-expand/src/stylesheet.rs` hard-codes the four valid state names (`hovered`, `pressed`, `focused`, `disabled`). Changing either side without the other is a silent drift — the parser would accept a state the catalog doesn't document, or vice versa.
 
@@ -51,9 +52,9 @@ The `values` slice is open, not locked, but has its own drift: every idea-theme 
 
 ### Primitive coverage
 
-- [ ] Open `crates/runtime/core/src/element.rs`. List every `pub enum Element { … }` variant.
-- [ ] For each variant, search `crates/mcp/catalog/src/primitives.rs` for an `inventory::submit!` whose `pascal_name` matches the variant ident, or `name` matches the snake_case form of the variant.
-- [ ] Flag any variant with no matching entry. Suggest the matching `PrimitiveEntry { name, pascal_name, docs, props, category, backends, _seal: () }` block.
+- [ ] Open `crates/runtime/macros-parse/src/primitives.rs`. List every tag `canonical_primitive` accepts; cross-check against the handlers `register_builtins` installs.
+- [ ] For each primitive, search `crates/mcp/catalog/src/primitives.rs` for an `inventory::submit!` whose `name` matches the snake_case tag.
+- [ ] Flag any primitive with no matching entry. Suggest the matching `PrimitiveEntry { name, pascal_name, docs, props, category, backends, _seal: () }` block.
 
 ### Primitive PROP coverage
 
@@ -91,7 +92,7 @@ a spelling that silently did nothing.
 
 ### Macro coverage
 
-- [ ] Inspect `crates/mcp/catalog/src/macros.rs`. For each `MacroEntry`, verify the macro actually exists: a `macro_rules! <name>` in `crates/runtime/core/src/lib.rs` (for `module_path: "runtime_core"`), or a `#[proc_macro]` / `#[proc_macro_attribute]` / `#[proc_macro_derive]` `pub fn <name>` in `crates/runtime/macros/src/lib.rs` (for `module_path: "runtime_macros"`).
+- [ ] Inspect `crates/mcp/catalog/src/macros.rs`. For each `MacroEntry`, verify the macro actually exists: a `macro_rules! <name>` reachable as `runtime_core::<name>!` (defined in `crates/runtime/vocabulary/src/lib.rs` or `crates/runtime/shared/src/lib.rs`, re-exported by the root; `module_path: "runtime_core"`), or a `#[proc_macro]` / `#[proc_macro_attribute]` / `#[proc_macro_derive]` `pub fn <name>` in `crates/runtime/macros/src/lib.rs` (for `module_path: "runtime_macros"`).
 - [ ] Flag entries naming a macro that doesn't resolve — stale claims that mislead AI authors. A name with only a `fn` and no macro must NOT appear in this table: `signal` and `memo` are plain fns now (their macros were removed) and live in `utilities.rs` under `UtilityCategory::Reactive` instead.
 - [ ] Flag *new* author-facing macros in those two files with no `MacroEntry` — especially reactive/markup/animation macros an author would type directly.
 - [ ] Spot-check the `expansion` field against the macro body: it should name the primitive the macro lowers to (e.g. `effect!` → `let _effect = Effect::new(move || { … });`). A drifted expansion is worse than an empty one.
@@ -104,10 +105,10 @@ a spelling that silently did nothing.
 
 ### SDK roster coverage
 
-- [ ] List the crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`). `tests/sdk_roster.rs` does this walk in both directions and fails on a missing or stale entry; its `NOT_AUTHOR_FACING` list is the exclusion set, so review any name added there.
+- [ ] List the crate directories under `crates/sdk/{client,server}/`, `crates/api/`, and `crates/ui/` (each with a `Cargo.toml`). Exclude internal/proc-macro-only helpers that aren't author-facing deps (e.g. `server-macros`, `idea-ui-docs-derive`). `crates/mcp/catalog/tests/sdk_roster.rs` does this walk in both directions and fails on a missing or stale entry; its `NOT_AUTHOR_FACING` list is the exclusion set, so review any name added there.
 - [ ] For each author-facing crate, search `crates/mcp/catalog/src/sdks.rs` for an `sdk!("<crate>", …)` entry. Flag any crate with no entry — it's undiscoverable from `list_sdks` / `describe_sdk` / `search`.
 - [ ] Flag any `SdkEntry` whose `name` no longer matches a directory under `crates/{sdk,api,ui}/` — a stale claim whose `dep_line` won't resolve.
-- [ ] Spot-check `category` (data / media / ui / device) and `kind` (api vs external — does the crate expose plain functions/types, or a `ui!` `Element::External` primitive?). A `MapView`/`WebView`/`Video`-style primitive is `External`; `net`/`storage`/`server` are `Api`.
+- [ ] Spot-check `category` (data / media / ui / device) and `kind` (api vs external — does the crate expose plain functions/types, or a third-party `ui!` primitive registered on the scene `Registry`?). A `MapView`/`WebView`/`Video`-style primitive is `External`; `net`/`storage`/`server` are `Api`.
 - [ ] Verify the `sdks` and `server-functions` guides still exist (`guides/sdks.md`, `guides/server-functions.md`) and that the `sdks` guide enumerates the data crates the structured slice indexes (the prose fallback for `read_guide("sdks")`).
 
 ### Guide link integrity

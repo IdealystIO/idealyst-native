@@ -1,5 +1,14 @@
 # Wave 2c deletion baseline
 
+> **Status: complete — a record, not a plan.** The old core was deleted on
+> 2026-07-30 (§8). This file stays because code comments across the backends
+> and parity crates cite it as the rationale for current behavior: §1 (the
+> frozen parity corpora and how they may change), §2.1–§2.3 (which capability
+> methods each backend leaves on a default, and why `NavigatorOps` has no
+> `create_navigator`), and §7.7 (generated-code name drift). The current
+> architecture is described in [`backend.md`](backend.md) and
+> [`crates/runtime/vocabulary/COVERAGE.md`](../crates/runtime/vocabulary/COVERAGE.md).
+
 Wave 2c deletes the old core: the `runtime-core` crate (the `Element`
 enum, the `Backend` mega-trait, the render walker, `Bound`/builders,
 `external`), `runtime-vocabulary`'s `legacy-bridge` feature

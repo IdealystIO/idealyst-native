@@ -95,9 +95,8 @@ relied on the panic to surface missing implementations during bring-up,
 watch for labeled placeholder boxes instead of aborts. Implemented methods
 are unaffected.
 
-**Status:** landed. Regression coverage in
-`crates/runtime/core/tests/prim_gating.rs` (gated-off placeholder per
-family, backend-mismatch placeholder, default-set anchors).
+**Status:** landed in 0.5; the `prim-*` features were removed in 1.0 (see
+[[migration-0-5-0-to-1-0-0]]), and their tests with them.
 
 ## idea-ui components are gated by their primitive families
 
@@ -141,10 +140,8 @@ prints a warning if either dep line still carries default features
 `table` SDK were converted to `default-features = false` runtime-core
 deps in this release, so idea-ui's whole subtree is unification-clean.
 
-**Status:** landed. Regression coverage in
-`crates/ui/idea-ui/tests/prim_gating.rs` (default-set pin, all-off core
-survival, the Textarea and Autocomplete splits), exercised per feature
-arm via `cargo test -p idea-ui --no-default-features [--features …]`.
+**Status:** landed in 0.5; idea-ui's `prim-*` features were removed in 1.0
+(see [[migration-0-5-0-to-1-0-0]]), and their tests with them.
 
 ## Release web bundles ship brotli `.br` siblings
 

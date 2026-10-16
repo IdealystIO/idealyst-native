@@ -64,25 +64,13 @@ something regresses here, the surface area to bisect is small.
   (`heavy payload byte:`) is rendered BY the handler, so in the lazy
   variant seeing it proves the parked item was actually drained.
 
-### History of this pair
+Parking is **opt-in per payload kind** (an undeclared unknown payload
+still panics at realize rather than degrading to a placeholder box), and a
+payload that realizes *before* its handler arrives completes in place. The
+semantics are unit-pinned in `crates/runtime/scene/src/tests.rs`; this
+directory is where they are measured in bytes.
 
-These fixtures measured the same axis before runtime v2, over the old
-`Element::External` + `runtime_core::defer_external_registration` seam
-(recorded: `main.wasm` 1294 KiB eager → 781 KiB lazy). Runtime v2 deleted
-that seam, and for one wave the pair degraded to measuring plain
-call-site reachability because no post-boot registration existed at all.
-
-`runtime_scene::Registry::defer` / `Registry::register_deferred` plus
-`runtime_scene::defer_registration` restored the capability — with two
-improvements over the old design: parking is **opt-in per payload kind**
-(an undeclared unknown payload still panics at realize rather than
-degrading to a placeholder box), and a payload that realizes *before* its
-handler arrives completes in place instead of being stuck as a permanent
-"not supported" node. The semantics are unit-pinned in
-`crates/runtime/scene/src/tests.rs`; this directory is where they are
-measured in bytes.
-
-## `own-glue/` — the framework-owned JS boundary (phase 1)
+## `own-glue/` — the framework-owned JS boundary
 
 Three small bin crates for [`docs/proposals/own-web-bindings.md`](../docs/proposals/own-web-bindings.md).
 They are NOT idealyst apps and are not built by `prune-regression`; the

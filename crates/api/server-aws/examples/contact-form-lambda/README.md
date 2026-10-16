@@ -69,7 +69,7 @@ Install [cargo-lambda](https://www.cargo-lambda.info/), then either path.
 > generates the wrapper, builds the `bootstrap`, and stages it plus an RIE
 > Dockerfile under `dist/serverless-lambda/` for you. This example keeps the
 > explicit bin to show what the adapter does. See
-> [docs/serverless.md](../../../../docs/serverless.md).
+> [docs/serverless.md](../../../../../docs/serverless.md).
 
 ### A. cargo-lambda (quickest)
 

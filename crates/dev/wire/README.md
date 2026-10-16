@@ -18,7 +18,7 @@ The dev side runs the user's components in a normal Rust process. A
 `WireRecordingBackend` (in `dev-server`) translates every capability
 call the realize pass makes into a serializable [`Command`]. The app side
 receives the command stream and a [`WireBackend<B>`] (in
-[`../dev-client`](../dev-client)) replays each command against the real
+[`../client`](../client)) replays each command against the real
 platform backend (`WebBackend`, `IosBackend`, `AndroidBackend`, …).
 
 The protocol is **data**. This crate has no runtime
@@ -65,7 +65,7 @@ A new capability method that needs to traverse the wire requires:
 
 This crate is data-only. The pieces that move bytes:
 
-- **App-side replay engine**: [`../dev-client`](../dev-client). Wraps any
+- **App-side replay engine**: [`../client`](../client) (`dev-client`). Wraps any
   the platform's `runtime_vocabulary::caps` surface and feeds it
   `Command`s.
 - **App-side native transport**: [`../runtime-server-shell`](../runtime-server-shell).

@@ -2,7 +2,7 @@
 
 Idealyst is two concepts with a contract between them: the
 **Runtime** above and a **Backend** below, glued by the
-`runtime_scene::Host` seam plus the ~30 capability (`*Ops`) traits in
+`runtime_scene::Host` seam plus the 31 capability (`*Ops`) traits in
 `runtime-vocabulary` (the Backend Interface). Every top-level
 directory here maps to one piece of that architecture.
 

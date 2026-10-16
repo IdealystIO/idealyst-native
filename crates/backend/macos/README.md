@@ -6,7 +6,7 @@ cross-compile + workspace-wide `cargo check` works from any platform.
 
 ## Status
 
-`src/newcore.rs` implements `runtime_scene::Host` plus all 30
+`src/newcore.rs` implements `runtime_scene::Host` plus all 31
 `runtime_vocabulary::caps` traits on `MacosBackend`, delegating to the
 AppKit mechanism code in `src/imp/`. The
 [GPU backend](../../gpu-backend) hosted on `appkit` / `winit` remains an

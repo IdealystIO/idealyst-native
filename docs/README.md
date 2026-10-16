@@ -50,7 +50,7 @@ If you're new to the codebase, read the docs in this order:
    Read this when you're adding a custom font or debugging why one
    isn't rendering the weight you expected.
 
-7. [`backend.md`](./backend.md). The `runtime_scene::Host` trait, the 30
+7. [`backend.md`](./backend.md). The `runtime_scene::Host` trait, the 31
    capability traits, the `Registry` mount path, the flush driver, and
    the rules a backend must follow. Read this last; it's where the seam
    between framework and platform lives, and it makes more sense after
@@ -62,7 +62,7 @@ If you're new to the codebase, read the docs in this order:
    platform's native AX system.
    [`accessibility-design.md`](./accessibility-design.md) has the
    internals: per-platform mapping tables and the GPU-backend semantics
-   tree (its trait signatures predate runtime v2).
+   tree.
    [`keyboard-input.md`](./keyboard-input.md) covers app-level keyboard
    input (key presses and releases for games and shortcuts);
    [`app-input.md`](./app-input.md) covers app-wide mouse input,
@@ -170,7 +170,7 @@ The repo is grouped by concern (`crates/runtime/`, `crates/backend/`,
 | --- | --- | --- |
 | `runtime-world` | `crates/runtime/world` | The reactive kernel: per-world arenas, `Copy` handles, staged-commit flush |
 | `runtime-scene` | `crates/runtime/scene` | `Element`, `Host`, `Registry`, `realize` + the structural drivers |
-| `runtime-vocabulary` | `crates/runtime/vocabulary` | The primitives (payloads + handlers), the 30 `caps::*Ops` traits, `glue` (the author surface) |
+| `runtime-vocabulary` | `crates/runtime/vocabulary` | The primitives (payloads + handlers), the 31 `caps::*Ops` traits, `glue` (the author surface) |
 | `runtime-shared` | `crates/runtime/shared` | The permanent substrate: style engine, colors, assets/fonts, animation, event types, scheduling, robot registry, per-primitive handles |
 | `runtime-core` | `crates/runtime/core` | The author surface: the `runtime_core::…` spelling — re-exports `glue::*` plus the macro set. No implementation lives here |
 | `runtime-macros` | `crates/runtime/macros` | `#[component]`, `ui!`, `jsx!`, `stylesheet!` proc-macros |
@@ -210,7 +210,7 @@ Primitive handlers  (runtime-vocabulary)
    │  + install binding effects so signal changes drive capability calls
    ▼
 Backend  (your platform impl)
-   │  Host (7 structural ops) + the caps traits it supports
+   │  Host (structural ops) + the caps traits it supports
    │  + a flush driver that commits staged writes after author code runs
    ▼
 Native UI on screen

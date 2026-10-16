@@ -176,8 +176,7 @@ statically reaches — is reachable from `main.wasm` no matter where the
 primitive renders.
 
 Registration is the anchor, so moving the anchor is what moves the weight. The
-registry has a **late-registration seam** for exactly that, the runtime-v2
-successor to the pre-v2 core's `defer_external_registration`:
+registry has a **late-registration seam** for exactly that:
 
 - **At boot, declare the kind instead of the handler.**
   `registry.defer::<HeavyProps>()` costs `main.wasm` a compile-time `TypeId`

@@ -233,7 +233,7 @@ backend, specialize `H` to that backend's registry type in your app crate and
 add the backend dep.
 
 SSR needs the same handlers so first paint matches the client (see the
-website's `examples/serve.rs`, which registers alongside the web build).
+website's `websites/website/examples/serve.rs`, which registers alongside the web build).
 
 ### Code-splitting a heavy extension (web)
 
@@ -247,8 +247,7 @@ Registration is the anchor, and the registry has a **late-registration seam**
 for moving it out of main: declare the payload kind at boot with
 `registry.defer::<T>()` (which lets `realize` park an item of that kind instead
 of panicking), then install the real handler from inside the chunk with
-`runtime_scene::defer_registration` → `Registry::register_deferred`. This is the
-runtime-v2 successor to the pre-v2 core's `defer_external_registration`. Full
+`runtime_scene::defer_registration` → `Registry::register_deferred`. Full
 recipe and the size measurement in [[lazy-loading]].
 
 Practical consequences:
@@ -267,30 +266,28 @@ Practical consequences:
 
 ### There are no `prim-*` features
 
-Earlier releases let you trim whole primitive families out of the build with
-twelve `prim-*` cargo features on `runtime-core` (mirrored by each backend
-crate), six matching ones on `idea-ui` that `#[cfg]`-deleted the components
-rendering each family, and `idealyst build --web --primitives=…` to select the
-set. **All three layers are gone**, along with the SDK-side forwards that fed
-them (`virtualized` → `prim-virtualizer`, the navigators → `prim-navigator`).
-They gated three things in the pre-v2 core — walker dispatch arms, authoring
-builder fns, and `Backend` trait methods — and none of them exist now.
+The `prim-*` cargo features (on `runtime-core`, the backends, and `idea-ui`)
+and `idealyst build --web --primitives=…` no longer exist. Drop any
+`features = ["prim-…"]` entry (cargo rejects the manifest otherwise) and any
+`--primitives` flag (the CLI rejects it with a pointer to the manifest key below);
+nothing in your source changes, and the component set is unconditional.
 
-Nothing in your source changes: no type, function, macro, or component was
-lost, and the component set is unconditional. Manifests and build commands do:
-drop any `features = ["prim-…"]` entry (cargo rejects the manifest otherwise)
-and drop `--primitives` (the CLI rejects it with a pointer to the migration
-guide). If you want a smaller bundle, the lever is now **what you register** —
-see "Register only the SDKs you actually render" above.
+The levers for a smaller bundle are **what you register** — see "Register only
+the SDKs you actually render" above — and, for the builtin primitives, the
+app manifest's primitive set:
 
-The structural successor for primitives themselves is per-primitive **handler
-registration**: `runtime_vocabulary::handlers::register_builtins` holds the
-only reference to each primitive's module and its caps calls, so a per-family
-gate belongs there (and in each backend's caps impls). Until that lands,
-keeping the old flags would have shipped a lever that deletes components from
-the public API while saving nothing in the bundle. See
-`docs/migrating-to-runtime-v2.md` for the full before/after, and
-[[migration-0-4-0-to-0-5-0]] for the historical contract.
+```toml
+[package.metadata.idealyst.app]
+primitives = ["view", "text", "button"]   # or the `core` / `all` presets
+```
+
+`idealyst::entry!` reads it and declares a `BuiltinSet`
+(`crates/runtime/vocabulary/src/handlers/mod.rs`), so unlisted primitives'
+handlers — and the backend code only they reach — are never named at the boot
+seam and drop out of the binary. Omit it to keep every builtin. Rendering a
+primitive the set omits panics at mount (a component library counts:
+`idea_ui::Button` needs `button`). See [[migration-0-4-0-to-0-5-0]] for the
+historical `prim-*` contract.
 
 ## Device & platform integration
 

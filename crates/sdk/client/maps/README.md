@@ -30,10 +30,10 @@ use maps::{MapView, MapViewProps};
 // `register` to the right leaf for the build target:
 backend_web::newcore::start_in("#app", maps::register, app);
 
-// Inside a `ui!` block. `MapView` is an external primitive, so it's
-// interpolated as an expression:
+// Inside a `ui!` block. `MapView` is a third-party primitive (a payload
+// with a registered handler), so it's interpolated as an expression:
 ui! {
-    View {
+    view {
         { MapView(MapViewProps { lat: 37.7749, lon: -122.4194, zoom: 12.0 }) }
     }
 }

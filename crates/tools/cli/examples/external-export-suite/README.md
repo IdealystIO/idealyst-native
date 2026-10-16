@@ -25,5 +25,5 @@ idealyst serve crates/tools/cli/examples/external-export-suite --port 8080
 The React / Svelte / Angular consumers run with their own toolchains — see
 [`consumers/README.md`](consumers/README.md).
 
-See [`docs/external-export.md`](../../docs/external-export.md) for how the
+See [`docs/external-export.md`](../../../../../docs/external-export.md) for how the
 export pipeline works.

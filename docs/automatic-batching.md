@@ -34,14 +34,11 @@ So coalescing is not a lever the author pulls — it is the only shape a
 turn has. A handler that writes five signals produces one commit, one
 deduped effect pass, and one layout/paint.
 
-**What changed from the pre-v2 core.** The old walker's batching
-deferred the *notification* only: "`with_signal_mut` writes the new
-value immediately; a `get()` on the next line sees it." That sentence
-described `runtime-core`'s `reactive::cycle` / `DirtyWindow` mechanism,
-which no longer exists. Runtime v2 stages the *value* too, so
-read-back-in-the-same-handler is the one authored pattern that changes
-behavior — see
-[`migrating-to-runtime-v2.md`](migrating-to-runtime-v2.md#reactive-semantics-writes-are-staged).
+**Reads see the committed value.** The *value* is staged along with the
+notification, so a `get()` on the line after a `set()` in the same handler
+returns the value from before the `set` — the one authored pattern this
+model changes compared with an immediate-write store (see
+[`migrating-to-runtime-v2.md`](migrating-to-runtime-v2.md#reactive-semantics-writes-are-staged)).
 Debug builds warn on it (`idealyst[staged-read]`, once per call site);
 the diagnostic's full contract is in
 [`reactivity.md`](reactivity.md#the-staged-read-diagnostic-dev-builds).
@@ -180,8 +177,7 @@ author-facing table.
 - `runtime_world::is_flushing()` — true while any world on the thread is
   inside `flush`, i.e. while effects are running by the reactive
   system's decision rather than an event handler's
-  (`tests.rs::is_flushing_reports_active_flush`). This is the
-  replacement for the old core's `is_reactive_busy`.
+  (`tests.rs::is_flushing_reports_active_flush`).
 - `runtime_world::is_entered()` — true while a live world is ambient, so
   creation-side APIs (`signal`, `effect`, `provide`/`inject`) are legal.
   Handlers run with this `false`; see

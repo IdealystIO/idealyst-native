@@ -1,19 +1,16 @@
 # Server functions — full-stack architecture (v1 design)
 
-Status: in progress. The v0 proof-of-concept (the `#[server]` macro,
-JSON-over-HTTP via the `net` SDK, inventory dispatch, batching) is shipped. This
-document specifies the v1 expansion into a foundation for full-stack development;
-each phase lands with tests per the repo's testing rules.
-
-**Done (tested, both feature modes):** Phase 0 typed errors · Phase 1 extractor
-keystone (`Context`/`FromContext`/`State`/`Headers`/`Extension`) · Phase 2
-middleware + auth guards (`Auth`/`Cookies`) · Phase 3 collision detection +
-schema versioning (`strict_version`, `IncompatibleVersion`) · Phase 4 deliberate
-batching · Phase 5a client credentials · Phase 5b `storage` crate.
-**Remaining:** `net` cookie support + per-platform `storage` backends (device
-testing), Phase 6 enforcement scaffolding (CLI templates), **Phase 7 streaming &
-WebSockets** (§9 — sibling transport for subscriptions/duplex), GraphQL BFF
-recipe. See the per-phase list near the end for detail.
+Status: implemented. Shipped and tested in both feature modes: typed errors,
+the extractor keystone (`Context` / `FromContext` / `State` / `Headers` /
+`Extension`), middleware + auth guards (`Auth` / `Cookies`, now the
+`DispatchHook` seam plus `server-kit`), collision detection + schema
+versioning (`strict_version`, `IncompatibleVersion`), deliberate batching,
+client credentials and response cookies, the `storage` / `credentials` SDKs,
+and the streaming transport (§9: `#[channel]`, `#[subscription]`, `#[sse]`,
+typed `Socket<In, Out>`, `use_socket` / `use_sse`). GraphQL is its own SDK
+(`crates/sdk/client/graphql`). Open items are listed under "Implementation
+status" near the end. The author-facing guide is
+[`docs/server-functions.md`](../../../docs/server-functions.md).
 
 The full-stack API layer lives under `crates/api/` (`server`, `server-macros`,
 and the future middleware / `storage` crates), kept separate from the UI-facing
@@ -38,8 +35,8 @@ app crate that holds their `#[server]` fns, not this repo's `crates/api/` home.
    actually needs (header injection, cookies, secure storage).
 8. **Deliberate batching** — opt-in, not a silent default.
 
-Non-goals for the HTTP layer (Phases 0–6): streaming/subscriptions (now their own
-transport — see §9 and Phase 7), exposing idealyst fns *as* GraphQL. GraphQL
+Non-goals for the HTTP layer: streaming/subscriptions (their own transport —
+see §9), exposing idealyst fns *as* GraphQL. GraphQL
 *consumption* is addressed as a BFF recipe, not framework surface.
 
 ---
@@ -151,8 +148,7 @@ extension map (`Arc`-shared headers + `TypeId`→`Any` map), `FromContext` retur
 `impl Future<…> + Send`, and an extraction failure is a `TransportError::Server {
 status, .. }` (e.g. 500 for missing state) surfaced to the client as
 `ServerError::Server` — infrastructure, not a domain `Failed`. `Auth<T>` is
-`Extension<T>` set by a guard; the named `Auth`/`Cookies` aliases land with
-middleware in Phase 2.
+`Extension<T>` set by a guard; `Auth` / `Cookies` are the named aliases.
 
 Built-in extractors, all `FromContext`:
 
@@ -161,8 +157,8 @@ Built-in extractors, all `FromContext`:
 | `State<T>`     | the process-wide app-state registry (Deref to T)    |
 | `Headers`      | the request's `HeaderMap` (Deref to it)             |
 | `Extension<T>` | `ctx.get::<T>()`, set by middleware (Deref to T)    |
-| `Auth<T>`      | (Phase 2) named alias of `Extension<T>` from a guard |
-| `Cookies`      | (Phase 2) parsed request cookies                    |
+| `Auth<T>`      | named alias of `Extension<T>` from a guard |
+| `Cookies`      | parsed request cookies                    |
 
 **Classification rule (macro).** A proc-macro sees syntax, not trait impls, so the
 wire-arg/extractor split is syntactic: a parameter is injected if it is annotated
@@ -202,9 +198,8 @@ data stops being a one-off field.
 
 ## 4. Middleware
 
-> **2026-07 update — middleware extracted from the primitive.** The
-> middleware system described below shipped in Phase 2 *inside* this crate,
-> and has since been split out: the `server` crate now exposes a single
+> **Middleware lives outside the primitive.** The middleware system described
+> below is not part of this crate: the `server` crate now exposes a single
 > `DispatchHook` slot (`install_dispatch_hook`, `around` for unary calls +
 > per-batch-entry, `on_open` for channel/subscription/SSE opens) as its only
 > policy seam, and the chain / `install_middleware` / `from_fn` /
@@ -383,7 +378,7 @@ header on native), and the primitives make both expressible.
 
 ---
 
-## 9. Streaming & WebSockets (planned)
+## 9. Streaming & WebSockets
 
 The HTTP layer above is request/response. Bidirectional and streamed
 communication (live queries, notifications, progress, LLM tokens, chat/presence)
@@ -562,19 +557,17 @@ client→server direction (chat/presence/collab) is genuinely needed.
 
 ---
 
-## Build phases
+## Implementation status
 
-Each phase is independently shippable and lands with tests (repo rules §1, §8).
-
-- **Phase 0 — Typed errors. ✅ DONE.** `ServerError<E = String>`, generic
+- **Typed errors. ✅ DONE.** `ServerError<E = String>`, generic
   `ServerFnReturn` (assoc. `Error`), `TransportError`/`into_domain`,
   `IncompatibleVersion` variant defined. Tested both modes. (item 1)
   (`#[derive(ServerError)]` sugar deferred — `ServerError<E>` covers the need.)
-- **Phase 1 — Keystone. ✅ DONE.** `Context` extension map, `FromContext`
+- **Keystone. ✅ DONE.** `Context` extension map, `FromContext`
   (`impl Future + Send`), `State<T>`/`Headers`/`Extension<T>`, `#[ctx]` +
   reserved-name macro classification, extraction-failure → HTTP status. Tested
   both modes + extractor unit tests. (items 2, 7)
-- **Phase 2 — Middleware + guards. ✅ DONE, then extracted.** `Middleware`
+- **Middleware + guards. ✅ DONE, then extracted.** `Middleware`
   trait + `from_fn` + `install_middleware`; the dispatcher runs the chain
   (single + per batch entry) before the handler, short-circuiting on error
   with its HTTP status. `Context` gained mutable `insert` + the matched
@@ -586,7 +579,7 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   (mechanism, not policy) stayed. Both crates tested both modes; the kit's
   e2e suite runs against public seams only.** Post-handler wrapping now
   falls out of `around` naturally (the hook holds the reply). (item 4)
-- **Phase 3 — Identity + versioning. ✅ DONE (core).** Boot-time collision
+- **Identity + versioning. ✅ DONE (core).** Boot-time collision
   detection (`router()` builds a path→entry `HashMap`, panics on duplicate;
   dedup logic unit-tested). Per-fn schema hash (macro hashes wire arg + return
   type spelling via fixed-seed `DefaultHasher`, embedded both sides). Negotiation
@@ -598,11 +591,11 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   qualification (inventory's const requirement makes `module_path!()`
   concatenation into a `&'static str` awkward; bare-name default + the boot
   collision panic is the safety net) and multi-version live registration. (items 5, 6)
-- **Phase 4 — Deliberate batching. ✅ DONE.** Direct single call by default;
+- **Deliberate batching. ✅ DONE.** Direct single call by default;
   coalescing happens only inside a `server::batch(future)` scope (a per-poll
   thread-local mirroring `cancel.rs`). Tested: in-scope concurrent calls →
   one `/_srv/_batch`; out-of-scope → N direct requests. (item 8)
-- **Phase 5 — Auth primitives. ◑ PARTIAL.** ✅ Client credential source
+- **Auth primitives. ◑ PARTIAL.** ✅ Client credential source
   (`ClientConfig::with_credentials` + `bearer` / `credentials_from_fn`), attached
   to every request (single + batch), tested. ✅ **Response cookies**:
   `server::set_cookie(Cookie)` / `Cookie::clearing()` / `clear_cookie(name)` — handlers attach a
@@ -619,9 +612,9 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
   Remaining: cross-origin `credentials: 'include'` on web fetch + CORS (same-origin
   BFF already works via fetch's default `same-origin` mode); native cookie jars;
   Windows/Linux secure backends. (item 3)
-- **Phase 6 — Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI
+- **Enforcement scaffolding.** layered `api`/`ui`/`server-bin` CLI
   templates; clippy `disallowed-types`; colocation cfg-gating recipe. (item 0)
-- **Phase 7 — Streaming & WebSockets. ◑ IN PROGRESS.** ✅ `net::WebSocket`
+- **Streaming & WebSockets. ✅ DONE.** ✅ `net::WebSocket`
   (native arm: sync `tungstenite` on a blocking I/O thread, no tokio; web/iOS/
   Android stubbed). ✅ Typed `Socket<In, Out>` (client wraps `net::WebSocket`,
   server wraps axum WS; JSON frames; shared enum = the contract) + `server::accept`
@@ -679,10 +672,7 @@ Each phase is independently shippable and lands with tests (repo rules §1, §8)
 
 ## Open decisions
 
-1. **`storage` as a new SDK crate vs. a `Backend` trait capability.** The repo's
-   "core stays minimal / mobile-first" stance argues for a separate crate
-   (parallel to `net`), keeping the `Backend` trait UI-focused. Leaning crate.
-2. **Schema negotiation cadence: per-call header vs. once-per-session handshake.**
+1. **Schema negotiation cadence: per-call header vs. once-per-session handshake.**
    Per-call is simplest and stateless but adds a header to every request;
    session handshake is leaner on the wire but needs connection state the current
    stateless HTTP model lacks. Leaning per-call for v1, revisit if measured.

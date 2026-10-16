@@ -20,11 +20,11 @@ pub fn counter(props: &CounterProps) -> Element {
     let count = signal(props.initial);
 
     ui! {
-        View {
-            Text { format!("Count: {}", count.get()) }
+        view {
+            text { format!("Count: {}", count.get()) }
             Button(
                 label = "Increment",
-                on_click = move || count.update(|n| *n += 1),
+                on_click = move || count.update(|n| n + 1),
             )
         }
     }
@@ -142,8 +142,8 @@ pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
     }
 
     ui! {
-        View {
-            Text { format!("Count: {}", value.get()) }
+        view {
+            text { format!("Count: {}", value.get()) }
         }
     }
 }
@@ -196,18 +196,18 @@ choice is purely stylistic.
 
 ```rust
 ui! {
-    View(style = card_style()) {
-        Text { "Hello" }
+    view(style = card_style()) {
+        text { "Hello" }
         Button(label = "Click me", on_click = move || println!("click"))
 
         if logged_in.get() {
-            Text { "Welcome back!" }
+            text { "Welcome back!" }
         } else {
-            Text { "Please log in." }
+            text { "Please log in." }
         }
 
         for item in items.iter() {
-            Text { item.name.clone() }
+            text { item.name.clone() }
         }
     }
 }
@@ -240,7 +240,7 @@ the choice is per-call-site.
 The mechanical differences are minor:
 
 - **`ui!`**: parens for props, braces for children. `style = expr`,
-  `Text { "hi" }`, `Card(kind = Outlined) { Counter() }`.
+  `text { "hi" }`, `Card(kind = Outlined) { Counter() }`.
 - **`jsx!`**: angle brackets. String attrs are bare (`label="x"`),
   expression attrs are braced (`value={signal}`). Closing tags must
   match (`<Foo>...</Foo>`); `</>` is not supported. Text content
@@ -265,11 +265,11 @@ pub fn counter(props: &CounterProps) -> Element {
     let count = signal(props.initial);
 
     ui! {
-        View {
-            Text { format!("Count: {}", count.get()) }
+        view {
+            text { format!("Count: {}", count.get()) }
             Button(
                 label = "Increment",
-                on_click = move || count.update(|n| *n += 1),
+                on_click = move || count.update(|n| n + 1),
             )
         }
     }
@@ -288,7 +288,7 @@ pub fn counter(props: &CounterProps) -> Element {
             <Text>{format!("Count: {}", count.get())}</Text>
             <Button
                 label="Increment"
-                on_click={move || count.update(|n| *n += 1)}
+                on_click={move || count.update(|n| n + 1)}
             />
         </View>
     }
@@ -306,7 +306,7 @@ pub fn counter(props: &CounterProps) -> Element {
 
     view(vec![
         text(move || format!("Count: {}", count.get())).into_element(),
-        button("Increment", move || count.update(|n| *n += 1)).into_element(),
+        button("Increment", move || count.update(|n| n + 1)).into_element(),
     ])
     .into_element()
 }
@@ -324,14 +324,14 @@ when debugging.
 
 Looking at the no-macro form, you can see what `ui!` does:
 
-- **`View { ... }`** → `view(vec![...])`. The `view` constructor
+- **`view { ... }`** → `view(vec![...])`. The `view` constructor
   takes a `Vec<Element>`. The primitive constructors
   (`text`, `button`, etc.) return `Bound<H>` handles, so each child
   is coerced to a `Element` via `.into_element()` before
   joining the vec.
-- **`Text { format!("...", count.get()) }`** → because the
+- **`text { format!("...", count.get()) }`** → because the
   expression contains `.get()`, the macro emits a *reactive* text:
-  `text(move || format!(...))`. A static `Text { "hi" }` emits the
+  `text(move || format!(...))`. A static `text { "hi" }` emits the
   non-reactive form: `text("hi")`.
 - **`Button(label = "...", on_click = ...)`** → `button(label,
   on_click)`. Both arguments go through the framework's coercion
@@ -346,9 +346,9 @@ Looking at the no-macro form, you can see what `ui!` does:
 ```rust
 ui! {
     if count.get() > 0 {
-        Text { "positive" }
+        text { "positive" }
     } else {
-        Text { "zero or negative" }
+        text { "zero or negative" }
     }
 }
 ```
@@ -373,7 +373,7 @@ at construction).
 ```rust
 ui! {
     for item in items {
-        Text { item.name.clone() }
+        text { item.name.clone() }
     }
 }
 ```
@@ -399,7 +399,7 @@ by hand.
 Tooling to make this easier (so you can describe a DSL's shape
 declaratively rather than write a proc-macro from scratch) is on
 the roadmap. Until that lands, the existing `ui!` and `jsx!`
-sources in [`crates/framework/macros/src/`](#) are the working
+sources in `crates/runtime/macros-expand/src/` (`ui.rs`, `jsx.rs`) are the working
 references.
 
 ## Recap: a finished component
@@ -424,9 +424,9 @@ pub fn counter(props: &CounterProps) -> Bindable<CounterHandle> {
     }
 
     ui! {
-        View {
-            Text { format!("Count: {}", value.get()) }
-            Button(label = "++", on_click = move || value.update(|n| *n += 1))
+        view {
+            text { format!("Count: {}", value.get()) }
+            Button(label = "++", on_click = move || value.update(|n| n + 1))
         }
     }
 }

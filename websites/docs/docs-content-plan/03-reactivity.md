@@ -39,7 +39,7 @@ ever calling `.clone()`.
 ```rust
 let n = count.get();          // tracked read
 count.set(7);                 // replace the value
-count.update(|n| *n += 1);    // mutate in place
+count.update(|n| n + 1);    // derive the next value from the current one
 ```
 
 `.get()` returns a clone of the current value (`T: Clone` is the
@@ -85,7 +85,7 @@ Anywhere a signal is read inside a **tracked context**, the
 framework records the dependency. The tracked contexts in everyday
 code are:
 
-- **Reactive text** — `Text { format!("count: {}", count.get()) }`.
+- **Reactive text** — `text { format!("count: {}", count.get()) }`.
   The expression is wrapped in an Effect that re-fires on signal
   change.
 - **Closure props** — `label = move || format!("...", count.get())`.
@@ -114,7 +114,7 @@ subscribing to changes. Event handlers are a common example:
 on_click = move || {
     // Not tracked — just a snapshot at click time.
     println!("count is {}", count.get());
-    count.update(|n| *n += 1);
+    count.update(|n| n + 1);
 }
 ```
 
@@ -241,7 +241,7 @@ Most of the time you don't construct a `Derived<T>` by hand. Inside
 ui! {
     // Reactive: the macro wraps this in a Derived<bool> Effect.
     if count.get() > 10 {
-        Text { "Over ten!" }
+        text { "Over ten!" }
     }
 }
 ```
@@ -451,8 +451,8 @@ The smallest reactive thing:
 ```rust
 let count = signal(0);
 ui! {
-    Text { format!("Count: {}", count.get()) }
-    Button(label = "++", on_click = move || count.update(|n| *n += 1))
+    text { format!("Count: {}", count.get()) }
+    Button(label = "++", on_click = move || count.update(|n| n + 1))
 }
 ```
 
@@ -466,8 +466,8 @@ write the same arena slot.
 #[component]
 fn counter(count: Signal<i32>) -> Element {
     ui! {
-        Text { format!("Count: {}", count.get()) }
-        Button(label = "++", on_click = move || count.update(|n| *n += 1))
+        text { format!("Count: {}", count.get()) }
+        Button(label = "++", on_click = move || count.update(|n| n + 1))
     }
 }
 
@@ -476,7 +476,7 @@ fn app() -> Element {
     let count = signal(0);
     ui! {
         counter(count = count)
-        Text { format!("Doubled: {}", count.get() * 2) }
+        text { format!("Doubled: {}", count.get() * 2) }
     }
 }
 ```
@@ -495,7 +495,7 @@ effect!({
 ```rust
 ui! {
     if logged_in.get() {
-        Text { "Welcome back!" }
+        text { "Welcome back!" }
     } else {
         Button(label = "Log in", on_click = move || logged_in.set(true))
     }
@@ -510,8 +510,8 @@ let doubled = signal(0);
 effect!({ doubled.set(count.get() * 2) });
 
 ui! {
-    Text { format!("count={}", count.get()) }
-    Text { format!("doubled={}", doubled.get()) }
+    text { format!("count={}", count.get()) }
+    text { format!("doubled={}", doubled.get()) }
 }
 ```
 
@@ -531,7 +531,7 @@ If you write:
 fn greeting(name: Signal<String>) -> Element {
     let greeting_text = format!("Hello, {}", name.get());  // computed ONCE
     ui! {
-        Text { greeting_text.clone() }
+        text { greeting_text.clone() }
     }
 }
 ```
@@ -541,7 +541,7 @@ tracked context. The fix is to do the read inside the `ui!`:
 
 ```rust
 ui! {
-    Text { format!("Hello, {}", name.get()) }
+    text { format!("Hello, {}", name.get()) }
 }
 ```
 
@@ -555,7 +555,7 @@ let count = signal(0);
 let initial = count.get();    // 0, frozen
 ui! {
     // Wrong: shows "Initial: 0" forever
-    Text { format!("Initial: {}", initial) }
+    text { format!("Initial: {}", initial) }
 }
 ```
 
@@ -595,7 +595,7 @@ their owning scope's lifetime.
 ## Where to read more
 
 - [How a render happens](#how-a-render-happens) — the mechanism
-  behind cascades, the walker, and reactive subtrees, on the
+  behind cascades, realize, and reactive subtrees, on the
   Overview page.
 - [Refs](#) — the full ref / handle surface and how `methods!`
   declares user-component handles.

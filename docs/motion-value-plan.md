@@ -1,5 +1,12 @@
 # Motion values — gesture-driven properties at native speed
 
+> **Status: not built.** A design for a future tier above the current
+> animation system ([`animation.md`](animation.md)). Its trait sketch below
+> is written as additions to a single backend trait; in the current
+> architecture the same surface would be a new `runtime_vocabulary::caps`
+> capability trait (or, per CLAUDE.md rule 3, a scene-`Registry`
+> extension), with the same methods.
+
 The "Layer 2" of the touch system per [native-touch-plan.md](native-touch-plan.md).
 A `Motion` is a shared scalar with dual residency (Rust + platform)
 that updates a bound native property the same frame, with no
@@ -341,7 +348,7 @@ explicitly. Sampling is a choice, not a free behavior.
 
 ## runtime-server / wire compatibility
 
-Per [project_aas_state_snapshot](../crates/framework/core/MEMORY-aas.md):
+Per the `project_aas_state_snapshot` memory entry:
 when a fresh runtime-server client connects mid-session, it receives a
 `SceneModel` snapshot.
 
@@ -350,7 +357,7 @@ Motion's wire story is the hard part of this design. Two options:
 ### Option A: runtime-server graphics-degraded
 
 Match the existing `create_graphics` policy per
-[project_aas_graphics_unsupported](../crates/framework/core/MEMORY-graphics.md).
+the `project_aas_graphics_unsupported` memory entry.
 Motion-bound transforms work fully locally but degrade to "static
 value at the time of write" over runtime-server — the binding is replaced
 with a one-shot transform write per `write_motion` call.

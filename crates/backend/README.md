@@ -1,7 +1,7 @@
 # `backend/` — native-SDK Backend implementations
 
 Each crate here is a concrete implementation of the
-[`Host`](../runtime/scene/src/host.rs) seam plus the ~30 capability
+[`Host`](../runtime/scene/src/host.rs) seam plus the 31 capability
 (`*Ops`) traits in [`runtime-vocabulary`](../runtime/vocabulary/src/caps),
 driving a particular platform's existing UI toolkit. The Runtime calls
 capability methods (`create_view`, `apply_style`, `update_text`, …); a

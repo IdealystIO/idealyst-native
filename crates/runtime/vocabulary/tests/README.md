@@ -2,17 +2,12 @@
 
 These suites drive the runtime (world → scene → vocabulary handlers)
 against **`host-mock`** (`crates/dev/host-mock`): a first-class
-`runtime_scene::Host` + all-30-`caps::*Ops` recording mock. The
-historical per-suite `impl Backend for Mini` + `LegacyBridge` plumbing
-was retired ahead of the old-core deletion wave, so this test base
-survived that deletion intact.
+`runtime_scene::Host` + all-31-`caps::*Ops` recording mock.
 
-- `caps_conformance.rs` — the per-caps battery: every one of the 30
-  capability traits (plus the seven `Host` structural ops) exercised at
-  least once against `HostMock`, run-proving the "all 30 caps
-  implemented directly" claim. Successor of the deleted `bridge.rs`
-  (the `LegacyBridge` delegation proof, which went with `LegacyBridge`
-  itself in the old-core deletion wave).
+- `caps_conformance.rs` — the per-caps battery: every capability trait
+  except `GridOps` (plus the `Host` structural ops) exercised at least once
+  against `HostMock`. `grid_caps_wired.rs` separately checks that every
+  backend shipping a two-axis grid engine actually wires `GridOps`.
 - `vocab.rs`, `navigator.rs`, `lazy.rs`, `portal_presence.rs`,
   `virtualizer_graphics.rs` — handler/behavior suites on the host-mock
   harness (op-log shapes, teardown probes, callback captures, pumped

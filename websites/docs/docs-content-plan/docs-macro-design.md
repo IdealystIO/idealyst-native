@@ -1,8 +1,15 @@
 # `docs!` macro design
 
-Concrete sketch of the structured-input macro that replaces hand-built
-page components, with the dual goal of generating UI and emitting a
-machine-readable metadata blob.
+> **Status: implemented.** The macro is `websites/docs-macro` (`parse.rs`,
+> `emit.rs`); `PageMeta` lives in `websites/docs/src/meta.rs` and the page
+> registry in `websites/docs/src/registry.rs`. Every page under
+> `websites/docs/src/pages/` is built with it except the hand-built
+> `cli.rs`, `macros_page.rs`, `platforms.rs`, `simulator_demo.rs` and
+> `ui_dsl.rs`. The MCP tool surface sketched below is not built.
+
+The structured-input macro that replaces hand-built page components, with
+the dual goal of generating UI and emitting a machine-readable metadata
+blob.
 
 ## Goals (recap)
 
@@ -119,10 +126,10 @@ pub enum BlockMeta {
 }
 
 pub enum Span {
-    Text(&'static str),
+    text(&'static str),
     Code(&'static str),
     /// Cross-reference to another page (or page#section).
-    Link {
+    link {
         target: &'static str,  // "reactivity" or "reactivity#signals"
         text: &'static str,
     },
@@ -312,7 +319,7 @@ docs! {
         code(rust) = r#"
             let count = signal(0);
             count.set(5);                  // replace
-            count.update(|n| *n += 1);     // mutate in place
+            count.update(|n| n + 1);     // derive the next value from the current one
         "#,
 
         p("The ", code("Signal<T>"), " you hold back is a small Copy token \
@@ -325,7 +332,7 @@ docs! {
            context to the signal:"),
 
         list {
-            ["Reactive text — ", code("Text { format!(\"...\", count.get()) }")],
+            ["Reactive text — ", code("text { format!(\"...\", count.get()) }")],
             ["A reactive ", code("if"), " inside ", code("ui!")],
             ["A reactive ", code("for"), " over a signal-backed list"],
             ["Closure props that read a signal"],
@@ -441,7 +448,7 @@ For a page declared as above, the macro produces two items:
 // 1. The UI function — called by the routes registry to render the screen.
 pub fn page() -> Element {
     ui! {
-        ScrollView {
+        scroll_view {
             Stack(gap = StackGap::Xl) {
                 PageHeader(
                     title = "Reactivity".to_string(),
@@ -571,7 +578,7 @@ This is the "noop for MCP" property: recipes participate in the
 registry the same way every other page does, but the MCP tools'
 default surface area excludes them.
 
-## MCP tool surface (proposal)
+## MCP tool surface (not built)
 
 Given the registry plus `PageMeta` walking, the MCP server can
 expose:
@@ -591,25 +598,6 @@ expose:
 `compare_for` is interesting — a model asked "show me everything that
 compares Idealyst to React" can get a single ranked list, since the
 metadata tags every comparison with its target framework.
-
-## Migration plan
-
-13 existing markdown drafts to convert. For each page:
-
-1. Extract slug + title + description from the existing intro.
-2. Walk the markdown:
-   - `#` → page title (already extracted).
-   - `##` → `section(heading = ...)` block.
-   - paragraphs → `p(...)` with `code()` spans for backticked code.
-   - fenced code → `code(lang) = r#"..."#`.
-   - bulleted lists → `list { ... }`.
-   - `> **From X.** ...` blockquotes → `compare(from = X) { ... }`.
-   - links to `[Page](#)` placeholders → `link("Page", to = "slug")`.
-3. Curate `related` and `concepts` arrays based on cross-references.
-
-A one-off script can do steps 2.a–2.d mechanically; the comparison
-extraction and link resolution want human review. Estimate:
-~30 minutes per page after the macro lands, mostly mechanical.
 
 ## Settled decisions
 

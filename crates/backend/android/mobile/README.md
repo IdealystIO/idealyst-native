@@ -69,9 +69,8 @@ in your Android app's `jniLibs` directory.
 
 ### 2. The Kotlin runtime
 
-Add `crates/backend-android/runtime/kotlin` as an additional Kotlin
-source root in your app's `build.gradle.kts`. From the
-`examples/hello-android` demo:
+Add `crates/backend/android/mobile/runtime/kotlin` as an additional Kotlin
+source root in your app's `build.gradle.kts`:
 
 ```kotlin
 android {
@@ -79,14 +78,16 @@ android {
         getByName("main") {
             java.srcDirs(
                 "src/main/java",
-                "../../../../crates/backend-android/runtime/kotlin",
+                "<path-to-idealyst-native>/crates/backend/android/mobile/runtime/kotlin",
             )
         }
     }
 }
 ```
 
-The path is relative to the app module — adjust for your own layout.
+Relative paths resolve against the app module. (`idealyst build --android`
+generates a wrapper project that wires this up for you; this section is
+for embedding the backend in an existing Android app.)
 That's the entire integration: no separate AAR, no included Gradle
 build, no `local.properties` dance.
 

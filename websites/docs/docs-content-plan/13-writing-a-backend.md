@@ -1,446 +1,235 @@
 # Writing your own backend
 
-A backend is the piece of code that translates the framework's
-`Element` tree into something a particular platform can put on
-screen — DOM elements, UIViews, Android Views, BrightScript
-SceneGraph nodes, or anything else you can drive from Rust.
+A backend is the piece of code that turns the framework's scene tree into something a particular platform can put on screen — DOM elements, UIViews, Android Views, BrightScript SceneGraph nodes, terminal cells, GPU draw calls, or anything else you can drive from Rust.
 
-You'd write one when the shipped backends don't cover your
-target: a terminal renderer, an embedded display, a custom GPU
-canvas, a server-side HTML renderer, a platform we haven't shipped
-yet. Most of the framework — primitives, reactivity, styles,
-components, hot reload, navigation — works the same against your
-backend as it does against the built-in ones. The seam is small.
+You'd write one when the shipped backends don't cover your target: an embedded display, a custom canvas, a server-side renderer, a platform nobody has shipped yet. Most of the framework — primitives, reactivity, styles, components, hot reload, navigation — works the same against your backend as against the built-in ones. The seam is small, and it is deliberately layered so you can ship something working long before you support everything.
 
-This page walks the trait, explains the two execution models
-(**runtime** vs **generator**), and shows the shape of a minimum
-viable implementation.
+This page walks the two layers of that seam, explains the two execution models (runtime vs generator), and shows the shape of a minimum viable implementation.
 
-## The Backend trait
+## Two layers: Host, then capabilities
 
-A backend implements one trait — `runtime_core::Backend`. The
-declaration is short:
+The seam is split in two, and the split is the thing to internalize.
+
+The FIRST layer is `runtime_scene::Host`: the structural contract. It owns the `Node` associated type and the handful of operations the mount drivers themselves perform — attaching children, splicing, clearing, and minting a reactive anchor. Nothing about it mentions a primitive:
 
 ```rust
-use runtime_core::{Backend, /* primitives, styles, etc. */};
+use runtime_scene::Host;
 
-pub struct MyBackend {
-    // your platform-specific state
-}
+pub struct MyBackend { /* your platform-specific state */ }
 
-impl Backend for MyBackend {
-    type Node = MyNodeHandle;     // the platform's "thing on screen"
+impl Host for MyBackend {
+    type Node = MyNodeHandle;      // the platform's "thing on screen"
 
-    fn create_view(&mut self) -> Self::Node { /* ... */ }
-    fn create_text(&mut self, content: &str) -> Self::Node { /* ... */ }
-    fn create_button(&mut self, label: &str, on_click: &Action,
-                     leading: Option<&IconData>, trailing: Option<&IconData>)
-                     -> Self::Node { /* ... */ }
-    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) { /* ... */ }
-    fn update_text(&mut self, node: &Self::Node, content: &str) { /* ... */ }
-    fn clear_children(&mut self, node: &Self::Node) { /* ... */ }
-    fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) { /* ... */ }
-    fn finish(&mut self, root: Self::Node) { /* ... */ }
+    fn insert(&mut self, parent: &mut Self::Node, child: Self::Node) { /* … */ }
+    fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, i: usize) { /* … */ }
+    fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node) { /* … */ }
+    fn clear_children(&mut self, node: &Self::Node) { /* … */ }
+    fn create_anchor(&mut self) -> Self::Node { /* … */ }
+    fn supports_splice(&self) -> bool { /* … */ }
 
-    // ... plus 30-ish more methods, almost all with sensible defaults
+    // `insert_many` defaults to per-child `insert`; override it if
+    // your platform has a batched insertion path (a
+    // `DocumentFragment` on web).
 }
 ```
 
-The methods above are the **required** ones — no default
-implementation. They cover the smallest set the framework needs
-to put a tree on screen: create views, create text, create
-buttons, attach children, update text content, clear a
-container's children, apply styles, finalize the root mount.
+The SECOND layer is `runtime_vocabulary::caps`: a family of narrow capability traits, each a subtrait of `Host`, each covering one primitive family. A primitive's mount handler is generic over exactly the capabilities it uses, so a backend supports a primitive precisely when it implements that primitive's trait.
 
-Everything else has a default. Most are either no-ops (for things
-that don't apply to your platform) or `unimplemented!()` (for
-primitives you don't support yet, which causes a clear panic if
-the app uses one). You can ship a backend that supports only the
-above and progressively fill in the rest.
+That is what makes the surface progressive. There is no mega-trait with thirty `unimplemented!()` methods to stare at: you implement `Host`, then add capability traits one at a time, and each one immediately unlocks its primitives.
 
-### `type Node`
+## type Node
 
-The associated type `Node: Clone` is whatever your platform uses
-to represent a thing on screen. Pick the shape that's most useful
-for your backend's internal state:
+The associated type `Node: Clone` is whatever your platform uses to represent a thing on screen. Pick the shape that's most useful for your backend's internal state:
 
-- **Web** uses `web_sys::Node` (with an `Rc` inside for cheap
-  cloning).
-- **iOS** uses a strong reference to a `UIView` subclass through
-  `objc2`.
-- **Android** uses a JNI global ref to a `View`.
-- **Roku** uses a `NodeId` — a u64 the device-side runtime maps
-  back to a SceneGraph node.
+- Web uses `web_sys::Node` (with an `Rc` inside for cheap cloning).
+- iOS uses a strong reference to a `UIView` subclass through `objc2`.
+- Android uses a JNI global ref to a `View`.
+- Roku uses a `NodeId` — a u64 the device-side runtime maps back to a SceneGraph node.
 
-The framework treats `Node` opaquely. It calls `create_*` to mint
-one, holds onto it, hands it back to `insert` / `update_text` /
-`clear_children` / `apply_style`. The backend is free to put
-whatever it likes inside.
+The framework treats `Node` opaquely: handlers mint one, the drivers hold onto it and hand it back to `insert` / `insert_at` / `remove_child` / `clear_children`. The backend is free to put whatever it likes inside.
+
+`Clone` is required because structural regions retain node handles across effect fires — a spliced region has to remove the exact nodes it inserted.
+
+## supports_splice — the one behavioral switch
+
+Most of `Host` is mechanical. One method is a real decision: `supports_splice` answers "can this host insert and remove children at an index inside a real parent?"
+
+- `true` — style-less reactive regions go ANCHORLESS. A reactive `if` or `for` splices its nodes directly into the surrounding parent, so there is no wrapper in the tree. This is what web client-side rendering and splice-capable native backends do.
+- `false` — every reactive region nests under a `create_anchor()` node the drivers swap subtrees under. Server-side rendering and hydration take this path deliberately: the client's adopt walk needs a stable node to claim.
+
+Get this right before anything else — it decides the SHAPE of the tree your other methods will see.
+
+## The capability traits
+
+Every trait below is a subtrait of `Host` and groups the operations one primitive family needs. The authoritative per-method contract is each trait's own rustdoc in `crates/runtime/vocabulary/src/caps/`; `COVERAGE.md` next to it maps every method to the handler that calls it.
+
+- Structure + input — `ViewOps`, `InputOps`, `PressableOps`.
+- Text — `TextOps`, `ButtonOps`.
+- Media — `ImageOps`, `IconOps`, `LinkOps`.
+- Widgets — `TextInputOps`, `ToggleOps`, `SliderOps`, `ActivityIndicatorOps`.
+- Scrolling + lists — `ScrollOps`, `SafeAreaOps`, `VirtualizerOps`.
+- Layers + navigation — `PortalOps`, `PresenceOps`, `NavigatorOps`, `GraphicsOps`.
+- Styling + assets — `StyleOps`, `AssetOps`.
+- Payload escape hatch — `ExternalOps`, `DocumentOps` (the "render something opaque" and document-level surfaces).
+- App shell — `AppEnvOps`, `LifecycleOps`, `BatchOps`.
+- Tooling — `A11yOps`, `AnimationOps`, `IntrospectionOps`, `WireBindingOps`.
+
+There is one umbrella: `AllCaps`, a blanket-implemented supertrait of every trait above. `runtime_vocabulary::register_builtins::<B: AllCaps>()` bounds on it, so a backend that implements the whole family gets the full built-in primitive vocabulary registered in one call.
+
+Until then, register the subset you support. A handler generic over `H: StyleServices + TextOps` compiles against any backend that has those two — which is also why third-party SDKs written that way work on your backend the day you implement the traits they name. See [third-party primitives](#).
 
 ## The two execution models
 
-There are two distinct ways a backend can do its job. Pick the
-one that fits the target platform.
+There are two distinct ways a backend can do its job. Pick the one that fits the target platform.
 
-### Runtime backends
+## Runtime backends
 
-The default model. The backend manipulates native widgets
-**directly, in process**, as the framework hands it operations.
+The default model. The backend manipulates native widgets directly, in process, as the drivers hand it operations.
 
-- `create_view()` immediately allocates a `<div>` / `UIView` /
-  Android `View`.
-- `insert(parent, child)` immediately calls `appendChild` /
-  `addSubview` / `addView`.
-- `update_text(node, content)` immediately mutates the
-  widget's text property.
-- `apply_style(node, rules)` immediately writes CSS / view
-  properties / drawable attributes.
+- A view handler immediately allocates a `<div>` / `UIView` / Android `View`.
+- `insert(parent, child)` immediately calls `appendChild` / `addSubview` / `addView`.
+- A text update immediately mutates the widget's text property.
+- `StyleOps::apply_style(node, rules)` immediately writes CSS / view properties / drawable attributes.
 
-The shipped web, iOS, and Android backends are all runtime
-backends. They run in the same process as your `app()` function;
-when a signal changes, the framework re-fires the effect, the
-effect calls `update_text(...)`, and the backend mutates the
-widget on the spot.
+The shipped web, iOS, Android, macOS, terminal, CPU and GPU backends are all runtime backends. They run in the same process as your `app()` function; when a signal changes, the world's flush re-runs the effect, the effect calls into the backend, and the backend mutates the widget on the spot.
 
-If you're writing a backend for any traditional GUI platform —
-desktop, mobile, embedded — runtime is the model you want.
+## Generator backends
 
-### Generator backends
+The unusual model. The backend has no direct access to a native widget tree, because the real renderer lives somewhere else — on a different device, in a different process, behind a serialization boundary.
 
-The unusual model. The backend doesn't have direct access to a
-native widget tree. It exists because the *real* renderer lives
-somewhere else — on a different device, in a different process,
-behind a serialization boundary.
+Instead of manipulating widgets, a generator backend emits a wire stream of commands that a remote runtime replays. A view handler mints a `NodeId` and emits a `Create(NodeId, View)`; `insert(parent, child)` emits an `Insert(parent_id, child_id)`. And so on.
 
-Instead of manipulating widgets, a generator backend **emits a
-wire stream of commands** that a remote runtime replays. The
-framework calls `create_view()`; the backend mints a `NodeId` and
-emits a `Create(NodeId, View)` command. The framework calls
-`insert(parent, child)`; the backend emits an `Insert(parent_id,
-child_id)`. And so on.
+`backend-roku` is the shipped generator backend. Roku devices don't run Rust — the only language the runtime understands is BrightScript. The backend runs on the developer's host machine; commands stream to a thin client on the device, which replays them against SceneGraph nodes.
 
-`backend-roku` is the only shipped generator backend. Roku
-devices don't run Rust — the only language the runtime
-understands is BrightScript. The backend runs on the developer's
-host machine; commands stream to a thin client on the device,
-which replays them against SceneGraph nodes.
+A generator backend has one extra obligation, and it is the interesting part of this model.
 
-The shape implies two extra constraints generator backends have
-to handle:
+## Closures don't ship
 
-#### Closures don't ship
+A runtime backend can capture a Rust closure from the framework and call it directly. A generator backend can't — the closure lives in the host's memory, and the device side has no way to invoke it.
 
-A runtime backend can capture a `Box<dyn Fn()>` from the
-framework and call it directly. A generator backend can't — the
-closure exists in the host's memory, and the device side has no
-way to invoke it.
+For event handlers that's a round-trip: the device sends an event-fired message back to the host, the host dispatches the closure in-process, the resulting writes stage, and the `settle()` step (drain microtasks + flush) commits them before the outbound command queue is drained. That boundary — "event → staged writes → flush → emitted commands" — is the embedder contract.
 
-For event handlers, this means the device sends an event-fired
-message back to the host, which dispatches the closure
-in-process. The wire protocol carries that round-trip.
-
-For reactive expressions (a `Text` whose content reads a signal,
-a `When`'s condition), the closure can't be re-evaluated on the
-device — so the framework provides a **structured** view of
-those expressions through `Derived<T>` and `Action`. Each carries
-a `method: &'static str` (a stable name the device runtime maps
-to a transpiled BrightScript function) plus an `inputs: Vec<u64>`
-(the signal ids the method reads). Generator backends consume
-the structured form via the `note_*_binding` hooks:
+For reactive expressions (a text node whose content reads a signal, a conditional's predicate) the closure can't be re-evaluated on the device at all. The framework therefore also publishes a STRUCTURED view of those expressions: a stable method name the device runtime maps to a transpiled function, plus the signal ids that method reads. `WireBindingOps` is the capability trait that receives them:
 
 ```rust
-fn note_text_binding(&mut self, node: &Self::Node,
-                     signal_ids: &[u64], method: &'static str) {
-    // Emit a "this node's text is computed by `method` from these signals" command
-}
-
-fn note_when_binding(&mut self, anchor: &Self::Node,
-                     signal_ids: &[u64], cond_method: &'static str,
-                     then_node: &Self::Node, otherwise_node: &Self::Node) {
-    // Emit a "this anchor toggles between these two subtrees based on `cond_method`"
+impl WireBindingOps for MyBackend {
+    fn note_text_binding(&mut self, node: &Self::Node,
+                         signal_ids: &[u64], method: &'static str) {
+        // Emit "this node's text is computed by `method` from these signals".
+    }
+    // …plus the conditional / switch / repeat siblings.
 }
 ```
 
-Runtime backends leave these defaults at no-op — they re-run the
-closures locally on every signal change, no metadata needed.
-
-#### Inactive subtrees shouldn't materialize
-
-A runtime backend can afford to build both branches of a `when()`
-up front and just hide the inactive one — it's a cheap local
-operation. A generator backend can't — building means emitting
-commands over a network, and shipping a subtree that's not on
-screen wastes bandwidth and device memory.
-
-Generator backends opt into **lazy slot capture** to handle
-this. The pattern:
-
-```rust
-fn supports_lazy_slot_capture(&self) -> bool { true }
-
-fn begin_slot_capture(&mut self) {
-    // Redirect subsequent backend mutations from the main wire stream
-    // into a capture buffer. The framework calls this around each
-    // `when` / `switch` / `for` arm's subtree build.
-}
-
-fn end_slot_capture(&mut self, slot_root: &Self::Node) {
-    // Close the capture region. The framework will then call one of
-    // the `note_*_binding` methods so you can package the captured
-    // commands as a stored, replayable subtree.
-}
-```
-
-With lazy slot capture on, the framework builds each conditional
-arm's subtree and the backend stores it as a *template* rather
-than sending it. When the condition flips on the device, the
-device-side runtime replays the relevant template's commands.
-
-Runtime backends leave `supports_lazy_slot_capture` at `false`
-and the framework builds every branch into the live tree
-directly — cheap on-platform, no capture needed.
-
-## The full method tour
-
-Here's what's in the trait, grouped by purpose. Methods without
-notes are "create + update" pairs for a specific primitive.
-
-### Required (no default)
-
-- `type Node: Clone`
-- `create_view`, `create_text`, `create_button`, `insert`
-- `update_text`
-- `clear_children`
-- `apply_style`
-- `finish` — called once after the initial render walk to let
-  the backend do any final mount work (web's `finish` triggers a
-  layout flush, iOS's attaches the root view to the
-  `UIWindow`).
-
-### Container primitives (defaults: `create_view`)
-
-- `create_pressable(on_click)` — a tappable container. The
-  default falls back to `create_view`, which means clicks won't
-  fire but the subtree renders.
-- `create_reactive_anchor` — placeholder node for `when` /
-  `switch` branches. Web overrides this to return a
-  `display: contents` element so the branch's children inherit
-  flex context.
-
-### Content primitives (defaults: `unimplemented!()`)
-
-- `create_image`, `update_image_src`
-- `create_icon`, `update_icon_color`, `update_icon_stroke`,
-  `animate_icon_stroke`
-- `create_activity_indicator`
-
-The walker only calls these if your app uses the corresponding
-primitive. Leave them `unimplemented!()` until you support the
-primitive.
-
-### Inputs (defaults: `unimplemented!()`)
-
-- `create_text_input`, `update_text_input_value`
-- `create_toggle`, `update_toggle_value`
-- `create_slider`, `update_slider_value`
-- `update_button_label`
-
-### Navigation (defaults: `unimplemented!()`)
-
-- `create_navigator` — stack navigator
-- `create_tab_navigator`
-- `create_drawer_navigator`
-
-These take a callbacks bundle so the framework can ask the
-backend to mount/release per-screen subtrees on demand. The
-shape is large; the trait's source has annotated examples.
-
-`create_link` is also navigation, but its default falls
-through to `create_view` — see the container section.
-
-### Portals (defaults: `unimplemented!()` / no-op)
-
-- `create_portal` — single entry point. Receives a
-  `PortalTarget` (either `Viewport(ViewportPlacement)` or
-  `Anchor { target, side, align }`), an `on_dismiss` callback,
-  and a `trap_focus` flag. Default: `unimplemented!()`.
-- `release_portal` — paired teardown. Defaults to no-op.
-- `make_portal_handle` — returns a `PortalHandle` for
-  imperative ops. Defaults to a no-op handle.
-
-Backends decide how to route by branching on `PortalTarget`.
-iOS could route `PortalTarget::Viewport(_)` to a window-level
-`UIView` and `PortalTarget::Anchor { .. }` to
-`UIContextMenuInteraction`, all inside one `create_portal`.
-Web uses the `popover` attribute with CSS anchor positioning.
-
-### Styling
-
-- `apply_style(node, &Rc<StyleRules>)` — required. The
-  framework hands you concrete, theme-resolved values.
-- `apply_styled_states(node, base, overlays)` — optional. If
-  your backend supports declarative state styling (web's CSS
-  pseudo-classes), implement this and return `true` from
-  `handles_states_natively()`. The framework then hands you
-  the base + per-state overlay rules in one call. If you leave
-  the default, the framework drives states via signal flips
-  and re-fires `apply_style` per change.
-- `register_stylesheet(&[Rc<StyleRules>])` — optional.
-  Backends that benefit from up-front rule emission (web mints
-  CSS classes here) override this. Defaults to a no-op.
-- `unregister_stylesheet(&[Rc<StyleRules>])` — paired teardown.
-- `install_theme_variables(&[TokenEntry])` — optional. Backends
-  with a runtime variable system (web's CSS custom properties)
-  install tokens here. iOS and Android leave the default no-op
-  and read `Tokenized::value()` at `apply_style` time. See
-  [Styles](#) for the full story.
-
-### Lazy-slot capture (generator backends only)
-
-- `supports_lazy_slot_capture(&self) -> bool` — default `false`.
-- `begin_slot_capture` / `end_slot_capture` — pair the
-  framework calls around each conditional arm's subtree build.
-- `note_text_binding`, `note_signal_initial`, `note_when_binding`,
-  `note_switch_binding`, `note_repeat_binding` — declarative
-  metadata hooks. Generator backends record these so the device
-  runtime can re-evaluate reactive expressions without closures.
-
-### Refs and handles
-
-- `ref_ops()` — returns a `RefOps` bundle with the per-primitive
-  trait objects the framework uses to construct handles
-  (`ButtonHandle`, `ViewHandle`, etc.). The defaults are no-op
-  ops, so refs work but the handle methods don't do anything.
-  Implement the relevant traits and return them here when you
-  want geometry queries, programmatic clicks, etc., to work.
-- `make_*_handle` for each primitive — defaults construct
-  no-op handles. Override per-primitive to return real
-  backend-aware handles.
-
-### Virtualization
-
-- `create_virtualizer(callbacks: VirtualizerCallbacks<Self::Node>)`
-  — defaults to `unimplemented!()`. The framework hands you a
-  bundle of closures (`item_count`, `mount_item`,
-  `release_item`, etc.) and you wire them into your platform's
-  recycling widget (`UICollectionView`, `RecyclerView`, an
-  IntersectionObserver). See [Lists](#) for what each callback
-  carries.
+Runtime backends leave every `WireBindingOps` method at its default no-op — they re-run the closures locally on each flush, so no metadata is needed.
 
 ## A skeleton backend
 
-The smallest plausible backend looks like this:
+The smallest plausible backend is `Host` plus the two or three capability traits your app's primitives actually use:
 
 ```rust
 use std::rc::Rc;
-use runtime_core::{Backend, Action, StyleRules, IconData};
+use runtime_scene::Host;
+use runtime_vocabulary::caps::{StyleOps, TextOps, ViewOps};
+use runtime_shared::StyleRules;
 
 #[derive(Clone)]
-struct Node {
-    // Whatever your platform uses
-}
+struct Node { /* whatever your platform uses */ }
 
-pub struct MyBackend {
-    // Backend-level state (the root container, a cache, etc.)
-}
+pub struct MyBackend { /* root container, caches, … */ }
 
-impl Backend for MyBackend {
+impl Host for MyBackend {
     type Node = Node;
 
-    fn create_view(&mut self) -> Node { /* allocate a container */ }
+    fn insert(&mut self, parent: &mut Node, child: Node) { /* attach */ }
+    fn insert_at(&mut self, parent: &mut Node, child: Node, i: usize) { /* … */ }
+    fn remove_child(&mut self, parent: &Node, child: &Node) { /* detach */ }
+    fn clear_children(&mut self, node: &Node) { /* detach all */ }
+    fn create_anchor(&mut self) -> Node { /* layout-transparent container */ }
+    fn supports_splice(&self) -> bool { true }
+}
 
-    fn create_text(&mut self, content: &str) -> Node {
-        /* allocate a text node, set initial content */
-    }
-
-    fn create_button(&mut self, label: &str, on_click: &Action,
-                     _leading: Option<&IconData>, _trailing: Option<&IconData>)
-                     -> Node {
-        /* allocate a button, wire on_click into your platform's event system */
-    }
-
-    fn insert(&mut self, parent: &mut Node, child: Node) {
-        /* attach child to parent in your scene */
-    }
-
-    fn update_text(&mut self, node: &Node, content: &str) {
-        /* set node's text content */
-    }
-
-    fn clear_children(&mut self, node: &Node) {
-        /* remove all children from node */
-    }
-
+impl ViewOps for MyBackend { /* create_view, … */ }
+impl TextOps for MyBackend { /* create_text, update_text, … */ }
+impl StyleOps for MyBackend {
     fn apply_style(&mut self, node: &Node, style: &Rc<StyleRules>) {
-        /* translate StyleRules into your platform's styling */
-    }
-
-    fn finish(&mut self, root: Node) {
-        /* attach root to your platform's surface (window, etc.) */
+        // Translate StyleRules into your platform's styling.
     }
 }
 ```
 
-This compiles and produces a working app — as long as your app
-uses only `View`, `Text`, and `Button`. Trying to use anything
-else (an `Image`, a `ScrollView`, navigation) will panic with
-`unimplemented!()` at the relevant call site, telling you
-exactly what to implement next.
+That compiles and produces a working app for any tree built from views, text, and styles. Adding an image means adding `ImageOps`; adding a scroll region means `ScrollOps`. You never have to write a method you don't intend to implement, and a primitive whose capability you haven't implemented is a COMPILE error at the registration site rather than a runtime panic in the field.
 
-That progressive shape is deliberate. You can ship a backend
-for an unusual target with the minimum surface working in a
-day, and grow it as you need more primitives.
+That progressive shape is deliberate. You can ship a backend for an unusual target with the minimum surface working in a day, and grow it as you need more primitives.
 
 ## Driving the render
 
-Once your backend is built, hand it to the framework:
+A boot entry does six things in order: forward your environment capabilities into the ambient thread-locals, build a `Registry` and register the primitive handlers on it, create the `World`, run the app's root component inside `World::enter`, realize the returned scene tree against your backend, and install the flush driver. Everything you need comes from one module — `runtime_vocabulary::backend`:
 
 ```rust
-use runtime_core::{render, Owner};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-fn main() {
-    let mut backend = MyBackend::new(/* platform args */);
-    let _owner = render(&mut backend, my_app::app());
-    // ...platform-specific event loop here...
+use runtime_vocabulary::backend::{
+    install_env_services, realize, register_builtins_with,
+    BuiltinSet, Registry, World,
+};
+
+// Generic over `S` on purpose: an entry that pins `AllBuiltins`
+// re-anchors the whole primitive vocabulary, so an app that
+// selected a smaller set pays for handlers it never mounts.
+fn boot<S: BuiltinSet>() {
+    let backend = Rc::new(RefCell::new(MyBackend::new(/* platform args */)));
+
+    // `platform()`, `color_scheme()`, `open_url()`,
+    // `set_fullscreen()` and `announce()` read thread-local
+    // slots; this fills them from your `AppEnvOps` / `A11yOps`
+    // impls. It must precede the build — a component body may
+    // read `platform()` while constructing.
+    install_env_services(&backend);
+
+    let mut registry = Registry::new();
+    register_builtins_with::<MyBackend, S>(&mut registry);
+    // …plus any third-party SDK registers the app hands you.
+    let registry = Rc::new(registry);
+
+    let world = World::new();
+    let realized = world.enter(|| {
+        let element = my_app::app();
+        realize(&backend, &registry, element)
+    });
+
+    // Hold `world` + `realized` for the app's lifetime; dropping
+    // them tears the tree down, and `realized` must drop FIRST —
+    // it unmounts before the `World` that owns the slots its
+    // effects read. Then install the flush driver so staged
+    // writes commit after each dispatch, and run the platform's
+    // event loop.
 }
 ```
 
-`render(backend, root)` walks the primitive tree, calling your
-backend's methods in the right order. The returned `Owner` holds
-the reactive scope; drop it to tear everything down.
+In practice you don't hand-roll this: each shipped backend exposes a `newcore` boot module that does it for you (`backend_web::``newcore::start_in`, `host_appkit::newcore::run`, `host_winit::newcore::run_with`, …), and a new backend should ship the same shape. Every one of them takes a `register` argument that runs after `register_builtins`, which is the app's SDK-registration seam.
+
+The flush driver is the piece that is easy to forget. Wrap every author-code entry point your backend owns — event callbacks, timers, animation frames — so the world flushes after the callback returns. Without it, an author's `set` stages and never commits, and the UI simply doesn't update. See [Reactivity](#) for what the flush does.
+
+Also wire a viewport source where the platform has one: push the platform's resize / rotation / configuration-change report into the world's viewport context, so breakpoint-reactive author code re-fires. Backends with no resize surface at all (a command stream, a fixed-size display) simply seed once and document that.
 
 What "the event loop" means is platform-specific:
 
-- **Native event loops** (iOS's `UIApplicationMain`, Android's
-  `ActivityThread`, a winit loop) — the platform runs the loop,
-  your event callbacks call `signal.set(...)`, the framework
-  cascades effects through the backend.
-- **Reactive runtimes** (web, where there's no explicit loop) —
-  events come in via JS callbacks the backend registered, those
-  call signals, those cascade.
-- **Generator runtimes** — your backend's loop is a network
-  loop: read inbound event messages from the device, dispatch
-  the matching closures, write outbound command updates.
+- Native event loops (iOS's `UIApplicationMain`, Android's `ActivityThread`, a winit loop) — the platform runs the loop, your event callbacks call `signal.set(...)`, your flush driver commits, the effects run through the backend.
+- Reactive runtimes (web, where there's no explicit loop) — events arrive via JS callbacks the backend registered, those write signals, the microtask flush driver commits.
+- Generator runtimes — your loop is a network loop: read inbound event messages from the device, dispatch the matching closures, `settle()`, then drain the outbound command queue.
 
-The framework doesn't run a loop itself. It runs *during* the
-walker pass and *during* signal cascades — both synchronous,
-both driven by whatever event source you wired in.
+The framework doesn't run a loop itself. It runs during realize and during flushes — both synchronous, both driven by whatever event source you wired in.
 
 ## Where to read more
 
-- [The shipped backends](#) — high-level overview of web, iOS,
-  Android, Roku, and the runtime-server dev backend. Useful for seeing how
-  each model maps to a real platform.
-- [Reactivity](#) — what's happening on the framework side when
-  your `update_text` or `apply_style` gets called.
-- [Styles](#) — the `StyleRules` you receive in `apply_style`
-  and the theme-token machinery you may want to implement.
-- [Lists](#) — the `VirtualizerCallbacks` bundle in detail.
-- [Navigation](#) — what the navigator `create_*` methods are
-  expected to do (and the per-screen mount/release callbacks
-  they receive).
-- [Robot](#) — what test-id propagation looks like (your
-  backend's primitive creation can opt in by capturing the
-  `test_id` field).
-- [Dev tools](#) — what runtime-server expects from the wire side if you're
-  writing a generator-style backend.
+- [The shipped backends](#) — high-level overview of web, iOS, Android, macOS, terminal, GPU, Roku, and the runtime-server dev backend. Useful for seeing how each model maps to a real platform.
+- [Reactivity](#) — what's happening on the framework side between a signal write and your `apply_style` call.
+- [Styles](#) — the `StyleRules` you receive in `apply_style` and the token-resolution machinery you may want to implement.
+- [Lists](#) — what `VirtualizerOps` is expected to do.
+- [Navigation](#) — what `NavigatorOps` is expected to do, and the per-screen mount/release callbacks the navigator host bundle carries.
+- [Third-party primitives](#) — how a handler declares the capabilities it needs, which is why SDKs work on a new backend for free.
+- [Robot](#) — what test-id propagation looks like, and the introspection surface `IntrospectionOps` exposes.
+- [Dev tools](#) — what runtime-server expects from the wire side if you're writing a generator-style backend.
+

@@ -125,8 +125,7 @@ at the `let` where the fix goes. `idealyst dev` runs the linter ambiently
 on startup, so this appears without ever invoking `idealyst lint`. Nothing
 warns at runtime — the kernel runs a component body untracked by
 construction (`component_scope`), so a bare `.get()` there is exactly what
-it expects and it has nothing to say about it. (The old core's arena had a
-debug-build console warning for this; the new kernel does not.)
+it expects and it has nothing to say about it.
 
 Build-time snapshots are still a legitimate tool when they're *intentional*
 (e.g. a structural choice that shouldn't rebuild — IconButton snapshots its

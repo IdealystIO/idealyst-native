@@ -5,25 +5,33 @@ app on a specific platform's screen. The framework hands it a tree
 of `Element`s and a stream of updates; the backend translates
 those into native widgets, layout, and input events.
 
-The `Backend` trait is the seam. Anything that implements it can
-run an app. This page is the **map** of the backends Idealyst
+The `Host` trait plus the capability traits are the seam. Anything that
+implements them can run an app. This page is the **map** of the backends Idealyst
 ships — what each one targets, what makes it interesting, what
 it can and can't do. For the trait's full surface and what writing
 one looks like, see [Writing your own backend](#).
 
 ## The shipped backends
 
-Five backends come in the box:
+These backends come in the box:
 
-| Backend | Target | Status |
-| --- | --- | --- |
-| `backend-web` | Browser (WASM + DOM) | Production-ready |
-| `backend-ios` | iOS / iPadOS / tvOS (UIKit) | Production-ready |
-| `backend-android` | Android phones / tablets / TV (Views) | Production-ready |
-| `backend-roku` | Roku devices (SceneGraph + BrightScript) | Experimental |
-| `aas-shell-native` | Dev-mode app-as-server client | Dev only |
+| Backend | Target |
+| --- | --- |
+| `backend-web` | Browser (WASM + DOM) |
+| `backend-ios-mobile` | iOS / iPadOS (UIKit) |
+| `backend-android-mobile` | Android phones / tablets (Views) |
+| `backend-macos` | macOS (AppKit) |
+| `backend-linux` | Linux (GTK4) |
+| `backend-windows` | Windows (Win32) |
+| `backend-roku` | Roku devices (SceneGraph + BrightScript) |
+| `backend-ssr` | Server-side rendering + static generation (HTML) |
+| `backend-email` | Email-safe HTML |
+| `backend-terminal` | A terminal character grid |
+| `backend-cpu` | A pixel framebuffer (software rasterizer) |
+| `render-wgpu` | A GPU renderer that paints its own pixels |
 
-Each one lives in `crates/backend/<name>` and gets pulled in by the
+Each one lives under `crates/backend/` (the GPU renderer under
+`crates/gpu-backend/`) and gets pulled in by the
 CLI when you target the matching platform.
 
 ## Web
@@ -31,7 +39,7 @@ CLI when you target the matching platform.
 `backend-web` drives the DOM via `web-glue`, the framework's own JS
 bindings (no `web-sys` / `wasm-bindgen`). Your
 app compiles to WebAssembly, the backend creates DOM elements as
-the walker visits primitives, and the browser handles layout,
+the scene mounts primitives, and the browser handles layout,
 input, and rendering.
 
 A few things worth knowing:
@@ -57,11 +65,12 @@ is split across three sub-crates:
 - **`backend-ios-core`** — the shared substrate. Style application,
   color/flex conversion, and the `NSTimer`-based render loop
   driver.
-- **`backend-ios-mobile`** — touch input semantics for iPhone and
-  iPad. Gesture recognizers, focus on first responder,
+- **`backend-ios-mobile`** — the iPhone / iPad backend: raw touch
+  delivery (gestures are recognized in shared Rust, not by
+  `UIGestureRecognizer`), focus on first responder,
   hardware-keyboard handling.
-- **`backend-ios-tv`** — Apple TV / tvOS focus-engine semantics.
-  D-pad navigation, focus visualizers, the focus-on-press model.
+- **`backend-ios-tv`** — reserved for Apple TV / tvOS focus-engine
+  semantics; currently an empty skeleton.
 
 The split exists because the input model genuinely differs:
 touch-based UIs and focus-engine-based UIs need different
@@ -94,8 +103,8 @@ mobile leaf and a TV leaf.
   `RenderLoopDriver`, and the shared View hierarchy primitives.
 - **`backend-android-mobile`** — touch input for phones and
   tablets.
-- **`backend-android-tv`** — Leanback / D-pad focus model for
-  Android TV.
+- **`backend-android-tv`** — reserved for the Leanback / D-pad focus
+  model on Android TV; currently an empty skeleton.
 
 Notes:
 
@@ -137,7 +146,7 @@ production TV app on.
 
 ## runtime-server — the dev-mode backend
 
-`aas-shell-native` is the **app-as-server** client. It's
+`runtime-server-shell-native` is the **app-as-server** client. It's
 unusual because it doesn't render anything itself — it forwards
 backend operations to whatever real backend is on the other end.
 
@@ -188,10 +197,11 @@ idealyst dev --aas       # runtime-server dev-host with whatever clients connect
 ## Writing your own backend
 
 The shipped backends cover the major platforms, but there's no
-reason to stop there. The `Backend` trait is small (~30
-methods), and a working backend lives in one Rust crate that
-depends only on `runtime-core` and whatever native bindings it
-needs.
+reason to stop there. `Host` is a handful of tree operations, every
+capability-trait method but a few has a working default, and a working
+backend lives in one Rust crate that depends on `runtime-scene`,
+`runtime-vocabulary`, `runtime-shared`, and whatever native bindings it
+needs (not on `runtime-core`, the author surface).
 
 Things people could plug in:
 
@@ -201,18 +211,17 @@ Things people could plug in:
   the whole tree on GPU)
 - An embedded display driver (e-paper, OLED)
 - A server-side renderer that emits HTML for SSR
-- A backend for a platform the framework doesn't ship yet (macOS,
-  Windows, Linux desktop via winit, KaiOS, anything)
+- A backend for a platform the framework doesn't ship yet (KaiOS, a
+  console, anything)
 
 The dedicated [Writing your own backend](#) page walks through the
-trait's full surface, the lifecycle of a backend node, the
-relationship between the walker and `Backend` methods, and what
-gets called when. This page is intentionally just the map.
+`Host` trait and the capability traits, the lifecycle of a backend
+node, and what gets called when. This page is intentionally just the map.
 
 ## Where to read more
 
-- [Writing your own backend](#) — the full trait, lifecycle, and a
-  worked example.
+- [Writing your own backend](#) — `Host`, the capability traits,
+  lifecycle, and a worked example.
 - [Dev tools](#) — runtime-server in depth, the wire protocol, hot reload.
 - [Architecture in more depth](#) (on the Overview) — where
   backends sit relative to `wire`, `dev-hot`, and

@@ -4,10 +4,11 @@ Primitives are the fixed set of things the framework knows how to put
 on screen. Every Idealyst app — and every component library built on
 top of the framework, including idea-ui — reduces to a tree of these.
 
-There is no way to add a new primitive without changing the framework
-itself, because each primitive corresponds to a method on the
-`Backend` trait that every backend has to implement. The cost of
-adding one is high; that's deliberate. What you build out of the
+A builtin primitive is part of the framework itself: it has a payload, a
+mount handler, and a capability trait (`caps::*Ops`) every backend
+implements. The cost of adding one is high; that's deliberate. (A widget
+built outside the framework is a third-party primitive — a payload type
+with a handler registered on the scene `Registry`.) What you build out of the
 primitives is unbounded.
 
 ## What every primitive shares
@@ -40,9 +41,9 @@ a View at some level.
 
 ```rust
 ui! {
-    View(style = my_view_style()) {
-        Text { "hello" }
-        Text { "world" }
+    view(style = my_view_style()) {
+        text { "hello" }
+        text { "world" }
     }
 }
 ```
@@ -64,7 +65,7 @@ the axis.
 
 ```rust
 ui! {
-    ScrollView {
+    scroll_view {
         // ...children scroll vertically
     }
 }
@@ -107,8 +108,8 @@ A run of text.
 
 ```rust
 ui! {
-    Text { "Hello, Idealyst" }
-    Text { format!("Count: {}", count.get()) }
+    text { "Hello, Idealyst" }
+    text { format!("Count: {}", count.get()) }
 }
 ```
 
@@ -123,7 +124,7 @@ A bitmap from a URL.
 
 ```rust
 ui! {
-    Image(src = "https://example.com/avatar.png", alt = "Avatar")
+    image(src = "https://example.com/avatar.png", alt = "Avatar")
 }
 ```
 
@@ -139,7 +140,7 @@ A vector icon, rendered as inline SVG on web, `CAShapeLayer` on iOS,
 
 ```rust
 ui! {
-    Icon(name = "chevron-right")
+    icon(name = "chevron-right")
 }
 ```
 
@@ -175,7 +176,7 @@ webview::register(&mut backend);
 
 // inside a `ui!` block
 ui! {
-    View {
+    view {
         { webview::WebView(webview::WebViewProps {
             url: webview::url("https://example.com"),
             ..Default::default()
@@ -197,7 +198,7 @@ A labeled tappable with native button semantics.
 ui! {
     Button(
         label = "Increment",
-        on_click = move || count.update(|n| *n += 1),
+        on_click = move || count.update(|n| n + 1),
     )
 }
 ```
@@ -218,7 +219,7 @@ A text field whose value is owned by the parent.
 let value = signal(String::new());
 
 ui! {
-    TextInput(
+    text_input(
         value = value,
         on_change = move |s| value.set(s),
         placeholder = "Search...",
@@ -256,7 +257,7 @@ A numeric slider with min/max bounds and an optional step.
 let volume = signal(50.0);
 
 ui! {
-    Slider(
+    slider(
         value = volume,
         on_change = move |v| volume.set(v),
         min = 0.0,
@@ -280,7 +281,7 @@ spins.
 
 ```rust
 ui! {
-    ActivityIndicator(size = ActivityIndicatorSize::Medium, color = Some(my_color))
+    activity_indicator(size = ActivityIndicatorSize::Medium, color = Some(my_color))
 }
 ```
 
@@ -299,7 +300,7 @@ the macro lowers it to `When`.
 ```rust
 ui! {
     if logged_in.get() {
-        Text { "Welcome back!" }
+        text { "Welcome back!" }
     } else {
         Button(label = "Log in", on_click = move || logged_in.set(true))
     }
@@ -319,9 +320,9 @@ pattern equals the discriminant.
 ```rust
 ui! {
     Switch(discriminant = mode) {
-        Arm(pattern = "loading") { ActivityIndicator() }
+        Arm(pattern = "loading") { activity_indicator() }
         Arm(pattern = "ready") { Body { /* ... */ } }
-        Default { Text { "error" } }
+        Default { text { "error" } }
     }
 }
 ```
@@ -344,9 +345,9 @@ You don't write `Repeat` by hand; you write a `for`.
 
 ```rust
 ui! {
-    View {
+    view {
         for item in items {
-            Card { Text { item.title } }
+            Card { text { item.title } }
         }
     }
 }
@@ -367,7 +368,7 @@ ui! {
     flat_list(
         items = signal_of_items,
         item_size = ItemSize::Fixed(72.0),
-        render_item = |i, item| ui! { Card { Text { &item.title } } },
+        render_item = |i, item| ui! { Card { text { &item.title } } },
     )
 }
 ```
@@ -411,8 +412,8 @@ a `NavCommand` against the closest ambient navigator.
 
 ```rust
 ui! {
-    Link(route = "/profile/:id", params = ProfileParams { id: 42 }) {
-        Text { "Open profile" }
+    link(route = "/profile/:id", params = ProfileParams { id: 42 }) {
+        text { "Open profile" }
     }
 }
 ```

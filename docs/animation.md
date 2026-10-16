@@ -442,9 +442,9 @@ the vocabulary's wrapper (`runtime_vocabulary::glue::animation`), whose
 `bind*` keeps the per-frame subscription alive through a world effect
 collected into the surrounding component scope — so the subscription dies
 exactly at unrealize, and a recycled `Ref` can't be written by a stale
-binding. The raw substrate type's `bind*` anchored through the old core's
-scope machinery, which no longer exists; the wrapper is what restores the
-"subscription dies with the component" contract. The failure mode it
+binding. The raw substrate type's `bind*` anchors through the legacy
+arena's scope machinery, which the runtime never opens; the wrapper is
+what provides the "subscription dies with the component" contract. The failure mode it
 fixes is visible: a bound value would tick while nobody wrote the
 property, so a bound thumb/height/opacity never moved.
 

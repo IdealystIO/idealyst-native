@@ -293,7 +293,7 @@ dev-host's arena, not in any client.
 The [Architecture](#architecture-in-more-depth) section of the
 Overview points at the supporting crates: `wire` for
 the protocol, `dev-client` for the app-side replayer,
-`aas-shell-native` for the desktop client side.
+`runtime-server-shell-native` for the native client side.
 
 ## The MCP server — Claude Desktop and Robot
 

@@ -5,12 +5,17 @@ targets:
   - crates/backend/ios/core
   - crates/backend/ios/mobile
   - crates/backend/ios/tv
-  - crates/backend/ios-stack
+  - crates/backend/ios/rs-shell
+  - crates/backend/apple/core
+  - crates/backend/macos
   - crates/backend/android/core
   - crates/backend/android/mobile
   - crates/backend/android/tv
   - crates/backend/roku
   - crates/backend/web
+  - crates/backend/linux
+  - crates/backend/windows
+  - crates/runtime/web-glue
   - benchmark/idealyst-native/wasm
 severity: high
 ---
@@ -19,8 +24,10 @@ severity: high
 
 ## Background
 
-Each backend bridges Rust to a foreign runtime: Objective-C/Swift on iOS,
-JNI on Android, BrightScript on Roku, JS via wasm-bindgen on web. Panics
+Each backend bridges Rust to a foreign runtime: Objective-C/Swift on iOS
+and macOS (objc2), JNI on Android, GTK4's C API on Linux, Win32 / COM on
+Windows, BrightScript on Roku, and JS on web through the framework-owned
+`web-glue` boundary (plus wasm-bindgen in hybrid builds). Panics
 that unwind across an FFI boundary are UB; raw pointers and JNI globals
 must be tracked carefully. The codebase has prior FFI footguns (e.g.
 `dispatch_get_main_queue` being a macro on iOS — see auto-memory

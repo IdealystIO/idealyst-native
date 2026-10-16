@@ -1,23 +1,12 @@
 # iOS + Android touch backend implementations
 
-> **Status note (2026-07-29, runtime-v2).** Both platform impls landed —
-> `install_touch_handler` is implemented in `crates/backend/ios/mobile` and
-> `crates/backend/android/mobile`. This doc is now the record of the
-> per-platform mechanics (UIKit `touches*` / Android `MotionEvent`), not
-> outstanding work. It also predates the `Backend` mega-trait's deletion: the
-> two methods below now live, unchanged, on the capability trait
+> **Status: implemented.** `install_touch_handler` / `claim_touch` are
+> implemented in `crates/backend/ios/mobile` (`src/imp/touch.rs`) and
+> `crates/backend/android/mobile` (`src/imp/primitives/touch.rs`). This doc
+> records the per-platform mechanics (UIKit `touches*` / Android
+> `MotionEvent`). The methods live on the capability trait
 > `runtime_vocabulary::caps::InputOps`
-> (`crates/runtime/vocabulary/src/caps/input.rs`), still defaulting to no-ops.
-> `Element::View { on_touch: … }` is likewise gone as a spelling — the
-> vocabulary's `view` handler installs the handler from the view payload's
-> `on_touch` slot at mount.
-
-Status (as filed): runtime-core, wgpu, and web are landed; iOS and Android are
-the two missing platform impls of `Backend::install_touch_handler` and
-`Backend::claim_touch`. This doc describes how to land them.
-
-The platforms are independent — pick either first, the other follows
-the same shape. Each is roughly one engineering day.
+> (`crates/runtime/vocabulary/src/caps/input.rs`), defaulting to no-ops.
 
 See [native-touch-plan.md](native-touch-plan.md) for the cross-platform
 design (event vocabulary, responder chain, claim protocol). This doc
@@ -25,7 +14,7 @@ only covers per-platform mechanics.
 
 ## What core asks of the backend
 
-Two methods on the [`Backend`] trait, both default no-op so partial
+Two methods on `caps::InputOps`, both default no-op so partial
 backends still render:
 
 ```rust
@@ -38,8 +27,8 @@ fn install_touch_handler(
 fn claim_touch(&mut self, node: &Self::Node, touch_id: TouchId);
 ```
 
-`install_touch_handler` is called once per `Element::View {
-on_touch: Some(_), .. }` after node creation. The backend's job:
+`install_touch_handler` is called by the `view` handler once per view
+whose payload has `on_touch: Some(_)`, after node creation. The backend's job:
 
 1. Wire `handler` to whatever native touch delivery the platform
    uses.
@@ -191,7 +180,7 @@ parallel `TouchEvent` streams sharing a handler.
 > `OnTouchListener` fires on the *target* (deepest) view first and only
 > propagates to ancestors when the child declines, which gives the
 > **deepest-view-first → bubble-to-ancestor** responder model the other
-> backends use (and that `runtime_core::touch` documents). A
+> backends use (and that `runtime_shared::touch` documents). A
 > `dispatchTouchEvent` override would instead make a parent intercept
 > *before* its children — the opposite order — so it was rejected. The
 > original sketch is kept for historical context:
@@ -336,41 +325,6 @@ shape as iOS — multiple concurrent streams sharing one handler.
   our framework's `ScrollView` primitive in particular.
 
 ---
-
-## Build order
-
-Either platform first. Roughly one engineering day each.
-
-1. **Subclass the native View type** (or extend the existing subclass).
-   Both platforms already have such a class for the View primitive.
-2. **Implement `install_touch_handler`** — store handler, override the
-   touch entry points, translate events, invoke handler, read
-   response.
-3. **Implement `claim_touch`** — ancestor walk for scroll cancel
-   (iOS) / `requestDisallowInterceptTouchEvent` (Android).
-4. **Smoke test** by adding `view().on_touch(...)` and
-   `view().on_touch(tap(TapRecognizer::new(), || ...))` to the
-   existing demo apps. Verify with two-finger gestures too.
-5. **Tests** — walker→backend wiring is trivially testable (mock
-   storage + assert install was called); the dispatcher itself is
-   harder to unit-test because of platform setup. The recognizer
-   tests in runtime-core already cover the gesture state machines
-   on top.
-
-## Definition of done
-
-- `view().on_touch(...)` mounts a working raw-touch handler on both
-  platforms, with parity to the wgpu and web behavior.
-- `tap()` and `long_press()` recognizers fire correctly with the
-  expected slop / threshold values.
-- A pan recognizer inside a `ScrollView` can claim the touch (via
-  `TouchResponse { claim: true }`) and the parent scroll stops
-  scrolling.
-- Multi-touch produces parallel event streams with stable
-  `TouchId`s.
-- `Cancelled` is delivered when the OS interrupts the gesture
-  (incoming call, alert, view detach) and when a sibling claim
-  preempts.
 
 ## Out of scope (for v1)
 

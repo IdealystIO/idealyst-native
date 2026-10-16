@@ -5,22 +5,19 @@ primitive coverage. Every framework test and example targets it first.
 
 ## Its JS boundary: web-glue
 
-Since own-web-bindings phase 2b
-([`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md))
-every DOM operation, listener, timer, shim call and dev-tooling entry
+Every DOM operation, listener, timer, shim call and dev-tooling entry
 point in this crate goes through `web-glue`: `web_glue::dom` classes with
 web-sys's method names and signatures, `web_glue::js` for the JS
 built-ins. `Host::Node` is `web_glue::dom::Node`. The eight `runtime/js/`
-shims ship as `web_glue::js_module!`s (no run-time eval).
+shims ship as `web_glue::js_module!`s (no run-time eval). Design and
+measurements: [`docs/proposals/own-web-bindings.md`](../../../docs/proposals/own-web-bindings.md).
 
 No web-sys or wasm-bindgen type crosses this crate's seams, and it depends on
 neither (`wasm-bindgen-test` stays as the browser-test harness). A dropped file reaches
 the file-picker SDK as a `web_glue::dom::File` (the type its
 `picked_from_dropped` downcasts `DroppedFile.source` to), and SDKs return /
-downcast `web_glue::dom::Node` as the host node — the generic node bridge used
-during the port (`backend_web::bridge::{node_from_web_sys, node_to_web_sys}`)
-and the dropped-file `HYBRID-BRIDGE` crossing are gone (own-web-bindings
-phase 3).
+downcast `web_glue::dom::Node` as the host node; there is no `web_sys`
+bridge.
 
 An app whose linked module carries no wasm-bindgen metadata builds in **own
 mode**: `idealyst build --web` / `dev --web` writes `pkg/<lib>.js` from the glue
@@ -97,7 +94,7 @@ the backend up by hand must call them.
   for reactive bindings. A single FFI call ships a batch of property writes
   rather than one call per property; the JS dispatcher reads capability
   flags to choose the fastest available update path.
-- **`dev_transport.rs`** (feature `aas-shell`): `web_sys::WebSocket` + rAF
+- **`dev_transport.rs`** (feature `runtime-server`): WebSocket + rAF
   outbound pump for hot-reload / runtime-server over the wire protocol on web.
 
 ## Style architecture

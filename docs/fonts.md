@@ -19,7 +19,7 @@ fonts out of the wasm download. See `runtime_core::assets` for the
 `embed-font-bytes` / `__face_source!` mechanism.
 
 Implementation: `runtime_core::assets` (declaration macros + types,
-`crates/runtime/shared/src/assets/`),
+`crates/runtime/shared/src/assets.rs`),
 `ensure_typefaces_registered_with` (registration walk over
 `StyleRules`, `crates/runtime/shared/src/style.rs`), and
 `caps::AssetOps::register_asset` + `register_typeface` (the

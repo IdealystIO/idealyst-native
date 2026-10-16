@@ -85,8 +85,8 @@ handlers are not (`tests.rs::ambient_api_requires_a_world`). See
 | `with(\|&T\| …)` | yes | committed value, borrowed — no clone |
 | `with_untracked(\|&T\| …)` | no | committed value, borrowed |
 
-No read ever returns a staged value. `peek()` is the untracked read —
-the name the old core spelled `get_untracked()`. Use it for
+No read ever returns a staged value. `peek()` is the untracked read.
+Use it for
 self-referential writes inside an effect (`set(peek() + 1)` with `get()`
 would re-trigger the effect forever) and `with()` for large values
 (`Vec` rows) where the clone is the cost
@@ -121,8 +121,7 @@ else notifies, so treat it as deliberate bookkeeping only.
 `update` takes `&T` and **returns** the new value; it composes on the
 staged value, which is what makes two increments in one turn net `+2`
 (`tests.rs::update_composes_on_the_staged_value`). This is the shape
-event handlers should use. (The old core's `update(|v: &mut T| …)`
-in-place form and `update_if_changed` are both gone.)
+event handlers should use. There is no in-place `&mut T` form.
 
 Leptos note: Leptos's `set` never compares — ported code relying on
 same-value sets as retriggers must switch those sites to `set_always` or
@@ -346,9 +345,9 @@ resolve after mount.
 
 Two caveats that follow from the slot living outside the world:
 
-- **A `Ref::new()` slot is not freed.** Its lifetime was bound to an
-  old-core `Scope`, and no old-core scope is ever active in a runtime-v2
-  build, so the slot leaks until the thread exits (`Ref::new`'s own docs
+- **A `Ref::new()` slot is not freed.** Its lifetime is bound to a
+  legacy-arena `Scope`, and no such scope is ever active, so the slot
+  leaks until the thread exits (`Ref::new`'s own docs
   state the rule). Refs are per-component, so this is a bounded leak, not
   a per-update one — but a `Ref` created inside a frequently-remounted
   subtree accumulates slots.
@@ -554,8 +553,8 @@ and they do not currently have equal coverage on this core:
   events these fold (`record_txn_enter`, `record_effect_run`,
   `record_commit`, `record_signal_created`) are emitted from
   `crates/runtime/shared/src/reactive.rs` — the legacy arena — and
-  **`runtime-world` emits none of them**. On runtime v2 the transaction
-  report is therefore empty of signal/effect data; the surviving
+  **`runtime-world` emits none of them**. The transaction report is
+  therefore empty of signal/effect data; the surviving
   contributions are `#[component]` enter/exit spans (emitted by
   `crates/runtime/macros-expand/src/lib.rs`) and the style-cache counters.
   Attribute a slow turn with phase counters until the kernel is

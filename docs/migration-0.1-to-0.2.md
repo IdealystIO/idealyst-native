@@ -30,7 +30,7 @@ Navigators **self-register** at backend construction (`inventory`), so an app's
 `register_extensions` can stay a no-op — the same as the 0.1 nav SDKs.
 
 Working examples: [`crates/sdk/client/navigators/swap/examples/swap-demo`](../crates/sdk/client/navigators/swap/examples/swap-demo) (3-tab router) and
-[`crates/sdk/client/navigators/stack-v2/examples/stack-demo-v2`](../crates/sdk/client/navigators/stack-v2/examples/stack-demo-v2) (push/pop with header slots).
+[`crates/sdk/client/navigators/stack/examples/stack-demo`](../crates/sdk/client/navigators/stack/examples/stack-demo) (push/pop with header slots; `stack-navigator-v2` has since been renamed `stack-navigator`).
 
 ---
 

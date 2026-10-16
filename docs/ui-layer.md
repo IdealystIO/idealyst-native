@@ -80,8 +80,8 @@ that triggered it: the write stages, the driver effect for the hole
 re-runs during the flush, and the swap happens there
 (`crates/runtime/scene/src/realize.rs`). So the triggering platform
 closure has already returned before the old subtree's closures are
-dropped — the property the old core bought with a microtask deferral now
-falls out of the flush boundary. See
+dropped — a property that falls out of the flush boundary rather than
+needing a microtask deferral. See
 [`automatic-batching.md`](./automatic-batching.md).
 
 ---
@@ -129,11 +129,11 @@ remains for components whose props need extra derives
 
 ```rust
 #[component]
-pub fn counter(props: &CounterProps) -> Element {
+pub fn Counter(props: &CounterProps) -> Element {
     let count = signal(0);
     ui! {
-        Button(label = "Inc", on_click = move || count.update(|n| *n += 1))
-        Text { format!("Count: {}", count.get()) }
+        button(label = "Inc", on_click = move || count.update(|n| n + 1))
+        text { format!("Count: {}", count.get()) }
     }
 }
 ```
@@ -144,8 +144,8 @@ them apart. The `#[component]` attribute does three jobs:
 1. **Reactivity rewrite** — walks the function body and rewrites
    expressions that contain `.get()` (signal reads) into reactive
    closures the underlying primitive constructors accept. The rewrite
-   targets the props of built-in primitives (`Text`, `Button`,
-   `Image`, …) where the constructor accepts an `IntoTextSource`-style
+   targets the props of built-in primitives (`text`, `button`,
+   `image`, …) where the constructor accepts an `IntoTextSource`-style
    wrapper that distinguishes static from reactive.
 2. **Dispatch-glue generation** — emits a `pub type Counter =
    CounterProps` tag alias plus an `impl runtime_core::BuildElement for
@@ -214,8 +214,8 @@ default no-op handle (`runtime_vocabulary::caps::noop`), so calling
 no-op rather than a build error — useful when filling in a new backend
 incrementally.
 
-**Lifetime caveat.** The ref slot's lifetime was tied to an old-core
-`Scope`, and no such scope is active in a runtime-v2 build, so a
+**Lifetime caveat.** The ref slot lives in `runtime-shared`'s legacy
+reactive arena, whose `Scope`s the current runtime never opens, so a
 `Ref::new()` slot is not freed until the thread exits. Refs are
 per-component, so this is bounded — but a `Ref` created inside a
 frequently-remounted subtree accumulates slots. See

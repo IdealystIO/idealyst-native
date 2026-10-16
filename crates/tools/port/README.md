@@ -242,10 +242,10 @@ expression / Svelte reactive statement it needs to translate.
 ### Per-file
 
 ```bash
-cargo run -p port-react   -- crates/port/react/fixtures/counter.tsx
-cargo run -p port-solid   -- crates/port/solid/fixtures/counter.tsx
-cargo run -p port-vue     -- crates/port/vue/fixtures/counter.vue
-cargo run -p port-svelte  -- crates/port/svelte/fixtures/counter.svelte
+cargo run -p port-react   -- crates/tools/port/react/fixtures/counter.tsx
+cargo run -p port-solid   -- crates/tools/port/solid/fixtures/counter.tsx
+cargo run -p port-vue     -- crates/tools/port/vue/fixtures/counter.vue
+cargo run -p port-svelte  -- crates/tools/port/svelte/fixtures/counter.svelte
 ```
 
 Each prints the rendered Rust to stdout and a hole summary to stderr.

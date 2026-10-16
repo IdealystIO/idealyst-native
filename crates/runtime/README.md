@@ -13,13 +13,14 @@ Interface.
 | `runtime-core` | [`core/`](./core) | The author surface — the `runtime_core::…` spelling every app uses. A paper-thin re-export of `runtime_vocabulary::glue` plus the macro set; nothing is implemented here. See its own README. |
 | `runtime-world` | [`world/`](./world) | The reactive kernel: worlds, signals, staged commits, derivation-class flush. |
 | `runtime-scene` | [`scene/`](./scene) | The scene model: `Element`, `realize`, the `Host` seam, the `Registry` of primitive mount handlers, the Dyn/Keyed structural drivers. |
-| `runtime-vocabulary` | [`vocabulary/`](./vocabulary) | The ~30 capability (`*Ops`) traits over `Host`, the builtin primitive handlers, the style-attach engine, navigation, and `glue`. |
+| `runtime-vocabulary` | [`vocabulary/`](./vocabulary) | The 31 capability (`*Ops`) traits over `Host`, the builtin primitive handlers, the style-attach engine, navigation, and `glue`. |
 | `runtime-shared` | [`shared/`](./shared) | The substrate: style engine + tokens, assets/typefaces, animation, input channels, scheduling, identity, introspection, the robot registry, and every primitive's prop/handle types. |
 | `runtime-macros` | [`macros/`](./macros) | `ui!`, `jsx!`, `#[component]`, `stylesheet!`, `#[method]`. Compile-time DSLs whose expansions target `runtime_vocabulary::glue`. No runtime cost. |
+| `runtime-macros-expand` | [`macros-expand/`](./macros-expand) | Every macro's expansion as a plain library; `runtime-macros` is one shim per macro over it. A library so the MCP catalog's source scan (`crates/mcp/catalog-scan`) can run the same expansion outside rustc. |
 | `runtime-macros-parse` | [`macros-parse/`](./macros-parse) | The `ui!` FRONT END as a plain library: parser, split pass, node numbering, IDE recovery, and the descriptor producer. A library and not part of the proc-macro crate because the CLI needs the same answers at build time and cannot depend on one — and a second implementation that disagreed by a node would mis-address every patch after it. |
 | `runtime-template` | [`template/`](./template) | A `ui!` site as DATA: `Descriptor`, slot signatures, `Registry`, patch validation, the `site_key` both halves address by. A descriptor is a BUILD artifact produced from source, not something compiled into the app — measured, see its README. Depends on `serde` only. |
 | `runtime-layout` | [`layout/`](./layout) | Taffy wrapper (flex + grid). Used by backends that don't have a native layout engine — iOS, Android, macOS, Linux, Windows, terminal, CPU, and the GPU engine. Web inherits the browser's layout. |
-| `web-glue` | [`web-glue/`](./web-glue) | The framework-owned wasm ⇄ JS boundary: JS handles, strings, callbacks, promises-as-futures, exceptions, with each binding's JS carried inside the wasm and turned into `pkg/<lib>.js` by `build_web::own_glue`. Phase 1 (proof of concept) of [`docs/proposals/own-web-bindings.md`](../../docs/proposals/own-web-bindings.md); nothing uses it yet, and it does not depend on wasm-bindgen. |
+| `web-glue` | [`web-glue/`](./web-glue) | The framework-owned wasm ⇄ JS boundary: JS handles, strings, callbacks, promises-as-futures, exceptions, with each binding's JS carried inside the wasm and turned into `pkg/<lib>.js` by `build_web::own_glue`. `backend-web`, the GPU engine's web leg, the `idealyst` entry crate, and the web legs of the client SDKs bind the browser through it; it does not depend on wasm-bindgen. Design and results: [`docs/proposals/own-web-bindings.md`](../../docs/proposals/own-web-bindings.md). |
 | `zone-offset` | [`zone-offset/`](./zone-offset) | The local UTC offset at an instant from the OS zone database (libc `localtime_r` / Win32). Backs `runtime-shared`'s native default wall clock — so `runtime_core::time::local_offset_minutes()` is right on every native backend — and the `datetime` SDK. Its own crate because runtime crates may not depend on SDKs, and it keeps per-target code out of `runtime-shared`. |
 
 The Runtime's job is to turn app code (components, signals,
@@ -28,10 +29,9 @@ tree into a backend through `Host` + the capability traits.
 Cross-cutting concerns — hot reload, dev-server replay, MCP
 introspection, animation — all hook into this layer's reactive graph.
 
-## Why "Runtime" and not "framework"
+## Why "Runtime"
 
-This dir was previously `crates/framework/`. The rename matches the
-public-facing concept used in docs: the framework is the Runtime
-plus the Backend Interface; everything below the seam is a Backend.
-The crate names follow the same convention now (`runtime-core`,
+The name matches the public-facing concept used in docs: the framework
+is the Runtime plus the Backend Interface; everything below the seam is
+a Backend. The crate names follow the same convention (`runtime-core`,
 `runtime-macros`, `runtime-layout`).

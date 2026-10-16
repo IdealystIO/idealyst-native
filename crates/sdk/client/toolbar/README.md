@@ -22,7 +22,7 @@ host_appkit::newcore::run_with(
 // the items closure is owned by a long-lived scope.
 let count = signal(0_i32);
 ui! {
-    View {
+    view {
         { toolbar::Toolbar(toolbar::ToolbarProps {
             items: Box::new(move || vec![
                 toolbar::ToolbarItem::button("Save")

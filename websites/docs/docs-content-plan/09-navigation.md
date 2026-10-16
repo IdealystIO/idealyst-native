@@ -329,8 +329,8 @@ a button's `on_click` — but it has costs:
 
 ```rust
 ui! {
-    Link(route = &PROFILE, params = ProfileParams { id: 42 }) {
-        Text { "Open profile" }
+    link(route = &PROFILE, params = ProfileParams { id: 42 }) {
+        text { "Open profile" }
     }
 }
 ```
@@ -361,13 +361,13 @@ navigator. The kind picks which command:
   depth. Default inside tabs and drawer navigators.
 
 ```rust
-Link(route = &HOME, params = (), kind = NavKind::Reset) {
-    Text { "Sign out" }
+link(route = &HOME, params = (), kind = NavKind::Reset) {
+    text { "Sign out" }
 }
 ```
 
 The constructor picks a default based on the ambient navigator
-kind, so `Link(route = ..., params = ...)` (no `kind`) does the
+kind, so `link(route = ..., params = ...)` (no `kind`) does the
 right thing in any context.
 
 ## Nested navigators

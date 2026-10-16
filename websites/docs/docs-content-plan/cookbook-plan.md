@@ -1,5 +1,9 @@
 # Cookbook plan
 
+> **Status: planned, not built.** The registry already splits pages by
+> `PageCategory::Cookbook` (`websites/docs/src/registry.rs`), but no recipe
+> pages exist yet.
+
 The cookbook is a set of **worked recipes** — concrete, end-to-end
 examples of common app patterns. Each recipe is one page, one
 problem, one complete solution you can read top-to-bottom.
@@ -128,11 +132,11 @@ pub fn app() -> Element {
     let is_dark = signal(false);
 
     ui! {
-        ScrollView {
-            View(style = page_style()) {
+        scroll_view {
+            view(style = page_style()) {
                 Heading { "Settings" }
 
-                View(style = row_style()) {
+                view(style = row_style()) {
                     Body { "Dark mode" }
                     Switch(
                         value = is_dark,

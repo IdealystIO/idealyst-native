@@ -17,16 +17,17 @@ severity: high
 
 The framework enforces reconciliation keys **only** at the `for`-loop
 lowering in `ui!`/`jsx!`. A reactive `for row in signal { … }` without a
-`, key = …` is a hard compile error (the `ReactiveListKeyed` diagnostic in
-`crates/runtime/core/src/builder.rs`), and a keyed `for` lowers to
-`Element::Each`, the one primitive that carries per-row keys and reconciles
-by identity.
+`, key = …` is a hard compile error (the `ReactiveListKeyed` diagnostic,
+emitted from `crates/runtime/macros-expand/src/ui.rs` / `jsx.rs`), and a
+reactive `for` lowers to `runtime_core::each_keyed(…)` →
+`runtime_scene::Element::Keyed` (`crates/runtime/scene/src/element.rs`), the
+one scene node that carries per-row keys: realize keeps, creates, or drops
+each row's subtree by `Key` identity (`crates/runtime/scene/src/realize.rs`).
 
-Every other child is reconciled **positionally, by slot index**
-(`crates/runtime/core/src/walker/view.rs` — a row's `Identity::node` is its
-iteration index). So the moment you build a `Vec<Element>` in plain Rust and
-splat it as children, the key information is *already erased* before the
-macro ever sees it. If that list is dynamic — its source data reorders,
+A `Vec<Element>` splatted as children is a plain `Element::Fragment` — a
+static list with no keys at all. So the moment you build a `Vec<Element>` in
+plain Rust and splat it as children, the key information is *already
+erased* before the macro ever sees it. If that list is dynamic — its source data reorders,
 grows, or shrinks across renders — the elements re-diff against the same
 positional slots and per-row state (component-local signals, text-input
 focus, scroll position) silently attaches to the **wrong** row. This is the
@@ -123,8 +124,8 @@ ui! {
 ```
 
 If the list is reactive, iterate the **signal itself** (`for c in rows_signal,
-key = c.id`) so it lowers to `Element::Each` — do not `.get()` it into a
-static `Vec` first, which re-enters the static positional path.
+key = c.id`) so it lowers to `Element::Keyed` — do not `.get()` it into a
+static `Vec` first, which re-enters the unkeyed path.
 
 ## Output format
 

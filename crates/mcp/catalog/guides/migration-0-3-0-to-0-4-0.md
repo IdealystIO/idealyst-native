@@ -101,12 +101,12 @@ framework's intentional-static marker is honored directly in the condition
 hoist is the other option and reads clearer for a plain presence check.
 
 **Status:** landed. `emit_if` / `emit_match` route through
-`condition_may_read_signal`; regression coverage in
-`crates/runtime/core/tests/if_reactive_lowering.rs`
+`condition_may_read_signal` (today in
+`crates/runtime/macros-expand/src/ui.rs`); the 0.4 regression tests
 (`comparison_with_buried_signal_read_is_reactive`,
-`compound_get_comparison_is_reactive`) and
-`match_reactive_call_regression.rs` (`match_method_call_scrutinee_is_reactive`),
-plus the dedup-preserved and static-stays-static assertions in the same files.
+`compound_get_comparison_is_reactive`, `match_method_call_scrutinee_is_reactive`)
+and the dedup-preserved / static-stays-static assertions beside them lived in
+the old `runtime-core` test suite, which 1.0 deleted.
 
 ## What did NOT change
 
@@ -163,10 +163,9 @@ lazy_split(|| Box::pin(async { Ok(my_chunk().await.into_element()) }))
 `Element::Lazy` also gained an `error` field; an exhaustive `match` on `Element`
 that names `Lazy { … }` needs the new field (or `..`).
 
-**Status:** landed. Coverage in `crates/runtime/core/tests/walker/lazy.rs`
-(`error_ui_renders_on_load_failure`, `retry_reloads_after_error`, and the
-`lazy_component_*` macro tests) and `primitives::lazy` / `walker::lazy` unit
-tests.
+**Status:** landed. Today's coverage is
+`crates/runtime/vocabulary/tests/lazy.rs` (`error_ui_mounts_and_retry_reloads`
+and the placeholder / teardown / SSR cases).
 
 ## Migration checklist
 

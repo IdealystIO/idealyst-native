@@ -3,6 +3,10 @@ name: ui-scope
 description: UI crates contain only reusable UI component implementations for application authors — no framework internals, no backend code.
 targets:
   - crates/ui/idea-ui
+  - crates/ui/idea-ui-nav
+  - crates/ui/idea-ui-mail
+  - crates/ui/idea-theme
+  - crates/ui/idea-theme-editor
   - crates/ui/idea-ui-docs-derive
   - crates/ui/icons-lucide
 severity: medium
@@ -14,10 +18,11 @@ severity: medium
 
 **`crates/ui/*` contains additional UI implementations that applications
 consume.** It is a library of composed components and presentation helpers
-built on top of `framework-core`. It does **not** contain:
+built on top of the `runtime-core` author surface. It does **not** contain:
 
-- Framework internals (reactive primitives, scheduling, build walkers)
-- Platform-specific code (those concerns belong in `backend/`)
+- Framework internals (reactive primitives, scheduling, scene realize /
+  mount handlers)
+- Platform-specific code (those concerns belong in `crates/backend/`)
 - Business logic or app-specific features (those live in the application,
   e.g. `examples/*`)
 
@@ -32,17 +37,18 @@ For each UI crate:
       `#[cfg(target_arch = ...)]` that gate behavior. UI components
       should render identically across backends; per-backend behavior
       is the backend's responsibility.
-- [ ] **Reactive system reimplementation** — UI consumes `Signal` /
-      `Effect` / `Scope` from `framework-core`; it should not define
-      its own.
+- [ ] **Reactive system reimplementation** — UI consumes `signal` /
+      `effect!` / `memo` and friends from `runtime-core`; it should not
+      define its own.
 - [ ] **App-specific code** — flag domain-specific names (anything tied
       to a particular product feature) that suggest a component belongs
       in the application, not the shared library.
 - [ ] **Public surface** — components should expose a clean
       `Props`-driven API. Flag broad `pub use` re-exports of framework
       internals or backend types.
-- [ ] **Dependencies** — should depend on `framework-core` and possibly
-      sibling UI crates. Flag dependencies on `crates/backend/*` or on
+- [ ] **Dependencies** — should depend on `runtime-core` (plus
+      `runtime-scene` / `runtime-vocabulary` where it registers scene
+      handlers) and possibly sibling UI crates. Flag dependencies on `crates/backend/*` or on
       application crates under `examples/`.
 
 ## Output format

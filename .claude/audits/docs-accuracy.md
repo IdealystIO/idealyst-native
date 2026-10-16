@@ -31,8 +31,8 @@ Two specific failure modes have already bitten us:
    (auto-memory `feedback_no_idealyst_prefix`). Doc samples that say
    `idealyst-wire` or `idealyst-dev-client` are wrong on sight.
 2. Behavioral claims like "every backend implements X" must be checked
-   against the actual `Backend` trait and its impls — backends can
-   diverge, and runtime-server in particular is a placeholder for some primitives
+   against the actual capability traits (`runtime_vocabulary::caps`) and
+   each backend's impls in `src/newcore.rs` — backends can diverge, and runtime-server in particular is a placeholder for some primitives
    (auto-memory `project_aas_graphics_unsupported`).
 
 ## Out of scope — do not flag
@@ -58,20 +58,24 @@ at the doc location, not the framework location.
 
 - [ ] **Type / trait / enum-variant names** — for each capitalized
       identifier the docs claim is real (e.g. `Signal<T>`, `Element`,
-      `Backend`, `BodyTone`, `HeadingKind`, `Effect`, `Scope`), grep
+      `Host`, `TextOps`, `BodyTone`, `HeadingKind`, `Effect`), grep
       the framework + UI crates to confirm it exists with the spelling
       the doc uses. Renames count as findings.
 - [ ] **Function / macro names** — for every code-sample function call
       (`signal`, `ui!`, `component!`, `Signal::new`, `count.update`,
       `count.get`, `on_cleanup`, etc.), confirm the symbol exists. Macro
       arms used in the docs (e.g. `signal(value)`) must match a real
-      macro arm in `framework/macros`.
+      macro in `crates/runtime/macros` (expansions in
+      `crates/runtime/macros-expand`) or a `macro_rules!` the
+      `runtime_core` root re-exports.
 - [ ] **Element prop names** — DSL examples like
-      `Button(label = ..., on_click = ...)` or
-      `Text(style = title_style)` must use the prop names the primitive
-      / component actually accepts. Cross-reference against the
-      `#[component]` definitions in `crates/ui/idea-ui` and the
-      primitive constructors in `framework_core`.
+      `Button(label = ..., on_click = ...)` (an idea-ui component) or
+      `text(style = title_style) { … }` (a primitive) must use the prop
+      names the primitive / component actually accepts. Cross-reference
+      against the `#[component]` definitions in `crates/ui/idea-ui` and
+      the primitive builders in `crates/runtime/vocabulary/src/glue.rs`.
+      Primitives are snake_case only; a PascalCase tag is always a
+      component (CLAUDE.md §9.2).
 - [ ] **Crate names in import lines and prose** — every `use foo::...`
       or "the `foo` crate" reference must match a real workspace member.
       **Flag any `idealyst-` prefix** as a high-severity finding (see
@@ -81,12 +85,12 @@ at the doc location, not the framework location.
       `Cargo.toml`. Flag stale or invented feature names.
 - [ ] **Behavioral universals** — statements of the form "every backend
       …", "the framework always …", "every primitive accepts …" must
-      be checked against the `Backend` trait and its impls in
-      `crates/backend/*`. Flag claims that hold for one backend but not
+      be checked against the capability traits and their impls in
+      `crates/backend/*` / `crates/gpu-backend/engine`. Flag claims that hold for one backend but not
       all (e.g. runtime-server placeholder primitives, web-only escape hatches).
 - [ ] **CLI command surface** — pages that document `idealyst <cmd>`
       (e.g. `build`, `dev`) must match the actual subcommands in
-      `crates/cli/src/cmd/`. Flag removed commands (e.g. `link_patch`,
+      `crates/tools/cli/src/cmd/`. Flag removed commands (e.g. `link_patch`,
       `rebuild_patch` were recently deleted) and missing new ones.
 - [ ] **File / module paths cited in prose** — when docs say "lives in
       `crates/foo/bar.rs`", confirm the path exists. Stale paths after
@@ -130,8 +134,8 @@ For each finding include:
   string from the doc as a short quote.
 - **Issue**: one-line description of the inaccuracy.
 - **Why**: cite the framework source of truth — the file/symbol that
-  contradicts the doc (e.g. "no such variant in `runtime_core::Element`
-  at `crates/runtime/core/src/lib.rs:NN`").
+  contradicts the doc (e.g. "no such method on `caps::TextOps` at
+  `crates/runtime/vocabulary/src/caps/text.rs:NN`").
 - **Suggested fix**: the corrected wording, symbol, or path — or
   "needs design discussion" if the doc reflects an intent that the
   framework hasn't caught up to.

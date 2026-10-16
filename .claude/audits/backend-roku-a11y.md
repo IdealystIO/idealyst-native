@@ -1,6 +1,6 @@
 ---
 name: backend-roku-a11y
-description: Roku Backend impl drops AccessibilityProps because Roku SceneGraph has no AT API; flag any sign that a future SDK has been wired but the param rename was missed.
+description: The Roku backend drops AccessibilityProps because Roku SceneGraph has no AT API; flag any sign that a future SDK has been wired but the param rename was missed.
 targets:
   - crates/backend/roku
 severity: low
@@ -16,9 +16,9 @@ OS itself, not by the app — there is no documented hook for an app
 to attach semantic labels/roles to a node or to post live-region
 announcements.
 
-So `backend-roku`'s `Backend` impl currently accepts an
-`AccessibilityProps` on every `create_*` (for trait conformance with
-iOS / Android / web) and drops it on the floor: every param is
+So `backend-roku`'s capability impls (`crates/backend/roku/src/newcore.rs`)
+accept an `AccessibilityProps` on every `create_*` (the `caps::*Ops`
+signatures every backend shares) and drop it on the floor: every param is
 written `_a11y: &AccessibilityProps`. The underscore prefix is the
 intentional marker that this is a no-op, deliberately.
 
@@ -33,21 +33,22 @@ the plumbing checklist when Roku adds AT support.
 
 ## Checklist
 
-- [ ] **`_a11y` discipline** — every `create_*` in
-      `crates/backend/roku/src/lib.rs`'s `impl Backend for RokuBackend`
-      block uses `_a11y: &AccessibilityProps` (not `a11y:`). Grep:
-      `grep -n "a11y: &framework_core::accessibility::AccessibilityProps" crates/backend/roku/src/lib.rs`.
+- [ ] **`_a11y` discipline** — every `create_*` in the `caps::*Ops`
+      impls in `crates/backend/roku/src/newcore.rs` uses
+      `_a11y: &AccessibilityProps` (not `a11y:`). Grep:
+      `grep -nE "[^_]a11y: &(runtime_shared::accessibility::)?AccessibilityProps" crates/backend/roku/src/newcore.rs`.
       A non-underscored `a11y:` is a finding: either (a) the param is
       now consumed and the module-level `# Accessibility` doc should
       be rewritten to describe how it's plumbed, or (b) the rename was
       a mistake and the underscore should go back.
 - [ ] **No silent overrides** — `update_accessibility`,
       `announce_for_accessibility`, and `dump_accessibility_tree` are
-      not overridden in the Roku impl. If one of them is overridden,
+      not overridden in the Roku `caps::A11yOps` impl. If one of them is overridden,
       the override must do something meaningful — not log-and-return,
       not push a wire op the BrightScript client ignores. Flag any
       override whose body is effectively a no-op.
-- [ ] **Wire op coverage** — if a `RokuCommand` variant exists that
+- [ ] **Wire op coverage** — if a `RokuCommand` variant
+      (`crates/backend/roku/src/command.rs`) exists that
       carries accessibility metadata (e.g. `SetAccessibility`,
       `Announce`), every `create_*` whose AT props were renamed should
       actually emit it. Flag a renamed `a11y` param that isn't read.

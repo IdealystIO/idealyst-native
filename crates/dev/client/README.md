@@ -30,9 +30,9 @@ UI tree → AasBackend → Wire → AasClient<PlatformBackend> → Native
 ## What this crate is *not*
 
 - **Not a transport.** This crate is platform-pure: protocol + replay only.
-  Bytes-on-the-wire live in [`../../backend/aas-shell-native`](../../backend/aas-shell-native)
+  Bytes-on-the-wire live in [`../runtime-server-shell`](../runtime-server-shell) (`runtime-server-shell-native`)
   for native targets (sync WebSocket + mDNS) and in `backend-web`'s
-  `dev_transport` module for web (`web_sys::WebSocket` + rAF pump).
+  `dev_transport` module for web (`web_glue::dom::WebSocket` + rAF pump).
 - **Not the dev side.** Components run in [`dev-server`](../../dev/server).
   This crate has no idea what the dev process is doing; it just applies
   commands.

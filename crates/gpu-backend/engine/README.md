@@ -23,9 +23,10 @@ implementations; new platforms slot in next to them.
   `wgpu::TextureView`.
 - **`animation::Animator`**: tween engine used by both widget animations
   (toggle thumb) and style-driven transitions (theme crossfade).
-- **`Skin`**: the pluggable platform skin contract. Concrete skins
-  ([`ios-sim`](../../skin/ios-sim), [`android-sim`](../../skin/android-sim))
-  live in their own crates; the renderer holds an `Rc<dyn Skin>` and
+- **`Painter`**: the pluggable platform look contract. Concrete painters
+  ([`ios-sim`](../painter/ios-sim), [`android-sim`](../painter/android-sim))
+  live in their own crates; `NativeSkin` (in this crate) is the painter for
+  native-looking output; the renderer holds an `Rc<dyn Painter>` and
   dispatches every widget + keyboard paint call through it.
 - **`scheduler::install_redraw_hook`**: the shell installs its redraw
   closure here; render-side state changes call `request_redraw()` to wake
@@ -77,7 +78,7 @@ durations come back as 0.
 ## Status
 
 Listed as "In progress" in the root README's roadmap. The `Host` +
-capability-trait implementation covers all 30 caps, but the GPU
+capability-trait implementation covers all 31 caps, but the GPU
 side (skins, pipelines, text shaping) is still under active development.
 Expect rough edges on advanced primitives until the rendering side
 catches up to the structural side.

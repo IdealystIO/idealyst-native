@@ -84,8 +84,8 @@ For UIs that don't need that subtlety, project to the simpler
 ```rust
 match user.network_state() {
     NetworkState::Loading      => ui!{ Spinner() },
-    NetworkState::Success(u)   => ui!{ Text(u.name) },
-    NetworkState::Error(e)     => ui!{ Text(format!("{e}")) },
+    NetworkState::Success(u)   => ui!{ text(u.name) },
+    NetworkState::Error(e)     => ui!{ text(format!("{e}")) },
     NetworkState::Idle         => unreachable!(),  // resource always starts Loading
 }
 ```
@@ -305,7 +305,7 @@ lives in the caller's state signal, not on the handle. The
 ```rust
 match create.status().get() {
     AsyncStatus::Loading => ui!{ Spinner() },
-    AsyncStatus::Error(e) => ui!{ Text(format!("Couldn't save: {e}")) },
+    AsyncStatus::Error(e) => ui!{ text(format!("Couldn't save: {e}")) },
     _ => ui!{ /* nothing — the list is up-to-date */ },
 }
 ```

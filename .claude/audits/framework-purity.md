@@ -2,9 +2,16 @@
 name: framework-purity
 description: Framework crates must be free of platform-specific implementations — only traits, abstractions, and platform-agnostic logic.
 targets:
+  - crates/runtime/world
+  - crates/runtime/scene
+  - crates/runtime/vocabulary
+  - crates/runtime/shared
+  - crates/runtime/layout
   - crates/runtime/core
   - crates/runtime/macros
-  - crates/runtime/layout
+  - crates/runtime/macros-expand
+  - crates/runtime/macros-parse
+  - crates/runtime/template
   - crates/dev/wire
   - crates/dev/client
 severity: high
@@ -14,24 +21,24 @@ severity: high
 
 ## Architectural rule
 
-**The `framework/` layer must be completely void of platform-specific
-implementations.** Framework crates define traits, types, protocols, and
-platform-agnostic logic. Platform implementations live in `backend/`;
-build/run tooling lives in `crates/tools/build/` and `crates/tools/run/`.
+**The runtime layer (`crates/runtime/`) must be completely void of
+platform-specific implementations.** Runtime crates define traits, types,
+protocols, and platform-agnostic logic. Platform implementations live in
+`crates/backend/*` and `crates/gpu-backend/*`; build/run tooling lives in
+`crates/tools/build/` and `crates/tools/run/`.
 
 ## Background
 
-Today `framework-core` reaches into `objc2` / `objc2-foundation` /
-`block2` to drive a CADisplayLink-substitute on iOS, and into
-`wasm-bindgen` / `web-sys` for the rAF render loop on web. These are
-platform implementations sitting in the framework layer. The right shape
-is: framework defines a `RenderLoop` (or similar) trait; each `backend/*`
-crate implements it for its platform.
+The seam is `runtime_scene::Host` plus the `runtime_vocabulary::caps::*Ops`
+traits; anything platform-shaped the runtime needs (a scheduler, a time
+source, a render loop, an async executor) is an install point the backend
+fills at boot (`runtime_shared::backend`, which documents the order). The
+one sanctioned exception is `zone-offset`, its own crate so the OS
+zone-database calls (libc / Win32) stay out of `runtime-shared` itself.
 
 ## Checklist
 
-For each framework crate (especially runtime crates — `core`,
-`native-layout`, `wire`, `dev-*`):
+For each targeted crate:
 
 - [ ] **Platform-specific dependencies** — scan `Cargo.toml` for
       `objc2*`, `block2`, `jni`, `ndk*`, `wasm-bindgen`, `web-sys`,
@@ -57,22 +64,22 @@ For each framework crate (especially runtime crates — `core`,
 - [ ] **`target_type` / variant-dispatch smell** — framework code
       must not branch on *what kind of primitive/target* it has in
       order to do rendering or behavior work. That decision belongs
-      on the `Backend` trait. Flag any of:
+      on a capability (`caps::*Ops`) method the backend implements. Flag any of:
       - A field, method, or accessor named `target_type` (or
         `kind_name`, `node_type`, `primitive_type`) that returns a
         `&str` / `String` — stringly-typed dispatch tags are the
         worst form of this smell.
       - Helpers that take `target_type: &str` / `kind: &str` and
         `match`/`if` on the value.
-      - `match primitive { Element::X => …, Element::Y => … }`
-        or chained `if let Element::X { .. }` blocks in framework
-        code *outside* the canonical walker (the dispatch site
-        whose entire job is to call `backend.create_X(...)` per
-        variant — `crates/runtime/core/src/walker/*.rs` today). If
-        another file is matching on variant to do platform-shaped
-        work (compute a frame, decide an animation curve, pick a
-        layout strategy), that's a Backend method waiting to
-        happen.
+      - Matching on a primitive's kind (`PrimitiveKind`, a payload
+        type, a scene `Element` variant) to do platform-shaped work
+        *outside* the canonical dispatch: scene realize
+        (`crates/runtime/scene/src/realize.rs`), whose job is to hand
+        each payload to its registered handler, and the mount handlers
+        (`crates/runtime/vocabulary/src/handlers/*.rs`), whose job is to
+        call the matching `caps` method. If another file is matching on
+        kind to compute a frame, decide an animation curve, or pick a
+        layout strategy, that's a capability method waiting to happen.
       - Per-variant branches that compensate for one backend's
         quirk (see rule 7 in `CLAUDE.md`): the fix lives in the
         backend, not behind a variant check in the framework.
@@ -83,7 +90,7 @@ For each framework crate (especially runtime crates — `core`,
       which side of the line you're on, ask: "would a new backend
       need this branch?" If yes, it's introspection. If only some
       backends would, it's dispatch, and it belongs behind a
-      Backend method.
+      capability method.
 
 ## Output format
 

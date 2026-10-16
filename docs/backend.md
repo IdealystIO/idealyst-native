@@ -30,7 +30,7 @@ Implementation:
 
 ## The seam, in three parts
 
-### 1. `Host` — seven structural operations
+### 1. `Host` — the structural operations
 
 ```rust
 pub trait Host: 'static {
@@ -41,14 +41,15 @@ pub trait Host: 'static {
     fn insert_at(&mut self, parent: &mut Self::Node, child: Self::Node, index: usize);
     fn remove_child(&mut self, parent: &Self::Node, child: &Self::Node);
     fn clear_children(&mut self, node: &Self::Node);
+    fn release_subtree(&mut self, node: &Self::Node) { /* no-op default */ }
     fn create_anchor(&mut self) -> Self::Node;
     fn supports_splice(&self) -> bool;
 }
 ```
 
 That is the *entire* structural interface. The scene's drivers — reactive
-holes, keyed lists, fragments — emit nothing else. Two of the seven are
-worth calling out:
+holes, keyed lists, fragments — emit nothing else. Three are worth
+calling out:
 
 - **`create_anchor`** returns a layout-transparent container the anchored
   drivers swap subtrees under. The scene holds it as a stable handle, but
@@ -68,6 +69,12 @@ worth calling out:
   `flex_grow` child to nothing, stacks a row parent's children vertically
   and swallows its `gap` — the shapes `runtime_layout`'s contents-node
   tests pin.
+- **`release_subtree`** is called when a subtree is disposed (a swapped-out
+  branch, a removed keyed row, a popped screen). Hosts that keep no per-node
+  state outside the node itself (web, SSR) leave the no-op default; a host
+  with a side registry keyed by node (iOS's `view_to_layout`: a retained
+  `UIView` plus a Taffy node per view) must drop those entries here, or
+  disposed screens live forever in every later layout pass.
 - **`supports_splice`** answers "can this host splice children directly
   into a real parent (`remove_child` + `insert_at`)?" `true` → style-less
   reactive regions go anchorless; `false` → every reactive region nests
@@ -77,8 +84,8 @@ worth calling out:
 `Self::Node: Clone` is the only constraint on the node type, and `Clone`
 is required because structural regions retain node handles across effect
 fires — a spliced region must `remove_child` the exact nodes it inserted.
-Backends use a cheap-to-clone wrapper (`web_sys::Node` is already a
-refcount; `GlobalRef` wraps a JVM ref-counted handle).
+Backends use a cheap-to-clone wrapper (`web_glue::dom::Node` is already a
+refcounted handle; `GlobalRef` wraps a JVM ref-counted handle).
 
 ### 2. Capability traits — one per primitive family
 
@@ -94,24 +101,25 @@ share the `Node` type and the structural ops:
 | Text | `TextOps`, `ButtonOps` |
 | Media | `ImageOps`, `IconOps`, `LinkOps` |
 | Widgets | `TextInputOps`, `ToggleOps`, `SliderOps`, `ActivityIndicatorOps` |
-| Structure-bearing prims | `VirtualizerOps`, `GraphicsOps`, `PortalOps`, `PresenceOps`, `NavigatorOps` |
+| Structure-bearing prims | `VirtualizerOps`, `GridOps`, `GraphicsOps`, `PortalOps`, `PresenceOps`, `NavigatorOps` |
 | Styling + assets | `StyleOps`, `AssetOps`, `DocumentOps` |
 | Cross-cutting | `A11yOps`, `AnimationOps`, `IntrospectionOps`, `BatchOps`, `WireBindingOps`, `ExternalOps` |
 
 `caps::AllCaps` is the umbrella: a blanket impl makes any type
-implementing all 30 traits `AllCaps` automatically, and
+implementing all 31 traits `AllCaps` automatically, and
 `register_builtins::<H: AllCaps>()` bounds on it
 (`crates/runtime/vocabulary/src/caps/mod.rs`).
 
-**A backend can ship incrementally**, because the traits carry the same
-frozen defaults the old mega-trait did, and the default target is
+**A backend can ship incrementally**, because every capability method
+except a handful of required ones has a default, and the default target is
 declared as a supertrait so the delegation is visible in the type system
-(`COVERAGE.md` § "Judgment calls on defaults"):
+([`COVERAGE.md`](../crates/runtime/vocabulary/COVERAGE.md) lists every
+method and marks the required ones):
 
 - **Placeholder defaults** — `create_image`, `create_icon`,
   `create_text_input`, `create_text_area`, `create_toggle`,
   `create_slider`, `create_activity_indicator`, `create_virtualizer`,
-  `create_graphics`, `create_portal`, `create_navigator` all default to
+  `create_virtual_grid`, `create_graphics`, `create_portal` all default to
   `ExternalOps::missing_primitive_placeholder`, which is why those traits
   declare `: ExternalOps`.
 - **Container degradation** — `create_pressable`, `create_link`,
@@ -150,10 +158,9 @@ registry.register::<MyPayload, _>(|cx, payload: &Rc<MyPayload>, children| -> H::
 
 Three consequences:
 
-- **First-party and third-party primitives use the same contract.** The
-  old core's `Element::External` concept is gone; a "third-party
-  primitive" is just a payload type whose handler ships outside the
-  framework. See [`external-export.md`](external-export.md).
+- **First-party and third-party primitives use the same contract.** A
+  "third-party primitive" is just a payload type whose handler ships
+  outside the framework. See [`external-export.md`](external-export.md).
 - **TypeId keying is collision-free by construction** — two crates' own
   `MapViewProps` types have distinct TypeIds, where a string-keyed
   registry would conflict.
@@ -161,18 +168,16 @@ Three consequences:
   `"runtime-scene: no handler registered for item payload (…) — register
   one on this backend's Registry before realizing"`
   (`crates/runtime/scene/src/realize.rs::mount_item`). A missed
-  registration fails loud; the old core rendered a placeholder box.
+  registration fails loud rather than rendering a placeholder box.
 
 **`H::Node` on the web is `web_glue::dom::Node`**, the framework-owned
-JS boundary's handle — not `web_sys::Node` (own-web-bindings phase 2b,
+JS boundary's handle — not `web_sys::Node` (see
 [`proposals/own-web-bindings.md`](proposals/own-web-bindings.md)). A web
 handler builds its DOM with `web_glue::dom` and returns the element as a
 `web_glue::dom::Node`; its ops downcast the `&dyn Any` they receive to
 `web_glue::dom::Node` and cast from there (`dyn_ref::<Element>()`, an
 SDK-local `js_class!`). Downcasting that `&dyn Any` to `web_sys::Node`
-compiles and silently yields `None`. (The phase-2b crossing
-`backend_web::bridge::{node_from_web_sys, node_to_web_sys}` is gone since
-every SDK that mounts DOM was ported in phase 3.)
+compiles and silently yields `None`; there is no `web_sys` bridge.
 
 backend-web itself depends on neither web-sys nor wasm-bindgen, so how a
 web app is packaged depends only on the app: a module with no wasm-bindgen
@@ -223,7 +228,7 @@ this handler's frame and become the item's live children),
 `realized_children()`, `realize_detached(element)` (a navigator screen or
 a keyed row root), and `realize_in_place(element)`.
 
-Two structural properties carry over from the old walker:
+Two structural properties hold for every realization:
 
 ### Everything created during a realize is owned by that subtree
 
@@ -687,7 +692,7 @@ keyed row root, spliced hole root) panics.
 One dependency (`runtime-vocabulary`) and one import
 (`runtime_vocabulary::backend`). The order to build it in:
 
-1. **`Host`** — the seven structural ops and `type Node`. Decide
+1. **`Host`** — the structural ops and `type Node`. Decide
    `supports_splice` honestly; `false` is always correct and costs an
    anchor node per reactive region — which makes `create_anchor`'s
    layout transparency matter under every `if`/`for`, not only at
