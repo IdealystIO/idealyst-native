@@ -19,6 +19,8 @@ anyhow = "1"
 # the same reason `build-macos` does — shared wrapper layout + the
 # workspace-vs-git source resolution.
 build-ios = { workspace = true }
+# `runtime_files.rs` reads SDK-declared runtime files from `cargo metadata`.
+serde_json = "1"
 
 [dev-dependencies]
 # The shared offline cargo world for the wrapper lock tests.

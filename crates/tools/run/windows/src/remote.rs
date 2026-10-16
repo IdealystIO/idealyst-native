@@ -134,10 +134,18 @@ impl Remote {
         Ok(())
     }
 
-    /// Copy `binary` (and its `assets/` folder) over and start it on the
-    /// remote desktop. Returns the local ssh session that keeps the
-    /// forwards up and the app alive (see the module docs).
-    pub fn launch(&self, binary: &Path, project_dir: &Path, env_vars: &[(String, String)]) -> Result<Child> {
+    /// Copy `binary` (with its `assets/` folder and the SDK `runtime_files`
+    /// it needs beside it — `build_windows::BuildArtifact::runtime_files`)
+    /// over and start it on the remote desktop. Returns the local ssh
+    /// session that keeps the forwards up and the app alive (see the module
+    /// docs).
+    pub fn launch(
+        &self,
+        binary: &Path,
+        runtime_files: &[std::path::PathBuf],
+        project_dir: &Path,
+        env_vars: &[(String, String)],
+    ) -> Result<Child> {
         let app = binary
             .file_stem()
             .and_then(|s| s.to_str())
@@ -156,6 +164,9 @@ impl Remote {
         self.copy(binary, &dir)?;
         if let Some(assets) = binary.parent().map(|p| p.join("assets")).filter(|p| p.is_dir()) {
             self.copy(&assets, &dir)?;
+        }
+        for file in runtime_files {
+            self.copy(file, &dir)?;
         }
         let script = std::env::temp_dir().join(format!("idealyst-remote-launch-{}.ps1", std::process::id()));
         std::fs::write(&script, launch_script(&exe, &env)).context("writing the remote launch script")?;

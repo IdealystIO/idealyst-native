@@ -36,10 +36,16 @@ pub struct BuildOptions {
     pub source: FrameworkSource,
 }
 
+mod runtime_files;
+
 #[derive(Debug)]
 pub struct BuildArtifact {
     /// Path to the produced Windows `.exe` (ready to spawn).
     pub binary: PathBuf,
+    /// Files SDKs need beside the `.exe` at runtime (`WebView2Loader.dll`),
+    /// already copied into its directory — see `runtime_files`. Whatever
+    /// moves the `.exe` elsewhere must move these with it.
+    pub runtime_files: Vec<PathBuf>,
     /// Wrapper crate directory (useful for debugging the template).
     pub wrapper_dir: PathBuf,
 }
@@ -105,7 +111,10 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         );
     }
     ship_assets(&project_dir, &binary)?;
-    Ok(BuildArtifact { binary, wrapper_dir })
+    let declared = runtime_files::collect(&wrapper_dir.join("Cargo.toml"), runtime_files::arch_dir(triple))?;
+    let exe_dir = binary.parent().expect("the binary sits in a directory");
+    let runtime_files = runtime_files::ship(&declared, exe_dir)?;
+    Ok(BuildArtifact { binary, runtime_files, wrapper_dir })
 }
 
 /// Ship the app crate's `assets/` to `<exe dir>/assets/`, where the
