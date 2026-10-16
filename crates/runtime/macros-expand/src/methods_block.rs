@@ -13,7 +13,7 @@
 //!     fn reset() { value.set(0); }
 //!
 //!     #[method]
-//!     fn bump_by(n: i32) { value.update(|v| *v += n); }
+//!     fn bump_by(n: i32) { value.update(|v| v + n); }
 //!
 //!     ui! { /* ... */ }
 //! }

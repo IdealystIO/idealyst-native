@@ -213,7 +213,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "pressable",
         pascal_name: "Pressable",
-        docs: "Tappable region with no native chrome — for building custom-looking interactive surfaces. Use `Button` if you want the platform's native button. CAVEAT: `pressable` is NOT an author `ui!`/`jsx!` tag — it's absent from the macro's primitive tag table, so `ui! { pressable() { … } }` will NOT compile. It's an `Element` variant the framework and compositions build directly (e.g. `overlay`'s dismiss backdrop). Authors reach for a tappable surface via the `idea-ui` styled wrapper (`Pressable`, a PascalCase `#[component]`) rather than the bare primitive; for a native button use `button`.",
+        docs: "Tappable region with no native chrome — for building custom-looking interactive surfaces. Use `button` if you want the platform's native button. CAVEAT: `pressable` is NOT an author `ui!`/`jsx!` tag — it's absent from the macro's primitive tag table, so `ui! { pressable() { … } }` will NOT compile. It's the function `pressable(children, on_click)` (in `runtime_core`), called as an expression — inside `ui!`, `{ pressable(vec![row], move || open()) }`. The framework builds `overlay`'s dismiss backdrop with it.",
         props: &[
             PropFieldSpec {
                 name: "children",
@@ -942,7 +942,7 @@ inventory::submit! {
     PrimitiveEntry {
         name: "portal",
         pascal_name: "Portal",
-        docs: "Renders children at the root of the view tree regardless of where the `Portal` appears. Used for modals, tooltips, and any UI that should escape layout / overflow clipping. CAVEAT: `portal` is NOT an author `ui!`/`jsx!` tag — there is no `portal` primitive in the macro's tag table, so `ui! { portal() { … } }` will NOT compile. It's the low-level `Element` variant that the `overlay` / `anchored_overlay` compositions lower to. For modals/drawers/sheets use `overlay` (viewport-anchored, with backdrop + focus-trap wiring); for popovers/tooltips/dropdowns/menus use `anchored_overlay`. Reach for the bare `Element::Portal` only when hand-assembling a backdrop-less teleport that the compositions can't express.",
+        docs: "Renders children at the root of the view tree regardless of where the portal appears. Used for modals, tooltips, and any UI that should escape layout / overflow clipping. CAVEAT: `portal` is NOT an author `ui!`/`jsx!` tag — there is no `portal` primitive in the macro's tag table, so `ui! { portal() { … } }` will NOT compile. It's the low-level primitive the `overlay` / `anchored_overlay` compositions lower to. For modals/drawers/sheets use `overlay` (viewport-anchored, with backdrop + focus-trap wiring); for popovers/tooltips/dropdowns/menus use `anchored_overlay`. Reach for the builder `runtime_vocabulary::portal(target)` (`.child` / `.children`, `.on_dismiss`, `.on_handle`, then `.build()`) only for a backdrop-less teleport the compositions can't express.",
         props: &[
             PropFieldSpec {
                 name: "children",
