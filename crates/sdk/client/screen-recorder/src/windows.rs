@@ -19,8 +19,15 @@
 //! - **Audio**: not carried (like the Linux portal backend) — a requested
 //!   audio source records video only, and says so.
 //!
+//! - **Private layer**: `PrivateLayer` content lives in popup windows over
+//!   the app's (`backend_windows::create_private_layer_window`). A
+//!   `CreateForWindow` capture of the app never contains another top-level
+//!   window; for every source the recording also holds
+//!   `backend_windows::exclude_from_capture` (`WDA_EXCLUDEFROMCAPTURE` on
+//!   the popups) so a monitor or picked-window capture leaves them out too.
+//!
 //! The `Recording`'s `Drop` closes the session and the pool, which stops
-//! frame delivery.
+//! frame delivery, and lifts the private layers' exclusion.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,7 +55,8 @@ use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDe
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::Shell::IInitializeWithWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GetWindow, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE,
+    GW_OWNER, WS_EX_TOOLWINDOW,
 };
 
 use crate::{NativeSource, RecorderError, RecordingConfig, Source};
@@ -69,6 +77,8 @@ pub(crate) async fn request_permission(_source: &Source) -> Result<(), RecorderE
 pub(crate) struct Recording {
     session: GraphicsCaptureSession,
     pool: Arc<Mutex<Direct3D11CaptureFramePool>>,
+    /// Keeps the private layers out of captures while this records.
+    _private_layers: backend_windows::CaptureExclusion,
 }
 
 impl Drop for Recording {
@@ -125,8 +135,10 @@ pub(crate) async fn start(
     // Optional on older builds; a capture without the cursor is the norm for
     // recordings of app content.
     let _ = session.SetIsCursorCaptureEnabled(true);
+    // Before the first frame: a private layer must never reach one.
+    let private_layers = backend_windows::exclude_from_capture();
     session.StartCapture().map_err(platform)?;
-    Ok((Recording { session, pool }, None))
+    Ok((Recording { session, pool, _private_layers: private_layers }, None))
 }
 
 /// Copies captured textures to the CPU. Lives behind a mutex: the pool's
@@ -190,7 +202,7 @@ async fn capture_item(source: &Source) -> Result<GraphicsCaptureItem, RecorderEr
     let interop = || windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>().map_err(platform);
     match source {
         Source::ThisApp => {
-            let hwnd = find_window(|hwnd| owned_by_this_process(hwnd)).ok_or_else(|| {
+            let hwnd = find_window(is_app_window).ok_or_else(|| {
                 RecorderError::Platform("this app has no visible window to record".into())
             })?;
             unsafe { interop()?.CreateForWindow(hwnd) }.map_err(platform)
@@ -207,7 +219,7 @@ async fn capture_item(source: &Source) -> Result<GraphicsCaptureItem, RecorderEr
         }
         Source::UserChoice => {
             let picker = GraphicsCapturePicker::new().map_err(platform)?;
-            if let Some(owner) = find_window(|hwnd| owned_by_this_process(hwnd)) {
+            if let Some(owner) = find_window(is_app_window) {
                 unsafe { picker.cast::<IInitializeWithWindow>().map_err(platform)?.Initialize(owner) }.map_err(platform)?;
             }
             let picked = picker.PickSingleItemAsync().map_err(platform)?.await;
@@ -221,6 +233,15 @@ fn owned_by_this_process(hwnd: HWND) -> bool {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     pid == unsafe { GetCurrentProcessId() }
+}
+
+/// One of this process's own app windows: not a window it owns on top of
+/// one (a private-layer popup, a tooltip), which sits above its owner in
+/// z-order and would otherwise be found first.
+fn is_app_window(hwnd: HWND) -> bool {
+    let owned = unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok_and(|o| !o.is_invalid());
+    let tool = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOOLWINDOW.0 != 0;
+    owned_by_this_process(hwnd) && !owned && !tool
 }
 
 fn title(hwnd: HWND) -> String {
@@ -310,6 +331,159 @@ mod tests {
         let (w, h) = got.expect("a captured frame arrives");
         assert!(w > 0 && h > 0 && buf.len() == (w * h * 4) as usize, "{w}x{h}, {} bytes", buf.len());
         drop(recording);
+    }
+
+    /// Frames from `source` for about a second, after the first arrives.
+    fn record(source: Source) -> Vec<(u32, u32, Vec<u8>)> {
+        let (stream, writer) = MediaStream::new();
+        let mut config = RecordingConfig::new();
+        config.source = source;
+        let (recording, _) = pollster::block_on(start(config, writer)).expect("capture starts");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut frames = Vec::new();
+        let mut first: Option<Instant> = None;
+        while Instant::now() < deadline && first.is_none_or(|t| t.elapsed() < Duration::from_secs(1)) {
+            let mut buf = Vec::new();
+            if let Some((w, h)) = stream.latest(&mut buf) {
+                first.get_or_insert_with(Instant::now);
+                frames.push((w, h, buf));
+            }
+            pump(Duration::from_millis(50));
+        }
+        drop(recording);
+        assert!(!frames.is_empty(), "frames arrive");
+        frames
+    }
+
+    /// Dispatch this thread's window messages for `d` (the test window
+    /// paints its scene on `WM_PAINT`).
+    fn pump(d: Duration) {
+        use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
+        let until = Instant::now() + d;
+        while Instant::now() < until {
+            let mut msg = MSG::default();
+            while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+                unsafe {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    thread_local! {
+        /// The backend the test window paints.
+        static PAINTS: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<backend_windows::WindowsBackend>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// A top-level window that paints `PAINTS` like the host shell does.
+    fn scene_window() -> HWND {
+        use windows::Win32::Foundation::{LRESULT, WPARAM};
+        use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+        use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, GetClientRect, RegisterClassW, WM_PAINT, WNDCLASSW, WS_POPUP};
+        unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+            if msg == WM_PAINT {
+                let mut ps = PAINTSTRUCT::default();
+                let dc = unsafe { BeginPaint(hwnd, &mut ps) };
+                let mut rc = Default::default();
+                let _ = unsafe { GetClientRect(hwnd, &mut rc) };
+                PAINTS.with(|p| {
+                    if let Some(b) = &*p.borrow() {
+                        b.borrow_mut().paint(dc, rc.right, rc.bottom);
+                    }
+                });
+                let _ = unsafe { EndPaint(hwnd, &ps) };
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        unsafe {
+            let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: w!("ScreenRecorderSceneTest"), ..Default::default() };
+            RegisterClassW(&wc);
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("ScreenRecorderSceneTest"),
+                w!("private-layer-recording-test"),
+                WS_POPUP | WS_VISIBLE,
+                100,
+                100,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("window")
+    }
+
+    /// Pixels of an RGBA frame (the stream swizzles capture's BGRA) within
+    /// 8 of `rgb`.
+    fn count(frame: &[u8], rgb: [u8; 3]) -> usize {
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 8;
+        frame.chunks_exact(4).filter(|p| near(p[0], rgb[0]) && near(p[1], rgb[1]) && near(p[2], rgb[2])).count()
+    }
+
+    /// `PrivateLayer` content is a popup owned by the app's window, above it
+    /// in z-order. `ThisApp` took the process's first visible window — the
+    /// popup — and recorded the private layer alone; and a full-screen
+    /// recording would show it. Neither recording contains it now, while
+    /// both show the app's own content.
+    #[test]
+    fn regression_recordings_leave_the_private_layer_out() {
+        use backend_windows::WindowsBackend;
+        use runtime_scene::Host;
+        use runtime_shared::accessibility::AccessibilityProps;
+        use runtime_shared::{Color, Length, StyleRules};
+        use runtime_vocabulary::caps::{LifecycleOps, StyleOps, ViewOps};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use windows::Win32::Graphics::Dwm::DwmFlush;
+
+        // A blue app window with a private layer holding a red box.
+        let host = scene_window();
+        let cell = Rc::new(RefCell::new(WindowsBackend::new(host)));
+        cell.borrow_mut().set_self_ref(Rc::downgrade(&cell));
+        PAINTS.with(|p| *p.borrow_mut() = Some(cell.clone()));
+        {
+            let mut b = cell.borrow_mut();
+            let a11y = AccessibilityProps::default();
+            let mut root = ViewOps::create_view(&mut *b, &a11y);
+            let mut rs = StyleRules::default();
+            rs.background = Some(Color::from("#0000ff").into());
+            b.apply_style(&root, &Rc::new(rs));
+            let mut layer = b.create_private_layer_window();
+            let red = ViewOps::create_view(&mut *b, &a11y);
+            let mut s = StyleRules::default();
+            s.width = Some(Length::Px(120.0).into());
+            s.height = Some(Length::Px(80.0).into());
+            s.background = Some(Color::from("#ff0000").into());
+            b.apply_style(&red, &Rc::new(s));
+            Host::insert(&mut *b, &mut layer, red);
+            Host::insert(&mut *b, &mut root, layer);
+            LifecycleOps::finish(&mut *b, root);
+        }
+        // `finish` invalidated the window: its WM_PAINT draws the scene and
+        // shows the layer's popup.
+        pump(Duration::from_millis(200));
+        let popups = backend_windows::private_layer_windows();
+        assert_eq!(popups.len(), 1, "the layer has its popup");
+        let popup = HWND(popups[0] as *mut std::ffi::c_void);
+        assert!(unsafe { IsWindowVisible(popup) }.as_bool(), "and it is on screen");
+        assert_eq!(find_window(is_app_window), Some(host), "the app's window, not the popup above it");
+        unsafe {
+            let _ = DwmFlush();
+        }
+
+        for (label, source) in [("ThisApp", Source::ThisApp), ("FullScreen", Source::FullScreen)] {
+            for (w, h, frame) in record(source) {
+                assert!(count(&frame, [0, 0, 255]) > 1000, "{label}: the app's blue is recorded ({w}x{h})");
+                assert_eq!(count(&frame, [255, 0, 0]), 0, "{label}: the private layer's red is not ({w}x{h})");
+            }
+        }
     }
 
     #[test]

@@ -861,9 +861,25 @@ unsafe fn paint_layer_pixels(
     b: &WindowsBackend,
     plan: &LayerPlan,
     layer: usize,
+    bx: (i32, i32, u32, u32),
+) -> Option<Vec<u8>> {
+    paint_pixels(b, b.root_id?, plan, layer, bx)
+}
+
+/// Paint root `root`'s whole subtree (a private layer) into premultiplied
+/// BGRA pixels covering the device box `bx`, transparent where it draws
+/// nothing.
+pub(crate) unsafe fn paint_root_pixels(b: &WindowsBackend, root: u64, bx: (i32, i32, u32, u32)) -> Option<Vec<u8>> {
+    paint_pixels(b, root, &LayerPlan::default(), 0, bx)
+}
+
+unsafe fn paint_pixels(
+    b: &WindowsBackend,
+    root: u64,
+    plan: &LayerPlan,
+    layer: usize,
     (x, y, w, h): (i32, i32, u32, u32),
 ) -> Option<Vec<u8>> {
-    let root = b.root_id?;
     let stride = w as usize * 4;
     let mut pixels = vec![0u8; stride * h as usize];
     let mut bmp: *mut GpBitmap = std::ptr::null_mut();
@@ -1128,7 +1144,7 @@ pub(crate) struct PathNode {
 /// hit. See the module docs for the target rules.
 pub(crate) fn hit_chain(b: &WindowsBackend, px: f32, py: f32) -> Vec<PathNode> {
     let mut out = Vec::new();
-    if let Some(root) = b.root_id {
+    if let Some(root) = crate::private_layer::hit_root(b) {
         hit_walk(b, root, px, py, 0.0, 0.0, false, &mut out);
     }
     out
@@ -1252,14 +1268,14 @@ pub(crate) fn window_origin(b: &WindowsBackend, target: u64) -> Option<(f32, f32
         let (cx, cy) = content_origin(meta, nx, ny);
         b.children.get(&id)?.iter().find_map(|cid| walk(b, *cid, target, cx, cy))
     }
-    walk(b, b.root_id?, target, 0.0, 0.0)
+    crate::private_layer::all_roots(b).find_map(|root| walk(b, root, target, 0.0, 0.0))
 }
 
 /// Route a mouse-wheel tick to the deepest scroll view under `(px, py)`.
 /// Returns `true` if a scroll node consumed it (offset updated +
 /// `on_scroll` fired + scene invalidated by the caller).
 pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32) -> bool {
-    let Some(root) = b.root_id else {
+    let Some(root) = crate::private_layer::hit_root(b) else {
         return false;
     };
     let Some(target) = find_scroll_node(b, root, px, py, 0.0, 0.0) else {

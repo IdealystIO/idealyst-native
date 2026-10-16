@@ -1,7 +1,8 @@
 //! `sdk-gallery` — one panel per client SDK, for checking each on a
 //! platform by hand: an SVG, a clipboard round trip, live connectivity,
 //! a notification (now and scheduled), an embedded web page, a video, a sound,
-//! a location, the share sheet, the camera and a screen recording.
+//! a location, the share sheet, the camera and a screen recording (with a
+//! private "REC" badge the recording leaves out).
 
 mod app;
 
@@ -16,6 +17,7 @@ where
     svg::register(registry);
     webview::register(registry);
     video::register(registry);
+    screen_recorder::register(registry);
 }
 
 /// Android entry shim, for parity with the other examples.

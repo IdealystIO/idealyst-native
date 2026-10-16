@@ -11096,6 +11096,7 @@ dependencies = [
  "backend-ios-mobile",
  "backend-macos",
  "backend-web",
+ "backend-windows",
  "block2 0.5.1",
  "futures-channel",
  "glib",

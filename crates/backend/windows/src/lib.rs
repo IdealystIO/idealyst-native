@@ -133,6 +133,8 @@ mod image_fetch;
 mod image_policy;
 mod keymap;
 mod pointer_policy;
+mod private_layer;
+pub use private_layer::{exclude_from_capture, private_layer_windows, CaptureExclusion};
 mod painted_geom;
 #[cfg(feature = "robot")]
 mod introspect;
@@ -678,6 +680,9 @@ pub struct WindowsBackend {
     /// DirectWrite measurement, present iff `renderer` is `D2d`: text must
     /// be measured by the engine that draws it (`dwrite_text.rs`).
     pub(crate) dwrite: Option<dwrite_text::DwText>,
+    /// The screen recorder's private layers: detached roots painted into
+    /// their own popups over the host (`private_layer.rs`).
+    pub(crate) private: private_layer::PrivateLayers,
 }
 
 /// Serializes tests that use DirectWrite / Direct2D. The backend only uses
@@ -804,6 +809,7 @@ impl WindowsBackend {
             renderer,
             d2d: RefCell::new(None),
             dwrite,
+            private: private_layer::PrivateLayers::default(),
         }
     }
 
@@ -997,6 +1003,7 @@ impl WindowsBackend {
             RendererKind::Gdi => unsafe { scene::paint_scene(self, hdc, w, h) },
             RendererKind::D2d => self.paint_d2d(w, h),
         }
+        self.present_private_layers();
     }
 
     /// The Direct2D frame. `hdc` is unused: the scene reaches the screen
@@ -1463,6 +1470,13 @@ impl WindowsBackend {
             return;
         }
         self.compute_layout_roots(root_layout, width, height);
+        // Private-layer roots fill the same client area (`private_layer`).
+        let private: Vec<u64> = self.private.roots().collect();
+        for id in private {
+            if let Some(layout) = self.layout_for_id.get(&id).copied() {
+                self.compute_layout_roots(layout, width, height);
+            }
+        }
 
         // Parent-relative frames for every laid-out node.
         let ids: Vec<u64> = self.layout_for_id.keys().copied().collect();
@@ -1602,13 +1616,17 @@ impl WindowsBackend {
         let Some(root_id) = self.root_id else {
             return;
         };
-        let mut stack: Vec<(u64, f32, f32, dcomp::ClipChain, bool)> =
-            vec![(root_id, 0.0, 0.0, dcomp::ClipChain::default(), false)];
+        // Private-layer roots too: their abs origins feed hit testing, and
+        // a native control inside one is still placed (in the host window).
+        let mut stack: Vec<(u64, f32, f32, dcomp::ClipChain, bool, bool)> =
+            vec![(root_id, 0.0, 0.0, dcomp::ClipChain::default(), false, false)];
+        stack.extend(self.private.roots().map(|id| (id, 0.0, 0.0, dcomp::ClipChain::default(), false, true)));
+        let mut control_in_private = false;
         let mut control_moves: Vec<(HWND, i32, i32, i32, i32, Option<RegionSpec>)> = Vec::new();
         // Graphics visuals collected during the walk, applied after it
         // (placement diff + one batched commit).
         let mut gfx_moves: Vec<(u64, (f32, f32, f32, f32), dcomp::ClipChain, bool)> = Vec::new();
-        while let Some((id, ox, oy, clip, hidden_above)) = stack.pop() {
+        while let Some((id, ox, oy, clip, hidden_above, private)) = stack.pop() {
             let is_gfx = self.graphics.contains_key(&id);
             let Some(meta) = self.nodes.get_mut(&id) else {
                 continue;
@@ -1624,6 +1642,7 @@ impl WindowsBackend {
             if is_gfx {
                 gfx_moves.push((id, (ax, ay, w, h), clip, hidden));
             } else if let Some(hwnd) = meta.hwnd() {
+                control_in_private |= private;
                 // Child windows live in DEVICE pixels: place the
                 // edge-snapped device rect, and cut the region from the
                 // clip in device space too (radii scale with it).
@@ -1664,9 +1683,12 @@ impl WindowsBackend {
             };
             if let Some(kids) = self.children.get(&id) {
                 for k in kids {
-                    stack.push((*k, cox, coy, child_clip, hidden));
+                    stack.push((*k, cox, coy, child_clip, hidden, private));
                 }
             }
+        }
+        if control_in_private {
+            self.warn_control_in_private_layer();
         }
         // Apply graphics-visual placements: offset + clip per changed
         // node, then ONE device commit — the DWM picks the whole batch
@@ -2428,6 +2450,12 @@ impl WindowsBackend {
         let Some(child_layout) = self.layout_for_id.get(&child.id).copied() else {
             return;
         };
+        // A private-layer root stays detached: a layout root of its own,
+        // painted into its popup, never part of the parent's scene.
+        if self.private.contains(child.id) {
+            self.layout_dirty = true;
+            return;
+        }
         self.layout.add_child(parent_layout, child_layout);
         self.children.entry(parent.id).or_default().push(child.id);
         // No HWND re-parenting: painted nodes have no windows, and

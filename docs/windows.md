@@ -99,7 +99,7 @@ the details and what was verified.
 | camera | Media Foundation capture (source reader → RGB32) |
 | location | WinRT `Geolocator` |
 | share | the share sheet (`DataTransferManager`) |
-| screen-recorder | `Windows.Graphics.Capture` (video only; no private-layer exclusion yet) |
+| screen-recorder | `Windows.Graphics.Capture` (video only); `PrivateLayer` content is a layered popup over the app's window (`backend_windows::create_private_layer_window`), excluded from captures with `WDA_EXCLUDEFROMCAPTURE` while a recording runs. Painted content only — native controls inside it are recorded |
 | media-writer | Media Foundation Sink Writer, H.264 + AAC in MP4 |
 
 `examples/sdk-gallery` has a panel for each, to check them by hand.

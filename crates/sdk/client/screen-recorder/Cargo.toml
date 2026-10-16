@@ -92,9 +92,14 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# The private layer's popup windows and their capture exclusion
+# (`backend_windows::create_private_layer_window`, `exclude_from_capture`).
+backend-windows = { workspace = true }
 
 [target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
 pollster = "0.4"
+# DwmFlush in the private-layer recording test.
+windows = { version = "0.62", features = ["Win32_Graphics_Dwm"] }
 
 [target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
 objc2 = "0.5"
@@ -185,15 +190,6 @@ runtime_kotlin = [
     "runtime/kotlin/io/idealyst/screenrecorder/RustScreenCaptureHelper.kt",
     "runtime/kotlin/io/idealyst/screenrecorder/MediaProjectionService.kt",
 ]
-
-# ---------------------------------------------------------------------------
-# Per-platform capture deps are added as each backend is implemented. iOS,
-# Android, macOS, web, and Linux are wired above; Windows is the remaining
-# planned target:
-#
-# [target.'cfg(target_os = "windows")'.dependencies]
-# windows = { features = ["Graphics_Capture", "Graphics_DirectX_Direct3D11", ...] }
-# ---------------------------------------------------------------------------
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

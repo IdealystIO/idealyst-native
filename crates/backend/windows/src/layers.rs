@@ -120,7 +120,7 @@ impl<G: Fn(u64) -> bool> Walk<'_, G> {
 }
 
 /// Whether a node paints anything of its own.
-fn draws(meta: &NodeMeta) -> bool {
+pub(crate) fn draws(meta: &NodeMeta) -> bool {
     match &meta.kind {
         NodeKind::View(v) => {
             v.effective_background().is_some_and(|c| c[3] > 0.0)

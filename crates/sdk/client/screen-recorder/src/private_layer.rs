@@ -20,12 +20,24 @@
 //!   the backend records; [`crate::ScreenRecorder::start`] reads those
 //!   ids via `backend_macos::private_layer_window_ids` and passes the
 //!   matching `SCWindow`s to the `SCContentFilter` exclusion list.
+//! - **Windows** — a per-pixel-alpha layered popup owned by the app's
+//!   window (`WindowsBackend::create_private_layer_window`), painted from
+//!   the layer's own layout root. A capture of the app's window never
+//!   contains another top-level window; for a monitor or picked-window
+//!   capture the recorder holds `backend_windows::exclude_from_capture`
+//!   (`WDA_EXCLUDEFROMCAPTURE` on the popups) while it runs. Native
+//!   controls inside the layer stay child windows of the app's window
+//!   and are recorded; painted content is not.
 //!
 //! Each of those windows has a passthrough `hitTest:` so clicks that
 //! miss a real control fall through to the app beneath, and each content
 //! view is registered as a detached window root so the backend's
 //! `insert` / `clear_children` skip reparenting it into the recorded
 //! tree.
+//!
+//! Re-review: the only user of the private layer is this crate's
+//! `screenshare-preview-demo`. Whether it earns its keep across five
+//! backends (Windows added it 2026-10) is to be reviewed again.
 //!
 //! On **web** and on hosts with no capture-exclusion mechanism the
 //! handler mounts a plain passthrough container instead: the children
@@ -160,6 +172,26 @@ fn mount_macos_window(
     node
 }
 
+/// Windows handler: the private-layer root over its layered popup, with
+/// the layer's children realized into it. Released with the scope — the
+/// root is detached from the parent's tree, so the parent's teardown
+/// never reaches it.
+#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+fn mount_windows_window(
+    cx: &mut MountCx<'_, backend_windows::WindowsBackend>,
+    _prim: &Rc<PrivateLayerPrim>,
+    children: Vec<Element>,
+) -> backend_windows::WindowsNode {
+    let backend = cx.backend().clone();
+    let mut node = backend.borrow_mut().create_private_layer_window();
+    cx.realize_children_into(&mut node, children);
+    let release = node.clone();
+    on_teardown(move || {
+        backend.borrow_mut().release_private_layer_window(&release);
+    });
+    node
+}
+
 /// Android handler: the `WindowManager` window's content view, with the
 /// layer's children realized into it.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
@@ -216,6 +248,14 @@ where
         let any: &mut dyn Any = registry;
         if let Some(reg) = any.downcast_mut::<Registry<backend_android::AndroidBackend>>() {
             reg.register::<PrivateLayerPrim, _>(mount_android_window);
+            return;
+        }
+    }
+    #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+    {
+        let any: &mut dyn Any = registry;
+        if let Some(reg) = any.downcast_mut::<Registry<backend_windows::WindowsBackend>>() {
+            reg.register::<PrivateLayerPrim, _>(mount_windows_window);
             return;
         }
     }

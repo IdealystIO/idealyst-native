@@ -96,8 +96,10 @@ impl WindowsBackend {
     /// The window-space box the painter draws node `id` in, in logical px.
     /// `None` when the node is not reachable from the mounted root.
     fn painted_rect(&self, id: u64) -> Option<NativeRect> {
-        let root = self.root_id?;
-        let (x, y, width, height) = self.find_painted(root, Affine::IDENTITY, id)?;
+        // Private-layer content sits in its popup at the same client
+        // coordinates, so its roots are searched the same way.
+        let (x, y, width, height) = crate::private_layer::all_roots(self)
+            .find_map(|root| self.find_painted(root, Affine::IDENTITY, id))?;
         Some(NativeRect { x, y, width, height })
     }
 

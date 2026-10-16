@@ -276,7 +276,7 @@ impl D2dRenderer {
             let target = win.bitmap.clone().expect("just created");
             self.plan = b.layer_plan();
             self.layer = 0;
-            self.draw(b, &target, size, (0.0, 0.0), true)?;
+            self.draw(b, b.root_id, &target, size, (0.0, 0.0), true)?;
             // Sync interval 1: present on the next vblank. Paints are driven
             // by WM_PAINT / the 60 Hz scheduler pulse, so this paces rather
             // than queues frames.
@@ -304,8 +304,27 @@ impl D2dRenderer {
         let du = D2D_SIZE_U { width: w, height: h };
         let target = self.ctx.CreateBitmap(du, None, 0, &bitmap_props(D2D1_BITMAP_OPTIONS_TARGET))?;
         self.layer = layer;
-        self.draw(b, &target, (w, h), (x as f32, y as f32), false)?;
+        self.draw(b, b.root_id, &target, (w, h), (x as f32, y as f32), false)?;
         self.read_back(&target, (w, h))
+    }
+
+    /// Root `root`'s whole subtree (a private layer) as premultiplied BGRA
+    /// pixels for the device box `(x, y, w, h)`, transparent where it draws
+    /// nothing.
+    pub(crate) fn render_root(&mut self, b: &WindowsBackend, root: u64, (x, y, w, h): (i32, i32, u32, u32)) -> Result<Vec<u8>> {
+        unsafe {
+            let du = D2D_SIZE_U { width: w, height: h };
+            let target = self.ctx.CreateBitmap(du, None, 0, &bitmap_props(D2D1_BITMAP_OPTIONS_TARGET))?;
+            // Nothing lifts inside a private layer: one layer, tree order.
+            // Saved and restored — the window frame's plan is still live.
+            let plan = std::mem::take(&mut self.plan);
+            let layer = std::mem::replace(&mut self.layer, 0);
+            let r = self.draw(b, Some(root), &target, (w, h), (x as f32, y as f32), false);
+            self.plan = plan;
+            self.layer = layer;
+            r?;
+            self.read_back(&target, (w, h))
+        }
     }
 
     unsafe fn create_window_target(&self, tree: &crate::dcomp::CompositionTree, size: (u32, u32)) -> Result<WindowTarget> {
@@ -346,7 +365,7 @@ impl D2dRenderer {
             // A screenshot is the whole scene in tree order: no lifting.
             self.plan = crate::layers::LayerPlan::default();
             self.layer = 0;
-            self.draw(b, &target, size, (0.0, 0.0), true)?;
+            self.draw(b, b.root_id, &target, size, (0.0, 0.0), true)?;
             self.read_back(&target, size)
         }
     }
@@ -380,6 +399,7 @@ impl D2dRenderer {
     unsafe fn draw(
         &mut self,
         b: &WindowsBackend,
+        root_id: Option<u64>,
         target: &ID2D1Bitmap1,
         size: (u32, u32),
         origin: (f32, f32),
@@ -397,7 +417,7 @@ impl D2dRenderer {
         let scale = b.dpi.factor();
         let root = Affine { a: scale, d: scale, e: -origin.0, f: -origin.1, ..Affine::IDENTITY };
         let clip = (0.0, 0.0, size.0 as f32, size.1 as f32);
-        if let Some(root_id) = b.root_id {
+        if let Some(root_id) = root_id {
             self.node(b, root_id, &root, 1.0, clip);
         }
         let r = self.ctx.EndDraw(None, None);

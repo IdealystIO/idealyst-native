@@ -307,6 +307,7 @@ pub fn CameraPanel() -> Element {
 #[component]
 pub fn RecordingPanel() -> Element {
     let status = signal("Not recording.".to_string());
+    let recording = signal(false);
     let clip: Signal<Option<MediaContentSource>> = signal(None);
     let active: Rc<std::cell::RefCell<Option<(camera::MediaStream, media_writer::Recording)>>> = Rc::default();
     let a = active.clone();
@@ -337,7 +338,8 @@ pub fn RecordingPanel() -> Element {
             {
                 Ok(rec) => {
                     *a.borrow_mut() = Some((stream, rec));
-                    status.set("Recording this window — press Stop.".to_string());
+                    recording.set(true);
+                    status.set("Recording this window — press Stop. The red REC badge is private: it is not in the clip.".to_string());
                 }
                 Err(e) => status.set(format!("Writer failed: {e}")),
             }
@@ -346,6 +348,7 @@ pub fn RecordingPanel() -> Element {
     let a = active.clone();
     let stop = Rc::new(move || {
         let Some((_stream, rec)) = a.borrow_mut().take() else { return };
+        recording.set(false);
         status.set("Finishing…".to_string());
         spawn_async(async move {
             match rec.stop().await {
@@ -375,6 +378,17 @@ pub fn RecordingPanel() -> Element {
                     .into_element() }
             }
             Status(line = rx!(status.get()))
+            // A private layer: on screen while recording, left out of the
+            // recording (its place in the tree doesn't matter — it shows in
+            // its own window over the app).
+            if recording.get() {
+                { screen_recorder::PrivateLayer(vec![ui! {
+                    view(style = styles::RecBadge()) {
+                        text(style = styles::RecBadgeText()) { "● REC (private)".to_string() }
+                    }
+                }])
+                .into_element() }
+            }
         }
     }
 }
@@ -536,7 +550,7 @@ pub fn VideoPanel() -> Element {
 
 mod styles {
     use idea_ui::IdeaThemeRef;
-    use runtime_core::{stylesheet, AlignItems, FlexDirection, FlexWrap, Length};
+    use runtime_core::{stylesheet, AlignItems, FlexDirection, FlexWrap, Length, Position};
 
     stylesheet! {
         pub Scroll<IdeaThemeRef> {
@@ -602,6 +616,28 @@ mod styles {
             base(t) {
                 font_size: Length::Px(13.0),
                 color: t.color.text_muted(),
+            }
+        }
+    }
+
+    stylesheet! {
+        pub RecBadge<IdeaThemeRef> {
+            base(t) {
+                position: Position::Absolute,
+                top: Length::Px(12.0),
+                right: Length::Px(12.0),
+                padding: t.spacing.xs(),
+                background: runtime_core::Color::from("#dc2626"),
+                border_radius: t.radius.md(),
+            }
+        }
+    }
+
+    stylesheet! {
+        pub RecBadgeText<IdeaThemeRef> {
+            base(_t) {
+                font_size: Length::Px(13.0),
+                color: runtime_core::Color::from("#ffffff"),
             }
         }
     }

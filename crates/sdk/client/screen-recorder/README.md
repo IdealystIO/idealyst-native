@@ -83,7 +83,13 @@ once at startup, then wrap children:
 // }
 ```
 
-Exclusion only applies when recording `Source::ThisApp`.
+Exclusion only applies when recording `Source::ThisApp` — except on Windows,
+where the layer is also left out of `FullScreen` and `UserChoice` recordings
+(see below).
+
+> **Re-review:** the private layer's only user is this crate's
+> `screenshare-preview-demo` (and the SDK gallery's REC badge). Whether it earns
+> its keep across five backends is to be reviewed again.
 
 ## Per-platform mechanism
 
@@ -96,7 +102,7 @@ differs.
 | macOS | ScreenCaptureKit (`SCStream` + `SCContentFilter`) | separate `NSWindow`/`NSPanel` excluded via `SCContentFilter` |
 | Android | `MediaProjection` + `VirtualDisplay` + `ImageReader` (JNI/Kotlin shim) | separate `WindowManager` window — PixelCopy-excluded |
 | Web (wasm32) | `getDisplayMedia` → hidden `<video>` → `<canvas>` pixel pump | inline no-op (TODO: Element Capture `restrictTo`) |
-| Windows | `Windows.Graphics.Capture`: this app's window / a window by title / the primary monitor / the system capture picker; a free-threaded frame pool copied to the CPU as BGRA, paced to `fps`; video only (an audio request is logged and ignored, as on Linux). Verified on a Windows 11 VM | not yet — the private layer mounts inline and IS captured (needs a separate excluded-from-capture window in the Windows backend) |
+| Windows | `Windows.Graphics.Capture`: this app's window / a window by title / the primary monitor / the system capture picker; a free-threaded frame pool copied to the CPU as BGRA, paced to `fps`; video only (an audio request is logged and ignored, as on Linux). Verified on a Windows 11 VM | a per-pixel-alpha popup owned by the app's window, which a capture of the app's window never contains; while a recording runs the popups also carry `WDA_EXCLUDEFROMCAPTURE`, so monitor and picked-window captures leave them out too (and so does any other capture, screenshots included, for that time). Painted content only: a native control (`button`, `text_input`, `toggle`, `slider`) inside the layer stays a child window of the app's and IS recorded. Verified on a Windows 11 VM |
 | Linux | xdg-desktop-portal ScreenCast + PipeWire | none available |
 | other desktop | *not implemented* — returns `RecorderError::Unsupported` | — |
 
@@ -137,6 +143,7 @@ item as you exercise it.
 - [ ] **Web** — `getDisplayMedia` source picker appears; frames stream as RGBA8; `PrivateLayer` is an inline no-op (no exclusion yet).
 - [ ] **iOS** — device-verified: ReplayKit consent dialog appears; `Source::ThisApp` frames stream (in-app capture shows the app — recursive mirror expected); the private layer's separate `UIWindow` is excluded; `UserChoice` falls back to `ThisApp`, `Window` → `UnsupportedSource`.
 - [ ] **Android** — ⚠️ not yet device-confirmed: MediaProjection consent dialog appears (re-prompts each session on API 14+); confirm the `FOREGROUND_SERVICE_MEDIA_PROJECTION` foreground-service notification shows; frames stream; the private layer's separate `WindowManager` window is PixelCopy-excluded.
+- [x] **Windows** — VM-verified: `ThisApp` and `FullScreen` recordings show the app and not the private layer (`regression_recordings_leave_the_private_layer_out`); the gallery's REC badge shows on screen during a recording and is absent from the saved clip.
 - [ ] **macOS** — system Screen Recording (TCC) prompt appears; ScreenCaptureKit frames stream; the private `NSWindow`/`NSPanel` is excluded via `SCContentFilter`.
 
 **Permissions**

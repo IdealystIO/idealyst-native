@@ -67,7 +67,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, MSG, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
     WM_DESTROY, WM_ERASEBKGND,
     WM_HSCROLL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CAPTURECHANGED, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
+    WM_MOUSEMOVE, WM_MOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CAPTURECHANGED, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
     WS_OVERLAPPEDWINDOW,
 };
 
@@ -702,6 +702,16 @@ unsafe extern "system" fn wnd_proc(
                 let _ = unsafe { UpdateWindow(hwnd) };
             }
             LRESULT(0)
+        }
+        WM_MOVE => {
+            // The screen recorder's private layers are popups over this
+            // window (`backend_windows::private_layer`): they move with it.
+            if let Some(state) = host_state(hwnd) {
+                if let Ok(b) = state.backend.try_borrow() {
+                    b.host_moved();
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SIZE => {
             // A resize changes the viewport with no tree change, so the
