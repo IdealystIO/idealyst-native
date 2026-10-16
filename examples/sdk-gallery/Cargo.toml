@@ -29,6 +29,10 @@ video = { workspace = true }
 audio = { workspace = true }
 location = { workspace = true }
 share = { workspace = true }
+camera = { workspace = true }
+screen-recorder = { workspace = true }
+media-writer = { workspace = true }
+files = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "SDK Gallery"

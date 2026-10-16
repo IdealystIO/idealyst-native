@@ -29,6 +29,8 @@ pub fn app() -> Element {
                 AudioPanel()
                 LocationPanel()
                 SharePanel()
+                CameraPanel()
+                RecordingPanel()
             }
         }
     }
@@ -235,6 +237,133 @@ pub fn WebViewPanel() -> Element {
                 .with_style(styles::WebFill())
                 .bind(handle.clone())
                 .into_element() }
+            }
+            Status(line = rx!(status.get()))
+        }
+    }
+}
+
+/// A video source that shows whatever the signal holds (nothing while empty).
+struct Live(Signal<Option<MediaContentSource>>);
+
+/// What [`Live`] can show: a live stream or a file.
+#[derive(Clone, PartialEq)]
+pub enum MediaContentSource {
+    /// A live capture.
+    Stream(camera::MediaStream),
+    /// A file on disk.
+    File(String),
+}
+
+impl video::VideoSource for Live {
+    fn resolve(&self) -> video::MediaContent {
+        match self.0.get() {
+            Some(MediaContentSource::Stream(s)) => video::MediaContent::Stream(s),
+            Some(MediaContentSource::File(p)) => video::MediaContent::Url(p),
+            None => video::MediaContent::None,
+        }
+    }
+}
+
+/// `camera` — open the camera and preview it.
+#[component]
+pub fn CameraPanel() -> Element {
+    let status = signal("Camera closed.".to_string());
+    let feed: Signal<Option<MediaContentSource>> = signal(None);
+    let open = Rc::new(move || {
+        status.set("Opening…".to_string());
+        spawn_async(async move {
+            match camera::Camera::new().open(camera::CameraConfig::new().with_resolution(640, 480)).await {
+                Ok(stream) => {
+                    feed.set(Some(MediaContentSource::Stream(stream)));
+                    status.set("Camera open.".to_string());
+                }
+                Err(e) => status.set(format!("Failed: {e}")),
+            }
+        });
+    }) as Rc<dyn Fn()>;
+    let close = Rc::new(move || {
+        feed.set(None);
+        status.set("Camera closed.".to_string());
+    }) as Rc<dyn Fn()>;
+    ui! {
+        Panel(title = "camera".to_string()) {
+            view(style = styles::Row()) {
+                Button(label = "Open camera".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = open)
+                Button(label = "Close".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = close)
+            }
+            view(style = styles::VideoBox()) {
+                { video::Video(video::VideoProps { source: Box::new(Live(feed)), ..Default::default() })
+                    .with_style(styles::WebFill())
+                    .into_element() }
+            }
+            Status(line = rx!(status.get()))
+        }
+    }
+}
+
+/// `screen-recorder` + `media-writer` — record this window to an MP4, then
+/// play the file back.
+#[component]
+pub fn RecordingPanel() -> Element {
+    let status = signal("Not recording.".to_string());
+    let clip: Signal<Option<MediaContentSource>> = signal(None);
+    let active: Rc<std::cell::RefCell<Option<(camera::MediaStream, media_writer::Recording)>>> = Rc::default();
+    let a = active.clone();
+    let start = Rc::new(move || {
+        let a = a.clone();
+        status.set("Starting…".to_string());
+        spawn_async(async move {
+            let stream = match screen_recorder::ScreenRecorder::new().start(screen_recorder::RecordingConfig::new()).await {
+                Ok(s) => s,
+                Err(e) => return status.set(format!("Capture failed: {e}")),
+            };
+            let store = match files::app_files("sdk-gallery") {
+                Ok(s) => s,
+                Err(e) => return status.set(format!("No file store: {e}")),
+            };
+            match media_writer::MediaWriter::new()
+                .record(media_writer::MediaInputs::video(&stream), media_writer::RecordConfig::new(store, "gallery-recording.mp4"))
+                .await
+            {
+                Ok(rec) => {
+                    *a.borrow_mut() = Some((stream, rec));
+                    status.set("Recording this window — press Stop.".to_string());
+                }
+                Err(e) => status.set(format!("Writer failed: {e}")),
+            }
+        });
+    }) as Rc<dyn Fn()>;
+    let a = active.clone();
+    let stop = Rc::new(move || {
+        let Some((_stream, rec)) = a.borrow_mut().take() else { return };
+        status.set("Finishing…".to_string());
+        spawn_async(async move {
+            match rec.stop().await {
+                Ok(rel) => {
+                    let path = files::app_files("sdk-gallery").ok().and_then(|s| s.local_path(&rel));
+                    match path {
+                        Some(p) => {
+                            status.set(format!("Saved {}", p.display()));
+                            clip.set(Some(MediaContentSource::File(p.to_string_lossy().into_owned())));
+                        }
+                        None => status.set(format!("Saved {rel}")),
+                    }
+                }
+                Err(e) => status.set(format!("Finishing failed: {e}")),
+            }
+        });
+    }) as Rc<dyn Fn()>;
+    ui! {
+        Panel(title = "screen recording".to_string()) {
+            view(style = styles::Row()) {
+                Button(label = "Record".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = start)
+                Button(label = "Stop".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = stop)
+            }
+            view(style = styles::VideoBox()) {
+                { video::Video(video::VideoProps { source: Box::new(Live(clip)), controls: true, ..Default::default() })
+                    .with_style(styles::WebFill())
+                    .into_element() }
             }
             Status(line = rx!(status.get()))
         }

@@ -1,6 +1,7 @@
 //! `sdk-gallery` — one panel per client SDK, for checking each on a
 //! platform by hand: an SVG, a clipboard round trip, live connectivity,
-//! a notification (now and scheduled), an embedded web page, a video and a sound.
+//! a notification (now and scheduled), an embedded web page, a video, a sound,
+//! a location, the share sheet, the camera and a screen recording.
 
 mod app;
 
