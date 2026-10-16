@@ -155,13 +155,19 @@ mod imp;
 #[path = "android.rs"]
 mod imp;
 
+// Windows: the app's notification setting (see `windows.rs`).
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[path = "windows.rs"]
+mod imp;
+
 // Fallback for every target with no native permission model (desktop
-// Windows / Linux, the host running `cargo test`): nothing to grant, so
-// every permission reads as `Unsupported` (which `is_usable()` accepts).
+// Linux, the host running `cargo test`): nothing to grant, so every
+// permission reads as `Unsupported` (which `is_usable()` accepts).
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
-    not(target_os = "android")
+    not(target_os = "android"),
+    not(target_os = "windows")
 ))]
 mod imp {
     use super::{Permission, PermissionStatus};
@@ -197,7 +203,8 @@ mod tests {
     #[cfg(all(
         not(target_arch = "wasm32"),
         not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
-        not(target_os = "android")
+        not(target_os = "android"),
+        not(target_os = "windows")
     ))]
     #[tokio::test]
     async fn host_reports_unsupported() {

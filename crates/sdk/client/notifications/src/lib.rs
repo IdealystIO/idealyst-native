@@ -277,8 +277,8 @@ pub(crate) fn resolve_id(n: &Notification) -> NotificationId {
 
 // ---------------------------------------------------------------------------
 // Platform implementation. Exactly one `imp` compiles per target; Linux uses
-// the D-Bus backend, and every remaining native target with no local-
-// notification model (desktop Windows / other desktops, the host running
+// the D-Bus backend, Windows WinRT toasts, and every remaining native target
+// with no local-notification model (other desktops, the host running
 // `cargo test`) falls back to the stub below. The public surface above is
 // uniform — only `imp` bodies differ.
 // ---------------------------------------------------------------------------
@@ -299,15 +299,19 @@ mod imp;
 mod imp;
 
 // Linux desktop: real local notifications via the session-bus
-// `org.freedesktop.Notifications` service (zbus). This WINS on Linux; the
-// `not(target_os = "linux")` clause on the fallback below keeps Windows/other
-// desktop targets on the stub.
+// `org.freedesktop.Notifications` service (zbus).
 #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 #[path = "linux.rs"]
 mod imp;
 
+// Windows: WinRT toasts (`Windows.UI.Notifications`), with OS-scheduled
+// delayed delivery.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+#[path = "windows.rs"]
+mod imp;
+
 // Fallback for every remaining target with no native local-notification model
-// (desktop Windows / other non-Linux desktops, the test host). Authorization
+// (other desktops, the test host). Authorization
 // there reports `Unsupported` (usable), so we honor that: `notify` /
 // `schedule` succeed as no-ops returning the resolved id, and `push_token`
 // reports `NotSupported`. This keeps host unit tests of the shared id/builder
@@ -316,7 +320,7 @@ mod imp;
     not(target_arch = "wasm32"),
     not(any(target_os = "ios", target_os = "macos", target_os = "tvos")),
     not(target_os = "android"),
-    not(target_os = "linux")
+    not(any(target_os = "linux", target_os = "windows"))
 ))]
 mod imp {
     use super::{resolve_id, Notification, NotificationId, NotifyError, PushToken};
@@ -409,7 +413,8 @@ mod tests {
         target_os = "macos",
         target_os = "tvos",
         target_os = "android",
-        target_os = "linux"
+        target_os = "linux",
+        target_os = "windows"
     )))]
     #[tokio::test]
     async fn host_notify_returns_resolved_id() {
@@ -436,7 +441,9 @@ mod tests {
         target_os = "ios",
         target_os = "macos",
         target_os = "tvos",
-        target_os = "android"
+        target_os = "android",
+        // Windows reports the app's real notification setting.
+        target_os = "windows"
     )))]
     #[tokio::test]
     async fn host_authorize_is_usable() {

@@ -50,6 +50,15 @@ block2 = "0.5"
 jni = "0.21"
 ndk-context = "0.1"
 
+# Windows: the notification setting via WinRT, for the app's
+# AppUserModelID (`backend_windows::app_identity`).
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dependencies]
+backend-windows = { workspace = true }
+windows = { version = "0.62", features = ["UI_Notifications"] }
+
+[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+pollster = "0.4"
+
 [features]
 # Compile the `recipe!` usage examples (feeds MCP / autodocs). Off in
 # production builds, so recipes cost nothing there. The notifications recipe

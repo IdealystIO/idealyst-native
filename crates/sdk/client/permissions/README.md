@@ -47,7 +47,8 @@ mechanism, not in the two functions you call.
 | web (wasm32) | `Notification.permission` (notifications); `navigator.permissions.query({name})` (geolocation / camera / microphone) | `Notification.requestPermission()` (notifications). Geolocation / camera / microphone have **no** explicit web request API — the prompt fires on first use (`getCurrentPosition` / `getUserMedia`); `request` reports current status (`Undetermined` = "will prompt on first use"). |
 | iOS / macOS / tvOS | `UNUserNotificationCenter.getNotificationSettings` (notifications); `CLLocationManager.authorizationStatus` (location); `AVCaptureDevice.authorizationStatusForMediaType:` (camera = `"vide"`, microphone = `"soun"`) | `requestAuthorizationWithOptions:completionHandler:` (notifications); `CLLocationManager.requestWhenInUse/AlwaysAuthorization` + delegate (location); `AVCaptureDevice.requestAccessForMediaType:completionHandler:` (camera / microphone). Callback / delegate bridged to the `async fn` via a oneshot. |
 | Android | `Context.checkSelfPermission(name)` (JNI) | `Activity.requestPermissions(...)` (JNI) + a host result-forwarding seam (see **Scope**). |
-| Windows / Linux / other native | every permission → `Unsupported` (no native runtime-permission model) | same |
+| Windows | notifications: the app's notification setting (`ToastNotifier.Setting`: on → `Granted`, off by the user → `Denied`, off by policy → `Restricted`; an app not yet listed in Settings is on → `Granted`). Location / camera / microphone → `Unsupported` (the capturing SDK reports a privacy-switch denial when it opens the device) | same as status — Windows never prompts |
+| Linux / other native | every permission → `Unsupported` (no native runtime-permission model) | same |
 
 **Verification.** The **web** path is genuinely runnable and is the verified
 backend. The **Apple** and **Android** native paths are **compile-checked
