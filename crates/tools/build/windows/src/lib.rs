@@ -393,6 +393,11 @@ fn main() {{
         }});
     }}
 
+    // The app's identity to Windows (AppUserModelID + display name): toast
+    // notifications are only shown for an id Windows knows, and the taskbar
+    // groups the app's windows under it.
+    host_win32::set_app_identity("{bundle_id}", "{app_name}");
+
     let opts = host_win32::RunOptions {{
         title: "{app_name}".to_string(),
         width: 1024,
@@ -529,6 +534,15 @@ mod tests {
             src.contains("host_win32::on_main_loop_start"),
             "the start must wait for the scheduler; got:\n{src}"
         );
+    }
+
+    /// The wrapper never identified the app to Windows, so an unpackaged
+    /// `.exe` had no AppUserModelID and toast notifications were never shown.
+    #[test]
+    fn regression_windows_wrapper_sets_the_app_identity() {
+        let src = main_rs("docs", "Docs", "com.x.docs", "/p/docs");
+        let set = src.find(r#"host_win32::set_app_identity("com.x.docs", "Docs");"#).expect(&src);
+        assert!(set < src.find("host_win32::run_with").unwrap(), "before the app runs");
     }
 
     /// The cross build linked the app's cdylib as a DLL with GNU ld's

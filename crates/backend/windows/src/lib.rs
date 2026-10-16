@@ -107,6 +107,7 @@ pub mod dispatch_hook;
 /// [`WindowsBackend`], plus the boot entry and flush driver.
 pub mod newcore;
 
+pub mod app_identity;
 pub mod app_keys;
 pub mod app_pointer;
 pub mod app_situation;

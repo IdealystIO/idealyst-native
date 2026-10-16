@@ -53,6 +53,15 @@ waits on another thread (a network reply, an OS event) therefore never
 blocks the window, and its continuation, which may write signals, runs on
 the UI thread. Source: `host/win32/src/scheduler.rs`, `async_executor.rs`.
 
+At startup the generated wrapper identifies the app to Windows
+(`host_win32::set_app_identity`): the manifest's `bundle_id` becomes the
+process's AppUserModelID, registered for the current user under
+`HKCU\Software\Classes\AppUserModelId\<bundle_id>` with the app `name`
+as its display name. Toast notifications are attributed to it (Windows only
+shows toasts for an id it knows; an unpackaged `.exe` has none of its own),
+and the taskbar groups the app's windows under it. Source:
+`backend/windows/src/app_identity.rs`.
+
 ## The two renderers
 
 | | GDI+ (default) | Direct2D |

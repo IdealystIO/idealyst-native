@@ -109,7 +109,21 @@ mod async_executor;
 #[cfg(target_os = "windows")]
 pub use app::{on_main_loop_start, run, run_with};
 
+/// Identify the app to Windows: `id` (the manifest's bundle id) becomes the
+/// process's AppUserModelID, registered for the current user with
+/// `display_name` (the app name). Toast notifications are attributed to it
+/// and only shown for an id Windows knows, and the taskbar groups the app's
+/// windows under it. Call before [`run_with`]; the generated wrapper does.
+/// A failure (no registry access) is logged, not fatal: the app runs, its
+/// toasts fall back to an id derived from the executable.
+#[cfg(target_os = "windows")]
+pub fn set_app_identity(id: &str, display_name: &str) {
+    if let Err(e) = backend_windows::app_identity::set(id, display_name) {
+        eprintln!("host-win32: could not set the app identity {id:?}: {e}");
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 mod stub;
 #[cfg(not(target_os = "windows"))]
-pub use stub::{on_main_loop_start, run, run_with};
+pub use stub::{on_main_loop_start, run, run_with, set_app_identity};

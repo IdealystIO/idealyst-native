@@ -26,5 +26,8 @@ where
     1
 }
 
+/// Off-Windows there is no shell identity to set.
+pub fn set_app_identity(_id: &str, _display_name: &str) {}
+
 /// Off-Windows nothing ever runs a loop, so the callback is dropped.
 pub fn on_main_loop_start<F: FnOnce() + 'static>(_f: F) {}

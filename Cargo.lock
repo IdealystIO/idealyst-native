@@ -8302,16 +8302,19 @@ dependencies = [
 name = "notifications"
 version = "1.6.2"
 dependencies = [
+ "backend-windows",
  "jni 0.21.1",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
  "permissions",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
  "zbus",
 ]
 
@@ -9245,16 +9248,19 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 name = "permissions"
 version = "1.6.1"
 dependencies = [
+ "backend-windows",
  "block2 0.5.1",
  "jni 0.21.1",
  "ndk-context",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+ "pollster 0.4.0",
  "runtime-core",
  "runtime-vocabulary",
  "tokio",
  "wasm-bindgen-test",
  "web-glue",
+ "windows 0.62.2",
 ]
 
 [[package]]

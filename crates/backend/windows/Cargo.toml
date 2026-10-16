@@ -101,6 +101,11 @@ windows = { version = "0.62", features = [
     # (`SHCreateMemStream` + `GdipLoadImageFromStream`) instead of staging
     # bytes to a temp file.
     "Win32_System_Com",
+    # `app_identity.rs`: the per-user AppUserModelId registration (toasts
+    # are only shown for an AUMID Windows knows).
+    "Win32_System_Registry",
+    # (`RegCreateKeyExW` takes an optional SECURITY_ATTRIBUTES.)
+    "Win32_Security",
     "Win32_UI_Shell",
     # `image()` `http(s)://` sources: WinHTTP on a worker pool
     # (`image_fetch.rs`) — the OS HTTP stack (proxy settings, system TLS
