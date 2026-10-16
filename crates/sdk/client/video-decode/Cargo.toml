@@ -24,7 +24,8 @@ license.workspace = true
 #   - iOS / macOS:      AVPlayer + AVPlayerItemVideoOutput (frames) +
 #                       MTAudioProcessingTap on the item's audio mix (PCM).
 #   - Android:          MediaExtractor + MediaCodec via a Kotlin shim.
-#   - desktop Linux/Win: not yet implemented (returns Unsupported).
+#   - desktop Linux:    GStreamer (appsink frames, tee'd F32LE appsink PCM).
+#   - Windows:          Media Engine frames + a source-reader PCM tap.
 #
 # The platform-agnostic shell (VideoDecoder / DecodeConfig / DecodedVideo /
 # Transport / VideoDecodeError) lives in this crate's top-level module. Each
@@ -65,7 +66,7 @@ windows = { version = "0.62", features = [
 windows-core = "0.62"
 async-channel = "2"
 
-[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
+[target.'cfg(all(any(target_os = "windows", target_os = "linux"), not(target_arch = "wasm32")))'.dev-dependencies]
 pollster = "0.4"
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]

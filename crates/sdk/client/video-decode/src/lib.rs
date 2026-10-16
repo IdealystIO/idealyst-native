@@ -45,7 +45,8 @@
 //!   `MTAudioProcessingTap` on the item's audio mix (PCM).
 //! - **Android** — `MediaExtractor` + `MediaCodec` via a Kotlin shim.
 //! - **Linux (desktop)** — a GStreamer pipeline (`decodebin ! videoconvert !
-//!   appsink`) pulling `RGBA8` frames; play/pause/seek/rate via the pipeline.
+//!   appsink`) pulling `RGBA8` frames, and a `tee`-off `F32LE` appsink for
+//!   PCM; play/pause/seek/rate via the pipeline.
 //! - **Windows** — Media Foundation's Media Engine in frame-server mode: the
 //!   engine plays the clip and drives the transport; a decode thread copies
 //!   each new frame to the CPU as `BGRA`; PCM from a source reader over the

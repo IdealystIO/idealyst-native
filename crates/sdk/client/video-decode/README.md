@@ -91,7 +91,7 @@ PCM; only the decode stack differs.
 | iOS / macOS | `AVPlayer` + `AVPlayerItemVideoOutput` (frames) + an `MTAudioProcessingTap` on the item's audio mix (PCM) |
 | Android | `MediaExtractor` + `MediaCodec` via a Kotlin shim |
 | Web (wasm32) | hidden `<video>` + offscreen `<canvas>` frame pump; WebAudio `MediaElementSource → ScriptProcessor` PCM tap |
-| desktop Linux | GStreamer (`decodebin ! videoconvert ! appsink`) pulling `RGBA8` frames; transport via the pipeline |
+| desktop Linux | GStreamer (`decodebin ! videoconvert ! appsink`) pulling `RGBA8` frames; PCM from a `tee` on the audio branch into a clock-synced `F32LE` appsink (delivered as played, before the mute); transport via the pipeline. With no audio output (headless, CI) the clip plays to a `fakesink` |
 | Windows | Media Foundation's Media Engine (frame server): the engine plays the clip and drives the transport; a decode thread copies each new frame to the CPU through a staging texture (`BGRA`). PCM from a second decoder (a source reader over the same file, audio only, to `f32`) that follows the engine's clock — delivered as it plays, nothing while paused, repositioned on a seek or loop; at rates other than 1× the samples are unstretched |
 
 ## Permissions
@@ -127,7 +127,8 @@ item as you exercise it.
 - [ ] **Web** — open a `Blob`/`data:`/remote URL clip → `frames()` delivers decoded RGBA8 (hidden `<video>` → `<canvas>` pump); `audio()` yields PCM when present; `transport` play/pause/seek/`seek_preview`/mute drive playback; `position`/`duration` resolve.
 - [ ] **iOS** — ⚠️ not yet device-confirmed: open a clip via `AVPlayer` + `AVPlayerItemVideoOutput` → RGBA8 frames + `MTAudioProcessingTap` PCM; transport ops + getters work.
 - [ ] **Android** — ⚠️ compile-checked only, not yet device-confirmed: `MediaExtractor` + `MediaCodec` shim decodes to RGBA8 + PCM; transport ops + getters work.
-- [x] **Windows** — VM-verified (`tests/windows_decode.rs`): a remote MP4 decodes to frames and seeks; a generated two-tone WAV's PCM arrives at its own format, in real time, at the right pitch, not while paused, at the new position's pitch after a seek, and unaffected by the player's mute.
+- [x] **Linux** — container-verified (Debian trixie, GStreamer 1.26, no audio device): `tests/clip_audio.rs` (the two-tone WAV, as below — also the audio-only clip that never opened before) and the `IDEALYST_TEST_VIDEO` end-to-end test on a VP8/Vorbis WebM (frames and PCM). Not yet run on a desktop with a real audio output.
+- [x] **Windows** — VM-verified (`tests/windows_decode.rs`, `tests/clip_audio.rs`): a remote MP4 decodes to frames and seeks; a generated two-tone WAV's PCM arrives at its own format, in real time, at the right pitch, not while paused, at the new position's pitch after a seek, and unaffected by the player's mute.
 - [ ] **macOS** — host-verified via `host_open`: a local clip decodes to RGBA8 frames; transport getters (`position`/`duration`/`is_playing`) and the frame pump behave; `set_muted` silences the player but the `AudioStream` keeps carrying PCM.
 
 No OS permission of its own — this decodes media you already have (remote URLs follow normal CORS rules on web).

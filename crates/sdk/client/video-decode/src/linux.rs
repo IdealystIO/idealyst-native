@@ -10,7 +10,9 @@
 //!
 //! ```text
 //!   <source> ! decodebin ! videoconvert ! [videoscale !] video/x-raw,RGBA ! appsink
-//!                       \-> (audio) audioconvert ! audioresample ! volume ! autoaudiosink
+//!                       \-> (audio) audioconvert ! audioresample ! tee
+//!                                      tee ! queue ! volume ! autoaudiosink        (heard)
+//!                                      tee ! queue ! audioconvert ! F32LE ! appsink (the tap)
 //! ```
 //!
 //! ## Why `RGBA` at the appsink
@@ -27,7 +29,7 @@
 //! appsink; `audio/*` → an audio branch built on the fly and brought up with
 //! `sync_state_with_parent` (the standard "add elements to a running pipeline"
 //! dance). The audio branch is best-effort and never blocks video: if no output
-//! device / `autoaudiosink` is available it falls back to `fakesink` so the
+//! device can be opened ([`audible_sink`]) it falls back to `fakesink` so the
 //! decoded audio pad is still drained (an unconsumed decodebin pad would stall
 //! the whole pipeline).
 //!
@@ -50,11 +52,14 @@
 //!
 //! ## Audio for the recorder
 //! The clip's audio is played audibly (parity with `AVPlayer` / the web
-//! `<video>`), but its PCM is NOT yet tapped into the [`AudioWriter`] for the
-//! recording mux, so [`Opened::has_audio`](crate::Opened) is `false` and the
-//! audio stream is dropped — the same posture `apple.rs` ships (its
-//! `MTAudioProcessingTap` is gated OFF). Wiring a `tee`-off `appsink` PCM tap is
-//! the follow-on that flips `has_audio` to `true`.
+//! `<video>`) and, through a `tee`, delivered as interleaved `f32` to the
+//! [`AudioWriter`] for the recording mux. The tap's appsink is `sync=true`, so
+//! samples arrive as they are played: nothing while paused (a sink renders
+//! nothing in `PAUSED`; the preroll buffer is not a `new-sample`), the new
+//! position's audio after a flushing seek. The tap branches off before the
+//! `volume` element, so the player's mute doesn't silence it. At rates other
+//! than 1 the samples are the clip's own, unstretched (about `rate` seconds of
+//! audio per second) — the same as the Windows tap.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -361,7 +366,8 @@ fn probe(kind: &SourceKind) -> Result<(Option<(u32, u32)>, bool), VideoDecodeErr
 /// transport need.
 struct Built {
     pipeline: gst::Pipeline,
-    appsink: gst::Element,
+    /// The video appsink; `None` for an audio-only clip.
+    appsink: Option<gst::Element>,
     /// The audio branch's `volume` element once (and if) its pad is linked, for
     /// the transport's mute. Filled on `pad-added` from the streaming thread.
     volume: Arc<Mutex<Option<gst::Element>>>,
@@ -372,12 +378,55 @@ struct Built {
 /// `audio/*` → a best-effort audible branch.
 fn build_pipeline(
     kind: &SourceKind,
+    has_video: bool,
     scale_to: Option<(u32, u32)>,
+    audio: AudioWriter,
 ) -> Result<Built, VideoDecodeError> {
     let pipeline = gst::Pipeline::default();
 
     let source = build_source(kind)?;
     let decodebin = make("decodebin")?;
+    pipeline
+        .add_many([&source, &decodebin])
+        .map_err(|e| VideoDecodeError::Backend(format!("pipeline add failed: {e}")))?;
+    source
+        .link(&decodebin)
+        .map_err(|e| VideoDecodeError::Backend(format!("source→decodebin link failed: {e}")))?;
+    let volume: Arc<Mutex<Option<gst::Element>>> = Arc::new(Mutex::new(None));
+    // An audio-only clip gets no video chain: a sink that never receives a
+    // buffer never prerolls, and the pipeline (and `pull-preroll`) waits on
+    // it forever — an audio-only clip never opened.
+    let appsink = if has_video {
+        Some(link_video_chain(&pipeline, &decodebin, scale_to)?)
+    } else {
+        None
+    };
+    let pipeline_weak = pipeline.downgrade();
+    let volume_slot = volume.clone();
+    decodebin.connect_pad_added(move |_dbin, src_pad| {
+        let media = src_pad
+            .current_caps()
+            .or_else(|| Some(src_pad.query_caps(None)))
+            .and_then(|caps| caps.structure(0).map(|s| s.name().to_string()));
+        if media.is_some_and(|m| m.starts_with("audio/")) {
+            let Some(pipeline) = pipeline_weak.upgrade() else {
+                return;
+            };
+            // Best-effort: a failure here leaves audio unlinked but never
+            // disturbs the video path.
+            let _ = link_audio_branch(&pipeline, src_pad, &volume_slot, &audio);
+        }
+    });
+    Ok(Built { pipeline, appsink, volume })
+}
+
+/// `videoconvert ! [videoscale !] appsink` (RGBA) in `pipeline`, fed by
+/// `decodebin`'s first video pad. Returns the appsink.
+fn link_video_chain(
+    pipeline: &gst::Pipeline,
+    decodebin: &gst::Element,
+    scale_to: Option<(u32, u32)>,
+) -> Result<gst::Element, VideoDecodeError> {
     let videoconvert = make("videoconvert")?;
     let appsink = make("appsink")?;
 
@@ -395,17 +444,13 @@ fn build_pipeline(
     };
 
     pipeline
-        .add_many([&source, &decodebin, &videoconvert, &appsink])
+        .add_many([&videoconvert, &appsink])
         .map_err(|e| VideoDecodeError::Backend(format!("pipeline add failed: {e}")))?;
     if let Some(scale) = &videoscale {
         pipeline
             .add(scale)
             .map_err(|e| VideoDecodeError::Backend(format!("videoscale add failed: {e}")))?;
     }
-
-    source
-        .link(&decodebin)
-        .map_err(|e| VideoDecodeError::Backend(format!("source→decodebin link failed: {e}")))?;
     // Static video tail: videoconvert ! [videoscale !] appsink.
     match &videoscale {
         Some(scale) => gst::Element::link_many([&videoconvert, scale, &appsink])
@@ -415,50 +460,31 @@ fn build_pipeline(
             .map_err(|e| VideoDecodeError::Backend(format!("videoconvert→appsink link failed: {e}")))?,
     }
 
-    let volume: Arc<Mutex<Option<gst::Element>>> = Arc::new(Mutex::new(None));
-
-    // Dynamic half: link decodebin's decoded pad by media type.
+    // Dynamic half: link decodebin's first decoded video pad.
     let videoconvert_weak = videoconvert.downgrade();
-    let pipeline_weak = pipeline.downgrade();
-    let volume_slot = volume.clone();
     decodebin.connect_pad_added(move |_dbin, src_pad| {
-        let media = src_pad
+        let is_video = src_pad
             .current_caps()
             .or_else(|| Some(src_pad.query_caps(None)))
-            .and_then(|caps| caps.structure(0).map(|s| s.name().to_string()));
-        let Some(media) = media else {
+            .and_then(|caps| caps.structure(0).map(|s| s.name().starts_with("video/")))
+            .unwrap_or(false);
+        let Some(videoconvert) = videoconvert_weak.upgrade().filter(|_| is_video) else {
             return;
         };
-
-        if media.starts_with("video/") {
-            let Some(videoconvert) = videoconvert_weak.upgrade() else {
-                return;
-            };
-            let Some(sink_pad) = videoconvert.static_pad("sink") else {
-                return;
-            };
-            if !sink_pad.is_linked() {
-                let _ = src_pad.link(&sink_pad); // first video pad wins
-            }
-        } else if media.starts_with("audio/") {
-            let Some(pipeline) = pipeline_weak.upgrade() else {
-                return;
-            };
-            // Best-effort: a failure here leaves audio unlinked but never
-            // disturbs the video path.
-            let _ = link_audio_branch(&pipeline, src_pad, &volume_slot);
+        let Some(sink_pad) = videoconvert.static_pad("sink") else {
+            return;
+        };
+        if !sink_pad.is_linked() {
+            let _ = src_pad.link(&sink_pad); // first video pad wins
         }
     });
-
-    Ok(Built {
-        pipeline,
-        appsink,
-        volume,
-    })
+    Ok(appsink)
 }
 
-/// Build + attach an audible audio branch (`audioconvert ! audioresample !
-/// volume ! autoaudiosink`) to the running pipeline and link `src_pad` into it.
+/// Build + attach the audio branch (`audioconvert ! audioresample ! tee`, then
+/// `queue ! volume ! autoaudiosink` to hear it and `queue ! audioconvert !
+/// F32LE ! appsink` for the PCM tap) to the running pipeline and link
+/// `src_pad` into it.
 /// Falls back to `fakesink` when no output device / `autoaudiosink` is
 /// available, so the decoded audio pad is always drained (an unconsumed pad
 /// stalls decodebin). Records the `volume` element for the transport's mute.
@@ -470,21 +496,46 @@ fn link_audio_branch(
     pipeline: &gst::Pipeline,
     src_pad: &gst::Pad,
     volume_slot: &Arc<Mutex<Option<gst::Element>>>,
+    tap: &AudioWriter,
 ) -> Result<(), VideoDecodeError> {
     let convert = make("audioconvert")?;
     let resample = make("audioresample")?;
+    let tee = make("tee")?;
+    let heard_queue = make("queue")?;
     let volume = make("volume")?;
-    let sink = gst::ElementFactory::make("autoaudiosink")
-        .build()
-        .or_else(|_| gst::ElementFactory::make("fakesink").property("sync", true).build())
-        .map_err(|e| VideoDecodeError::Backend(format!("audio sink unavailable: {e}")))?;
+    let sink = audible_sink()?;
+    let tap_queue = make("queue")?;
+    let tap_convert = make("audioconvert")?;
+    let tap_sink = make("appsink")?;
+    tap_sink.set_property(
+        "caps",
+        gst::Caps::builder("audio/x-raw").field("format", "F32LE").field("layout", "interleaved").build(),
+    );
+    // Played time, not decode time: samples reach the callback as they are
+    // rendered. Never drop — the callback copies each one out at once.
+    tap_sink.set_property("sync", true);
+    tap_sink.set_property("emit-signals", true);
+    let writer = tap.clone();
+    tap_sink.connect("new-sample", false, move |args| {
+        let sink = args[0].get::<gst::Element>().ok()?;
+        let sample: Option<gst::Sample> = sink.emit_by_name("pull-sample", &[]);
+        if let Some(sample) = sample {
+            push_pcm(&sample, &writer);
+        }
+        Some(gst::FlowReturn::Ok.to_value())
+    });
 
+    let elements = [&convert, &resample, &tee, &heard_queue, &volume, &sink, &tap_queue, &tap_convert, &tap_sink];
     pipeline
-        .add_many([&convert, &resample, &volume, &sink])
+        .add_many(elements)
         .map_err(|e| VideoDecodeError::Backend(format!("audio branch add failed: {e}")))?;
-    gst::Element::link_many([&convert, &resample, &volume, &sink])
-        .map_err(|e| VideoDecodeError::Backend(format!("audio branch link failed: {e}")))?;
-    for element in [&convert, &resample, &volume, &sink] {
+    let link = |chain: &[&gst::Element]| {
+        gst::Element::link_many(chain).map_err(|e| VideoDecodeError::Backend(format!("audio branch link failed: {e}")))
+    };
+    link(&[&convert, &resample, &tee])?;
+    link(&[&tee, &heard_queue, &volume, &sink])?;
+    link(&[&tee, &tap_queue, &tap_convert, &tap_sink])?;
+    for element in elements {
         element
             .sync_state_with_parent()
             .map_err(|e| VideoDecodeError::Backend(format!("audio branch sync failed: {e}")))?;
@@ -499,6 +550,40 @@ fn link_audio_branch(
 
     *volume_slot.lock().unwrap() = Some(volume);
     Ok(())
+}
+
+/// The sink the clip is heard through: `autoaudiosink` when it can open an
+/// output, else a clock-synced `fakesink`. `autoaudiosink` builds even with
+/// no output (a headless box, a container); it fails only when it opens its
+/// device, and left in the pipeline that failure stalls preroll, so the clip
+/// never plays — frames included. Opening it here (`READY`) is the test.
+fn audible_sink() -> Result<gst::Element, VideoDecodeError> {
+    if let Ok(sink) = gst::ElementFactory::make("autoaudiosink").build() {
+        if sink.set_state(gst::State::Ready).is_ok() {
+            let _ = sink.set_state(gst::State::Null);
+            return Ok(sink);
+        }
+        let _ = sink.set_state(gst::State::Null);
+    }
+    gst::ElementFactory::make("fakesink")
+        .property("sync", true)
+        .build()
+        .map_err(|e| VideoDecodeError::Backend(format!("audio sink unavailable: {e}")))
+}
+
+/// Copy one tapped sample (interleaved `F32LE`, per the tap's caps) to the
+/// recorder's [`AudioWriter`].
+fn push_pcm(sample: &gst::Sample, writer: &AudioWriter) {
+    let Some(caps) = sample.caps() else { return };
+    let Some(s) = caps.structure(0) else { return };
+    let (Ok(rate), Ok(channels)) = (s.get::<i32>("rate"), s.get::<i32>("channels")) else { return };
+    let Some(buffer) = sample.buffer() else { return };
+    let Ok(map) = buffer.map_readable() else { return };
+    let samples: Vec<f32> =
+        map.as_slice().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    if rate > 0 && channels > 0 {
+        writer.write_pcm_f32(rate as u32, channels as u16, &samples);
+    }
 }
 
 /// The bus-message loop (dedicated thread; no GLib main loop). On EOS it
@@ -700,20 +785,20 @@ impl Drop for StreamHandle {
 /// presence — honest `BadSource`/`Backend` at open, parity with the audio
 /// backend's eager validation), then build the live pipeline, push the first
 /// frame from the preroll so a paused clip still shows a frame, and spawn the
-/// bus + pull threads. `audio` (the recorder PCM writer) is intentionally
-/// dropped for now — see the module note; the clip still plays its sound.
+/// bus + pull threads. `audio` (the recorder PCM writer) is fed by the audio
+/// branch's tap — see the module note.
 pub(crate) async fn open(
     source: DecodeSource,
     config: DecodeConfig,
     frames: FrameWriter,
-    _audio: AudioWriter,
+    audio: AudioWriter,
 ) -> Result<Opened, VideoDecodeError> {
     ensure_gst()?;
 
     let kind = resolve_source(source)?;
 
     // Validate decode + learn natural size / audio presence.
-    let (natural, _has_audio_track) = probe(&kind)?;
+    let (natural, has_audio) = probe(&kind)?;
     let scale_to = match (config.max_dimension, natural) {
         (Some(_), Some((nw, nh))) => {
             let (tw, th) = target_size(nw, nh, config.max_dimension);
@@ -726,7 +811,7 @@ pub(crate) async fn open(
         _ => None,
     };
 
-    let built = build_pipeline(&kind, scale_to)?;
+    let built = build_pipeline(&kind, natural.is_some(), scale_to, audio)?;
     let pipeline = built.pipeline;
     let appsink = built.appsink;
     let volume = built.volume;
@@ -750,9 +835,11 @@ pub(crate) async fn open(
     }
 
     // Push the preroll frame so a paused clip shows its first frame immediately.
-    let preroll: Option<gst::Sample> = appsink.emit_by_name("pull-preroll", &[]);
-    if let Some(sample) = preroll {
-        push_sample(&sample, &frames);
+    if let Some(appsink) = &appsink {
+        let preroll: Option<gst::Sample> = appsink.emit_by_name("pull-preroll", &[]);
+        if let Some(sample) = preroll {
+            push_sample(&sample, &frames);
+        }
     }
 
     let looping = Arc::new(AtomicBool::new(config.loop_playback));
@@ -776,12 +863,11 @@ pub(crate) async fn open(
         let quit = quit.clone();
         std::thread::spawn(move || bus_loop(bus, pipeline, looping, ended, quit))
     };
-    let pull_thread = {
-        let appsink = appsink.clone();
+    let pull_thread = appsink.map(|appsink| {
         let frames = frames.clone();
         let quit = quit.clone();
         std::thread::spawn(move || pull_loop(appsink, frames, quit))
-    };
+    });
 
     let control: std::rc::Rc<dyn TransportControl> = std::rc::Rc::new(LinuxTransport {
         pipeline: pipeline.clone(),
@@ -795,15 +881,13 @@ pub(crate) async fn open(
         pipeline: Some(pipeline),
         quit,
         bus_thread: Some(bus_thread),
-        pull_thread: Some(pull_thread),
+        pull_thread,
     };
 
     Ok(Opened {
         handle: Box::new(handle),
         control,
-        // PCM tap for the recorder is not yet wired (parity with apple.rs, whose
-        // audio tap is gated OFF); the clip still plays its sound audibly.
-        has_audio: false,
+        has_audio,
         natural_size: natural,
     })
 }
@@ -974,5 +1058,19 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(got.is_some(), "a real clip must produce at least one frame");
+        // With a sound track, its PCM arrives alongside the frames (the tee
+        // must not stall the video branch, nor the video the tap).
+        if let Some(audio) = clip.audio() {
+            let mut pcm = Vec::new();
+            let mut format = None;
+            for _ in 0..300 {
+                format = audio.latest(&mut pcm);
+                if format.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(format.is_some() && !pcm.is_empty(), "the sound track's PCM arrives");
+        }
     }
 }
