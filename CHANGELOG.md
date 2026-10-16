@@ -27,6 +27,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `docs/robot.md`. *Migration:* a test that drove a disabled control, or
   expected an unsnapped slider value, asserts the refusal / snapped value.
 
+- **robot-test actions and assertions auto-wait** (`robot-test`). As in
+  Playwright, an action waits for its element to exist and accept it (a
+  disabled control is waited out), and an assertion retries until it holds,
+  up to `App::set_timeout` (5 s); both panic with the last thing seen. New:
+  element state reads and assertions (`state`, `assert_value`,
+  `assert_checked`, `assert_enabled` / `assert_disabled`, `assert_focused`,
+  `assert_count`), `label` / `nth` locators, `fill`, `focus` / `blur`,
+  `scroll_to`, navigation (`navigate`, `back`, `assert_path`), components
+  (`component(name).invoke` / `.prop`), `signal(..).set`, `logs`, and raw
+  `call`. The MCP server gains `get_state`, `set_scroll`, the navigator,
+  watched-signal and component-instance tools, and `call_verb`.
+  *Migration:* a test that asserted a failure right away (expecting a
+  missing element to fail fast) now fails after the timeout; failure
+  messages read "still failing after …: <last seen>".
+
 - **`text_input` `secure` masks on Android; remote and dev-wire versions
   bumped** (`backend-android-mobile`, `runtime-vocabulary`, `wire`).
   Android ignored `secure` (a password field showed its text); it now sets

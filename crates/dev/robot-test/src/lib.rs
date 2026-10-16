@@ -18,6 +18,13 @@
 //! }
 //! ```
 //!
+//! Actions and assertions **auto-wait**, as in Playwright: an action waits
+//! for its element to exist and accept it (a disabled control refuses), an
+//! assertion retries until it holds, both up to [`App::set_timeout`]
+//! ([`DEFAULT_TIMEOUT`]). Elements report their own state — a field's text,
+//! a toggle's checked state, disabled, focused — so most assertions need
+//! nothing from the app. See `docs/robot.md` for the verbs underneath.
+//!
 //! Because `#[robot_test]` expands to a real `#[test]`, `cargo test` discovers
 //! and runs these. But they need a live app + relay, which `cargo test` can't
 //! set up — so when none is reachable each test **skips** (prints a note and
@@ -32,7 +39,7 @@ mod client;
 mod harness;
 pub mod parity;
 
-pub use app::{App, Locator, SignalAssert};
+pub use app::{App, Component, ElementState, Locator, NavigatorInfo, SignalAssert, DEFAULT_TIMEOUT};
 pub use client::{
     default_apps_dir, default_apps_dirs, discover, discover_all, RobotClient, WINE_APPS_DIR_NAME,
 };

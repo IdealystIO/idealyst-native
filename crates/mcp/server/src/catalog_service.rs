@@ -415,6 +415,84 @@ pub struct RobotInvokeMethod {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotSetScroll {
+    /// A ScrollView's element ID.
+    pub element_id: u64,
+    /// Content offset to scroll to, logical px.
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotNavId {
+    /// Navigator ID from `list_navigators`.
+    pub nav_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotNavigate {
+    /// Navigator ID from `list_navigators`.
+    pub nav_id: u64,
+    /// `push`, `replace`, `reset` or `pop`.
+    pub action: String,
+    /// The path to go to, resolved like a deep link (ignored for `pop`).
+    #[serde(default)]
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotSignalRef {
+    /// The name the app registered the signal under (`watch_signal("name", …)`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Or its id from `list_watched_signals`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotWriteSignal {
+    /// The name the app registered the signal under (`watch_signal_writable`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    /// The new value, as JSON (deserialized into the signal's type).
+    pub value: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotInstanceId {
+    /// Component instance ID from `list_component_instances`.
+    pub instance_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotRawCall {
+    /// The bridge verb (see docs/robot.md), e.g. a custom verb an SDK registered.
+    pub verb: String,
+    /// The verb's arguments.
+    #[serde(default)]
+    pub args: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotAppOnly {
     /// Target app name (from `list_apps`). Optional when only one
     /// app is registered; required otherwise.
@@ -1415,7 +1493,109 @@ impl CatalogService {
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
-    #[tool(description = "Invoke a `#[method]`-tagged method on an element's instance (Robot's component-level escape hatch).")]
+    #[tool(description = "Read an element's own STATE — what a user would see, with no help from the app: { value (a TextInput's text, a Slider's value), checked (a Toggle), disabled, focused (a TextInput) }. Fields the element doesn't have are omitted; a View/Text/Image returns {}. `find_element` results carry the same object under `state`. Robot actions on a disabled element fail with \"refused: the element is disabled\", as the control refuses a user.")]
+    async fn get_state(
+        &self,
+        Parameters(args): Parameters<RobotElementId>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_state", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Scroll a ScrollView's content to offset (x, y), logical px, through the native scroll view (its on_scroll / on_end_reached fire as for a user's scroll).")]
+    async fn set_scroll(
+        &self,
+        Parameters(args): Parameters<RobotSetScroll>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("set_scroll", app.as_deref(), body).await
+    }
+
+    #[tool(description = "List the running app's navigators: [{ nav_id, element_id, type_name, active_route, active_path, depth, can_go_back, is_current, base, stack:[{route,path}], controllable }]. Use `nav_id` with `navigate` / `get_navigator_state`.")]
+    async fn list_navigators(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("list_navigators", args.app.as_deref(), json!({})).await
+    }
+
+    #[tool(description = "One navigator's state (same shape as a `list_navigators` entry).")]
+    async fn get_navigator_state(
+        &self,
+        Parameters(args): Parameters<RobotNavId>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_navigator_state", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Navigate: `action` is push / replace / reset / pop on navigator `nav_id`; `path` is resolved like a deep link (ignored for pop). The way to reach a screen without clicking through the UI.")]
+    async fn navigate(
+        &self,
+        Parameters(args): Parameters<RobotNavigate>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("navigate", app.as_deref(), body).await
+    }
+
+    #[tool(description = "List the signals the app exposes by name (`watch_signal` / `watch_signal_writable`): [{ id, name, value, writable, … }]. Values are their Debug form.")]
+    async fn list_watched_signals(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("list_watched_signals", args.app.as_deref(), json!({})).await
+    }
+
+    #[tool(description = "Read a watched signal's current value (its Debug form) by `name` or `id`.")]
+    async fn read_signal(
+        &self,
+        Parameters(args): Parameters<RobotSignalRef>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("read_signal", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Write a signal the app registered with `watch_signal_writable` (by `name` or `id`); `value` is JSON, deserialized into the signal's type. Effects run as for any write.")]
+    async fn write_signal(
+        &self,
+        Parameters(args): Parameters<RobotWriteSignal>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("write_signal", app.as_deref(), body).await
+    }
+
+    #[tool(description = "List the component INSTANCES mounted in the running app (unlike `list_components`, which lists the catalog): [{ instance_id, name, file, line, element_id, methods:[{name,args}] }]. `instance_id` is what `invoke_method` and `get_component_instance` take; `element_id` is the element the instance renders as.")]
+    async fn list_component_instances(
+        &self,
+        Parameters(args): Parameters<RobotAppOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call("list_components", args.app.as_deref(), json!({})).await
+    }
+
+    #[tool(description = "One mounted component instance with its LIVE props: { instance_id, name, file, line, element_id, methods, props:[{ name, type, mode (live/static), value }] }.")]
+    async fn get_component_instance(
+        &self,
+        Parameters(args): Parameters<RobotInstanceId>,
+    ) -> Result<CallToolResult, McpError> {
+        let app = args.app.clone();
+        let body = strip_app(serde_json::to_value(args).unwrap_or_default());
+        self.robot_call("get_component", app.as_deref(), body).await
+    }
+
+    #[tool(description = "Call any Robot bridge verb by name with JSON `args` and return its raw result — for verbs no dedicated tool covers (custom verbs an SDK or host registered). See docs/robot.md for the verb set.")]
+    async fn call_verb(
+        &self,
+        Parameters(args): Parameters<RobotRawCall>,
+    ) -> Result<CallToolResult, McpError> {
+        self.robot_call(&args.verb, args.app.as_deref(), args.args).await
+    }
+
+    #[tool(description = "Invoke a `#[method]`-tagged method on a component instance — `instance_id` from `list_component_instances`, `args` keyed by parameter name.")]
     async fn invoke_method(
         &self,
         Parameters(args): Parameters<RobotInvokeMethod>,
@@ -6042,5 +6222,68 @@ mod tests {
         let msg = format!("{err:?}");
         assert!(msg.contains("not found"), "{msg}");
         assert!(!msg.contains("live"), "no caveat when nothing was skipped: {msg}");
+    }
+
+    /// The robot verbs the MCP server didn't expose — state, scrolling,
+    /// navigation, watched signals, live component instances, and any verb
+    /// by name — each reach the bridge with the right verb and arguments.
+    /// Before, `invoke_method` was listed but its `instance_id` could not be
+    /// found over MCP (`list_components` is the catalog), and navigation
+    /// and signals had no tools at all.
+    #[tokio::test]
+    async fn regression_robot_tools_reach_every_bridge_verb() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let log = seen.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut lines = BufReader::new(r).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                log.lock().unwrap().push((req["cmd"].as_str().unwrap().to_string(), req["args"].clone()));
+                let resp = json!({ "id": req["id"], "ok": "ok" });
+                w.write_all(format!("{resp}\n").as_bytes()).await.unwrap();
+            }
+        });
+        let svc = CatalogService::with_robot_mode(true, Some(addr.to_string()));
+
+        svc.get_state(Parameters(RobotElementId { element_id: 4, app: None })).await.unwrap();
+        svc.set_scroll(Parameters(RobotSetScroll { element_id: 4, x: 0.0, y: 120.0, app: None })).await.unwrap();
+        svc.list_navigators(Parameters(RobotAppOnly { app: None })).await.unwrap();
+        svc.get_navigator_state(Parameters(RobotNavId { nav_id: 2, app: None })).await.unwrap();
+        svc.navigate(Parameters(RobotNavigate { nav_id: 2, action: "push".into(), path: "/a".into(), app: None }))
+            .await
+            .unwrap();
+        svc.list_watched_signals(Parameters(RobotAppOnly { app: None })).await.unwrap();
+        svc.read_signal(Parameters(RobotSignalRef { name: Some("count".into()), id: None, app: None })).await.unwrap();
+        svc.write_signal(Parameters(RobotWriteSignal { name: Some("count".into()), id: None, value: json!(3), app: None }))
+            .await
+            .unwrap();
+        svc.list_component_instances(Parameters(RobotAppOnly { app: None })).await.unwrap();
+        svc.get_component_instance(Parameters(RobotInstanceId { instance_id: 9, app: None })).await.unwrap();
+        svc.call_verb(Parameters(RobotRawCall { verb: "get_identity".into(), args: json!({}), app: None }))
+            .await
+            .unwrap();
+
+        let seen = seen.lock().unwrap().clone();
+        let expected = vec![
+            ("get_state", json!({ "element_id": 4 })),
+            ("set_scroll", json!({ "element_id": 4, "x": 0.0, "y": 120.0 })),
+            ("list_navigators", json!({})),
+            ("get_navigator_state", json!({ "nav_id": 2 })),
+            ("navigate", json!({ "nav_id": 2, "action": "push", "path": "/a" })),
+            ("list_watched_signals", json!({})),
+            ("read_signal", json!({ "name": "count" })),
+            ("write_signal", json!({ "name": "count", "value": 3 })),
+            ("list_components", json!({})),
+            ("get_component", json!({ "instance_id": 9 })),
+            ("get_identity", json!({})),
+        ];
+        let got: Vec<(&str, serde_json::Value)> = seen.iter().map(|(c, a)| (c.as_str(), a.clone())).collect();
+        assert_eq!(got, expected);
     }
 }
