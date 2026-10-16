@@ -21,7 +21,7 @@
 //! so where the layer draws nothing (alpha 0) clicks fall through to the
 //! app beneath; where it draws, the popup routes the mouse into the
 //! backend's input handling with the private root as the hit-test root
-//! ([`hit_root`]).
+//! ([`input_roots`]).
 //!
 //! # Leaving it out of a recording
 //!
@@ -85,16 +85,22 @@ thread_local! {
     static INPUT_ROOT: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
-/// The root hit testing starts from: the private root whose popup is
-/// routing the current message, else the main scene's.
-pub(crate) fn hit_root(b: &WindowsBackend) -> Option<u64> {
-    INPUT_ROOT.with(|r| r.get()).or(b.root_id)
+/// Every root a node can be found under: the main scene's, each private
+/// layer's, each portal's.
+pub(crate) fn all_roots(b: &WindowsBackend) -> impl Iterator<Item = u64> + '_ {
+    b.root_id.into_iter().chain(b.private.roots()).chain(b.portals.roots())
 }
 
-/// Every root a node can be found under: the main scene's, then each
-/// private layer's.
-pub(crate) fn all_roots(b: &WindowsBackend) -> impl Iterator<Item = u64> + '_ {
-    b.root_id.into_iter().chain(b.private.roots())
+/// The roots a pointer event in the HOST window hit-tests, topmost first:
+/// the private root whose popup is routing it, alone; else every placed
+/// portal (last created on top), then the main scene.
+pub(crate) fn input_roots(b: &WindowsBackend) -> Vec<u64> {
+    if let Some(root) = INPUT_ROOT.with(|r| r.get()) {
+        return vec![root];
+    }
+    let mut roots: Vec<u64> = b.portals.roots().rev().filter(|&id| b.portals.placed(id)).collect();
+    roots.extend(b.root_id);
+    roots
 }
 
 /// Runs `f` with `root` as the hit-test root (see [`hit_root`]).

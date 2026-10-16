@@ -25,6 +25,17 @@ tree order as on every other platform. Only content that actually overlaps
 a surface is lifted; a window without graphics surfaces does none of this.
 Source: `layers.rs`, `overlay.rs`.
 
+Overlays (`overlay`, `anchored_overlay`, and idea-ui's Modal, Popover, Menu,
+Select and toasts on top of them) are portals: each is a layout root of its
+own, laid out against the window with the shared placement rules, painted
+over the page in the order they were created, and hit-tested before it, so
+an overlay takes the clicks and wheel ticks it covers. An anchored one is
+placed next to its anchor with the shared placer (flip to fit, align,
+clamp to the window) on the turn after each layout or scroll, and isn't
+drawn until it has been placed. Escape calls the topmost overlay's
+`on_dismiss`. Native controls inside an overlay are child windows like any
+other, positioned with it. Source: `portal.rs`.
+
 The `canvas` SDK's default renderer (`canvas-native`) draws with Direct2D
 on Windows. It needs Windows 10 or later, like the Direct2D scene renderer.
 

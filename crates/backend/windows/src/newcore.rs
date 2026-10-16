@@ -1091,6 +1091,10 @@ impl caps::PortalOps for WindowsBackend {
     fn set_portal_hidden(&mut self, node: &Self::Node, hidden: bool) {
         WindowsBackend::set_portal_hidden(self, node, hidden)
     }
+
+    fn release_portal(&mut self, node: &Self::Node) {
+        WindowsBackend::release_portal(self, node)
+    }
 }
 
 impl caps::PresenceOps for WindowsBackend {}

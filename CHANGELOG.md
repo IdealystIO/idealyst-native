@@ -1507,6 +1507,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Overlays work on Windows** (`backend-windows`, `host-win32`).
+  `create_portal` was a placeholder: an overlay, popover, menu or toast
+  rendered inline where it was written and covered nothing. A portal is now
+  a detached layout root laid out against the client area with the shared
+  placement rules, painted over the page and hit-tested before it
+  (wheel included); anchored portals sit next to their anchor through the
+  shared placer (flip, align, clamp), placed on the turn after each layout
+  or scroll and not painted until then; Escape calls the topmost
+  overlay's `on_dismiss`; `release_portal` frees the subtree.
+
 - **Android apps aborted once they had touched enough of the framework**
   (`runtime-tls` new; `runtime-world`, `runtime-shared`, `runtime-scene`,
   `runtime-vocabulary`, `backend-android-mobile`, `idea-theme`, `idea-ui`,

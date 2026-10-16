@@ -100,6 +100,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // sites live in the host shell (`host-win32`); no-op default.
 pub mod dispatch_hook;
 
+mod portal;
+
 #[cfg(feature = "robot")]
 mod native_input;
 
@@ -683,6 +685,9 @@ pub struct WindowsBackend {
     /// The screen recorder's private layers: detached roots painted into
     /// their own popups over the host (`private_layer.rs`).
     pub(crate) private: private_layer::PrivateLayers,
+    /// Portals: detached layout roots painted over the main tree and hit
+    /// tested before it (`portal`).
+    pub(crate) portals: portal::Portals,
 }
 
 /// Serializes tests that use DirectWrite / Direct2D. The backend only uses
@@ -815,6 +820,7 @@ impl WindowsBackend {
             d2d: RefCell::new(None),
             dwrite,
             private: private_layer::PrivateLayers::default(),
+            portals: portal::Portals::default(),
         }
     }
 
@@ -1475,8 +1481,9 @@ impl WindowsBackend {
             return;
         }
         self.compute_layout_roots(root_layout, width, height);
-        // Private-layer roots fill the same client area (`private_layer`).
-        let private: Vec<u64> = self.private.roots().collect();
+        // Private-layer and portal roots fill the same client area
+        // (`private_layer`, `portal`).
+        let private: Vec<u64> = self.private.roots().chain(self.portals.roots()).collect();
         for id in private {
             if let Some(layout) = self.layout_for_id.get(&id).copied() {
                 self.compute_layout_roots(layout, width, height);
@@ -1518,6 +1525,9 @@ impl WindowsBackend {
             }
         }
 
+        // Anchored portals' content goes where it was last placed (a fresh
+        // placement follows on the next turn — `portal::queue_placement`).
+        self.apply_anchor_placements();
         self.position_native_children();
 
         // Graphics surfaces: decide which nodes owe an `on_ready` /
@@ -1626,6 +1636,13 @@ impl WindowsBackend {
         let mut stack: Vec<(u64, f32, f32, dcomp::ClipChain, bool, bool)> =
             vec![(root_id, 0.0, 0.0, dcomp::ClipChain::default(), false, false)];
         stack.extend(self.private.roots().map(|id| (id, 0.0, 0.0, dcomp::ClipChain::default(), false, true)));
+        // Portal roots: an anchored portal not yet placed keeps its native
+        // children hidden (its content isn't painted either).
+        stack.extend(
+            self.portals
+                .roots()
+                .map(|id| (id, 0.0, 0.0, dcomp::ClipChain::default(), !self.portals.placed(id), false)),
+        );
         let mut control_in_private = false;
         let mut control_moves: Vec<(HWND, i32, i32, i32, i32, Option<RegionSpec>)> = Vec::new();
         // Graphics visuals collected during the walk, applied after it
@@ -1695,6 +1712,9 @@ impl WindowsBackend {
         if control_in_private {
             self.warn_control_in_private_layer();
         }
+        // Origins just moved (layout, scroll): re-place anchored portals
+        // against their anchors' new rects.
+        portal::queue_placement(self);
         // Apply graphics-visual placements: offset + clip per changed
         // node, then ONE device commit — the DWM picks the whole batch
         // up atomically with its next composition frame, which is what
@@ -2449,7 +2469,7 @@ impl WindowsBackend {
         };
         // A private-layer root stays detached: a layout root of its own,
         // painted into its popup, never part of the parent's scene.
-        if self.private.contains(child.id) {
+        if self.private.contains(child.id) || self.portals.contains(child.id) {
             self.layout_dirty = true;
             return;
         }
@@ -2860,14 +2880,59 @@ impl WindowsBackend {
     }
 
 
+    /// A portal root (`portal`): a view node laid out as a root of its
+    /// own with its placement's container rules, detached from its parent.
+    /// Focus trapping is not modelled: painted content takes no keyboard
+    /// focus, and native controls tab in window order.
     fn create_portal(
         &mut self,
-        _target: runtime_shared::primitives::portal::PortalTarget,
-        _on_dismiss: Option<Rc<dyn Fn()>>,
+        target: runtime_shared::primitives::portal::PortalTarget,
+        on_dismiss: Option<Rc<dyn Fn()>>,
         _trap_focus: bool,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
-        self.placeholder("Portal not yet implemented on Windows backend")
+        let node = self.add_node(NodeKind::View(ViewVisual::default()));
+        let rules = self.portals.add(node.id, &target, on_dismiss);
+        if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
+            self.layout.set_style(layout, &rules);
+        }
+        self.layout_dirty = true;
+        node
+    }
+
+    /// Tear down a portal root: its subtree (unreachable from its parent,
+    /// which never held it) and its entry.
+    pub(crate) fn release_portal(&mut self, node: &WindowsNode) {
+        if !self.portals.contains(node.id) {
+            return;
+        }
+        self.portals.remove(node.id);
+        self.remove_subtree(node.id);
+        self.layout_dirty = true;
+        self.invalidate();
+    }
+
+    /// The `on_dismiss` Escape should call: the topmost shown portal's.
+    pub fn escape_dismiss(&self) -> Option<Rc<dyn Fn()>> {
+        self.portals
+            .topmost_dismiss(|id| self.portals.placed(id) && self.nodes.get(&id).is_some_and(|m| !m.hidden))
+    }
+
+    /// Move each placed anchored portal's content to its placement.
+    pub(crate) fn apply_anchor_placements(&mut self) {
+        let placed: Vec<(u64, (f32, f32))> = self
+            .portals
+            .roots()
+            .filter_map(|id| Some((id, self.portals.get(id)?.anchor.as_ref()?.at?)))
+            .collect();
+        for (id, (x, y)) in placed {
+            for child in self.children.get(&id).cloned().unwrap_or_default() {
+                if let Some(meta) = self.nodes.get_mut(&child) {
+                    meta.frame.0 = x;
+                    meta.frame.1 = y;
+                }
+            }
+        }
     }
 
     fn set_portal_hidden(&mut self, node: &WindowsNode, hidden: bool) {
@@ -3000,9 +3065,20 @@ impl WindowsBackend {
     }
 
     fn apply_style(&mut self, node: &WindowsNode, style: &Rc<StyleRules>) {
-        // Box layout via the shared StyleRules→Taffy translator.
+        // Box layout via the shared StyleRules→Taffy translator. A
+        // portal's style is layered over its container rules: `set_style`
+        // resets every field the style leaves unset, which would drop the
+        // placement.
         if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
-            self.layout.set_style(layout, style);
+            match self.portals.get(node.id) {
+                Some(entry) => {
+                    let merged = entry.base.clone().merge(style);
+                    self.layout.set_style(layout, &merged);
+                }
+                None => {
+                    self.layout.set_style(layout, style);
+                }
+            }
         }
         self.layout_dirty = true;
 
@@ -3727,6 +3803,83 @@ mod dpi_tests {
         assert_eq!(b.node_frame(fill_id), Some((0.0, 0.0, 800.0, 300.0)), "the percentage resolves through the anchor");
         assert_eq!(b.node_frame(a_id), Some((0.0, 0.0, 50.0, 50.0)));
         assert_eq!(b.node_frame(c_id), Some((60.0, 0.0, 50.0, 50.0)), "the row and its gap reach through the anchor");
+    }
+
+    /// Portals were a placeholder on Windows: an overlay rendered inline
+    /// where it was written, covered nothing and took no clicks over the
+    /// page. A portal is now a detached root laid out against the client
+    /// area: a `Center` overlay's content sits in the middle, the
+    /// portal's empty area (its root is `pointer-events: none`, as the
+    /// overlay lowering styles it) lets clicks reach the page, a
+    /// full-screen backdrop portal takes them, Escape finds the topmost
+    /// `on_dismiss`, and releasing a portal frees its subtree.
+    #[test]
+    fn regression_portals_lay_out_over_the_page_and_take_the_clicks_they_cover() {
+        use runtime_shared::primitives::portal::{PortalTarget, ViewportPlacement};
+        let host = host_window();
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let none = Rc::new(StyleRules { pointer_events: Some(runtime_shared::PointerEvents::None), ..Default::default() });
+        let mut root = b.create_view(&a11y);
+        let page = b.create_pressable(Rc::new(|| {}), &a11y);
+        b.apply_style(&page, &sized(100.0, 50.0, None));
+        let page_id = page.id;
+        b.insert(&mut root, page);
+
+        let dismissed = Rc::new(std::cell::Cell::new(0));
+        let d = dismissed.clone();
+        let mut portal =
+            b.create_portal(PortalTarget::Viewport(ViewportPlacement::Center), Some(Rc::new(move || d.set(d.get() + 1))), true, &a11y);
+        let content = b.create_view(&a11y);
+        let mut cs = (*sized(120.0, 40.0, None)).clone();
+        cs.pointer_events = Some(runtime_shared::PointerEvents::Auto);
+        b.apply_style(&content, &Rc::new(cs));
+        let content_id = content.id;
+        b.insert(&mut portal, content);
+        b.apply_style(&portal, &none);
+        let portal_node = portal.clone();
+        b.insert(&mut root, portal);
+        b.finish(root);
+
+        let (w, h) = b.logical_client_size();
+        assert_eq!(
+            b.node_frame(content_id),
+            Some(((w - 120.0) / 2.0, (h - 40.0) / 2.0, 120.0, 40.0)),
+            "the Center placement survives the portal's own style"
+        );
+        let hit = |b: &WindowsBackend, x: f32, y: f32| scene::hit_chain(b, x, y).first().map(|n| n.id);
+        assert_eq!(hit(&b, w / 2.0, h / 2.0), Some(content_id), "the overlay's content is on top");
+        assert_eq!(hit(&b, 10.0, 10.0), Some(page_id), "its empty area lets the click through");
+
+        // A full-screen backdrop portal over everything takes the click.
+        let mut backdrop_portal =
+            b.create_portal(PortalTarget::Viewport(ViewportPlacement::FullScreen), None, false, &a11y);
+        let backdrop = b.create_pressable(Rc::new(|| {}), &a11y);
+        let mut fill = StyleRules::default();
+        fill.position = Some(runtime_shared::Position::Absolute);
+        for edge in [&mut fill.top, &mut fill.left, &mut fill.right, &mut fill.bottom] {
+            *edge = Some(Length::Px(0.0).into());
+        }
+        fill.pointer_events = Some(runtime_shared::PointerEvents::Auto);
+        b.apply_style(&backdrop, &Rc::new(fill));
+        let backdrop_id = backdrop.id;
+        b.insert(&mut backdrop_portal, backdrop);
+        b.apply_style(&backdrop_portal, &none);
+        let mut root_again = WindowsNode { id: b.root_id.unwrap(), hwnd: HWND(std::ptr::null_mut()) };
+        b.insert(&mut root_again, backdrop_portal);
+        b.layout_pass();
+        assert_eq!(hit(&b, 10.0, 10.0), Some(backdrop_id), "the backdrop covers the page");
+
+        // Escape: the topmost portal with an on_dismiss.
+        (b.escape_dismiss().expect("the overlay has one"))();
+        assert_eq!(dismissed.get(), 1);
+
+        b.release_portal(&portal_node);
+        assert!(b.nodes.get(&content_id).is_none(), "the subtree went with it");
+        assert!(b.escape_dismiss().is_none());
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
     }
 
     #[test]

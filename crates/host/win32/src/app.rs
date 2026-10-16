@@ -68,10 +68,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_DESTROY, WM_ERASEBKGND,
     WM_HSCROLL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
     WM_MOUSEMOVE, WM_MOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CAPTURECHANGED, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW,
+    WS_OVERLAPPEDWINDOW, WM_KEYDOWN,
 };
 
 use crate::RunOptions;
+
+/// `VK_ESCAPE` (winuser.h).
+const VK_ESCAPE_CODE: usize = 0x1B;
 
 /// Private wake message the scheduler worker `PostMessageW`s to the
 /// host window; the `WndProc` responds by draining due timers/rafs.
@@ -257,6 +260,16 @@ where
             // slot is shared.
             if keyboard.pre_dispatch(msg) {
                 return;
+            }
+            // Escape closes the topmost overlay that has an `on_dismiss`,
+            // the platform dismissal web and macOS give it. After the app
+            // keyboard, which may claim the key first.
+            if msg.message == WM_KEYDOWN && msg.wParam.0 == VK_ESCAPE_CODE {
+                let dismiss = backend.try_borrow().ok().and_then(|b| b.escape_dismiss());
+                if let Some(dismiss) = dismiss {
+                    dismiss();
+                    return;
+                }
             }
             // App-level pointer, same reasoning: a click / move / wheel
             // over a child control goes to that control's window. A

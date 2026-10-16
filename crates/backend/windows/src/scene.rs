@@ -818,6 +818,12 @@ pub(crate) unsafe fn paint_scene(b: &mut WindowsBackend, target: HDC, w: i32, h:
         if let Some(root) = b.root_id {
             paint_node(b, g, root, 1.0, LayerFilter { plan: &plan, layer: 0 });
         }
+        // Portals over the main tree, in creation order (`crate::portal`);
+        // an anchored one only once placed next to its anchor.
+        let portals: Vec<u64> = b.portals.roots().filter(|&id| b.portals.placed(id)).collect();
+        for root in portals {
+            paint_node(b, g, root, 1.0, LayerFilter { plan: &plan, layer: 0 });
+        }
         let _ = GdipDeleteGraphics(g);
     }
 
@@ -1144,8 +1150,14 @@ pub(crate) struct PathNode {
 /// hit. See the module docs for the target rules.
 pub(crate) fn hit_chain(b: &WindowsBackend, px: f32, py: f32) -> Vec<PathNode> {
     let mut out = Vec::new();
-    if let Some(root) = crate::private_layer::hit_root(b) {
+    // Portals over the main scene, topmost first: the first root with a
+    // hit takes the click (a portal root itself is `pointer-events: none`,
+    // so its empty area falls through to what is under it).
+    for root in crate::private_layer::input_roots(b) {
         hit_walk(b, root, px, py, 0.0, 0.0, false, &mut out);
+        if !out.is_empty() {
+            break;
+        }
     }
     out
 }
@@ -1275,7 +1287,14 @@ pub(crate) fn window_origin(b: &WindowsBackend, target: u64) -> Option<(f32, f32
 /// Returns `true` if a scroll node consumed it (offset updated +
 /// `on_scroll` fired + scene invalidated by the caller).
 pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32) -> bool {
-    let Some(root) = crate::private_layer::hit_root(b) else {
+    // The root that takes the point (a portal over the page takes its
+    // wheel too, as it takes its clicks).
+    let root = crate::private_layer::input_roots(b).into_iter().find(|&r| {
+        let mut hits = Vec::new();
+        hit_walk(b, r, px, py, 0.0, 0.0, false, &mut hits);
+        !hits.is_empty()
+    });
+    let Some(root) = root else {
         return false;
     };
     let Some(target) = find_scroll_node(b, root, px, py, 0.0, 0.0) else {
