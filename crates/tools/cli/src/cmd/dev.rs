@@ -172,6 +172,13 @@ fn dev_env_vars(
     if let Some(endpoint) = endpoint {
         out.push(("IDEALYST_DEV_ENDPOINT".to_string(), endpoint.to_string()));
     }
+    // `idealyst test` marks the run as externally driven so an in-app
+    // self-test stands down. A child process inherits it; an app the CLI
+    // launches with an explicit environment — a remote Windows machine —
+    // needs it passed along.
+    if let Ok(v) = std::env::var("IDEALYST_TEST_DRIVER") {
+        out.push(("IDEALYST_TEST_DRIVER".to_string(), v));
+    }
     // Advertise the dev backend's URL to native clients that read it via
     // the `server` SDK's `dev_base_url()` helper. Loopback is correct for
     // macOS / terminal / iOS-sim (they share the host's network stack);
@@ -2002,6 +2009,19 @@ fn launch_web(
                 None => dev_http::HeadInjectionContext { html: script },
             });
             crate::dlog!("dev web", "robot relay URL injected ({url})");
+        }
+        // `idealyst test` drives this page: say so to the app, which has no
+        // environment to read it from (`robot::is_test_driven`).
+        if std::env::var_os("IDEALYST_TEST_DRIVER").is_some() {
+            let script = build_web::test_driver_script_tag().to_string();
+            head_ctx = Some(match head_ctx.take() {
+                Some(mut h) => {
+                    h.html.push('\n');
+                    h.html.push_str(&script);
+                    h
+                }
+                None => dev_http::HeadInjectionContext { html: script },
+            });
         }
 
         crate::dev_log::emit(dev_events::DevEvent::ServerReady {

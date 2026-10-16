@@ -149,6 +149,26 @@ fn sign_in(app: &mut App) {
 passes when nothing matches or the match is not visible (a closed overlay,
 a navigated-away screen).
 
+### Running a suite on each platform
+
+`idealyst test --web | --macos | --ios | --android | --linux | --windows
+<project>` builds and launches the app (`idealyst dev --local`), waits for
+THIS project's app to register — a registration from another project or an
+earlier run is ignored — and runs `cargo test --test robot` against it. The
+dev session's output goes to a log file named on failure. `--windows` runs
+on a remote machine with `IDEALYST_WINDOWS_REMOTE` (docs/windows.md);
+`--linux` needs a Linux host. `--attach` drives an app already running.
+
+The same suite passes unchanged on web, macOS, iOS (simulator), Android
+(emulator) and Windows — `crates/dev/robot-e2e/examples/robot-e2e-demo`.
+
+An app with an in-app self-test should stand it down when a driver owns
+it: `runtime_vocabulary::robot::is_test_driven()`. `idealyst test` sets
+`IDEALYST_TEST_DRIVER`, which the tooling carries to every platform — a
+child process inherits it; Android gets it through the manifest
+(`IdealystEnv`), iOS through `simctl`, a remote Windows app through its
+launch environment, and a web page as a global the dev server injects.
+
 ### MCP server
 
 Every verb is reachable: dedicated tools for the element verbs (`find_element`, `click`,

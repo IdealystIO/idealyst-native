@@ -278,7 +278,8 @@ How it works (`crates/tools/run/windows/src/remote.rs`):
 - Programs started over SSH have no desktop, so the app is started by a
   scheduled task in the desktop session of the logged-in user. **Someone has
   to be logged in to the machine's desktop.**
-- The app binds its robot bridge on port 9718 there; an SSH forward exposes
+- The app binds its robot bridge there on a port fixed by its name (in
+  9718–10717), so two apps on one machine don't collide; an SSH forward exposes
   it on a free local port, and a registration in `~/.idealyst/apps` points
   at that port, so the parity runner and the MCP tools find the app as if it
   were local. Loopback URLs the app is given (a dev server, for example) are

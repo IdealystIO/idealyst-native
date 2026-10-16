@@ -91,9 +91,10 @@ pub fn app() -> Element {
     //
     // Skip the auto-run when an external driver (`idealyst test`) owns the
     // app: that driver runs its own suite over the relay and the in-app
-    // suite would race it for the same `count`/`secret` state. The driver
-    // sets `IDEALYST_TEST_DRIVER`, inherited by the spawned app process.
-    if std::env::var_os("IDEALYST_TEST_DRIVER").is_none() {
+    // suite would race it for the same `count`/`secret` state.
+    // `is_test_driven` reads the driver's flag on every platform (the
+    // environment natively, a page global on web).
+    if !runtime_vocabulary::robot::is_test_driven() {
         runtime_core::after_ms_detached(INITIAL_RUN_DELAY_MS, run_suite);
     }
 

@@ -57,4 +57,4 @@ robot-test = { workspace = true }
 name      = "Robot E2E Demo"
 bundle_id = "ai.truday.idealyst.robote2edemo"
 version   = "0.0.1"
-targets   = ["web", "ios", "android", "macos"]
+targets   = ["web", "ios", "android", "macos", "linux", "windows"]

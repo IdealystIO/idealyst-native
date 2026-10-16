@@ -10,8 +10,9 @@
 //!
 //! ## How the remote app looks local
 //!
-//! - **Bridge.** The app binds its robot bridge on the remote machine
-//!   ([`REMOTE_BRIDGE_PORT`]); an SSH local forward exposes it on a free
+//! - **Bridge.** The app binds its robot bridge on the remote machine, on a
+//!   port fixed by its name ([`remote_bridge_port`], so two apps can run at
+//!   once); an SSH local forward exposes it on a free
 //!   port here, and a registration file in `~/.idealyst/apps` names that
 //!   port, the HOST project root, and the local ssh session's pid. That pid
 //!   is a real process on this host, so the registry's PID-liveness pruning
@@ -41,10 +42,24 @@ use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
 
-/// Where the app binds its bridge on the remote machine. Fixed rather than
-/// ephemeral so the forward can be set up before the app starts; a stale
-/// app holding it is stopped before each launch.
+/// The first port of the range remote apps bind their bridges in.
 pub const REMOTE_BRIDGE_PORT: u16 = 9718;
+
+/// How many ports the range spans.
+const REMOTE_BRIDGE_PORT_SPAN: u16 = 1000;
+
+/// Where `app` binds its bridge on the remote machine: a port in
+/// [`REMOTE_BRIDGE_PORT`]`..+`[`REMOTE_BRIDGE_PORT_SPAN`] fixed by its name.
+/// Known before the app starts, so the forward can be set up first; the
+/// same app always gets the same port (a stale copy of it is stopped
+/// before each launch). One shared port meant a second app on the same
+/// machine couldn't bind it, and the forward reached whatever app held it
+/// — the robot drove the SDK gallery while `idealyst test` ran the demo.
+pub(crate) fn remote_bridge_port(app: &str) -> u16 {
+    // FNV-1a: stable across runs and Rust versions (`DefaultHasher` isn't).
+    let hash = app.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    REMOTE_BRIDGE_PORT + (hash % REMOTE_BRIDGE_PORT_SPAN as u64) as u16
+}
 
 /// How long the remote session waits for the app's process to appear. A
 /// debug build of a 3D app is half a gigabyte, and Windows scans a new
@@ -162,7 +177,8 @@ impl Remote {
 
         let local_env: Vec<(String, String)> =
             INHERITED.iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))).collect();
-        let (env, reverse_ports) = remote_env(env_vars, &local_env, REMOTE_BRIDGE_PORT);
+        let bridge_port = remote_bridge_port(&app);
+        let (env, reverse_ports) = remote_env(env_vars, &local_env, bridge_port);
 
         eprintln!("[run-windows] remote: preparing {} on {}", dir, self.dest);
         self.run_ps(&prepare_script(&dir, &task, &app))?;
@@ -183,16 +199,16 @@ impl Remote {
         let mut cmd = Command::new("ssh");
         self.auth_args(&mut cmd);
         cmd.args(["-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]);
-        cmd.arg("-L").arg(format!("{local_port}:127.0.0.1:{REMOTE_BRIDGE_PORT}"));
+        cmd.arg("-L").arg(format!("{local_port}:127.0.0.1:{bridge_port}"));
         for p in &reverse_ports {
             cmd.arg("-R").arg(format!("{p}:127.0.0.1:{p}"));
         }
-        cmd.arg(&self.dest).arg(encoded_command(&session_script(&dir, &task, &app)));
+        cmd.arg(&self.dest).arg(encoded_command(&session_script(&dir, &task, &app, bridge_port)));
         cmd.stdin(Stdio::null());
         let child = cmd.spawn().with_context(|| format!("starting the ssh session to {}", self.dest))?;
         eprintln!(
             "[run-windows] remote: {app} starting on {} (bridge {} → 127.0.0.1:{local_port})",
-            self.dest, REMOTE_BRIDGE_PORT
+            self.dest, bridge_port
         );
 
         let root = std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
@@ -333,7 +349,7 @@ pub(crate) fn launch_script(exe: &str, env: &[(String, String)]) -> String {
 /// then hold the session (and with it the forwards) open until the app
 /// exits — so a foreground `idealyst run windows` returns when the window
 /// is closed.
-pub(crate) fn session_script(dir: &str, task: &str, app: &str) -> String {
+pub(crate) fn session_script(dir: &str, task: &str, app: &str, port: u16) -> String {
     format!(
         "$ErrorActionPreference = 'Stop'\n\
          $ProgressPreference = 'SilentlyContinue'\n\
@@ -366,7 +382,7 @@ pub(crate) fn session_script(dir: &str, task: &str, app: &str) -> String {
         dir = ps_quote(dir),
         task = ps_quote(task),
         app = ps_quote(app),
-        port = REMOTE_BRIDGE_PORT,
+        port = port,
         start_timeout = START_TIMEOUT_SECS,
     )
 }
@@ -414,6 +430,17 @@ mod tests {
     }
 
     #[test]
+    fn regression_two_apps_get_different_remote_bridge_ports() {
+        let gallery = remote_bridge_port("sdk-gallery-windows");
+        let demo = remote_bridge_port("robot-e2e-demo-windows");
+        assert_ne!(gallery, demo, "a second app must not collide with the first's bridge");
+        assert_eq!(demo, remote_bridge_port("robot-e2e-demo-windows"), "stable per app");
+        for p in [gallery, demo] {
+            assert!((REMOTE_BRIDGE_PORT..REMOTE_BRIDGE_PORT + REMOTE_BRIDGE_PORT_SPAN).contains(&p));
+        }
+    }
+
+    #[test]
     fn remote_env_drops_host_only_values_and_sets_the_bridge_port() {
         let env_vars = vec![
             kv("IDEALYST_LAUNCHER_PID", "4242"),
@@ -456,8 +483,9 @@ mod tests {
     /// long timeout before anything else, and fail loudly if it never comes.
     #[test]
     fn regression_session_waits_for_a_slow_first_start() {
-        let s = session_script(r"C:\idealyst\a", "idealyst-a", "a");
+        let s = session_script(r"C:\idealyst\a", "idealyst-a", "a", 9900);
         let wait = s.find("AddSeconds(180)").expect("the long start timeout");
+        assert!(s.contains("-LocalPort 9900"), "the session waits on the app's own bridge port");
         let bridge = s.find("-State Listen").expect("the bridge check");
         assert!(wait < bridge, "the process wait comes before the bridge wait");
         assert!(s.contains("did not start within 180 s"));

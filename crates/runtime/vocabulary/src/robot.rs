@@ -1114,6 +1114,28 @@ fn state_of(id: ElementId) -> Option<ElementState> {
     Some(f())
 }
 
+thread_local! {
+    /// Set by a platform boot that learns an external driver owns the app
+    /// another way than the environment (web: a page global).
+    static TEST_DRIVEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether an external test driver (`idealyst test`) owns this app — so an
+/// in-app self-test should stand down rather than race the driver's suite
+/// for the same state. `IDEALYST_TEST_DRIVER` in the environment on native
+/// (the dev tooling forwards it to Android, iOS and remote Windows apps,
+/// which inherit nothing); on web the boot reads the page global the dev
+/// server injects ([`set_test_driven`]).
+pub fn is_test_driven() -> bool {
+    TEST_DRIVEN.with(|t| t.get())
+        || (!cfg!(target_arch = "wasm32") && std::env::var_os("IDEALYST_TEST_DRIVER").is_some())
+}
+
+/// Mark the app as owned by an external test driver (see [`is_test_driven`]).
+pub fn set_test_driven(on: bool) {
+    TEST_DRIVEN.with(|t| t.set(on));
+}
+
 /// A recursive snapshot of the mounted tree.
 #[derive(Clone, Debug)]
 pub struct TreeNode {

@@ -92,3 +92,34 @@ pub(crate) fn view_viewport_rect(
     let density = super::with_env(|env| super::density_of(env, &root.as_obj())).unwrap_or(1.0);
     crate::anchored_portal_policy::screen_px_to_viewport_dp(view, (root_rect.x, root_rect.y), density)
 }
+
+
+/// Opacity at or below which a view counts as invisible — the painted
+/// backends' hit-test bar (`effective_opacity() <= 0.003`).
+const TRANSPARENT_ALPHA: f32 = 0.003;
+
+/// Whether Android shows `node` (`IntrospectionOps::is_shown`):
+/// `View.isShown()` — it and every ancestor `VISIBLE`, and attached to a
+/// window — and not faded out (the product of `getAlpha()` up the parent
+/// chain above ~0). `None` if the JNI calls fail.
+pub(crate) fn view_is_shown(node: &jni::objects::GlobalRef) -> Option<bool> {
+    super::with_env(|env| {
+        let shown = env.call_method(node.as_obj(), "isShown", "()Z", &[]).and_then(|v| v.z()).ok()?;
+        if !shown {
+            return Some(false);
+        }
+        let view_class = env.find_class("android/view/View").ok()?;
+        let mut alpha = 1.0f32;
+        let mut cur = env.new_local_ref(node.as_obj()).ok()?;
+        loop {
+            alpha *= env.call_method(&cur, "getAlpha", "()F", &[]).and_then(|v| v.f()).ok()?;
+            let parent = env.call_method(&cur, "getParent", "()Landroid/view/ViewParent;", &[]).and_then(|v| v.l()).ok()?;
+            if parent.is_null() || !env.is_instance_of(&parent, &view_class).ok()? {
+                break;
+            }
+            let _ = env.delete_local_ref(cur);
+            cur = parent;
+        }
+        Some(alpha > TRANSPARENT_ALPHA)
+    })
+}

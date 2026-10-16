@@ -819,6 +819,11 @@ fn launch_app(udid: &str, bundle_id: &str) -> Result<()> {
     if let Ok(url) = std::env::var("IDEALYST_ROBOT_RELAY_URL") {
         cmd.env("SIMCTL_CHILD_IDEALYST_ROBOT_RELAY_URL", url);
     }
+    // `idealyst test` tells an in-app self-test to stand down; a desktop
+    // app inherits the variable, a simulator app needs it forwarded.
+    if let Ok(v) = std::env::var("IDEALYST_TEST_DRIVER") {
+        cmd.env("SIMCTL_CHILD_IDEALYST_TEST_DRIVER", v);
+    }
     let status = cmd.status().with_context(|| "spawn xcrun simctl launch")?;
     if !status.success() {
         anyhow::bail!("xcrun simctl launch exited with {status}");

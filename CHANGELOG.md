@@ -15,6 +15,24 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **The robot works on Android, and `idealyst test` runs on every platform**
+  (`backend-android-mobile`, `build-android`, `run-android`, `run-ios`,
+  `run-windows`, `idealyst-cli`, `robot-test`, `runtime-vocabulary`,
+  `idealyst`). Android had no robot at all: no `robot` feature, nothing
+  installed the driver env or started the bridge, so element verbs answered
+  from an empty registry and `idealyst test --android` timed out. It now
+  mirrors iOS (driver env, verb router, `screenshot`, `absolute_frame`,
+  `is_shown`). `idealyst test` gains `--linux` / `--windows`; it waits for
+  its OWN app's fresh registration (it took any live app — another dev
+  session's — and pinged it for four minutes), kills the dev session's whole
+  process group, and logs the session's output. Remote Windows apps bind a
+  per-app bridge port (a second app couldn't bind the shared 9718, and the
+  forward reached the first). `IDEALYST_TEST_DRIVER` reaches Android, iOS,
+  remote Windows and web apps; read it with
+  `runtime_vocabulary::robot::is_test_driven()`. The robot-e2e demo suite
+  passes on web, macOS, iOS, Android and Windows. *Migration:* an app that
+  read `std::env::var("IDEALYST_TEST_DRIVER")` calls `is_test_driven()`.
+
 - **Robot actions behave like a user** (`runtime-vocabulary`, dev builds
   only). `click`, `type_text`, `set_toggle`, `set_slider` and `focus` on a
   disabled control now fail (`action '…' refused: the element is

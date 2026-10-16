@@ -1736,6 +1736,14 @@ pub fn robot_relay_script_tag(url: &str) -> String {
     )
 }
 
+/// `window.IDEALYST_TEST_DRIVER` — tells a browser-hosted app an external
+/// driver (`idealyst test`) owns it, as the environment variable does a
+/// native app (a browser has no environment). Served by the dev server
+/// when its own environment carries the flag.
+pub fn test_driver_script_tag() -> &'static str {
+    "\n    <script>window.IDEALYST_TEST_DRIVER=\"1\";</script>"
+}
+
 /// Escape `s` for embedding in a double-quoted JS string literal that
 /// lives inside an inline `<script>`.
 ///
@@ -5440,6 +5448,11 @@ mod robot_relay_tests {
     /// trusted input. A `"` would close the string literal and a
     /// `</script>` would close the block, either one turning the rest
     /// of the head into markup the browser executes.
+    #[test]
+    fn test_driver_tag_sets_the_page_global() {
+        assert_eq!(test_driver_script_tag().trim(), r#"<script>window.IDEALYST_TEST_DRIVER="1";</script>"#);
+    }
+
     #[test]
     fn relay_url_cannot_break_out_of_the_script_tag() {
         let tag = robot_relay_script_tag(r#"ws://x"</script><script>alert(1)"#);

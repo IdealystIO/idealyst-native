@@ -32,6 +32,11 @@ async-driver = ["runtime-shared/async-driver", "backend-android-core/async-drive
 # The variant crate enables this through its OWN `debug-stats` feature
 # forwarding here — see CLAUDE.md for the variant-vs-dep gotcha.
 debug-stats = ["runtime-shared/debug-stats"]
+# The Robot bridge on this backend (dev builds): the vocabulary's element
+# registry plus the transport, and the boot-time `newcore::install_robot_env`
+# that points the bridge at the registry this boot fills. Mirrors
+# `backend-ios-mobile/robot`; the Android wrapper's `dev` turns it on.
+robot = ["runtime-vocabulary/robot", "runtime-shared/robot"]
 
 [dependencies]
 # `embed-font-bytes`: Android loads fonts by writing the raw bytes to

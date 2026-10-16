@@ -77,6 +77,13 @@ pub struct Args {
     /// Test against the Android emulator.
     #[arg(long)]
     pub android: bool,
+    /// Test against the Linux (GTK) app — on a Linux host.
+    #[arg(long)]
+    pub linux: bool,
+    /// Test against the Windows app — on a Windows host, or on a remote
+    /// Windows machine via `IDEALYST_WINDOWS_REMOTE` (see docs/windows.md).
+    #[arg(long)]
+    pub windows: bool,
     /// Attach to an already-running app (started with `idealyst dev`) instead of
     /// launching one.
     #[arg(long)]
@@ -106,15 +113,36 @@ fn parse_viewport(s: &str) -> Result<(u32, u32)> {
     Ok((w.trim().parse()?, h.trim().parse()?))
 }
 
-/// Kills its child processes (dev session + headless browser) on drop.
+/// Kills its child processes (dev session + headless browser) on drop —
+/// each with its whole process group on unix, so what `idealyst dev`
+/// started (cargo, an emulator install, the SSH session that keeps a remote
+/// Windows app and its registration alive) goes with it. Killing only the
+/// `dev` process left that SSH session running, and the next run found its
+/// stale registration and drove the wrong app.
 struct Kill(Vec<Child>);
 impl Drop for Kill {
     fn drop(&mut self) {
         for c in &mut self.0 {
+            #[cfg(unix)]
+            unsafe {
+                // Children are spawned as process-group leaders (`own_group`).
+                libc::killpg(c.id() as libc::pid_t, libc::SIGTERM);
+            }
             let _ = c.kill();
             let _ = c.wait();
         }
     }
+}
+
+/// Spawn `cmd` as the leader of a new process group, so [`Kill`] can stop
+/// everything it starts.
+fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -138,12 +166,29 @@ pub fn run(args: Args) -> Result<()> {
         "ios"
     } else if args.android {
         "android"
+    } else if args.linux {
+        "linux"
+    } else if args.windows {
+        "windows"
     } else {
         "web"
     };
 
     let viewport = parse_viewport(&args.viewport)?;
+    let apps_dirs = registry_dirs()?;
+    // Registrations already live before the launch belong to another run
+    // (or the app being attached to): when launching, wait for a new one.
+    let preexisting: Vec<SocketAddr> = if args.attach {
+        Vec::new()
+    } else {
+        apps_dirs.iter().flat_map(|d| discover_all(Some(&dir), d)).collect()
+    };
     let mut kill = Kill(Vec::new());
+    let dev_log: Option<PathBuf> = (!args.attach).then(|| dev_log_path(platform));
+    let see_log = |what: &str| match &dev_log {
+        Some(log) => format!("{what} — the dev session's output is in {}", log.display()),
+        None => what.to_string(),
+    };
     if !args.attach {
         // Launch the app by spawning a `dev` session of THIS binary. Robot is on
         // by default, so the app dials the relay; killing the child tears it down.
@@ -158,16 +203,21 @@ pub fn run(args: Args) -> Result<()> {
         // that would race the suite for shared state.
         cmd.env("IDEALYST_TEST_DRIVER", "1");
         cmd.env("IDEALYST_WINDOW_SIZE", format!("{}x{}", viewport.0, viewport.1));
-        cmd.arg(&dir).stdout(Stdio::null()).stderr(Stdio::null());
-        kill.0.push(cmd.spawn().context("spawning `idealyst dev`")?);
+        // The session's build + launch output goes to a log file, named when
+        // the app doesn't come up — discarding it left "did not become ready"
+        // with nothing to go on.
+        let log = dev_log.as_ref().expect("set when not attaching");
+        let file = std::fs::File::create(log).with_context(|| format!("creating {}", log.display()))?;
+        cmd.arg(&dir).stdout(file.try_clone()?).stderr(file);
+        eprintln!("[test] dev session log: {}", log.display());
+        kill.0.push(own_group(&mut cmd).spawn().context("spawning `idealyst dev`")?);
     }
 
     // Wait for the relay registration for this project (a cold build can take a
     // while), then for web open the page headlessly so the app dials.
-    let apps_dirs = registry_dirs()?;
     eprintln!("[test] waiting for the app to come up…");
-    let addr = wait_for_registration(&dir, &apps_dirs, Duration::from_secs(300))
-        .context("the app never registered with the relay (build failed? run `idealyst dev` to see)")?;
+    let addr = wait_for_registration(&dir, &apps_dirs, &preexisting, Duration::from_secs(300))
+        .with_context(|| see_log("the app never registered with the relay (build failed?)"))?;
 
     if platform == "web" && !args.attach {
         if !wait_for_web_server(args.port, Duration::from_secs(600)) {
@@ -190,7 +240,7 @@ pub fn run(args: Args) -> Result<()> {
     // The relay registers as soon as `dev` hosts it — well before a cold app
     // build finishes, launches, and dials — so give the app a generous budget
     // and reconnect each attempt (the bridge isn't pingable until it dials).
-    wait_until_ready(addr, Duration::from_secs(240)).context("the app did not become ready")?;
+    wait_until_ready(addr, Duration::from_secs(240)).with_context(|| see_log("the app did not become ready"))?;
 
     // Run the project's tests against the live app. The `#[robot_test]` harness
     // reads `IDEALYST_ROBOT_BRIDGE`; `--test-threads=1` keeps them serialized
@@ -508,14 +558,32 @@ fn wait_until_ready(addr: SocketAddr, timeout: Duration) -> Result<()> {
     }
 }
 
+/// A live registration for THIS project that wasn't there before the
+/// launch. `discover` falls back to any live app (with another dev session
+/// running, the wrong one), and a registration left by an earlier run's
+/// still-closing session is live too — neither is the app just launched.
+fn fresh_registration(project_dir: &Path, apps_dirs: &[PathBuf], preexisting: &[SocketAddr]) -> Option<SocketAddr> {
+    apps_dirs
+        .iter()
+        .flat_map(|d| discover_all(Some(project_dir), d))
+        .find(|addr| !preexisting.contains(addr))
+}
+
+/// Where a test run's `idealyst dev` output goes: the system temp dir,
+/// one file per platform and run.
+fn dev_log_path(platform: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("idealyst-test-{platform}-{}.log", std::process::id()))
+}
+
 fn wait_for_registration(
     project_dir: &Path,
     apps_dirs: &[PathBuf],
+    preexisting: &[SocketAddr],
     timeout: Duration,
 ) -> Option<SocketAddr> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(addr) = apps_dirs.iter().find_map(|d| discover(Some(project_dir), d)) {
+        if let Some(addr) = fresh_registration(project_dir, apps_dirs, preexisting) {
             return Some(addr);
         }
         if Instant::now() >= deadline {
@@ -607,4 +675,39 @@ fn launch_headless_web(port: u16, viewport: (u32, u32)) -> Option<Child> {
                 _ => Some(child),
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A registration live before the launch is another run's (the run
+    /// before, still closing its SSH session to a remote Windows app): the
+    /// launcher must wait for the new one. It used the old one and drove the
+    /// wrong app — the SDK gallery that held the remote bridge port.
+    #[test]
+    fn regression_the_launcher_ignores_registrations_from_before_its_launch() {
+        use std::net::TcpListener;
+        let apps = std::env::temp_dir().join(format!("idealyst-test-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&apps);
+        let project = apps.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let register = |name: &str| {
+            let live = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = live.local_addr().unwrap().port();
+            let reg = serde_json::json!({ "name": name, "pid": 1, "port": port, "project_root": project });
+            std::fs::write(apps.join(format!("{name}.json")), reg.to_string()).unwrap();
+            live
+        };
+        let old = register("old");
+        let dirs = vec![apps.clone()];
+        let preexisting: Vec<SocketAddr> = discover_all(Some(&project), &apps);
+        assert_eq!(preexisting.len(), 1);
+        assert_eq!(fresh_registration(&project, &dirs, &preexisting), None, "the old run's app is not this one");
+        let new = register("new");
+        let got = fresh_registration(&project, &dirs, &preexisting).expect("the launched app");
+        assert_eq!(got.port(), new.local_addr().unwrap().port());
+        drop(old);
+        let _ = std::fs::remove_dir_all(&apps);
+    }
 }

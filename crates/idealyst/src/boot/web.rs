@@ -186,6 +186,14 @@ fn start_local<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     app: impl Fn() -> Element + 'static,
     config: AppConfig,
 ) {
+    // `idealyst test` owns this page: an in-app self-test stands down
+    // (`runtime_vocabulary::robot::is_test_driven`). A browser has no
+    // environment, so the dev server injects the flag as a page global.
+    // BEFORE the mount: the app's components decide at build time.
+    #[cfg(feature = "robot")]
+    if read_global_string("IDEALYST_TEST_DRIVER").is_some() {
+        runtime_vocabulary::robot::set_test_driven(true);
+    }
     let selector = config.mount_selector;
     // BOTH boot paths must instantiate the SAME `S`. The bundle
     // compiles in `start_in_with` and `hydrate_in_with` and picks at

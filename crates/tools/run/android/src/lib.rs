@@ -261,6 +261,7 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                 "ROBOT_RELAY_URL",
                 &xml_escape(opts.robot_relay_url.as_deref().unwrap_or("")),
             ),
+            ("IDEALYST_ENV", &xml_escape(&forwarded_env(|k| std::env::var(k).ok()))),
             ("ICON_ATTRS", &icon_attrs),
             ("USES_PERMISSIONS", &uses_permissions),
             ("SERVICES", &services),
@@ -1047,6 +1048,21 @@ fn adb_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {
 /// `TcpListener::bind` fails with EACCES on Android and host tooling /
 /// MCP can't reach the app — see the live-verification of the `device_frame`
 /// / `adb input tap` path that surfaced this gap.
+/// The dev-tooling variables an Android app gets from the dev process's
+/// environment (desktop apps inherit them as child processes).
+const FORWARDED_ENV: &[&str] = &["IDEALYST_TEST_DRIVER"];
+
+/// `KEY=VALUE;…` for each [`FORWARDED_ENV`] variable that is set — the
+/// `IdealystEnv` manifest meta-data MainActivity replays through
+/// `NativeBridge.setEnv` before attach.
+fn forwarded_env(get: impl Fn(&str) -> Option<String>) -> String {
+    FORWARDED_ENV
+        .iter()
+        .filter_map(|k| get(k).map(|v| format!("{k}={v}")))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn local_robot_build_needs_internet(is_runtime_server: bool, user_features: &[String]) -> bool {
     !is_runtime_server
         && user_features
@@ -1152,6 +1168,23 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// `idealyst test` sets `IDEALYST_TEST_DRIVER` so an app's in-app
+    /// self-test stands down, but an Android app has no environment to
+    /// inherit: the self-test ran under the host suite and changed the
+    /// state it asserted on. The variable now rides the manifest.
+    #[test]
+    fn regression_the_test_driver_flag_reaches_the_app_manifest() {
+        use super::forwarded_env;
+        let env = |k: &str| (k == "IDEALYST_TEST_DRIVER").then(|| "1".to_string());
+        assert_eq!(forwarded_env(env), "IDEALYST_TEST_DRIVER=1");
+        assert_eq!(forwarded_env(|_| None), "", "nothing set, nothing forwarded");
+        assert!(
+            include_str!("../templates/AndroidManifest.xml").contains("{{IDEALYST_ENV}}"),
+            "the local manifest carries the meta-data"
+        );
+        assert!(include_str!("../templates/MainActivity.java").contains("NativeBridge.setEnv("));
+    }
+
     use super::{local_robot_build_needs_internet, render, ANDROID_MANIFEST_LOCAL_XML};
     use super::{splice_assets_into_apk, stage_apk_assets, APK_ASSETS_STAGING};
     use std::fs;

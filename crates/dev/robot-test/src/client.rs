@@ -132,6 +132,16 @@ pub fn discover(project_dir: Option<&Path>, apps_dir: &Path) -> Option<SocketAdd
     fallback
 }
 
+/// The **live** app bridge registered for `project_dir` — and only that one.
+/// Unlike [`discover`], no fallback to another project's app: a launcher
+/// waiting for ITS app to register must not settle for whatever else is
+/// running. (`idealyst test` did, and with another `idealyst dev` session up
+/// it pinged that session's relay for four minutes and reported "the app did
+/// not become ready".)
+pub fn discover_project(project_dir: &Path, apps_dir: &Path) -> Option<SocketAddr> {
+    discover_all(Some(project_dir), apps_dir).into_iter().next()
+}
+
 /// Every **live** app bridge registered for `project_dir` (or every live app
 /// when `project_dir` is `None`). Unlike [`discover`], which returns one, this
 /// returns all of them — so a caller running two platforms of the same project

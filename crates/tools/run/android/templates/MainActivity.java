@@ -71,6 +71,15 @@ public class MainActivity extends FragmentActivity {
                 if (robotUrl != null && !robotUrl.isEmpty()) {
                     NativeBridge.setRobotRelayUrl(robotUrl);
                 }
+                String env = meta.getString("IdealystEnv");
+                if (env != null && !env.isEmpty()) {
+                    for (String pair : env.split(";")) {
+                        int eq = pair.indexOf('=');
+                        if (eq > 0) {
+                            NativeBridge.setEnv(pair.substring(0, eq), pair.substring(eq + 1));
+                        }
+                    }
+                }
             }
         } catch (Throwable t) {
             Log.w("idealyst", "robot relay meta-data read failed: " + t);

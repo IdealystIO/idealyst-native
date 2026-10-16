@@ -645,6 +645,19 @@ mod native {
         // returns. Survives Activity recreation: this install runs
         // again for the new world (see the viewport-source section).
         set_viewport_sink(Some(vp_sig));
+        // Point the Robot bridge at the registry this boot fills, and
+        // answer `screenshot` with this backend's real capture — as the
+        // iOS / macOS / Linux / Windows boots do. Without it the bridge
+        // answered element verbs from runtime-shared's old, empty registry.
+        #[cfg(feature = "robot")]
+        {
+            install_robot_env();
+            let weak = Rc::downgrade(&backend);
+            runtime_shared::robot::screenshot::register_native_screenshot(move |done| match weak.upgrade() {
+                Some(b) => caps::IntrospectionOps::capture_screenshot(&*b.borrow(), done),
+                None => done(Err("the app has been torn down".into())),
+            });
+        }
         APP.with(|slot| {
             *slot.borrow_mut() = Some(App {
                 realized,
@@ -652,6 +665,34 @@ mod native {
                 _registry: registry,
                 world,
             })
+        });
+    }
+
+    /// Wire the Robot bridge to this backend's element registry: the
+    /// driver env runs queries inside the mounted world and settles
+    /// (flushes) after an action; the verb router hands each bridge verb
+    /// to the vocabulary's command table, `None` for the transport's own.
+    /// Same as `backend_ios::newcore::install_robot_env`.
+    #[cfg(feature = "robot")]
+    fn install_robot_env() {
+        runtime_vocabulary::robot::install_driver_env(
+            |f| match crate::newcore::mounted_world() {
+                Some(world) => world.enter(|| f()),
+                None => f(),
+            },
+            || {
+                if let Some(world) = crate::newcore::mounted_world() {
+                    if !world.is_flushing() {
+                        world.flush();
+                    }
+                }
+            },
+        );
+        runtime_shared::robot::bridge::install_verb_router(|cmd, args| {
+            match runtime_vocabulary::robot::bridge::invoke_command(cmd, args) {
+                Err(e) if e.starts_with("unknown command:") => None,
+                other => Some(other),
+            }
         });
     }
 
@@ -1580,6 +1621,17 @@ mod native {
 
         fn device_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
             AndroidBackend::device_frame_impl(self, node)
+        }
+
+        /// Window-relative rect in dp — the anchoring space (`rect()`),
+        /// which the robot's synthetic touches and slider drags map onto.
+        fn absolute_frame(&self, node: &Self::Node) -> Option<ViewportRect> {
+            let r = crate::imp::view_rect::view_viewport_rect(node);
+            (r.width > 0.0 || r.height > 0.0).then_some(r)
+        }
+
+        fn is_shown(&self, node: &Self::Node) -> Option<bool> {
+            crate::imp::view_rect::view_is_shown(node)
         }
 
         fn supports_screenshot(&self) -> bool {

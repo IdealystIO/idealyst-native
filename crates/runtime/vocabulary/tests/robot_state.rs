@@ -353,3 +353,17 @@ fn scroll_view_state_reports_its_offset() {
     assert_eq!(state(&robot, "list").scroll, Some((0.0, 240.0)));
     robot.reset();
 }
+
+/// An external driver's flag reaches the app on every platform: the web
+/// boot sets it from a page global (a browser has no environment), and a
+/// self-test that asks `is_test_driven` stands down. Before, the demo read
+/// `std::env` — always unset in a browser, so its self-test ran under
+/// `idealyst test --web` and changed the state the suite asserted on.
+#[test]
+fn regression_the_test_driver_flag_is_readable_without_an_environment() {
+    use runtime_vocabulary::robot::{is_test_driven, set_test_driven};
+    set_test_driven(true);
+    assert!(is_test_driven());
+    set_test_driven(false);
+    assert_eq!(is_test_driven(), std::env::var_os("IDEALYST_TEST_DRIVER").is_some());
+}

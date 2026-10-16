@@ -41,7 +41,8 @@ pub mod parity;
 
 pub use app::{App, Component, ElementState, Locator, NavigatorInfo, ScrollOffset, SignalAssert, DEFAULT_TIMEOUT};
 pub use client::{
-    default_apps_dir, default_apps_dirs, discover, discover_all, RobotClient, WINE_APPS_DIR_NAME,
+    default_apps_dir, default_apps_dirs, discover, discover_all, discover_project, RobotClient,
+    WINE_APPS_DIR_NAME,
 };
 pub use parity::{capture_native, diff as diff_native, report as report_parity, Capture, Mismatch, Tolerance};
 

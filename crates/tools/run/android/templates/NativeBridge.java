@@ -33,4 +33,9 @@ public class NativeBridge {
     /// self-hosting an on-device TCP bridge. Call BEFORE `attach`. Only
     /// resolved in dev builds; MainActivity guards on the meta-data presence.
     public static native void setRobotRelayUrl(String url);
+
+    /// Set an `IDEALYST_*` environment variable in the app process (the
+    /// `IdealystEnv` meta-data `idealyst dev` bakes in — what a desktop app
+    /// would inherit from the dev process). Call BEFORE `attach`.
+    public static native void setEnv(String key, String value);
 }

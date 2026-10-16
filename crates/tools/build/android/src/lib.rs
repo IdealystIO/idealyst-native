@@ -367,10 +367,12 @@ crate-type = ["cdylib"]
 
 [features]
 # `idealyst dev` builds with `--features dev`: the catalog + automation
-# surface (`runtime-core/dev`) plus the bridge TRANSPORT
-# (`runtime-shared/robot`), which is what makes
-# `robot::bridge::set_app_identity` in the JNI bridge resolve.
-dev = ["runtime-core/dev", "runtime-shared/robot"]
+# surface (`runtime-core/dev`), the bridge TRANSPORT (`runtime-shared/robot`,
+# which makes `robot::bridge::set_app_identity` in the JNI bridge resolve),
+# and `backend-android-mobile/robot` — the boot-time `install_robot_env`
+# that points the bridge at the registry the mount fills. Without that one
+# every element verb answered from an empty registry.
+dev = ["runtime-core/dev", "runtime-shared/robot", "backend-android-mobile/robot"]
 
 [dependencies]
 runtime-core = {runtime_core_dep}
@@ -526,6 +528,27 @@ pub extern "system" fn Java_{jni}_NativeBridge_attach<'local>(
             {lib}::scene_app,
         );
 
+        // Start the Robot bridge AFTER the mount: both entry points end
+        // in `schedule_periodic_poll()`, which drains the bridge's command
+        // queue on the main Looper and needs the scheduler installed above.
+        // A relay URL (`setRobotRelayUrl`, from the manifest meta-data
+        // `idealyst dev` bakes in + `adb reverse`) means dial the host
+        // relay; otherwise bind a device-local listener. Same choice the
+        // iOS / macOS / Linux / Windows wrappers make. Once per process:
+        // an Activity recreation re-attaches but keeps the bridge.
+        #[cfg(feature = "dev")]
+        {{
+            static BRIDGE_STARTED: ::std::sync::Once = ::std::sync::Once::new();
+            BRIDGE_STARTED.call_once(|| {{
+                match ::runtime_shared::robot::bridge::relay_url_from_env() {{
+                    Some(url) => ::runtime_shared::robot::bridge::start_relay_client(url),
+                    None => ::runtime_shared::robot::bridge::start_auto_polling(
+                        ::runtime_shared::robot::bridge::DEFAULT_PORT,
+                    ),
+                }}
+            }});
+        }}
+
         log::info!("idealyst: attach complete");
     }}));
     // A swallowed panic here means "app launches to a blank screen
@@ -628,6 +651,31 @@ pub extern "system" fn Java_{jni}_NativeBridge_deliverLink<'local>(
         }}
     }}));
     abort_on_link_panic("deliverLink", result);
+}}
+
+/// Set an `IDEALYST_*` variable in the process environment — the
+/// `IdealystEnv` manifest meta-data `idealyst dev` bakes in (an Android
+/// app has no environment to inherit from the dev process, the way a
+/// desktop app does). Only `IDEALYST_` keys: this is dev tooling's
+/// channel, not a general env setter. Called from MainActivity BEFORE
+/// `attach`.
+#[no_mangle]
+pub extern "system" fn Java_{jni}_NativeBridge_setEnv<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    key: JString<'local>,
+    value: JString<'local>,
+) {{
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+        let read = |env: &mut JNIEnv<'local>, s: &JString<'local>| {{
+            env.get_string(s).ok().map(|js| js.to_str().unwrap_or("").to_string())
+        }};
+        if let (Some(k), Some(v)) = (read(&mut env, &key), read(&mut env, &value)) {{
+            if k.starts_with("IDEALYST_") {{
+                ::std::env::set_var(k, v);
+            }}
+        }}
+    }}));
 }}
 
 /// Export the robot relay URL (baked into the manifest meta-data by
@@ -1065,6 +1113,26 @@ mod regression_tests {
     fn local_wrapper_has_dev_surface() {
         let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
         assert_dev_surface(&std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap());
+    }
+
+    /// The local Android wrapper never wired the Robot to the app: its
+    /// `dev` turned on the registry and the transport but not the backend's
+    /// `install_robot_env`, and nothing started the bridge, so `idealyst
+    /// test --android` timed out and every element verb answered from an
+    /// empty registry. `dev` now turns on `backend-android-mobile/robot`,
+    /// and the attach starts the bridge AFTER the mount (its poll needs the
+    /// scheduler the attach installs).
+    #[test]
+    fn regression_local_wrapper_wires_and_starts_the_robot_bridge() {
+        let (wrapper_dir, _tmp) = run_generator(BuildMode::Local);
+        let cargo = parse(&std::fs::read_to_string(wrapper_dir.join("Cargo.toml")).unwrap());
+        let dev: Vec<&str> = cargo["features"]["dev"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+        assert!(dev.contains(&"backend-android-mobile/robot"), "dev = {dev:?}");
+        let lib_rs = std::fs::read_to_string(wrapper_dir.join("src/lib.rs")).unwrap();
+        let mount = lib_rs.find("backend_android::newcore::start(").expect("the attach mounts");
+        let bridge = lib_rs.find("start_relay_client(url)").expect("the attach starts the bridge");
+        assert!(bridge > mount, "the bridge starts after the mount");
+        assert!(lib_rs.contains("start_auto_polling("), "no relay: a device-local listener");
     }
 
     #[test]
