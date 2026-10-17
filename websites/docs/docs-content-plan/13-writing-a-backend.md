@@ -35,7 +35,7 @@ impl Host for MyBackend {
 
 The SECOND layer is `runtime_vocabulary::caps`: a family of narrow capability traits, each a subtrait of `Host`, each covering one primitive family. A primitive's mount handler is generic over exactly the capabilities it uses, so a backend supports a primitive precisely when it implements that primitive's trait.
 
-That is what makes the surface progressive. There is no mega-trait with thirty `unimplemented!()` methods to stare at: you implement `Host`, then add capability traits one at a time, and each one immediately unlocks its primitives.
+That is what makes the surface progressive. There is no mega-trait with thirty `unimplemented!()` methods to stare at: almost every capability method has a default that degrades rather than crashes, so most traits start as an empty `impl` block and you fill in methods as you support them.
 
 ## type Node
 
@@ -62,22 +62,22 @@ Get this right before anything else — it decides the SHAPE of the tree your ot
 
 ## The capability traits
 
-Every trait below is a subtrait of `Host` and groups the operations one primitive family needs. The authoritative per-method contract is each trait's own rustdoc in `crates/runtime/vocabulary/src/caps/`; `COVERAGE.md` next to it maps every method to the handler that calls it.
+Every trait below is a subtrait of `Host` and groups the operations one primitive family needs. The authoritative per-method contract is each trait's own rustdoc in `crates/runtime/vocabulary/src/caps/`; `crates/runtime/vocabulary/COVERAGE.md` lists every trait's methods and marks the few with no default.
 
 - Structure + input — `ViewOps`, `InputOps`, `PressableOps`.
 - Text — `TextOps`, `ButtonOps`.
 - Media — `ImageOps`, `IconOps`, `LinkOps`.
 - Widgets — `TextInputOps`, `ToggleOps`, `SliderOps`, `ActivityIndicatorOps`.
-- Scrolling + lists — `ScrollOps`, `SafeAreaOps`, `VirtualizerOps`.
-- Layers + navigation — `PortalOps`, `PresenceOps`, `NavigatorOps`, `GraphicsOps`.
+- Scrolling + lists — `ScrollOps`, `SafeAreaOps`, `VirtualizerOps`, `GridOps`.
+- Layers + graphics — `PortalOps`, `PresenceOps`, `GraphicsOps`, and `NavigatorOps` (extension hooks only; the built-in navigators mount through `ViewOps` and `LifecycleOps`).
 - Styling + assets — `StyleOps`, `AssetOps`.
 - Payload escape hatch — `ExternalOps`, `DocumentOps` (the "render something opaque" and document-level surfaces).
 - App shell — `AppEnvOps`, `LifecycleOps`, `BatchOps`.
 - Tooling — `A11yOps`, `AnimationOps`, `IntrospectionOps`, `WireBindingOps`.
 
-There is one umbrella: `AllCaps`, a blanket-implemented supertrait of every trait above. `runtime_vocabulary::register_builtins::<B: AllCaps>()` bounds on it, so a backend that implements the whole family gets the full built-in primitive vocabulary registered in one call.
+There is one umbrella: `AllCaps`, a blanket-implemented supertrait of every trait above. `register_builtins`, `register_builtins_with`, the `BuiltinSet` methods, and the per-primitive `register_view` / `register_text` / … helpers all bound on `H: AllCaps`, so a backend implements every trait before it registers any built-in primitive. That is cheap because of the defaults: a trait you don't support yet is an empty `impl`, and its widgets render a labeled "unsupported" placeholder (`ExternalOps::missing_primitive_placeholder`) instead of crashing.
 
-Until then, register the subset you support. A handler generic over `H: StyleServices + TextOps` compiles against any backend that has those two — which is also why third-party SDKs written that way work on your backend the day you implement the traits they name. See [third-party primitives](#).
+Third-party handlers are different: they bound on just the traits they use. A handler generic over `H: StyleServices + TextOps` compiles against any backend that has those — which is why third-party SDKs written that way work on your backend the day you implement the traits they name. See [third-party primitives](third-party-primitives).
 
 ## The two execution models
 
@@ -126,12 +126,12 @@ Runtime backends leave every `WireBindingOps` method at its default no-op — th
 
 ## A skeleton backend
 
-The smallest plausible backend is `Host` plus the two or three capability traits your app's primitives actually use:
+The smallest plausible backend is `Host`, real implementations of the capability traits your app's primitives actually use, and empty `impl`s for the rest:
 
 ```rust
 use std::rc::Rc;
 use runtime_scene::Host;
-use runtime_vocabulary::caps::{StyleOps, TextOps, ViewOps};
+use runtime_vocabulary::caps::*;
 use runtime_shared::StyleRules;
 
 #[derive(Clone)]
@@ -150,16 +150,26 @@ impl Host for MyBackend {
     fn supports_splice(&self) -> bool { true }
 }
 
-impl ViewOps for MyBackend { /* create_view, … */ }
-impl TextOps for MyBackend { /* create_text, update_text, … */ }
+impl ViewOps for MyBackend { /* create_view (required), … */ }
+impl TextOps for MyBackend { /* create_text, update_text (required), … */ }
 impl StyleOps for MyBackend {
     fn apply_style(&mut self, node: &Node, style: &Rc<StyleRules>) {
         // Translate StyleRules into your platform's styling.
     }
 }
+impl LifecycleOps for MyBackend { /* finish (required) */ }
+impl ButtonOps for MyBackend { /* create_button (required) */ }
+impl AnimationOps for MyBackend { /* set_animated_color (required) */ }
+
+// Everything else starts empty and degrades: unsupported
+// widgets render a labeled placeholder.
+impl ImageOps for MyBackend {}
+impl ScrollOps for MyBackend {}
+// …one empty impl per remaining trait in `AllCaps`
+// (COVERAGE.md lists them).
 ```
 
-That compiles and produces a working app for any tree built from views, text, and styles. Adding an image means adding `ImageOps`; adding a scroll region means `ScrollOps`. You never have to write a method you don't intend to implement, and a primitive whose capability you haven't implemented is a COMPILE error at the registration site rather than a runtime panic in the field.
+That compiles, satisfies `AllCaps`, and produces a working app for any tree built from views, text, and styles. Supporting images means filling in `ImageOps`; a scroll region means `ScrollOps`. You never have to write a method you don't intend to implement, and a missing trait impl is a COMPILE error at the registration site rather than a runtime panic in the field.
 
 That progressive shape is deliberate. You can ship a backend for an unusual target with the minimum surface working in a day, and grow it as you need more primitives.
 
@@ -209,9 +219,9 @@ fn boot<S: BuiltinSet>() {
 }
 ```
 
-In practice you don't hand-roll this: each shipped backend exposes a `newcore` boot module that does it for you (`backend_web::``newcore::start_in`, `host_appkit::newcore::run`, `host_winit::newcore::run_with`, …), and a new backend should ship the same shape. Every one of them takes a `register` argument that runs after `register_builtins`, which is the app's SDK-registration seam.
+In practice you don't hand-roll this: each shipped backend exposes a `newcore` boot module that does it for you (`backend_web::newcore::start_in`, `host_appkit::newcore::run_with`, `host_winit::newcore::run_with`, …), and a new backend should ship the same shape. Each takes a `register` argument that runs after `register_builtins`, which is the app's SDK-registration seam. (`host_appkit::newcore::run` and `host_winit::newcore::run` are the same boot with no `register` argument.)
 
-The flush driver is the piece that is easy to forget. Wrap every author-code entry point your backend owns — event callbacks, timers, animation frames — so the world flushes after the callback returns. Without it, an author's `set` stages and never commits, and the UI simply doesn't update. See [Reactivity](#) for what the flush does.
+The flush driver is the piece that is easy to forget. Wrap every author-code entry point your backend owns — event callbacks, timers, animation frames — so the world flushes after the callback returns. Without it, an author's `set` stages and never commits, and the UI simply doesn't update. See [Reactivity](reactivity) for what the flush does.
 
 Also wire a viewport source where the platform has one: push the platform's resize / rotation / configuration-change report into the world's viewport context, so breakpoint-reactive author code re-fires. Backends with no resize surface at all (a command stream, a fixed-size display) simply seed once and document that.
 
@@ -225,12 +235,12 @@ The framework doesn't run a loop itself. It runs during realize and during flush
 
 ## Where to read more
 
-- [The shipped backends](#) — high-level overview of web, iOS, Android, macOS, terminal, GPU, Roku, and the runtime-server dev backend. Useful for seeing how each model maps to a real platform.
-- [Reactivity](#) — what's happening on the framework side between a signal write and your `apply_style` call.
-- [Styles](#) — the `StyleRules` you receive in `apply_style` and the token-resolution machinery you may want to implement.
-- [Lists](#) — what `VirtualizerOps` is expected to do.
-- [Navigation](#) — what `NavigatorOps` is expected to do, and the per-screen mount/release callbacks the navigator host bundle carries.
-- [Third-party primitives](#) — how a handler declares the capabilities it needs, which is why SDKs work on a new backend for free.
-- [Robot](#) — what test-id propagation looks like, and the introspection surface `IntrospectionOps` exposes.
-- [Dev tools](#) — what runtime-server expects from the wire side if you're writing a generator-style backend.
+- [The shipped backends](backends) — high-level overview of web, iOS, Android, macOS, terminal, GPU, Roku, and the runtime-server dev backend. Useful for seeing how each model maps to a real platform.
+- [Reactivity](reactivity) — what's happening on the framework side between a signal write and your `apply_style` call.
+- [Styles](styles) — the `StyleRules` you receive in `apply_style` and the token-resolution machinery you may want to implement.
+- [Lists](lists) — what `VirtualizerOps` is expected to do.
+- [Navigation](navigation) — the built-in navigators run on `ViewOps` and `LifecycleOps`, so a backend gets them with no navigator-specific code.
+- [Third-party primitives](third-party-primitives) — how a handler declares the capabilities it needs, which is why SDKs work on a new backend for free.
+- [Robot](robot) — what test-id propagation looks like, and the introspection surface `IntrospectionOps` exposes.
+- [Dev tools](dev-tools) — what runtime-server expects from the wire side if you're writing a generator-style backend.
 

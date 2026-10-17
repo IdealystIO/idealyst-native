@@ -111,9 +111,16 @@ docs! {
         code(rust, r##"
             #[server]                              // path = function name ("add")
             #[server(path = "v1/users/list")]      // explicit path
+            #[server(strict_version)]              // reject schema-mismatched clients
+            #[server(tags(admin, limit = "30/min"))] // metadata a dispatch hook reads
         "##),
         p("The path appears after ", code("/_srv/"),
-          " in the URL. Use it to version endpoints or scope groups of functions."),
+          " in the URL. Use it to version endpoints or scope groups of functions. ",
+          code("strict_version"), " makes the server reject a client whose wire \
+           schema hash differs, with ", code("ServerError::IncompatibleVersion"),
+          " — see Errors below. ", code("tags(...)"),
+          " attaches static metadata a dispatch hook reads with ",
+          code("ctx.has_tag"), " / ", code("ctx.tag"), "."),
     },
 
     section(heading = "Constraints") {
@@ -130,7 +137,7 @@ docs! {
     },
 
     section(heading = "The wire protocol") {
-        p("Deliberately small for v0:"),
+        p("Deliberately small:"),
         list(
             ["Single call: ", code("POST /_srv/<path>"), " with JSON body ",
              code("[arg0, arg1, ...]"), ". Response is JSON ",
@@ -149,8 +156,7 @@ docs! {
             p("Why JSON? Easy to debug, universally supported by every client \
                transport without extra deps. The ", code("IntoBody"), " / ",
               code("FromBody"), " traits in ", link("Net", to = "net"),
-              " make swapping to postcard / msgpack later a downstream wrapper — \
-               no changes to the macro."),
+              " are where another body format would plug in."),
         },
     },
 
@@ -255,9 +261,7 @@ docs! {
         code(rust, r##"
             use server::ClientConfig;
 
-            server::configure(ClientConfig {
-                base_url: "https://api.example.com".into(),
-            });
+            server::configure(ClientConfig::new("https://api.example.com"));
         "##),
         p(code("configure"),
           " is idempotent — call it once at app start, or call it again to \
@@ -268,9 +272,14 @@ docs! {
             {
                 let origin = deep_link::origin()
                     .unwrap_or_else(|| "http://localhost:3000".to_string());
-                server::configure(ClientConfig { base_url: origin });
+                server::configure(ClientConfig::new(origin));
             }
         "##),
+        p("Native apps run by ", code("idealyst dev"),
+          " get the dev server's address from ", code("server::dev_base_url()"),
+          " (it reads the ", code("IDEALYST_SERVER_URL"),
+          " the CLI sets); it returns ", code("None"),
+          " in production and on web."),
         p("Server-fn calls happen against ", code("<base_url>/_srv/..."),
           ". The transport underneath is the ", link("net", to = "net"),
           " SDK — same per-platform HTTP stack, no separate code path."),
@@ -304,10 +313,9 @@ docs! {
            frame at most."),
         note(kind = Info) {
             p("The on-mount fan-out is where batching pays for itself. A typical \
-               app loads several resources when a page mounts (",
-              code("use_query(get_user)"), ", ",
-              code("use_query(list_todos)"), ", ",
-              code("use_query(list_projects)"),
+               app loads several resources when a page mounts (three ",
+              code("resource(...)"), " fetchers calling ", code("get_user"), ", ",
+              code("list_todos"), ", and ", code("list_projects"),
               "). With batching, that fan-out is one request on the wire, not \
                three. Open the network tab in any of the example apps to see the ",
               code("_srv/_batch"), " line."),
@@ -382,21 +390,32 @@ docs! {
           code("ServerFnReturn"), ":"),
         code(rust, r##"
             pub trait ServerFnReturn: Sized {
+                /// The domain error `E` of this return type's `ServerError<E>`.
+                type Error;
+
                 /// Construct a Self representing a non-domain failure
-                /// (transport, codec, dispatcher-level error).
-                fn from_server_error(error: ServerError) -> Self;
+                /// (transport, codec, version, dispatcher-level error).
+                fn from_server_error(error: ServerError<Self::Error>) -> Self;
             }
         "##),
-        p("The built-in ", code("ServerError"),
-          " already implements it. Most apps just return ",
-          code("Result<T, ServerError>"), ". The error enum has five variants:"),
+        p(code("Result<T, ServerError<E>>"),
+          " already implements it, for any serializable domain error ",
+          code("E"), ". ", code("E"), " defaults to ", code("String"),
+          ", so most apps just write ", code("Result<T, ServerError>"),
+          ". For typed errors, spell ", code("Result<T, ServerError<MyError>>"),
+          " — no extra impl needed. The error enum has six variants:"),
         code(rust, r##"
-            pub enum ServerError {
-                Failed(String),                          // server fn returned Err
+            pub enum ServerError<E = String> {
+                Failed(E),                               // server fn returned Err
                 Network(String),                         // transport failure (client only)
                 Codec(String),                           // JSON encode/decode failed
                 Server { status: u16, message: String }, // dispatcher rejected
                 Cancelled,                               // cancel token fired
+                IncompatibleVersion {                    // client/server schema drift
+                    path: String,
+                    client_schema: u64,
+                    server_schema: u64,
+                },
             }
         "##),
         p("The split matters:"),
@@ -418,6 +437,13 @@ docs! {
              " is the dispatcher's response — 404 (unknown path), 400 (malformed \
               args), 500 (handler panic). Distinct from ", code("Failed"), "."],
             [code("Cancelled"), " is a cancel-token cancellation."],
+            [code("IncompatibleVersion"),
+             " means the client and server disagree on this function's wire \
+              schema. The macro hashes the arg and return types on both \
+              sides; when a payload fails to decode and the hashes differ, \
+              you get this instead of ", code("Codec"),
+             ". A ", code("strict_version"),
+             " function rejects a hash mismatch up front (HTTP 426)."],
         ),
     },
 
@@ -486,30 +512,65 @@ docs! {
           " fn → wrap in the primitive that fits how the UI uses it."),
     },
 
-    section(heading = "Limits — what's not in v0") {
+    section(heading = "Streaming") {
+        p("Three sibling attributes stream instead of returning once. They \
+           share the cfg split, extractors, middleware, and errors with ",
+          code("#[server]"), "; only the transport and return shape differ."),
         list(
-            ["Streaming. No ", code("#[server_stream]"),
-             " yet. Server-pushed updates (subscriptions, SSE, WebSockets) are \
-              roadmap."],
-            ["Custom error types in ", code("Result<T, E>"),
-             ". The trait is in place but only ", code("Result<T, ServerError>"),
-             " ships with an impl. Custom error types need ",
-             code("impl ServerFnReturn for Result<T, MyError>"), "."],
-            ["Binary wire format. JSON only in v0. Postcard / msgpack is a \
-              downstream wrapper using ", code("IntoBody"), " / ",
-             code("FromBody"), " on ", code("net"), "."],
-            ["Schema-drift detection. Mismatched client/server function signatures \
-              surface as ", code("Codec"),
-             " errors at runtime. A compile-time hash check is roadmap."],
-            ["CLI integration. ", code("idealyst dev"),
-             " doesn't yet orchestrate a server bin alongside the wasm build. You \
-              run them separately for now."],
+            [code("#[subscription]"),
+             " — server → client over WebSocket. The fn returns ",
+             code("impl Stream<Item = T>"), "; the client stub returns a \
+              scope-bound ", code("UseSocket<T, ()>"),
+             " that connects on mount and closes on unmount."],
+            [code("#[channel]"),
+             " — full duplex over WebSocket. The first param is a ",
+             code("Socket<In, Out>"), "; the client gets the mirrored ",
+             code("UseSocket<Out, In>"), " with ", code("send(msg)"), " and ",
+             code("incoming()"), "."],
+            [code("#[sse]"),
+             " — server → client over plain HTTP (",
+             code("text/event-stream"),
+             "). The client stub returns the URL; consume it with ",
+             code("server::use_sse::<T>(url)"),
+             ". Prefer it for one-way streams."],
+        ),
+    },
+
+    section(heading = "CLI integration") {
+        p("Declare the server bin in the app metadata and ",
+          code("idealyst dev"), " runs the whole stack:"),
+        code(text, r##"
+            [package.metadata.idealyst.app]
+            server_bin = "server"    # → cargo run --bin server --features server
+        "##),
+        p("On web, the dev loop runs your server bin instead of the static \
+           dev server, so ", code("/_srv/*"),
+          " works and the bundle and API are served same-origin. A server \
+           in another package is named with ", code("server_manifest"),
+          ". Native apps get the address through ",
+          code("server::dev_base_url()"), "."),
+    },
+
+    section(heading = "Per-call credentials") {
+        p("Attach a ", code("CredentialProvider"),
+          " to the client config and its headers go on every server-fn \
+           request. It is called per request, so a refreshed token is picked \
+           up without reconfiguring:"),
+        code(rust, r##"
+            server::configure(
+                ClientConfig::new(base)
+                    .with_credentials(server::bearer(|| read_token())),
+            );
+        "##),
+        p(code("server::credentials_from_fn(|| vec![...])"),
+          " covers any other header scheme. Cookie auth needs no provider."),
+    },
+
+    section(heading = "Limits") {
+        list(
+            ["Wire format is JSON. There is no binary format option."],
             [code("idealyst new"),
-             " scaffold. No template for the three-crate layout yet."],
-            ["Per-call headers / auth. The client uses one shared ",
-             code("net::Client"), " configured at ", code("server::configure(...)"),
-             ". Adding a per-call ", code(".with_header(...)"),
-             " shape is a planned ergonomic."],
+             " has no template for the three-crate full-stack layout."],
         ),
     },
 

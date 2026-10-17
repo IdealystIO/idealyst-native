@@ -74,9 +74,10 @@ docs! {
            primitive's trait."),
         p("That is what makes the surface progressive. There is no mega-trait \
            with thirty ", code("unimplemented!()"),
-          " methods to stare at: you implement ", code("Host"),
-          ", then add capability traits one at a time, and each one \
-           immediately unlocks its primitives."),
+          " methods to stare at: almost every capability method has a \
+           default that degrades rather than crashes, so most traits start \
+           as an empty ", code("impl"),
+          " block and you fill in methods as you support them."),
     },
 
     section(heading = "type Node") {
@@ -133,8 +134,8 @@ docs! {
           " and groups the operations one primitive family needs. The \
            authoritative per-method contract is each trait's own rustdoc in ",
           code("crates/runtime/vocabulary/src/caps/"), "; ",
-          code("COVERAGE.md"),
-          " next to it maps every method to the handler that calls it."),
+          code("crates/runtime/vocabulary/COVERAGE.md"),
+          " lists every trait's methods and marks the few with no default."),
         list(
             ["Structure + input — ", code("ViewOps"), ", ", code("InputOps"),
              ", ", code("PressableOps"), "."],
@@ -144,10 +145,13 @@ docs! {
             ["Widgets — ", code("TextInputOps"), ", ", code("ToggleOps"),
              ", ", code("SliderOps"), ", ", code("ActivityIndicatorOps"), "."],
             ["Scrolling + lists — ", code("ScrollOps"), ", ",
-             code("SafeAreaOps"), ", ", code("VirtualizerOps"), "."],
-            ["Layers + navigation — ", code("PortalOps"), ", ",
-             code("PresenceOps"), ", ", code("NavigatorOps"), ", ",
-             code("GraphicsOps"), "."],
+             code("SafeAreaOps"), ", ", code("VirtualizerOps"), ", ",
+             code("GridOps"), "."],
+            ["Layers + graphics — ", code("PortalOps"), ", ",
+             code("PresenceOps"), ", ", code("GraphicsOps"), ", and ",
+             code("NavigatorOps"), " (extension hooks only; the built-in \
+              navigators mount through ", code("ViewOps"), " and ",
+             code("LifecycleOps"), ")."],
             ["Styling + assets — ", code("StyleOps"), ", ",
              code("AssetOps"), "."],
             ["Payload escape hatch — ", code("ExternalOps"), ", ",
@@ -160,15 +164,22 @@ docs! {
         ),
         p("There is one umbrella: ", code("AllCaps"),
           ", a blanket-implemented supertrait of every trait above. ",
-          code("runtime_vocabulary::register_builtins::<B: AllCaps>()"),
-          " bounds on it, so a backend that implements the whole family \
-           gets the full built-in primitive vocabulary registered in one \
-           call."),
-        p("Until then, register the subset you support. A handler generic \
-           over ", code("H: StyleServices + TextOps"),
-          " compiles against any backend that has those two — which is also \
-           why third-party SDKs written that way work on your backend the \
-           day you implement the traits they name. See ",
+          code("register_builtins"), ", ", code("register_builtins_with"),
+          ", the ", code("BuiltinSet"), " methods, and the per-primitive ",
+          code("register_view"), " / ", code("register_text"),
+          " / … helpers all bound on ", code("H: AllCaps"),
+          ", so a backend implements every trait before it registers any \
+           built-in primitive. That is cheap because of the defaults: a \
+           trait you don't support yet is an empty ", code("impl"),
+          ", and its widgets render a labeled \"unsupported\" placeholder \
+           (", code("ExternalOps::missing_primitive_placeholder"),
+          ") instead of crashing."),
+        p("Third-party handlers are different: they bound on just the \
+           traits they use. A handler generic over ",
+          code("H: StyleServices + TextOps"),
+          " compiles against any backend that has those — which is why \
+           third-party SDKs written that way work on your backend the day \
+           you implement the traits they name. See ",
           link("third-party primitives", to = "third-party-primitives"), "."),
     },
 
@@ -255,13 +266,14 @@ docs! {
 
     section(heading = "A skeleton backend") {
         p("The smallest plausible backend is ", code("Host"),
-          " plus the two or three capability traits your app's primitives \
-           actually use:"),
+          ", real implementations of the capability traits your app's \
+           primitives actually use, and empty ", code("impl"),
+          "s for the rest:"),
 
         code(rust, r##"
             use std::rc::Rc;
             use runtime_scene::Host;
-            use runtime_vocabulary::caps::{StyleOps, TextOps, ViewOps};
+            use runtime_vocabulary::caps::*;
             use runtime_shared::StyleRules;
 
             #[derive(Clone)]
@@ -280,23 +292,32 @@ docs! {
                 fn supports_splice(&self) -> bool { true }
             }
 
-            impl ViewOps for MyBackend { /* create_view, … */ }
-            impl TextOps for MyBackend { /* create_text, update_text, … */ }
+            impl ViewOps for MyBackend { /* create_view (required), … */ }
+            impl TextOps for MyBackend { /* create_text, update_text (required), … */ }
             impl StyleOps for MyBackend {
                 fn apply_style(&mut self, node: &Node, style: &Rc<StyleRules>) {
                     // Translate StyleRules into your platform's styling.
                 }
             }
+            impl LifecycleOps for MyBackend { /* finish (required) */ }
+            impl ButtonOps for MyBackend { /* create_button (required) */ }
+            impl AnimationOps for MyBackend { /* set_animated_color (required) */ }
+
+            // Everything else starts empty and degrades: unsupported
+            // widgets render a labeled placeholder.
+            impl ImageOps for MyBackend {}
+            impl ScrollOps for MyBackend {}
+            // …one empty impl per remaining trait in `AllCaps`
+            // (COVERAGE.md lists them).
         "##),
 
-        p("That compiles and produces a working app for any tree built from \
-           views, text, and styles. Adding an image means adding ",
-          code("ImageOps"), "; adding a scroll region means ",
-          code("ScrollOps"),
+        p("That compiles, satisfies ", code("AllCaps"),
+          ", and produces a working app for any tree built from views, \
+           text, and styles. Supporting images means filling in ",
+          code("ImageOps"), "; a scroll region means ", code("ScrollOps"),
           ". You never have to write a method you don't intend to \
-           implement, and a primitive whose capability you haven't \
-           implemented is a COMPILE error at the registration site rather \
-           than a runtime panic in the field."),
+           implement, and a missing trait impl is a COMPILE error at the \
+           registration site rather than a runtime panic in the field."),
         p("That progressive shape is deliberate. You can ship a backend for \
            an unusual target with the minimum surface working in a day, and \
            grow it as you need more primitives."),
@@ -358,12 +379,15 @@ docs! {
         p("In practice you don't hand-roll this: each shipped backend \
            exposes a ", code("newcore"),
           " boot module that does it for you (", code("backend_web::"),
-          code("newcore::start_in"), ", ", code("host_appkit::newcore::run"),
+          code("newcore::start_in"), ", ", code("host_appkit::newcore::run_with"),
           ", ", code("host_winit::newcore::run_with"),
-          ", …), and a new backend should ship the same shape. Every one of \
-           them takes a ", code("register"),
-          " argument that runs after ", code("register_builtins"),
-          ", which is the app's SDK-registration seam."),
+          ", …), and a new backend should ship the same shape. Each takes a ",
+          code("register"), " argument that runs after ",
+          code("register_builtins"),
+          ", which is the app's SDK-registration seam. (",
+          code("host_appkit::newcore::run"), " and ",
+          code("host_winit::newcore::run"),
+          " are the same boot with no ", code("register"), " argument.)"),
         p("The flush driver is the piece that is easy to forget. Wrap every \
            author-code entry point your backend owns — event callbacks, \
            timers, animation frames — so the world flushes after the \
@@ -412,9 +436,9 @@ docs! {
             [link("Lists", to = "lists"), " — what ",
              code("VirtualizerOps"), " is expected to do."],
             [link("Navigation", to = "navigation"),
-             " — what ", code("NavigatorOps"),
-             " is expected to do, and the per-screen mount/release \
-              callbacks the navigator host bundle carries."],
+             " — the built-in navigators run on ", code("ViewOps"), " and ",
+             code("LifecycleOps"),
+             ", so a backend gets them with no navigator-specific code."],
             [link("Third-party primitives", to = "third-party-primitives"),
              " — how a handler declares the capabilities it needs, which is \
               why SDKs work on a new backend for free."],
@@ -422,7 +446,7 @@ docs! {
              " — what test-id propagation looks like, and the \
               introspection surface ", code("IntrospectionOps"),
              " exposes."],
-            [link("Dev tools", to = "cli"),
+            [link("Dev tools", to = "dev-tools"),
              " — what runtime-server expects from the wire side if you're \
               writing a generator-style backend."],
         ),

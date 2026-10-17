@@ -358,9 +358,11 @@ docs! {
           " enum. Why do primitives live in a registry rather than as enum \
            variants third-party crates could add?"),
         p("Because registration is what makes the primitive set OPEN while \
-           keeping the structural set CLOSED. The five structural variants \
-           (item, dyn hole, keyed list, fragment, and the navigator outlet) \
-           are what the mount drivers reason about — those must be closed and \
+           keeping the structural set CLOSED. The six structural variants \
+           (", code("Item"), ", ", code("Fragment"), ", ", code("Dyn"),
+          " hole, ", code("Keyed"), " list, ", code("Owned"),
+          " component scope, and ", code("Many"),
+          " multi-node item) are what the mount drivers reason about — those must be closed and \
            exhaustively handled. What a given item DOES is a handler lookup, \
            which costs one dispatch and lets a third-party crate participate \
            without touching the runtime."),

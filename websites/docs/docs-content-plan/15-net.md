@@ -1,11 +1,12 @@
 # Net — cross-platform HTTP
 
-`net` is the framework's HTTP client SDK. One API surface, four
-transports underneath:
+`net` is the framework's networking SDK: an HTTP `Client`, a
+`WebSocket`, and a receive-only `EventSource` for Server-Sent Events.
+HTTP has one API surface and four transports underneath:
 
 | Target | Backend |
 |---|---|
-| Native (macOS / Linux / Windows / wgpu / terminal) | `reqwest` + rustls |
+| Linux / Windows / terminal | `reqwest` + rustls, on an I/O runtime thread `net` owns |
 | Web (wasm32) | `fetch` via web-glue bindings |
 | iOS / macOS / tvOS | `NSURLSession` via `objc2` + `block2` |
 | Android | `HttpURLConnection` via JNI on a worker thread |
@@ -17,8 +18,9 @@ OS supplies them, and `fetch`-cache semantics on web. No 2MB+
 rustls/reqwest cohort gets dragged into a 100KB wasm bundle.
 
 The crate is independently usable — `net` doesn't depend on
-`runtime-core` or any other framework crate. You can drop it into a
-plain Rust binary.
+`runtime-core` or the reactive system. Its only framework dependency
+is `web-glue` (the browser bindings), and only on wasm. You can drop
+it into a plain Rust binary.
 
 ## The shape
 
@@ -37,14 +39,14 @@ let user: User = client
 
 let created: User = client
     .post("https://api.example.com/users")
-    .body(Json(&CreateUser { name: "Alice".into() }))?
+    .body(Json(&CreateUser { name: "Alice".into() }))
     .send()
     .await?
     .json()
     .await?;
 ```
 
-Six public types:
+The HTTP types:
 
 - **`Client`** — cheap-to-clone (`Arc` inside), holds a base URL,
   default headers, default timeout, and a per-process connection
@@ -53,7 +55,7 @@ Six public types:
 - **`RequestBuilder`** — fluent. Headers, query params, body,
   timeout, cancellation. Returned by `client.get(url)` / `post(url)` / etc.
 - **`Response`** — the `await`ed result. Status, headers, body
-  (already buffered into memory in v0).
+  (buffered into memory).
 - **`Method`** — closed enum: `Get`, `Post`, `Put`, `Patch`,
   `Delete`, `Head`, `Options`.
 - **`Headers`** — order-preserving case-insensitive multi-map.
@@ -77,8 +79,8 @@ Built-in impls: `()`, `Vec<u8>`, `String`, `&'static str`, plus the
 feature-gated `Json<T>` and `Form<T>` wrappers.
 
 ```rust
-client.post(url).body(Json(&payload))?.send().await?;
-client.post(url).body(Form(&form_data))?.send().await?;
+client.post(url).body(Json(&payload)).send().await?;
+client.post(url).body(Form(&form_data)).send().await?;
 client.post(url).body(b"raw bytes".to_vec()).send().await?;
 client.post(url).body(()).send().await?;   // no body, no content-type
 ```
@@ -86,16 +88,18 @@ client.post(url).body(()).send().await?;   // no body, no content-type
 `Json<T>` and `Form<T>` set their content-type defaults — overridden
 if you already added a `.header("Content-Type", ...)`.
 
+The body builders return the builder, not a `Result`. A body that
+fails to encode is held on the request and returned as
+`Error::Serialize` from `.send()`, so one `?` after `.await` covers it.
+
 ### Downstream wire formats
 
-The trait is the extensibility point. Server functions (the SDK on
-top of `net`) ship a postcard-shaped wrapper for binary RPC by
-implementing `IntoBody`/`FromBody` for its own format type. No
-changes to `net` required.
+The traits are the extensibility point. Server functions (the SDK
+on top of `net`) send their arguments as JSON with `net::Json`.
 
-If you want msgpack, CBOR, protobuf, etc., the same shape applies:
-write a small wrapper `Foo<T>(pub T)`, implement both traits,
-done.
+If you want msgpack, CBOR, protobuf, postcard, etc., write a small
+wrapper `Foo<T>(pub T)` in your own crate and implement both traits.
+No changes to `net` required.
 
 ## Convenience methods
 
@@ -113,7 +117,7 @@ For request bodies, `.json(&value)` / `.form(&value)` are sugar that
 takes `&T` so the caller doesn't move the value:
 
 ```rust
-client.post(url).json(&payload)?.send().await?;   // = .body(Json(&payload))?
+client.post(url).json(&payload).send().await?;   // = .body(Json(&payload))
 ```
 
 ## Cancellation
@@ -156,7 +160,7 @@ resource_cancel.on_cancel(move || handle.cancel());
 
 Whenever the higher-level system cancels, the net side fires.
 (Server functions wrap this pattern into `server::with_cancel(resource_cancel, future)`
-so authors don't write it by hand — see [Server functions](./16-server-functions.md).)
+so authors don't write it by hand — see [Server functions](server-functions).)
 
 ## Error type
 
@@ -228,27 +232,55 @@ running. A few platform-specific notes for the people who care:
   to the JavaVM via `ndk_context`. The connection is promoted to
   a JNI `GlobalRef` so a cancel watcher on a separate thread can
   call `disconnect()` mid-flight.
-- **Native**: reqwest with rustls. Drop-on-future-drop handles
-  cancellation; we wrap that in a `poll_fn` race so the
-  cancel-token contract is uniform across all transports.
+- **macOS / tvOS**: the same `NSURLSession` transport as iOS.
+- **Linux / Windows / terminal**: reqwest with rustls, run on one
+  process-wide runtime thread `net` owns, so the host doesn't need
+  to provide a Tokio runtime. Dropping the future aborts the
+  exchange; a `poll_fn` race keeps the cancel-token contract uniform
+  across all transports.
 
-## What's not in v0
+## WebSocket and Server-Sent Events
 
-To save people grep-time:
+`net::WebSocket` is the bidirectional sibling of `Client`:
+`connect(url)`, `send`, `recv`, `close`, and it closes on drop.
+Messages are `WsMessage::Text` or `WsMessage::Binary`;
+`close_status()` reports the close code and reason the same way on
+every target.
 
-- **Streaming responses.** Bodies are buffered in memory. Streaming
-  is on the roadmap; the public API will keep `Response::bytes()` /
-  `.text()` / `.json()` and add a `.stream()`.
-- **Multipart uploads.** Same — needs a streaming body story first.
-- **WebSocket.** Not in `net`. The next SDK in line is a separate
-  `ws` crate; it'll share `net`'s cancel and address types.
+```rust
+use net::{WebSocket, WsMessage};
+
+let mut ws = WebSocket::connect("wss://echo.example.com").await?;
+ws.send(WsMessage::Text("hello".into()))?;
+while let Some(msg) = ws.recv().await {
+    match msg? {
+        WsMessage::Text(t) => println!("{t}"),
+        WsMessage::Binary(b) => println!("{} bytes", b.len()),
+    }
+}
+```
+
+`net::EventSource` reads a `text/event-stream` (what a `#[sse]`
+server endpoint serves): `connect(url)`, then `recv()` yields each
+event's `data:` payload.
+
+The web arm uses the browser's `WebSocket` and `EventSource`. Native
+targets run `tungstenite` on an I/O thread for WebSocket; Android
+supports `ws://` only (no bundled TLS).
+
+## What's not included
+
+- **Streaming HTTP response bodies.** `Response` bodies are buffered
+  in memory; use `EventSource` or `WebSocket` for data that arrives
+  over time.
+- **Multipart uploads.**
 - **Cookies.** Each platform's native HTTP stack manages its own
-  cookie jar; we don't impose a cross-platform abstraction yet.
+  cookie jar; there is no cross-platform cookie API.
 
 ## Where to read more
 
-- [Server functions](./16-server-functions.md) — the canonical
+- [Server functions](server-functions) — the canonical
   consumer of `net`. Every `#[server]` call site routes through
   this crate on the client side.
-- [Async reactivity](./14-async-reactivity.md) — the higher-level
+- [Async reactivity](async-reactivity) — the higher-level
   reactive primitives that consume `net`'s futures.

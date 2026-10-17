@@ -15,7 +15,7 @@ blob.
 
 1. **One Rust source per page.** No markdown parser, no JSON authoring.
 2. **The macro emits the screen** (a `pub fn page() -> Element` that
-   composes the shell's existing `PageHeader` / `Section` / `CodeBlock`
+   composes the shell's existing `PageHeader` / `Card` / `CodeBlock`
    components).
 3. **The macro also emits structured metadata** (a `pub static
    PAGE_META: PageMeta`) that an MCP server (or text export, or a
@@ -23,8 +23,9 @@ blob.
    anything.
 4. **Demos are real function references.** Type-checked at compile
    time; no "missing demo" runtime errors.
-5. **Cookbook entries opt out of the default page index** so the MCP
-   server doesn't promote recipes as primary documentation.
+5. **Cookbook entries opt out of the default page index**
+   (`registry::non_cookbook`) so recipes aren't promoted as primary
+   documentation.
 
 ## The `PageMeta` struct
 
@@ -55,9 +56,9 @@ pub struct PageMeta {
     /// Many pages mention "signal" — only Reactivity teaches what one
     /// is, so only Reactivity lists `DocConcept::Signal` here.
     ///
-    /// Drives the MCP server's `pages_about(concept)` reverse-index
-    /// queries. The set of variants in `DocConcept` is the framework's
-    /// canonical vocabulary list.
+    /// Drives the `registry::pages_about(concept)` reverse index. The
+    /// set of variants in `DocConcept` is the framework's canonical
+    /// vocabulary list.
     pub concepts: &'static [DocConcept],
 
     /// Ordered sections.
@@ -67,6 +68,8 @@ pub struct PageMeta {
 pub enum PageCategory {
     /// The Overview page. Always first.
     Overview,
+    /// Architectural introduction, ahead of the onboarding path.
+    Introduction,
     /// Foundational concepts (Primitives, Reactivity, Styles,
     /// Components). The order matters here — pages are listed in
     /// declaration order within a category.
@@ -76,8 +79,11 @@ pub enum PageCategory {
     /// Reference material (Backends, Refs, Lists, Icons, Navigation,
     /// Getting Started).
     Reference,
-    /// Cookbook recipes. Default-hidden from the MCP page list; the
-    /// MCP server exposes a separate `list_cookbook_recipes` tool.
+    /// Deeper material: internal contracts, extension points, the
+    /// public API of a specific backend.
+    Advanced,
+    /// Cookbook recipes. Kept out of `registry::non_cookbook()`;
+    /// listed by `registry::cookbook()`.
     Cookbook,
 }
 
@@ -150,138 +156,46 @@ pub enum NoteKind {
 
 /// Every named concept the framework documents. A page lists each
 /// concept it is the authoritative source for in its `concepts`
-/// field. Pages may reference concepts they don't *own* via inline
-/// `link(...)` spans — being in someone else's `concepts` list is
-/// what makes a concept "owned" by that page.
-///
-/// Adding a new concept = adding a variant here. Compile-time
-/// reference-checked from every page's `concepts` field.
+/// field. Adding a new concept = adding a variant here; every page's
+/// `concepts` list is checked against it at compile time.
 pub enum DocConcept {
     // Reactivity
     Signal,
     Effect,
     Scope,
-    TrackedContext,
-    Derived,
-    Action,
-    Untrack,
-
-    // Components
-    Component,
-    ComponentMethods,    // the `methods!` block surface
-    Bindable,
-    Bound,
-    Props,
-    Defaults,            // #[component(default(...))]
-
-    // UI DSLs
-    UiMacro,             // ui! { ... }
-    JsxMacro,            // jsx! { ... }
-    InlineSpans,         // the docs! macro's span vocabulary (meta)
-
-    // Primitives
-    Element,
-    Container,           // View, ScrollView, Pressable
-    Content,             // Text, Image, Icon, Video, WebView
-    Input,               // Button, TextInput, Toggle, Slider
-    ReactiveControlFlow, // When, Switch (the primitive), Repeat
-
-    // Styling
-    Stylesheet,
-    Theme,
-    Token,
-    Variant,
-    Override,
-    StyleState,          // hovered / pressed / focused / disabled
-    Transition,
-
-    // Refs and handles
-    Ref,
-    Handle,              // primitive handles + user-component handles
+    Mount,
+    Memo,
+    Resource,
+    // ...
 
     // Navigation
     Route,
     RouteParams,
     Screen,
+    SwapNavigator,
     StackNavigator,
-    TabNavigator,
-    DrawerNavigator,
+    NavigatorOutlet,
     Link,
     AmbientNavigator,
     MountPolicy,
-
-    // Lists
-    Virtualizer,
-    FlatList,
-    ItemKey,
-    ItemSize,
-
-    // Icons
-    IconData,
-    IconRegistry,
-    StrokeAnimation,
-
-    // Overlays / animation
-    Overlay,
-    AnchoredOverlay,
-    Presence,
-
-    // Backends
-    Backend,
-    RuntimeBackend,
-    GeneratorBackend,
-    LazySlotCapture,
-
-    // Dev tools
-    Cli,
-    HotReload,
-    Aas,                 // app-as-server
-    WireProtocol,
-    McpServer,
-
-    // Robot
-    Robot,
-    TestId,
-
-    // Architecture / cross-cutting
-    AppBackendSplit,
-    BuildCache,
-    SafeArea,
-    DocsMacro,
+    // ...one group per area: components, UI DSLs, primitives,
+    // styling, refs, lists, icons, overlays, backends, dev tools,
+    // robot, server functions, net, …
 }
 
 impl DocConcept {
-    /// Human-readable name for display in chips, search results, etc.
-    pub const fn display(self) -> &'static str {
-        match self {
-            DocConcept::Signal => "Signal",
-            DocConcept::Effect => "Effect",
-            DocConcept::Scope => "Scope",
-            DocConcept::TrackedContext => "Tracked context",
-            DocConcept::ComponentMethods => "methods!",
-            DocConcept::UiMacro => "ui!",
-            DocConcept::JsxMacro => "jsx!",
-            DocConcept::ReactiveControlFlow => "Reactive control flow",
-            DocConcept::StyleState => "Style state",
-            DocConcept::AmbientNavigator => "Ambient navigator",
-            DocConcept::AppBackendSplit => "App ↔ Backend split",
-            DocConcept::Aas => "runtime-server (app-as-server)",
-            DocConcept::McpServer => "MCP server",
-            DocConcept::TestId => "test_id",
-            // ... etc., one arm per variant
-            _ => stringify_default(self),  // placeholder for the bulk
-        }
-    }
-
-    /// Slug form for URLs and search keys.
-    pub const fn slug(self) -> &'static str {
-        // Generated to match the display name, kebab-cased.
-        // e.g. DocConcept::StackNavigator => "stack-navigator"
-        // ...
-        unimplemented!()
-    }
+    /// Human-readable name for chips and search results.
+    pub const fn display(self) -> &'static str { /* one arm per variant */ }
+    /// Kebab-case slug for URLs and search keys.
+    pub const fn slug(self) -> &'static str { /* one arm per variant */ }
 }
 ```
+
+The variant list above is an excerpt. The full, current list —
+with a doc comment per variant — is `DocConcept` in
+`websites/docs/src/meta.rs`; `display()` and `slug()` there are
+exhaustive `const` matches, so a new variant without both arms
+fails to compile.
 
 That's the whole metadata vocabulary. Everything else (typography
 choices, layout, theme application) is the UI side and isn't visible
@@ -290,7 +204,7 @@ to the metadata consumer.
 ## The macro's input grammar
 
 ```rust
-use runtime_core::docs;
+use docs_macro::docs;
 use crate::demos::counter_demo;
 
 docs! {
@@ -298,7 +212,7 @@ docs! {
     title = "Reactivity",
     category = Foundation,
     description = "The mechanism behind every change in an Idealyst app.",
-    related = ["signals", "components", "styles"],
+    related = ["components", "styles"],
     concepts = [Signal, Effect, Scope, TrackedContext, Derived, Untrack],
 
     section(heading = "The model in one paragraph") {
@@ -309,40 +223,40 @@ docs! {
            context that read it — and only those. State, styles, themes, \
            conditional rendering, and list contents all use this same \
            mechanism underneath."),
-    }
+    },
 
     section(heading = "Signals") {
         p("Make a signal with ", code("signal(initial)"), ". Read with ",
           code(".get()"), " and write with ", code(".set(...)"),
           " or ", code(".update(|v| ...)"), "."),
 
-        code(rust) = r#"
+        code(rust, r##"
             let count = signal(0);
             count.set(5);                  // replace
             count.update(|n| n + 1);     // derive the next value from the current one
-        "#,
+        "##),
 
         p("The ", code("Signal<T>"), " you hold back is a small Copy token \
            — a couple of u32s indexing into a thread-local arena. Pass it \
            into closures and child components freely; no manual clone()."),
-    }
+    },
 
     section(heading = "What gets tracked") {
         p("A signal read inside any of these contexts subscribes the \
            context to the signal:"),
 
-        list {
-            ["Reactive text — ", code("text { format!(\"...\", count.get()) }")],
+        list(
+            ["Reactive text — ", code("text { \"count: {count}\" }")],
             ["A reactive ", code("if"), " inside ", code("ui!")],
             ["A reactive ", code("for"), " over a signal-backed list"],
             ["Closure props that read a signal"],
             ["Stylesheets — reading the active theme is itself tracked"],
             ["A manual ", code("effect!({ ... })"), " (or ", code("watch(...)"), " outside the tree)"],
-        }
+        ),
 
         p("A plain expression that doesn't read a signal is not tracked — \
            it's computed once when the tree is built and never re-runs."),
-    }
+    },
 
     section(heading = "Comparisons") {
         compare(from = React) {
@@ -362,8 +276,8 @@ docs! {
             p("Equivalent to ", code("$state"), ". The model is the same; \
                Svelte's runes are compiler-driven, Idealyst's signals are \
                a regular Rust API."),
-        }
-    }
+        },
+    },
 
     section(heading = "Try it") {
         p("This counter is mounted live in the page. Edits to ",
@@ -371,14 +285,14 @@ docs! {
            keeps its value across edits."),
 
         demo(counter_demo, description = "Counter with one signal."),
-    }
+    },
 
     note(kind = Tip) {
         p("If you find an effect re-firing more often than expected, look \
            for an accidental ", code(".get()"), " in a place that didn't \
            need to subscribe. Wrap the read in ", code("untrack(|| ...)"),
           " to opt out."),
-    }
+    },
 }
 ```
 
@@ -387,10 +301,12 @@ docs! {
 Paragraphs and list items take a variadic sequence of spans. Three
 kinds:
 
-- **String literal** — plain text. `"foo"` lowers to `Span::Text("foo")`.
+- **String literal** — plain text. `"foo"` lowers to `Span::text("foo")`.
 - **`code("...")`** — inline code span. `Span::Code("...")`.
-- **`link("Reactivity", to = "reactivity")`** — cross-reference.
-  Optional `#section` suffix on `to` for deep links.
+- **`link("Reactivity", to = "reactivity")`** — cross-reference,
+  `Span::link { target, text }`. Optional `#section` suffix on `to`
+  for deep links. The variant names really are `text` / `Code` /
+  `link` — `meta.rs` spells them that way.
 
 The macro recognizes these by syntax shape, not by trait dispatch, so
 the diagnostics are good ("expected string literal or `code(...)` /
@@ -399,19 +315,20 @@ the diagnostics are good ("expected string literal or `code(...)` /
 ### Sections
 
 `section(heading = "Heading") { block, block, ... }`. Section slug is
-auto-derived (`heading.to_lowercase().replace(' ', "-")`); override
+auto-derived (lowercased; each run of non-alphanumeric characters becomes one `-`); override
 with `section(heading = "Why no diff?", slug = "no-diff")`.
 
 ### Code blocks
 
-`code(rust) = r#"..."#` — language tag is a bare identifier (`rust`,
-`bash`, `typescript`, `json`, `text`), source is a string. The macro
+`code(rust, r##"..."##)` — language tag is a bare identifier (`rust`,
+`bash`, `typescript`, `json`, `text`), then the source as a string
+literal (raw strings with `##` let the source contain `"#`). The macro
 extracts the indentation prefix from the raw string and trims so
 authors can indent the source naturally inside the macro.
 
 ### Lists
 
-`list { [span, span, ...], [span, span, ...], ... }` — each row is a
+`list([span, span, ...], [span, span, ...], ...)` — each row is a
 bracketed span sequence, same as a paragraph's contents.
 
 ### Comparisons
@@ -420,17 +337,18 @@ bracketed span sequence, same as a paragraph's contents.
 `Framework` is one of the `ComparisonFramework` enum variants. The
 macro lowers to `BlockMeta::Comparison { from: ..., blocks: &[...] }`.
 
-The UI side handles the tab-bar rendering; the metadata side just
-records each comparison's framework and content.
+The UI side renders it inline as a "From <Framework>" sub-heading
+plus its blocks; the metadata side records each comparison's
+framework and content.
 
 ### Demos
 
 `demo(fn_name)` or `demo(fn_name, description = "...")` — the
-identifier is a path to a `#[component] fn fn_name(props: &Props) ->
-Element` (or a no-arg `() -> Element`). The macro emits both:
+identifier is a path to a no-arg `fn() -> Element`. The macro emits
+both:
 
-- **UI side**: `Demo { fn_name() }` — the component is invoked
-  inline.
+- **UI side**: `fn_name()` — called inline in the page tree, so the
+  compiler checks the symbol at the `docs!` call site.
 - **Metadata side**: `BlockMeta::Demo { name: "fn_name", description:
   ... }` — just the name. MCP consumers don't need to know how the
   demo is implemented; they just need to know it exists.
@@ -445,96 +363,78 @@ Tip / Warning callout. Kind matches the `NoteKind` enum.
 For a page declared as above, the macro produces two items:
 
 ```rust
-// 1. The UI function — called by the routes registry to render the screen.
-pub fn page() -> Element {
-    ui! {
-        scroll_view {
-            Stack(gap = StackGap::Xl) {
-                PageHeader(
-                    title = "Reactivity".to_string(),
-                    description = "The mechanism behind every change in an Idealyst app.".to_string(),
-                )
-
-                Section(heading = "The model in one paragraph".to_string()) {
-                    Body(content = "Idealyst's reactivity is one mechanism applied uniformly...".to_string())
-                    Body(content = "When the signal changes, the framework re-runs...".to_string())
-                }
-
-                Section(heading = "Signals".to_string()) {
-                    Body(/* spans → rendered with code-styling */)
-                    CodeBlock(language = "rust".to_string(), source = "let count = signal(0);\n...".to_string())
-                    Body(...)
-                }
-
-                // ... sections continue ...
-
-                Comparison { /* tab-bar component holding the per-framework blocks */ }
-
-                Section(heading = "Try it".to_string()) {
-                    Body(...)
-                    Demo { counter_demo() }    // ← real fn call
-                }
-
-                Note(kind = NoteKind::Tip) { Body(...) }
-            }
-        }
-    }
-}
-
-// 2. The metadata — collected by the docs-registry.
-pub static PAGE_META: PageMeta = PageMeta {
+// 1. The metadata — collected by the registry.
+pub static PAGE_META: crate::meta::PageMeta = crate::meta::PageMeta {
     slug: "reactivity",
     title: "Reactivity",
-    category: PageCategory::Foundation,
+    category: crate::meta::PageCategory::Foundation,
     description: Some("The mechanism behind every change in an Idealyst app."),
-    related: &["signals", "components", "styles"],
-    concepts: &["signal", "effect", "scope", "tracked-context"],
+    related: &["components", "styles"],
+    concepts: &[
+        crate::meta::DocConcept::Signal,
+        crate::meta::DocConcept::Effect,
+        // ...
+    ],
     sections: &[
-        SectionMeta {
-            heading: "The model in one paragraph",
-            slug: "the-model-in-one-paragraph",
-            blocks: &[
-                BlockMeta::Paragraph(&[Span::Text("Idealyst's reactivity is one mechanism...")]),
-                BlockMeta::Paragraph(&[Span::Text("When the signal changes...")]),
-            ],
-        },
-        SectionMeta {
+        crate::meta::SectionMeta {
             heading: "Signals",
             slug: "signals",
             blocks: &[
-                BlockMeta::Paragraph(&[
-                    Span::Text("Make a signal with "),
-                    Span::Code("signal(initial)"),
-                    Span::Text(". Read with "),
-                    Span::Code(".get()"),
+                crate::meta::BlockMeta::Paragraph(&[
+                    crate::meta::Span::text("Make a signal with "),
+                    crate::meta::Span::Code("signal(initial)"),
                     /* ... */
                 ]),
-                BlockMeta::Code { language: "rust", source: "let count = signal(0);\n..." },
+                crate::meta::BlockMeta::Code { language: "rust", source: "let count = signal(0);\n..." },
                 /* ... */
             ],
         },
         /* ... */
     ],
 };
+
+// 2. The UI function — the routes table calls it to render the screen.
+pub fn page() -> ::runtime_core::Element {
+    ::runtime_core::ui! {
+        scroll_view {
+            Stack(gap = ::idea_ui::StackGap::Xl) {
+                PageHeader(
+                    title = "Reactivity".to_string(),
+                    description = "The mechanism behind every change in an Idealyst app.".to_string(),
+                )
+                // One Card per section.
+                Card {
+                    Typography(content = "Signals".to_string(), kind = ::idea_ui::typography_kind::H2)
+                    Typography(content = "Make a signal with `signal(initial)`. ...".to_string(), muted = true)
+                    CodeBlock(code = "let count = signal(0);\n...".to_string())
+                }
+                // ...
+            }
+        }
+    }
+}
 ```
 
-The shell components (`PageHeader`, `Section`, `CodeBlock`,
-`Comparison`, `Demo`, `Note`) don't change — the macro just calls them
-with the right props. New ones we need to add:
+The render side is deliberately plain:
 
-- **`Comparison`** — the tab-bar card that shows one framework's
-  blocks at a time, driven by the global `from_framework` signal.
-- **`Demo`** — a wrapper that frames a live component (border, label
-  "Live demo", maybe a "see source" affordance).
-- **`Note`** — the info/tip/warning callout.
+- Each section is a `Card` headed by an H2 `Typography`.
+- A paragraph is one muted `Typography`; its spans are flattened to
+  plain text (code spans wrapped in backticks, links reduced to their
+  text). Per-span styling exists only in the metadata.
+- A list renders one `"• item"` `Typography` per row.
+- A code block is a `CodeBlock` with its indentation trimmed.
+- A comparison or note renders as an H3 label ("From React",
+  "Tip:") followed by its blocks; a top-level one gets its own `Card`.
+- A demo is a direct call to its function.
+
+There are no `Comparison`, `Demo`, or `Note` shell components. A
+page module must have `PageHeader`, `CodeBlock`, `Card`, `Stack` and
+`Typography` in scope, which is why every page imports them.
 
 ## The page registry
 
-A small `docs-registry` module collects every `PAGE_META` exported by
-the docs crate's modules. It can either be hand-maintained (one
-`pub const PAGES: &[&PageMeta] = &[ &reactivity::PAGE_META, ... ];`)
-or build-script-driven. Hand-maintained is fine for v1 — adding a
-page is one line.
+`websites/docs/src/registry.rs` collects every `PAGE_META` by hand:
+one `PAGES` slice, one line per page.
 
 ```rust
 // src/registry.rs
@@ -552,31 +452,28 @@ pub fn find(slug: &str) -> Option<&'static PageMeta> {
 pub fn by_category(cat: PageCategory) -> impl Iterator<Item = &'static PageMeta> {
     PAGES.iter().copied().filter(move |p| p.category == cat)
 }
+
+// Also: non_cookbook(), cookbook(), pages_about(concept), all_concepts().
 ```
 
-The routes table and the sidebar both build off this registry. The
-MCP server queries it.
+The sidebar and cross-reference resolution build off this registry.
+No MCP server reads it today.
 
-## Cookbook — "noop for MCP"
+## Cookbook — kept out of the default listing
 
 Cookbook recipes are `PageCategory::Cookbook` entries. The site
 treats them as normal pages (linked from a dedicated Cookbook
-section). The MCP server treats them specially:
+section). The registry splits them out:
 
-- `list_doc_pages()` — returns all categories **except** Cookbook.
-  This is the model's default view of "what documentation exists."
-- `list_cookbook_recipes()` — returns Cookbook entries only.
-- `get_page(slug)` — works for any category. Cookbook recipes are
+- `registry::non_cookbook()` — every category **except** Cookbook.
+  This is the default view of "what documentation exists."
+- `registry::cookbook()` — Cookbook entries only.
+- `registry::find(slug)` — works for any category. Recipes are
   addressable; they're just not promoted.
 
-The model can browse the cookbook if it explicitly wants to ("I want
-example code for a form with validation"), but won't see recipes
-when answering general questions about how the framework works.
-Recipes-as-examples don't drown out concept pages.
-
-This is the "noop for MCP" property: recipes participate in the
-registry the same way every other page does, but the MCP tools'
-default surface area excludes them.
+An MCP surface over the registry (below) should keep the same split,
+so recipes-as-examples don't drown out concept pages when a model
+asks how the framework works.
 
 ## MCP tool surface (not built)
 

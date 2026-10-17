@@ -10,17 +10,19 @@ docs! {
     slug = "net",
     title = "Net — cross-platform HTTP",
     category = Reference,
-    description = "Async HTTP client SDK. One public surface, four per-target transports (reqwest / fetch / NSURLSession / HttpURLConnection).",
+    description = "Async HTTP, WebSocket and Server-Sent Events SDK. One public surface, four per-target HTTP transports (reqwest / fetch / NSURLSession / HttpURLConnection).",
     related = ["server-functions", "async-reactivity"],
     concepts = [Net, NetClient, BodyCodec, NetCancelToken],
 
     section(heading = "Overview") {
         p(code("net"),
-          " is the framework's HTTP client SDK. One API surface, four transports \
-           underneath:"),
+          " is the framework's networking SDK: an HTTP ", code("Client"),
+          ", a ", code("WebSocket"), ", and a receive-only ",
+          code("EventSource"), " for Server-Sent Events. HTTP has one API \
+           surface and four transports underneath:"),
         list(
-            ["Native (macOS / Linux / Windows / wgpu / terminal): ",
-             code("reqwest"), " + rustls"],
+            ["Linux / Windows / terminal: ", code("reqwest"),
+             " + rustls, on an I/O runtime thread ", code("net"), " owns"],
             ["Web (wasm32): the browser's ", code("fetch"), " via the framework's own \
               web-glue bindings"],
             ["iOS / macOS / tvOS: ", code("NSURLSession"), " via ",
@@ -35,7 +37,9 @@ docs! {
            into a 100KB wasm bundle."),
         p("The crate is independently usable — ", code("net"), " doesn't depend \
            on ", code("runtime-core"),
-          " or any other framework crate. Drop it into a plain Rust binary."),
+          " or the reactive system. Its only framework dependency is ",
+          code("web-glue"), " (the browser bindings), and only on wasm. Drop \
+           it into a plain Rust binary."),
     },
 
     section(heading = "The shape") {
@@ -54,13 +58,13 @@ docs! {
 
             let created: User = client
                 .post("https://api.example.com/users")
-                .body(Json(&CreateUser { name: "Alice".into() }))?
+                .body(Json(&CreateUser { name: "Alice".into() }))
                 .send()
                 .await?
                 .json()
                 .await?;
         "##),
-        p("Six public types:"),
+        p("The HTTP types:"),
         list(
             [code("Client"), " — cheap-to-clone (", code("Arc"),
              " inside), holds a base URL, default headers, default timeout, and a \
@@ -72,8 +76,8 @@ docs! {
               Returned by ", code("client.get(url)"), " / ", code("post(url)"),
              " / etc."],
             [code("Response"),
-             " — the awaited result. Status, headers, body (buffered into memory in \
-              v0)."],
+             " — the awaited result. Status, headers, body (buffered into \
+              memory)."],
             [code("Method"), " — closed enum: ", code("Get"), ", ", code("Post"),
              ", ", code("Put"), ", ", code("Patch"), ", ", code("Delete"),
              ", ", code("Head"), ", ", code("Options"), "."],
@@ -99,25 +103,28 @@ docs! {
           ", plus the feature-gated ", code("Json<T>"), " and ", code("Form<T>"),
           " wrappers."),
         code(rust, r##"
-            client.post(url).body(Json(&payload))?.send().await?;
-            client.post(url).body(Form(&form_data))?.send().await?;
+            client.post(url).body(Json(&payload)).send().await?;
+            client.post(url).body(Form(&form_data)).send().await?;
             client.post(url).body(b"raw bytes".to_vec()).send().await?;
             client.post(url).body(()).send().await?;   // no body, no content-type
         "##),
         p(code("Json<T>"), " and ", code("Form<T>"),
           " set their content-type defaults — overridden if you already added a ",
           code(".header(\"Content-Type\", ...)"), "."),
+        p("The body builders return the builder, not a ", code("Result"),
+          ". A body that fails to encode is held on the request and returned \
+           as ", code("Error::Serialize"), " from ", code(".send()"),
+          ", so one ", code("?"), " after ", code(".await"), " covers it."),
     },
 
     section(heading = "Downstream wire formats") {
-        p("The trait is the extensibility point. Server functions (the SDK on top \
-           of ", code("net"),
-          ") ship a postcard-shaped wrapper for binary RPC by implementing ",
-          code("IntoBody"), " / ", code("FromBody"),
-          " for its own format type. No changes to ", code("net"), " required."),
-        p("If you want msgpack, CBOR, protobuf, etc., the same shape applies: write \
-           a small wrapper ", code("Foo<T>(pub T)"),
-          ", implement both traits, done."),
+        p("The traits are the extensibility point. Server functions (the SDK on \
+           top of ", code("net"), ") send their arguments as JSON with ",
+          code("net::Json"), "."),
+        p("If you want msgpack, CBOR, protobuf, postcard, etc., write a small \
+           wrapper ", code("Foo<T>(pub T)"),
+          " in your own crate and implement both traits. No changes to ",
+          code("net"), " required."),
     },
 
     section(heading = "Convenience methods") {
@@ -133,7 +140,7 @@ docs! {
           " are sugar that takes ", code("&T"), " so the caller doesn't move the \
            value:"),
         code(rust, r##"
-            client.post(url).json(&payload)?.send().await?;   // = .body(Json(&payload))?
+            client.post(url).json(&payload).send().await?;   // = .body(Json(&payload))
         "##),
     },
 
@@ -248,26 +255,54 @@ docs! {
              ". The connection is promoted to a JNI GlobalRef so a cancel watcher \
               on a separate thread can call ", code("disconnect()"),
              " mid-flight."],
-            ["Native: reqwest with rustls. Drop-on-future-drop handles \
-              cancellation; we wrap that in a ", code("poll_fn"),
-             " race so the cancel-token contract is uniform across all transports."],
+            ["macOS / tvOS: the same ", code("NSURLSession"),
+             " transport as iOS."],
+            ["Linux / Windows / terminal: reqwest with rustls, run on one \
+              process-wide runtime thread ", code("net"),
+             " owns, so the host doesn't need to provide a Tokio runtime. \
+              Dropping the future aborts the exchange; a ", code("poll_fn"),
+             " race keeps the cancel-token contract uniform across all \
+              transports."],
         ),
     },
 
-    section(heading = "What's not in v0") {
-        p("To save grep-time:"),
+    section(heading = "WebSocket and Server-Sent Events") {
+        p(code("net::WebSocket"), " is the bidirectional sibling of ",
+          code("Client"), ": ", code("connect(url)"), ", ", code("send"),
+          ", ", code("recv"), ", ", code("close"),
+          ", and it closes on drop. Messages are ", code("WsMessage::Text"),
+          " or ", code("WsMessage::Binary"), "; ", code("close_status()"),
+          " reports the close code and reason the same way on every target."),
+        code(rust, r##"
+            use net::{WebSocket, WsMessage};
+
+            let mut ws = WebSocket::connect("wss://echo.example.com").await?;
+            ws.send(WsMessage::Text("hello".into()))?;
+            while let Some(msg) = ws.recv().await {
+                match msg? {
+                    WsMessage::Text(t) => println!("{t}"),
+                    WsMessage::Binary(b) => println!("{} bytes", b.len()),
+                }
+            }
+        "##),
+        p(code("net::EventSource"), " reads a ", code("text/event-stream"),
+          " (what a ", code("#[sse]"), " server endpoint serves): ",
+          code("connect(url)"), ", then ", code("recv()"),
+          " yields each event's ", code("data:"), " payload."),
+        p("The web arm uses the browser's ", code("WebSocket"), " and ",
+          code("EventSource"), ". Native targets run ", code("tungstenite"),
+          " on an I/O thread for WebSocket; Android supports ",
+          code("ws://"), " only (no bundled TLS)."),
+    },
+
+    section(heading = "What's not included") {
         list(
-            ["Streaming responses. Bodies are buffered in memory. Streaming is on \
-              the roadmap; the public API will keep ", code(".bytes()"), " / ",
-             code(".text()"), " / ", code(".json()"), " and add a ",
-             code(".stream()"), "."],
-            ["Multipart uploads. Same — needs a streaming body story first."],
-            ["WebSocket. Not in ", code("net"),
-             ". The next SDK in line is a separate ", code("ws"),
-             " crate; it'll share ", code("net"),
-             "'s cancel and address types."],
+            ["Streaming HTTP response bodies. ", code("Response"),
+             " bodies are buffered in memory; use ", code("EventSource"),
+             " or ", code("WebSocket"), " for data that arrives over time."],
+            ["Multipart uploads."],
             ["Cookies. Each platform's native HTTP stack manages its own cookie \
-              jar; no cross-platform abstraction yet."],
+              jar; there is no cross-platform cookie API."],
         ),
     },
 

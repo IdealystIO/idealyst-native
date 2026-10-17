@@ -32,8 +32,7 @@ docs! {
            — plus a ", code("Link"), " primitive that declaratively \
            dispatches navigation without you wiring up a handle."),
         p("There is deliberately no tab navigator and no drawer navigator. \
-           What used to be a \"tab bar\" or a \"drawer panel\" is just \
-           ordinary author layout wrapped around the navigator's single \
+           A \"tab bar\" or a \"drawer panel\" is ordinary author layout wrapped around the navigator's single \
            outlet — the analog of react-router's ",
           code("<Outlet/>"), ". A tab UI is a swap navigator whose ",
           code(".layout(|nav| …)"), " puts a bar under ", code("{nav.outlet}"),
@@ -143,21 +142,20 @@ docs! {
           ") adds chainable header options:"),
 
         list(
-            [code(".title(\"...\")"), " — the screen title. Drives the \
-              native bar title on mobile and the ", code("StackHeader"),
-             " on web/desktop."],
+            [code(".title(\"...\")"), " — the screen title. The author's ",
+             code("StackHeader"), " shows it on every backend."],
             [code(".header_left(HeaderButton::text(\"Edit\").on_press(...))"),
              " — leading header slot."],
             [code(".header_right(...)"), " — trailing header slot."],
             [code(".hide_header(true)"), " — hide the header entirely for \
               this screen."],
-            [code(".back_enabled(false)"),
-             " — lock the platform back affordance (iOS swipe-back, Android \
-              system back) while this screen is on top. Browser back cannot \
-              be locked — a platform constraint."],
-            [code(".fullscreen(true)"),
-             " — request full-screen (status bar / home indicator hidden) \
-              while this screen is on top. Native mobile only."],
+            [code(".back_enabled(false)"), " and ", code(".fullscreen(true)"),
+             " — stored on the screen's options, but no backend reads them \
+              today: the iOS and Android stack presenters ignore both, so \
+              swipe-back and system Back still pop, and the status bar \
+              stays. For full-screen, call ", code("set_fullscreen(true)"),
+             " from the screen yourself; the stack navigator has no working \
+              back lock."],
         ),
 
         p("Swap screens draw no navigator chrome of their own, so they take \
@@ -325,9 +323,13 @@ docs! {
             [code("nav.reset(&route, params)"),
              " — clear the stack, mount the new route as the root. Useful \
               for post-login redirects."],
-            [code("nav.push_with_state(&route, params, state)"),
-             " — push, carrying state for the screen to start from. Each \
-              verb has a ", code("_with_state"), " twin. See below."],
+            [code("nav.inner().push_with_state(&route, params, state)"),
+             " — push, carrying state for the screen to start from. The \
+              ", code("_with_state"), " verbs (", code("push_with_state"), ", ",
+             code("replace_with_state"), ", ", code("reset_with_state"), ", ",
+             code("select_with_state"), ") live on the underlying ",
+             code("NavHandle"), ", which ", code("inner()"),
+             " returns. See below."],
         ),
 
         p("The ", code(".layout(|nav| …)"), " closure receives a ",
@@ -415,7 +417,8 @@ docs! {
             }
 
             // Navigating writes /inbox?tab=starred&page=2
-            nav.push_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 2 });
+            // (`nav` is a bound StackHandle; the state verbs live on NavHandle.)
+            nav.inner().push_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 2 });
 
             // Reading, inside the screen builder:
             .screen(INBOX, |_| {
@@ -439,11 +442,15 @@ docs! {
              " are the same screen, so changing the query updates state \
               without remounting — a filter change won't reset scroll \
               position or focus. To react to those changes, read the \
-              reactive ", code("query"), " signal on the navigator context \
-              rather than the build-time ", code("screen_state()"),
-             " snapshot."],
-            ["Use ", code("replace_with_state"), " for filter changes, not ",
-             code("push_with_state"),
+              reactive ", code("query"), " signal on the navigator's world \
+              context — ", code("inject::<StackNav>()"), " or ",
+             code("inject::<SwapNav>()"), " (from ",
+             code("runtime_vocabulary::prims"),
+             ") — rather than the build-time ", code("screen_state()"),
+             " snapshot. The layout's ", code("StackContext"), " / ",
+             code("SwapContext"), " do not carry it."],
+            ["Use ", code("nav.inner().replace_with_state(...)"),
+             " for filter changes, not ", code("push_with_state"),
              ". Replace rewrites the current entry, so back leaves the \
               screen instead of stepping through every intermediate filter \
               value."],
@@ -489,11 +496,11 @@ docs! {
              code("width"), "; use ", code("sidebar_pinned(pin_at)"),
              " to hide the hamburger / skip drawer-closing while pinned."],
             [code("StackHeader"),
-             " — a themed top bar for stack screens on web/desktop. It \
+             " — a themed top bar for stack screens, on every backend. It \
               reads the active screen's ", code("StackHeaderState"),
-             " and self-suppresses when a native bar is already rendering \
-              it (mobile) or the screen set ", code("hide_header"),
-             " — so you place it unconditionally and nothing doubles."],
+             " and renders nothing when the screen set ", code("hide_header"),
+             ". The native bar is always hidden, so this is the only header \
+              and you place it unconditionally."],
         ),
 
         code(rust, r##"
@@ -517,11 +524,12 @@ docs! {
     },
 
     section(heading = "What backends do") {
-        p("Both SDKs drive everything through the framework's ",
-          code("NavigatorHost"),
-          " callbacks (build the layout with an outlet, mount/release \
-           per-screen subtrees, swap nodes), so ONE backend-neutral handler \
-           serves every backend — there are no per-backend twins to drift \
+        p("Both SDKs lower to the vocabulary's built-in ",
+          code("swap_navigator"), " / ", code("stack_navigator"),
+          " handlers. Each is one backend-neutral registry handler that \
+           builds the layout with an outlet, mounts and releases per-screen \
+           subtrees, and swaps nodes using the ordinary node ops every \
+           backend already has — there are no per-backend twins to drift \
            apart. Two surfaces get extra treatment:"),
 
         list(
@@ -546,8 +554,11 @@ docs! {
             [code("iOS / Android"),
              " — the stack still FEELS native: inside the outlet lives a \
               real ", code("UINavigationController"),
-             " (interactive swipe-back, native transitions) or the \
-              Fragment back-stack (system back button, back-lock). The \
+             " (interactive swipe-back, native transitions) or, on \
+              Android, a view-level container (", code("RustStackPresenter"),
+             ") that plays Material's shared-axis transition and takes \
+              system Back while more than one screen is stacked. The stack \
+              SDK installs these presenters itself on iOS and Android. The \
               native bar is always hidden — the header is the author's ",
              code("StackHeader"),
              ", driven by the same ", code("screen_chrome"),
@@ -703,10 +714,12 @@ docs! {
           " defaults to a bounded, fillable flex region (",
           code("flex: 1 1 0"), " + ", code("min-height: 0"),
           "), so screens that assume they can fill — and scroll views that \
-           need a bounded height — work with zero configuration. Override \
-           either by styling it directly: ", code(".with_style(...)"),
-          " on the navigator builder, ",
-          code("ctx.outlet.with_style(...)"), " on the outlet."),
+           need a bounded height — work with zero configuration. The ",
+          code("SwapNavigator"), " / ", code("StackNavigator"),
+          " builders take no style, and ", code("nav.outlet"),
+          " arrives already built, so neither default can be overridden \
+           from the SDK. To size a navigator differently, place it (or the \
+           outlet) inside a styled ", code("view"), "."),
     },
 
     section(heading = "Scopes and lifecycle, recap") {
@@ -742,8 +755,8 @@ docs! {
              code("navigator"),
              " and the outlet sit among the other primitives."],
             [link("Writing a backend", to = "writing-a-backend"),
-             " — the ", code("NavigatorOps"),
-             " contract a backend implements."],
+             " — a backend needs nothing navigator-specific; the \
+              handlers run on the node ops it already implements."],
             ["Hot reload — how navigation state survives source edits."],
         ),
     },

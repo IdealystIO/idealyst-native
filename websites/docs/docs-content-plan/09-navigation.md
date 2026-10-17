@@ -1,26 +1,29 @@
 # Navigation
 
-Navigation is how your app moves between screens. Idealyst ships
-three navigator primitives — **stack**, **tabs**, **drawer** — plus
-a **`Link`** primitive that declaratively dispatches navigation
-without you wiring up a handle.
+Navigation is how your app moves between screens. Idealyst ships two
+navigator behaviors as SDK crates — **`swap-navigator`** (a flat set of
+co-equal screens the user switches between) and **`stack-navigator`**
+(push/pop with depth and a back-stack) — plus a **`link`** primitive that
+dispatches navigation without you wiring up a handle.
 
-All three navigators share a substrate: typed routes, per-screen
-reactive scopes, an ambient-navigator stack the `Link` primitive
-reads, URL-pattern matching, and a per-screen `ScreenOptions`
-bundle for header chrome. What differs is the active-screen
-selection UI (a stack on a stack navigator, a tab bar, a slide-in
-panel) and the imperative commands the handle exposes.
+There is no tab navigator and no drawer navigator. A tab bar or a drawer
+panel is ordinary author layout wrapped around the navigator's single
+**outlet** — the analog of react-router's `<Outlet/>`. A tab UI is a swap
+navigator whose `.layout(|nav| …)` puts a bar under `{nav.outlet}`; a
+drawer UI is the same navigator with the outlet wrapped in a side panel.
+`idea_ui_nav` ships themed chrome for the common shapes: `TabBar`,
+`Drawer`, `AppShell` (pinned sidebar ⇄ drawer) and `StackHeader`.
 
-This page covers all of it: routes and params, declaring screens,
-the three navigator kinds, headers, the `Link` primitive, nested
-navigators, and the breakpoint behavior the drawer leans on.
+Both navigators share a substrate: typed routes, per-screen reactive
+scopes, an ambient-navigator stack `link` reads, URL-pattern matching,
+and web URL sync. What differs is the command vocabulary — `Select` for
+swap, `Push` / `Pop` / `Replace` / `Reset` for stack — and whether
+covered screens exist below the visible one.
 
 ## Routes
 
-A route is a typed name plus a URL pattern. You declare each route
-once, give it a stable identifier, and reuse it everywhere — on
-navigators, in `Link`s, in pushes:
+A route is a typed name plus a URL pattern. Declare each route once and
+reuse it on navigators, in links, and in pushes:
 
 ```rust
 use runtime_core::Route;
@@ -30,15 +33,13 @@ pub const PROFILE: Route<ProfileParams> = Route::new("profile", "/profile/:id");
 pub const ABOUT:   Route<()>            = Route::new("about",   "/about");
 ```
 
-The `name` (first arg) is the in-stack key — what the framework
-and native backends use to identify the route. The `path` (second
-arg) is the URL pattern web (and any future SSR backend) maps
-`window.location` against. Native backends ignore `path`; they
-work purely from `name` plus boxed params.
+The `name` (first arg) is the in-navigator key that the framework and
+chrome components use. The `path` (second arg) is the URL pattern web and
+SSR match `window.location` against. Native backends ignore `path`; they
+work from `name` plus boxed params.
 
-The generic `P` is the typed payload the route carries. For
-no-params routes, use `()`. For routes that take data, declare a
-struct and implement `RouteParams`:
+`P` is the typed payload the route carries. Use `()` for no params; for
+data, declare a struct and implement `RouteParams`:
 
 ```rust
 use runtime_core::RouteParams;
@@ -61,271 +62,267 @@ impl RouteParams for ProfileParams {
 }
 ```
 
-The two methods round-trip your typed struct through a URL on web
-and SSR. `to_path` builds the URL when you push the route;
-`from_segments` parses it back when the browser's location changes.
-Native backends never call either method — they pass the boxed
-struct through directly.
+`to_path` builds the URL when you navigate; `from_segments` parses it
+back when the browser location changes (back/forward, deep links).
+Native backends pass the boxed struct through and call `from_segments`
+only to open a deep link.
 
 ### Why params are typed
 
-`nav.push(&PROFILE, ProfileParams { id: 42 })` is a compile-time
-check that the params match the route. If you try to push a
-mismatched payload, the compiler rejects it. Inside the framework,
-the params get boxed into `Box<dyn Any>` for storage, and each
-screen builder downcasts back to its declared type before
-rendering. There's only one place that downcast can fail — if you
-fabricate a `Route<X>` at runtime with the wrong `P` — and the
-framework panics with a clear message rather than silently using
-the wrong data.
+`nav.push(&PROFILE, ProfileParams { id: 42 })` is checked at compile
+time. Inside the framework the params are boxed into `Box<dyn Any>`, and
+each screen builder downcasts back to its declared type. The downcast can
+only fail if you fabricate a `Route<X>` at runtime with the wrong `P`,
+and then the framework panics with a clear message.
 
 ## Screens
 
-A `Screen` is what a route's render closure returns: a primitive
-tree plus optional header configuration.
+A `Screen` is what a route's render closure returns: an element plus
+optional per-screen options.
 
 ```rust
 use runtime_core::{Screen, ui};
+use stack_navigator::StackScreenExt;
 
 fn render_home(_params: ()) -> Screen {
     Screen::new(ui! {
         // ...home page content
     })
     .title("Home")
-    .header_shown(true)
 }
 ```
 
-The `Screen::new(...)` builder takes anything that converts to a
-`Element`. Chainable methods set per-screen header options:
+For stack screens, `StackScreenExt` adds header options:
 
-- `.title("...")` — the title shown in the header bar.
-- `.header_shown(bool)` — whether the header is visible.
-- `.header_left(HeaderButton::new("back", on_press))` — left slot
-  (replaces the default back button if set).
-- `.header_right(HeaderButton::new("settings", on_press))` — right
-  slot.
-- `.header_background(|| my_color())` / `.header_tint(...)` /
-  `.title_color(...)` — colors. These are closures so they
-  re-evaluate when the active theme changes, retinting the header
-  reactively without a screen rebuild.
+- `.title("...")` — the screen title. The author's `StackHeader` shows
+  it on every backend.
+- `.header_left(HeaderButton::text("Edit").on_press(...))` — leading
+  header slot.
+- `.header_right(...)` — trailing header slot.
+- `.hide_header(true)` — hide the header for this screen.
+- `.back_enabled(false)` and `.fullscreen(true)` — stored on the
+  screen's options, but no backend reads them today: the iOS and Android
+  stack presenters ignore both. For full-screen, call
+  `set_fullscreen(true)` from the screen; the stack navigator has no
+  working back lock.
 
-If you don't need options, return a bare `Element` — the
-`Into<Screen>` impl wraps it for you:
+Swap screens draw no navigator chrome, so they take no options. A bare
+`Element` works too — `Into<Screen>` wraps it.
+
+## The swap navigator
+
+`SwapNavigator` manages a flat set of co-equal screens. Selecting a
+screen swaps the one visible screen in the outlet. It is the behavior
+behind tab UIs, sidebar UIs, wizards and site shells.
 
 ```rust
-fn render_home(_: ()) -> Element {
-    ui! { /* ... */ }
-}
+use swap_navigator::{SwapBuilder, SwapHandle, SwapNavigator};
+use idea_ui_nav::{TabBar, TabItem};
+use runtime_core::{ui, Ref, Screen};
+
+let nav: Ref<SwapHandle> = Ref::new();
+
+let builder = SwapNavigator::new(&HOME)
+    .screen(HOME,    |_| Screen::new(home_page()))
+    .screen(SEARCH,  |_| Screen::new(search_page()))
+    .screen(PROFILE, |p: ProfileParams| Screen::new(profile_page(p)))
+    .layout(|nav| ui! {
+        view(style = fill_column) {
+            view(style = grow) { { nav.outlet } }
+            TabBar(
+                items = vec![
+                    TabItem::new("home", "Home"),
+                    TabItem::new("search", "Search"),
+                    TabItem::new("profile", "Profile"),
+                ],
+                active_route = nav.active_route,
+                on_select = nav.on_select,
+            )
+        }
+    });
+
+ui! { builder.bind(nav) }
 ```
 
-…and the navigator builder accepts it the same way.
+The layout closure receives a `SwapContext`:
+
+- `nav.outlet` — splat it once, in one stable spot. It is a one-shot,
+  non-`Clone` value and cannot sit inside a reactive `if` / `when`.
+- `nav.active_route` — `Signal<&'static str>`, the active route name.
+- `nav.active_path` — the active screen's path.
+- `nav.on_select` — switch to a sibling screen by route name.
+
+`.bind(...)` fills a `Ref<SwapHandle>`; `handle.select(&PROFILE,
+ProfileParams { id: 42 })` builds the URL and dispatches `Select`.
+Selecting the active screen is a no-op. Without `.layout(...)` the outlet
+fills the navigator with no chrome.
+
+### MountPolicy
+
+Set navigator-wide with `.mount_policy(...)`:
+
+- `LazyPersistent` (default) — mount on first select, then keep it.
+  Switching away preserves scroll, nested stack depth and form state.
+- `EagerPersistent` — mount every screen up front.
+- `LazyDisposing` — drop the inactive screen's scope on switch and
+  remount fresh on return. On web, a rebuilt section re-reads the
+  address bar, so nested navigators come back on the screen the URL names.
 
 ## The stack navigator
 
-`Navigator` is the classic push/pop stack. It's what iOS calls a
-`UINavigationController` and Android calls a back-stack-driven
-`FragmentManager`. On web, it's an inline subtree swap that
-threads through `history.pushState` / `popstate`.
+`StackNavigator` is the push/pop sibling. The visible screen is the top
+of the stack, swapped into the same single outlet. Chrome is author
+layout here too — typically a `StackHeader` above the outlet:
 
 ```rust
-use runtime_core::{Navigator, Ref};
+use stack_navigator::{
+    header_state, StackBuilder, StackHandle, StackNavigator, StackScreenExt,
+};
+use idea_ui_nav::StackHeader;
+use runtime_core::{rx, ui, Ref, Screen};
 
-let nav: Ref<NavigatorHandle> = Ref::new();
+let nav: Ref<StackHandle> = Ref::new();
 
-ui! {
-    Navigator::new(&HOME)
-        .screen(HOME,    |_| render_home(()))
-        .screen(PROFILE, |p| render_profile(p))
-        .screen(ABOUT,   |_| render_about(()))
-        .bind(nav)
+let builder = StackNavigator::new(&LIST)
+    .screen(LIST, |_| Screen::new(list_page()).title("Inbox"))
+    .screen(DETAIL, |p: DetailParams| Screen::new(detail_page(p)).title("Detail"))
+    .layout(|nav| {
+        let screen_chrome = nav.screen_chrome;
+        let state = rx!(header_state(&screen_chrome));
+        ui! {
+            view(style = fill_column) {
+                StackHeader(
+                    state = state,
+                    show_back = nav.can_go_back,
+                    on_back = Some(nav.pop.clone()),
+                )
+                view(style = grow) { { nav.outlet } }
+            }
+        }
+    });
+
+ui! { builder.bind(nav) }
+```
+
+`StackHandle` commands: `push(&route, params)`, `pop()` (no-op at the
+root), `replace(&route, params)`, `reset(&route, params)`. The
+`_with_state` verbs live on the underlying `NavHandle`:
+`nav.inner().push_with_state(&route, params, state)`, and likewise
+`replace_with_state`, `reset_with_state`, `select_with_state`.
+
+`StackContext` carries the same `outlet` / `active_route` / `active_path`
+as swap, plus `depth`, `can_go_back`, `pop`, and `screen_chrome` (read it
+with `stack_navigator::header_state` inside `rx!`).
+
+Each screen runs in its own reactive scope. Popping drops the scope and
+frees every signal, effect and ref inside it.
+
+### Stack retention
+
+Covered screens follow `StackRetention`:
+
+- `Retain` — covered screens stay alive; pop reveals them intact. The
+  default everywhere except web.
+- `Rebuild` — covered screens are disposed on push; pop re-mounts the
+  revealed screen from its URL. The default on web, and how cold-start
+  deep links work: the synthesized parent never mounts until you pop to it.
+- `PlatformDefault` — the default: `Rebuild` on web, `Retain` elsewhere.
+
+Force either with `.retention(...)`. A native stack presenter forces
+`Retain`, because the platform container keeps covered screens on screen.
+
+## Screen state
+
+Route params say which screen you are on (`/items/5`); screen state says
+how it is configured (tab, filter, search). State travels as query
+params, so it survives reload, sharing, and back.
+
+```rust
+use runtime_core::{screen_state, QueryParams, ScreenState};
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Filters { tab: String, page: u32 }
+
+impl ScreenState for Filters {
+    fn to_query(&self) -> QueryParams {
+        QueryParams::new()
+            .with("tab", self.tab.clone())
+            .with("page", self.page.to_string())
+    }
+    fn from_query(q: &QueryParams) -> Option<Self> {
+        Some(Filters {
+            tab: q.get("tab").unwrap_or("all").to_string(),
+            page: q.get_as("page").unwrap_or(1),
+        })
+    }
 }
+
+// Navigating writes /inbox?tab=starred&page=2
+nav.inner().push_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 2 });
+
+// Reading, inside the screen builder:
+.screen(INBOX, |_| {
+    let filters = signal(screen_state::<Filters>().unwrap_or_default());
+    // …
+})
 ```
 
-The handle's commands:
+- Query params never change route identity, so a query change updates
+  state without remounting. To react to it, read the `query` signal on
+  the navigator's world context — `inject::<StackNav>()` or
+  `inject::<SwapNav>()` from `runtime_vocabulary::prims`. The layout's
+  `StackContext` / `SwapContext` do not carry it.
+- Use `nav.inner().replace_with_state(...)` for filter changes so back
+  leaves the screen instead of stepping through every filter value.
+- A route pattern can carry defaults: `Route::new("inbox",
+  "/inbox?tab=unread")`.
 
-- `nav.push(&PROFILE, ProfileParams { id: 42 })` — push a new
-  screen onto the top.
-- `nav.pop()` — pop the top screen.
-- `nav.replace(&route, params)` — replace the top of the stack.
-- `nav.reset(&route, params)` — clear the stack, mount the new
-  route as the root. Useful for post-login redirects.
+On backends with no address bar the URL round-trip is a no-op; the
+in-memory path is the same.
 
-Each pushed screen runs inside its own reactive `Scope`. Popping
-drops the scope — every signal, effect, and ref allocated inside
-that screen is freed in one shot. You don't write screen-teardown
-code.
+## Chrome — idea-ui-nav
 
-### What backends do
+- `TabBar` — wire `active_route = nav.active_route` and
+  `on_select = nav.on_select`.
+- `Drawer` — a side panel around the outlet with a tap-to-close scrim.
+  `is_open` is a `Signal<bool>` the author owns.
+- `AppShell` — pinned sidebar on wide screens, drawer on narrow ones.
+  The sidebar builds once; pinned vs drawer is breakpoint styling that
+  compiles to real `@media` rules on web and SSR. Configure `is_open`,
+  `pin_at` (default `Breakpoint::Lg`) and `width`; `sidebar_pinned(pin_at)`
+  tells you whether it is pinned.
+- `StackHeader` — the header for stack screens on every backend. It
+  renders nothing when the screen set `hide_header`. The native bar is
+  always hidden, so this is the only header.
 
-- **iOS** — `UINavigationController` with a child `UIViewController`
-  per pushed screen. The back-swipe gesture, the slide animation,
-  the navigation bar all come from UIKit.
-- **Android** — `FrameLayout` driven by `FragmentManager`. Each
-  push commits a new `Fragment` and adds it to the back stack so
-  the system Back button pops correctly.
-- **Web** — an inline container. push/pop swap the active subtree
-  atomically. `history.pushState` writes a URL built from
-  `params.to_path(route.path())`; `popstate` events drive pops.
+## What backends do
 
-## The tab navigator
+Both SDKs lower to the vocabulary's built-in `swap_navigator` /
+`stack_navigator` handlers, installed by `register_builtins` on every
+host (including SSR/SSG and the runtime-server recorder). The handlers
+use the ordinary node ops every backend has, so there is no per-backend
+navigator code and nothing for an app to register.
 
-`TabNavigator` is a tab bar plus a switched content region.
+- **Web** — URL sync is automatic: `Select` and `Push` write
+  `history.pushState` entries, back/forward reconcile into nav commands,
+  cold deep links seed the right screen, and scroll offsets restore on
+  back.
+- **iOS / Android** — the stack SDK installs a native presenter. Inside
+  the outlet lives a real `UINavigationController` (swipe-back, native
+  transitions) or, on Android, a view-level container
+  (`RustStackPresenter`) that plays Material's shared-axis transition and
+  takes system Back while more than one screen is stacked. Chrome is still
+  the author's `StackHeader`.
 
-```rust
-use runtime_core::{TabNavigator, TabSpec};
+## Deep links
 
-let tabs: Ref<TabsHandle> = Ref::new();
+A link from outside the app (`myapp://settings/about`,
+`https://example.com/settings/about`) opens the screen at its path,
+whether it launched the app or arrived while running. Declare links
+under `[package.metadata.idealyst.app.links]`; the `deep-link` SDK
+(`on_link`, `intercept`, `route_link`) lets you see, hold, or replay them.
 
-ui! {
-    TabNavigator::new(&HOME)
-        .tab(HOME,    TabSpec::new("Home").icon("house"),       |_| home_screen())
-        .tab(SEARCH,  TabSpec::new("Search").icon("magnifyingglass"), |_| search_screen())
-        .tab(PROFILE, TabSpec::new("Profile").icon("person"),   |p| profile_screen(p))
-        .bind(tabs)
-}
-```
-
-The `TabSpec` carries the chrome — label, icon, optional reactive
-badge:
-
-```rust
-TabSpec::new("Messages")
-    .icon("envelope")
-    .badge(move || {
-        let count = unread.get();
-        if count == 0 { String::new() } else { count.to_string() }
-    })
-```
-
-The badge closure runs in an Effect; reading signals subscribes it.
-Returning an empty string hides the badge.
-
-### Tab state preservation
-
-How a tab's screen behaves when it's not the active one is
-controlled by `MountPolicy`:
-
-- **`LazyPersistent`** (default) — mount the screen the first time
-  its tab is activated, then keep it mounted forever. Switching
-  away preserves its state (scroll position, nested stack depth,
-  form fields). Switching back is instant — the screen is still
-  there. Matches React Navigation's default.
-- **`EagerPersistent`** — mount every tab's screen at navigator
-  creation. Higher memory; tab switches are pure visibility
-  toggles. Use this for apps where all tabs are "always live."
-- **`LazyDisposing`** — drop the inactive tab's scope on switch.
-  Lowest memory; loses state. Use for tabs whose contents are
-  cheap to rebuild.
-
-Set it per-tab via `.tab(...).mount_policy(MountPolicy::EagerPersistent)`
-or as a navigator default.
-
-### What backends do
-
-- **iOS** — `UITabBarController`. The bar is iOS-rendered (icons
-  from SF Symbols by default; you can supply your own).
-- **Android** — `BottomNavigationView` (bottom placement) or
-  `TabLayout` (top placement), hosting child fragments.
-- **Web** — a `<nav role="tablist">` plus a content region. The
-  bar's HTML is the framework's; the icons are SVGs.
-
-The handle exposes `tabs.select(&route, params)` for programmatic
-switching. Users tap the bar normally.
-
-## The drawer navigator
-
-`DrawerNavigator` is a slide-in side panel plus a switched body
-region. Users open the drawer with a hamburger button (or the
-platform's edge-swipe gesture); the drawer's content panel renders
-whatever navigation UI the design calls for; tapping an entry
-switches the body to that entry's screen.
-
-```rust
-use runtime_core::{DrawerNavigator, DrawerSide};
-
-let drawer: Ref<DrawerHandle> = Ref::new();
-
-ui! {
-    DrawerNavigator::new(&HOME)
-        .screen(HOME,    |_| Screen::new(home_page()).title("Home"))
-        .screen(LIBRARY, |_| Screen::new(library_page()).title("Library"))
-        .screen(SETTINGS,|_| Screen::new(settings_page()).title("Settings"))
-        .content(|props| drawer_panel(props))
-        .side(DrawerSide::Start)
-        .bind(drawer)
-}
-```
-
-The `content` closure renders the drawer's panel. It receives a
-`DrawerContentProps` with the nav callbacks and reactive state, so
-the panel can build whatever shape — a list of `Link`s, a brand
-header, a settings toggle at the bottom, anything.
-
-Handle commands:
-
-- `drawer.select(&route, params)` — switch the active screen.
-- `drawer.open()` / `drawer.close()` / `drawer.toggle()` — control
-  the panel.
-- `drawer.is_open()` — current state (non-reactive read; subscribe
-  to the signal directly if you need reactivity).
-
-### Drawer vs sidebar — the breakpoint behavior
-
-This is the part of the drawer that's interesting cross-platform.
-
-On a phone, the drawer slides over the body — a temporary modal
-panel with a scrim. On a tablet, desktop browser, or any wide
-viewport, the drawer pins beside the body permanently, becoming
-the sidebar. Tapping inside the body doesn't dismiss it because
-there's nothing to dismiss; it's just always there.
-
-The framework doesn't make you wire this up. Each backend chooses
-based on viewport width:
-
-- **iOS** uses the size class — regular-width = pinned sidebar,
-  compact-width = modal drawer. Same posture as
-  `UISplitViewController` without adopting that API's opinions.
-- **Android** uses `Configuration.screenWidthDp`.
-- **Web** uses a CSS media query.
-
-You don't get a knob to override this from app code. The reasoning
-is that phone vs tablet adaptation is a *backend* concern: each
-platform has conventions about what "tablet" means, and the
-backend respects those conventions.
-
-If you genuinely need different layouts at different widths beyond
-the drawer's auto-adapt, that's a stylesheet concern — see
-[Styles](#).
-
-### `DrawerType` — the animation
-
-Two animation styles:
-
-- **`Front`** — the drawer slides over the body, body stays put,
-  scrim dims the body. Material's default; React Navigation's
-  `"front"` type.
-- **`Slide`** — both drawer and body slide together. The body
-  moves to reveal the drawer underneath. iOS-leaning default;
-  React Navigation's `"slide"` type.
-
-Set with `.drawer_type(DrawerType::Slide)`. Defaults to the
-platform's idiomatic choice.
-
-## The `Link` primitive
-
-Imperative navigation works fine — `nav.push(&route, params)` from
-a button's `on_click` — but it has costs:
-
-- You have to thread a `Ref<NavigatorHandle>` through every
-  component that needs to navigate.
-- The browser's link semantics (right-click "copy link",
-  cmd-click new tab, hover URL preview, keyboard activation, the
-  `link` accessibility role) need separate wiring.
-- Static analysis tooling can't see what links your screens
-  expose, because they're hidden inside click handlers.
-
-`Link` solves all three:
+## The `link` primitive
 
 ```rust
 ui! {
@@ -335,129 +332,37 @@ ui! {
 }
 ```
 
-What you get:
+- **Web** — a real `<a href="/profile/42">`: right-click, cmd-click,
+  keyboard activation and screen readers all work.
+- **Native** — a tappable wrapper that dispatches in-process.
+- **No prop drilling** — `link` reads the ambient navigator, the closest
+  enclosing navigator whose screen is building the subtree.
 
-- **Web**: emits a real `<a href="/profile/42">` so the browser's
-  link contract works. Right-click, cmd-click, keyboard
-  activation, screen readers — all of it.
-- **Native**: an invisible tappable wrapper. The press dispatches
-  in-process against the captured navigator.
-- **Static introspection**: future tooling can extract the link
-  graph by walking the primitive tree.
-- **No prop drilling**: the `Link` reads the **ambient navigator**
-  — the closest enclosing navigator whose `mount_screen` is
-  building this subtree — and dispatches through it.
-
-### Picking the right `NavKind`
-
-Activation dispatches a `NavCommand` against the ambient
-navigator. The kind picks which command:
-
-- **`Push`** — push the route. Default inside a stack navigator.
-- **`Replace`** — replace the top of the stack.
-- **`Reset`** — clear the stack and mount the route as the root.
-  Useful for post-login redirects.
-- **`Select`** — switch active screen without changing stack
-  depth. Default inside tabs and drawer navigators.
-
-```rust
-link(route = &HOME, params = (), kind = NavKind::Reset) {
-    text { "Sign out" }
-}
-```
-
-The constructor picks a default based on the ambient navigator
-kind, so `link(route = ..., params = ...)` (no `kind`) does the
-right thing in any context.
+Inside a swap navigator a link dispatches `Select`; inside a stack it
+dispatches `Push`.
 
 ## Nested navigators
 
-Navigators nest. A tab navigator at the root with a stack
-navigator inside each tab is a common shape:
+Put one navigator inside another's screen. A drawer shell at the root,
+tabs in one section and a stack inside a tab is three navigators deep
+(the `examples/nav-showcase` structure). A `link` targets the innermost
+navigator; to reach an outer one, capture its handle `Ref` and call it
+directly. With `LazyPersistent`, a nested stack keeps its depth when you
+switch tabs and back.
 
-```rust
-ui! {
-    TabNavigator::new(&TAB_HOME)
-        .tab(TAB_HOME, TabSpec::new("Home"), |_| ui! {
-            Navigator::new(&HOME)
-                .screen(HOME, |_| home_screen())
-                .screen(DETAIL, |p| detail_screen(p))
-        })
-        .tab(TAB_PROFILE, TabSpec::new("Profile"), |_| ui! {
-            Navigator::new(&PROFILE_ROOT)
-                .screen(PROFILE_ROOT, |_| profile_root_screen())
-                .screen(EDIT_PROFILE, |_| edit_profile_screen())
-        })
-}
-```
+## Sizing
 
-A `Link` inside the home tab's `DETAIL` screen targets the home
-tab's stack — not the root tabs. The ambient-navigator stack
-pushes each navigator's control plane as its screens build, so
-`Link` always finds the innermost navigator by default.
-
-If you need to break out — e.g. a "log out" link inside a deeply
-nested screen needs to reset the root navigator — capture a
-`Ref<NavigatorHandle>` to the outer navigator and call its
-imperative methods directly, or use a future `.via(ref)` Link
-override.
-
-### Tab state survives switches
-
-Combined with `MountPolicy::LazyPersistent`, nested stacks keep
-their state: navigate three levels deep into the Home tab, switch
-to Profile, switch back — you're still three levels deep. The
-nested stack's screens are still mounted; their signals still
-hold their values.
-
-## Headers and theming
-
-Each navigator kind exposes a top-level `.header(...)` helper that
-takes a `HeaderStyle` (or a closure producing one):
-
-```rust
-DrawerNavigator::new(&HOME)
-    .screen(/* ... */)
-    .header(|theme: &MyTheme| HeaderStyle {
-        background: Some(theme.surface.value().clone()),
-        title: Some(theme.text.value().clone()),
-        tint: Some(theme.text.value().clone()),
-        body_background: Some(theme.background.value().clone()),
-    })
-```
-
-The closure runs against the *active* theme, so swapping themes
-re-tints the bar without a screen rebuild. Per-screen options
-(set via `Screen::new(...).title(...).header_left(...)`) layer on
-top of the navigator-level defaults.
-
-idea-ui ships an `idea_header(...)` helper that bundles common
-patterns. The docs site uses it; you can use it, fork it, or
-write your own.
-
-## Scopes and lifecycle, recap
-
-Three lifecycle properties worth keeping in mind:
-
-- **Each mounted screen has its own reactive scope.** When the
-  screen unmounts (pop, tab switch with `LazyDisposing`, drawer
-  select away from), the scope drops. Every signal, effect, and
-  ref allocated inside is freed.
-- **Backend nodes survive when their identity is stable.** Hot
-  reload preserves a screen's nodes if the screen's place in the
-  tree hasn't moved.
-- **Navigation state itself is reactive.** Each navigator
-  publishes a `NavState` signal bundle that layout closures and
-  external code can subscribe to. The drawer's open-state, the
-  tab navigator's active index, the stack's depth — all
-  observable as signals.
+The navigator root fills its container (width/height 100% +
+`flex-grow: 1`), and a style-less `{nav.outlet}` is a bounded flex region
+(`flex: 1 1 0` + `min-height: 0`), so screens and scroll views fill with
+no configuration. The SDK builders take no style and `nav.outlet`
+arrives already built; to size a navigator differently, place it (or the
+outlet) inside a styled `view`.
 
 ## Where to read more
 
-- [Routes and params](#) — the full `RouteParams` trait, the
-  pattern matching algorithm, and the URL ↔ typed-payload story.
-- [The `Link` primitive](#) — every prop, every `NavKind`, and
-  how the ambient stack works in detail.
-- [Layout and chrome](#) — `LayoutPlan` / `LayoutBuilder`, how
-  navigators feed into custom layout for web.
-- [Hot reload](#) — how navigation state survives source edits.
+- [Primitives](primitives) — where the navigator and outlet sit among
+  the primitives.
+- [Writing a backend](writing-a-backend) — a backend needs nothing
+  navigator-specific.
+- [Styles](styles) — the breakpoints `AppShell` pins on.

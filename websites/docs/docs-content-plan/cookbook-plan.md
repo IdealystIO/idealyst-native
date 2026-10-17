@@ -31,18 +31,19 @@ Recipes are **not** API reference — they don't enumerate every
 prop or describe edge cases. The conceptual pages do that. A
 recipe is the happy path.
 
-## MCP behavior
+## Listing behavior
 
-Recipes use `PageCategory::Cookbook`. The MCP server's default
-`list_doc_pages` tool excludes them; a separate
-`list_cookbook_recipes` tool exposes them. An LLM asking "how
-does reactivity work?" lands on Reactivity, not on a list of
-seven recipes that happen to use signals.
+Recipes use `PageCategory::Cookbook`. `registry::non_cookbook()`
+(the default page listing) excludes them and `registry::cookbook()`
+lists only them, so a reader asking "how does reactivity work?"
+lands on Reactivity, not on a list of recipes that happen to use
+signals.
 
-A model can still navigate to a recipe (`get_page("forms")`
-works for any slug), and `search_docs` returns matches across
-all categories — but recipes don't drown out the concept pages
-in the default surface.
+The idealyst MCP server has no docs-page tools (its docs surface is
+`list_guides` / `read_guide` / `search`). If recipes should reach
+agents, they need a tool built for that; this plan proposes keeping
+the same split there — recipes reachable by slug and search, but out
+of the default listing.
 
 ## Proposed recipes
 
@@ -52,22 +53,22 @@ gets its own page using the `docs!` macro and the
 
 | Recipe | Covers |
 | --- | --- |
-| Theme switcher | `set_theme`, signal-driven theme swap, why no nodes re-mount |
+| Theme switcher | `idea_ui::set_theme`, signal-driven theme swap, why no nodes re-mount |
 | Form with validation | controlled inputs, derived state, error display, submit flow |
 | List with filter | `flat_list`, reactive filter via derived data |
-| Tabs with nested stacks | `TabNavigator` + `Navigator` per tab, state preservation |
-| Drawer + body | `DrawerNavigator`, content panel, breakpoint behavior |
-| Modal overlay | `overlay()`, signal-driven open/close, dismiss handling |
-| Tooltip / popover | `anchored_overlay()`, `Ref<ButtonHandle>` as anchor |
-| Animated mount / unmount | `Presence`, enter/exit transitions |
-| Counter component with methods | `methods!`, parent-side `Ref<H>` |
+| Tabs with nested stacks | `SwapNavigator` + `idea_ui_nav::TabBar`, a `StackNavigator` per tab, `MountPolicy` state preservation |
+| Drawer + body | `SwapNavigator` with `idea_ui_nav::Drawer` / `AppShell` chrome, breakpoint pinning |
+| Modal overlay | `overlay`, signal-driven open/close, dismiss handling |
+| Tooltip / popover | `anchored_overlay`, `Ref<ButtonHandle>` as anchor |
+| Animated mount / unmount | `presence`, enter/exit transitions |
+| Counter component with methods | `#[method]` fns, parent-side `Ref<H>` |
 | Reactive style | passing `Signal<Variant>` to a stylesheet builder |
 | Imperative scroll | `Ref<ScrollViewHandle>` + scroll-to action |
 | Image gallery with detail screen | navigation with typed params |
-| Settings screen | inputs (`Toggle`, `Slider`) bound to a settings struct |
+| Settings screen | inputs (`Switch`, `Slider`) bound to a settings struct |
 | Robot-driven smoke test | how to write a deterministic UI test against `--features robot` |
 
-Fifteen feels about right for a v1 cookbook — enough to cover
+Fourteen feels about right for a first cookbook — enough to cover
 the major shapes, not so many that nothing stands out. Add to
 the list as patterns prove themselves.
 
@@ -101,8 +102,8 @@ are probably two recipes.
 ## Sample recipe — "Theme switcher"
 
 To anchor the format, here's the first recipe written out as a
-prose draft (same shape as the other 13 docs-content-plan files;
-will be translated to the `docs!` macro when that lands).
+prose draft (same shape as the other docs-content-plan files). It
+becomes a `docs!` page with `category = Cookbook` when written.
 
 ### Theme switcher
 
@@ -112,7 +113,7 @@ with the styling system to make theme changes effectively free.
 
 ### What you'll need
 
-- A theme struct implementing `ThemeTokens` (see [Styles](#)).
+- A theme struct implementing `idea_ui::ThemeTokens` (see [Styles](styles)).
 - A signal to drive the active mode.
 - A button to flip the signal.
 
@@ -122,8 +123,9 @@ re-render trigger.
 ### The code
 
 ```rust
-use runtime_core::{component, install_theme, set_theme, signal, ui, Element};
-use crate::theme::{MyTheme};  // your app's theme; see Styles
+use runtime_core::{component, signal, ui, Element};
+use idea_ui::{install_theme, set_theme, typography_kind, Switch, Typography};
+use crate::theme::MyTheme;  // your app's theme; see Styles
 
 #[component]
 pub fn app() -> Element {
@@ -134,10 +136,10 @@ pub fn app() -> Element {
     ui! {
         scroll_view {
             view(style = page_style()) {
-                Heading { "Settings" }
+                Typography(content = "Settings".to_string(), kind = typography_kind::H2)
 
                 view(style = row_style()) {
-                    Body { "Dark mode" }
+                    Typography(content = "Dark mode".to_string())
                     Switch(
                         value = is_dark,
                         on_change = move |on| {
@@ -180,12 +182,12 @@ The Effect re-fire is the *only* update path.
 **On web, even the Effects often don't run.** The web backend
 emits stylesheet rules as `var(--name, fallback)` references and
 installs theme tokens as CSS custom properties on `:root`. When
-`set_theme` runs on web, the framework calls
-`install_theme_variables` once with the new token values; the
+`set_theme` runs on web, the framework calls the backend's
+`update_tokens` once with the new token values; the
 browser re-resolves every `var(--...)` reference in the rendered
 DOM in a single paint. No Effect re-fire per node, no
 `apply_style` per node. Theme swap is O(tokens), not O(styled
-nodes). See [Styles](#) for the full mechanism.
+nodes). See [Styles](styles) for the full mechanism.
 
 **Native backends do the per-Effect path.** iOS and Android don't
 have a runtime variable system, so they take the standard route:
@@ -201,8 +203,8 @@ visual state stays in sync because both the toggle and any
 
 ### Try it
 
-*(Live demo will be inserted via `demo(theme_switcher_demo)`
-once the `docs!` macro lands.)*
+*(Live demo, embedded with the `docs!` macro's `demo(...)` block
+when the page is written.)*
 
 ### Variations
 
@@ -212,11 +214,9 @@ syncs through the `storage` SDK (`localStorage` on web,
 `persisted_signal`, which does both halves. Read the persisted
 value at app start and pass it to `signal(…)`.
 
-**Follow the OS.** Read `Backend::color_scheme()` at startup to
-seed the signal, then listen for OS-level appearance changes.
-The framework's render setup calls `color_scheme` before the
-first install; you can use the returned value to pick the
-initial theme.
+**Follow the OS.** Read `runtime_core::color_scheme()` at startup
+to seed the signal and pick the initial theme. The backend fills it
+from its `AppEnvOps` impl before the app builds.
 
 **More than two themes.** `MyTheme::light()` and
 `MyTheme::dark()` are just constructor functions. Add
@@ -226,21 +226,19 @@ framework only sees one type. Drive the active variant from a
 
 ### See also
 
-- [Styles](#) — the full theming model, including tokens,
+- [Styles](styles) — the full theming model, including tokens,
   runtime variables, and the per-backend cost model.
-- [Reactivity](#) — why `is_dark` is `Copy` and what
+- [Reactivity](reactivity) — why `is_dark` is `Copy` and what
   "the active theme is a signal" means in practice.
-- [Backends](#) — what each backend does on theme swap (CSS
+- [Backends](backends) — what each backend does on theme swap (CSS
   variables on web, Effect re-fire on native).
 
 ---
 
-That's one recipe. The plan above lists fourteen more; each
+That's one recipe. The plan above lists thirteen more; each
 follows the same shape (intro / what-you-need / code /
-walkthrough / try-it / variations / see-also). I'll write them
-once the `docs!` macro is in place and we can author them
-directly in their final form — translating these planning drafts
-would just be busywork before the macro lands.
+walkthrough / try-it / variations / see-also). They are written
+directly as `docs!` pages rather than as prose drafts here.
 
 ## Where this slots in
 
@@ -248,11 +246,10 @@ When the docs ship:
 
 - **Sidebar:** Cookbook is its own section, listed after the
   reference pages.
-- **Cross-references:** conceptual pages can link to a recipe
-  ("for a complete example, see [Theme switcher](#)").
-- **MCP:** `list_cookbook_recipes` exposes the recipe set as a
-  separate surface; `get_page` works for any slug; cookbook
-  recipes don't appear in `list_doc_pages` by default.
-- **Search:** recipes participate in `search_docs`. A model
-  asking "form validation" finds the Forms recipe even though
-  it's in the Cookbook category.
+- **Cross-references:** conceptual pages can link to a recipe by
+  its slug ("for a complete example, see Theme switcher").
+- **Listing:** `registry::cookbook()` lists recipes;
+  `registry::non_cookbook()` leaves them out.
+- **Search:** recipes should participate in docs search, so a
+  reader asking "form validation" finds the Forms recipe even
+  though it's in the Cookbook category.

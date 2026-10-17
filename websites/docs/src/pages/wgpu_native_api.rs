@@ -3,7 +3,7 @@
 //! Documents the public surface a native shell uses to drive the
 //! wgpu render backend: the four-crate layout, the `EventSink`
 //! trait, the event vocabulary, `DeviceProfile` /
-//! `DeviceProfile`, the redraw hook, and the minimal skeleton
+//! `Painter`, the redraw hook, and the minimal skeleton
 //! for writing a new native shell or a new render backend on top
 //! of the same contract.
 
@@ -22,7 +22,7 @@ docs! {
     concepts = [],
 
     section(heading = "Intro") {
-        p("The wgpu preview stack isn't one crate — it's four layers, \
+        p("The wgpu preview stack isn't one crate — it's layered, \
            deliberately. The split exists so a new host shell (a web \
            canvas shim, a UIKit shim, an Android NDK shim) can be \
            written without touching the renderer; a new render \
@@ -30,15 +30,18 @@ docs! {
            under the same shell; and a new platform skin can be added \
            without recompiling either. The layers communicate through \
            a small, frozen contract crate and a `Painter` trait."),
-        p("The layout, under ", code("crates/"), ":"),
+        p("The layout, under ", code("crates/gpu-backend/"), ":"),
         code(text, r##"
-            render/api              render-api     No wgpu, no winit. Pure contract types.
-            render/wgpu             render-wgpu    Renderer + Painter trait + interaction host. Depends on api + wgpu.
-            ios-sim                 ios-sim        iOS skin (UISwitch/Slider/TextField/spinner/keyboard).
-            android-sim             android-sim    Android Material 3 skin.
-            host/winit              host-winit     Winit shell. Depends on api + render-wgpu + winit + wgpu.
-            native/{phone,tablet,tv}               Device-profile facades — pick a (host, renderer, skin, profile) tuple.
+            api                      render-api      No wgpu, no winit. Pure contract types.
+            engine                   render-wgpu     Renderer + Painter trait + interaction host. Depends on api + wgpu.
+            painter/ios-sim          ios-sim         iOS skin (UISwitch/Slider/TextField/spinner/keyboard).
+            painter/android-sim      android-sim     Android Material 3 skin.
+            host/winit               host-winit      Winit shell. Depends on api + render-wgpu + winit + wgpu.
+            variant/{phone,tablet,tv} variant-*      Device-profile facades — pick a (host, renderer, skin, profile) tuple.
         "##),
+        p("Other shells (", code("host/appkit"), ", ", code("host/web"),
+          ", the desktop and mobile hosts) live beside ", code("host/winit"),
+          " and drive the same contract."),
         p("The contract crate is the seam. ", code("render-api"),
           " has no platform dependencies and no rendering dependencies — \
            it's just types (events, profile, simulated-platform enum) \
@@ -48,7 +51,7 @@ docs! {
            what coordinate space events live in, and how a new shell or \
            a new render backend plugs in. If you only want to ship an \
            Idealyst app, you don't need this page — pick a variant \
-           crate and call ", code("run(profile, app)"),
+           crate and call ", code("run(skin, app)"),
           ". This is the layer underneath that."),
     },
 
@@ -83,8 +86,9 @@ docs! {
             [code("variant-phone"), " / ", code("-tablet"), " / ",
              code("-tv"), " — variant facades. Each fixes a ",
              code("DeviceProfile"), " (window size, color scheme) and \
-              calls ", code("host-winit::run(profile, skin, app)"),
-             ". The caller passes the skin. No render logic, no event \
+              calls ", code("host_winit::run_with(profile, skin, register, app)"),
+             ". The caller passes the skin to the variant's ",
+             code("run(skin, app)"), ". No render logic, no event \
               translation — just configuration."],
         ),
         p("Any future host shell (web, iOS-native, Android-native) is \
@@ -114,7 +118,11 @@ docs! {
             }
         "##),
 
-        p("Nine methods. That's the entire contract a shell drives. \
+        p("Nine required methods. The trait also has defaulted hooks a \
+           shell calls when its platform reports them — ",
+          code("mouse_motion"), ", ", code("modifiers_changed"), ", ",
+          code("focus_gained"), ", ", code("app_visibility"), ", ",
+          code("pointer_lock_changed"), " — which default to no-ops. \
            Coordinates are always in logical CSS pixels — the shell \
            does the physical-to-logical conversion (divide by the \
            platform's scale factor, normalize wheel-line deltas to \
@@ -279,6 +287,7 @@ docs! {
         code(rust, r##"
             pub struct DeviceProfile {
                 pub logical_size: (u32, u32),
+                pub position: Option<(i32, i32)>,   // initial window position; None = OS places it
                 pub title: String,
                 pub color_scheme: ColorScheme,
             }
@@ -289,7 +298,7 @@ docs! {
 
         p(code("DeviceProfile"),
           " is the shape of the window — how big in logical pixels, \
-           what title, what color scheme to report on init. The ",
+           where it opens, what title, what color scheme to report on init. The ",
           code("phone"), " / ", code("tablet"), " / ", code("tv"),
           " crates each carry a different profile; that's the entirety \
            of what a variant crate does on this front."),
@@ -343,10 +352,14 @@ docs! {
             ["Android — ", code("View.postInvalidateOnAnimation"),
              " or a ", code("Choreographer"), " frame callback."],
         ),
-        p("The hook lives in thread-local storage. The framework's \
-           reactivity is single-threaded; cross-thread input (audio \
-           callbacks, background networking) needs to post onto the \
-           host thread before driving ", code("EventSink"), "."),
+        p("The hook is process-global: a ", code("OnceLock"),
+          " holding a ", code("Send + Sync"),
+          " closure, so ", code("request_redraw()"),
+          " is safe from any thread. The first install wins; later calls \
+           are ignored. The framework's reactivity is still \
+           single-threaded, so cross-thread input (audio callbacks, \
+           background networking) must post onto the host thread before \
+           driving ", code("EventSink"), "."),
     },
 
     section(heading = "Writing a new native shell") {
@@ -361,27 +374,31 @@ docs! {
         p("Minimal skeleton:"),
 
         code(rust, r##"
+            use std::rc::Rc;
             use render_api::DeviceProfile;
-            use render_wgpu::{install_redraw_hook, Host, Renderer};
-            use runtime_core::Element;
+            use render_wgpu::newcore::{SceneElement, SceneRegistry};
+            use render_wgpu::{install_redraw_hook, Host, Painter, Renderer, WgpuBackend};
 
-            pub fn run<F: FnOnce() -> Element + 'static>(
-                profile: DeviceProfile,
-                build_ui: F,
-            ) {
+            pub fn run<R, F>(profile: DeviceProfile, skin: Rc<dyn Painter>, register: R, build_ui: F)
+            where
+                R: FnOnce(&mut SceneRegistry<WgpuBackend>),
+                F: FnOnce() -> SceneElement,
+            {
                 // 1. Wire the redraw hook into your platform's event loop.
                 install_redraw_hook(Box::new(|| {
                     // post-a-redraw-message logic for your platform
                 }));
+                // …and install a scheduler (the flush driver rides it).
 
                 // 2. Build the render-side host + renderer.
-                let mut host = Host::new(profile.platform, profile.color_scheme);
+                let mut host = Host::new(skin, profile.color_scheme);
                 let mut renderer = /* Renderer::new(&device, &queue, format) */;
 
                 // 3. Hand the host the viewport and mount the app.
                 host.set_viewport(profile.logical_size.0 as f32,
                                   profile.logical_size.1 as f32);
-                host.mount(build_ui);
+                let app = render_wgpu::newcore::start(host.backend().clone(), register, build_ui);
+                // Keep `app` alive for the app's lifetime.
 
                 // 4. Run your platform's event loop. For each native event,
                 //    translate to api types and call into EventSink:
@@ -400,8 +417,8 @@ docs! {
         "##),
 
         p("The winit shell at ",
-          code("crates/backend/wgpu/native/src/app.rs"),
-          " is the worked example. It's about 300 lines, most of which \
+          code("crates/gpu-backend/host/winit/src/app.rs"),
+          " is the worked example. It's about 1,500 lines, much of which \
            is straightforward ", code("winit::WindowEvent"),
           " → api-type translation. A web shell would be the same \
            shape but reading DOM events; a UIKit shell would read ",
@@ -429,7 +446,8 @@ docs! {
              " for the layering."],
             [code("render_api::EventSink"),
              " — so any shell on the api side can forward events to \
-              you. The eight methods above."],
+              you. The nine required methods above, plus any defaulted \
+              hooks you want to act on."],
         ),
         p(code("render-wgpu"), "'s ", code("Host"),
           " is the worked example: it owns the per-interaction state \

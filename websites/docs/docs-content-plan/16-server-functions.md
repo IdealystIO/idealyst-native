@@ -95,10 +95,15 @@ each compiled artifact.
 ```rust
 #[server]                              // path = function name ("add")
 #[server(path = "v1/users/list")]      // explicit path
+#[server(strict_version)]              // reject schema-mismatched clients
+#[server(tags(admin, limit = "30/min"))] // metadata a dispatch hook reads
 ```
 
 The path appears after `/_srv/` in the URL. Use it to version
-endpoints or to scope groups of functions.
+endpoints or to scope groups of functions. `strict_version` makes the
+server reject a client whose wire schema hash differs, with
+`ServerError::IncompatibleVersion`. `tags(...)` attaches static
+metadata a dispatch hook reads with `ctx.has_tag` / `ctx.tag`.
 
 ### Constraints
 
@@ -108,11 +113,11 @@ endpoints or to scope groups of functions.
 - Args must be `Serialize + DeserializeOwned`.
 - Return must be `Result<T, E>` where `T: Serialize + DeserializeOwned`
   and `E` implements [`ServerFnReturn`](#errors-and-serverfnreturn).
-  The built-in error type `ServerError` already implements it.
+  `Result<T, ServerError<E>>` already implements it.
 
 ## The wire protocol
 
-Deliberately small for v0:
+Deliberately small:
 
 - **Single call:** `POST /_srv/<path>` with JSON body
   `[arg0, arg1, ...]`. Response is JSON `{"Ok": T}` or `{"Err": E}` —
@@ -131,9 +136,8 @@ below).
 
 > **Why JSON?** Easy to debug, universally supported by every
 > client transport without extra deps. The `IntoBody` /
-> `FromBody` traits in [`net`](./15-net.md) make swapping to
-> postcard / msgpack later a downstream wrapper — no changes to
-> the macro.
+> `FromBody` traits in [`net`](net) are where another body format
+> would plug in.
 
 ## The build setup
 
@@ -248,9 +252,7 @@ server::serve("0.0.0.0:3000".parse().unwrap()).await?;
 ```rust
 use server::ClientConfig;
 
-server::configure(ClientConfig {
-    base_url: "https://api.example.com".into(),
-});
+server::configure(ClientConfig::new("https://api.example.com"));
 ```
 
 `configure` is idempotent — call it once at app start, or call it
@@ -263,12 +265,16 @@ For web apps, the natural base URL is the page's own origin:
 {
     let origin = deep_link::origin()
         .unwrap_or_else(|| "http://localhost:3000".to_string());
-    server::configure(ClientConfig { base_url: origin });
+    server::configure(ClientConfig::new(origin));
 }
 ```
 
+Native apps run by `idealyst dev` get the dev server's address from
+`server::dev_base_url()` (it reads the `IDEALYST_SERVER_URL` the CLI
+sets); it returns `None` in production and on web.
+
 Server-fn calls happen against `<base_url>/_srv/...`. The transport
-underneath is the [`net`](./15-net.md) SDK — same per-platform HTTP
+underneath is the [`net`](net) SDK — same per-platform HTTP
 stack, no separate code path.
 
 ## Batching
@@ -305,8 +311,8 @@ frame at most.
 
 > **The on-mount fan-out.** This is where batching pays for
 > itself. A typical app loads several resources when a page
-> mounts (`use_query(get_user)`, `use_query(list_todos)`,
-> `use_query(list_projects)`). With batching, that fan-out is one
+> mounts (three `resource(...)` fetchers calling `get_user`,
+> `list_todos` and `list_projects`). With batching, that fan-out is one
 > request on the wire, not three. Open the network tab in any of
 > the example apps to see the `_srv/_batch` line.
 
@@ -385,24 +391,33 @@ Server fns return `Result<T, E>` where `E` implements
 
 ```rust
 pub trait ServerFnReturn: Sized {
+    /// The domain error `E` of this return type's `ServerError<E>`.
+    type Error;
+
     /// Construct a Self representing a non-domain failure
-    /// (transport, codec, dispatcher-level error).
-    fn from_server_error(error: ServerError) -> Self;
+    /// (transport, codec, version, dispatcher-level error).
+    fn from_server_error(error: ServerError<Self::Error>) -> Self;
 }
 ```
 
-The built-in `ServerError` already implements it. Most apps just
-return `Result<T, ServerError>`.
+`Result<T, ServerError<E>>` already implements it, for any
+serializable domain error `E`. `E` defaults to `String`, so most apps
+just return `Result<T, ServerError>`.
 
-The error type has four variants:
+The error type has six variants:
 
 ```rust
-pub enum ServerError {
-    Failed(String),                          // server fn returned Err
+pub enum ServerError<E = String> {
+    Failed(E),                               // server fn returned Err
     Network(String),                         // transport failure (client only)
     Codec(String),                           // JSON encode/decode failed
     Server { status: u16, message: String }, // dispatcher rejected
     Cancelled,                               // cancel token fired
+    IncompatibleVersion {                    // client/server schema drift
+        path: String,
+        client_schema: u64,
+        server_schema: u64,
+    },
 }
 ```
 
@@ -420,13 +435,18 @@ The split matters:
   `400` (malformed args), `500` (handler panic). Distinct from
   `Failed`.
 - `Cancelled` is a cancel-token cancellation.
+- `IncompatibleVersion` means the client and server disagree on this
+  function's wire schema. The macro hashes the arg and return types
+  on both sides; when a payload fails to decode and the hashes
+  differ, you get this instead of `Codec`. A `strict_version`
+  function rejects a hash mismatch up front (HTTP 426).
 
 ### Custom error types
 
-You can use your own error type. Implement `ServerFnReturn` for
-`Result<T, MyError>` if you want it to receive transport failures
-in `MyError`'s own error variant. v0 ships only the built-in
-`Result<T, ServerError>` impl; the trait is the upgrade path.
+Spell the return type `Result<T, ServerError<MyError>>`. `MyError`
+rides in `Failed` and is serialized across the wire; transport
+failures fold into the same `ServerError<MyError>`. No extra impl is
+needed.
 
 ## Extractors
 
@@ -481,7 +501,7 @@ need to iterate.
 ## How the pieces connect to async reactivity
 
 Server functions are async fns. They compose with every primitive
-on the [Async reactivity](./14-async-reactivity.md) page:
+on the [Async reactivity](async-reactivity) page:
 
 ```rust
 // load on mount, refresh on dep change
@@ -503,35 +523,67 @@ let create = async_reducer(
 The shape is always: `#[server]` fn → wrap in the primitive that
 fits how the UI uses it.
 
-## Limits / what's not in v0
+## Streaming
 
-For grep:
+Three sibling attributes stream instead of returning once. They share
+the cfg split, extractors, middleware and errors with `#[server]`;
+only the transport and return shape differ.
 
-- **Streaming.** No `#[server_stream]` yet. Server-pushed updates
-  (subscriptions, SSE, WebSockets) are roadmap.
-- **Custom error types in `Result<T, E>`.** The trait is in place
-  but only `Result<T, ServerError>` ships with an impl. Custom
-  error types need `impl ServerFnReturn for Result<T, MyError>`.
-- **Binary wire format.** JSON only in v0. Postcard / msgpack is a
-  downstream wrapper using `IntoBody`/`FromBody` on `net`.
-- **Schema-drift detection.** Mismatched client/server function
-  signatures surface as `Codec` errors at runtime. A compile-time
-  hash check is roadmap.
-- **CLI integration.** `idealyst dev` doesn't yet orchestrate a
-  server-bin alongside the wasm build. You run them separately for
-  now (`cargo run --bin server --features server` + `idealyst build --web`).
+- **`#[subscription]`** — server → client over WebSocket. The fn
+  returns `impl Stream<Item = T>`; the client stub returns a
+  scope-bound `UseSocket<T, ()>` that connects on mount and closes
+  on unmount.
+- **`#[channel]`** — full duplex over WebSocket. The first param is a
+  `Socket<In, Out>`; the client gets the mirrored `UseSocket<Out, In>`
+  with `send(msg)` and `incoming()`.
+- **`#[sse]`** — server → client over plain HTTP
+  (`text/event-stream`). The client stub returns the URL; consume it
+  with `server::use_sse::<T>(url)`. Prefer it for one-way streams.
+
+## CLI integration
+
+Declare the server bin in the app metadata and `idealyst dev` runs the
+whole stack:
+
+```toml
+[package.metadata.idealyst.app]
+server_bin = "server"    # → cargo run --bin server --features server
+```
+
+On web, the dev loop runs your server bin instead of the static dev
+server, so `/_srv/*` works and the bundle and API are served
+same-origin. A server in another package is named with
+`server_manifest`. Native apps get the address through
+`server::dev_base_url()`.
+
+## Per-call credentials
+
+Attach a `CredentialProvider` to the client config and its headers go
+on every server-fn request. It is called per request, so a refreshed
+token is picked up without reconfiguring:
+
+```rust
+server::configure(
+    ClientConfig::new(base)
+        .with_credentials(server::bearer(|| read_token())),
+);
+```
+
+`server::credentials_from_fn(|| vec![...])` covers any other header
+scheme. Cookie auth needs no provider.
+
+## Limits
+
+- **Wire format is JSON.** There is no binary format option.
 - **`idealyst new` scaffold.** No template for the three-crate
-  layout yet. Today you set it up by hand.
-- **Per-call headers / auth.** The client uses one shared
-  `net::Client` configured at `server::configure(...)`. Adding a
-  per-call `.with_header(...)` shape is a planned ergonomic.
+  full-stack layout; you set it up by hand.
 
 ## Where to read more
 
-- [Async reactivity](./14-async-reactivity.md) — `resource`,
+- [Async reactivity](async-reactivity) — `resource`,
   `mutation`, `async_reducer`, and how they consume server-fn
   futures.
-- [Net](./15-net.md) — the HTTP client SDK underneath. Same
+- [Net](net) — the HTTP client SDK underneath. Same
   cancel-token primitive, same `IntoBody`/`FromBody` traits.
 - `crates/api/server/examples/server-fn-demo` — runnable full-stack todo app
   exercising every concept on this page.
