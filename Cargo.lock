@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "android-navigator-helpers"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "codeblock"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -4465,7 +4465,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -6405,7 +6405,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "7.2.0"
+version = "7.2.1"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6519,7 +6519,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6774,7 +6774,7 @@ dependencies = [
 
 [[package]]
 name = "ios-navigator-helpers"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -7603,7 +7603,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-android-mobile",
  "backend-ios-core",
@@ -7663,7 +7663,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "1.25.0"
+version = "1.25.1"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10739,7 +10739,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -10762,7 +10762,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "runtime-tls",
  "runtime-world",
@@ -10783,7 +10783,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -10817,7 +10817,7 @@ version = "0.1.0"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -10837,7 +10837,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "runtime-tls",
  "rustc-hash 2.1.2",
@@ -12129,7 +12129,7 @@ dependencies = [
 
 [[package]]
 name = "stack-navigator"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "android-navigator-helpers",
  "backend-android-mobile",
@@ -12353,7 +12353,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -12414,7 +12414,7 @@ dependencies = [
 
 [[package]]
 name = "swap-navigator"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -13227,7 +13227,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "toolbar"
-version = "3.0.1"
+version = "3.0.2"
 dependencies = [
  "backend-linux",
  "backend-macos",
@@ -14047,7 +14047,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
@@ -14724,7 +14724,7 @@ dependencies = [
 
 [[package]]
 name = "webview"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
