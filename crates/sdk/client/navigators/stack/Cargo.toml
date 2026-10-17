@@ -31,6 +31,9 @@ description = "Stack navigator SDK — push/pop depth with author chrome around 
 # switch.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # The builders + glue re-exports (Element/Ref/Signal/inject) + prims
 # (NavHandle/StackNav/ScreenChrome/Screen/StackRetention) the authored
 # surface lowers to.

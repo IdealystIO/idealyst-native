@@ -39,7 +39,7 @@ pub(crate) struct NavigatorEntry {
     pub(crate) callbacks_ptr: jlong,
 }
 
-thread_local! {
+runtime_tls::thread_local! {
     /// Per-instance registry keyed by the container's JObject* pointer.
     pub(crate) static NAVIGATOR_INSTANCES: RefCell<HashMap<usize, NavigatorEntry>> =
         RefCell::new(HashMap::new());

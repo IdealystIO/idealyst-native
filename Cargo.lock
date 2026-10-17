@@ -226,6 +226,7 @@ dependencies = [
  "jni 0.21.1",
  "log",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 
@@ -6783,6 +6784,7 @@ dependencies = [
  "objc2-ui-kit",
  "runtime-layout",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 
@@ -12141,6 +12143,7 @@ dependencies = [
  "jni 0.21.1",
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
  "runtime-world",
  "wasm-bindgen",

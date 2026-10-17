@@ -12,6 +12,9 @@ license.workspace = true
 # depends on it and supplies its kind-specific callback bundle.
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Substrate only: the navigator DATA model (`NavigatorControl` / `NavState` /
 # `MountResult` / `NavigatorHandle`) and the substrate `Signal` those nav-state
 # slots are built from. No author surface (no `ui!`, no `Element`), so this

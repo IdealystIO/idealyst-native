@@ -136,7 +136,7 @@ pub struct IosScreenOptions {
 // Keyed by the container view's pointer (the same `view_key()` the
 // framework uses).
 
-thread_local! {
+runtime_tls::thread_local! {
     pub(crate) static STACK_INSTANCES:
         RefCell<HashMap<usize, Rc<RefCell<stack::StackEntry>>>> =
         RefCell::new(HashMap::new());

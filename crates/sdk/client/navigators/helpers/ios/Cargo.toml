@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
 # Substrate only: the navigator DATA model (`NavigatorControl` / `NavState` /
 # `MountResult` / `NavigatorOps`) plus the style + color vocabulary. Nothing
 # here touches the author surface (no `ui!`, no `Element`), and `NavState`'s

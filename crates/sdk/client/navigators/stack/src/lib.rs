@@ -431,7 +431,7 @@ fn install_native_presenter() {
     #[cfg(all(target_os = "ios", not(target_arch = "wasm32")))]
     {
         use std::cell::Cell;
-        thread_local! {
+        runtime_tls::thread_local! {
             static INSTALLED: Cell<bool> = const { Cell::new(false) };
         }
         INSTALLED.with(|done| {
@@ -444,7 +444,7 @@ fn install_native_presenter() {
     #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
     {
         use std::cell::Cell;
-        thread_local! {
+        runtime_tls::thread_local! {
             static INSTALLED: Cell<bool> = const { Cell::new(false) };
         }
         INSTALLED.with(|done| {

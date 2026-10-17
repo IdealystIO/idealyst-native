@@ -22,12 +22,36 @@ fn android_linked_crates(root: &Path) -> Vec<PathBuf> {
         .iter()
         .map(|d| root.join("crates").join(d))
         .collect();
-    let sdks = root.join("crates/sdk/client");
-    for entry in std::fs::read_dir(&sdks).unwrap() {
-        dirs.push(entry.unwrap().path());
+    // Client SDKs, including the ones grouped one or two directories down
+    // (`navigators/stack`, `navigators/helpers/android`): a group directory
+    // has no Cargo.toml of its own, so only collecting direct children
+    // skipped every crate inside it.
+    fn crates_under(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.is_dir() {
+                continue;
+            }
+            if path.join("Cargo.toml").exists() {
+                out.push(path);
+            } else if depth > 0 {
+                crates_under(&path, depth - 1, out);
+            }
+        }
     }
+    crates_under(&root.join("crates/sdk/client"), 2, &mut dirs);
     dirs.retain(|d| d.join("Cargo.toml").exists());
     dirs
+}
+
+#[test]
+fn the_scan_reaches_crates_inside_sdk_groups() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let dirs = android_linked_crates(&root);
+    for nested in ["navigators/stack", "navigators/helpers/android"] {
+        let want = root.join("crates/sdk/client").join(nested);
+        assert!(dirs.contains(&want), "{nested} is scanned");
+    }
 }
 
 fn scan(dir: &Path, hits: &mut Vec<String>) {
