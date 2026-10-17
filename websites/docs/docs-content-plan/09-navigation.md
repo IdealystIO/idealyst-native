@@ -358,9 +358,10 @@ switch tabs and back.
 The navigator root fills its container (width/height 100% +
 `flex-grow: 1`), and a style-less `{nav.outlet}` is a bounded flex region
 (`flex: 1 1 0` + `min-height: 0`), so screens and scroll views fill with
-no configuration. The SDK builders take no style and `nav.outlet`
-arrives already built; to size a navigator differently, place it (or the
-outlet) inside a styled `view`.
+no configuration. Override either by styling it: `.style(s)` on the
+`SwapNavigator` / `StackNavigator` builder replaces the root's default,
+and `navigator_outlet().style(s)` in the layout, in place of
+`{nav.outlet}`, replaces the outlet's.
 
 ## Where to read more
 

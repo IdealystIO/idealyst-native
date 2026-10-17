@@ -57,8 +57,9 @@
 //! fillable flex region (`flex: 1 1 0` + `min-height: 0` —
 //! `outlet_fill_rules`), so screens that assume they can fill — and
 //! scroll views that need a bounded height — work with zero
-//! configuration. Neither the builder nor the outlet has a style setter;
-//! to size either differently, wrap it in a styled `view`.
+//! configuration. Override either by styling it: `.style(...)` on the
+//! navigator builder, and `navigator_outlet().style(...)` in the layout
+//! in place of `{nav.outlet}`.
 //!
 //! # The outlet is one-shot — keep it in one stable spot
 //!
@@ -74,12 +75,16 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_vocabulary::builders::{self, navigator_outlet};
+use runtime_vocabulary::builders;
 use runtime_vocabulary::glue::{inject, ChildList, Element, IntoElement, Ref, Signal};
 use runtime_vocabulary::prims::{NavHandle, SwapNav};
 
 pub use runtime_vocabulary::glue::{Route, RouteParams};
 pub use runtime_vocabulary::prims::{MountPolicy, Screen};
+/// The outlet, for a layout that styles it: `navigator_outlet().style(s)`
+/// where `{nav.outlet}` would go.
+pub use runtime_vocabulary::builders::navigator_outlet;
+use runtime_vocabulary::style_attach::IntoStyleProp;
 
 /// Presentation-label marker. There is no typed navigator payload any
 /// more; the label string below is what introspection serves as
@@ -204,6 +209,10 @@ pub trait SwapBuilder: Sized {
     /// Bind a [`Ref<SwapHandle>`] so the app can switch screens
     /// imperatively.
     fn bind(self, r: Ref<SwapHandle>) -> Self;
+    /// Style the navigator's root, in place of its fill-the-container
+    /// default. To style the outlet, write `navigator_outlet().style(..)`
+    /// in the layout where `{nav.outlet}` would go.
+    fn style(self, style: impl IntoStyleProp) -> Self;
 }
 
 impl SwapBuilder for SwapNavigator {
@@ -239,6 +248,11 @@ impl SwapBuilder for SwapNavigator {
 
     fn mount_policy(mut self, policy: MountPolicy) -> Self {
         self.b = self.b.mount_policy(policy);
+        self
+    }
+
+    fn style(mut self, style: impl IntoStyleProp) -> Self {
+        self.b = self.b.style(style);
         self
     }
 
@@ -278,7 +292,7 @@ impl ChildList for SwapNavigator {
 /// everything from here.
 pub mod prelude {
     pub use super::{
-        MountPolicy, Route, Screen, SwapBuilder, SwapContext, SwapHandle,
+        navigator_outlet, MountPolicy, Route, Screen, SwapBuilder, SwapContext, SwapHandle,
         SwapNavigator, SwapPresentation, SwapScreenOptions,
     };
 }

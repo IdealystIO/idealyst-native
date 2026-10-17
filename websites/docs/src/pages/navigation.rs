@@ -717,12 +717,12 @@ docs! {
           " defaults to a bounded, fillable flex region (",
           code("flex: 1 1 0"), " + ", code("min-height: 0"),
           "), so screens that assume they can fill — and scroll views that \
-           need a bounded height — work with zero configuration. The ",
+           need a bounded height — work with zero configuration. Override \
+           either by styling it: ", code(".style(s)"), " on the ",
           code("SwapNavigator"), " / ", code("StackNavigator"),
-          " builders take no style, and ", code("nav.outlet"),
-          " arrives already built, so neither default can be overridden \
-           from the SDK. To size a navigator differently, place it (or the \
-           outlet) inside a styled ", code("view"), "."),
+          " builder replaces the root's default, and ",
+          code("navigator_outlet().style(s)"), " in the layout, in place of ",
+          code("{nav.outlet}"), ", replaces the outlet's."),
     },
 
     section(heading = "Scopes and lifecycle, recap") {

@@ -129,8 +129,8 @@
 //! # Sizing
 //!
 //! The navigator's root **fills its container by default** (width/height
-//! 100% + `flex-grow: 1` — `navigator_fill_rules`). The builder has no
-//! style setter; to size it differently, wrap it in a styled `view`.
+//! 100% + `flex-grow: 1` — `navigator_fill_rules`). Override by styling
+//! it: `StackNavigator::new(&home).style(my_style)`.
 //!
 //! # Screen retention — what happens below the top
 //!
@@ -146,7 +146,7 @@
 
 use std::rc::Rc;
 
-use runtime_vocabulary::builders::{self, navigator_outlet};
+use runtime_vocabulary::builders;
 use runtime_vocabulary::glue::{inject, ChildList, Element, IntoElement, Ref, Signal};
 use runtime_vocabulary::prims::{NavHandle, ScreenBehavior, ScreenChrome, StackNav};
 
@@ -154,6 +154,10 @@ pub use runtime_vocabulary::glue::primitives::navigator::{
     HeaderButton, Route, RouteParams, StackHeaderState,
 };
 pub use runtime_vocabulary::prims::{Screen, StackRetention};
+/// The outlet, for a layout that styles it: `navigator_outlet().style(s)`
+/// where `{nav.outlet}` would go.
+pub use runtime_vocabulary::builders::navigator_outlet;
+use runtime_vocabulary::style_attach::IntoStyleProp;
 
 /// Presentation-label marker. There is no typed navigator payload any
 /// more; the label string below is what introspection serves as
@@ -474,6 +478,10 @@ pub trait StackBuilder: Sized {
     fn retention(self, r: StackRetention) -> Self;
     /// Bind a `Ref<StackHandle>` for imperative push/pop.
     fn bind(self, r: Ref<StackHandle>) -> Self;
+    /// Style the navigator's root, in place of its fill-the-container
+    /// default. To style the outlet, write `navigator_outlet().style(..)`
+    /// in the layout where `{nav.outlet}` would go.
+    fn style(self, style: impl IntoStyleProp) -> Self;
 }
 
 impl StackBuilder for StackNavigator {
@@ -512,6 +520,11 @@ impl StackBuilder for StackNavigator {
         self
     }
 
+    fn style(mut self, style: impl IntoStyleProp) -> Self {
+        self.b = self.b.style(style);
+        self
+    }
+
     fn bind(mut self, r: Ref<StackHandle>) -> Self {
         self.b = self
             .b
@@ -545,7 +558,7 @@ impl ChildList for StackNavigator {
 /// `Screen`, `StackContext`), so an app imports everything from here.
 pub mod prelude {
     pub use super::{
-        header_state, HeaderButton, Route, Screen, StackBuilder, StackContext,
+        header_state, navigator_outlet, HeaderButton, Route, Screen, StackBuilder, StackContext,
         StackHandle, StackHeaderState, StackNavigator, StackPresentation, StackRetention,
         StackScreenExt, StackScreenOptions,
     };
