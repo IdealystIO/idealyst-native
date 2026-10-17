@@ -70,18 +70,22 @@ pub const TEMPLATE_DIRECTIVES: &[(&str, &str)] = &[
 /// Examples (input → output, syntactic only):
 ///
 /// - `count = count + 1`  → `count.set(count.get() + 1)`
-/// - `count++`            → `count.update(|v| *v += 1)`
-/// - `count += 5`         → `count.update(|v| *v += 5)`
+/// - `count++`            → `count.update(|v| v.clone() + 1)`
+/// - `count += 5`         → `count.update(|v| v.clone() + (5))`
+///
+/// `Signal::update` hands the closure `&T` and takes the next value back,
+/// so the closure computes rather than mutates. The right-hand side is
+/// parenthesized so `count -= a - b` stays `v - (a - b)`.
 ///
 /// Returns `None` when the assignment shape isn't one of the
 /// recognized cases — caller should emit a hole.
 pub fn rewrite_assignment(name: &str, op: &str, rhs: Option<&str>) -> Option<String> {
     match (op, rhs) {
         ("=", Some(rhs)) => Some(format!("{}.set({})", name, rhs)),
-        ("++", None) => Some(format!("{}.update(|v| *v += 1)", name)),
-        ("--", None) => Some(format!("{}.update(|v| *v -= 1)", name)),
-        ("+=", Some(rhs)) => Some(format!("{name}.update(|v| *v += {rhs})", name = name, rhs = rhs)),
-        ("-=", Some(rhs)) => Some(format!("{name}.update(|v| *v -= {rhs})", name = name, rhs = rhs)),
+        ("++", None) => Some(format!("{name}.update(|v| v.clone() + 1)")),
+        ("--", None) => Some(format!("{name}.update(|v| v.clone() - 1)")),
+        ("+=", Some(rhs)) => Some(format!("{name}.update(|v| v.clone() + ({rhs}))")),
+        ("-=", Some(rhs)) => Some(format!("{name}.update(|v| v.clone() - ({rhs}))")),
         _ => None,
     }
 }
@@ -98,12 +102,34 @@ mod tests {
         );
     }
 
+    /// Regression: `++` / `+=` emitted `count.update(|v| *v += 1)`, a
+    /// mutation through `&T` that does not compile against
+    /// `Signal::update(FnOnce(&T) -> T)`.
     #[test]
-    fn rewrite_increment() {
+    fn regression_rewrite_increment_returns_the_next_value() {
         assert_eq!(
             rewrite_assignment("count", "++", None).as_deref(),
-            Some("count.update(|v| *v += 1)"),
+            Some("count.update(|v| v.clone() + 1)"),
         );
+        assert_eq!(
+            rewrite_assignment("count", "-=", Some("a - b")).as_deref(),
+            Some("count.update(|v| v.clone() - (a - b))"),
+            "the right-hand side keeps its own grouping",
+        );
+    }
+
+    /// The emitted closures are what `Signal::update` takes: `&T` in, the
+    /// next `T` out. Written out here so a signature change breaks this
+    /// test instead of the ported app.
+    #[test]
+    fn emitted_update_closures_have_the_update_shape() {
+        fn update<T: Clone>(v: T, f: impl FnOnce(&T) -> T) -> T {
+            f(&v)
+        }
+        let (a, b) = (3, 1);
+        assert_eq!(update(5, |v| v.clone() + 1), 6);
+        assert_eq!(update(5, |v| v.clone() - (a - b)), 3);
+        assert_eq!(update(String::from("a"), |v| v.clone() + ("b")), "ab");
     }
 
     #[test]
