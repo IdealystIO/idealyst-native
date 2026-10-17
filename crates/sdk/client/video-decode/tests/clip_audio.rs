@@ -3,11 +3,18 @@
 //! no network and no fixture. Run on a real Windows machine (the VM runner)
 //! and on Linux with GStreamer's base + good plugins installed.
 //!
+//! On macOS it pins the `MTAudioProcessingTap` fixes: the callback table is
+//! `#pragma pack(4)` in the SDK (natural alignment made MediaToolbox jump
+//! through a garbage `init` — SIGBUS), and the tap ref needs its opaque
+//! type encoding for `setAudioTapProcessor:`.
+//!
+//! `harness = false` (see Cargo.toml): the test runs on the main thread so
+//! `wait` can pump the main run loop AVFoundation loads assets on.
+//!
 //! On Linux this also pins two fixes it exposed: an audio-only clip never
 //! opened (the video appsink waited for a first frame forever), and on a box
 //! with no audio output (a container, CI) playback stalled on the
 //! `autoaudiosink` that couldn't open a device.
-#![cfg(any(windows, target_os = "linux"))]
 
 use std::time::Duration;
 
@@ -54,9 +61,33 @@ fn file_url(path: &std::path::Path) -> String {
     format!("file://{}{p}", if p.starts_with('/') { "" } else { "/" })
 }
 
+/// Let `d` pass. On macOS, by running the main run loop for it.
 fn wait(d: Duration) {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            static kCFRunLoopDefaultMode: *const core::ffi::c_void;
+            fn CFRunLoopRunInMode(mode: *const core::ffi::c_void, seconds: f64, return_after_source: u8) -> i32;
+        }
+        let end = std::time::Instant::now() + d;
+        while let Some(left) = end.checked_duration_since(std::time::Instant::now()).filter(|l| !l.is_zero()) {
+            // SAFETY: runs this (main) thread's run loop.
+            unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, left.as_secs_f64(), 0) };
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
     std::thread::sleep(d);
 }
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn main() {
+    regression_the_clips_audio_arrives_as_it_plays();
+    println!("clip_audio: ok");
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn main() {}
 
 /// `audio()` was always `None` on Windows and Linux: the Media Engine plays a
 /// clip's sound but exposes no samples, and the GStreamer pipeline sent its
@@ -64,7 +95,7 @@ fn wait(d: Duration) {
 /// audio. Now the clip's PCM arrives as it plays — the right tone, in real time,
 /// nothing while paused, the new position's tone after a seek — and the
 /// player's mute doesn't silence it.
-#[test]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn regression_the_clips_audio_arrives_as_it_plays() {
     use std::sync::{Arc, Mutex};
     let path = two_tone_wav();

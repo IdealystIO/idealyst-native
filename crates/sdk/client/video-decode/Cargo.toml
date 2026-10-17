@@ -66,7 +66,7 @@ windows = { version = "0.62", features = [
 windows-core = "0.62"
 async-channel = "2"
 
-[target.'cfg(all(any(target_os = "windows", target_os = "linux"), not(target_arch = "wasm32")))'.dev-dependencies]
+[target.'cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), not(target_arch = "wasm32")))'.dev-dependencies]
 pollster = "0.4"
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
@@ -117,3 +117,10 @@ runtime_kotlin = ["runtime/kotlin/io/idealyst/videodecode/RustVideoDecoder.kt"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+
+# Runs on the process's main thread: on macOS, AVFoundation finishes
+# loading an asset on the main run loop, which `wait` pumps (libtest's
+# worker threads have no main run loop, so the clip never starts).
+[[test]]
+name = "clip_audio"
+harness = false

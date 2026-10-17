@@ -42,8 +42,9 @@ mod runtime_files;
 pub struct BuildArtifact {
     /// Path to the produced Windows `.exe` (ready to spawn).
     pub binary: PathBuf,
-    /// Files SDKs need beside the `.exe` at runtime (`WebView2Loader.dll`),
-    /// already copied into its directory — see `runtime_files`. Whatever
+    /// Files SDKs need beside the `.exe` at runtime — declared runtime files
+    /// (`WebView2Loader.dll`) and the DLLs of declared artifacts — already in
+    /// its directory; see `runtime_files`. Whatever
     /// moves the `.exe` elsewhere must move these with it.
     pub runtime_files: Vec<PathBuf>,
     /// Wrapper crate directory (useful for debugging the template).
@@ -111,10 +112,59 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         );
     }
     ship_assets(&project_dir, &binary)?;
-    let declared = runtime_files::collect(&wrapper_dir.join("Cargo.toml"), runtime_files::arch_dir(triple))?;
+    let metadata = runtime_files::metadata(&wrapper_dir.join("Cargo.toml"))?;
+    let mut declared = runtime_files::resolve(&metadata, runtime_files::arch_dir(triple))?;
+    for plan in runtime_files::resolve_artifacts(&metadata)? {
+        declared.push(build_artifact(&wrapper_dir, &cargo_target_dir, &project_dir, &plan, triple, opts.release)?);
+    }
     let exe_dir = binary.parent().expect("the binary sits in a directory");
     let runtime_files = runtime_files::ship(&declared, exe_dir)?;
     Ok(BuildArtifact { binary, runtime_files, wrapper_dir })
+}
+
+/// Build one SDK-declared artifact (`runtime_files::ArtifactPlan`) for the
+/// app's target and profile, into the wrapper's target dir, and return the
+/// DLL. A cross build puts it in the `.exe`'s own directory.
+fn build_artifact(
+    wrapper_dir: &Path,
+    target_dir: &Path,
+    project_dir: &Path,
+    plan: &runtime_files::ArtifactPlan,
+    triple: Option<&str>,
+    release: bool,
+) -> Result<PathBuf> {
+    let b = build_ios::sdk_products::ProductBuild {
+        label: "build-windows",
+        wrapper_dir,
+        target_dir,
+        project_dir,
+        // The Windows wrapper carries no `[patch]` tables.
+        patch_block: "",
+        package: &plan.package,
+        manifest_dir: &plan.manifest_dir,
+        target: build_ios::sdk_products::ProductTarget::Lib,
+        features: &plan.features,
+        env: &[],
+        triple,
+        release,
+    };
+    // `write_replacing`, like every generated file here: the shim lives on
+    // the same VM share as the wrapper.
+    let write = |path: &Path, contents: &str| {
+        let comment = if path.extension().is_some_and(|e| e == "rs") { "//" } else { "#" };
+        write_replacing(path, contents, comment)
+    };
+    let profile = build_ios::sdk_products::build_product(&b, &write)?;
+    let dll = profile.join(plan.dll_name());
+    if !dll.is_file() {
+        anyhow::bail!(
+            "{} declares a windows artifact from `{}`, but its build produced no {}",
+            plan.declarer,
+            plan.package,
+            dll.display()
+        );
+    }
+    Ok(dll)
 }
 
 /// Ship the app crate's `assets/` to `<exe dir>/assets/`, where the

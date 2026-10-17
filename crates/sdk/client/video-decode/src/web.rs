@@ -476,7 +476,7 @@ pub(crate) async fn open(
     // `AudioContext` that starts suspended without a user-gesture resume, which
     // stalls `<video>` playback (so play/scrub appear dead). With it off the
     // element plays natively (its own sound); only capturing that audio INTO a
-    // recording is deferred — mirrors the macOS `ENABLE_AUDIO_TAP` gate.
+    // recording is not wired on the web.
     let audio_tap = if ENABLE_AUDIO_TAP {
         install_audio_tap(&video, audio)
     } else {

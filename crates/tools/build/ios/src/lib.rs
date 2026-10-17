@@ -45,6 +45,9 @@ use serde::Deserialize;
 pub mod app_assets;
 pub mod capabilities;
 pub mod links;
+/// Building an SDK-declared package (a plug-in, an extension, a DLL) as a
+/// product of its own for the app's target.
+pub mod sdk_products;
 pub mod source;
 /// Pruning of the target dirs the CLI builds into: every build records
 /// its units and a prune removes what no recorded variant uses; recency

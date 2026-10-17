@@ -5,7 +5,8 @@
 //! ```text
 //!   build-macos::build (release)        → bare binary
 //!   assemble_app_bundle                  → Foo.app (Info.plist + .icns)
-//!   entitlements.plist (from capabilities)
+//!   entitlements.plist (from capabilities + SDK `app-entitlements`)
+//!   codesign each SDK bundle (its own entitlements, hardened runtime)
 //!   codesign … --entitlements … Foo.app  → distribution-signed .app
 //!
 //!   ── Mac App Store (App Store Connect) ──
@@ -50,7 +51,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use build_ios::{capabilities, parse_manifest, FrameworkSource};
 
-use crate::{assemble_app_bundle, resolve_signing_identity};
+use crate::{assemble_app_bundle, codesign_plan, resolve_signing_identity, run_codesign, SignFlags};
 
 /// App Store Connect API key (key id + issuer id + `AuthKey_<id>.p8`). Drives
 /// `altool` upload (App Store) and `notarytool` (Developer ID). The CLI
@@ -183,8 +184,16 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
     };
 
     // ── 3. Assemble the .app (icons + Info.plist incl. macOS keys) ─
-    let assembled = assemble_app_bundle(&project_dir, &built.binary, &resolved.macos_plist)?;
-    let app = assembled.app_dir;
+    // SDK bundles nest in it; their templates' `{{team_id}}` is the
+    // publishing team.
+    let assembled = assemble_app_bundle(
+        &project_dir,
+        &built.binary,
+        &resolved.macos_plist,
+        &built.sdk,
+        Some(&opts.team),
+    )?;
+    let app = assembled.app_dir.clone();
 
     // ── 4. Embed the provisioning profile (App Store) + sign ─────
     // The profile MUST be copied in BEFORE codesign so the signature seals
@@ -214,7 +223,10 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
     };
     let entitlements = entitlements_plist(
         /* sandbox */ app_store,
-        &resolved.macos_entitlements,
+        &build_macos::sdk_bundles::union_entitlements(
+            &resolved.macos_entitlements,
+            &built.sdk.app_entitlements,
+        ),
         &string_entitlements,
         // Universal links: the domains the app opens (empty ⇒ omitted).
         &[(
@@ -235,12 +247,14 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
     // Store / TestFlight (error 91109).
     strip_xattrs(&app)?;
 
-    codesign_app(
+    let plan = codesign_plan(
         &app,
         &signing.app,
-        &entitlements_path,
-        /* hardened_runtime */ !app_store,
-    )?;
+        Some(&entitlements_path),
+        &assembled.nested,
+        SignFlags { timestamp: true, hardened_runtime: !app_store },
+    );
+    run_codesign("publish macos", &plan)?;
 
     // ── 5. Package + ship per path ───────────────────────────────
     let app_name = app
@@ -308,7 +322,7 @@ pub fn publish(project_dir: &Path, opts: MacPublishOptions) -> Result<MacPublish
 /// `array_entitlements` carry string-array values —
 /// `com.apple.developer.associated-domains` (`applinks:…`) for universal
 /// links. Pure (no IO) so it's unit-testable.
-fn entitlements_plist(
+pub(crate) fn entitlements_plist(
     sandbox: bool,
     bool_entitlements: &[String],
     string_entitlements: &[(String, String)],
@@ -560,29 +574,6 @@ fn with_team<T>(team: &str, f: impl FnOnce() -> T) -> T {
 // ---------------------------------------------------------------------------
 // codesign / productbuild / dmg / notarytool / altool
 // ---------------------------------------------------------------------------
-
-/// `codesign --force --deep --timestamp [--options runtime] --entitlements
-/// <ent> --sign <id> <app>`. `--deep` is acceptable here because the bundle
-/// is a single binary with no nested frameworks. `--timestamp` is required
-/// for notarization; `--options runtime` (hardened runtime) for Developer ID.
-fn codesign_app(
-    app: &Path,
-    identity: &str,
-    entitlements: &Path,
-    hardened_runtime: bool,
-) -> Result<()> {
-    eprintln!("[publish macos] codesign {}", app.display());
-    let mut cmd = Command::new("codesign");
-    cmd.args(["--force", "--deep", "--timestamp"]);
-    if hardened_runtime {
-        cmd.args(["--options", "runtime"]);
-    }
-    cmd.arg("--entitlements")
-        .arg(entitlements)
-        .args(["--sign", identity])
-        .arg(app);
-    run(cmd, "codesign")
-}
 
 /// `productbuild --component <app> /Applications --sign <installer> <pkg>`.
 fn productbuild(app: &Path, installer_identity: &str, out_pkg: &Path) -> Result<()> {

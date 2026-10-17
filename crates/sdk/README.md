@@ -270,6 +270,81 @@ there rustc links the binary and honors `#[link]`.
 `crates/tools/run/ios/tests/sdk_framework_declarations.rs` scans every crate
 under `crates/sdk/` and fails when a framework linked on iOS is not declared.
 
+## Declaring build products (macOS bundles, Windows DLLs)
+
+Some integrations are separate executables the OS loads, not code the app
+links: a CoreAudio plug-in or a camera system extension nested in the macOS
+`.app`, a COM DLL beside the Windows `.exe`. Put that code in its own
+package, make it a dependency of the SDK (so it is in the app's graph and
+locked with it; with its product feature off it contributes nothing to the
+app), and declare it in the SDK's `Cargo.toml`. The CLI builds the package
+for the app's target with the declared features — in a shim workspace under
+the platform wrapper (`crates/tools/build/ios/src/sdk_products.rs`), so the
+features do not leak into the app's own build of the package — and places
+the result. A declaration naming a package outside the graph fails the
+build.
+
+**Windows** — `<lib name>.dll` beside the `.exe` (see
+[`docs/windows.md`](../../docs/windows.md) for `runtime-files`, the
+prebuilt-file variant):
+
+```toml
+[[package.metadata.idealyst.windows.artifacts]]
+package = "my-sdk-camera-source"
+kind = "cdylib"
+features = ["source"]   # optional
+```
+
+**macOS** — a bundle at `<App>.app/<place>/<bundle>/Contents/{Info.plist,
+MacOS/<executable>}`, the executable being the binary or the cdylib's file;
+universal (both slices, `lipo`'d) when the app build is:
+
+```toml
+[package.metadata.idealyst.macos]
+# Boolean entitlements added to the APP's signature.
+app-entitlements = ["com.apple.developer.system-extension.install"]
+
+[[package.metadata.idealyst.macos.bundles]]
+package = "my-sdk-camera-extension"
+kind = "bin"                       # or "cdylib"
+bin = "my-camera-extension"        # the binary target, for kind = "bin"
+features = ["extension"]           # optional
+bundle = "{{bundle_id}}.camera-extension.systemextension"
+place = "Contents/Library/SystemExtensions"
+info-plist = "bundle/Info.plist"   # template, relative to the package's manifest dir
+entitlements = "bundle/extension.entitlements"   # optional template, same base
+bundle-id = "{{bundle_id}}.camera-extension"
+env = { MY_SDK_VENDOR = "{{app_name}}" }   # optional, set while building it
+```
+
+Templates:
+
+| Where | Keys |
+| --- | --- |
+| `bundle`, `bundle-id`, `env` values | `{{bundle_id}}` (the app's), `{{app_name}}` |
+| `info-plist`, `entitlements` files | `{{bundle_id}}` (the nested bundle's), `{{app_bundle_id}}`, `{{app_name}}`, `{{version}}`, `{{executable}}`, `{{team_id}}`, `{{uuid:<salt>}}` |
+
+Any other key fails the build, naming the key and the declaring package.
+`{{uuid:<salt>}}` is a UUID derived from the nested bundle id and the salt
+— the same on every build and CLI release, different per app — for ids
+like a CFPlugIn factory: SHA-256 of `idealyst-sdk-bundle-uuid` NUL
+`<bundle id>` NUL `<salt>`, first 16 bytes with the version nibble set to 8
+and the RFC variant bits, uppercase `8-4-4-4-12`. `{{team_id}}` is the
+publishing team for `publish macos`; on a dev run it is
+`IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM`, else
+`[package.metadata.idealyst.app.links] apple_team_id`, else the `OU` of the
+signing certificate — and an error only when a template uses it and none
+resolves. The app must set `[package.metadata.idealyst.app] bundle_id`.
+
+Signing (dev `run` and `publish macos`): every nested bundle first, with
+its own rendered entitlements and the hardened runtime, then the app, with
+its entitlements plus every declared `app-entitlements`. An app holding a
+nested bundle is not signed `--deep`, which would re-sign the bundles with
+the app's entitlements. A declared bundle or app entitlement makes a dev
+run wrap the binary in an `.app`. Source:
+`crates/tools/build/macos/src/sdk_bundles.rs`, `crates/tools/run/macos/src/lib.rs`
+(`codesign_plan`).
+
 ## The two SDK shapes
 
 Both shapes are valid; pick by ownership model.

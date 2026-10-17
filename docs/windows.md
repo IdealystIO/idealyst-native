@@ -87,7 +87,24 @@ and `idealyst build --windows` copies every declared file (`{arch}` = `x64`
 / `arm64` / `x86`) out of the named dependency package next to the `.exe`;
 `run --windows` on a remote machine copies them with it. Ship the `.exe`'s
 whole folder. The webview SDK loads the DLL at runtime rather than importing
-it, so an app missing it still starts. Source:
+it, so an app missing it still starts.
+
+A DLL an SDK builds from its own source — a Media Foundation source or COM
+server another process loads — is declared as an artifact instead: a
+dependency package whose `cdylib` the CLI builds,
+
+```toml
+[[package.metadata.idealyst.windows.artifacts]]
+package = "my-sdk-camera-source"   # must be in the app's dependency graph
+kind = "cdylib"                    # the only Windows artifact kind
+features = ["source"]              # optional
+```
+
+for the app's target triple and profile, in a shim workspace under the
+wrapper so the features reach that package and not the app's own build of
+it (`build_ios::sdk_products`). `<lib name>.dll` lands beside the `.exe`
+and travels with it like a runtime file. A package outside the graph, or
+one whose library is not a `cdylib`, fails the build. Source:
 `tools/build/windows/src/runtime_files.rs`.
 
 ## Client SDKs on Windows

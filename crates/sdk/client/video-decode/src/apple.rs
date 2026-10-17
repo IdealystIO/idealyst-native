@@ -22,7 +22,8 @@ use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::rc::Retained;
@@ -93,6 +94,17 @@ unsafe impl RefEncode for CVBuffer {
     const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("__CVBuffer", &[]));
 }
 
+/// Opaque `MTAudioProcessingTapRef` pointee, so the tap passed to
+/// `setAudioTapProcessor:` encodes as `^{opaqueMTAudioProcessingTap=}` —
+/// objc2's debug message verifier rejects a bare `*mut c_void` (`^v`).
+struct OpaqueTap {
+    _priv: [u8; 0],
+}
+// SAFETY: matches the `MTAudioProcessingTapRef` type AVFoundation declares.
+unsafe impl RefEncode for OpaqueTap {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("opaqueMTAudioProcessingTap", &[]));
+}
+
 // MTAudioProcessingTap lives in MediaToolbox.
 #[link(name = "MediaToolbox", kind = "framework")]
 extern "C" {
@@ -160,16 +172,25 @@ const PIXEL_FORMAT_32BGRA: u32 = 0x4247_5241;
 const LOCK_READ_ONLY: u64 = 0x0000_0001;
 const AV_MEDIA_TYPE_VIDEO: &str = "vide";
 const AV_MEDIA_TYPE_AUDIO: &str = "soun";
-/// Whether to install the `MTAudioProcessingTap` that taps the clip's PCM for
-/// the recording mux. Currently OFF: the tap's C-callback interop SIGBUSes
-/// inside `MTAudioProcessingTapCreate` (it invokes our `init` callback
-/// synchronously) and needs on-device debugging. With it off the clip still
-/// plays audibly through `AVPlayer`; only capturing that audio INTO a recording
-/// is deferred. Flip to `true` once the tap ABI is verified on a device.
-const ENABLE_AUDIO_TAP: bool = false;
-/// `kMTAudioProcessingTapCreationFlag_PostEffects` — tap after the mix's
-/// effects, leaving the played-out audio intact.
-const TAP_FLAG_POST_EFFECTS: u32 = 1;
+/// `kMTAudioProcessingTapCreationFlag_PostEffects` (`1 << 1`; `1 << 0` is
+/// PreEffects) — tap after the mix's effects, leaving the played-out audio
+/// intact.
+const TAP_FLAG_POST_EFFECTS: u32 = 1 << 1;
+/// A chunk this far before a seek target still counts as "at" it (one
+/// sample of rounding at 48 kHz, with room to spare).
+const SEEK_START_SLOP_SECONDS: f64 = 0.001;
+/// After this much post-target audio, a pending seek gate opens even if
+/// every chunk was silent (see `seek_landed`).
+const SEEK_GATE_SECONDS: f64 = 1.0;
+
+/// `CMTimeRange` mirror (`<CoreMedia/CMTimeRange.h>`).
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct CMTimeRange {
+    start: CMTime,
+    duration: CMTime,
+}
+
 /// `kAudioFormatFlagIsNonInterleaved`.
 const FLAG_NON_INTERLEAVED: u32 = 0x20;
 
@@ -208,8 +229,11 @@ struct AudioBufferList {
     buffers: [AudioBuffer; 8],
 }
 
-/// MTAudioProcessingTap C callback table.
-#[repr(C)]
+/// MTAudioProcessingTap C callback table. `packed(4)`: the header declares
+/// it under `#pragma pack(push, 4)`, so `clientInfo` follows `version` at
+/// offset 4 with no padding. Natural alignment puts every pointer 4 bytes
+/// late and MediaToolbox jumps through a garbage `init` (SIGBUS).
+#[repr(C, packed(4))]
 struct MTAudioProcessingTapCallbacks {
     version: i32,
     client_info: *mut c_void,
@@ -235,6 +259,15 @@ struct MTAudioProcessingTapCallbacks {
 /// it, so it's `Send`-safe (only the `AudioWriter`, which is `Send`).
 struct TapState {
     writer: AudioWriter,
+    /// Whether the transport is playing. AVPlayer keeps running the tap
+    /// after `pause` (it renders silence through the mix), so delivery is
+    /// gated on the transport's own state, not on tap callbacks arriving.
+    playing: Arc<AtomicBool>,
+    /// After a seek: the target, as `f64` bits (`NaN` = none pending).
+    /// `seekToTime:` completes asynchronously, so chunks from the old
+    /// position still pass through the tap after `play`; they are dropped
+    /// until a chunk starts near the target.
+    seek_target: Arc<AtomicU64>,
     /// `(sample_rate, channels, non_interleaved)`, set by `prepare`.
     format: Mutex<Option<(u32, u16, bool)>>,
 }
@@ -283,12 +316,13 @@ unsafe extern "C" fn tap_process(
     flags_out: *mut u32,
 ) {
     let mut got: isize = 0;
+    let mut range = CMTimeRange { start: CMTime::from_seconds(0.0), duration: CMTime::from_seconds(0.0) };
     let status = MTAudioProcessingTapGetSourceAudio(
         tap,
         number_frames,
         buffer_list,
         flags_out,
-        ptr::null_mut(),
+        &mut range as *mut CMTimeRange as *mut c_void,
         &mut got,
     );
     if !number_frames_out.is_null() {
@@ -298,9 +332,10 @@ unsafe extern "C" fn tap_process(
         return;
     }
     let state = storage::<TapState>(tap);
-    if state.is_null() {
+    if state.is_null() || !(*state).playing.load(Ordering::Acquire) {
         return;
     }
+
     let Some((sample_rate, channels, non_interleaved)) = *(*state).format.lock().unwrap() else {
         return;
     };
@@ -336,7 +371,33 @@ unsafe extern "C" fn tap_process(
         }
     }
 
+    if !seek_landed(&(*state).seek_target, range.start.seconds() as f64, &interleaved) {
+        return;
+    }
     (*state).writer.write_pcm_f32(sample_rate, channels, &interleaved);
+}
+
+/// Whether a tap chunk starting at `start` may be delivered, given a
+/// pending seek in `target` (`f64` bits, `NaN` = none). AVPlayer's
+/// `seekToTime:` completes asynchronously and leaves three kinds of chunk
+/// that are not the new position's audio: chunks from the old position, an
+/// all-zero pre-roll chunk at the target, and a crossfade chunk starting
+/// just *before* the target that blends the old audio in. The gate opens on
+/// the first chunk at or after the target that carries signal — or, so a
+/// genuinely silent passage cannot hold it shut, one starting more than
+/// `SEEK_GATE_SECONDS` past the target.
+fn seek_landed(target: &AtomicU64, start: f64, samples: &[f32]) -> bool {
+    let t = f64::from_bits(target.load(Ordering::Acquire));
+    if t.is_nan() {
+        return true;
+    }
+    let at_or_after = start >= t - SEEK_START_SLOP_SECONDS;
+    let signal = samples.iter().any(|v| *v != 0.0);
+    if (at_or_after && signal) || start > t + SEEK_GATE_SECONDS {
+        target.store(f64::NAN.to_bits(), Ordering::Release);
+        return true;
+    }
+    false
 }
 
 /// `MTAudioProcessingTapGetStorage(tap)` — the pointer `tap_init` stored.
@@ -356,6 +417,10 @@ struct MacosTransport {
     player: Retained<AnyObject>,
     muted: Cell<bool>,
     rate: Cell<f32>,
+    /// Shared with the audio tap (see `TapState::playing`).
+    playing: Arc<AtomicBool>,
+    /// Shared with the audio tap (see `TapState::seek_target`).
+    seek_target: Arc<AtomicU64>,
 }
 
 // The transport is used only on the main thread (matching MediaStream's !Send
@@ -366,16 +431,19 @@ impl TransportControl for MacosTransport {
         let r = self.rate.get().max(0.0);
         let r = if r == 0.0 { 1.0 } else { r };
         self.rate.set(r);
+        self.playing.store(true, Ordering::Release);
         // `-[AVPlayer setRate:]` takes a `float` (f32) — NOT f64.
         let _: () = unsafe { msg_send![&*self.player, setRate: r] };
     }
     fn pause(&self) {
+        self.playing.store(false, Ordering::Release);
         let _: () = unsafe { msg_send![&*self.player, pause] };
     }
     fn seek(&self, seconds: f32) {
         // EXACT: zero tolerance before/after → decode the precise frame (the
         // drag's final landing). Plain `seekToTime:` is allowed to land on a
         // nearby efficient sample, which we DON'T want for the exact form.
+        self.seek_target.store((seconds.max(0.0) as f64).to_bits(), Ordering::Release);
         let t = CMTime::from_seconds(seconds.max(0.0));
         let zero = CMTime::from_seconds(0.0);
         let _: () = unsafe {
@@ -385,6 +453,7 @@ impl TransportControl for MacosTransport {
     fn seek_preview(&self, seconds: f32) {
         // FAST/approximate: plain `seekToTime:` may land on a nearby efficient
         // sample (keyframe) without a full decode — smooth live scrubbing.
+        self.seek_target.store((seconds.max(0.0) as f64).to_bits(), Ordering::Release);
         let t = CMTime::from_seconds(seconds.max(0.0));
         let _: () = unsafe { msg_send![&*self.player, seekToTime: t] };
     }
@@ -395,6 +464,7 @@ impl TransportControl for MacosTransport {
     fn set_rate(&self, rate: f32) {
         let rate = rate.max(0.0);
         self.rate.set(rate);
+        self.playing.store(rate > 0.0, Ordering::Release);
         let _: () = unsafe { msg_send![&*self.player, setRate: rate] };
     }
     fn position(&self) -> f32 {
@@ -498,11 +568,11 @@ pub(crate) async fn open(
         ];
         let _: () = msg_send![&*item, addOutput: &*video_output];
 
-        // Audio tap → PCM for the recorder (gated; see `ENABLE_AUDIO_TAP`). When
-        // off, `audio` (the writer) is dropped here and the clip reports no audio
-        // track to the recorder — it still plays its sound through `AVPlayer`.
-        let tap = if audio_track_present && ENABLE_AUDIO_TAP {
-            install_audio_tap(&item, &asset, audio)
+        // Audio tap → the clip's PCM, into its `AudioStream`.
+        let playing = Arc::new(AtomicBool::new(config.autoplay));
+        let seek_target = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+        let tap = if audio_track_present {
+            install_audio_tap(&item, &asset, audio, playing.clone(), seek_target.clone())
         } else {
             None
         };
@@ -531,6 +601,8 @@ pub(crate) async fn open(
             player: player.clone(),
             muted: Cell::new(config.muted),
             rate: Cell::new(if config.autoplay { 1.0 } else { 0.0 }),
+            playing,
+            seek_target,
         });
 
         let handle = StreamHandle {
@@ -742,6 +814,8 @@ unsafe fn install_audio_tap(
     item: &Retained<AnyObject>,
     asset: &Retained<AnyObject>,
     writer: AudioWriter,
+    playing: Arc<AtomicBool>,
+    seek_target: Arc<AtomicU64>,
 ) -> Option<*mut c_void> {
     let mt = NSString::from_str(AV_MEDIA_TYPE_AUDIO);
     let tracks: Retained<AnyObject> = msg_send_id![&**asset, tracksWithMediaType: &*mt];
@@ -754,6 +828,8 @@ unsafe fn install_audio_tap(
     // clientInfo box, freed in tap_finalize.
     let state = Box::into_raw(Box::new(TapState {
         writer,
+        playing,
+        seek_target,
         format: Mutex::new(None),
     })) as *mut c_void;
 
@@ -781,7 +857,7 @@ unsafe fn install_audio_tap(
         class!(AVMutableAudioMixInputParameters),
         audioMixInputParametersWithTrack: &*track
     ];
-    let _: () = msg_send![&*params, setAudioTapProcessor: tap];
+    let _: () = msg_send![&*params, setAudioTapProcessor: tap as *mut OpaqueTap];
 
     let mix: Retained<AnyObject> = msg_send_id![class!(AVMutableAudioMix), audioMix];
     let arr: Retained<AnyObject> = msg_send_id![class!(NSArray), arrayWithObject: &*params];
@@ -815,4 +891,41 @@ unsafe fn install_loop_observer(player: &Retained<AnyObject>) {
     // The observer token leaks for the player's lifetime (matches video/macos.rs
     // v1); a longer-lived clip would retain + remove it on teardown.
     std::mem::forget(block);
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// Sizes / offsets from `clang` against the macOS SDK header, which
+    /// packs the struct to 4 bytes.
+    #[test]
+    fn regression_tap_callbacks_match_the_packed_sdk_layout() {
+        assert_eq!(core::mem::size_of::<MTAudioProcessingTapCallbacks>(), 52);
+        assert_eq!(core::mem::offset_of!(MTAudioProcessingTapCallbacks, client_info), 4);
+        assert_eq!(core::mem::offset_of!(MTAudioProcessingTapCallbacks, init), 12);
+        assert_eq!(core::mem::offset_of!(MTAudioProcessingTapCallbacks, process), 44);
+        assert_eq!(core::mem::size_of::<CMTimeRange>(), 48);
+    }
+
+    /// The chunk sequence AVPlayer produced around `seek(2.5)` on macOS 26:
+    /// old position, silent pre-roll at the target, crossfade starting
+    /// before it, then the new audio. Only the last may pass.
+    #[test]
+    fn regression_seek_drops_stale_preroll_and_crossfade_chunks() {
+        let t = AtomicU64::new(2.5f64.to_bits());
+        let tone = [0.3f32, -0.3];
+        assert!(!seek_landed(&t, 1.104, &tone), "old position");
+        assert!(!seek_landed(&t, 2.500, &[0.0, 0.0]), "silent pre-roll");
+        assert!(!seek_landed(&t, 2.467, &tone), "crossfade before the target");
+        assert!(seek_landed(&t, 2.548, &tone), "the new position");
+        assert!(seek_landed(&t, 2.641, &[0.0, 0.0]), "gate stays open: real silence passes");
+    }
+
+    #[test]
+    fn a_silent_landing_cannot_hold_the_gate_shut() {
+        let t = AtomicU64::new(2.0f64.to_bits());
+        assert!(!seek_landed(&t, 2.5, &[0.0]));
+        assert!(seek_landed(&t, 3.1, &[0.0]));
+    }
 }

@@ -577,6 +577,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **SDK-declared build products** (`build-ios`, `build-macos`, `run-macos`,
+  `build-windows`). An SDK can name a dependency package the app must ship
+  as a separate build product, and the CLI builds it for the app's target
+  (features and env applied, in a shim workspace under the wrapper —
+  `build_ios::sdk_products`) and places it. Windows:
+  `[[package.metadata.idealyst.windows.artifacts]]` (`kind = "cdylib"`)
+  ships `<lib>.dll` beside the `.exe`, and `run --windows` copies it with
+  it. macOS: `[[package.metadata.idealyst.macos.bundles]]` (`cdylib` or
+  `bin`) is wrapped into `<App>.app/<place>/<bundle>/Contents/{Info.plist,
+  MacOS/…}` from templates in the package (`{{bundle_id}}`,
+  `{{team_id}}`, a stable `{{uuid:<salt>}}`, …), universal when the app
+  is, and `[package.metadata.idealyst.macos] app-entitlements` are added to
+  the app's signature. Nested bundles are signed first with their own
+  entitlements and the hardened runtime, and an app holding one is no
+  longer signed `--deep` (dev `run` and `publish macos`). A declared
+  bundle forces the dev run's `.app`. Documented in `crates/sdk/README.md`.
+
 - **Slider `thumb_icon`, Popover `min_width`, SegmentedControl `block`**
   (`idea-ui`, `idea-theme`). `Slider(thumb_icon = Some(ICON))` draws the
   icon centred in the thumb, tinted with the variant foreground; an icon
@@ -1524,6 +1541,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A clip's audio reaches its `AudioStream` on macOS / iOS** (`video-decode`).
+  `audio()` was always `None` on Apple targets: the `MTAudioProcessingTap`
+  was switched off because creating it crashed (SIGBUS). The SDK packs its
+  callback table to 4 bytes (`#pragma pack(4)`) and the Rust mirror did
+  not, so MediaToolbox read a garbage `init` pointer. With the tap on, two
+  more fixes make it match Windows and Linux: nothing is delivered while
+  paused (AVPlayer keeps calling the tap with silence), and after a seek
+  the old position's tail, the pre-roll silence and the crossfade chunk are
+  dropped. `tests/clip_audio.rs` now runs on macOS too (on the main thread,
+  pumping the run loop AVFoundation loads assets on).
 
 - **`count_elements` ignored every criterion but `kind`** (`runtime-shared`,
   `runtime-vocabulary`). The Robot verb counted ALL elements when asked by

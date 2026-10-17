@@ -67,15 +67,22 @@ pub struct BuildOptions {
     pub universal: bool,
 }
 
+/// SDK-declared bundles nested in the `.app` (plug-ins, system extensions)
+/// and the entitlements they need on the app. See the module docs.
+pub mod sdk_bundles;
+
 #[derive(Debug)]
 pub struct BuildArtifact {
-    /// Path to the produced macOS binary (ready to spawn). For now
-    /// this is the cargo-emitted binary directly; a future revision
-    /// will wrap it in a `.app` bundle.
+    /// Path to the produced macOS binary (ready to spawn) — the
+    /// cargo-emitted binary; `run-macos` wraps it in the `.app`.
     pub binary: PathBuf,
     /// Wrapper crate directory. Useful for debugging the template
     /// or for `idealyst scaffold macos` to take ownership later.
     pub wrapper_dir: PathBuf,
+    /// The bundles the app's SDKs declared, built for the same target(s)
+    /// as `binary`, and the app entitlements they need. Whatever lays out
+    /// the `.app` must place and sign them (`sdk_bundles::assemble`).
+    pub sdk: sdk_bundles::SdkBundles,
 }
 
 /// Build the macOS wrapper for `project_dir` with `opts`.
@@ -136,10 +143,58 @@ pub fn build(project_dir: &Path, opts: BuildOptions) -> Result<BuildArtifact> {
         );
     }
     ship_assets(&project_dir, &binary)?;
+    // A runtime-server wrapper does not depend on the user crate, so its
+    // graph holds no SDK declarations.
+    let sdk = if opts.mode.is_runtime_server() {
+        sdk_bundles::SdkBundles::default()
+    } else {
+        build_sdk_bundles(&wrapper_dir, &cargo_target_dir, &project_dir, &manifest, &opts)?
+    };
     Ok(BuildArtifact {
         binary,
         wrapper_dir,
+        sdk,
     })
+}
+
+/// Discover the SDKs' macOS declarations in the wrapper's graph and build
+/// every declared bundle's package for the app's target(s).
+fn build_sdk_bundles(
+    wrapper_dir: &Path,
+    target_dir: &Path,
+    project_dir: &Path,
+    manifest: &Manifest,
+    opts: &BuildOptions,
+) -> Result<sdk_bundles::SdkBundles> {
+    let decls = sdk_bundles::discover(&wrapper_dir.join("Cargo.toml"))?;
+    if decls.bundles.is_empty() {
+        return Ok(sdk_bundles::SdkBundles { app_entitlements: decls.app_entitlements, bundles: Vec::new() });
+    }
+    // Nested bundle ids are derived from the app's, and the OS checks the
+    // prefix (a system extension's id must extend its app's), so a
+    // placeholder id would only fail later.
+    let bundle_id = manifest.app.require_bundle_id().with_context(|| {
+        format!(
+            "{} declares a macOS bundle nested in the app; its id derives from the app's bundle_id",
+            decls.bundles[0].declarer
+        )
+    })?;
+    let app = sdk_bundles::AppIdentity {
+        bundle_id,
+        name: &manifest.app.name,
+        version: &manifest.app.version,
+        team_id: None,
+    };
+    let patch_block = opts.source.patch_block();
+    let site = sdk_bundles::BuildSite {
+        wrapper_dir,
+        target_dir,
+        project_dir,
+        patch_block: &patch_block,
+        release: opts.release,
+        universal: opts.universal.then_some(manifest.app.macos.min_version.as_str()),
+    };
+    sdk_bundles::build_all(decls, &app, &site)
 }
 
 /// Ship the app crate's `assets/` to `<exe dir>/assets/`, where the

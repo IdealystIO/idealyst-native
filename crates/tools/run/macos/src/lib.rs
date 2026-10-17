@@ -3,6 +3,7 @@
 //! fire-and-forgets it (dev mode, where blocking on the app's
 //! lifecycle would tie up the orchestrator's other targets).
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -116,8 +117,24 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     );
 
     let links = parse_manifest(project_dir)?.app.links;
-    let spawn_target = match maybe_wrap_in_app_bundle(project_dir, &built.binary, &permission_pairs, &links)? {
-        Some(path) => path,
+    // Resolved before the bundle is laid out: SDK bundle templates can name
+    // `{{team_id}}`, which comes from the signing identity at the latest.
+    let identity = resolve_macos_signing_identity();
+    let team_id = if built.sdk.is_empty() {
+        None
+    } else {
+        resolve_dev_team_id(links.apple_team_id.as_deref(), identity.as_deref())
+    };
+    let wrapped = maybe_wrap_in_app_bundle(
+        project_dir,
+        &built.binary,
+        &permission_pairs,
+        &links,
+        &built.sdk,
+        team_id.as_deref(),
+    )?;
+    let spawn_target = match &wrapped {
+        Some(app) => app.inner_binary.clone(),
         None => built.binary.clone(),
     };
 
@@ -131,15 +148,35 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
     // bundle id), exactly like the iOS path. Honors
     // `IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM` to pick a team; otherwise
     // uses the first Apple Development cert. No-op (ad-hoc) if none is found.
-    if let Some(app_bundle) = app_bundle_for(&spawn_target) {
-        match resolve_macos_signing_identity() {
-            Some(identity) => codesign_bundle(&app_bundle, &identity)?,
+    if let Some(app) = &wrapped {
+        match &identity {
+            Some(identity) => {
+                // SDK-declared app entitlements; a dev signature has none
+                // of its own.
+                let entitlements = if built.sdk.app_entitlements.is_empty() {
+                    None
+                } else {
+                    let path = app.app_dir.with_extension("dev-entitlements.plist");
+                    fs::write(&path, publish::entitlements_plist(false, &built.sdk.app_entitlements, &[], &[]))
+                        .with_context(|| format!("write {}", path.display()))?;
+                    Some(path)
+                };
+                let plan = codesign_plan(
+                    &app.app_dir,
+                    identity,
+                    entitlements.as_deref(),
+                    &app.nested,
+                    SignFlags { timestamp: false, hardened_runtime: false },
+                );
+                run_codesign("run-macos", &plan)?;
+            }
             None => eprintln!(
                 "[run-macos] no Apple Development signing identity found — \
-                 leaving the linker ad-hoc signature. macOS will re-prompt for \
+                 leaving the linker ad-hoc signature{}. macOS will re-prompt for \
                  Screen Recording / Camera permission on every rebuild. Install \
                  an Apple Development certificate (or set DEVELOPMENT_TEAM) to \
-                 make grants stick."
+                 make grants stick.",
+                if app.nested.is_empty() { "" } else { " (SDK bundles stay unsigned, and the OS will refuse to load them)" },
             ),
         }
     }
@@ -296,23 +333,142 @@ fn register_with_launch_services(app: &Path) {
     }
 }
 
-/// `codesign --force --deep --sign <identity> <app>`. Deep-signs the bundle and
-/// its nested binary so the launched executable carries the stable cert
-/// identity TCC keys grants on. No hardened runtime / entitlements — this is a
-/// local dev signature, not a distribution one.
-fn codesign_bundle(app: &Path, identity: &str) -> Result<()> {
-    eprintln!(
-        "[run-macos] codesign --force --deep --sign {} {}",
-        &identity[..identity.len().min(10)],
-        app.display()
-    );
-    let status = Command::new("codesign")
-        .args(["--force", "--deep", "--sign", identity])
-        .arg(app)
-        .status()
-        .context("invoke codesign")?;
-    if !status.success() {
-        anyhow::bail!("codesign failed for {} (status {status})", app.display());
+/// The team SDK bundle templates' `{{team_id}}` resolves to on a dev run:
+/// `IDEALYST_DEVELOPMENT_TEAM` / `DEVELOPMENT_TEAM`, else the manifest's
+/// `[..app.links] apple_team_id`, else the OU of the signing identity's
+/// certificate. `None` is only an error for a template that uses it.
+fn resolve_dev_team_id(manifest_team: Option<&str>, identity: Option<&str>) -> Option<String> {
+    std::env::var("IDEALYST_DEVELOPMENT_TEAM")
+        .or_else(|_| std::env::var("DEVELOPMENT_TEAM"))
+        .ok()
+        .filter(|t| !t.is_empty())
+        .or_else(|| manifest_team.map(str::to_string))
+        .or_else(|| identity.and_then(certificate_team_id))
+}
+
+/// The team id (subject OU) of the keychain certificate whose SHA-1 is
+/// `identity`. The `(…)` in an "Apple Development: Name (XXXXXXXXXX)"
+/// identity name is a per-person id, not the team, so it is never used.
+fn certificate_team_id(identity: &str) -> Option<String> {
+    let listing = Command::new("security").args(["find-certificate", "-a", "-Z", "-p"]).output().ok()?;
+    let pem = pem_for_sha1(&String::from_utf8_lossy(&listing.stdout), identity)?;
+    let mut child = Command::new("openssl")
+        .args(["x509", "-noout", "-subject"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+    {
+        use std::io::Write;
+        child.stdin.take()?.write_all(pem.as_bytes()).ok()?;
+    }
+    let out = child.wait_with_output().ok()?;
+    team_from_subject(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The PEM block following `SHA-1 hash: <sha1>` in `security
+/// find-certificate -a -Z -p` output.
+fn pem_for_sha1(listing: &str, sha1: &str) -> Option<String> {
+    let mut lines = listing.lines().skip_while(|l| {
+        !l.trim().strip_prefix("SHA-1 hash:").is_some_and(|h| h.trim().eq_ignore_ascii_case(sha1))
+    });
+    lines.next()?;
+    let mut pem = String::new();
+    for line in lines.skip_while(|l| !l.starts_with("-----BEGIN CERTIFICATE-----")) {
+        pem.push_str(line);
+        pem.push('\n');
+        if line.starts_with("-----END CERTIFICATE-----") {
+            return Some(pem);
+        }
+    }
+    None
+}
+
+/// The `OU=` of an `openssl x509 -subject` line, in OpenSSL's
+/// (`subject=UID=…, CN=…, OU=TEAM, …`) or LibreSSL's (`subject= /UID=…/OU=TEAM/…`)
+/// format.
+fn team_from_subject(subject: &str) -> Option<String> {
+    let body = subject.trim().strip_prefix("subject=").unwrap_or(subject).trim();
+    body.split(['/', ','])
+        .filter_map(|part| part.trim().strip_prefix("OU="))
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
+}
+
+/// How `codesign` is invoked for one signing pass.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SignFlags {
+    /// `--timestamp` (a secure timestamp; notarization requires it).
+    pub timestamp: bool,
+    /// `--options runtime` on the app (nested SDK bundles always get it).
+    pub hardened_runtime: bool,
+}
+
+/// The `codesign` invocations (arguments after `codesign`) that sign `app`,
+/// in order. Nested SDK bundles come first, each with its own entitlements
+/// and the hardened runtime; the app's signature then seals them.
+///
+/// The app is signed `--deep` only when it holds no SDK bundle: `--deep`
+/// re-signs the nested code it finds with the APP's `--entitlements` and
+/// `--options`, replacing each bundle's own (measured with codesign on
+/// macOS 26: a bundle under `Contents/PlugIns` signed with sandbox +
+/// app-group entitlements and the hardened runtime came out with only the
+/// app's entitlement and no runtime flag) — and an extension without its
+/// own entitlements is refused by the OS.
+pub(crate) fn codesign_plan(
+    app: &Path,
+    identity: &str,
+    app_entitlements: Option<&Path>,
+    nested: &[build_macos::sdk_bundles::AssembledBundle],
+    flags: SignFlags,
+) -> Vec<Vec<OsString>> {
+    let mut plan = Vec::with_capacity(nested.len() + 1);
+    for bundle in nested {
+        let mut args: Vec<OsString> = vec!["--force".into()];
+        if flags.timestamp {
+            args.push("--timestamp".into());
+        }
+        args.extend(["--options".into(), "runtime".into()]);
+        if let Some(e) = &bundle.entitlements {
+            args.extend(["--entitlements".into(), e.into()]);
+        }
+        args.extend(["--sign".into(), identity.into(), bundle.path.clone().into()]);
+        plan.push(args);
+    }
+    let mut args: Vec<OsString> = vec!["--force".into()];
+    if nested.is_empty() {
+        args.push("--deep".into());
+    }
+    if flags.timestamp {
+        args.push("--timestamp".into());
+    }
+    if flags.hardened_runtime {
+        args.extend(["--options".into(), "runtime".into()]);
+    }
+    if let Some(e) = app_entitlements {
+        args.extend(["--entitlements".into(), e.into()]);
+    }
+    args.extend(["--sign".into(), identity.into(), app.into()]);
+    plan.push(args);
+    plan
+}
+
+/// Run each `codesign` invocation of `plan` in order. The identity (a
+/// SHA-1) is shortened in the log line.
+pub(crate) fn run_codesign(label: &str, plan: &[Vec<OsString>]) -> Result<()> {
+    for args in plan {
+        let shown: Vec<String> = args
+            .iter()
+            .map(|a| {
+                let a = a.to_string_lossy();
+                if a.len() == 40 && a.chars().all(|c| c.is_ascii_hexdigit()) { format!("{}…", &a[..10]) } else { a.into_owned() }
+            })
+            .collect();
+        eprintln!("[{label}] codesign {}", shown.join(" "));
+        let status = Command::new("codesign").args(args).status().context("invoke codesign")?;
+        if !status.success() {
+            anyhow::bail!("codesign {} failed (status {status})", shown.join(" "));
+        }
     }
     Ok(())
 }
@@ -323,8 +479,8 @@ fn codesign_bundle(app: &Path, identity: &str) -> Result<()> {
 /// reads the parent `.app`'s metadata for dock chrome).
 ///
 /// Returns `Ok(None)` when the project has no `[icon]` block, no
-/// capability-derived permission keys and no custom URL schemes — the
-/// caller falls back to the
+/// capability-derived permission keys, no custom URL schemes, no `assets/`
+/// and no SDK bundle or app entitlement — the caller falls back to the
 /// bare-binary launch path. A project with permissions but no icon is
 /// still wrapped, because the usage-description strings have to live in an
 /// `Info.plist` for the OS to show them. Errors out on genuinely broken
@@ -336,22 +492,25 @@ fn maybe_wrap_in_app_bundle(
     binary: &Path,
     permissions: &[(String, String)],
     links: &build_ios::links::LinksMetadata,
-) -> Result<Option<PathBuf>> {
+    sdk: &build_macos::sdk_bundles::SdkBundles,
+    team_id: Option<&str>,
+) -> Result<Option<AssembledApp>> {
     let config = icon_gen::load_config_from_manifest(project_dir)?;
     // URL schemes live in the bundle's Info.plist too: without a bundle
     // the OS has nothing to route `myapp://` links to. An `assets/` dir
     // forces the bundle as well, so dev runs read `asset!` files from
-    // `Contents/Resources/assets/` exactly as a shipped app does.
+    // `Contents/Resources/assets/` exactly as a shipped app does. SDK
+    // bundles need an app to nest in, and the entitlements SDKs declare
+    // are applied by signing the bundle.
     if config.is_none()
         && permissions.is_empty()
         && links.schemes.is_empty()
         && build_ios::app_assets::app_assets_dir(project_dir).is_none()
+        && sdk.is_empty()
     {
         return Ok(None);
     }
-    Ok(Some(
-        assemble_app_bundle(project_dir, binary, permissions)?.inner_binary,
-    ))
+    Ok(Some(assemble_app_bundle(project_dir, binary, permissions, sdk, team_id)?))
 }
 
 /// A laid-out `.app` bundle.
@@ -360,19 +519,26 @@ pub(crate) struct AssembledApp {
     pub app_dir: PathBuf,
     /// The executable inside `Contents/MacOS/` (what gets launched).
     pub inner_binary: PathBuf,
+    /// The SDK bundles nested in it, to be signed before it
+    /// ([`codesign_plan`]).
+    pub nested: Vec<build_macos::sdk_bundles::AssembledBundle>,
 }
 
 /// Assemble `<App>.app/Contents/{MacOS,Resources}` around `binary` with an
 /// Info.plist + (when declared) AppIcon.icns. ALWAYS wraps — used by the
 /// publish path, which needs a guaranteed bundle. The dev/run path goes
-/// through [`maybe_wrap_in_app_bundle`], which skips wrapping when there's
-/// neither an icon nor a permission to carry. Errors out on a broken icon
+/// through [`maybe_wrap_in_app_bundle`], which skips wrapping when nothing
+/// needs a bundle. SDK bundles are laid out at their declared places, their
+/// templates rendered with `team_id` (see `build_macos::sdk_bundles`); they
+/// still need signing before the app ([`codesign_plan`]). Errors out on a broken icon
 /// config (missing source, invalid gradient) rather than shipping a
 /// silently iconless app.
 pub(crate) fn assemble_app_bundle(
     project_dir: &Path,
     binary: &Path,
     permissions: &[(String, String)],
+    sdk: &build_macos::sdk_bundles::SdkBundles,
+    team_id: Option<&str>,
 ) -> Result<AssembledApp> {
     let config = icon_gen::load_config_from_manifest(project_dir)?;
     let manifest = parse_manifest(project_dir)?;
@@ -445,9 +611,26 @@ pub(crate) fn assemble_app_bundle(
     // finished bundle, and a resource added after would break the seal.
     ship_bundle_assets(project_dir, &resources)?;
 
+    // SDK bundles (plug-ins, system extensions) at their declared places,
+    // their entitlements rendered beside the `.app` (outside its seal).
+    let mut nested = Vec::with_capacity(sdk.bundles.len());
+    if !sdk.bundles.is_empty() {
+        let app = build_macos::sdk_bundles::AppIdentity {
+            bundle_id: manifest.app.require_bundle_id()?,
+            name: &display_name,
+            version: &manifest.app.version,
+            team_id,
+        };
+        let entitlements_dir = bin_dir.join(format!("{display_name}.sdk-entitlements"));
+        for built in &sdk.bundles {
+            nested.push(build_macos::sdk_bundles::assemble(&app_dir, built, &app, &entitlements_dir)?);
+        }
+    }
+
     Ok(AssembledApp {
         app_dir,
         inner_binary: dest_binary,
+        nested,
     })
 }
 
@@ -694,10 +877,178 @@ mod tests {
         fs::write(&binary, b"bin").unwrap();
 
         let no_links = build_ios::links::LinksMetadata::default();
-        let inner = maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links)
+        let inner = maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links, &Default::default(), None)
             .unwrap()
-            .expect("an assets/ dir must force the .app bundle");
+            .expect("an assets/ dir must force the .app bundle")
+            .inner_binary;
         let app = app_bundle_for(&inner).unwrap();
         assert!(app.join("Contents/Resources/assets/images/logo.png").is_file());
+    }
+
+    fn nested(path: &str, entitlements: Option<&str>) -> build_macos::sdk_bundles::AssembledBundle {
+        build_macos::sdk_bundles::AssembledBundle {
+            path: PathBuf::from(path),
+            entitlements: entitlements.map(PathBuf::from),
+        }
+    }
+
+    fn strings(plan: &[Vec<OsString>]) -> Vec<Vec<String>> {
+        plan.iter().map(|a| a.iter().map(|s| s.to_string_lossy().into_owned()).collect()).collect()
+    }
+
+    /// An app carrying SDK bundles was signed `--deep`, which re-signs the
+    /// nested code with the APP's entitlements and options, dropping each
+    /// bundle's own (sandbox + app group, hardened runtime) — the OS then
+    /// refuses the extension. Nested bundles must be signed first with their
+    /// own entitlements, and the app after them without `--deep`. (The
+    /// codesign behaviour itself needs a keychain identity, so this pins the
+    /// invocations instead; see `codesign_plan`.)
+    #[test]
+    fn regression_deep_app_signature_replaced_nested_bundle_entitlements() {
+        let plan = codesign_plan(
+            Path::new("/b/Demo.app"),
+            "ID",
+            Some(Path::new("/b/app.entitlements")),
+            &[
+                nested("/b/Demo.app/Contents/Resources/Demo Audio.driver", None),
+                nested("/b/Demo.app/Contents/Library/SystemExtensions/x.systemextension", Some("/b/x.entitlements")),
+            ],
+            SignFlags { timestamp: false, hardened_runtime: false },
+        );
+        assert_eq!(
+            strings(&plan),
+            [
+                vec!["--force", "--options", "runtime", "--sign", "ID", "/b/Demo.app/Contents/Resources/Demo Audio.driver"],
+                vec![
+                    "--force", "--options", "runtime", "--entitlements", "/b/x.entitlements", "--sign", "ID",
+                    "/b/Demo.app/Contents/Library/SystemExtensions/x.systemextension",
+                ],
+                vec!["--force", "--entitlements", "/b/app.entitlements", "--sign", "ID", "/b/Demo.app"],
+            ]
+        );
+    }
+
+    /// Without SDK bundles the dev signature stays the deep one it has
+    /// always been.
+    #[test]
+    fn an_app_without_sdk_bundles_is_signed_deep() {
+        let plan = codesign_plan(Path::new("/b/Demo.app"), "ID", None, &[], SignFlags { timestamp: false, hardened_runtime: false });
+        assert_eq!(strings(&plan), [vec!["--force", "--deep", "--sign", "ID", "/b/Demo.app"]]);
+    }
+
+    /// Distribution signing: a secure timestamp on every signature, the
+    /// hardened runtime on the app when asked (Developer ID).
+    #[test]
+    fn distribution_signing_timestamps_every_signature() {
+        let plan = codesign_plan(
+            Path::new("/b/Demo.app"),
+            "ID",
+            Some(Path::new("/b/e.plist")),
+            &[nested("/b/Demo.app/Contents/Resources/A.driver", None)],
+            SignFlags { timestamp: true, hardened_runtime: true },
+        );
+        let plan = strings(&plan);
+        assert_eq!(plan[0], ["--force", "--timestamp", "--options", "runtime", "--sign", "ID", "/b/Demo.app/Contents/Resources/A.driver"]);
+        assert_eq!(
+            plan[1],
+            ["--force", "--timestamp", "--options", "runtime", "--entitlements", "/b/e.plist", "--sign", "ID", "/b/Demo.app"]
+        );
+    }
+
+    #[test]
+    fn team_id_is_read_from_the_certificate_subject_ou() {
+        assert_eq!(
+            team_from_subject("subject=UID=T9Z7VF8XNP, CN=Apple Development: Jane (UT9F68R76C), OU=BMVWGH34FS, O=Acme, C=US\n").as_deref(),
+            Some("BMVWGH34FS")
+        );
+        assert_eq!(
+            team_from_subject("subject= /UID=T9Z7VF8XNP/CN=Apple Development: Jane (UT9F68R76C)/OU=BMVWGH34FS/O=Acme/C=US").as_deref(),
+            Some("BMVWGH34FS")
+        );
+        assert_eq!(team_from_subject("subject=CN=x"), None);
+    }
+
+    #[test]
+    fn pem_for_sha1_picks_the_matching_certificate() {
+        let listing = "SHA-256 hash: 11\nSHA-1 hash: AAAA\n-----BEGIN CERTIFICATE-----\nfirst\n-----END CERTIFICATE-----\n\
+                       SHA-256 hash: 22\nSHA-1 hash: BBBB\n-----BEGIN CERTIFICATE-----\nsecond\n-----END CERTIFICATE-----\n";
+        assert_eq!(
+            pem_for_sha1(listing, "bbbb").as_deref(),
+            Some("-----BEGIN CERTIFICATE-----\nsecond\n-----END CERTIFICATE-----\n")
+        );
+        assert_eq!(pem_for_sha1(listing, "CCCC"), None);
+    }
+
+    /// A project with neither icon, permissions, schemes nor assets — the
+    /// bare-binary case — still gets an `.app` once an SDK declares a bundle
+    /// (it has nowhere else to live), with the bundle laid out inside.
+    #[test]
+    fn an_sdk_bundle_forces_the_app_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("demo");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n\
+             [package.metadata.idealyst.app]\nname = \"Demo\"\nbundle_id = \"ai.example.demo\"\n",
+        )
+        .unwrap();
+        let binary = tmp.path().join("target/debug/demo-macos");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"bin").unwrap();
+        let no_links = build_ios::links::LinksMetadata::default();
+        assert!(
+            maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links, &Default::default(), None).unwrap().is_none(),
+            "nothing else here forces a bundle"
+        );
+
+        let pkg = tmp.path().join("plugin");
+        fs::create_dir_all(pkg.join("bundle")).unwrap();
+        fs::write(pkg.join("bundle/Info.plist"), "{{bundle_id}} {{executable}} {{uuid:factory}}").unwrap();
+        let built_lib = tmp.path().join("target/debug/libplugin.dylib");
+        fs::write(&built_lib, b"dylib").unwrap();
+        let sdk = build_macos::sdk_bundles::SdkBundles {
+            app_entitlements: Vec::new(),
+            bundles: vec![build_macos::sdk_bundles::BuiltBundle {
+                decl: build_macos::sdk_bundles::BundleDecl {
+                    declarer: "sdk".into(),
+                    package: "plugin".into(),
+                    manifest_dir: pkg.clone(),
+                    kind: build_macos::sdk_bundles::BundleKind::Cdylib { lib_name: "plugin".into() },
+                    features: Vec::new(),
+                    bundle: "{{app_name}} Audio.driver".into(),
+                    place: PathBuf::from("Contents/Resources"),
+                    info_plist: pkg.join("bundle/Info.plist"),
+                    entitlements: None,
+                    bundle_id: "{{bundle_id}}.audio".into(),
+                    env: Vec::new(),
+                },
+                dir_name: "Demo Audio.driver".into(),
+                bundle_id: "ai.example.demo.audio".into(),
+                executable: built_lib,
+            }],
+        };
+        let app = maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links, &sdk, None)
+            .unwrap()
+            .expect("an SDK bundle must force the .app bundle");
+        let driver = app.app_dir.join("Contents/Resources/Demo Audio.driver");
+        assert_eq!(app.nested, [build_macos::sdk_bundles::AssembledBundle { path: driver.clone(), entitlements: None }]);
+        assert_eq!(fs::read(driver.join("Contents/MacOS/libplugin.dylib")).unwrap(), b"dylib");
+        assert_eq!(
+            fs::read_to_string(driver.join("Contents/Info.plist")).unwrap(),
+            format!(
+                "ai.example.demo.audio libplugin.dylib {}",
+                build_macos::sdk_bundles::stable_uuid("ai.example.demo.audio", "factory")
+            )
+        );
+
+        // Declared app entitlements alone force it too: the dev path applies
+        // them by signing the bundle.
+        let entitlements_only = build_macos::sdk_bundles::SdkBundles {
+            app_entitlements: vec!["com.apple.developer.system-extension.install".into()],
+            bundles: Vec::new(),
+        };
+        assert!(maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links, &entitlements_only, None).unwrap().is_some());
     }
 }
