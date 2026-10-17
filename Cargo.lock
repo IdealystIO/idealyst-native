@@ -1962,6 +1962,7 @@ dependencies = [
  "anyhow",
  "build-ios",
  "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]

@@ -53,6 +53,8 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
             release: opts.release,
             user_features: opts.user_features.clone(),
             source: opts.source,
+            // A run builds on, and for, the Windows host itself.
+            arch: None,
         },
     )?;
 

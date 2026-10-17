@@ -27,6 +27,7 @@ anyhow = "1"
 build-ios = { workspace = true }
 
 [dev-dependencies]
+toml = "0.8"
 # The shared offline cargo world for the wrapper lock tests.
 build-ios = { workspace = true, features = ["test-support"] }
 tempfile = "3"

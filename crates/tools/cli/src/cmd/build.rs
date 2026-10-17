@@ -126,9 +126,12 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub remote_out: Option<PathBuf>,
 
-    /// serverless-lambda only: target CPU architecture (`arm64` default,
-    /// or `x86_64`). No effect on other targets.
-    #[arg(long, value_name = "arm64|x86_64")]
+    /// Target CPU architecture. serverless-lambda: `arm64` (default) or
+    /// `x86_64`. Windows: `x64` (default) or `arm64` — build `arm64` for
+    /// Arm64 PCs: components Windows loads into its own native processes
+    /// (e.g. a virtual camera's media source) must match the app. No
+    /// effect on other targets.
+    #[arg(long, value_name = "arm64|x86_64|x64")]
     pub arch: Option<String>,
 
     /// SSG only: suppress the hydration boot `<script>`. The exported
@@ -561,6 +564,7 @@ fn build_windows_target(dir: &std::path::Path, args: &Args) -> Result<()> {
             release: args.release,
             source,
             user_features: Vec::new(),
+            arch: args.arch.as_deref().map(build_windows::Arch::parse).transpose()?,
         },
     )?;
     eprintln!("[build windows] success → {}", artifact.binary.display());

@@ -152,12 +152,29 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         match &identity {
             Some(identity) => {
                 // SDK-declared app entitlements; a dev signature has none
-                // of its own.
-                let entitlements = if built.sdk.app_entitlements.is_empty() {
+                // of its own. Restricted ones need a provisioning profile.
+                let profile = std::env::var_os(DEV_PROFILE_ENV).map(PathBuf::from);
+                let manifest = parse_manifest(project_dir)?;
+                let bundle_id = manifest.app.require_bundle_id()?;
+                let dev = dev_entitlements(&built.sdk.app_entitlements, profile.is_some(), team_id.as_deref(), &bundle_id);
+                if !dev.dropped.is_empty() {
+                    eprintln!(
+                        "[run-macos] not signing with {} — restricted entitlements need a provisioning \
+                         profile, and macOS kills an app that claims them without one. The features \
+                         that need them report an error at runtime instead. Set {DEV_PROFILE_ENV} to a \
+                         macOS development .provisionprofile for this bundle id to include them.",
+                        dev.dropped.join(", "),
+                    );
+                }
+                if let Some(p) = &profile {
+                    let dest = app.app_dir.join("Contents").join("embedded.provisionprofile");
+                    fs::copy(p, &dest).with_context(|| format!("copy {} → {}", p.display(), dest.display()))?;
+                }
+                let entitlements = if dev.booleans.is_empty() && dev.strings.is_empty() {
                     None
                 } else {
                     let path = app.app_dir.with_extension("dev-entitlements.plist");
-                    fs::write(&path, publish::entitlements_plist(false, &built.sdk.app_entitlements, &[], &[]))
+                    fs::write(&path, publish::entitlements_plist(false, &dev.booleans, &dev.strings, &[]))
                         .with_context(|| format!("write {}", path.display()))?;
                     Some(path)
                 };
@@ -344,6 +361,42 @@ fn resolve_dev_team_id(manifest_team: Option<&str>, identity: Option<&str>) -> O
         .filter(|t| !t.is_empty())
         .or_else(|| manifest_team.map(str::to_string))
         .or_else(|| identity.and_then(certificate_team_id))
+}
+
+/// Environment variable naming a macOS development `.provisionprofile` a dev
+/// run embeds, so the app may carry restricted SDK entitlements.
+const DEV_PROFILE_ENV: &str = "IDEALYST_MACOS_PROVISIONING_PROFILE";
+
+/// What a dev signature carries from the SDK-declared app entitlements.
+#[derive(Debug, PartialEq, Eq)]
+struct DevEntitlements {
+    booleans: Vec<String>,
+    /// String entitlements the profile requires the signature to match.
+    strings: Vec<(String, String)>,
+    /// Declared but left out (restricted, no profile).
+    dropped: Vec<String>,
+}
+
+/// Decide a dev signature's entitlements. `com.apple.developer.*` keys are
+/// restricted: AMFI SIGKILLs an app at launch that claims one without an
+/// embedded provisioning profile authorising it, so without a profile they
+/// are dropped (the feature fails at runtime with an error the app can
+/// show). With a profile they are kept, along with the application- and
+/// team-identifier entitlements the profile is matched against.
+fn dev_entitlements(declared: &[String], has_profile: bool, team: Option<&str>, bundle_id: &str) -> DevEntitlements {
+    let restricted = |e: &String| e.starts_with("com.apple.developer.");
+    if !has_profile {
+        let (dropped, booleans) = declared.iter().cloned().partition(restricted);
+        return DevEntitlements { booleans, strings: Vec::new(), dropped };
+    }
+    let strings = match team {
+        Some(t) => vec![
+            ("com.apple.application-identifier".to_string(), format!("{t}.{bundle_id}")),
+            ("com.apple.developer.team-identifier".to_string(), t.to_string()),
+        ],
+        None => Vec::new(),
+    };
+    DevEntitlements { booleans: declared.to_vec(), strings, dropped: Vec::new() }
 }
 
 /// The team id (subject OU) of the keychain certificate whose SHA-1 is
@@ -1050,5 +1103,36 @@ mod tests {
             bundles: Vec::new(),
         };
         assert!(maybe_wrap_in_app_bundle(&project, &binary, &[], &no_links, &entitlements_only, None).unwrap().is_some());
+    }
+
+    /// A dev run of an app using an SDK that declares
+    /// `com.apple.developer.system-extension.install` was SIGKILLed at
+    /// launch: the signature claimed a restricted entitlement with no
+    /// provisioning profile behind it.
+    #[test]
+    fn regression_dev_signature_drops_restricted_entitlements_without_a_profile() {
+        let declared = vec![
+            "com.apple.developer.system-extension.install".to_string(),
+            "com.apple.security.device.audio-input".to_string(),
+        ];
+        let d = dev_entitlements(&declared, false, Some("TEAM123456"), "ai.example.demo");
+        assert_eq!(d.booleans, ["com.apple.security.device.audio-input"]);
+        assert_eq!(d.dropped, ["com.apple.developer.system-extension.install"]);
+        assert!(d.strings.is_empty());
+    }
+
+    #[test]
+    fn dev_signature_with_a_profile_keeps_restricted_entitlements_and_ids() {
+        let declared = vec!["com.apple.developer.system-extension.install".to_string()];
+        let d = dev_entitlements(&declared, true, Some("TEAM123456"), "ai.example.demo");
+        assert_eq!(d.booleans, declared);
+        assert!(d.dropped.is_empty());
+        assert_eq!(
+            d.strings,
+            [
+                ("com.apple.application-identifier".to_string(), "TEAM123456.ai.example.demo".to_string()),
+                ("com.apple.developer.team-identifier".to_string(), "TEAM123456".to_string()),
+            ]
+        );
     }
 }

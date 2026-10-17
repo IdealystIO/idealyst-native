@@ -373,6 +373,16 @@ small VM that couldn't compile the app can still run it:
    `set IDEALYST_WINDOWS_RENDERER=d2d` (cmd) or
    `$env:IDEALYST_WINDOWS_RENDERER="d2d"` (PowerShell).
 
-On a Windows-on-Arm VM (VMware or Parallels on an Apple-silicon Mac), the x64
-`.exe` runs under Windows' built-in emulation. That's fine for checking
+On a Windows-on-Arm VM (VMware, Parallels or UTM on an Apple-silicon Mac), the
+x64 `.exe` runs under Windows' built-in emulation. That's fine for checking
 correctness, but timings there don't represent x64 hardware.
+
+To build natively for an Arm64 PC: `idealyst build --windows --arch arm64`
+(output under `target/aarch64-pc-windows-gnullvm/`). It needs
+`rustup target add aarch64-pc-windows-gnullvm` and
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases) on `PATH`; the C
+runtime is linked statically, so the `.exe` still depends only on system DLLs.
+An app whose SDKs put components into Windows' own processes needs the
+native build: a virtual camera's media source, for instance, loads both in
+the app and in the (always native) camera service, so an emulated x64 app on
+an Arm64 PC cannot start one.

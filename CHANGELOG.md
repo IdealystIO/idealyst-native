@@ -577,6 +577,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Windows Arm64 builds** (`build-windows`, `idealyst-cli`). `idealyst build
+  --windows --arch arm64` cross-builds a native Arm64 app (and its SDK
+  artifacts) with llvm-mingw, linking the C runtime statically; it fails up
+  front with an install hint when the toolchain is missing. See
+  `docs/windows.md`.
+
 - **SDK-declared build products** (`build-ios`, `build-macos`, `run-macos`,
   `build-windows`). An SDK can name a dependency package the app must ship
   as a separate build product, and the CLI builds it for the app's target
@@ -1541,6 +1547,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **Out-of-tree apps build for Windows and Linux against a local framework
+  checkout** (`build-windows`, `build-linux`). Their wrappers never emitted
+  the framework patch block the macOS / iOS wrappers do, so the app's own
+  framework deps stayed on the registry while the wrapper used the checkout:
+  two of every runtime crate ("expected `Element`, found `Element`").
+- **A dev run no longer SIGKILLs an app whose SDK declares a restricted
+  entitlement** (`run-macos`). Restricted `com.apple.developer.*` app
+  entitlements are signed only with a provisioning profile
+  (`IDEALYST_MACOS_PROVISIONING_PROFILE`), which is then embedded; without
+  one they are left out with a warning.
 
 - **A clip's audio reaches its `AudioStream` on macOS / iOS** (`video-decode`).
   `audio()` was always `None` on Apple targets: the `MTAudioProcessingTap`

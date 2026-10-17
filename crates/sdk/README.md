@@ -341,7 +341,13 @@ its own rendered entitlements and the hardened runtime, then the app, with
 its entitlements plus every declared `app-entitlements`. An app holding a
 nested bundle is not signed `--deep`, which would re-sign the bundles with
 the app's entitlements. A declared bundle or app entitlement makes a dev
-run wrap the binary in an `.app`. Source:
+run wrap the binary in an `.app`. A dev run signs restricted
+(`com.apple.developer.*`) app entitlements only when
+`IDEALYST_MACOS_PROVISIONING_PROFILE` names a development profile, which it
+embeds (with the matching application- and team-identifier entitlements);
+without one it leaves them out and warns, since macOS kills an app that claims
+them unauthorised, and the SDK feature needing them fails at runtime instead.
+Source:
 `crates/tools/build/macos/src/sdk_bundles.rs`, `crates/tools/run/macos/src/lib.rs`
 (`codesign_plan`).
 
