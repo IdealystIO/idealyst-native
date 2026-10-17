@@ -439,14 +439,19 @@ fn rewrite_body(
     let idx = item_fn.block.stmts.len().saturating_sub(1);
     item_fn.block.stmts.insert(idx, handle_construction);
 
-    // New path: fill the injected `bind_to` prop with the handle, so the
-    // ordinary `ui! { Tag(bind_to = my_ref) }` tag form binds — no
-    // `Bindable` return, no fn-call form. `Ref` fills exactly once, at
-    // build (same contract as idea-ui's unconditional primitive binds).
+    // Fill the injected `bind_to` prop with the handle, so the ordinary
+    // `ui! { Tag(bind_to = my_ref) }` tag form binds. The fill is held
+    // while the component is mounted and released at its teardown, so
+    // the caller's ref reads `None` after unmount — a method call through
+    // a kept handle would otherwise write the component's freed signals
+    // and panic.
     if bind_to_injected {
         let fill_stmt: Stmt = syn::parse_quote! {
             if let ::core::option::Option::Some(__r) = bind_to {
-                __r.fill(::std::clone::Clone::clone(&__component_handle));
+                ::runtime_core::__fill_ref_while_mounted(
+                    __r,
+                    ::std::clone::Clone::clone(&__component_handle),
+                );
             }
         };
         item_fn.block.stmts.insert(idx + 1, fill_stmt);
@@ -631,7 +636,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(body.contains("__r.fill"), "bind_to fill emitted: {body}");
+        assert!(body.contains("__fill_ref_while_mounted"), "bind_to fill emitted: {body}");
         assert!(!body.contains("Bindable::new"), "new path returns plain Element: {body}");
         assert!(
             body.contains("__attach_component_methods"),
@@ -658,7 +663,7 @@ mod tests {
         )
         .unwrap();
         assert!(body.contains("Bindable::new"), "legacy keeps the Bindable return: {body}");
-        assert!(!body.contains("__r.fill"), "no bind_to in scope on the legacy path: {body}");
+        assert!(!body.contains("__fill_ref_while_mounted"), "no bind_to in scope on the legacy path: {body}");
     }
 
     #[test]
@@ -678,8 +683,8 @@ mod tests {
     /// rewritten body through the retarget must land every `#[method]`
     /// reference on a name `runtime_vocabulary::glue` provides —
     /// `glue::robot::{Method, __attach_component_methods}`,
-    /// `glue::__serde_json`, and the `bind_to` fill's `glue::Ref` (via
-    /// the injected prop type). A rename on either side breaks this
+    /// `glue::__serde_json`, and the `bind_to` fill
+    /// (`glue::__fill_ref_while_mounted`). A rename on either side breaks this
     /// pin, not a downstream app build.
     #[test]
     fn new_core_retarget_lands_method_emission_on_glue_names() {
@@ -702,6 +707,7 @@ mod tests {
             "::runtime_vocabulary::glue::robot::Method",
             "::runtime_vocabulary::glue::robot::__attach_component_methods",
             "::runtime_vocabulary::glue::__serde_json::from_value",
+            "::runtime_vocabulary::glue::__fill_ref_while_mounted",
         ] {
             assert!(out.contains(needle), "missing {needle} in: {out}");
         }

@@ -339,7 +339,7 @@ pub use reactive::{
     arena_stats, batch, cycle, inject, inject_or, install_drop_deferral, install_reactive_idle_hook,
     is_reactive_busy, memo, memo_with, on, on_cleanup, on_defer, provide, reducer,
     register_signal_js_notifier, signal_has_js_notifier, unregister_signal_js_notifier, untrack,
-    watch, with_inject, ArenaStats, Effect, ReadSignal, Ref, Signal, Subscription, Trackable,
+    watch, with_inject, ArenaStats, Effect, ReadSignal, Ref, RefLease, Signal, Subscription, Trackable,
     WriteSignal,
 };
 /// Internal re-export for the `#[component]` / `#[method]` codegen only —

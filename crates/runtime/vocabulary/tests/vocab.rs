@@ -2178,6 +2178,57 @@ mod p6_glue {
         assert!(r.get().is_some(), "Ref filled with the mount-time handle");
     }
 
+    /// Regression: a ref kept the handle of an element that had unmounted.
+    /// Nothing released a mount-time fill, so `r.get()` answered the dead
+    /// node's handle forever, and a `#[method]` call through a component
+    /// ref wrote the component's freed signals and panicked.
+    #[test]
+    fn regression_bind_ref_reads_none_after_its_element_unmounts() {
+        use runtime_vocabulary::glue::IntoElement;
+        let h = harness();
+        let r: Ref<runtime_shared::ScrollViewHandle> = Ref::new();
+        let el = h.world.enter(|| glue::scroll_view(Vec::new()).bind(r).into_element());
+        let realized = h.world.enter(|| realize(&h.backend, &h.registry, el));
+        assert!(r.get().is_some(), "filled while mounted");
+        drop(realized);
+        assert!(r.get().is_none(), "released when the element unmounted");
+    }
+
+    /// A branch can mount the new element bearing a ref before the old
+    /// one tears down; the old element's teardown must not empty it.
+    #[test]
+    fn regression_remount_fill_survives_the_old_elements_teardown() {
+        use runtime_vocabulary::glue::IntoElement;
+        let h = harness();
+        let r: Ref<runtime_shared::ScrollViewHandle> = Ref::new();
+        let old_el = h.world.enter(|| glue::scroll_view(Vec::new()).bind(r).into_element());
+        let old = h.world.enter(|| realize(&h.backend, &h.registry, old_el));
+        let new_el = h.world.enter(|| glue::scroll_view(Vec::new()).bind(r).into_element());
+        let new = h.world.enter(|| realize(&h.backend, &h.registry, new_el));
+        drop(old);
+        assert!(r.get().is_some(), "the remount's fill survives the old teardown");
+        drop(new);
+        assert!(r.get().is_none());
+    }
+
+    /// The `#[method]` component's `bind_to` fill, as the macro emits it
+    /// into the component body: released when the component unrealizes.
+    #[test]
+    fn regression_component_bind_to_ref_released_at_unrealize() {
+        let h = harness();
+        let r: Ref<Rc<Cell<u32>>> = Ref::new();
+        let realized = h.world.enter(|| {
+            let element = runtime_scene::component_scope(|| {
+                glue::__fill_ref_while_mounted(r, Rc::new(Cell::new(0)));
+                view().build()
+            });
+            realize(&h.backend, &h.registry, element)
+        });
+        assert!(r.get().is_some(), "bound while the component is mounted");
+        drop(realized);
+        assert!(r.get().is_none(), "released at unrealize");
+    }
+
     /// Regression (`if` E0507 class): the static `if` arm's thunks are
     /// `FnOnce`, so a taken branch may MOVE a captured `String` — the shape every
     /// hoisted-condition (`let has_x = !x.is_empty()`) component emits.

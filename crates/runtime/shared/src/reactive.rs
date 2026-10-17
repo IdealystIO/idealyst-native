@@ -260,6 +260,11 @@ struct Arena {
     /// Inner `Option<Box<dyn Any>>`: `None` while the ref exists but hasn't
     /// been filled by a mount yet; `Some` once mounted.
     refs: Vec<Option<Option<Box<dyn Any>>>>,
+    /// Which fill a ref slot holds, indexed parallel to `refs`: the id
+    /// [`Ref::fill_owned`] stamped (`0` when unfilled). Ids come from
+    /// [`NEXT_REF_FILL`] and never repeat, so a [`RefLease`] from an
+    /// earlier fill — or from a freed slot's previous ref — never matches.
+    ref_fill: Vec<u64>,
 
     /// Per-signal subscriber set, indexed parallel to `signals`. Lives
     /// on the arena (not on `SignalInner<T>`) so cleanup code that
@@ -329,6 +334,7 @@ impl Arena {
             signal_gen: Vec::new(),
             effects: Vec::new(),
             refs: Vec::new(),
+            ref_fill: Vec::new(),
             signal_subscribers: Vec::new(),
             effect_dependencies: Vec::new(),
             signal_js_notifiers: FxHashMap::default(),
@@ -378,10 +384,12 @@ impl Arena {
     fn insert_ref(&mut self) -> RefId {
         if let Some(idx) = self.ref_free.pop() {
             self.refs[idx as usize] = Some(None);
+            self.ref_fill[idx as usize] = 0;
             RefId(idx)
         } else {
             let id = RefId(self.refs.len() as u32);
             self.refs.push(Some(None));
+            self.ref_fill.push(0);
             id
         }
     }
@@ -3009,9 +3017,9 @@ fn run_effects(ids: &[EffectId]) {
 
 /// A copy-handle pointing at an arena slot that holds an `H` once a
 /// component has mounted. The parent of a component owns the `Ref<H>`
-/// (typically inside its own reactive scope); the child component's
-/// mount path calls [`Ref::fill`] to populate the slot, and unmount
-/// calls [`Ref::clear`]. Reading via [`Ref::with`] returns `None` if
+/// (typically inside its own reactive scope); the child's mount path
+/// fills the slot with [`Ref::fill_owned`] and releases that fill when
+/// the child tears down, so a ref to an unmounted element reads `None`. Reading via [`Ref::with`] returns `None` if
 /// the slot has not been filled yet — pre-mount calls are silently
 /// skipped, the same way `ref.current` is `null` in React before mount.
 ///
@@ -3053,29 +3061,57 @@ impl<H: 'static> Ref<H> {
         Self { id, _phantom: PhantomData }
     }
 
-    /// Populates the slot with `handle`. The framework's mount path
-    /// calls this; user code typically does not. Overwrite is legal
-    /// (a `when()` rebuild may remount a component bearing the same
-    /// ref) and replaces the previous handle cleanly.
+    /// Populates the slot with `handle`, with no owner to release it:
+    /// the handle stays until the slot is filled again, cleared, or
+    /// freed. The framework's mount paths use [`Ref::fill_owned`]
+    /// instead, so an unmounted element's ref reads `None`.
     pub fn fill(&self, handle: H) {
-        ARENA.with(|a| {
-            let mut a = a.borrow_mut();
-            if let Some(Some(inner)) = a.refs.get_mut(self.id.0 as usize) {
-                *inner = Some(Box::new(handle));
-            }
-        });
+        let _ = self.fill_owned(handle);
     }
 
-    /// Clears the slot, leaving the ref un-mounted. Called by the
-    /// framework when the component bearing this ref unmounts (e.g.
-    /// because a `when()` branch flipped away from it).
-    pub fn clear(&self) {
-        ARENA.with(|a| {
-            let mut a = a.borrow_mut();
-            if let Some(Some(inner)) = a.refs.get_mut(self.id.0 as usize) {
-                *inner = None;
-            }
+    /// Populates the slot with `handle` and returns the [`RefLease`] that
+    /// releases it. Overwrite is legal (a branch may remount an element
+    /// bearing the same ref before the old one tears down): the newer
+    /// fill wins, and releasing the older one leaves it in place.
+    pub fn fill_owned(&self, handle: H) -> RefLease {
+        let fill = NEXT_REF_FILL.with(|n| {
+            let id = n.get();
+            n.set(id + 1);
+            id
         });
+        let previous = ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            let idx = self.id.0 as usize;
+            let previous = match a.refs.get_mut(idx) {
+                Some(Some(inner)) => Some(inner.replace(Box::new(handle))),
+                _ => None,
+            };
+            if previous.is_some() {
+                a.ref_fill[idx] = fill;
+            }
+            previous.flatten()
+        });
+        // Dropped outside the arena borrow: a handle's own `Drop` may
+        // reach back into the arena.
+        drop(previous);
+        RefLease { id: self.id, fill }
+    }
+
+    /// Clears the slot, leaving the ref un-mounted, whatever filled it.
+    pub fn clear(&self) {
+        let previous = ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            let idx = self.id.0 as usize;
+            let previous = match a.refs.get_mut(idx) {
+                Some(Some(inner)) => inner.take(),
+                _ => None,
+            };
+            if let Some(f) = a.ref_fill.get_mut(idx) {
+                *f = 0;
+            }
+            previous
+        });
+        drop(previous);
     }
 
     /// Runs `f` against the filled handle, if any. Returns `None` if
@@ -3140,6 +3176,39 @@ impl<H: Clone + 'static> Ref<H> {
                 .expect("internal: ref handle type mismatch");
             Some(handle.clone())
         })
+    }
+}
+
+runtime_tls::thread_local! {
+    /// The next [`RefLease`] id. Starts at 1: `0` marks an unfilled slot.
+    static NEXT_REF_FILL: Cell<u64> = const { Cell::new(1) };
+}
+
+/// One fill of a [`Ref`], from [`Ref::fill_owned`]. [`RefLease::release`]
+/// clears the slot if it still holds this fill — not a later one, and
+/// not a different ref that reused the freed slot.
+#[must_use = "a fill nobody releases keeps the handle after its element unmounts"]
+pub struct RefLease {
+    id: RefId,
+    fill: u64,
+}
+
+impl RefLease {
+    /// Clear the slot if it still holds this fill.
+    pub fn release(self) {
+        let previous = ARENA.with(|a| {
+            let mut a = a.borrow_mut();
+            let idx = self.id.0 as usize;
+            if a.ref_fill.get(idx) != Some(&self.fill) {
+                return None;
+            }
+            a.ref_fill[idx] = 0;
+            match a.refs.get_mut(idx) {
+                Some(Some(inner)) => inner.take(),
+                _ => None,
+            }
+        });
+        drop(previous);
     }
 }
 

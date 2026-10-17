@@ -349,14 +349,11 @@ its body builds the handle. If the bound thing mounts again — an
 `if` branch flipping back, a list row rebuilt — the slot is
 refilled with the new handle.
 
-The framework does not empty the slot when the bound thing
-unmounts. After an `if` branch flips away, `.get()` still returns
-the last handle. Calling a primitive handle then talks to a
-detached node. Calling a component method then writes to signals
-whose scope has dropped, which panics with a stale-handle
-diagnostic. If the target can unmount, track its presence with a
-signal (the same condition that gates the branch) and check it
-before calling.
+When the bound thing unmounts, its slot empties: after an `if`
+branch flips away, `.get()` returns `None`, so
+`r.get().map(|h| h.reset())` is skipped instead of reaching an element
+that is gone. If the new element mounts before the old one tears down,
+the new handle stays.
 
 ## Refs vs Signals
 

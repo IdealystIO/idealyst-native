@@ -406,13 +406,11 @@ docs! {
            when its body builds the handle. If the bound thing mounts again — \
            an ", code("if"), " branch flipping back, a list row rebuilt — the slot \
            is refilled with the new handle."),
-        p("The framework does not empty the slot when the bound thing unmounts. \
-           After an ", code("if"), " branch flips away, ", code(".get()"),
-          " still returns the last handle. Calling a primitive handle then talks \
-           to a detached node. Calling a component method then writes to signals \
-           whose scope has dropped, which panics with a stale-handle diagnostic. \
-           If the target can unmount, track its presence with a signal (the same \
-           condition that gates the branch) and check it before calling."),
+        p("When the bound thing unmounts, its slot empties: after an ", code("if"),
+          " branch flips away, ", code(".get()"), " returns ", code("None"),
+          ", so ", code("r.get().map(|h| h.reset())"), " is skipped instead of \
+           reaching an element that is gone. If the new element mounts before \
+           the old one tears down, the new handle stays."),
     },
 
     section(heading = "Refs vs Signals") {

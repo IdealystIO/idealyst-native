@@ -41,6 +41,8 @@ mod on_and_defer;
 mod reducer_tests;
 #[path = "reactive/nested_update.rs"]
 mod nested_update;
+#[path = "reactive/ref_lease.rs"]
+mod ref_lease;
 
 // Resource is feature-gated — only compiled in when async-driver is on.
 #[cfg(feature = "async-driver")]
