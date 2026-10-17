@@ -227,9 +227,9 @@ Other primitives have handles too (`TextHandle`, `ImageHandle`,
 Third-party SDKs ship their own — e.g. `webview::WebViewHandle`
 with `.post_message()` / `.reload()` / `.execute_js()`.
 
-The button's handle type is not re-exported from `runtime_core`, so
-you can't name it. Let inference pick it: `let b = Ref::new();`
-followed by `button(bind = b, …)` types `b` from the prop.
+Every handle a `bind` or `on_handle` takes is exported from
+`runtime_core` — `let b: Ref<ButtonHandle> = Ref::new();` for
+`button(bind = b, …)`.
 
 ### Reading geometry
 

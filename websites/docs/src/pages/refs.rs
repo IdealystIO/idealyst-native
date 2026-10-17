@@ -254,10 +254,10 @@ docs! {
           code("webview::WebViewHandle"),
           " with ", code(".post_message()"), " / ", code(".reload()"), " / ",
           code(".execute_js()"), "."),
-        p("The button's handle type is not re-exported from ", code("runtime_core"),
-          ", so you can't name it. Let inference pick it: ",
-          code("let b = Ref::new();"), " followed by ", code("button(bind = b, …)"),
-          " types ", code("b"), " from the prop."),
+        p("Every handle a ", code("bind"), " or ", code("on_handle"),
+          " takes is exported from ", code("runtime_core"), " — ",
+          code("let b: Ref<ButtonHandle> = Ref::new();"), " for ",
+          code("button(bind = b, …)"), "."),
     },
 
     section(heading = "Reading geometry") {

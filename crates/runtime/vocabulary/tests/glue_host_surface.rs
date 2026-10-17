@@ -261,3 +261,35 @@ fn glue_reexports_keyboard_inset_and_it_reads_platform_pushes() {
     world.flush();
     assert_eq!(world.enter(|| kb.get().height), 300.0);
 }
+
+/// Regression: `button(bind = r)` takes a `Ref<ButtonHandle>`, but the
+/// type was not reachable from the author root, so a caller could not
+/// write the ref's type and had to lean on inference. Every handle a
+/// `bind` / `on_handle` setter takes is nameable at the root.
+#[test]
+fn regression_every_bindable_handle_type_is_nameable_at_the_root() {
+    use runtime_vocabulary::glue::{
+        ButtonHandle, GraphicsHandle, IconHandle, ImageHandle, PortalHandle, PresenceHandle,
+        PressableHandle, Ref, ScrollViewHandle, TextAreaHandle, TextHandle, TextInputHandle,
+        ToggleHandle, ViewHandle, VirtualizerHandle,
+    };
+    fn named<H: 'static>() -> Ref<H> {
+        Ref::default()
+    }
+    let _ = (
+        named::<ButtonHandle>(),
+        named::<GraphicsHandle>(),
+        named::<IconHandle>(),
+        named::<ImageHandle>(),
+        named::<PortalHandle>(),
+        named::<PresenceHandle>(),
+        named::<PressableHandle>(),
+        named::<ScrollViewHandle>(),
+        named::<TextAreaHandle>(),
+        named::<TextHandle>(),
+        named::<TextInputHandle>(),
+        named::<ToggleHandle>(),
+        named::<ViewHandle>(),
+        named::<VirtualizerHandle>(),
+    );
+}

@@ -503,6 +503,11 @@ pub use crate::scoped_scheduling::{after_ms_scoped, raf_loop_scoped};
 // Interaction handles (filled by the mount handlers' `ref_fill` via
 // `make_*_handle`).
 pub use runtime_shared::{PressableHandle, TextHandle};
+// Every handle type a `bind = r` / `on_handle` setter takes is nameable at
+// the root, so `let r: Ref<ButtonHandle> = Ref::new();` needs no deep path.
+pub use runtime_shared::ButtonHandle;
+pub use runtime_shared::primitives::graphics::GraphicsHandle;
+pub use runtime_shared::primitives::virtualizer::VirtualizerHandle;
 
 // Text/style source data types component code stores and matches on.
 // `StyleSource` is pure data (application + closure variants); the
