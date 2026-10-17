@@ -14,40 +14,62 @@
 
 == mount ==
 create n0 view
-create n1 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n1 portal target=viewport(FullScreen) on_dismiss=none trap_focus=false
 create n2 pressable on_click=<fn>
 create n3 view
-apply_style n3 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0)))}
-install_touch_handler n3
+apply_style n3 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
 insert n2 <- n3
-apply_style n2 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
-insert n1 <- n2
 create n4 view
-create n5 text "modal body"
-insert n4 <- n5
-insert n1 <- n4
+apply_style n4 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0)))}
+install_touch_handler n4
+insert n2 <- n4
+apply_style n2 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0))), pointer_events: Some(Auto)}
+insert n1 <- n2
+apply_style n1 {pointer_events: Some(None)}
+create n5 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n6 view
+create n7 text "modal body"
+insert n6 <- n7
+apply_style n6 {pointer_events: Some(Auto)}
+insert n5 <- n6
+apply_style n5 {pointer_events: Some(None)}
 insert_at n0 <- n1 @ 0
+insert_at n0 <- n5 @ 1
 
 == close (backdrop unstyle + release_portal in one window) ==
 remove_child n0 -x n1
+remove_child n0 -x n5
 on_node_unstyled n3
+on_node_unstyled n4
 on_node_unstyled n2
+on_node_unstyled n1
 release_portal n1
-create n6 text "closed"
-insert_at n0 <- n6 @ 0
+on_node_unstyled n6
+on_node_unstyled n5
+release_portal n5
+create n8 text "closed"
+insert_at n0 <- n8 @ 0
 
 == reopen ==
-remove_child n0 -x n6
-create n7 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
-create n8 pressable on_click=<fn>
-create n9 view
-apply_style n9 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0)))}
-install_touch_handler n9
-insert n8 <- n9
-apply_style n8 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
-insert n7 <- n8
-create n10 view
-create n11 text "modal body"
+remove_child n0 -x n8
+create n9 portal target=viewport(FullScreen) on_dismiss=none trap_focus=false
+create n10 pressable on_click=<fn>
+create n11 view
+apply_style n11 {background: Some(Literal(Color("#00000080"))), width: Some(Literal(Px(40.0)))}
 insert n10 <- n11
-insert n7 <- n10
-insert_at n0 <- n7 @ 0
+create n12 view
+apply_style n12 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0)))}
+install_touch_handler n12
+insert n10 <- n12
+apply_style n10 {position: Some(Absolute), top: Some(Literal(Px(0.0))), right: Some(Literal(Px(0.0))), bottom: Some(Literal(Px(0.0))), left: Some(Literal(Px(0.0))), pointer_events: Some(Auto)}
+insert n9 <- n10
+apply_style n9 {pointer_events: Some(None)}
+create n13 portal target=viewport(Center) on_dismiss=<fn> trap_focus=true
+create n14 view
+create n15 text "modal body"
+insert n14 <- n15
+apply_style n14 {pointer_events: Some(Auto)}
+insert n13 <- n14
+apply_style n13 {pointer_events: Some(None)}
+insert_at n0 <- n9 @ 0
+insert_at n0 <- n13 @ 1

@@ -371,6 +371,22 @@ same override machinery). ONE new full-op divergence:
    and `full_overlay_toggle.spliced.golden` (the latter already an
    override for #5).
 
+9. **Overlays follow one hit contract on every backend (post-freeze
+   behaviour fix).** An overlay's portal root never takes a tap
+   (`pointer-events: none`) and its content wrapper does (`auto`). A
+   `Dismiss` / `Opaque` backdrop is its own `FullScreen` portal, mounted
+   before the content's portal, holding a pressable that fills it
+   (`absolute; inset 0`, `pointer-events: auto`); `backdrop_style`
+   paints a layer inside that pressable. The walker put the backdrop
+   pressable and the content view in ONE portal at the overlay's
+   placement, which covered only the content's box on web and nothing
+   on iOS. The op stream therefore gains the backdrop portal, the
+   pointer-events `apply_style` lines on both roots and the two
+   fillers, and a second `release_portal` (with its `on_node_unstyled`
+   lines) in the teardown window; node ids shift accordingly. Nothing
+   about the content itself moves.
+   *Pinned by:* the same two overrides as #8.
+
    All the pairs above are the closed `FULL_NEWCORE_OVERRIDES` set.
 
 ### Known walker-shape facts the full-op goldens pin (worth naming)

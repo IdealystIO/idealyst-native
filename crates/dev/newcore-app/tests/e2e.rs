@@ -468,7 +468,9 @@ fn demo_mount_gates_portals_presence_and_rows() {
 
 /// The authored open handler mounts BOTH portal compositions (the
 /// centered overlay with its dismissable backdrop, and the anchored
-/// overlay), and the close handler releases them again.
+/// overlay), and the close handler releases them again. The `Dismiss`
+/// backdrop is its own full-screen portal, so the pair is three portals:
+/// backdrop, overlay content, anchored content.
 #[test]
 fn overlay_open_close_mounts_and_releases_both_portals() {
     let (h, _) = DemoHarness::mount();
@@ -477,9 +479,10 @@ fn overlay_open_close_mounts_and_releases_both_portals() {
     let log = joined(&ops);
     assert_eq!(
         log.matches("portal target=").count(),
-        2,
-        "overlay + anchored_overlay each lower to one portal:\n{log}"
+        3,
+        "backdrop + overlay content + anchored content:\n{log}"
     );
+    assert!(log.contains("portal target=viewport(FullScreen)"), "the backdrop covers the window:\n{log}");
     assert!(log.contains("pressable"), "Dismiss backdrop mounts a pressable scrim:\n{log}");
     assert!(log.contains("\"modal body\""), "overlay content:\n{log}");
     assert!(log.contains("\"close-modal\""), "overlay button:\n{log}");
@@ -489,8 +492,8 @@ fn overlay_open_close_mounts_and_releases_both_portals() {
     let log = joined(&ops);
     assert_eq!(
         log.matches("release_portal").count(),
-        2,
-        "closing releases both portals:\n{log}"
+        3,
+        "closing releases all three portals:\n{log}"
     );
     assert!(!log.contains("portal target="), "no portal re-created:\n{log}");
     // The false branch of the gating `if` swaps in the layout-neutral
