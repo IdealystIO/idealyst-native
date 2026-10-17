@@ -1958,6 +1958,8 @@ fn emit_if(
     //    scrutinee stays a plain Rust `if let`. Not lowering it reactively
     //    froze `if let Some(x) = sig.get()` at its first value, silently —
     //    the one thing the reactive-by-default gate exists to prevent.
+    //    Its bindings stay owned, as in a plain `if let` (`Bindings::Owned`),
+    //    so a closure in the branch can keep them.
     if let Expr::Let(l) = cond {
         if condition_may_read_signal(&l.expr) || is_reactive_call_shape(&l.expr) {
             let wild: syn::Pat = syn::parse_quote!(_);
@@ -2232,10 +2234,14 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
 /// How a reactive `match`'s patterns bind. `switch` hands its render
 /// closure `&S`, so match ergonomics bind by reference (`Borrowed`) —
 /// what a `match` in `ui!` has always done. An `if let` binds the way
-/// Rust's `if let PAT = expr` does, by value (`Owned`: the arm matches a
-/// clone of the scrutinee): `if let Some(id) = pending.get()` gives a
-/// `u64`, not a `&u64`, so code written as a plain `if let` keeps
-/// compiling when the condition turns reactive.
+/// Rust's `if let PAT = expr` does, by value (`Owned`): `if let Some(id) =
+/// pending.get()` gives a `u64`, not a `&u64`, so code written as a plain
+/// `if let` — a closure in the branch keeping `id` included — keeps
+/// compiling when the condition turns reactive. `Owned` matches a clone
+/// when `S: Clone` (every `.get()` scrutinee) and falls back to the `&S`
+/// otherwise, chosen at compile time by autoref specialization
+/// (`glue::__IfLetArm`), so it adds no `Clone` requirement a plain `if let`
+/// never had.
 #[derive(Clone, Copy, PartialEq)]
 enum Bindings {
     Borrowed,
@@ -2320,7 +2326,11 @@ fn emit_match_bindings(
             .collect();
         let matched = match bindings {
             Bindings::Borrowed => quote! { __v },
-            Bindings::Owned => quote! { ::core::clone::Clone::clone(__v) },
+            Bindings::Owned => quote! {{
+                #[allow(unused_imports)]
+                use ::runtime_core::{__IfLetBorrow as _, __IfLetOwn as _};
+                (&::runtime_core::__IfLetArm(__v)).__if_let_value()
+            }},
         };
         return quote! {
             ::runtime_core::switch(

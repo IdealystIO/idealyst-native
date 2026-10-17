@@ -66,3 +66,53 @@ fn regression_reactive_if_let_binds_by_value() {
     }));
     assert_eq!(texts(&h.take_log()), ["create n2 text \"id=4\""]);
 }
+
+/// The `confirm_dialog_overlay` recipe's shape: a closure inside the branch
+/// keeps the binding (`if let Some(id) = pending.get() { button(on_click =
+/// move || … id …) }`). As a plain Rust `if let` the binding was owned and
+/// this compiled; lowered through the reactive `match` it bound a reference
+/// into the matched value, which no `'static` closure may keep
+/// ("borrowed data escapes"). A reactive `if let` binds owned values.
+#[test]
+fn regression_reactive_if_let_binding_moves_into_a_closure() {
+    let h = Harness::new();
+    let sig = h.world.enter(|| runtime_world::signal(None::<i32>));
+    let _r = h.mount(h.world.enter(|| {
+        ui! {
+            view() {
+                if let Some(n) = sig.get() { text { move || format!("next={}", n + 1) } }
+            }
+        }
+    }));
+    h.take_log();
+    h.world.enter(|| sig.set(Some(41)));
+    h.flush();
+    // A closure child creates its text node empty, then writes it.
+    let log = h.take_log();
+    assert!(log.iter().any(|l| l == "update_text n3 \"next=42\""), "{log:?}");
+}
+
+/// A scrutinee whose type isn't `Clone` (reachable through the reactive-call
+/// shape, `key(state)`) can't be bound by value; it keeps reference bindings,
+/// so making `if let` own its bindings adds no `Clone` requirement.
+#[test]
+fn reactive_if_let_on_a_non_clone_value_still_binds() {
+    #[derive(PartialEq)]
+    struct Token(i32);
+    fn token(v: Option<i32>) -> Option<Token> {
+        v.map(Token)
+    }
+    let h = Harness::new();
+    let sig = h.world.enter(|| runtime_world::signal(None::<i32>));
+    let _r = h.mount(h.world.enter(|| {
+        ui! {
+            view() {
+                if let Some(_t) = token(sig) { text { "some" } } else { text { "none" } }
+            }
+        }
+    }));
+    assert_eq!(texts(&h.take_log()), ["create n2 text \"none\""]);
+    h.world.enter(|| sig.set(Some(5)));
+    h.flush();
+    assert_eq!(texts(&h.take_log()), ["create n3 text \"some\""]);
+}

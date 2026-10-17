@@ -2835,6 +2835,46 @@ pub fn switch<S: PartialEq + 'static>(
     dyn_keyed(scrutinee, render)
 }
 
+/// How a reactive `if let` binds: `switch` hands each render a `&S`, so a
+/// plain `match` on it binds references into the keyed value, and a
+/// `'static` closure in the branch (`button(on_click = move || … id …)`)
+/// cannot keep one. `ui!` lowers `if let` as
+/// `match (&__IfLetArm(v)).__if_let_value() { … }`, and method resolution
+/// picks the binding by autoref specialization, at compile time:
+///
+/// - `S: Clone` (every `.get()` scrutinee) — [`__IfLetOwn`] is found at the
+///   by-value step and yields an owned clone, so bindings are owned, as
+///   they are in a plain Rust `if let`;
+/// - otherwise [`__IfLetBorrow`], one autoref step later, yields the `&S`,
+///   so a non-`Clone` scrutinee still compiles with reference bindings.
+///
+/// Not a `.clone()` in the expansion: that would make `Clone` a new
+/// requirement on every reactive `if let` scrutinee.
+#[doc(hidden)]
+pub struct __IfLetArm<'a, S>(pub &'a S);
+
+#[doc(hidden)]
+pub trait __IfLetOwn<S> {
+    fn __if_let_value(&self) -> S;
+}
+
+impl<S: Clone> __IfLetOwn<S> for __IfLetArm<'_, S> {
+    fn __if_let_value(&self) -> S {
+        self.0.clone()
+    }
+}
+
+#[doc(hidden)]
+pub trait __IfLetBorrow<'a, S> {
+    fn __if_let_value(&self) -> &'a S;
+}
+
+impl<'a, S> __IfLetBorrow<'a, S> for &__IfLetArm<'a, S> {
+    fn __if_let_value(&self) -> &'a S {
+        self.0
+    }
+}
+
 // ============================================================================
 // StaticCond / ReactiveCond — type-driven `if COND` dispatch for a bare
 // path/field condition (`if visible`, `if props.open`).

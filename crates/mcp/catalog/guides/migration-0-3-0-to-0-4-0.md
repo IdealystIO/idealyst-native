@@ -122,6 +122,8 @@ the old `runtime-core` test suite, which 1.0 deleted.
   reactive.
 - **`if let PAT = EXPR`** lowers as a two-arm `match` under the same gate:
   `if let Some(x) = sig.get()` is reactive; a signal-free scrutinee is static.
+  Bindings are owned (cloned per rebuild), so a closure in the branch can
+  keep `x`.
 
 ## Lazy loading: component surface + a fallible loader
 

@@ -37,7 +37,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   Some(x) = sig.get() { … }` lowered to a plain Rust `if let`: it ran
   once and froze at the first value, silently. It now lowers as `match
   EXPR { PAT => …, _ => … }` under the same gate as `match` (a
-  signal-free scrutinee stays a plain `if let`).
+  signal-free scrutinee stays a plain `if let`). Its bindings are owned,
+  as in a plain `if let` — the value is cloned per rebuild; a non-`Clone`
+  scrutinee binds by reference — so a closure in the branch can keep one
+  (`if let Some(id) = pending.get() { button(on_click = move || … id …) }`).
 
 - **The robot works on Android, and `idealyst test` runs on every platform**
   (`backend-android-mobile`, `build-android`, `run-android`, `run-ios`,
