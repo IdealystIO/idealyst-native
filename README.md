@@ -66,8 +66,8 @@ source by `cargo install`; there are no pre-built binaries yet.
 - **Rust** stable toolchain (1.78+ recommended). Install via
   [rustup](https://rustup.rs/) if you don't already have it.
 
-Per-platform tooling (Xcode for iOS, Android NDK for Android, `wasm-pack` for
-web bundling) is only needed when you actually `build` / `run` for that target.
+Per-platform tooling (Xcode for iOS, Android NDK for Android, the
+`wasm32-unknown-unknown` rustup target for web) is only needed when you actually `build` / `run` for that target.
 The CLI itself has no platform dependencies. `idealyst doctor` will tell you
 what each enabled target is missing.
 

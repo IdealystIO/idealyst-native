@@ -8,18 +8,17 @@
 //! What the preview actually does:
 //!
 //! - Mounts a tiny "Hello, from inside the simulator!" Idealyst app
-//!   into a `Graphics` surface allocated by the framework's web
+//!   into a `graphics` surface allocated by the framework's web
 //!   backend (a `<canvas>` underneath).
 //! - The `render_wgpu::Host` + `Renderer` driving the surface is
 //!   exactly the same code path that the native `host-winit` shell
 //!   uses on desktop. The skin is `IosSim` so the chrome looks
 //!   like the iPhone preview window.
 //!
-//! Input events aren't plumbed yet (the embedded preview only
-//! renders; pointer/keyboard events stop at the canvas). That's a
-//! follow-up — the `EventSink` API on the host is ready for it,
-//! the missing piece is translating browser `pointerdown` /
-//! `keydown` events through to it.
+//! Input: `host-web` forwards the canvas's `pointerdown` /
+//! `pointermove` / `pointerup` / `pointercancel` / `wheel` events
+//! through `EventSink` into the embedded tree. Keyboard events are
+//! not forwarded.
 
 use std::rc::Rc;
 
@@ -63,7 +62,7 @@ pub fn page() -> Element {
             PageHeader(
                 title = "Simulator".to_string(),
                 description = "An embedded live preview that runs an Idealyst app through the \
-                               wgpu render backend, hosted on a `Graphics` surface inside the \
+                               wgpu render backend, hosted on a `graphics` surface inside the \
                                docs page.".to_string(),
             )
 

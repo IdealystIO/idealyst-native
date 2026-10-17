@@ -1,7 +1,7 @@
 //! Backends page — built via the `docs!` macro.
 //!
-//! Map of the backends Idealyst ships: web, iOS, Android, Roku, and
-//! the runtime-server dev-mode shell client.
+//! Map of the backends Idealyst ships, plus the runtime-server
+//! dev-mode shell client.
 
 use docs_macro::docs;
 #[allow(unused_imports)]
@@ -32,20 +32,31 @@ docs! {
     },
 
     section(heading = "The shipped backends") {
-        p("Five backend families come in the box:"),
+        p("These backends come in the box:"),
         list(
-            [code("backend-web"), " — Browser (WASM + DOM); production-ready"],
-            [code("backend-ios-*"), " family (", code("-core"), ", ",
-             code("-mobile"), ", ", code("-tv"),
-             ") — iOS / iPadOS / tvOS (UIKit); production-ready"],
-            [code("backend-android-*"), " family (", code("-core"), ", ",
-             code("-mobile"), ", ", code("-tv"),
-             ") — Android phones / tablets / TV (Views); production-ready"],
+            [code("backend-web"), " — Browser (WASM + DOM)"],
+            [code("backend-ios-mobile"), " (on ", code("backend-ios-core"),
+             ") — iOS / iPadOS (UIKit)"],
+            [code("backend-android-mobile"), " (on ", code("backend-android-core"),
+             ") — Android phones / tablets (Views)"],
+            [code("backend-macos"), " — macOS (AppKit)"],
+            [code("backend-linux"), " — Linux (GTK4)"],
+            [code("backend-windows"), " — Windows (Win32)"],
             [code("backend-roku"), " — Roku devices (SceneGraph + BrightScript); experimental"],
-            [code("runtime-server-shell-native"), " — Dev-mode app-as-server client; dev only"],
+            [code("backend-ssr"), " — Server-side rendering and static generation (HTML)"],
+            [code("backend-email"), " — Email-safe HTML"],
+            [code("backend-terminal"), " — A terminal character grid"],
+            [code("backend-cpu"), " — A pixel framebuffer (software rasterizer)"],
+            [code("render-wgpu"), " — A GPU renderer that paints its own pixels"],
         ),
-        p("Each one lives in ", code("crates/backend/<name>"), " and gets \
-           pulled in by the CLI when you target the matching platform."),
+        p("Each one lives under ", code("crates/backend/"), " (the GPU renderer \
+           under ", code("crates/gpu-backend/"), ") and gets pulled in by the \
+           CLI when you target the matching platform. ", code("backend-ios-tv"),
+          " and ", code("backend-android-tv"), " exist as empty skeletons; \
+           tvOS and Android TV are not supported."),
+        p("Dev mode adds one more piece: ", code("runtime-server-shell-native"),
+          ", the thin client that replays a dev session on a device. See \
+           runtime-server below."),
     },
 
     section(heading = "Web") {
@@ -64,32 +75,32 @@ docs! {
               lazily; ", code("apply_style"), " just sets ", code("className"),
              ". Theme swaps are CSS variable writes — see ",
              link("Styles", to = "styles"), " for the full mechanism."],
-            ["The dev pipeline uses ", code("wasm-pack"), ". ",
-             code("idealyst dev --web"), " watches your source, rebuilds the \
-              WASM module, and serves it from a local HTTP server. Live \
-              updates apply via hot reload — not full page reloads."],
+            ["The CLI builds the app crate for ", code("wasm32-unknown-unknown"),
+             " with ", code("cargo build"), " and packages the module itself; \
+              the ", code("wasm-bindgen"), " CLI runs only for apps that link \
+              wgpu or their own ", code("web-sys"), ". ",
+             code("idealyst dev --web"), " watches your source and serves the \
+              app from a local HTTP server. Most saves apply in place, \
+              without a page reload."],
         ),
     },
 
     section(heading = "iOS") {
-        p(code("backend-ios"), " renders to UIKit via the ", code("objc2"),
-          " crate. The backend is split across three sub-crates:"),
+        p("The iOS backend renders to UIKit via the ", code("objc2"),
+          " crate. It is split across three sub-crates:"),
         list(
             [code("backend-ios-core"), " — the shared substrate. Style \
               application, color/flex conversion, and the ", code("NSTimer"),
              "-based render loop driver."],
-            [code("backend-ios-mobile"), " — touch input semantics for iPhone \
-              and iPad. Gesture recognizers, focus on first responder, \
-              hardware-keyboard handling."],
-            [code("backend-ios-tv"), " — Apple TV / tvOS focus-engine \
-              semantics. D-pad navigation, focus visualizers, the \
-              focus-on-press model."],
+            [code("backend-ios-mobile"), " — the iPhone / iPad backend: raw \
+              touch delivery (gestures are recognized in shared Rust), focus \
+              on first responder, hardware-keyboard handling."],
+            [code("backend-ios-tv"), " — reserved for Apple TV / tvOS \
+              focus-engine input; an empty skeleton."],
         ),
-        p("The split exists because the input model genuinely differs: \
-           touch-based UIs and focus-engine-based UIs need different \
-           gesture-recognizer plumbing and different selection chrome. They \
-           share everything below input — the same flex layout, the same \
-           style application, the same primitive vocabulary."),
+        p("The split exists because touch input and focus-engine input need \
+           different plumbing, while everything below input — layout, style \
+           application, the primitive vocabulary — is shared."),
         p("A few specifics:"),
         list(
             ["Layout is Taffy. The backend hands flex constraints to Taffy \
@@ -100,25 +111,27 @@ docs! {
               changes (rotation, dynamic island, software keyboard) drive a \
               framework signal; primitives that opt into safe-area padding \
               re-apply automatically."],
-            ["The build pipeline uses ", code("xcodebuild"), ". ",
-             code("idealyst dev --ios"), " generates a small Xcode wrapper \
-              project in a build cache, invokes ", code("cargo build"),
-             " for the static library, then ", code("xcodebuild"),
-             " to launch on a simulator."],
+            ["No Xcode project for the simulator. The CLI generates a small \
+              wrapper crate in a build cache, runs ", code("cargo build"),
+             " for the static library, links it with ", code("swiftc"),
+             ", assembles the ", code(".app"), ", and launches it with ",
+             code("simctl"), ". Device builds (", code("--device"),
+             ") generate an Xcode project so ", code("xcodebuild"),
+             " can sign them."],
         ),
     },
 
     section(heading = "Android") {
-        p(code("backend-android"), " mirrors the iOS split: a shared core, \
-           plus a mobile leaf and a TV leaf."),
+        p("The Android backend mirrors the iOS split: a shared core, plus a \
+           mobile leaf and a TV leaf."),
         list(
             [code("backend-android-core"), " — JNI helpers, the render-thread ",
              code("RenderLoopDriver"), ", and the shared View hierarchy \
               primitives."],
             [code("backend-android-mobile"), " — touch input for phones and \
               tablets."],
-            [code("backend-android-tv"), " — Leanback / D-pad focus model for \
-              Android TV."],
+            [code("backend-android-tv"), " — reserved for the Leanback / D-pad \
+              focus model on Android TV; an empty skeleton."],
         ),
         p("Notes:"),
         list(
@@ -126,9 +139,11 @@ docs! {
              " system has its own layout machinery, but the framework drives \
               layout itself and pushes computed frames into the View \
               hierarchy."],
-            ["The build pipeline uses Gradle. ", code("idealyst dev --android"),
-             " generates a Gradle wrapper around your Rust ", code("cdylib"),
-             ", then builds and installs to an emulator or attached device."],
+            ["No Gradle. The CLI generates a wrapper crate that builds your \
+              app as a ", code("cdylib"), " (", code(".so"), "), then runs the \
+              Android SDK tools directly (", code("javac"), ", ", code("d8"),
+             ", ", code("aapt2"), ", ", code("apksigner"),
+             ") and installs the APK with ", code("adb"), "."],
         ),
     },
 
@@ -136,13 +151,18 @@ docs! {
         p(code("backend-roku"), " is the experimental one. Roku devices don't \
            run Rust — the only language the device runtime supports is \
            BrightScript, plus the SceneGraph XML markup format."),
-        p("The backend works by emitting a wire stream of commands that a \
-           small BrightScript thin client running on the device replays \
-           against SceneGraph nodes. Every primitive create / update / event \
-           goes over the network."),
+        p("The backend is a command emitter: every capability call becomes a \
+           JSON ", code("RokuCommand"), " in a queue. ",
+          code("idealyst build --roku"), " runs your ", code("app()"),
+          " once in a generated wrapper binary, snapshots the command stream, \
+           and lays out a side-loadable package in ", code("dist/roku/"),
+          " (plus ", code("dist/roku.zip"), "): the snapshot, a small \
+           BrightScript runtime that replays it against SceneGraph nodes, and \
+           your ", code("#[method]"), " functions transpiled to BrightScript."),
         p("Implications:"),
         list(
-            ["Performance is bounded by the network round-trip. This backend \
+            ["Button events are not yet sent back from the device, and there \
+              is no ", code("idealyst dev"), " loop for Roku. This backend \
               isn't viable for shipping consumer apps. It's primarily a \
               demonstration that the framework's seams can target a platform \
               with no native Rust runtime."],
@@ -152,7 +172,7 @@ docs! {
              link("Reactivity", to = "reactivity"), ") carry a structured \
               form specifically for this case — generator backends can \
               serialize the reactive intent without serializing a closure."],
-            ["Some primitives have no Roku analog. GPU ", code("Graphics"),
+            ["Some primitives have no Roku analog. GPU ", code("graphics"),
              " are not supported; certain layout features are approximated."],
         ),
         p("Read ", code("backend-roku"), "'s source comments for the exact \
@@ -198,29 +218,29 @@ docs! {
            build. There's no code change to switch."),
         p("For one-off runs:"),
         code(bash, r##"
-            idealyst dev --web       # only the web backend
-            idealyst dev --ios       # only the iOS backend
-            idealyst dev --aas       # runtime-server dev-host with whatever clients connect
+            idealyst dev --web           # only the web backend
+            idealyst dev --ios           # only the iOS backend
+            idealyst dev --web --local   # build and run the app in the browser itself
         "##),
+        p(code("idealyst dev"), " runs in runtime-server mode by default: one \
+           sidecar process runs your app and each platform connects as a thin \
+           client. ", code("--local"), " builds and runs the app on each \
+           platform instead."),
     },
 
     section(heading = "Writing your own backend") {
         p("The shipped backends cover the major platforms, but there's no \
-           reason to stop there. The structural contract is six methods, and \
-           you add capability traits only for the primitives you support — so \
-           a working backend lives in one Rust crate that depends on the \
-           runtime and whatever native bindings it needs."),
+           reason to stop there. ", code("Host"), " is a handful of tree \
+           operations, every capability-trait method but a few has a working \
+           default, and a working backend lives in one Rust crate that depends \
+           on ", code("runtime-scene"), ", ", code("runtime-vocabulary"), ", ",
+          code("runtime-shared"), ", and whatever native bindings it needs."),
         p("Things people could plug in:"),
         list(
-            ["A terminal renderer for command-line apps"],
-            ["A custom GPU renderer with ", code("wgpu"),
-             " (Idealyst already exposes the ", code("Graphics"),
-             " primitive — a backend can take it further and render the \
-              whole tree on GPU)"],
             ["An embedded display driver (e-paper, OLED)"],
-            ["A server-side renderer that emits HTML for SSR"],
-            ["A backend for a platform the framework doesn't ship yet \
-              (macOS, Windows, Linux desktop via winit, KaiOS, anything)"],
+            ["A game-engine or custom-GPU renderer"],
+            ["A backend for a platform the framework doesn't ship yet (KaiOS, \
+              a console, anything)"],
         ),
         p("The dedicated ",
           link("Writing your own backend", to = "writing-a-backend"),

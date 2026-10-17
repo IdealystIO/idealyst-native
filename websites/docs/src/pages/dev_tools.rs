@@ -33,27 +33,27 @@ docs! {
             my-app/
               Cargo.toml          # crate manifest + Idealyst metadata
               src/
+                main.rs           # `idealyst::entry!(my_app);` — the entry point for every platform
                 lib.rs            # exports `pub fn app() -> Element`
         "##),
-        p("There's no ", code("ios/"), ", no ", code("android/"), ", no ",
-          code("web/"), ". The per-platform host crates that turn ", code("app()"),
-          " into a runnable platform artifact are generated on demand by the \
-           CLI into a build cache:"),
+        p("There's no ", code("ios/"), " and no ", code("android/"),
+          ". The web build compiles your crate itself, through ",
+          code("src/main.rs"), ". The iOS, Android, and runtime-server builds \
+           use wrapper crates the CLI generates on demand into a build cache:"),
         code(text, r##"
             target/
               idealyst/
-                web/              # wasm bundle + index.html
-                ios/              # Xcode project + static lib
-                android/          # Gradle project + cdylib
-                roku/             # Channel package layout
-                aas/              # Dev-host binary
+                <project>/
+                  web/                   # staging for the wasm bundle (shipped from dist/web)
+                  ios/wrapper/           # staticlib wrapper
+                  android/wrapper/       # cdylib wrapper
+                  runtime-server/app/    # the dev sidecar that runs your app
+                  runtime-server/host/   # the dev host
         "##),
-        p("Each platform's directory holds whatever that platform expects. \
-           Each one depends on your app crate as a library, calls its ",
-          code("app()"), " function from the right entry point (a WASM ",
-          code("start()"), ", a JNI ", code("attach()"), ", an ",
-          code("@UIApplicationMain"), ", a Roku manifest), and hands it to \
-           the matching backend."),
+        p("Each wrapper depends on your app crate as a library, supplies the \
+           platform entry point (a C-callable ", code("ios_main"),
+          " on iOS, the JNI entry on Android), and hands ", code("app()"),
+          " to the matching backend."),
         p("You don't author these files. You don't even see them unless you \
            go looking. The CLI regenerates them as needed; their contents \
            change with the framework, not with your app."),
@@ -63,11 +63,11 @@ docs! {
         p("The build cache approach trades visible boilerplate for one moving \
            part: a project's \"platform support\" is a list of strings in ",
           code("Cargo.toml"), ", not a folder structure you have to maintain."),
-        code(rust, r##"
+        code(toml, r##"
             [package.metadata.idealyst.app]
-            name = "my-app"
-            bundle_id = "com.example.my-app"
-            targets = ["web", "ios", "android", "roku"]
+            name = "My App"
+            bundle_id = "com.example.my_app"
+            targets = ["web", "ios", "android"]
         "##),
         p("Adding iOS to a project that didn't have it is editing this list \
            and running ", code("idealyst dev --ios"), ". Removing it is \
@@ -79,11 +79,11 @@ docs! {
     section(heading = "Per-platform tools") {
         p("Each backend has its own native build flow. The CLI invokes them:"),
         list(
-            ["Web — ", code("wasm-pack build --target web"), ", then serves the output from a local HTTP server."],
-            ["iOS — ", code("cargo build"), " for the static lib, then ", code("xcodebuild"), " on the generated Xcode project, then a simulator launch."],
-            ["Android — ", code("cargo build"), " for the ", code("cdylib"), ", then ", code("gradle assembleDebug"), ", then ", code("adb install"), " to an emulator or device."],
-            ["Roku — Rust build for the host process, BrightScript packaging for the device side, push over the developer-mode HTTP interface."],
-            ["runtime-server — ", code("cargo build"), " for the dev-host binary, then run."],
+            ["Web — ", code("cargo build --target wasm32-unknown-unknown"), " on your crate, the CLI's own glue pass (the ", code("wasm-bindgen"), " CLI runs only for apps that link wgpu or ", code("web-sys"), "), ", code("wasm-split"), ", and ", code("wasm-opt"), " for release builds. Dev serves the result from a local HTTP server; ", code("idealyst build --web"), " writes it to ", code("dist/web/"), "."],
+            ["iOS — ", code("cargo build"), " for the static lib, ", code("swiftc"), " to link the app, then ", code("simctl"), " to install and launch on a simulator. Device builds generate an Xcode project so ", code("xcodebuild"), " can sign them."],
+            ["Android — ", code("cargo build"), " for the ", code("cdylib"), ", then the SDK tools directly (", code("javac"), ", ", code("d8"), ", ", code("aapt2"), ", ", code("apksigner"), ") and ", code("adb install"), " to an emulator or device. No Gradle."],
+            ["Roku — ", code("idealyst build --roku"), " lays out a side-loadable package in ", code("dist/roku/"), " from a snapshot of your app's commands plus a BrightScript runtime. There is no dev loop: ", code("idealyst dev"), " refuses a Roku target."],
+            ["runtime-server — ", code("cargo build"), " for the sidecar wrapper (your app plus the recording backend), then run it."],
         ),
         p("You can run any of these by hand if you need to debug the \
            pipeline. The CLI is orchestration; the underlying tools are \
@@ -91,59 +91,52 @@ docs! {
     },
 
     section(heading = "Exporting a generated project") {
-        p(code("idealyst scaffold <platform>"), " (planned — see Getting \
-           Started for current status) materializes the generated host crate \
-           for a platform out of the build cache and into your repo. Once \
-           exported, the CLI builds from your hand-editable source instead of \
-           regenerating. The escape hatch when you need to do something the \
-           default scaffold doesn't."),
+        p(code("idealyst scaffold <platform>"), " is reserved for materializing \
+           a platform's generated wrapper out of the build cache and into your \
+           repo, so you could hand-edit it. It is not implemented: running it \
+           prints a \"not yet implemented\" notice."),
     },
 
     section(heading = "Hot reload") {
         p("When you save a file with ", code("idealyst dev"), " running, the \
-           CLI rebuilds the affected crate, hands the new code to the running \
-           app, and the UI updates in place. State doesn't reset. Scroll \
-           position doesn't reset. Navigation state doesn't reset. The user's \
-           typed text in a ", code("TextInput"), " is still there."),
-        p("This works because of two pieces working together: a jump-table \
-           function dispatcher and a primitive-tree diff."),
+           CLI sorts the save into one of three tiers before doing any work:"),
+        list(
+            ["Overlay patch — only literals inside ", code("ui!"), " bodies changed. The running app edits its own mounted tree. No compiler; milliseconds."],
+            ["Hot patch — only function bodies changed. The edited crate is rebuilt into a patch, a jump table rebinds the patched functions, and the mounted tree re-runs in place with signal values carried over. Seconds."],
+            ["Rebuild — anything that changes a file's shape (a signature, a struct, a new item). In runtime-server mode the sidecar rebuilds and restarts, and clients keep their connections and receive a fresh snapshot. With ", code("--local"), " on the web the bundle rebuilds and the page reloads."],
+        ),
+        p("The hot-patch tier rests on two pieces: a jump-table function \
+           dispatcher, and carrying state across a re-run of the tree."),
     },
 
     section(heading = "The function dispatcher") {
-        p(code("#[component]"), " splits every component function into two \
-           parts at compile time:"),
+        p("With hot reload on, ", code("#[component]"), " splits every \
+           component function into two parts at compile time:"),
         list(
-            ["The outer function keeps the public name (", code("counter"), "). Its body is ", code("dev_hot::call(__counter_hot_impl, args)"), " — a dispatch through a runtime jump table."],
-            ["The inner function (", code("__counter_hot_impl"), ") holds the real body."],
+            ["The outer function keeps the public name and signature (", code("Counter"), "). Its body is ", code("dev_hot::call(__Counter_hot_impl, (props,))"), " — a dispatch through a runtime jump table."],
+            ["The inner function (", code("__Counter_hot_impl"), ") holds the real body."],
         ),
-        p("When you change a component's source and the rebuild produces a \
-           new ", code("__counter_hot_impl"), ", the jump table's entry is \
-           updated to point at the new function. The next time the component \
-           runs, it runs the new code. The outer function — and everything \
-           that holds a function pointer to it — never has to be updated."),
-        p("This is the same mechanism the subsecond crate from the Dioxus \
-           project uses. Idealyst's ", code("dev-hot"), " sits on top, \
-           integrating the dispatch with the reactive substrate."),
+        p("When a patch carries a new ", code("__Counter_hot_impl"), ", the \
+           jump table's entry is updated to point at it. The next time the \
+           component runs, it runs the new code. The outer function — and \
+           everything that calls it — never has to be updated."),
+        p(code("dev-hot"), " is a thin layer over the subsecond crate from the \
+           Dioxus project. With the feature off, ", code("dev_hot::call"),
+          " is a direct call and the split costs nothing."),
     },
 
-    section(heading = "The primitive-tree diff") {
-        p("The dispatcher takes care of \"the new function runs next time.\" \
-           But \"next time\" might not be soon, and even when it does run, it \
-           might return a primitive tree that's structurally identical to the \
-           old one — just with different values. The framework needs to \
-           figure out what changed and what to update on the backend."),
-        p("That's ", code("dev-hot"), "'s other job. When a component \
-           re-renders after a hot patch, the framework:"),
-        list(
-            ["Hashes each primitive in the new tree by its identity (position in the tree + relevant content). Identical identities map to the same backend node."],
-            ["Diffs the trees to find which nodes changed, which moved, which were added or removed."],
-            ["Emits the minimal sequence of backend operations — ", code("update_text"), ", ", code("apply_style"), ", ", code("insert"), ", ", code("clear_children"), " — needed to morph the live tree into the new one."],
-        ),
+    section(heading = "What survives a patch") {
+        p("A patch rebinds functions; it does not re-render. So after a patch \
+           the framework re-runs the mounted tree: it moves each signal's value \
+           out of the old tree, drops the tree, and builds it again, handing \
+           each ", code("signal()"), " call its predecessor's value. Backend \
+           nodes are rebuilt along with the tree."),
         p("What this means in practice:"),
         list(
-            ["Signal values survive. Signals live in the world's arena, not in the primitive tree. A hot patch doesn't touch them."],
-            ["Component state survives if the component's place in the tree is stable. Move a component or change its props structurally and you may lose its state."],
-            ["Backend nodes survive when their identity is stable. Editing the contents of a ", code("Text"), " keeps the same DOM/UIView/Android-View node — the backend just gets ", code("update_text(node, new_string)"), "."],
+            ["Signals created while the tree mounts survive. They are matched by position: the component path, the order of ", code("signal()"), " calls in the body, and the value's type."],
+            ["A body that adds or reorders a ", code("signal()"), " call gets fresh state from that call on, rather than another variable's value."],
+            ["Signals created later — in an event handler, or in an ", code("if"), " / keyed ", code("for"), " / navigator screen that mounts later — start fresh."],
+            ["On the web, patches reach only code called through a ", code("#[component]"), ". Keep ", code("app()"), " thin and render a root component from it."],
         ),
     },
 
@@ -166,27 +159,17 @@ docs! {
            it for anything fancy: it changes what \"running the app\" means."),
     },
 
-    section(heading = "The default — local-render mode") {
-        p(code("idealyst dev --web"), " (or ", code("--ios"), ", or ",
-          code("--android"), ") builds the app for that platform, runs it \
-           natively, and hot-reloads source changes in place. Everything \
-           stays in one process per platform. If you want to run the same app \
-           on web and iOS simultaneously, two builds, two processes."),
-        p("This is fine and fast. It's what most development looks like."),
-    },
-
-    section(heading = "runtime-server mode") {
-        p(code("idealyst dev --aas"), " is different. The CLI builds one \
-           dev-host binary that runs the user's reactive runtime. It starts a \
-           WebSocket server. It advertises itself over the local network \
-           using Bonjour (Apple's name for mDNS / DNS-SD — the same \
-           zero-config service discovery iTunes, AirPlay, and \"Shared\" \
-           devices in Finder all use). Clients on the same network find the \
-           dev-host without you typing a URL."),
+    section(heading = "The default — runtime-server mode") {
+        p(code("idealyst dev"), " (with ", code("--web"), ", ", code("--ios"),
+          ", ", code("--android"), ", or any mix) builds one sidecar binary \
+           that runs your app's reactive runtime, and starts a WebSocket \
+           server. The CLI points every client it launches at that server — \
+           native clients get the address baked into their build — so there \
+           is no network discovery and no URL to type."),
         p("Then clients connect:"),
         code(text, r##"
             ┌─────────────────────────────┐
-            │   runtime-server dev-host (your Mac)   │
+            │  sidecar (your machine)     │
             │   - app()'s reactive state  │
             │   - signals, effects, scopes│
             │   - the primitive tree      │
@@ -200,27 +183,37 @@ docs! {
               client)     client)    (thin client)
         "##),
         p("Each client is a thin client backend. It receives wire commands \
-           from the dev-host and replays them against its real backend (DOM \
+           from the sidecar and replays them against its real backend (DOM \
            on web, UIKit on iOS, Views on Android). It doesn't run any of \
-           your app code — it doesn't need to. The dev-host is the single \
+           your app code — it doesn't need to. The sidecar is the single \
            source of truth for what the app looks like."),
         p("When you click a button on the iOS client, the click event is \
-           forwarded back to the dev-host over the wire. The dev-host's \
-           button handler fires. Signals update. Effects re-run. The new wire \
+           forwarded back to the sidecar over the wire. The sidecar's button \
+           handler fires. Signals update. Effects re-run. The new wire \
            commands ship to every connected client. All of them update \
            simultaneously."),
-        p("When you edit ", code("src/lib.rs"), " and save, only the dev-host \
-           binary rebuilds. The clients are unaware that a build happened — \
-           they just start receiving different wire commands. Navigation \
-           state, scroll position, and signal values that were on the \
-           dev-host's side survive across the rebuild because they live in \
-           the dev-host's arena, not in any client."),
+        p("When you save, the clients never rebuild. A literal or body-only \
+           edit is applied inside the running sidecar, so signal values on \
+           its side survive. A shape change rebuilds and restarts the \
+           sidecar; clients keep their connections and receive a fresh \
+           snapshot."),
+    },
+
+    section(heading = "Local-render mode") {
+        p(code("idealyst dev --local"), " (with ", code("--web"), ", ",
+          code("--ios"), ", …) builds the app for each platform and runs it \
+           there, with its own watch loop. On the web the page runs the app as \
+           wasm and saves land in the same three tiers; native platforms \
+           rebuild and relaunch on every save."),
+        p("Use it to run the real wasm build, when the framework workspace \
+           isn't reachable for the sidecar build, or to bypass the wire \
+           protocol."),
     },
 
     section(heading = "What runtime-server is good for") {
         list(
             ["Cross-platform comparison. Run web, iOS, and Android clients side by side, navigate on one, watch the others follow. Useful for spotting platform-specific rendering differences in real time."],
-            ["State that survives source edits. Navigation, scroll positions, complex form state — all of it lives in the dev-host's world and persists across rebuilds. Useful when you're 6 screens deep into testing and don't want to re-navigate after every change."],
+            ["State that survives source edits. The app's state lives in the sidecar, so overlay and hot patches keep it (see What survives a patch for the limits). Useful when you're 6 screens deep into testing and don't want to re-navigate after every change."],
             ["Driving demos. One canonical instance of the app, multiple windows or devices showing it."],
             ["Debugging the wire protocol or backends. Because the wire is the seam, you can log it, replay it, modify it in flight."],
         ),
@@ -228,7 +221,7 @@ docs! {
 
     section(heading = "What runtime-server isn't good for") {
         list(
-            ["GPU work. ", code("Graphics"), " primitives don't ship over the wire. They emit a placeholder when the dev-host is in runtime-server mode. If you're building anything with a ", code("wgpu"), " canvas, run in local-render mode."],
+            ["GPU work. ", code("graphics"), " primitives don't ship over the wire. They emit a placeholder in runtime-server mode. If you're building anything with a ", code("wgpu"), " canvas, run with ", code("--local"), "."],
             ["Performance testing. Every interaction pays a WebSocket round-trip. runtime-server is for development, not perf measurement."],
             ["Production. runtime-server is a development tool. Shipping an app-as-server architecture has security implications that the current implementation doesn't address."],
         ),
@@ -236,14 +229,14 @@ docs! {
 
     section(heading = "A few specifics") {
         list(
-            ["Discovery via Bonjour. Clients browse for ", code("_idealyst-dev._tcp."), " service records on the local network. Different projects on the same network get different bundle IDs in their records, so a client running your ", code("com.example.my-app"), " build picks the host advertising the same bundle id — not your coworker's ", code("com.example.other-app"), " host on the same Wi-Fi. Cross-platform: works on macOS (built in), iOS (built in), Android (via NSD), and most modern Linux distros (via Avahi). Windows ships Bonjour with iTunes; without it, you'd need to install the Apple Bonjour print services or point-and-connect via IP instead."],
-            ["Connection-time snapshot. When a fresh client connects mid-session, the dev-host sends it a ", code("SceneModel"), " snapshot — the current state of the tree — rather than replaying the full command log. The client comes in synced."],
-            ["Reverse channel for callbacks. Click handlers, text changes, and other input events go from client to dev-host on the same WebSocket. The dev-host resolves them to in-process closures and fires them."],
+            ["Fixed endpoint, no discovery. The CLI bakes the sidecar's address into native client builds (", code("IDEALYST_DEV_ENDPOINT=ws://host:port"), "), and the client connects straight to it. There is no Bonjour / mDNS browsing."],
+            ["Connection-time snapshot. When a fresh client connects mid-session, the sidecar sends it a ", code("SceneModel"), " snapshot — the current state of the tree — rather than replaying the full command log. The client comes in synced."],
+            ["Reverse channel for callbacks. Click handlers, text changes, and other input events go from client to sidecar on the same WebSocket. The sidecar resolves them to in-process closures and fires them."],
         ),
         p("The Architecture section of the Overview points at the supporting \
            crates: ", code("wire"), " for the protocol, ",
           code("dev-client"), " for the app-side replayer, ",
-          code("runtime-server-shell-native"), " for the desktop client side."),
+          code("runtime-server-shell-native"), " for the native client side."),
     },
 
     section(heading = "The MCP server — Claude Desktop and Robot") {
@@ -332,7 +325,7 @@ docs! {
         p("To recap how the pieces fit:"),
         list(
             ["The CLI turns your one-crate project into platform builds. Per-platform wrappers live in a build cache, generated on demand."],
-            ["Hot reload patches a running app without restarting it. Component bodies update through a function-pointer dispatcher; primitive trees update through identity-keyed diffs."],
+            ["Hot reload patches a running app without restarting it. Component bodies update through a function-pointer dispatcher; the mounted tree then re-runs with signal values carried over."],
             ["runtime-server is a dev mode where the framework runs once on your machine and thin clients connect over WebSocket. State lives in one place; every client sees it."],
             ["Robot is the introspection layer that lets external processes drive a running app."],
             ["The MCP proxy is the bridge from MCP-speaking tools (Claude Desktop, etc.) to Robot."],
@@ -349,7 +342,7 @@ docs! {
             ["Robot — the tools the bridge exposes, in detail."],
             ["Backends — what the runtime-server thin clients are doing on each platform."],
             ["Architecture in more depth (on the Overview) — where ", code("dev-hot"), ", ", code("wire"), ", and ", code("dev-client"), " sit."],
-            ["Hot reload internals — identity hashing, diff strategy, what survives a patch in detail."],
+            ["Hot reload internals — the patch pipeline, how state is carried, what survives a patch in detail."],
             ["The wire protocol — the ", code("Command"), " enum and id namespaces, for anyone building their own wire consumer."],
         ),
     },

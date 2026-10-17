@@ -22,28 +22,29 @@ Your repo looks like this:
 my-app/
   Cargo.toml          # crate manifest + Idealyst metadata
   src/
+    main.rs           # `idealyst::entry!(my_app);` — the entry point for every platform
     lib.rs            # exports `pub fn app() -> Element`
 ```
 
-There's no `ios/`, no `android/`, no `web/`. The per-platform host
-crates that turn `app()` into a runnable platform artifact are
-**generated on demand by the CLI** into a build cache:
+There's no `ios/` and no `android/`. The web build compiles your
+crate itself, through `src/main.rs`. The iOS, Android, and
+runtime-server builds use wrapper crates the CLI **generates on
+demand** into a build cache:
 
 ```
 target/
   idealyst/
-    web/              # pkg/ (the generated JS + wasm) + index.html
-    ios/              # Xcode project + static lib
-    android/          # Gradle project + cdylib
-    roku/             # Channel package layout
-    aas/              # Dev-host binary
+    <project>/
+      web/                   # staging for the wasm bundle (shipped from dist/web)
+      ios/wrapper/           # staticlib wrapper
+      android/wrapper/       # cdylib wrapper
+      runtime-server/app/    # the dev sidecar that runs your app
+      runtime-server/host/   # the dev host
 ```
 
-Each platform's directory holds whatever that platform expects.
-Each one depends on your app crate as a library, calls its
-`app()` function from the right entry point (a WASM `start()`, a
-JNI `attach()`, an `@UIApplicationMain`, a Roku manifest), and
-hands it to the matching backend.
+Each wrapper depends on your app crate as a library, supplies the
+platform entry point (a C-callable `ios_main` on iOS, the JNI entry
+on Android), and hands `app()` to the matching backend.
 
 You don't author these files. You don't even *see* them unless
 you go looking. The CLI regenerates them as needed; their
@@ -57,9 +58,9 @@ in `Cargo.toml`, not a folder structure you have to maintain.
 
 ```toml
 [package.metadata.idealyst.app]
-name = "my-app"
-bundle_id = "com.example.my-app"
-targets = ["web", "ios", "android", "roku"]
+name = "My App"
+bundle_id = "com.example.my_app"
+targets = ["web", "ios", "android"]
 ```
 
 Adding iOS to a project that didn't have it is editing this list
@@ -72,16 +73,23 @@ framework evolves.
 
 Each backend has its own native build flow. The CLI invokes them:
 
-- **Web** — `wasm-pack build --target web`, then serves the
-  output from a local HTTP server.
-- **iOS** — `cargo build` for the static lib, then `xcodebuild`
-  on the generated Xcode project, then a simulator launch.
-- **Android** — `cargo build` for the `cdylib`, then `gradle
-  assembleDebug`, then `adb install` to an emulator or device.
-- **Roku** — Rust build for the host process, BrightScript
-  packaging for the device side, push over the developer-mode
-  HTTP interface.
-- **runtime-server** — `cargo build` for the dev-host binary, then run.
+- **Web** — `cargo build --target wasm32-unknown-unknown` on your
+  crate, the CLI's own glue pass (the `wasm-bindgen` CLI runs only
+  for apps that link wgpu or `web-sys`), `wasm-split`, and
+  `wasm-opt` for release builds. Dev serves the result from a local
+  HTTP server; `idealyst build --web` writes it to `dist/web/`.
+- **iOS** — `cargo build` for the static lib, `swiftc` to link the
+  app, then `simctl` to install and launch on a simulator. Device
+  builds generate an Xcode project so `xcodebuild` can sign them.
+- **Android** — `cargo build` for the `cdylib`, then the SDK tools
+  directly (`javac`, `d8`, `aapt2`, `apksigner`) and `adb install`
+  to an emulator or device. No Gradle.
+- **Roku** — `idealyst build --roku` lays out a side-loadable
+  package in `dist/roku/` from a snapshot of your app's commands
+  plus a BrightScript runtime. There is no dev loop: `idealyst dev`
+  refuses a Roku target.
+- **runtime-server** — `cargo build` for the sidecar wrapper (your
+  app plus the recording backend), then run it.
 
 You can run any of these by hand if you need to debug the
 pipeline. The CLI is orchestration; the underlying tools are
@@ -89,77 +97,72 @@ unchanged.
 
 ### Exporting a generated project
 
-`idealyst scaffold <platform>` (planned — see [Getting
-Started](#) for current status) materializes the generated host
-crate for a platform out of the build cache and into your repo.
-Once exported, the CLI builds *from* your hand-editable source
-instead of regenerating. The escape hatch when you need to do
-something the default scaffold doesn't.
+`idealyst scaffold <platform>` is reserved for materializing a
+platform's generated wrapper out of the build cache and into your
+repo, so you could hand-edit it. It is not implemented: running it
+prints a "not yet implemented" notice.
 
 ## Hot reload
 
-When you save a file with `idealyst dev` running, the CLI rebuilds
-the affected crate, hands the new code to the running app, and
-the UI updates in place. State doesn't reset. Scroll position
-doesn't reset. Navigation state doesn't reset. The user's typed
-text in a `TextInput` is still there.
+When you save a file with `idealyst dev` running, the CLI sorts the
+save into one of three tiers before doing any work:
 
-This works because of two pieces working together: a jump-table
-function dispatcher and a primitive-tree diff.
+- **Overlay patch** — only literals inside `ui!` bodies changed. The
+  running app edits its own mounted tree. No compiler; milliseconds.
+- **Hot patch** — only function bodies changed. The edited crate is
+  rebuilt into a patch, a jump table rebinds the patched functions,
+  and the mounted tree re-runs in place with signal values carried
+  over. Seconds.
+- **Rebuild** — anything that changes a file's shape (a signature, a
+  struct, a new item). In runtime-server mode the sidecar rebuilds
+  and restarts, and clients keep their connections and receive a
+  fresh snapshot. With `--local` on the web the bundle rebuilds and
+  the page reloads.
+
+The hot-patch tier rests on two pieces: a jump-table function
+dispatcher, and carrying state across a re-run of the tree.
 
 ### The function dispatcher
 
-`#[component]` splits every component function into two parts at
-compile time:
+With hot reload on, `#[component]` splits every component function
+into two parts at compile time:
 
-- The **outer function** keeps the public name (`counter`). Its
-  body is `dev_hot::call(__counter_hot_impl, args)` — a
-  dispatch through a runtime jump table.
-- The **inner function** (`__counter_hot_impl`) holds the real
+- The **outer function** keeps the public name and signature
+  (`Counter`). Its body is `dev_hot::call(__Counter_hot_impl,
+  (props,))` — a dispatch through a runtime jump table.
+- The **inner function** (`__Counter_hot_impl`) holds the real
   body.
 
-When you change a component's source and the rebuild produces a
-new `__counter_hot_impl`, the jump table's entry is updated to
-point at the new function. The next time the component runs, it
-runs the new code. The outer function — and everything that
-holds a function pointer to it — never has to be updated.
+When a patch carries a new `__Counter_hot_impl`, the jump table's
+entry is updated to point at it. The next time the component runs,
+it runs the new code. The outer function — and everything that
+calls it — never has to be updated.
 
-This is the same mechanism the [subsecond](https://github.com/DioxusLabs/dioxus)
-crate from the Dioxus project uses. Idealyst's `dev-hot`
-sits on top, integrating the dispatch with the reactive
-substrate.
+`dev-hot` is a thin layer over the
+[subsecond](https://github.com/DioxusLabs/dioxus) crate from the
+Dioxus project. With the feature off, `dev_hot::call` is a direct
+call and the split costs nothing.
 
-### The primitive-tree diff
+### What survives a patch
 
-The dispatcher takes care of "the new function runs next time."
-But "next time" might not be soon, and even when it does run, it
-might return a primitive tree that's structurally identical to
-the old one — just with different values. The framework needs to
-figure out what changed and what to update on the backend.
-
-That's `dev-hot`'s other job. When a component re-renders
-after a hot patch, the framework:
-
-1. **Hashes each primitive in the new tree** by its identity
-   (position in the tree + relevant content). Identical
-   identities map to the same backend node.
-2. **Diffs the trees** to find which nodes changed, which moved,
-   which were added or removed.
-3. **Emits the minimal sequence of backend operations** —
-   `update_text`, `apply_style`, `insert`, `clear_children` —
-   needed to morph the live tree into the new one.
+A patch rebinds functions; it does not re-render. So after a patch
+the framework re-runs the mounted tree: it moves each signal's value
+out of the old tree, drops the tree, and builds it again, handing
+each `signal()` call its predecessor's value. Backend nodes are
+rebuilt along with the tree.
 
 What this means in practice:
 
-- **Signal values survive.** Signals live in the reactive arena,
-  not in the primitive tree. A hot patch doesn't touch them.
-- **Component state survives** if the component's place in the
-  tree is stable. Move a component or change its props
-  structurally and you may lose its state.
-- **Backend nodes survive** when their identity is stable.
-  Editing the contents of a `Text` keeps the same DOM/UIView/
-  Android-View node — the backend just gets `update_text(node,
-  new_string)`.
+- **Signals created while the tree mounts survive.** They are
+  matched by position: the component path, the order of `signal()`
+  calls in the body, and the value's type.
+- **A body that adds or reorders a `signal()` call** gets fresh
+  state from that call on, rather than another variable's value.
+- **Signals created later** — in an event handler, or in an `if` /
+  keyed `for` / navigator screen that mounts later — start fresh.
+- **On the web, patches reach only code called through a
+  `#[component]`.** Keep `app()` thin and render a root component
+  from it.
 
 ### What forces a full reload
 
@@ -183,31 +186,20 @@ and the change is structural enough that I'm starting over."
 This is the part that's worth understanding even if you never use
 it for anything fancy: it changes what "running the app" means.
 
-### The default — local-render mode
+### The default — runtime-server mode
 
-`idealyst dev --web` (or `--ios`, or `--android`) builds the app
-for that platform, runs it natively, and hot-reloads source
-changes in place. Everything stays in one process per platform.
-If you want to run the same app on web and iOS simultaneously,
-two builds, two processes.
-
-This is fine and fast. It's what most development looks like.
-
-### runtime-server mode
-
-`idealyst dev --aas` is different. The CLI builds **one
-dev-host binary** that runs the user's reactive runtime. It
-starts a WebSocket server. It advertises itself over the local
-network using **Bonjour** (Apple's name for mDNS / DNS-SD —
-the same zero-config service discovery iTunes, AirPlay, and
-"Shared" devices in Finder all use). Clients on the same network
-find the dev-host without you typing a URL.
+`idealyst dev` (with `--web`, `--ios`, `--android`, or any mix)
+builds **one sidecar binary** that runs your app's reactive
+runtime, and starts a WebSocket server. The CLI points every client
+it launches at that server — native clients get the address baked
+into their build — so there is no network discovery and no URL to
+type.
 
 Then clients connect:
 
 ```
 ┌─────────────────────────────┐
-│   runtime-server dev-host (your Mac)   │
+│  sidecar (your machine)     │
 │   - app()'s reactive state  │
 │   - signals, effects, scopes│
 │   - the primitive tree      │
@@ -222,23 +214,32 @@ Then clients connect:
 ```
 
 Each client is a **thin client backend**. It receives wire
-commands from the dev-host and replays them against its real
+commands from the sidecar and replays them against its real
 backend (DOM on web, UIKit on iOS, Views on Android). It doesn't
-run any of your app code — it doesn't need to. The dev-host is
-the single source of truth for what the app looks like.
+run any of your app code — it doesn't need to. The sidecar is the
+single source of truth for what the app looks like.
 
 When you click a button on the iOS client, the click event is
-forwarded back to the dev-host over the wire. The dev-host's
-button handler fires. Signals update. Effects re-run. The new
-wire commands ship to **every connected client**. All of them
-update simultaneously.
+forwarded back to the sidecar over the wire. The sidecar's button
+handler fires. Signals update. Effects re-run. The new wire
+commands ship to **every connected client**. All of them update
+simultaneously.
 
-When you edit `src/lib.rs` and save, only the dev-host binary
-rebuilds. The clients are unaware that a build happened — they
-just start receiving different wire commands. Navigation state,
-scroll position, and signal values that were on the dev-host's
-side survive across the rebuild because they live in the
-dev-host's arena, not in any client.
+When you save, the clients never rebuild. A literal or body-only
+edit is applied inside the running sidecar, so signal values on its
+side survive. A shape change rebuilds and restarts the sidecar;
+clients keep their connections and receive a fresh snapshot.
+
+### Local-render mode
+
+`idealyst dev --local` (with `--web`, `--ios`, …) builds the app for
+each platform and runs it there, with its own watch loop. On the
+web the page runs the app as wasm and saves land in the same three
+tiers; native platforms rebuild and relaunch on every save.
+
+Use it to run the real wasm build, when the framework workspace
+isn't reachable for the sidecar build, or to bypass the wire
+protocol.
 
 ### What runtime-server is good for
 
@@ -246,11 +247,11 @@ dev-host's arena, not in any client.
   clients side by side, navigate on one, watch the others
   follow. Useful for spotting platform-specific rendering
   differences in real time.
-- **State that survives source edits.** Navigation, scroll
-  positions, complex form state — all of it lives in the
-  dev-host's reactive arena and persists across rebuilds. Useful
-  when you're 6 screens deep into testing and don't want to
-  re-navigate after every change.
+- **State that survives source edits.** The app's state lives in
+  the sidecar, so overlay and hot patches keep it (see What
+  survives a patch for the limits). Useful when you're 6 screens
+  deep into testing and don't want to re-navigate after every
+  change.
 - **Driving demos.** One canonical instance of the app, multiple
   windows or devices showing it.
 - **Debugging the wire protocol or backends.** Because the wire
@@ -258,10 +259,9 @@ dev-host's arena, not in any client.
 
 ### What runtime-server isn't good for
 
-- **GPU work.** `Graphics` primitives don't ship over the wire.
-  They emit a placeholder when the dev-host is in runtime-server mode. If
-  you're building anything with a `wgpu` canvas, run in
-  local-render mode.
+- **GPU work.** `graphics` primitives don't ship over the wire.
+  They emit a placeholder in runtime-server mode. If you're
+  building anything with a `wgpu` canvas, run with `--local`.
 - **Performance testing.** Every interaction pays a WebSocket
   round-trip. runtime-server is for development, not perf measurement.
 - **Production.** runtime-server is a development tool. Shipping an
@@ -270,30 +270,23 @@ dev-host's arena, not in any client.
 
 ### A few specifics
 
-- **Discovery via Bonjour.** Clients browse for
-  `_idealyst-dev._tcp.` service records on the local network.
-  Different projects on the same network get different bundle
-  IDs in their records, so a client running your `com.example.
-  my-app` build picks the host advertising the same bundle id —
-  not your coworker's `com.example.other-app` host on the same
-  Wi-Fi. Cross-platform: works on macOS (built in), iOS (built
-  in), Android (via NSD), and most modern Linux distros (via
-  Avahi). Windows ships Bonjour with iTunes; without it, you'd
-  need to install the Apple Bonjour print services or
-  point-and-connect via IP instead.
+- **Fixed endpoint, no discovery.** The CLI bakes the sidecar's
+  address into native client builds
+  (`IDEALYST_DEV_ENDPOINT=ws://host:port`), and the client connects
+  straight to it. There is no Bonjour / mDNS browsing.
 - **Connection-time snapshot.** When a fresh client connects mid-
-  session, the dev-host sends it a **`SceneModel` snapshot** —
+  session, the sidecar sends it a **`SceneModel` snapshot** —
   the current state of the tree — rather than replaying the full
   command log. The client comes in synced.
 - **Reverse channel for callbacks.** Click handlers, text
-  changes, and other input events go from client to dev-host on
-  the same WebSocket. The dev-host resolves them to in-process
+  changes, and other input events go from client to sidecar on
+  the same WebSocket. The sidecar resolves them to in-process
   closures and fires them.
 
-The [Architecture](#architecture-in-more-depth) section of the
-Overview points at the supporting crates: `wire` for
-the protocol, `dev-client` for the app-side replayer,
-`runtime-server-shell-native` for the native client side.
+The [Architecture](overview) section of the Overview points at the
+supporting crates: `wire` for the protocol, `dev-client` for the
+app-side replayer, `runtime-server-shell-native` for the native
+client side.
 
 ## The MCP server — Claude Desktop and Robot
 
@@ -397,7 +390,7 @@ To recap how the pieces fit:
   demand.
 - **Hot reload** patches a running app without restarting it.
   Component bodies update through a function-pointer dispatcher;
-  primitive trees update through identity-keyed diffs.
+  the mounted tree then re-runs with signal values carried over.
 - **runtime-server** is a dev mode where the framework runs once on your
   machine and thin clients connect over WebSocket. State lives
   in one place; every client sees it.
@@ -414,13 +407,14 @@ it.
 
 ## Where to read more
 
-- [Robot](#) — the tools the bridge exposes, in detail.
-- [Backends](#) — what the runtime-server thin clients are doing on each
+- [Robot](robot) — the tools the bridge exposes, in detail.
+- [Backends](backends) — what the runtime-server thin clients are doing on each
   platform.
-- [Architecture in more depth](#architecture-in-more-depth) (on
+- [Architecture in more depth](overview) (on
   the Overview) — where `dev-hot`, `wire`, and
   `dev-client` sit.
-- [Hot reload internals](#) — identity hashing, diff strategy,
-  what survives a patch in detail.
-- [The wire protocol](#) — the `Command` enum and id namespaces,
+- Hot reload internals (`docs/hot-reload.md` in the repo) — the
+  patch pipeline, how state is carried, what survives a patch in
+  detail.
+- The wire protocol (the `wire` crate, `crates/dev/wire/`) — the `Command` enum and id namespaces,
   for anyone building their own wire consumer.

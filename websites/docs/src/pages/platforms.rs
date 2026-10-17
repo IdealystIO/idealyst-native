@@ -10,8 +10,8 @@ pub fn page() -> Element {
         PageBody {
             PageHeader(
                 title = "Platforms".to_string(),
-                description = "Idealyst targets web, iOS, Android, Roku, and runtime-server — same Rust \
-                               crate, different backend.".to_string(),
+                description = "Idealyst targets web, iOS, Android, macOS, Linux, Windows, Roku, and \
+                               more — same Rust crate, different backend.".to_string(),
             )
 
             Section(
@@ -40,13 +40,14 @@ pub fn page() -> Element {
             Card {
                 Typography(content = "iOS (UIKit)".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "The `backend-ios-*` family (`-core`, `-mobile`, `-tv`) \
-                               binds to UIKit via the `objc2` crate. Views become \
-                               `UIView`s; navigators wrap `UINavigationController`; \
-                               tabs wrap `UITabBarController`; the drawer is hand-rolled \
-                               because UIKit doesn't ship a stock drawer. Build via the CLI \
-                               (`idealyst build --ios`) or open the materialized \
-                               Xcode project under `target/idealyst/ios/`.".to_string(),
+                    content = "`backend-ios-mobile` (on `backend-ios-core`) binds to UIKit \
+                               via the `objc2` crate. Views become `UIView`s; the stack \
+                               navigator presents through `UINavigationController`. \
+                               `idealyst build --ios` produces the static library from a \
+                               generated wrapper crate under \
+                               `target/idealyst/<project>/ios/wrapper/`; `idealyst run ios` \
+                               builds, installs, and launches it. tvOS is not supported \
+                               (`backend-ios-tv` is an empty skeleton).".to_string(),
                     muted = true,
                 )
             }
@@ -54,12 +55,14 @@ pub fn page() -> Element {
             Card {
                 Typography(content = "Android".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "The `backend-android-*` family (`-core`, `-mobile`, `-tv`) \
-                               bridges to the native View hierarchy via JNI. The Rust \
-                               crate compiles to a `.so` the Android app loads; the \
-                               framework populates the layout when the activity hands \
-                               it a root container. Drawer maps to `DrawerLayout`, tabs \
-                               to `BottomNavigationView`, stack to `FragmentManager`.".to_string(),
+                    content = "`backend-android-mobile` (on `backend-android-core`) bridges \
+                               to the native View hierarchy via JNI. The Rust crate \
+                               compiles to a `.so` the Android app loads; the framework \
+                               populates the layout when the activity hands it a root \
+                               container. The stack navigator presents screens in a \
+                               view-level container with the platform's Back handling. \
+                               Android TV is not supported (`backend-android-tv` is an \
+                               empty skeleton).".to_string(),
                     muted = true,
                 )
             }
@@ -67,12 +70,15 @@ pub fn page() -> Element {
             Card {
                 Typography(content = "Roku (BrightScript)".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "Roku has no Rust runtime — `backend-roku` is a code generator. \
-                               Your Rust app is rebuilt as a declarative model, serialized, \
-                               and shipped to the device alongside generated BrightScript \
-                               glue that replays the tree against Roku's SceneGraph. The \
-                               model handles reactivity via a small in-Roku runtime in \
-                               `crates/build/roku/runtime/`.".to_string(),
+                    content = "Roku has no Rust runtime — `backend-roku` is a command \
+                               emitter: each capability call becomes a JSON command. \
+                               `idealyst build --roku` runs your `app()` once, snapshots \
+                               the commands, and packages them with a small BrightScript \
+                               runtime (in \
+                               `crates/tools/build/roku/runtime/`) that replays it against \
+                               SceneGraph, plus your `#[method]` functions transpiled to \
+                               BrightScript. Experimental: there is no dev loop, and button \
+                               events are not yet sent back from the device.".to_string(),
                     muted = true,
                 )
             }
@@ -80,14 +86,17 @@ pub fn page() -> Element {
             Card {
                 Typography(content = "runtime-server — App-as-Server".to_string(), kind = idea_ui::typography_kind::H2)
                 Typography(
-                    content = "runtime-server runs the Rust app on a server and ships a wire-format \
-                               command stream to thin clients. The server owns state and \
-                               business logic; clients render. Fresh clients receive a \
-                               snapshot (a `SceneModel`) rather than the full command log, \
-                               so reconnects are O(scene) not O(history). The dev server \
-                               uses runtime-server internally for hot-reload — your saves rebuild a \
-                               dylib, the runtime-server server reloads it, and connected clients see \
-                               the diff with no full reload.".to_string(),
+                    content = "runtime-server is the default mode of `idealyst dev`. Your app \
+                               runs in one sidecar process on your machine and ships a \
+                               wire-format command stream to thin clients on each platform; \
+                               the sidecar owns state, clients render. Fresh clients receive \
+                               a snapshot (a `SceneModel`) rather than the full command log, \
+                               so reconnects are O(scene) not O(history). A body-only save \
+                               is hot-patched into the running sidecar and its tree re-runs \
+                               with signal values carried over; a shape change rebuilds and \
+                               restarts the sidecar while clients keep their connections. \
+                               It is a development tool, not a production deployment \
+                               model.".to_string(),
                     muted = true,
                 )
             }

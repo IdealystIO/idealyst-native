@@ -48,8 +48,10 @@ docs! {
         p("What the Runtime actually consists of:"),
         list(
             [code("Primitives"), " — the fixed vocabulary of nodes the \
-              Backend Interface understands: View, Text, Button, Pressable, \
-              TextInput, ScrollView, Icon, and a handful more. See ",
+              Backend Interface understands: ", code("view"), ", ", code("text"),
+              ", ", code("button"), ", ", code("pressable"), ", ", code("text_input"),
+              ", ", code("scroll_view"), ", ", code("icon"), ", and a handful \
+              more. See ",
               link("Primitives", to = "primitives"), "."],
             [code("Reactivity"), " — signals, effects, scopes. The \
               fine-grained dependency graph that drives every update. See ",
@@ -64,8 +66,11 @@ docs! {
               code("#[component]"), ", ", code("stylesheet!"), ". Compile-time \
               sugar that lowers into plain Runtime calls. No runtime cost."],
         ),
-        p("All of this lives in ", code("runtime-core"), " (plus its \
-           reactive-arena and macro sibling crates). It compiles once. The \
+        p("All of this lives in a small set of crates — ", code("runtime-world"),
+          " (the reactive kernel), ", code("runtime-scene"), ", ",
+          code("runtime-vocabulary"), ", ", code("runtime-shared"),
+          ", and the macro crates — re-exported to your app through ",
+          code("runtime-core"), ". It compiles once. The \
            same compiled Runtime hands its output to whichever Backend the \
            build target picked."),
     },
@@ -105,9 +110,9 @@ docs! {
            handling, scroll physics, hit-testing — the entire substrate. \
            The Backend's job is to translate; it doesn't reimplement the \
            toolkit."),
-        p("Other native Backends shipping today: Roku (SceneGraph) and a \
-           terminal Backend. The contract is the same; the substrate \
-           differs."),
+        p("Other native Backends shipping today: Linux (GTK4), Windows \
+           (Win32), Roku (SceneGraph), and a terminal Backend. The contract is \
+           the same; the substrate differs."),
     },
 
     section(heading = "GPUBackend: Host, Painter, Engine") {
@@ -127,9 +132,10 @@ docs! {
               Hosts target different platforms — ", code("host-winit"),
               " for desktop windowing, ", code("host-appkit"), " for macOS, ",
               code("host-web"), " for browser, ", code("host-terminal"),
-              " for TTY, with ", code("host-ios-mobile"), " and ",
-              code("host-android-mobile"), " planned so GPU-rendered apps \
-              can target iOS and Android directly."],
+              " for TTY. ", code("host-ios-mobile"), " and ",
+              code("host-android-mobile"), " embed a GPU-rendered preview \
+              inside a ", code("graphics"), " surface of a native iOS or \
+              Android app."],
             [code("Painter"), " — the primitive renderer. When the Backend \
               Interface receives ", code("create_button"), ", the Painter \
               knows what a button looks like and emits the geometry. \
@@ -155,7 +161,7 @@ docs! {
         p("Reactivity is not a separate system bolted on. It is woven \
            through the runtime."),
         p("The Walker wraps every reactive expression it meets — a ",
-          code("Text"), " whose contents read a signal, a style that reads \
+          code("text"), " whose contents read a signal, a style that reads \
            a token, a ", code("for"), " over a signal-backed list — in an \
            Effect. When a signal changes, the framework runs only the \
            Effects that subscribed to it. Each Effect makes the surgical \

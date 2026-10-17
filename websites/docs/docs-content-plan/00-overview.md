@@ -55,7 +55,7 @@ Components are functions you write that return a tree of primitives. A component
 
 Signals are how state works. A signal holds a value. When you read it, the framework remembers that you read it. When you change it, the framework re-runs the small pieces of UI that depended on that value — not the whole tree, just the pieces that read the signal. This is the only way reactive updates happen in Idealyst. There is no virtual DOM and no top-down re-render.
 
-Styles are written in a separate macro called `stylesheet!`. A stylesheet is a typed description of how a component should look: its colors, spacing, borders, text size, and so on. Stylesheets emit tokenized values (named references with fallback values), so the same stylesheet can pick up different colors / spacing / sizes when the token store changes — the foundation app-wide "theme" patterns build on. See [Building a theme system](#) for that pattern.
+Styles are written in a separate macro called `stylesheet!`. A stylesheet is a typed description of how a component should look: its colors, spacing, borders, text size, and so on. Stylesheets emit tokenized values (named references with fallback values), so the same stylesheet can pick up different colors / spacing / sizes when the token store changes — the foundation app-wide "theme" patterns build on. See [Building a theme system](building-a-theme-system) for that pattern.
 
 That's the surface. The rest of this guide is mostly about how those four things connect to each other and to the platform underneath.
 
@@ -186,7 +186,7 @@ Signals are the only kind of state the framework knows about. A regular Rust var
 
 > **From React.** A signal is not `useState`. `useState` re-runs the component (and its subtree) when its setter fires. A signal does not: it notifies only the specific reads that depended on it. The closer React analog is `useSyncExternalStore` over an observable, or a library like Jotai or Zustand. The shift in thinking: you're not handing new props to a component and asking it to render again — you're letting a value notify the few places that read it.
 
-> **From Solid.** Signals here are conceptually identical to `createSignal`. Reads are tracked, effects re-run on change, components run once. The API names differ (`signal!`, `.get()`, `.set()` here vs `createSignal`, `value()`, `setValue` in Solid) but the model is the same.
+> **From Solid.** Signals here are conceptually identical to `createSignal`. Reads are tracked, effects re-run on change, components run once. The API names differ (`signal()`, `.get()`, `.set()` here vs `createSignal`, `value()`, `setValue` in Solid) but the model is the same.
 
 > **From Svelte.** A signal is what Svelte 5 calls a `$state` rune. Same idea: a value that tracks its readers and notifies them on change. The difference is mostly in delivery — Svelte's runes are compiler-driven inside a `.svelte` file, while Idealyst signals are a regular Rust type, no preprocessor involved.
 
@@ -228,7 +228,7 @@ Styling isn't a separate system in Idealyst. It uses the same reactivity that po
 
 A stylesheet is a description that resolves against the token registry, and the resolution is itself a tracked context. When tokens are updated — say, your "dark mode" toggle swaps a bundle of values — the framework re-runs only the style resolutions that depended on the tokens that changed, and calls `apply_style` on the backend for those specific nodes.
 
-The same goes for any value derived from a token: a button color, a border radius, a font size. Update the tokens, and the framework updates exactly the parts that referenced what changed. You don't write code to listen for token changes, because there is no separate listener to write — it's the same path that updates a `text` when a counter increments. See [Building a theme system](#) for the cookbook on wrapping this in an app-wide "theme" pattern.
+The same goes for any value derived from a token: a button color, a border radius, a font size. Update the tokens, and the framework updates exactly the parts that referenced what changed. You don't write code to listen for token changes, because there is no separate listener to write — it's the same path that updates a `text` when a counter increments. See [Building a theme system](building-a-theme-system) for the cookbook on wrapping this in an app-wide "theme" pattern.
 
 > **From React.** Theme changes in React typically go through Context, and changing the context value re-renders every consumer (unless you've wrapped them in memoization). Here, the theme is a signal and stylesheets read from it. Only the styles that read the tokens that actually changed re-resolve; only their nodes get an `apply_style` call from the backend. No consumer re-renders, no Provider tree to thread through.
 
@@ -269,7 +269,7 @@ The Application → Backend split is the headline. In practice the framework is 
 │  ui!, jsx!,        │               │  component library │
 │  #[component],     │               │  (optional)        │
 │  stylesheet!,      │               └─────────┬──────────┘
-│  methods!          │                         │
+│  #[method]         │                         │
 └─────────┬──────────┘                         │
           └─────────────────┬───────────────────┘
                             ▼
@@ -304,15 +304,15 @@ The Application → Backend split is the headline. In practice the framework is 
 
 ## The layers in one line each
 
-- `runtime-macros` — Compile-time DSLs (`ui!`, `jsx!`, `#[component]`, `stylesheet!`, `methods!`). Lowers source into plain runtime-core calls; nothing here exists at runtime.
+- `runtime-macros` — Compile-time DSLs (`ui!`, `jsx!`, `#[component]`, `stylesheet!`, `#[method]`). Lowers source into plain runtime-core calls; nothing here exists at runtime.
 - `runtime-shared` / `runtime-world` / `runtime-scene` / `runtime-vocabulary` — The runtime everything else builds on: the style engine and shared data model, the signal/effect kernel, the structural scene tree + mount drivers, and the primitive vocabulary with its capability traits. Your app code talks to one facade over the whole set.
 - `idea-ui` — Optional component library on top of runtime-core. Heading, Card, Stack, Button, themed colors, breakpoints. Use it, replace bits of it, or skip it.
-- `dev-hot` — Diff-and-patch for hot reload. Compares two `Element` trees by their identity hashes and produces the minimal sequence of backend operations to morph one into the other.
+- `dev-hot` — A thin layer over the `subsecond` crate for hot reload. `#[component]` routes each component call through it, and applying a patch rebinds the patched functions in a jump table. The mounted tree then re-runs with signal values carried over; compiles out when the `hot` feature is off.
 - `wire` — The wire protocol. Pure data: a `Command` enum and three id namespaces (nodes, handlers, styles). No runtime-core dependency. Used by hot reload, app-as-server, and any future server-driven mode.
 - `dev-client` — The app side of the wire. Receives commands from the dev server and replays them against the local backend, so `idealyst dev` updates a running app without recompiling.
-- `runtime-layout` — Wraps Taffy (flexbox + grid) for backends without a native layout engine. Web uses the browser's layout; iOS, Android, and Roku use this.
+- `runtime-layout` — Wraps Taffy (flexbox + grid) for backends without a native layout engine. Web uses the browser's layout; iOS, Android, macOS, Linux, Windows, terminal, CPU, and the GPU renderer use this.
 - Robot — Feature-gated introspection inside runtime-core. With `--features robot` enabled, external processes can list components on screen, find elements by props or path, read frames, click, and type. Powers automated testing without per-platform harnesses.
-- Backends — One crate per platform under `crates/backend/`. Each implements the host + capability traits by translating their calls into native operations. The runtime-server backend is the odd one out — it serializes the tree onto the wire instead of rendering it.
+- Backends — One crate per platform under `crates/backend/` (the GPU renderer under `crates/gpu-backend/`). Each implements the host + capability traits by translating their calls into native operations. The runtime-server pieces live under `crates/dev/`: the sidecar's recording backend in `dev-server` serializes the tree onto the wire instead of rendering it, and `runtime-server-shell-native` replays it on a device.
 - CLI — Orchestration. Scaffolds projects, runs the dev server, materializes the per-platform host crate, drives builds. Not part of the runtime; an Idealyst app can run without ever invoking the CLI.
 
 ## Seams that let you hook in
@@ -321,7 +321,7 @@ Each crate boundary is a place to plug something new in:
 
 - The backend traits. Write a new platform — embedded display, game engine, anything you can drive from Rust. Implement `Host` plus the capability traits you need; everything above the seam stays the same.
 - wire. Write a new transport, a new viewer, or a server-driven UI host. The protocol is pure data; nothing about it assumes "the dev server" specifically.
-- dev-hot. Substitute a different diff strategy, or intercept patches to log, replay, or transform them.
+- dev-hot. Register a handler that runs after each patch is applied (`dev_hot::register_handler`).
 - Robot. Drive a running app from another process — IDE plugins, accessibility tooling, scripted demos, test runners. The `idealyst mcp` server is one such consumer; you can write your own.
 - runtime-macros. Write your own front-end syntax. Anything that emits the right runtime-core calls slots in alongside `ui!` and `jsx!`.
 
@@ -335,7 +335,7 @@ Topics that go past the overview, with their own pages:
 - The dev server and wire protocol — what `idealyst dev` does, what the wire commands carry, how reverse callbacks resolve.
 - Robot — controlling a running app from another process, the MCP surface, what queries are available.
 - Writing your own DSL — the contract a front-end macro has to satisfy to participate in reactivity and component composition.
-- Hot reload internals — identity hashing, diff strategy, what changes survive a patch and what forces a full rebuild.
+- Hot reload internals — the jump-table patch, how state is carried across a re-run, and what forces a full rebuild.
 
 ## What to read next
 
@@ -347,7 +347,7 @@ If you want to understand the moving parts before writing anything, read the pag
 - Components — how to define your own.
 - Reactivity — signals, effects, how updates propagate.
 - Styles — stylesheets, themes, variants.
-- Navigation — screens, routes, drawer/tab navigators.
+- Navigation — screens, routes, stack and swap navigators.
 - The CLI — the workflow commands and what they do.
 - Backends — what a backend is responsible for, if you want to write one or just understand the seam.
 

@@ -32,8 +32,8 @@ docs! {
            like. It does not contain any code that is specific to a platform."),
         p("The backend is the other half. A backend is the piece of code that \
            decides how your app runs on a particular platform. It is the API \
-           that translates the framework's vocabulary — ", code("View"), ", ",
-          code("Text"), ", ", code("Button"), ", a style being applied, a button \
+           that translates the framework's vocabulary — ", code("view"), ", ",
+          code("text"), ", ", code("button"), ", a style being applied, a button \
            being clicked — into operations on a specific platform's native UI \
            system."),
         p("The two halves never reach into each other. The application only knows \
@@ -43,22 +43,30 @@ docs! {
     },
 
     section(heading = "Which backends ship with Idealyst") {
-        p("Four backends come in the box. They exist so you have a sensible \
-           default for the major platforms — none of them are the only way to \
+        p("A backend for every major platform comes in the box. They exist so \
+           you have a sensible default — none of them are the only way to \
            render to that platform, just the one we wrote."),
         list(
             ["Web — renders into the DOM, compiled to WebAssembly."],
             ["iOS — renders into UIKit views, via ", code("objc2"), "."],
             ["Android — renders into native Android views, via JNI."],
+            ["macOS — renders into AppKit views, via ", code("objc2"), "."],
+            ["Linux — renders into GTK4 widgets."],
+            ["Windows — paints a Win32 window, with native controls for input."],
             ["Roku — renders into a SceneGraph component tree. This one is \
               experimental; it exists partly to show that the backend model isn't \
               tied to traditional GUI toolkits."],
+            ["Headless — server-side rendering / static generation, email HTML, \
+              a terminal character grid, and a CPU software rasterizer."],
+            ["GPU — a wgpu renderer that paints every pixel itself."],
         ),
-        p("If none of those fits — say you want to render to a terminal, an \
-           embedded display, a game engine, or a platform we haven't covered — \
-           you can write your own. Writing a backend means implementing a small \
-           trait with a handful of methods. Everything else stays the same: the \
-           same application code, the same components, the same styles."),
+        p("If none of those fits — say you want to render to an embedded \
+           display, a game engine, or a platform we haven't covered — you can \
+           write your own. Writing a backend means implementing the ",
+          code("Host"), " trait's handful of tree operations plus the capability \
+           traits for the primitives you support. Everything else stays the \
+           same: the same application code, the same components, the same \
+           styles."),
         compare(from = React) {
             p("The app + backend split is the same idea as splitting ", code("react"),
               " from ", code("react-dom"), " / ", code("react-native"), " / a \
@@ -91,9 +99,9 @@ docs! {
         p("An Idealyst app is built out of four kinds of things. You will use all \
            four in even the smallest app."),
         p("Primitives are the building blocks the framework knows how to \
-           render. There is a fixed list of them: ", code("View"), ", ", code("Text"),
-          ", ", code("Button"), ", ", code("Pressable"), ", ", code("ScrollView"),
-          ", ", code("Icon"), ", and a handful more. Every primitive is something \
+           render. There is a fixed list of them: ", code("view"), ", ", code("text"),
+          ", ", code("button"), ", ", code("pressable"), ", ", code("scroll_view"),
+          ", ", code("icon"), ", and a handful more. Every primitive is something \
            a backend has to know how to draw. Application code composes \
            primitives into trees; the framework hands those trees to the backend."),
         p("Components are functions you write that return a tree of \
@@ -167,7 +175,7 @@ docs! {
     },
 
     section(heading = "Wiring up reactivity") {
-        p("Whenever realize meets a reactive expression — a ", code("Text"),
+        p("Whenever realize meets a reactive expression — a ", code("text"),
           " whose contents read a signal, a style that reads a token, a ",
           code("for"), " loop over a signal-backed list, the condition of a \
            reactive ", code("if"), " — it wraps that expression in an Effect."),
@@ -373,7 +381,7 @@ docs! {
         compare(from = Solid) {
             p("Signals here are conceptually identical to ", code("createSignal"),
               ". Reads are tracked, effects re-run on change, components run \
-               once. The API names differ (", code("signal!"), ", ", code(".get()"),
+               once. The API names differ (", code("signal()"), ", ", code(".get()"),
               ", ", code(".set()"), " here vs ", code("createSignal"), ", ",
               code("value()"), ", ", code("setValue"), " in Solid) but the model \
                is the same."),
@@ -476,7 +484,7 @@ docs! {
            the framework updates exactly the parts that referenced what \
            changed. You don't write code to listen for token changes, \
            because there is no separate listener to write — it's the \
-           same path that updates a ", code("Text"),
+           same path that updates a ", code("text"),
           " when a counter increments. See ",
           link("Building a theme system", to = "building-a-theme-system"),
           " for the cookbook on wrapping this in an app-wide \"theme\" \
@@ -545,7 +553,7 @@ docs! {
   │  ui!, jsx!,        │               │  component library │
   │  #[component],     │               │  (optional)        │
   │  stylesheet!,      │               └─────────┬──────────┘
-  │  methods!          │                         │
+  │  #[method]         │                         │
   └─────────┬──────────┘                         │
             └─────────────────┬───────────────────┘
                               ▼
@@ -583,7 +591,7 @@ docs! {
         list(
             [code("runtime-macros"), " — Compile-time DSLs (", code("ui!"), ", ",
               code("jsx!"), ", ", code("#[component]"), ", ", code("stylesheet!"),
-              ", ", code("methods!"), "). Lowers source into plain runtime-core \
+              ", ", code("#[method]"), "). Lowers source into plain runtime-core \
               calls; nothing here exists at runtime."],
             [code("runtime-shared"), " / ", code("runtime-world"), " / ",
               code("runtime-scene"), " / ", code("runtime-vocabulary"),
@@ -595,10 +603,12 @@ docs! {
             [code("idea-ui"), " — Optional component library on top of \
               runtime-core. Heading, Card, Stack, Button, themed colors, \
               breakpoints. Use it, replace bits of it, or skip it."],
-            [code("dev-hot"), " — Diff-and-patch for hot reload. Compares \
-              two ", code("Element"), " trees by their identity hashes and \
-              produces the minimal sequence of backend operations to morph one \
-              into the other."],
+            [code("dev-hot"), " — A thin layer over the ", code("subsecond"),
+              " crate for hot reload. ", code("#[component]"), " routes each \
+              component call through it, and applying a patch rebinds the \
+              patched functions in a jump table. The mounted tree then re-runs \
+              with signal values carried over; compiles out when the ",
+              code("hot"), " feature is off."],
             [code("wire"), " — The wire protocol. Pure data: a ",
               code("Command"), " enum and three id namespaces (nodes, handlers, \
               styles). No runtime-core dependency. Used by hot reload, \
@@ -609,17 +619,21 @@ docs! {
               without recompiling."],
             [code("runtime-layout"), " — Wraps Taffy (flexbox + grid) \
               for backends without a native layout engine. Web uses the \
-              browser's layout; iOS, Android, and Roku use this."],
+              browser's layout; iOS, Android, macOS, Linux, Windows, terminal, \
+              CPU, and the GPU renderer use this."],
             ["Robot — Feature-gated introspection inside runtime-core. With ",
               code("--features robot"), " enabled, external processes can list \
               components on screen, find elements by props or path, read \
               frames, click, and type. Powers automated testing without \
               per-platform harnesses."],
             ["Backends — One crate per platform under ", code("crates/backend/"),
-              ". Each implements the host + capability traits by translating \
-              their calls into native operations. The runtime-server backend \
-              is the odd one out — it serializes the tree onto the wire \
-              instead of rendering it."],
+              " (the GPU renderer under ", code("crates/gpu-backend/"),
+              "). Each implements the host + capability traits by translating \
+              their calls into native operations. The runtime-server pieces \
+              live under ", code("crates/dev/"), ": the sidecar's recording \
+              backend in ", code("dev-server"), " serializes the tree onto the \
+              wire instead of rendering it, and ",
+              code("runtime-server-shell-native"), " replays it on a device."],
             ["CLI — Orchestration. Scaffolds projects, runs the dev server, \
               materializes the per-platform host crate, drives builds. Not part \
               of the runtime; an Idealyst app can run without ever invoking the \
@@ -630,14 +644,14 @@ docs! {
     section(heading = "Seams that let you hook in") {
         p("Each crate boundary is a place to plug something new in:"),
         list(
-            ["The backend traits. Write a new platform — terminal, embedded \
-              display, game engine, anything you can drive from Rust. Implement \
+            ["The backend traits. Write a new platform — embedded display, \
+              game engine, anything you can drive from Rust. Implement \
               a handful of methods; everything above the seam stays the same."],
             ["wire. Write a new transport, a new viewer, or a \
               server-driven UI host. The protocol is pure data; nothing about \
               it assumes \"the dev server\" specifically."],
-            ["dev-hot. Substitute a different diff strategy, or \
-              intercept patches to log, replay, or transform them."],
+            ["dev-hot. Register a handler that runs after each patch is \
+              applied (", code("dev_hot::register_handler"), ")."],
             ["Robot. Drive a running app from another process — IDE plugins, \
               accessibility tooling, scripted demos, test runners. The ",
               code("idealyst mcp"), " server is one such consumer; you can \
@@ -663,8 +677,8 @@ docs! {
               surface, what queries are available."],
             ["Writing your own DSL — the contract a front-end macro has to \
               satisfy to participate in reactivity and component composition."],
-            ["Hot reload internals — identity hashing, diff strategy, what \
-              changes survive a patch and what forces a full rebuild."],
+            ["Hot reload internals — the jump-table patch, how state is \
+              carried across a re-run, and what forces a full rebuild."],
         ),
     },
 
@@ -679,7 +693,7 @@ docs! {
             ["Components — how to define your own."],
             ["Reactivity — signals, effects, how updates propagate."],
             ["Styles — stylesheets, themes, variants."],
-            ["Navigation — screens, routes, drawer/tab navigators."],
+            ["Navigation — screens, routes, stack and swap navigators."],
             ["The CLI — the workflow commands and what they do."],
             ["Backends — what a backend is responsible for, if you want to \
               write one or just understand the seam."],

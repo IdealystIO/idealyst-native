@@ -1,9 +1,9 @@
 # Getting Started
 
 This page gets you from "nothing installed" to a running Idealyst app
-that updates live when you edit it. The same project will build for
-web, iOS, Android, and Roku out of the box — you pick which platform
-to run.
+that updates live when you edit it. The same project builds for web,
+iOS, Android, macOS, and the other shipped platforms — you pick which
+platform to run.
 
 ## What you're about to do
 
@@ -17,33 +17,33 @@ machine.
 
 ## What you need
 
-- **Rust** (1.70 or newer). Install via [rustup](https://rustup.rs/)
-  if you don't have it.
+- **Rust**, stable (1.78 or newer recommended). Install via
+  [rustup](https://rustup.rs/) if you don't have it.
 - **Tools for the platform(s) you want to run.** You only need the
-  ones you'll actually use — the scaffold builds for all of them, but
-  the dev server only invokes the toolchain for the targets you
-  select.
-  - *Web* — a modern browser. The CLI runs `wasm-pack` for you.
-  - *iOS* — Xcode and the iOS Simulator. No manual setup beyond the
-    standard Xcode install.
-  - *Android* — Android Studio (for the SDK and an emulator) plus the
-    Android NDK.
-  - *Roku* — a Roku device in developer mode, or the Roku simulator.
-    Experimental; expect rough edges.
+  ones you'll actually use — the CLI only invokes the toolchain for
+  the targets you select.
+  - *Web* — a modern browser and the `wasm32-unknown-unknown` Rust
+    target (`rustup target add wasm32-unknown-unknown`). Release
+    builds also use `wasm-opt` from binaryen.
+  - *iOS* — Xcode with the iOS Simulator, plus the iOS Rust targets
+    (`aarch64-apple-ios-sim` on Apple Silicon).
+  - *Android* — the Android SDK (with an emulator or a connected
+    device) and the Android NDK, with `ANDROID_NDK_HOME` set.
+  - *Roku* — experimental, build-only: `idealyst build --roku`
+    produces a package to side-load. There is no dev loop for Roku.
 
-A future `idealyst doctor` command will check your toolchain
-automatically and report what's missing. Until that lands, the
-platform builders will tell you what they couldn't find if something
-isn't installed.
+`idealyst doctor` checks your toolchain for the core, web, iOS, and
+Android targets and tells you what's missing and how to fix it.
 
 ## Install the CLI
 
 ```bash
-cargo install idealyst-cli
+cargo install idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked
 ```
 
-The crate is called `idealyst-cli` but the binary it installs is
-`idealyst`. Confirm with:
+The CLI is published to the framework's registry,
+`crates.idealyst.io`. The crate is called `idealyst-cli` but the
+binary it installs is `idealyst`. Confirm with:
 
 ```bash
 idealyst --version
@@ -61,74 +61,96 @@ You'll get a layout like this:
 ```
 my-app/
   Cargo.toml          # crate manifest + Idealyst config under [package.metadata.idealyst]
+  index.html          # the web page shell
+  dev.toml            # dev-session settings
+  .mcp.json           # points MCP clients at `idealyst mcp`
+  fonts/
   src/
-    lib.rs            # exports `pub fn app() -> Element` — your whole app
+    main.rs           # one line: `idealyst::entry!(my_app);` — the entry point for every platform
+    lib.rs            # exports `pub fn app() -> Element`
+    app.rs            # the welcome screen's tree
+    components/ …     # the welcome screen's components
 ```
 
-That's it. There is no `ios/` folder, no `android/`, no `web/`. The
-per-platform host crates that turn your `app()` into a runnable
-binary or bundle are generated on demand by the CLI into a build
-cache. You don't author them, and you don't see them unless you go
-looking.
+`src/main.rs` is required: `idealyst::entry!` reads your app config
+and emits the `main` each platform's shell needs. Nothing in it names
+a platform.
 
-The generated `Cargo.toml` enables every supported platform as a
-build target by default:
+There is no `ios/` folder and no `android/`. The iOS and Android
+wrapper crates that turn your `app()` into a native library are
+generated on demand by the CLI into a build cache
+(`target/idealyst/<project>/`). You don't author them, and you don't
+see them unless you go looking. The web build compiles your crate
+directly.
+
+The generated `Cargo.toml` starts with web as the only target,
+because it needs no per-platform toolchain:
 
 ```toml
 [package.metadata.idealyst.app]
-name = "my-app"
-bundle_id = "com.example.my-app"
-targets = ["web", "ios", "android", "roku"]
+name      = "My App"
+bundle_id = "com.example.my_app"
+version   = "0.0.1"
+targets   = ["web"]
 ```
 
-`targets` is the list of platforms the CLI will build for when you
-don't pass an explicit `--web` / `--ios` / `--android` / `--roku`
-flag. You can prune this list later (drop platforms you don't
-target), or add a new entry when more platforms ship.
+`name` is the display name, title-cased from the crate name.
+`bundle_id` uses underscores, not hyphens, because Android derives
+JNI symbol names from it; pass `--bundle-id` to `idealyst new` to
+choose your own.
+
+`targets` is the list of platforms `idealyst dev` and `idealyst
+build` use when you don't pass an explicit `--web` / `--ios` /
+`--android` flag. Add entries (`targets = ["web", "ios", "android"]`)
+when you're ready for more platforms.
 
 ## What's in `src/lib.rs`
 
-The scaffold's `app()` function is a small showcase that exercises
-most of the framework's primitives — text, a counter with a button,
-a toggle, an icon, a scrollable container — so you can see what's
-on offer and have something concrete to modify.
+The scaffold's `app()` is an animated welcome screen built from a
+handful of components in `src/components/` — something concrete to
+read and modify.
 
-Every Idealyst app starts the same way: one function annotated with
-`#[component]` that returns a `Element` tree. The minimal shape
+Every Idealyst app exposes one `pub fn app() -> Element`. Keep it
+thin and put the tree in a `#[component]` — on the web, hot patching
+reaches only code called through a component. The minimal shape
 looks like this:
 
 ```rust
 use runtime_core::{component, signal, ui, Element};
 
 #[component]
-pub fn app() -> Element {
+fn Root() -> Element {
     let count = signal(0);
 
     ui! {
         view {
             text { "Hello, Idealyst" }
-            text { format!("Count: {}", count.get()) }
-            Button(
+            text { "Count: {count}" }
+            button(
                 label = "Increment",
                 on_click = move || count.update(|n| n + 1),
             )
         }
     }
 }
+
+pub fn app() -> Element {
+    ui! { Root() }
+}
 ```
 
-The scaffold expands on this with more primitives, but the structure
-is the same — a component, some state, a UI tree.
+The welcome scaffold is larger, but the structure is the same —
+components, some state, a UI tree.
 
 A few things to notice, without going deep on any of them yet:
 
-- `#[component]` marks `app()` as a component. Every Idealyst app
-  starts from one.
-- `signal(0)` declares reactive state. The `count.get()` inside
-  `format!` is a tracked read; the `count.update(...)` inside the
-  button's `on_click` is a write. The framework keeps the
-  surrounding `Text` in sync when the button is pressed — see
-  [Reactivity](#) on the Overview page for the mechanism.
+- `#[component]` makes `Root` a component, so `app()` can render it
+  as `Root()` inside `ui!`.
+- `signal(0)` declares reactive state. The `{count}` slot in the
+  text is a live read of the signal; the `count.update(...)` inside
+  the button's `on_click` is a write. The framework keeps that
+  `text` in sync when the button is pressed — see
+  [Reactivity](reactivity) for the mechanism.
 - `ui! { ... }` is the DSL for declaring the UI tree. It lowers to
   plain Rust function calls; you don't have to import the primitive
   constructors (`view`, `text`, `button`) explicitly because the
@@ -136,18 +158,17 @@ A few things to notice, without going deep on any of them yet:
 
 ## Building UI: components, not just primitives
 
-The scaffold uses runtime-core primitives (`View`, `Text`,
-`Button`) directly. For most projects you'll want higher-level
+The example above uses runtime-core primitives (`view`, `text`,
+`button`) directly. For most projects you'll want higher-level
 pieces too — headings, cards, themed buttons, layout stacks.
 
 You have four options:
 
 - **idea-ui** — the first-party component library. The docs site is
-  built with it. See [idea-ui](#) for what's included and how to use
-  it.
+  built with it.
 - **Build your own** with the framework's theme and stylesheet
   system on top of the primitive vocabulary. See
-  [Styles](#) for how that system works.
+  [Styles](styles) for how that system works.
 - **Use a third-party library** built on runtime-core.
 - **Skip it.** Primitives alone are a complete option.
 
@@ -173,10 +194,16 @@ You can combine flags (`idealyst dev --web --ios`) to run multiple
 platforms in parallel; each gets its own watch + rebuild loop and
 Ctrl-C tears them all down together.
 
-Hot reload is on by default. The dev server watches your source
-files, rebuilds incrementally on save, and patches the running app
-in place — your scroll position, navigation state, and current
-signal values are preserved across edits.
+By default `idealyst dev` runs your app in one sidecar process on
+your machine, and each platform connects to it as a thin client.
+`--local` builds and runs the app on each platform instead. See
+[Dev tools](dev-tools).
+
+Hot reload is on by default. A literal edit inside `ui!` applies in
+milliseconds; an edit to function bodies is hot-patched in seconds
+and signal values are carried over. A change to a signature, a
+struct, or a new item rebuilds and restarts the app, and signal
+values are not carried over.
 
 ## Edit something
 
@@ -188,10 +215,9 @@ With `idealyst dev --web` running and the browser open:
 
 The app should update without a page reload, and the counter value
 should still be whatever you'd clicked it to. If a full reload
-happens instead, that's a structural change the patcher couldn't
-apply — usually a new top-level component, a re-shaped signal, or a
-change to the component graph. Hot reload covers most edits; full
-reloads happen rarely and only when they have to.
+happens instead, that's a shape change the patcher can't apply — a
+changed signature, a changed struct, or a new item. Hot reload covers
+most edits.
 
 ## Building for production
 
@@ -205,10 +231,12 @@ Same flag shape as `dev` — with no platform flag, it builds every
 target in your `Cargo.toml`. Add `--web` / `--ios` / `--android` /
 `--roku` to narrow.
 
-Output lands in `target/idealyst/<platform>/`. Each platform's
-directory holds whatever the platform expects: a WASM bundle and an
-`index.html` for web, an Xcode `.app` for iOS, an APK for Android,
-a side-loadable channel package for Roku.
+Web output lands in `dist/web/` (the `pkg/` bundle, `index.html`,
+and assets); Roku's side-loadable package lands in `dist/roku/`. The
+iOS build produces the static library and the Android build produces
+the `.so`, from the generated wrapper under
+`target/idealyst/<project>/`; `idealyst run ios` and `idealyst run
+android` package, install, and launch them.
 
 ## Exporting a platform project (coming soon)
 
@@ -227,9 +255,9 @@ If the counter is on screen, you have a working setup. Next up:
 - **Components** — define your own and reuse them.
 - **Reactivity** — signals, effects, the rules for what gets re-run.
 - **Styles** — stylesheets, themes, variants.
-- **Primitives** — the full list of built-in nodes (`View`, `Text`,
-  `Button`, `Pressable`, `ScrollView`, `Icon`, and more).
-- **Navigation** — drawer and tab navigators, screens, routes.
+- **Primitives** — the full list of built-in nodes (`view`, `text`,
+  `button`, `pressable`, `scroll_view`, `icon`, and more).
+- **Navigation** — stack and swap navigators, screens, routes.
 
 The Overview page is the right read if you skipped it — it covers
 the model the rest of the documentation assumes.

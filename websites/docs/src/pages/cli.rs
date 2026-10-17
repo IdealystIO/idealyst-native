@@ -18,8 +18,11 @@ pub fn page() -> Element {
 
             Section(
                 title = "Install".to_string(),
-                body = "Install the CLI from the workspace crate. The installed binary is \
-                        self-contained — it doesn't need the repo to keep working.".to_string(),
+                body = "Install the CLI from the framework's registry with `cargo install \
+                        idealyst-cli --index sparse+https://crates.idealyst.io/index/ --locked`. \
+                        The installed binary is self-contained — it doesn't need the repo to \
+                        keep working. `idealyst update` replaces it with the newest \
+                        release.".to_string(),
             )
 
             SectionWithCode(
@@ -31,10 +34,13 @@ pub fn page() -> Element {
 
             SectionWithCode(
                 title = "Dev server".to_string(),
-                body = "`dev` watches your source, rebuilds incrementally, and patches the \
-                        running app over a WebSocket — no full reload, state preserved across \
-                        edits.".to_string(),
-                code = "idealyst dev".to_string(),
+                body = "`dev` runs your app in one sidecar process and connects each \
+                        platform to it as a thin client over a WebSocket (`--local` builds and \
+                        runs the app on each platform instead). Saves that change only literals \
+                        or function bodies apply in place with signal values kept; a shape \
+                        change rebuilds and restarts the app.".to_string(),
+                code = "idealyst dev\n\
+                        idealyst dev --web --local".to_string(),
             )
 
             SectionWithCode(
@@ -96,17 +102,18 @@ pub fn page() -> Element {
                                removes the build output the CLI owns (the web, dev-server and MCP \
                                target dirs); `clean --stale` keeps what current builds use and \
                                drops only superseded output. `sync` regenerates derived assets \
-                               (icons, splash screens) from the project config. `scaffold` \
-                               materializes a per-platform wrapper project from the ephemeral \
-                               build cache into the repo so you can hand-edit it. `brs` \
-                               collects and emits BrightScript methods for the Roku backend.".to_string(),
+                               (icons, splash screens) from the project config. `doctor` checks \
+                               your toolchain per target. `brs` collects and emits BrightScript \
+                               methods for the Roku backend. `scaffold <platform>` is reserved \
+                               for exporting a generated wrapper project into the repo; it is \
+                               not implemented yet and only prints a notice.".to_string(),
                     muted = true,
                 )
                 CodeBlock(
                     code = "idealyst check\n\
                             idealyst clean --stale\n\
                             idealyst sync\n\
-                            idealyst scaffold ios\n\
+                            idealyst doctor\n\
                             idealyst brs".to_string(),
                 )
             }
