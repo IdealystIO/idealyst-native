@@ -1965,7 +1965,7 @@ fn emit_if(
                 MatchArm { pat: (*l.pat).clone(), guard: None, body: then_body.to_vec() },
                 MatchArm { pat: wild, guard: None, body: else_body.map(<[UiNode]>::to_vec).unwrap_or_default() },
             ];
-            return emit_match(&l.expr, &arms, ctx);
+            return emit_match_bindings(&l.expr, &arms, ctx, Bindings::Owned);
         }
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
@@ -2226,6 +2226,28 @@ pub(crate) fn condition_may_read_signal(expr: &Expr) -> bool {
 /// handle the implicit `&` coercion on patterns. The user writes
 /// `Screen::Summary => ui!{...}` and it matches the borrowed value.
 fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
+    emit_match_bindings(scrutinee, arms, ctx, Bindings::Borrowed)
+}
+
+/// How a reactive `match`'s patterns bind. `switch` hands its render
+/// closure `&S`, so match ergonomics bind by reference (`Borrowed`) —
+/// what a `match` in `ui!` has always done. An `if let` binds the way
+/// Rust's `if let PAT = expr` does, by value (`Owned`: the arm matches a
+/// clone of the scrutinee): `if let Some(id) = pending.get()` gives a
+/// `u64`, not a `&u64`, so code written as a plain `if let` keeps
+/// compiling when the condition turns reactive.
+#[derive(Clone, Copy, PartialEq)]
+enum Bindings {
+    Borrowed,
+    Owned,
+}
+
+fn emit_match_bindings(
+    scrutinee: &Expr,
+    arms: &[MatchArm],
+    ctx: Ctx,
+    bindings: Bindings,
+) -> TokenStream2 {
     // Priority order, same as emit_if:
     //   1. Structured match — scrutinee is a `method(sig, ...)` call
     //      and every arm is `LITERAL => body` (or `_ => body` for
@@ -2296,10 +2318,14 @@ fn emit_match(scrutinee: &Expr, arms: &[MatchArm], ctx: Ctx) -> TokenStream2 {
                 }
             })
             .collect();
+        let matched = match bindings {
+            Bindings::Borrowed => quote! { __v },
+            Bindings::Owned => quote! { ::core::clone::Clone::clone(__v) },
+        };
         return quote! {
             ::runtime_core::switch(
                 move || #scrutinee_expr,
-                move |__v| match __v {
+                move |__v| match #matched {
                     #( #arm_tokens, )*
                 },
             )
