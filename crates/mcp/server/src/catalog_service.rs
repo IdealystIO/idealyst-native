@@ -1832,6 +1832,7 @@ impl CatalogService {
                 .filter(|a| args.name.as_deref().map(|n| a.name == n).unwrap_or(true))
                 .cloned()
                 .collect();
+            let registered: Vec<String> = matched.iter().map(|a| a.name.clone()).collect();
             // Registration precedes drivability: a web app's relay registers
             // at dev startup, but the bridge only answers once the wasm app
             // has dialed in. Returning on registration alone sends agents
@@ -1872,16 +1873,11 @@ impl CatalogService {
             }
             if std::time::Instant::now() >= deadline {
                 let target = args.name.as_deref().unwrap_or("any app");
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "timed out after {}s waiting for {target} to register AND answer \
-                     a bridge ping (registration alone isn't drivable). If you \
-                     launched it with run_dev, the build may still be running or \
-                     failing — check read_dev_log. For a WEB target, Robot needs \
-                     run_dev with local=true (the relay only exists in local \
-                     mode), and something must load the served page — on a \
-                     display-less machine dev auto-launches a headless browser \
-                     client for you (or pass headless_client=true).",
-                    timeout.as_secs()
+                return Ok(CallToolResult::error(vec![Content::text(wait_for_app_timeout_message(
+                    target,
+                    timeout.as_secs(),
+                    &registered,
+                    &crate::app_discovery::describe_apps_dir(),
                 ))]));
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -4422,6 +4418,36 @@ impl ServerHandler for CatalogService {
 
 }
 
+/// `wait_for_app`'s timeout, by what the wait actually saw: apps that
+/// registered but never answered a ping (the page/process hasn't dialed in),
+/// or no registration at all — where the apps dir's state, and the dev log,
+/// say why. One fixed message blamed the build in both cases, sending an
+/// agent to a build that had finished while the real cause (nothing could
+/// register) went unnamed.
+fn wait_for_app_timeout_message(
+    target: &str,
+    secs: u64,
+    registered: &[String],
+    apps_dir_note: &str,
+) -> String {
+    if !registered.is_empty() {
+        return format!(
+            "timed out after {secs}s: {} registered but never answered a bridge ping, so \
+             it can't be driven yet. The relay is up; the app hasn't dialed in. For a WEB \
+             target, run_dev needs local=true (the relay only exists in local mode) and \
+             something must load the served page — on a display-less machine dev \
+             auto-launches a headless browser client (or pass headless_client=true). \
+             read_dev_log shows the page's progress.",
+            registered.join(", ")
+        );
+    }
+    format!(
+        "timed out after {secs}s: no registration for {target} appeared — {apps_dir_note}. \
+         If you launched it with run_dev, read_dev_log shows whether the build is still \
+         running or failed, and warns if the relay could not write its registration."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     //! Tools-level regression: a `#[component]` linked into this
@@ -6127,6 +6153,27 @@ mod tests {
                 assert!(tools.contains(name), "the robot sentence names `{name}`, which is not a tool");
             }
         }
+    }
+
+    /// A dev session whose relay could not register (a root-owned
+    /// `~/.idealyst`) left `wait_for_app` blaming a build that had finished.
+    /// The message now tells the two failures apart.
+    #[test]
+    fn regression_wait_for_app_timeout_says_what_was_missing() {
+        let none = wait_for_app_timeout_message(
+            "any app",
+            400,
+            &[],
+            "/home/u/.idealyst/apps does not exist and can't be created (/home/u/.idealyst is not a writable directory), so no app can register there",
+        );
+        assert!(none.contains("no registration for any app"), "{none}");
+        assert!(none.contains("can't be created"), "{none}");
+        assert!(none.contains("could not write its registration"), "{none}");
+
+        let silent = wait_for_app_timeout_message("any app", 60, &["App".into()], "unused");
+        assert!(silent.contains("App registered but never answered"), "{silent}");
+        assert!(silent.contains("local=true"), "{silent}");
+        assert!(!silent.contains("unused"), "{silent}");
     }
 
     #[test]

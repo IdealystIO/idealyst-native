@@ -3042,6 +3042,18 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
                     pinned,
                 },
             });
+            // The relay serves without its registration, but an MCP server
+            // finds apps only through it: say so here, in the log
+            // `read_dev_log` returns, not as a `wait_for_app` timeout.
+            for err in relay.registration_errors() {
+                dev_events::global().warn(
+                    "dev",
+                    format!(
+                        "robot relay registration failed: {err} — an MCP server won't discover \
+                         this app (`list_apps` / `wait_for_app` won't see it)"
+                    ),
+                );
+            }
             Some(relay)
         }
         Err(e) => {

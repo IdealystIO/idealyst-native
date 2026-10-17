@@ -406,3 +406,34 @@ fn the_project_registration_names_the_bridge_port_and_goes_with_the_relay() {
     assert!(!path.exists(), "removed with the relay");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A relay whose registration can't be written still serves, but says so.
+/// The registration error used to be discarded, so a dev session advertised
+/// MCP discovery for an app no MCP server could find, and `wait_for_app`
+/// ran to its timeout with nothing to explain why.
+#[test]
+fn regression_an_unwritable_registration_is_reported_not_swallowed() {
+    let dir = std::env::temp_dir().join(format!("relay_unwritable_reg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // `.idealyst` is a file, so `.idealyst/robot.json` can't be created.
+    std::fs::write(dir.join(".idealyst"), "not a dir").unwrap();
+    let path = dir.join(".idealyst").join("robot.json");
+    let relay = robot_relay::start(robot_relay::RelayConfig {
+        register: false,
+        identity: Some(robot_relay::Identity {
+            name: "todo".into(),
+            bundle_id: None,
+            project_root: Some(dir.display().to_string()),
+        }),
+        project_registration: Some(path.clone()),
+        ..Default::default()
+    })
+    .expect("the relay itself still starts");
+    assert!(relay.registration_files().is_empty());
+    let errors = relay.registration_errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains(&dir.join(".idealyst").display().to_string()), "{errors:?}");
+    drop(relay);
+    let _ = std::fs::remove_dir_all(&dir);
+}
