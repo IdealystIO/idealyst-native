@@ -16,7 +16,12 @@
 use runtime_scene::Registry;
 use runtime_world::{effect, Value};
 
-use crate::caps::AllCaps;
+use crate::caps::{
+    ActivityIndicatorOps, AllCaps, AssetOps, ButtonOps, IconOps, ImageOps, InputOps,
+    IntrospectionOps, LinkOps, PressableOps, SafeAreaOps, ScrollOps, SliderOps, TextInputOps,
+    TextOps, ToggleOps, ViewOps,
+};
+use crate::style_attach::StyleServices;
 use crate::prims::{
     ActivityIndicatorPrim, ButtonPrim, IconPrim, ImagePrim, LinkPrim, PressablePrim, PrimCell,
     ScrollViewPrim, SliderPrim, TextAreaPrim, TextInputPrim, TextPrim, TogglePrim, ViewPrim,
@@ -88,56 +93,60 @@ pub fn register_builtins<H: AllCaps + 'static>(registry: &mut Registry<H>) {
 // BuiltinSet — per-primitive, opt-in bundle seam
 // ---------------------------------------------------------------------------
 
+// Each `register_*` asks for exactly the capabilities its mount handler
+// uses, not `AllCaps`, so a backend still being written registers the
+// primitives it can draw and implements the rest of the traits later.
+
 /// Register the `view` primitive handler.
-pub fn register_view<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_view<H: ViewOps + InputOps + StyleServices + SafeAreaOps + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ViewPrim>, _>(|cx, p, children| mount_view(cx, p.take(), children));
 }
 /// Register the `text` primitive handler.
-pub fn register_text<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_text<H: TextOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<TextPrim>, _>(|cx, p, children| mount_text(cx, p.take(), children));
 }
 /// Register the `button` primitive handler.
-pub fn register_button<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_button<H: ButtonOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ButtonPrim>, _>(|cx, p, children| mount_button(cx, p.take(), children));
 }
 /// Register the `pressable` primitive handler.
-pub fn register_pressable<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_pressable<H: PressableOps + InputOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<PressablePrim>, _>(|cx, p, children| mount_pressable(cx, p.take(), children));
 }
 /// Register the `image` primitive handler.
-pub fn register_image<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_image<H: ImageOps + StyleServices + AssetOps + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ImagePrim>, _>(|cx, p, children| mount_image(cx, p.take(), children));
 }
 /// Register the `icon` primitive handler.
-pub fn register_icon<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_icon<H: IconOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<IconPrim>, _>(|cx, p, children| mount_icon(cx, p.take(), children));
 }
 /// Register the `link` primitive handler.
-pub fn register_link<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_link<H: LinkOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<LinkPrim>, _>(|cx, p, children| mount_link(cx, p.take(), children));
 }
 /// Register the `toggle` primitive handler.
-pub fn register_toggle<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_toggle<H: ToggleOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<TogglePrim>, _>(|cx, p, children| mount_toggle(cx, p.take(), children));
 }
 /// Register the `slider` primitive handler.
-pub fn register_slider<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_slider<H: SliderOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<SliderPrim>, _>(|cx, p, children| mount_slider(cx, p.take(), children));
 }
 /// Register the `activity_indicator` primitive handler.
-pub fn register_activity_indicator<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_activity_indicator<H: ActivityIndicatorOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ActivityIndicatorPrim>, _>(|cx, p, children| mount_activity_indicator(cx, p.take(), children));
 }
 /// Register the `text_input` primitive handler.
-pub fn register_text_input<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_text_input<H: TextInputOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<TextInputPrim>, _>(|cx, p, children| mount_text_input(cx, p.take(), children));
 }
 /// Register the `text_area` primitive handler.
-pub fn register_text_area<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_text_area<H: TextInputOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<TextAreaPrim>, _>(|cx, p, children| mount_text_area(cx, p.take(), children));
 }
 /// Register the `scroll_view` primitive handler.
-pub fn register_scroll_view<H: AllCaps + 'static>(registry: &mut Registry<H>) {
+pub fn register_scroll_view<H: ScrollOps + SafeAreaOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<ScrollViewPrim>, _>(|cx, p, children| mount_scroll_view(cx, p.take(), children));
 }
 

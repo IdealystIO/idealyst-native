@@ -47,6 +47,17 @@ pub use runtime_world::World;
 pub use crate::caps;
 pub use crate::caps::AllCaps;
 pub use crate::handlers::{register_builtins_with, AllBuiltins, BuiltinSet};
+/// One builtin primitive's handler each, bounded by only the capabilities
+/// that primitive uses — so a backend still being written registers what
+/// it can draw (`register_view` + `register_text` need `ViewOps`,
+/// `TextOps`, `InputOps`, `SafeAreaOps`, `IntrospectionOps` and the style
+/// services) before it implements every trait `register_builtins_with`
+/// asks for.
+pub use crate::handlers::{
+    register_activity_indicator, register_button, register_icon, register_image, register_link,
+    register_pressable, register_scroll_view, register_slider, register_text, register_text_area,
+    register_text_input, register_toggle, register_view,
+};
 
 // --- substrate -------------------------------------------------------------
 pub use runtime_shared::backend::*;

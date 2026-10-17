@@ -108,7 +108,11 @@ share the `Node` type and the structural ops:
 `caps::AllCaps` is the umbrella: a blanket impl makes any type
 implementing all 31 traits `AllCaps` automatically, and
 `register_builtins::<H: AllCaps>()` bounds on it
-(`crates/runtime/vocabulary/src/caps/mod.rs`).
+(`crates/runtime/vocabulary/src/caps/mod.rs`). The per-primitive
+`register_view` / `register_text` / … (re-exported from
+`runtime_vocabulary::backend`) bound on only their primitive's
+capabilities, so a backend can register the primitives it has before it
+implements the rest (`tests/partial_backend.rs`).
 
 **A backend can ship incrementally**, because every capability method
 except a handful of required ones has a default, and the default target is

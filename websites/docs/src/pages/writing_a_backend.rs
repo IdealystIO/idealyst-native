@@ -165,15 +165,19 @@ docs! {
         p("There is one umbrella: ", code("AllCaps"),
           ", a blanket-implemented supertrait of every trait above. ",
           code("register_builtins"), ", ", code("register_builtins_with"),
-          ", the ", code("BuiltinSet"), " methods, and the per-primitive ",
-          code("register_view"), " / ", code("register_text"),
-          " / … helpers all bound on ", code("H: AllCaps"),
-          ", so a backend implements every trait before it registers any \
-           built-in primitive. That is cheap because of the defaults: a \
-           trait you don't support yet is an empty ", code("impl"),
-          ", and its widgets render a labeled \"unsupported\" placeholder \
+          " and the ", code("BuiltinSet"), " methods bound on ",
+          code("H: AllCaps"), ". The per-primitive helpers in ",
+          code("runtime_vocabulary::backend"), " — ", code("register_view"),
+          ", ", code("register_text"), ", … — bound on only what their \
+           primitive uses (", code("register_view"), " needs ",
+          code("ViewOps"), ", ", code("InputOps"), ", ", code("SafeAreaOps"),
+          ", ", code("IntrospectionOps"), " and the style services), so a \
+           backend still being written registers the primitives it can draw \
+           first. Once every trait has an ", code("impl"),
+          " — empty ones are fine: the methods default, and a widget you \
+           haven't implemented renders a labeled \"unsupported\" placeholder \
            (", code("ExternalOps::missing_primitive_placeholder"),
-          ") instead of crashing."),
+          ") — ", code("register_builtins"), " takes over."),
         p("Third-party handlers are different: they bound on just the \
            traits they use. A handler generic over ",
           code("H: StyleServices + TextOps"),
