@@ -38,8 +38,11 @@ features, never the app crate's own, so an app-side
 
 ## Elements
 
-`find_element` / `find_all_elements` take one of `test_id`, `label`,
-`label_contains` or `kind`, and return
+`find_element` / `find_all_elements` / `count_elements` take one of
+`test_id`, `label`, `label_contains` or `kind` (the first present, in that
+order; with none, every element matches). An unknown `kind` is an error.
+`count_elements` returns the number of matches; `find_all_elements` a list
+of elements, and `find_element` the first, shaped
 
 ```json
 {"id": 7, "kind": "Toggle", "test_id": "wifi", "label": null,

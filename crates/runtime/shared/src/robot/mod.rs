@@ -1110,6 +1110,28 @@ mod find_all_tests {
         robot.reset();
     }
 
+    /// Regression: the `count_elements` verb read only `kind`, so
+    /// `count_elements {test_id}` (or `label`) counted EVERY element, and an
+    /// unknown kind silently counted everything too. It now applies the same
+    /// criteria as `find_all_elements`, so a count agrees with the list.
+    #[test]
+    fn regression_count_elements_verb_honors_find_criteria() {
+        use crate::__serde_json::json;
+        let robot = Robot::new();
+        robot.reset();
+        register(entry("row-del"));
+        register(entry("row-del"));
+        register(entry("other"));
+        let count = |args| super::bridge::invoke_command("count_elements", &args);
+
+        assert_eq!(count(json!({ "test_id": "row-del" })).unwrap(), "2");
+        assert_eq!(count(json!({ "test_id": "missing" })).unwrap(), "0");
+        assert_eq!(count(json!({ "kind": "Text" })).unwrap(), "3");
+        assert_eq!(count(json!({})).unwrap(), "3");
+        assert!(count(json!({ "kind": "Buton" })).is_err(), "an unknown kind is an error");
+        robot.reset();
+    }
+
     /// Regression: `snapshot()` must surface an *orphaned* entry — one whose
     /// `parent` points to a freed/recycled slot — as a root, not hide it.
     ///

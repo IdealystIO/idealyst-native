@@ -153,6 +153,9 @@ Exposed tools (the catalog's core set; `list_guides`, `list_primitives`, `list_s
 | `search(query)`                 | Fulltext over names + doc comments.                            |
 | `list_values(filter)`           | Open-set prop values (§4.3.1), filterable by the prop type.    |
 | `describe_macro` / `describe_utility` | Macro / utility record incl. its `snippet` (§5.1).       |
+| `get_docs(name?, query?)`      | Long-form docs for this server's own tools and topics.         |
+
+Tool definitions are deliberately terse (one-line descriptions and parameter docs, minified schemas): a client keeps them in context for the whole session. Return shapes, caveats and workflows live in `crates/mcp/server/docs/*.md` and are fetched with `get_docs`; see the "Tool definitions stay small" section of `crates/mcp/README.md`.
 
 ### 5.1 Snippets on the macro and utility tables
 

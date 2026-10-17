@@ -1295,6 +1295,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **`idealyst mcp`'s tool list is a third of its size; detail moved to
+  `get_docs`** (`mcp-server`). Every tool definition sits in an MCP client's
+  context for the whole session, and the 80 definitions came to 90.9 KB
+  (~25 k tokens) before any call. Descriptions and parameter docs are now
+  one line each, the schemars noise in input schemas (`$schema`, `null`
+  unions, integer formats, struct titles and Rust doc comments) is
+  stripped, and the server instructions no longer repeat the tool list:
+  27.4 KB on the wire. Return shapes, caveats and workflows live in
+  `crates/mcp/server/docs/*.md`, served by the new `get_docs(name?,
+  query?)` tool. `tool_surface_tests` pins a size budget and one docs
+  section per tool.
+
 - **`idealyst mcp` no longer builds the app to refresh its catalog**
   (`idealyst-cli`, new `catalog-scan`, new `runtime-macros-expand`). The
   catalog refresh that runs on every save used to rebuild a binary
@@ -1512,6 +1524,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`count_elements` ignored every criterion but `kind`** (`runtime-shared`,
+  `runtime-vocabulary`). The Robot verb counted ALL elements when asked by
+  `test_id`, `label` or `label_contains`, and an unknown `kind` counted
+  everything too, while `idealyst mcp` advertised those criteria. It now
+  uses the same criteria as `find_all_elements` (one of them, first
+  present, in that order), and an unknown kind is an error.
 
 - **Animations on Windows ran flat out and leaked memory** (`host-win32`).
   The scheduler ticked every `raf_loop` on every drain — and a tick

@@ -89,7 +89,7 @@ docs! {
              code("{id, kind, label, children}"), "."],
             [code("get_children"), " — direct children of an element."],
             [code("get_parent"), " — parent of an element."],
-            [code("count_elements"), " — total mounted elements, optionally filtered by kind."],
+            [code("count_elements"), " — how many elements match the same criteria (every mounted element when none is given)."],
         ),
 
         p("A typical scripted check is \"find by test_id, assert its children \
@@ -290,7 +290,10 @@ docs! {
         "##),
 
         p("…and the model gets every tool on this page as a callable function, \
-           plus the static component catalog."),
+           plus the static component catalog. Tool definitions are kept to a \
+           one-line description each, since a client holds them in context for \
+           the whole session; the model calls ", code("get_docs"), " for a \
+           tool's full parameters, return shape and caveats."),
 
         p("The Robot MCP tools mirror the bridge surface above: ",
           code("find_element"), ", ", code("get_state"), ", ", code("click"),

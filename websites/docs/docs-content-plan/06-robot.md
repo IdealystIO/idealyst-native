@@ -69,7 +69,7 @@ component, signal and navigator operations.
 | `get_snapshot` | The full component hierarchy as a tree of `{id, kind, label, children}`. |
 | `get_children` | Direct children of an element. |
 | `get_parent` | Parent of an element. |
-| `count_elements` | Total mounted elements, optionally filtered by kind. |
+| `count_elements` | How many elements match the same criteria (every mounted element when none is given). |
 
 A typical scripted check is "find by test_id, assert its children
 look right." `get_snapshot` is the heavy hammer when you want to

@@ -15,6 +15,8 @@ mod catalog_status;
 mod dev_runner;
 pub mod lint;
 mod robot_bridge;
+mod schema_minify;
+mod tool_docs;
 mod watch;
 
 pub use app_discovery::{DiscoveredApp, DiscoveryTable};

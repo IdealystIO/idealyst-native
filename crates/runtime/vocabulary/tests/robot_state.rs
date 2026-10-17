@@ -367,3 +367,36 @@ fn regression_the_test_driver_flag_is_readable_without_an_environment() {
     set_test_driven(false);
     assert_eq!(is_test_driven(), std::env::var_os("IDEALYST_TEST_DRIVER").is_some());
 }
+
+/// Regression: the `count_elements` verb read only `kind`, so a count by
+/// `test_id` or `label` counted every element, and an unknown kind counted
+/// everything too. It now uses the `find_all_elements` criteria.
+#[test]
+fn regression_count_elements_verb_honors_find_criteria() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .child(button().test_id("row").label("Go").on_press(|| {}).build())
+                .child(button().test_id("row").label("Go").on_press(|| {}).build())
+                .child(toggle().test_id("t").value(false).build())
+                .build(),
+        )
+    });
+    let count = |args| invoke_command("count_elements", &args);
+    let listed = |args| -> usize {
+        serde_json::from_str::<Vec<serde_json::Value>>(&invoke_command("find_all_elements", &args).unwrap())
+            .unwrap()
+            .len()
+    };
+
+    assert_eq!(count(json!({ "test_id": "row" })).unwrap(), "2");
+    assert_eq!(count(json!({ "label": "Go" })).unwrap(), listed(json!({ "label": "Go" })).to_string());
+    assert_eq!(count(json!({ "kind": "Toggle" })).unwrap(), "1");
+    assert_eq!(count(json!({})).unwrap(), listed(json!({})).to_string());
+    assert!(count(json!({ "kind": "Buton" })).is_err(), "an unknown kind is an error");
+}

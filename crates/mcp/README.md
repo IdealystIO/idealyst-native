@@ -82,6 +82,34 @@ the SDK crate's own docs/README. A registry that lets tools browse
 *available-but-unlinked* SDKs would be a separate surface from this
 link-time catalog.
 
+## Tool definitions stay small
+
+An MCP client loads every tool definition into the model's context and
+keeps it there for the whole session, so `mcp-server` treats the size of
+its tool list as a budget. Each tool carries a one-line description and
+one-line parameter docs, and nothing else:
+
+- **Long-form docs live in [`server/docs/`](./server/docs)**, one markdown
+  topic per tool group (`catalog`, `robot`, `dev`, `project`, plus
+  `overview` and `app`). A `## tool_name` heading is that tool's doc. The
+  `get_docs` tool serves them on demand: `get_docs()` lists the topics,
+  `get_docs(name)` returns a topic or a tool's page (summary, parameters
+  read from its live schema, then its section), and `query` keeps only the
+  matching sections, within one doc or across all of them.
+- **Advertised schemas are minified** (`server/src/schema_minify.rs`):
+  the `$schema` URI, `null` unions for `Option`, integer-width formats and
+  the args struct's own title and Rust doc comment are stripped before a
+  client sees them. Deserialization still goes through the same typed
+  structs.
+- **Tests hold the line** (`tool_surface_tests` in `catalog_service.rs`):
+  a total size budget, per-description and per-parameter limits, exactly
+  one docs section per registered tool, and no section naming a tool that
+  doesn't exist.
+
+Adding a tool means a short `#[tool(description = …)]` plus a
+`## tool_name` section in the matching topic; the tests fail until both
+exist.
+
 ## Robot is the other half
 
 The catalog is the *static* view. Robot (in `runtime-core` under a

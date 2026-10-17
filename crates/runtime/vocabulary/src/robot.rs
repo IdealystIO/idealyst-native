@@ -2153,8 +2153,11 @@ pub mod bridge {
                 }
             }
             "count_elements" => {
-                let kind = args["kind"].as_str().and_then(parse_element_kind);
-                Ok(robot.count(kind).to_string())
+                // Same criteria as `find_all_elements`, so a count always
+                // agrees with the list it counts (and an unknown kind errors
+                // instead of counting everything).
+                let query = parse_query(args)?;
+                Ok(robot.find_all(query).len().to_string())
             }
             "get_frame" => {
                 let el = resolve_element(args)?;
