@@ -209,7 +209,7 @@ impl MarkdownBound {
     /// and fills the ref.
     pub fn bind(mut self, r: Ref<MarkdownHandle>) -> Self {
         self.ref_fill = Some(Box::new(move |node_any| {
-            r.fill(MarkdownHandle { node: node_any });
+            runtime_vocabulary::glue::fill_ref_while_mounted(r, MarkdownHandle { node: node_any });
         }));
         self
     }

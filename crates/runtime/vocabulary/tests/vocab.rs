@@ -2219,7 +2219,7 @@ mod p6_glue {
         let r: Ref<Rc<Cell<u32>>> = Ref::new();
         let realized = h.world.enter(|| {
             let element = runtime_scene::component_scope(|| {
-                glue::__fill_ref_while_mounted(r, Rc::new(Cell::new(0)));
+                glue::fill_ref_while_mounted(r, Rc::new(Cell::new(0)));
                 view().build()
             });
             realize(&h.backend, &h.registry, element)

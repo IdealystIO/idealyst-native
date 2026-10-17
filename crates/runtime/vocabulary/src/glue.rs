@@ -176,9 +176,9 @@ pub use runtime_shared::{Ref, ViewHandle};
 /// state. A later fill of the same ref (a remount that landed first) is
 /// left in place. Call where effect creation is legal — a mount handler
 /// or a component body; every `bind` setter and the `#[method]`
-/// component's `bind_to` go through here.
-#[doc(hidden)]
-pub fn __fill_ref_while_mounted<H: 'static>(r: Ref<H>, handle: H) {
+/// component's `bind_to` go through here, and an extension's mount
+/// handler that hands an author a handle should too.
+pub fn fill_ref_while_mounted<H: 'static>(r: Ref<H>, handle: H) {
     let lease = r.fill_owned(handle);
     crate::style_attach::on_teardown(move || lease.release());
 }
@@ -1657,7 +1657,7 @@ impl GlueKeyboardAvoidingView {
 
     /// Fill a `Ref<ViewHandle>` with this view's handle at mount.
     pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
-        self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+        self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
         self
     }
 }
@@ -1832,7 +1832,7 @@ pub mod primitives {
 
             /// Fill `r` with the mounted node's handle.
             pub fn bind(mut self, r: super::super::Ref<ImageHandle>) -> Self {
-                self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+                self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
                 self
             }
 
@@ -1965,7 +1965,7 @@ pub mod primitives {
 
             /// Fill `r` with the mounted node's handle.
             pub fn bind(mut self, r: super::super::Ref<TextInputHandle>) -> Self {
-                self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+                self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
                 self
             }
 
@@ -2083,7 +2083,7 @@ pub mod primitives {
 
             /// Fill `r` with the mounted node's handle.
             pub fn bind(mut self, r: super::super::Ref<ScrollViewHandle>) -> Self {
-                self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+                self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
                 self
             }
         }
@@ -2791,7 +2791,7 @@ pub mod primitives {
 
             /// Fill `r` with the mounted node's handle.
             pub fn bind(mut self, r: super::super::Ref<TextAreaHandle>) -> Self {
-                self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+                self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
                 self
             }
         }
@@ -3705,7 +3705,7 @@ impl GluePressable {
 
     /// Fill `r` with the mounted node's handle.
     pub fn bind(mut self, r: Ref<PressableHandle>) -> Self {
-        self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+        self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
         self
     }
 }
@@ -3715,7 +3715,7 @@ glue_wrapper_common!(GluePressable);
 impl GlueView {
     /// Fill `r` with the mounted node's handle.
     pub fn bind(mut self, r: Ref<ViewHandle>) -> Self {
-        self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+        self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
         self
     }
 }
@@ -3723,7 +3723,7 @@ impl GlueView {
 impl GlueText {
     /// Fill `r` with the mounted node's handle.
     pub fn bind(mut self, r: Ref<TextHandle>) -> Self {
-        self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+        self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
         self
     }
 }
@@ -3731,7 +3731,7 @@ impl GlueText {
 impl GlueButton {
     /// Fill `r` with the mounted node's handle.
     pub fn bind(mut self, r: Ref<runtime_shared::ButtonHandle>) -> Self {
-        self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+        self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
         self
     }
 }
@@ -3783,7 +3783,7 @@ impl GlueIcon {
 
     /// Fill `r` with the mounted node's handle.
     pub fn bind(mut self, r: Ref<runtime_shared::IconHandle>) -> Self {
-        self.b = self.b.on_handle(move |h| crate::glue::__fill_ref_while_mounted(r, h));
+        self.b = self.b.on_handle(move |h| crate::glue::fill_ref_while_mounted(r, h));
         self
     }
 }

@@ -314,7 +314,7 @@ pub trait WebViewBind {
 impl WebViewBind for WebViewBound {
     fn bind(mut self, r: Ref<WebViewHandle>) -> Self {
         self.ref_fill = Some(Box::new(move |node_any| {
-            r.fill(WebViewHandle::new(node_any, OPS));
+            runtime_vocabulary::glue::fill_ref_while_mounted(r, WebViewHandle::new(node_any, OPS));
         }));
         self
     }

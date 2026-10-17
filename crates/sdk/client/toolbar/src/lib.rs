@@ -257,7 +257,7 @@ pub trait ToolbarBind {
 impl ToolbarBind for ToolbarBound {
     fn bind(mut self, r: Ref<ToolbarHandle>) -> Self {
         self.ref_fill = Some(Box::new(move |node_any| {
-            r.fill(ToolbarHandle::new(node_any, OPS));
+            runtime_vocabulary::glue::fill_ref_while_mounted(r, ToolbarHandle::new(node_any, OPS));
         }));
         self
     }

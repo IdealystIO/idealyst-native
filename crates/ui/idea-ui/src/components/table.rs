@@ -492,7 +492,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
 
     let row = sdk_row(SdkTableRowProps { children }).into_element();
     if let Some(r) = props.bind_to {
-        table::bind_row(&row, move |h| r.fill(h));
+        table::bind_row(&row, move |h| runtime_core::fill_ref_while_mounted(r, h));
     }
     row
 }

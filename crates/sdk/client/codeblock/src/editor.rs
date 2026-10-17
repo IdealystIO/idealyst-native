@@ -485,7 +485,7 @@ impl CodeEditorBuilder {
         self,
         r: runtime_shared::reactive::Ref<runtime_shared::primitives::text_area::TextAreaHandle>,
     ) -> Self {
-        self.on_handle(move |h| r.fill(h))
+        self.on_handle(move |h| runtime_vocabulary::glue::fill_ref_while_mounted(r, h))
     }
 
     /// Bind the editing layer's imperative handle — `focus()`,

@@ -245,7 +245,9 @@ impl SwapBuilder for SwapNavigator {
     fn bind(mut self, r: Ref<SwapHandle>) -> Self {
         self.b = self
             .b
-            .on_handle(move |handle| r.fill(SwapHandle::from_inner(handle)));
+            .on_handle(move |handle| {
+                runtime_vocabulary::glue::fill_ref_while_mounted(r, SwapHandle::from_inner(handle))
+            });
         self
     }
 }

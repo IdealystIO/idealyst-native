@@ -329,7 +329,7 @@ pub trait SvgBind {
 impl SvgBind for SvgBound {
     fn bind(mut self, r: Ref<SvgHandle>) -> Self {
         self.ref_fill = Some(Box::new(move |node_any| {
-            r.fill(SvgHandle::new(node_any, OPS));
+            runtime_vocabulary::glue::fill_ref_while_mounted(r, SvgHandle::new(node_any, OPS));
         }));
         self
     }

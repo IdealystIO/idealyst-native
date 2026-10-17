@@ -466,7 +466,7 @@ pub trait VideoBind {
 impl VideoBind for VideoBound {
     fn bind(mut self, r: Ref<VideoHandle>) -> Self {
         self.ref_fill = Some(Box::new(move |node_any| {
-            r.fill(VideoHandle::new(node_any, OPS));
+            runtime_vocabulary::glue::fill_ref_while_mounted(r, VideoHandle::new(node_any, OPS));
         }));
         self
     }
