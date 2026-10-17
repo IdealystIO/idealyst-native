@@ -370,7 +370,11 @@ fn is_region_rooted(element: &Element) -> bool {
 /// This is what `#[component]` wraps function bodies in, built on the
 /// kernel's [`component_scope`](runtime_world::component_scope) collector.
 pub fn component_scope(f: impl FnOnce() -> Element) -> Element {
-    let (element, owned) = runtime_world::component_scope(f);
+    // The component's body builds in its own `use_id` frame, seated in
+    // the frame it was written in (see `id_frame`).
+    let seat = crate::id_frame::take_seat();
+    let (element, owned) =
+        crate::id_frame::with_frame(seat, || runtime_world::component_scope(f));
     if owned.is_empty() {
         element
     } else {
@@ -457,10 +461,23 @@ impl DynSpec {
 /// Deliberately explicit: swapping a subtree is heavier than rebinding a
 /// value prop, so it should be visible at the call site.
 pub fn dyn_element(f: impl Fn() -> Element + 'static) -> Element {
+    let f = framed_builds(f);
     Element::Dyn(DynSpec {
         kind: DynKind::Plain(Box::new(f)),
         retire: None,
     })
+}
+
+/// Wrap a hole's build so each run opens a `use_id` frame under the seat
+/// the hole took where it was written, numbered by the build: the driver
+/// calls it later, outside that frame (see `id_frame`).
+fn framed_builds(build: impl Fn() -> Element + 'static) -> impl Fn() -> Element + 'static {
+    let seat = crate::id_frame::take_seat();
+    let builds = std::cell::Cell::new(0u64);
+    move || {
+        let n = builds.replace(builds.get() + 1);
+        crate::id_frame::with_frame(crate::id_frame::mix(seat, n), || build())
+    }
 }
 
 /// A GUARDED structural hole: `select` runs tracked and produces a guard
@@ -486,6 +503,10 @@ where
     // closure (reads it) — the driver calls them in that order.
     let last: Rc<RefCell<Option<K>>> = Rc::new(RefCell::new(None));
     let last_build = Rc::clone(&last);
+    let build = framed_builds(move || {
+        let guard = last_build.borrow();
+        build(guard.as_ref().expect("guard key is set before build"))
+    });
     Element::Dyn(DynSpec {
         kind: DynKind::Guarded {
             changed: Box::new(move || {
@@ -496,10 +517,7 @@ where
                 *last.borrow_mut() = Some(key);
                 true
             }),
-            build: Box::new(move || {
-                let guard = last_build.borrow();
-                build(guard.as_ref().expect("guard key is set before build"))
-            }),
+            build: Box::new(build),
         },
         retire: None,
     })
@@ -512,6 +530,7 @@ where
 /// [`DynSpec::into_parts`] — a remote component's hole, rebuilt on the host
 /// with each half calling back into the bundle that owns the guard state.
 pub fn dyn_guarded(changed: impl Fn() -> bool + 'static, build: impl Fn() -> Element + 'static) -> Element {
+    let build = framed_builds(build);
     Element::Dyn(DynSpec {
         kind: DynKind::Guarded { changed: Box::new(changed), build: Box::new(build) },
         retire: None,
@@ -575,16 +594,22 @@ where
     K: Into<Key>,
     RF: Fn(T) -> Element + 'static,
 {
+    // Each row builds in a `use_id` frame seeded by its key under the
+    // list's seat, so a row keeps its ids when the list reorders.
+    let seat = crate::id_frame::take_seat();
     Element::Keyed {
         items: Box::new(move || {
             items()
                 .into_iter()
-                .map(|item| (key(&item).into(), Box::new(item) as Box<dyn Any>))
+                .map(|item| {
+                    let k: Key = key(&item).into();
+                    (k.clone(), Box::new((k, item)) as Box<dyn Any>)
+                })
                 .collect()
         }),
         render: Box::new(move |data| {
-            let item = *data.downcast::<T>().expect("keyed list: item type mismatch");
-            render(item)
+            let (k, item) = *data.downcast::<(Key, T)>().expect("keyed list: item type mismatch");
+            crate::id_frame::with_frame(crate::id_frame::key_seed(seat, &k), || render(item))
         }),
     }
 }

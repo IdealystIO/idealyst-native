@@ -1098,18 +1098,12 @@ where
     (state, dispatch)
 }
 
-// Stable per-position identifiers. Pure thread-local reads over
-// `runtime_shared::identity`. `runtime_core::use_id()` is documented on
-// the docs site.
-//
-// ⚠️ Contract caveat: `use_id()` derives from the AMBIENT identity, which
-// the scene realizer does not set per emission, so every call currently
-// answers from `Identity::UNIDENTIFIED` — stable and non-panicking, but
-// NOT per-position-unique. `with_current_identity` works for callers that
-// establish it themselves. Pinned by `glue_reactive_surface.rs`.
-pub use runtime_shared::{
-    current_identity, hash_key, use_id, use_id_keyed, with_current_identity, Identity,
-};
+// Per-position ids for markup (`use_id`, `use_id_keyed`): the scene's
+// build frames — unique in a tree, the same on every build of the same
+// tree (see `runtime_scene`'s `id_frame`). The structural `Identity`
+// hashes are runtime-shared's.
+pub use runtime_scene::{use_id, use_id_keyed};
+pub use runtime_shared::{current_identity, hash_key, with_current_identity, Identity};
 
 /// The dependency-source trait `on` / `on_defer` are generic over: a
 /// tracked read of the current value.

@@ -1357,6 +1357,10 @@ impl Engine for Native {
         world_enter(world, f)
     }
     #[inline]
+    fn ambient_world() -> Option<WorldId> {
+        TLS.try_with(|t| t.borrow().enter_stack.last().copied()).ok().flatten()
+    }
+    #[inline]
     fn world_flush(world: WorldId) {
         if let Some(arena) = arena_of(world) {
             flush_arena(&arena);

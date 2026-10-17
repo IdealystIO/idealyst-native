@@ -28,6 +28,12 @@ use rustc_hash::FxHashMap;
 use super::{GuestHooks, Handle, HostOps, Id, ImportSync, StageMode};
 use crate::engine::{Access, AnySignal, EffectClass, Engine, WorldId};
 use crate::native;
+
+runtime_tls::thread_local! {
+    /// The worlds this bundle's own `World::enter` calls entered,
+    /// innermost last — what `Engine::ambient_world` answers here.
+    static GUEST_ENTERED: RefCell<Vec<WorldId>> = const { RefCell::new(Vec::new()) };
+}
 use crate::SiteLoc;
 
 /// The bridged engine, generic over its transport to the host.
@@ -421,14 +427,22 @@ impl<H: HostOps> Engine for Bridged<H> {
     }
     fn world_enter<R>(world: WorldId, f: impl FnOnce() -> R) -> R {
         H::enter_push(world);
+        GUEST_ENTERED.with(|e| e.borrow_mut().push(world));
         struct Guard<H: HostOps>(PhantomData<fn() -> H>);
         impl<H: HostOps> Drop for Guard<H> {
             fn drop(&mut self) {
+                let _ = GUEST_ENTERED.try_with(|e| e.borrow_mut().pop());
                 H::enter_pop();
             }
         }
         let _guard = Guard::<H>(PhantomData);
         f()
+    }
+    /// The innermost world this bundle entered itself. A world the host
+    /// entered before calling in is not visible from here (the import ABI
+    /// has no query for it), so code the host calls reads `None`.
+    fn ambient_world() -> Option<WorldId> {
+        GUEST_ENTERED.try_with(|e| e.borrow().last().copied()).ok().flatten()
     }
     fn world_flush(world: WorldId) {
         H::world_flush(world)

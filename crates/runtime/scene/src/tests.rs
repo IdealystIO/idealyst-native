@@ -2254,3 +2254,64 @@ fn regression_region_rerealize_reenters_mount_time_context() {
         assert_eq!(AMBIENT.with(|a| a.get()), 0);
     }
 }
+
+/// A keyed row's `use_id`s come from its key: the same key answers the
+/// same id wherever the row sits, even when it is unmounted and mounted
+/// again, and different keys differ.
+#[test]
+fn keyed_rows_take_use_ids_from_their_keys() {
+    let rig = Rig::new(true);
+    let seen: Rc<RefCell<Vec<(i32, String)>>> = Rc::default();
+    let list = rig.world.enter(|| signal(vec![1i32, 2]));
+    let seen_b = seen.clone();
+    let shell = rig.realize(v(vec![keyed(
+        move || list.get(),
+        |n| *n,
+        move |n: i32| {
+            seen_b.borrow_mut().push((n, crate::use_id()));
+            t(&format!("r{n}"))
+        },
+    )]));
+    let id = |n: i32| seen.borrow().iter().rev().find(|(k, _)| *k == n).unwrap().1.clone();
+    let (one, two) = (id(1), id(2));
+    assert_ne!(one, two);
+    list.set(vec![2]);
+    rig.flush();
+    list.set(vec![1, 2]); // row 1 mounts again, now in a different render order
+    rig.flush();
+    assert_eq!(seen.borrow().len(), 3, "row 2 was kept, row 1 rendered twice");
+    assert_eq!(id(1), one, "a remounted row's id follows its key");
+    drop(shell);
+}
+
+/// Each build of a structural hole opens a fresh `use_id` frame, so a
+/// rebuilt branch never reuses a previous build's ids — and the first
+/// build is the same in every world.
+#[test]
+fn a_rebuilt_hole_gets_fresh_use_ids() {
+    let ids_in_world = || {
+        let rig = Rig::new(true);
+        let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+        let flag = rig.world.enter(|| signal(false));
+        let seen_b = seen.clone();
+        // Built inside the world, as an app's tree is.
+        let element = rig.world.enter(|| {
+            v(vec![dyn_keyed(
+                move || flag.get(),
+                move |_| {
+                    seen_b.borrow_mut().push(crate::use_id());
+                    t("branch")
+                },
+            )])
+        });
+        let shell = rig.realize(element);
+        flag.set(true);
+        rig.flush();
+        drop(shell);
+        Rc::try_unwrap(seen).unwrap().into_inner()
+    };
+    let first = ids_in_world();
+    assert_eq!(first.len(), 2);
+    assert_ne!(first[0], first[1], "the rebuild got a fresh id");
+    assert_eq!(ids_in_world(), first, "the same tree in a new world answers the same ids");
+}

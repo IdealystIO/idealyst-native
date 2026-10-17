@@ -217,51 +217,50 @@ fn glue_reducer_notifies_even_when_the_fold_is_a_no_op() {
 // ---------------------------------------------------------------------------
 
 /// `use_id` / `use_id_keyed` / `hash_key` / `Identity` /
-/// `with_current_identity` reach authors again. The deletion baseline
-/// lists `runtime_shared::identity` as an explicit survivor (§4.2), so
-/// their absence from the facade was an oversight.
+/// `with_current_identity` reach authors through the facade.
 #[test]
 fn glue_reexports_the_identity_surface() {
     let a = glue::Identity::node(glue::Identity::UNIDENTIFIED, 0, None, None);
     let b = glue::Identity::node(glue::Identity::UNIDENTIFIED, 1, None, None);
     assert_ne!(a, b, "distinct slots must produce distinct identities");
-
-    let in_a = glue::with_current_identity(a, glue::use_id);
-    let in_b = glue::with_current_identity(b, glue::use_id);
-    assert_ne!(in_a, in_b, "use_id must discriminate by ambient identity");
-    assert!(in_a.starts_with("ui-"), "documented format, got {in_a}");
-
-    let keyed_name = glue::with_current_identity(a, || glue::use_id_keyed("name"));
-    let keyed_age = glue::with_current_identity(a, || glue::use_id_keyed("age"));
-    assert_ne!(keyed_name, keyed_age);
-
+    assert!(glue::use_id().starts_with("ui-"), "documented format");
+    assert_ne!(glue::use_id_keyed("name"), glue::use_id_keyed("age"));
     assert_eq!(glue::hash_key("x"), glue::hash_key("x"));
     assert_eq!(glue::current_identity(), glue::Identity::UNIDENTIFIED);
 }
 
-/// ⚠️ **Known gap, pinned rather than hidden.**
-///
-/// `use_id()`'s documented contract is "deterministic per position in the
-/// tree": two components at different positions get different ids. The
-/// renderer (`runtime_scene::realize`) does NOT set an ambient identity
-/// per emission, so `use_id()` answers from `Identity::UNIDENTIFIED`
-/// everywhere and every call site in a tree returns the SAME string.
-///
-/// It is stable and non-panicking, so nothing crashes — which is exactly
-/// why it needs a test: a silently-degraded id generator is the kind of
-/// thing that ships. This test documents the current answer. When the
-/// renderer starts seeding identity per mount site (the same change that
-/// enables the dev-server recorder's identity-keyed `NodeId` reuse),
-/// this test goes red and
-/// should be replaced with a per-position-uniqueness assertion.
+/// Regression: every `use_id()` call in a tree answered the same string
+/// (the renderer seeded no identity), so two fields' `<label for>` ids
+/// collided. Ids differ by position and per call, and the same tree built
+/// in a fresh world — a server request, the hydrating client — answers the
+/// same ids again.
 #[test]
-fn use_id_is_currently_position_independent_because_the_renderer_seeds_no_identity() {
-    let outside = glue::use_id();
-    let unidentified = glue::with_current_identity(glue::Identity::UNIDENTIFIED, glue::use_id);
-    assert_eq!(
-        outside, unidentified,
-        "with no ambient identity, use_id answers from the UNIDENTIFIED sentinel"
-    );
+fn regression_use_id_is_unique_per_position_and_stable_per_tree() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let build = |ids: Rc<RefCell<Vec<String>>>| {
+        let field = |ids: Rc<RefCell<Vec<String>>>| {
+            runtime_scene::component_scope(move || {
+                ids.borrow_mut().push(glue::use_id());
+                ids.borrow_mut().push(glue::use_id());
+                ids.borrow_mut().push(glue::use_id_keyed("hint"));
+                runtime_scene::fragment(Vec::new())
+            })
+        };
+        runtime_scene::component_scope(|| {
+            runtime_scene::fragment(vec![field(ids.clone()), field(ids.clone())])
+        })
+    };
+    let run = || {
+        let ids = Rc::new(RefCell::new(Vec::new()));
+        let world = runtime_world::World::new();
+        world.enter(|| drop(build(ids.clone())));
+        Rc::try_unwrap(ids).unwrap().into_inner()
+    };
+    let first = run();
+    let unique: std::collections::HashSet<_> = first.iter().collect();
+    assert_eq!(unique.len(), first.len(), "every id distinct: {first:?}");
+    assert_eq!(run(), first, "a fresh world builds the same ids");
 }
 
 // ---------------------------------------------------------------------------

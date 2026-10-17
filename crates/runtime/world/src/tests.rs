@@ -3555,3 +3555,24 @@ mod host_owned_values {
         assert_eq!(host_get(native), 6);
     }
 }
+
+#[test]
+fn world_local_is_one_value_per_world_created_once() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    #[derive(Clone)]
+    struct Counter(Rc<Cell<u32>>);
+    let make = || Counter(Rc::new(Cell::new(0)));
+    assert!(crate::world_local(make).is_none(), "outside every enter");
+    let a = World::new();
+    let b = World::new();
+    a.enter(|| {
+        crate::world_local(make).unwrap().0.set(5);
+        assert_eq!(crate::world_local(make).unwrap().0.get(), 5, "the same value on the next ask");
+        b.enter(|| assert_eq!(crate::world_local(make).unwrap().0.get(), 0, "the nested world has its own"));
+        assert_eq!(crate::world_local(make).unwrap().0.get(), 5);
+    });
+    drop(a);
+    let c = World::new();
+    c.enter(|| assert_eq!(crate::world_local(make).unwrap().0.get(), 0, "a new world starts fresh"));
+}

@@ -779,7 +779,7 @@ named:
 
 | Item | What is different |
 | --- | --- |
-| `use_id()` / `use_id_keyed(k)` | 🔴 **Position-independence is currently lost.** The documented contract is "deterministic per position in the tree", which the OLD walker delivered by calling `with_current_identity` before every emission (`runtime-core/src/walker.rs::build`). `runtime_scene::realize` sets no ambient identity, so every call answers from `Identity::UNIDENTIFIED` and all call sites in a tree return the SAME string. Stable and non-panicking, so nothing crashes. `with_current_identity` still works for callers that establish identity themselves. Pinned by `glue_reactive_surface.rs::use_id_is_currently_position_independent_because_the_renderer_seeds_no_identity`, which goes red when the renderer starts seeding — the same change that restores the dev-server recorder's identity-keyed `NodeId` reuse across hot-reload rebuilds |
+| `use_id()` / `use_id_keyed(k)` | ✅ Unique per position again: every component build and every structural hole (`when` / `match` branches, keyed rows) opens an id frame in `runtime_scene` (`id_frame`), so ids differ by position and per call, are the same on every build of the same tree (and per world — a server request and the hydrating client agree), and a keyed row's ids follow its key. `with_current_identity` / `Identity` are the separate structural-hash surface and don't affect `use_id`. |
 
 #### Gone by decision — with the replacement
 

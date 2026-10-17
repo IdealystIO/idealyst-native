@@ -589,21 +589,22 @@ docs! {
     section(heading = "use_id() — stable identifiers") {
         p(code("use_id()"), " returns a string id of the form ",
           code("ui-<16 hex chars>"),
-          ", derived from the current component identity. It is stable \
-           and safe to use as an HTML id or ARIA target."),
-        p("It is NOT unique per component today. The realizer doesn't set \
-           a per-position identity, so every ", code("use_id()"),
-          " call in an app returns the same string. When you need distinct \
-           ids — label/input pairing, ", code("aria-controls"),
-          " — use ", code("use_id_keyed(&key)"),
-          " with a key that is unique within the app:"),
+          ", for markup that pairs elements — a label and its input, ",
+          code("aria-controls"), ". Each call answers a different id, and \
+           the same component at the same place in the tree answers the same \
+           ids on every build, so a server render and the client that \
+           hydrates it agree. A row of a keyed ", code("for"),
+          " list takes its ids from its key, so they follow the row when the \
+           list reorders."),
+        p(code("use_id_keyed(&key)"), " mixes a key into the component's \
+           position instead of taking the next id — the same key in the same \
+           component answers the same id however many other ids it asked for \
+           first:"),
         code(rust, r##"
-            use runtime_core::use_id_keyed;
+            use runtime_core::{use_id, use_id_keyed};
 
-            // The key must be unique app-wide: use_id_keyed only mixes it
-            // into the shared base id.
-            let name_id = use_id_keyed(&("signup-form", "name"));
-            let email_id = use_id_keyed(&("signup-form", "email"));
+            let field = use_id();                  // this field's own id
+            let hint = use_id_keyed(&"hint");      // its help text's id
         "##),
     },
 

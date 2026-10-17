@@ -951,6 +951,26 @@ pub fn current_effect() -> Option<Effect> {
     Some(Effect { world, slot, gen, _marker: PhantomData })
 }
 
+/// The ambient world's world-lifetime value of type `T` — created by
+/// `init` the first time it is asked for, then the same value (a clone of
+/// it) every time, until the world drops. `None` outside every
+/// [`World::enter`]. Keyed by `T` in the world's context, like
+/// [`World::provide`]: use a private type so nothing else shares the
+/// entry. For per-world state reached without the `World` value —
+/// `runtime_scene`'s `use_id` counters restart in each world this way, so
+/// a server render (one world per request) mints the ids the hydrating
+/// client does.
+pub fn world_local<T: Clone + 'static>(init: impl FnOnce() -> T) -> Option<T> {
+    let world = Active::ambient_world()?;
+    let key = TypeId::of::<T>();
+    if let Some(value) = Active::world_inject(world, key, |v| v.downcast_ref::<T>().cloned()).flatten() {
+        return Some(value);
+    }
+    let value = init();
+    Active::world_provide(world, key, Box::new(value.clone()));
+    Some(value)
+}
+
 /// True while an ownership collector ([`collect_owned`]) is active on
 /// this thread — i.e. a signal/effect created right now would be owned
 /// by a component subtree's [`Owned`], not the world root.

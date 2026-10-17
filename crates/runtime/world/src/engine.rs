@@ -97,6 +97,8 @@ pub(crate) trait Engine {
     /// `World::enter`: make `world` the ambient creation context for `f`
     /// (a stack; panic-safe restore).
     fn world_enter<R>(world: WorldId, f: impl FnOnce() -> R) -> R;
+    /// The innermost entered world, if any (`world_local`).
+    fn ambient_world() -> Option<WorldId>;
     /// `World::flush`.
     fn world_flush(world: WorldId);
     /// `World::is_flushing`.
