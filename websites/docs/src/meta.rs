@@ -324,8 +324,8 @@ pub enum DocConcept {
     /// `template_parts`, `initial_values`, and a `compute_fallback`
     /// closure. Backends that opt into JS-side bindings (web)
     /// process this variant without installing a per-leaf Rust
-    /// Effect; non-opting backends use `compute_fallback` via the
-    /// normal `Bound` Effect path. Authoritative explainer:
+    /// Effect; non-opting backends use `compute_fallback` through an
+    /// ordinary effect. Authoritative explainer:
     /// `reactive-text-bindings` page.
     JsBinding,
     /// F-string text (`text { "count: {count}" }`) — a string
@@ -347,10 +347,8 @@ pub enum DocConcept {
 
     // ---- Components ----
     Component,
-    /// The `methods!` block surface.
+    /// `#[method]` fns on a component and the handle they generate.
     ComponentMethods,
-    Bindable,
-    Bound,
     Props,
     /// `#[component(default(...))]` per-prop defaults.
     Defaults,
@@ -610,8 +608,6 @@ impl DocConcept {
 
             DocConcept::Component => "Component",
             DocConcept::ComponentMethods => "methods!",
-            DocConcept::Bindable => "Bindable",
-            DocConcept::Bound => "Bound",
             DocConcept::Props => "Props",
             DocConcept::Defaults => "Component defaults",
 
@@ -741,8 +737,6 @@ impl DocConcept {
 
             DocConcept::Component => "component",
             DocConcept::ComponentMethods => "component-methods",
-            DocConcept::Bindable => "bindable",
-            DocConcept::Bound => "bound",
             DocConcept::Props => "props",
             DocConcept::Defaults => "defaults",
 

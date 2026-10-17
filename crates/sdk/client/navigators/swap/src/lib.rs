@@ -57,9 +57,8 @@
 //! fillable flex region (`flex: 1 1 0` + `min-height: 0` —
 //! `outlet_fill_rules`), so screens that assume they can fill — and
 //! scroll views that need a bounded height — work with zero
-//! configuration. Override either by styling it directly:
-//! `.with_style(...)` on the navigator builder,
-//! `ctx.outlet.with_style(...)` on the outlet.
+//! configuration. Neither the builder nor the outlet has a style setter;
+//! to size either differently, wrap it in a styled `view`.
 //!
 //! # The outlet is one-shot — keep it in one stable spot
 //!

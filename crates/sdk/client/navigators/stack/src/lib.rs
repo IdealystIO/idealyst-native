@@ -129,9 +129,8 @@
 //! # Sizing
 //!
 //! The navigator's root **fills its container by default** (width/height
-//! 100% + `flex-grow: 1` — `navigator_fill_rules`). Override by styling
-//! the navigator element itself:
-//! `StackNavigator::new(&home)…​.with_style(my_style)`.
+//! 100% + `flex-grow: 1` — `navigator_fill_rules`). The builder has no
+//! style setter; to size it differently, wrap it in a styled `view`.
 //!
 //! # Screen retention — what happens below the top
 //!
@@ -221,8 +220,8 @@ pub fn header_state(screen_chrome: &Signal<ScreenChrome>) -> Option<StackHeaderS
 
 /// Per-screen header options for a stack navigator: title,
 /// leading/trailing [`HeaderButton`] slots, `hide_header`, plus the
-/// native-mobile `back_enabled` / `fullscreen` requests (carried, and
-/// consumed once a native push surface lands). Set them via
+/// native-mobile `back_enabled` / `fullscreen` requests (carried on the
+/// options; the stack presenters do not read them). Set them via
 /// [`StackScreenExt`] on the [`Screen`] a `.screen(...)` render closure
 /// returns.
 #[derive(Clone)]

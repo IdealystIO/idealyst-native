@@ -51,8 +51,8 @@ pub enum ServerError<E = String> {
     /// schema hashes differ (DESIGN.md §5), or when a `strict_version` endpoint
     /// rejects a hash mismatch up front. This is the actionable "your app is
     /// outdated" signal, deliberately distinct from a same-version
-    /// [`Self::Codec`] bug. (The negotiation that produces it lands in a later
-    /// phase; the variant is defined now so the wire enum is stable.)
+    /// [`Self::Codec`] bug. The server answers it as a `426 Upgrade Required`
+    /// carrying both schema hashes, which the client maps back to this variant.
     #[error("incompatible version for '{path}' (client schema {client_schema:#x}, server schema {server_schema:#x})")]
     IncompatibleVersion {
         path: String,
