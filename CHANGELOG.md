@@ -15,6 +15,31 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Token sets own their names; idea's theme is a `#[derive(Tokens)]`
+  set** (`runtime-vocabulary`, `runtime-macros-expand`, `idea-theme`).
+  A token set installing a name another, unrelated set already installed
+  now panics — in release builds too — naming both sets and the token,
+  instead of silently overwriting it. `IdeaThemeDefaults` derives
+  `Tokens` (same token names, same install order, byte-identical CSS —
+  the website's SSG corpus is unchanged), so `install_idea_theme` claims
+  idea's names: an app `#[derive(Tokens)]` set naming `spacing-md`,
+  `color-surface` (…) now fails at install. Untyped `install_tokens` /
+  `update_tokens` writes are not checked. New derive attributes:
+  `#[tokens(flatten)]` (embed another set — an app theme built on idea's
+  keeps idea's names and accessors, and may share them), `rename`, `as`,
+  `computed(…)`, `vocabulary`; and `AppTheme::current()` /
+  `try_current()` read the active theme struct reactively.
+  idea's vocabulary types (`IdeaTokens`, `ColorTokens`, `PrimaryTokens`,
+  `SpacingTokens`, …) are now aliases of the derived accessor types: every
+  accessor (`t.color.surface()`, `t.radius.pill()`) is unchanged, but the
+  seven intent and twelve hue aliases are ONE type, and the per-namespace
+  `NAMES` / `DESCRIPTORS` consts, `RadiusTokens::PILL` and
+  `RadiusTokens::PILL_DESCRIPTOR` are gone. *Migration:* give a colliding
+  app set `#[tokens(prefix = "app")]`, or build it on idea's with
+  `#[tokens(flatten)] idea: IdeaThemeDefaults`; read names from
+  `IdeaThemeDefaults::NAMES` (`use runtime_core::TokenTheme`) or
+  `idea_theme::token_descriptors()` instead of the removed consts.
+
 - **Overlays take taps the same way on every backend** (`runtime-vocabulary`,
   `backend-ios-mobile`). What an `overlay()` blocked differed per backend:
   a native portal container spans the viewport, so on macOS an overlay

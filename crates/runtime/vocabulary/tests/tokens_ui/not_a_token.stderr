@@ -21,6 +21,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
   | impl TokenLeaf for f32 {
   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+  | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
   = note: required for `Font` to implement `TokenField`
   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -47,6 +50,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required because it appears within the type `AppThemeTokens<R>`
   --> tests/tokens_ui/not_a_token.rs:10:12
@@ -80,6 +86,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required because it appears within the type `AppThemeTokens<R>`
   --> tests/tokens_ui/not_a_token.rs:10:12
@@ -114,6 +123,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required because it appears within the type `AppThemeTokens<R>`
   --> tests/tokens_ui/not_a_token.rs:10:12
@@ -147,6 +159,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required because it appears within the type `AppThemeTokens<R>`
   --> tests/tokens_ui/not_a_token.rs:10:12
@@ -183,6 +198,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required because it appears within the type `AppThemeTokens<R>`
   --> tests/tokens_ui/not_a_token.rs:10:12
@@ -220,6 +238,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required because it appears within the type `AppThemeTokens<R>`
   --> tests/tokens_ui/not_a_token.rs:10:12
@@ -252,6 +273,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 
 error[E0277]: `Font` cannot be a field of a `#[derive(Tokens)]` struct
@@ -277,6 +301,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
   | impl TokenLeaf for f32 {
   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+  | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
   = note: required for `Font` to implement `TokenField`
   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
 
@@ -303,6 +330,9 @@ help: the following other types implement trait `TokenLeaf`
 ...
    | impl TokenLeaf for f32 {
    | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+...
+   | impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Tokenized<T>`
    = note: required for `Font` to implement `TokenField`
 note: required by a bound in `__is_token_field`
   --> tests/tokens_ui/not_a_token.rs:9:10

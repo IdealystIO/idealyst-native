@@ -1,11 +1,17 @@
-error[E0271]: type mismatch resolving `<Length as TokenLeaf>::Value == Color`
+error[E0277]: `#[tokens(app_background)]` needs a token that installs as a `Color`, not `runtime_vocabulary::glue::Length`
+ --> tests/tokens_ui/background_not_color.rs:5:10
+  |
+5 | #[derive(Tokens, Clone)]
+  |          ^^^^^^ the host surface is painted with a colour
+  |
+  = help: the trait `runtime_vocabulary::tokens::__IsColor` is not implemented for `runtime_vocabulary::glue::Length`
+help: the trait `runtime_vocabulary::tokens::__IsColor` is implemented for `runtime_vocabulary::glue::Color`
+ --> src/tokens.rs
+  |
+  | impl __IsColor for Color {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `__is_color`
  --> tests/tokens_ui/background_not_color.rs:9:14
   |
 9 |     pub gap: Length,
-  |              ^^^^^^ expected `Color`, found `Length`
-  |
-note: required by a bound in `__is_color_leaf`
- --> tests/tokens_ui/background_not_color.rs:9:14
-  |
-9 |     pub gap: Length,
-  |              ^^^^^^ required by this bound in `__is_color_leaf`
+  |              ^^^^^^ required by this bound in `__is_color`

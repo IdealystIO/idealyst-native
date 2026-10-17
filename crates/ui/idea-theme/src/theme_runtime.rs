@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use runtime_core::{install_tokens, update_tokens, watch, Color, Signal, Subscription};
+use runtime_core::{install_tokens, update_tokens, watch, Color, Signal, Subscription, Tokens};
 
 pub use runtime_core::{TokenEntry, TokenValue, Tokenized};
 
@@ -206,6 +206,32 @@ pub fn set_theme<T: ThemeTokens + 'static>(theme: T) {
     store_active_theme(rc);
 
     update_tokens(&tokens);
+    apply_host_surface_from_tokens(&tokens);
+}
+
+/// Install an idea theme: stash the carrier as the active theme (what
+/// [`active_theme`] returns — component code reads `hover_overlay`,
+/// `font_family` … through it) and install its tokens through the derived
+/// vocabulary, [`IdeaThemeDefaults::install`], so idea's token names are
+/// OWNED by idea's set: a second token set naming one of them panics
+/// instead of silently repainting idea-ui.
+///
+/// [`IdeaThemeDefaults::install`]: runtime_core::Tokens::install
+pub(crate) fn install_idea(theme: crate::theme::IdeaThemeRef) {
+    let data = crate::theme::IdeaThemeDefaults::from_theme(&theme);
+    let tokens = data.token_entries();
+    store_active_theme(Rc::new(theme));
+    <crate::theme::IdeaThemeDefaults as runtime_core::Tokens>::install(data);
+    apply_host_surface_from_tokens(&tokens);
+}
+
+/// Swap the active idea theme — [`install_idea`]'s swap half, through
+/// [`IdeaThemeDefaults::set`](runtime_core::Tokens::set).
+pub(crate) fn set_idea(theme: crate::theme::IdeaThemeRef) {
+    let data = crate::theme::IdeaThemeDefaults::from_theme(&theme);
+    let tokens = data.token_entries();
+    store_active_theme(Rc::new(theme));
+    <crate::theme::IdeaThemeDefaults as runtime_core::Tokens>::set(data);
     apply_host_surface_from_tokens(&tokens);
 }
 

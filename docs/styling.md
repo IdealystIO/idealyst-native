@@ -263,9 +263,10 @@ token is exactly the set that needs to re-apply, by construction.
 > The observable result is identical.
 
 > **Typed themes sit on top.** The flat `(name → TokenValue)` table is
-> all the core knows. A `#[derive(Tokens)]` theme (next section) and
-> idea-ui's `IdeaTheme` are both typed layers that *emit* token entries
-> into it — nothing below them changes.
+> all the core knows. A `#[derive(Tokens)]` theme (next section) is a
+> typed layer that *emits* token entries into it — nothing below it
+> changes. idea-ui's theme is one too: `IdeaThemeDefaults` derives
+> `Tokens`, and `install_idea_theme` installs through it.
 
 ### Your own tokens: `#[derive(Tokens)]`
 
@@ -399,6 +400,76 @@ catalog (`list_tokens` shows every token with its accessor path, kind
 and default). The catalog's source scan (`idealyst mcp --watch`) cannot
 read const-evaluated names, so a crate defining a theme is compiled for
 the catalog instead of scanned.
+
+**Reading the active theme.** `AppTheme::current()` returns the theme
+last installed or set (`Rc<AppTheme>`; `try_current()` is `None` before
+an install) for code outside a stylesheet — a navigator header colour, a
+canvas fill. It is a reactive read: an effect or reactive `ui!`
+expression that calls it re-runs on every swap, and a swap is visible to
+a read in the same turn. Prefer tokens in stylesheets: a token
+reference re-tints through the registry without re-running anything.
+
+**One owner per name.** Token names share one registry, so two token
+sets naming the same token would silently overwrite each other —
+whichever installed last would repaint the other's components. Each set
+therefore OWNS its names in a world: installing a set that names a token
+another, unrelated set already installed panics (in release builds too),
+naming both sets and the token. Re-installing or swapping the same set
+is fine, and so is a set and a set it embeds with `flatten` (below).
+Untyped `install_tokens` / `update_tokens` writes — a theme editor's
+live edit, a tone's extension tokens — claim nothing and are not
+checked. idea-ui's theme is such a set (`IdeaThemeDefaults`), so an app
+token named `spacing-md` or `color-surface` is refused rather than
+re-spacing or re-tinting idea-ui; use `#[tokens(prefix = "app")]` or
+build on idea's set instead.
+
+#### Building on another set: `flatten`, `rename`, `as`, computed tokens
+
+```rust
+use idea_ui::{light_theme, IdeaThemeDefaults};
+
+#[derive(Tokens, Clone)]
+#[tokens(default = app_light)]
+pub struct AppTheme {
+    pub brand: Color,                 // the app's own token: `brand`
+    #[tokens(flatten)]
+    pub idea: IdeaThemeDefaults,      // idea's tokens, under idea's own names
+}
+
+fn app_light() -> AppTheme { AppTheme { brand: "#0ea5e9".into(), idea: light_theme() } }
+fn app_dark() -> AppTheme {
+    app_light().with(|t| { t.idea = idea_ui::dark_theme(); t.brand = "#38bdf8".into(); })
+}
+
+stylesheet! {
+    pub Hero<AppTheme> {
+        base(t) { background: t.color.surface(), border_color: t.brand(), padding: t.spacing.lg() }
+    }
+}
+```
+
+A flattened set's tokens keep their names (`color-surface`) and its
+accessors are the embedding set's too (`t.color.surface()`, through
+`Deref`). One field per struct may be flattened. A token name the two
+sets share, or an embedding-set accessor that would hide one of the
+base's (`pub color: Color` beside a base with a `color` namespace), is a
+compile error. An app that embeds idea's set still calls
+`install_idea_theme` (it installs idea-ui's component sheets and default
+font) — the embedding is what lets both installs write idea's names.
+
+Three more attributes shape how a struct maps onto tokens:
+
+- `#[tokens(rename = "color")]` on a field names its accessor and its
+  token segment — idea's `colors` field is the `color-…` namespace,
+  reached as `t.color`. One attribute moves both because the accessor
+  path *is* the token name.
+- `#[tokens(as = Length)]` (a field, or the whole struct) installs a
+  leaf as another registry kind via `From` — idea stores spacing as bare
+  `f32` px and installs `Length::Px`.
+- `#[tokens(computed(pill: Length = Radius::pill))]` on a struct adds a
+  token with no stored field, valued by `fn(&Self) -> Length` — for a
+  value that is a property of the theme rather than a knob on it (idea's
+  `radius-pill` is always `Length::Full`).
 
 The derive's contract is documented in `runtime_vocabulary::tokens`.
 

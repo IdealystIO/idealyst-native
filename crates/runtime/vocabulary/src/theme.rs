@@ -127,6 +127,11 @@ struct ThemeState {
     /// dead-Weak sweep,
     /// drained on the next [`ensure_sheet_registered`].
     pending_unregister: Vec<Rc<Vec<Rc<StyleRules>>>>,
+    /// Which token SET owns each token name in this world: the set's
+    /// `TypeId` and its type name (for the error). Filled by
+    /// [`ThemeCtx::claim_token_names`] on every typed install; see it for
+    /// why a second owner is a hard error.
+    owners: HashMap<&'static str, TokenOwner>,
     /// Typefaces already registered with this world's backend:
     /// `register_asset` + `register_typeface`
     /// fire once per `TypefaceId` no matter how many sheets reference
@@ -151,6 +156,7 @@ impl Default for ThemeState {
             premint_used: false,
             registrations: HashMap::new(),
             pending_unregister: Vec::new(),
+            owners: HashMap::new(),
             registered_typefaces: HashSet::new(),
         }
     }
@@ -344,6 +350,59 @@ impl ThemeCtx {
         self.version.update(|v| v + 1);
     }
 
+    /// Record that token set `owner` owns every name in `names`.
+    ///
+    /// A name may move between sets only along an EMBEDDING: a set that
+    /// `#[tokens(flatten)]`s another (an app theme built on idea's) installs
+    /// the embedded set's names by design, and the embedded set may still
+    /// install them itself (idea-ui's own install). The outermost set
+    /// becomes the owner, so a SECOND set embedding the same base is still
+    /// a collision with the first. Re-claiming by the same set (a
+    /// re-install, a swap) is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// When a name is owned by a set that neither embeds nor is embedded
+    /// by `owner`, in every build. Token names share one registry, so two
+    /// unrelated sets installing one name would silently overwrite each
+    /// other: whichever installed last would repaint the other's
+    /// components (an app's `spacing.md` re-spacing all of idea-ui).
+    /// Nothing is recorded for the failing call, so the first owner keeps
+    /// the name.
+    ///
+    /// Untyped writes (`install_tokens` / `update_tokens` with raw
+    /// entries — a theme editor's live edit, a tone's extension tokens)
+    /// claim nothing and are not checked: they are the explicit override
+    /// channel, not a second vocabulary.
+    pub fn claim_token_names(&self, owner: TokenOwner, names: &[&'static str]) {
+        let mut s = self.state.borrow_mut();
+        for name in names {
+            if let Some(current) = s.owners.get(name) {
+                if !current.related(&owner) {
+                    let other_name = current.name;
+                    drop(s);
+                    panic!(
+                        "token `{name}` is already owned by token set `{other_name}`; \
+                         `{owner_name}` cannot install it too — two token sets would overwrite \
+                         each other's value. Rename one (`#[tokens(prefix = \"…\")]` or \
+                         `#[tokens(rename = \"…\")]`), or embed one set in the other with \
+                         `#[tokens(flatten)]`.",
+                        owner_name = owner.name
+                    );
+                }
+            }
+        }
+        for name in names {
+            match s.owners.get(name) {
+                // The current owner embeds the claimant: it stays the owner.
+                Some(current) if current.embeds.contains(&owner.id) => {}
+                _ => {
+                    s.owners.insert(name, owner.clone());
+                }
+            }
+        }
+    }
+
     /// See [`token_value`]. Handler-safe.
     pub fn token_value(&self, name: &str) -> Option<TokenValue> {
         self.state.borrow().values.get(name).cloned()
@@ -402,6 +461,29 @@ pub fn install_tokens(tokens: &[TokenEntry]) {
 /// time and use [`ThemeCtx::update_tokens`].
 pub fn update_tokens(tokens: &[TokenEntry]) {
     theme_ctx_handler_safe().update_tokens(tokens);
+}
+
+/// A token set claiming its names — see [`ThemeCtx::claim_token_names`].
+#[derive(Clone, Debug)]
+pub struct TokenOwner {
+    /// The set's type.
+    pub id: std::any::TypeId,
+    /// Its type name, for the collision error.
+    pub name: &'static str,
+    /// Every set it embeds with `#[tokens(flatten)]`, transitively.
+    pub embeds: Rc<[std::any::TypeId]>,
+}
+
+impl TokenOwner {
+    /// Same set, or one embeds the other.
+    fn related(&self, other: &TokenOwner) -> bool {
+        self.id == other.id || self.embeds.contains(&other.id) || other.embeds.contains(&self.id)
+    }
+}
+
+/// See [`ThemeCtx::claim_token_names`]. Handler-safe.
+pub fn claim_token_names(owner: TokenOwner, names: &[&'static str]) {
+    theme_ctx_handler_safe().claim_token_names(owner, names);
 }
 
 /// Declare every palette the app can switch between, so a STATIC render

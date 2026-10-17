@@ -27,64 +27,32 @@
 //! `Tokenized::token("typography-size-md", …)` compiled fine and rendered
 //! its fallback forever (two sheets in this repo were doing exactly that).
 //!
-//! # The invariant
+//! # Where it comes from
 //!
-//! **The accessor path is the token name.** `t.color.surface_alt()` →
+//! [`IdeaThemeDefaults`] is a `#[derive(Tokens)]` theme, and this
+//! vocabulary is its generated accessor tree — the names below are aliases
+//! of the derived types under idea's established names. So **the accessor
+//! path is the token name** by construction: `t.color.surface_alt()` →
 //! `color-surface-alt`, `t.intent.primary.solid_bg()` →
-//! `intent-primary-solid-bg`, `t.spacing.md()` → `spacing-md`. Two
-//! properties keep that honest, both enforced by tests in this module:
-//!
-//! 1. Each accessor's *fallback* is read from the field the macro derives
-//!    from the accessor's own name (`surface_alt()` reads
-//!    `light.colors.surface_alt`) — so an accessor cannot be paired with
-//!    the wrong palette entry, and the fallback can't drift from
-//!    [`light_theme`] the way hand-restated hex values did.
-//! 2. The set of names this vocabulary can emit is asserted equal, in both
-//!    directions, to the set [`ThemeTokens::tokens`] installs. A token you
-//!    can install but not reference — or reference but not install — fails
-//!    the build.
+//! `intent-primary-solid-bg`, `t.spacing.md()` → `spacing-md`,
+//! `t.radius.pill()` → the computed `radius-pill`. The same derived name
+//! table is what [`ThemeTokens::tokens`] installs, so a token cannot be
+//! referenceable but never installed (or the reverse), and each accessor's
+//! fallback is read from [`light_theme`] (the theme's
+//! `#[tokens(default = …)]`), never restated. The tests in this module pin
+//! the names byte-for-byte against idea's canonical lists, in install order.
 //!
 //! [`ThemeTokens::tokens`]: crate::theme_runtime::ThemeTokens::tokens
+//! [`IdeaThemeDefaults`]: crate::IdeaThemeDefaults
 
-use runtime_core::{Color, Length, TokenVocabulary, Tokenized};
+use std::sync::OnceLock;
+
+use runtime_core::{TokenTheme, TokenValue, TokenVocabulary, Tokens};
 
 use crate::theme::{light_theme, IdeaThemeDefaults, IdeaThemeRef};
 
-runtime_tls::thread_local! {
-    /// The base palette every accessor's fallback comes from, built once
-    /// per thread.
-    ///
-    /// A fallback is only ever observed *before* a theme installs (after
-    /// that the registry value wins in `Tokenized::resolve`), so which
-    /// palette it comes from is a cosmetic pre-install detail — but it
-    /// must come from a real palette rather than a restated literal, or
-    /// the two drift. Reading `light_theme()` keeps the accessor honest
-    /// by construction.
-    ///
-    /// Built once because the alternative — the string
-    /// `canonical_color(name)` path — reconstructed the whole theme and
-    /// linear-scanned ~70 entries on *every* property, and idea-ui alone
-    /// references 600+.
-    static BASE: IdeaThemeDefaults = light_theme();
-}
-
-/// Render a length for catalog display (`12px`). Only ever sees the
-/// base palette's values, which are all `Px`; the other arms exist so a
-/// vocabulary that grows percent/auto tokens still reads correctly.
-///
-/// Deliberately NOT `#[cfg(feature = "catalog")]`: the registration it
-/// serves is gated on `runtime-core/catalog`, a different feature, so a
-/// cfg here would strip the helper out from under a live call site (it
-/// did). Unused without the catalog — the optimizer drops it.
-#[allow(dead_code)]
-fn length_display(l: Length) -> String {
-    match l {
-        Length::Px(v) => format!("{v}px"),
-        Length::Percent(v) => format!("{v}%"),
-        Length::Auto => "auto".to_string(),
-        Length::Full => "full".to_string(),
-    }
-}
+/// The theme the vocabulary's names are indexed against.
+type Root = IdeaThemeDefaults;
 
 // =============================================================================
 // The vocabulary as data
@@ -109,9 +77,8 @@ pub enum TokenKind {
 /// [`field_path`](Self::field_path), the `IdeaThemeDefaults` path to
 /// assign when generating source.
 ///
-/// All four string fields are compile-time `concat!`s of the same
-/// tokens the accessor is generated from, so a descriptor cannot drift
-/// from the accessor it describes.
+/// Built once from the derived name and path tables, so a descriptor
+/// cannot drift from the accessor it describes.
 #[derive(Clone, Copy, Debug)]
 pub struct TokenDescriptor {
     /// The registry key — `color-table-header`. What
@@ -120,8 +87,8 @@ pub struct TokenDescriptor {
     /// The accessor path inside a `stylesheet!` block, without the
     /// binding — `color.table_header`, `intent.primary.solid_bg`.
     pub path: &'static str,
-    /// First path segment — `color`, `intent`, `spacing`, `radius`,
-    /// `typography`. The grouping an editor lays out by.
+    /// First path segment — `color`, `intent`, `palette`, `effect`,
+    /// `spacing`, `radius`, `typography`. The grouping an editor lays out by.
     pub namespace: &'static str,
     /// The field path on [`IdeaThemeDefaults`](crate::IdeaThemeDefaults)
     /// this token reads from — `colors.table_header`,
@@ -130,435 +97,33 @@ pub struct TokenDescriptor {
     /// makes "export this theme as Rust" a mechanical walk.
     ///
     /// `None` for a token with no field behind it: `radius-pill` is
-    /// the only one today (it emits [`Length::Full`], deliberately not
-    /// a number a theme can pick — see [`RadiusTokens::PILL`]).
-    /// Codegen must skip those rather than emit an assignment to a
-    /// field that does not exist.
+    /// the only one (a computed token, always [`Length::Full`] — not a
+    /// number a theme can pick). Codegen must skip those rather than emit
+    /// an assignment to a field that does not exist.
+    ///
+    /// [`Length::Full`]: runtime_core::Length::Full
     pub field_path: Option<&'static str>,
     /// Which `Tokenized<T>` the accessor returns.
     pub kind: TokenKind,
 }
 
-// =============================================================================
-// Namespace generators
-// =============================================================================
-
-/// Generate a color-token namespace. Each entry is
-/// `accessor => "token-name"`; the fallback is always read from
-/// `light.$group.$accessor`, so the accessor and the palette field it
-/// reports are the same identifier by construction.
-macro_rules! color_namespace {
-    (
-        $(#[$ty_meta:meta])*
-        $ty:ident as $ns:literal on $group:ident {
-            $( $accessor:ident => $token:literal ),+ $(,)?
-        }
-    ) => {
-        $(#[$ty_meta])*
-        #[derive(Default, Clone, Copy, Debug)]
-        pub struct $ty;
-
-        impl $ty {
-            /// Every token name this namespace can emit, in declaration
-            /// order. Drives the round-trip tests; not needed to author a
-            /// stylesheet.
-            pub const NAMES: &'static [&'static str] = &[$($token),+];
-
-            /// Every token this namespace can emit, described as data.
-            /// Same declaration, same order as [`Self::NAMES`].
-            pub const DESCRIPTORS: &'static [TokenDescriptor] = &[$(
-                TokenDescriptor {
-                    name: $token,
-                    path: concat!($ns, ".", stringify!($accessor)),
-                    namespace: $ns,
-                    field_path: Some(concat!(stringify!($group), ".", stringify!($accessor))),
-                    kind: TokenKind::Color,
-                }
-            ),+];
-
-            $(
-                #[doc = concat!("Theme token `", $token, "`.")]
-                pub fn $accessor(&self) -> Tokenized<Color> {
-                    BASE.with(|b| {
-                        Tokenized::token($token, b.$group.$accessor.value().clone())
-                    })
-                }
-            )+
-        }
-
-        $(
-            catalog_token!($token, concat!($ns, ".", stringify!($accessor)), $ns, "Color", {
-                $ty.$accessor().value().0.clone()
-            });
-        )+
-    };
-}
-
-/// Generate a length-token namespace (spacing / radius / typography size).
-/// Same accessor-is-the-field rule as [`color_namespace`]; the palette
-/// stores these as bare `f32` px, so the accessor wraps in [`Length::Px`].
-macro_rules! length_namespace {
-    (
-        $(#[$ty_meta:meta])*
-        $ty:ident as $ns:literal on $group:ident {
-            $( $accessor:ident => $token:literal ),+ $(,)?
-        }
-    ) => {
-        $(#[$ty_meta])*
-        #[derive(Default, Clone, Copy, Debug)]
-        pub struct $ty;
-
-        impl $ty {
-            /// Every token name this namespace can emit, in declaration order.
-            pub const NAMES: &'static [&'static str] = &[$($token),+];
-
-            /// Every token this namespace can emit, described as data.
-            /// Same declaration, same order as [`Self::NAMES`].
-            pub const DESCRIPTORS: &'static [TokenDescriptor] = &[$(
-                TokenDescriptor {
-                    name: $token,
-                    path: concat!($ns, ".", stringify!($accessor)),
-                    namespace: $ns,
-                    field_path: Some(concat!(stringify!($group), ".", stringify!($accessor))),
-                    kind: TokenKind::Length,
-                }
-            ),+];
-
-            $(
-                #[doc = concat!("Theme token `", $token, "`.")]
-                pub fn $accessor(&self) -> Tokenized<Length> {
-                    BASE.with(|b| {
-                        Tokenized::token($token, Length::Px(b.$group.$accessor))
-                    })
-                }
-            )+
-        }
-
-        $(
-            catalog_token!($token, concat!($ns, ".", stringify!($accessor)), $ns, "Length", {
-                length_display(*$ty.$accessor().value())
-            });
-        )+
-    };
-}
-
-/// One swatch slot accessor — an intent's or a palette hue's. Split out of
-/// `swatch_namespaces!` because the slot's *token* spelling (`solid-bg`)
-/// and its *field* spelling (`solid_bg`) differ, so both have to be passed;
-/// the fallback still comes from the field, never a literal. `$ns` is the
-/// token prefix (`intent` / `palette`), `$group` the theme field the block
-/// lives on (`intents` / `palette`).
-macro_rules! swatch_slot {
-    ($ns:literal, $group:ident, $field:ident, $name:literal, $slot_field:ident, $slot:literal) => {
-        #[doc = concat!("Theme token `", $ns, "-", $name, "-", $slot, "`.")]
-        pub fn $slot_field(&self) -> Tokenized<Color> {
-            BASE.with(|b| {
-                Tokenized::token(
-                    concat!($ns, "-", $name, "-", $slot),
-                    b.$group.$field.$slot_field.value().clone(),
-                )
-            })
-        }
-    };
-}
-
-/// One swatch slot's [`TokenDescriptor`]. Peer of [`swatch_slot`],
-/// split out for the same reason: the slot's token spelling
-/// (`solid-bg`) and field spelling (`solid_bg`) differ, so the name and
-/// the two paths have to be assembled from both.
-macro_rules! swatch_descriptor {
-    ($ns:literal, $group:ident, $field:ident, $name:literal, $slot_field:ident, $slot:literal) => {
-        TokenDescriptor {
-            name: concat!($ns, "-", $name, "-", $slot),
-            path: concat!($ns, ".", $name, ".", stringify!($slot_field)),
-            namespace: $ns,
-            field_path: Some(concat!(
-                stringify!($group),
-                ".",
-                stringify!($field),
-                ".",
-                stringify!($slot_field)
-            )),
-            kind: TokenKind::Color,
-        }
-    };
-}
-
-/// Register one token into the MCP catalog, so tooling gets the
-/// vocabulary as data (`list_tokens`, and the editor completion that
-/// offers `t.spacing.│`).
-///
-/// Rides the same declaration as the accessor: a token cannot be added
-/// to the vocabulary without appearing in the catalog, and the displayed
-/// default is produced by CALLING the accessor, so it can't drift from
-/// the fallback the accessor actually emits.
-///
-/// Delegates to `runtime_core::register_style_token!`, whose catalog
-/// gate follows `runtime-core/catalog` — a `#[cfg(feature = "catalog")]`
-/// written HERE would see only idea-theme's own feature, which the
-/// catalog wrapper never turns on, so the entries would silently never
-/// register.
-macro_rules! catalog_token {
-    ($name:expr, $path:expr, $ns:expr, $ty:literal, $default:block) => {
-        ::runtime_core::register_style_token!($name, $path, $ns, $ty, "IdeaThemeRef", $default);
-    };
-}
-
-/// Generate one namespace per swatch (an intent, or a palette hue), each
-/// carrying the six canonical slots. The slot accessors are fixed (they're
-/// the `IntentColors` fields), so only the swatch name varies — and the
-/// token name is assembled from it at compile time via `concat!`, which is
-/// what keeps `t.intent.primary.solid_bg()` and `intent-primary-solid-bg`
-/// (or `t.palette.blue.soft_bg()` and `palette-blue-soft-bg`) the same fact.
-macro_rules! swatch_namespaces {
-    ( $ns:literal on $group:ident { $( $ty:ident => $field:ident, $name:literal );+ $(;)? } ) => {
-        $(
-            #[doc = concat!("The `", $name, "` ", $ns, "'s six color slots.")]
-            #[derive(Default, Clone, Copy, Debug)]
-            pub struct $ty;
-
-            impl $ty {
-                /// Every token name this namespace can emit, in slot order.
-                pub const NAMES: &'static [&'static str] = &[
-                    concat!($ns, "-", $name, "-solid-bg"),
-                    concat!($ns, "-", $name, "-solid-text"),
-                    concat!($ns, "-", $name, "-soft-bg"),
-                    concat!($ns, "-", $name, "-soft-text"),
-                    concat!($ns, "-", $name, "-fg"),
-                    concat!($ns, "-", $name, "-border"),
-                ];
-
-                /// Every slot of this swatch, described as data. Same
-                /// slot order as [`Self::NAMES`].
-                pub const DESCRIPTORS: &'static [TokenDescriptor] = &[
-                    swatch_descriptor!($ns, $group, $field, $name, solid_bg, "solid-bg"),
-                    swatch_descriptor!($ns, $group, $field, $name, solid_text, "solid-text"),
-                    swatch_descriptor!($ns, $group, $field, $name, soft_bg, "soft-bg"),
-                    swatch_descriptor!($ns, $group, $field, $name, soft_text, "soft-text"),
-                    swatch_descriptor!($ns, $group, $field, $name, fg, "fg"),
-                    swatch_descriptor!($ns, $group, $field, $name, border, "border"),
-                ];
-
-                swatch_slot!($ns, $group, $field, $name, solid_bg, "solid-bg");
-                swatch_slot!($ns, $group, $field, $name, solid_text, "solid-text");
-                swatch_slot!($ns, $group, $field, $name, soft_bg, "soft-bg");
-                swatch_slot!($ns, $group, $field, $name, soft_text, "soft-text");
-                swatch_slot!($ns, $group, $field, $name, fg, "fg");
-                swatch_slot!($ns, $group, $field, $name, border, "border");
-            }
-
-            catalog_swatch_slot!($ty, $ns, $name, solid_bg, "solid-bg");
-            catalog_swatch_slot!($ty, $ns, $name, solid_text, "solid-text");
-            catalog_swatch_slot!($ty, $ns, $name, soft_bg, "soft-bg");
-            catalog_swatch_slot!($ty, $ns, $name, soft_text, "soft-text");
-            catalog_swatch_slot!($ty, $ns, $name, fg, "fg");
-            catalog_swatch_slot!($ty, $ns, $name, border, "border");
-        )+
-    };
-}
-
-/// Catalog registration for one swatch slot — peer of `catalog_token!`,
-/// split out because the swatch path has three segments.
-macro_rules! catalog_swatch_slot {
-    ($ty:ident, $ns:literal, $name:literal, $slot_field:ident, $slot:literal) => {
-        catalog_token!(
-            concat!($ns, "-", $name, "-", $slot),
-            concat!($ns, ".", $name, ".", stringify!($slot_field)),
-            $ns,
-            "Color",
-            { $ty.$slot_field().value().0.clone() }
-        );
-    };
-}
-
-// =============================================================================
-// The vocabulary
-// =============================================================================
-
-color_namespace! {
-    /// Non-intent neutrals — page background, surfaces, text, borders,
-    /// focus ring, overlay.
-    ColorTokens as "color" on colors {
-        background => "color-background",
-        surface => "color-surface",
-        surface_alt => "color-surface-alt",
-        text => "color-text",
-        text_muted => "color-text-muted",
-        text_inverse => "color-text-inverse",
-        border => "color-border",
-        border_hover => "color-border-hover",
-        border_strong => "color-border-strong",
-        focus_ring => "color-focus-ring",
-        overlay => "color-overlay",
-        // Component-scoped: the `Table` header band. Defaults to the
-        // `surface_alt` value so it is invisible until an app overrides
-        // it — see `theme::Colors::table_header`.
-        table_header => "color-table-header",
-        // Component-scoped: `Table` row tones, opaque by contract — see
-        // `theme::Colors::table_row_highlight`.
-        table_row_highlight => "color-table-row-highlight",
-        table_row_highlight_hover => "color-table-row-highlight-hover",
-        table_row_warning => "color-table-row-warning",
-        table_row_warning_hover => "color-table-row-warning-hover",
-        table_row_danger => "color-table-row-danger",
-        table_row_danger_hover => "color-table-row-danger-hover",
+/// The struct field a vocabulary namespace reads: the three groups
+/// `#[tokens(rename = …)]`d to the singular on [`IdeaThemeDefaults`].
+fn group_field(namespace: &str) -> &str {
+    match namespace {
+        "color" => "colors",
+        "intent" => "intents",
+        "effect" => "effects",
+        other => other,
     }
 }
 
-color_namespace! {
-    /// Effect colors — the resting drop shadow, a hover glow per intent,
-    /// and the accent gradient's stops and text. See `theme::Effects`.
-    EffectTokens as "effect" on effects {
-        shadow => "effect-shadow",
-        glow_primary => "effect-glow-primary",
-        glow_secondary => "effect-glow-secondary",
-        glow_neutral => "effect-glow-neutral",
-        glow_success => "effect-glow-success",
-        glow_danger => "effect-glow-danger",
-        glow_warning => "effect-glow-warning",
-        glow_info => "effect-glow-info",
-        gradient_start => "effect-gradient-start",
-        gradient_mid => "effect-gradient-mid",
-        gradient_end => "effect-gradient-end",
-        gradient_text => "effect-gradient-text",
-    }
-}
-
-length_namespace! {
-    /// The spacing scale — padding, margin, and gap steps.
-    SpacingTokens as "spacing" on spacing {
-        xs => "spacing-xs",
-        sm => "spacing-sm",
-        md => "spacing-md",
-        lg => "spacing-lg",
-        xl => "spacing-xl",
-        xxl => "spacing-xxl",
-    }
-}
-
-length_namespace! {
-    /// The corner-radius scale.
-    RadiusTokens as "radius" on radius {
-        sm => "radius-sm",
-        md => "radius-md",
-        lg => "radius-lg",
-    }
-}
-
-impl RadiusTokens {
-    /// Theme token `radius-pill`.
-    ///
-    /// Declared by hand rather than through `length_namespace!` because it is
-    /// the one radius that is NOT a px number: "fully round" depends on the box
-    /// it paints on, so it emits [`Length::Full`] and each backend resolves it
-    /// against the element (a `Px(999.0)` stops being a pill on any box
-    /// taller than 1998px).
-    pub const PILL: &'static str = "radius-pill";
-
-    /// Theme token `radius-pill` — fully round, resolved against the box.
-    pub fn pill(&self) -> Tokenized<Length> {
-        Tokenized::token(Self::PILL, Length::Full)
-    }
-}
-
-impl RadiusTokens {
-    /// `radius-pill` as data. Held apart from
-    /// [`Self::DESCRIPTORS`] because it is declared outside
-    /// `length_namespace!`, and it carries `field_path: None` — the
-    /// `Radius` struct has no `pill` field to assign, by design.
-    pub const PILL_DESCRIPTOR: &'static [TokenDescriptor] = &[TokenDescriptor {
-        name: Self::PILL,
-        path: "radius.pill",
-        namespace: "radius",
-        field_path: None,
-        kind: TokenKind::Length,
-    }];
-}
-
-catalog_token!("radius-pill", "radius.pill", "radius", "Length", {
-    length_display(*RadiusTokens.pill().value())
-});
-
-length_namespace! {
-    /// Per-variant font sizes. One entry per `Typography` kind — the only
-    /// type property pulled up to the theme (see [`crate::theme::Typography`]
-    /// for why weight/line-height aren't).
-    TypographyTokens as "typography" on typography {
-        display_size => "typography-display-size",
-        h1_size => "typography-h1-size",
-        h2_size => "typography-h2-size",
-        h3_size => "typography-h3-size",
-        body_xl_size => "typography-body-xl-size",
-        body_lg_size => "typography-body-lg-size",
-        body_size => "typography-body-size",
-        body_sm_size => "typography-body-sm-size",
-        caption_size => "typography-caption-size",
-        overline_size => "typography-overline-size",
-    }
-}
-
-swatch_namespaces! {
-    "intent" on intents {
-        PrimaryTokens => primary, "primary";
-        SecondaryTokens => secondary, "secondary";
-        NeutralTokens => neutral, "neutral";
-        SuccessTokens => success, "success";
-        DangerTokens => danger, "danger";
-        WarningTokens => warning, "warning";
-        InfoTokens => info, "info";
-    }
-}
-
-swatch_namespaces! {
-    "palette" on palette {
-        RedTokens => red, "red";
-        OrangeTokens => orange, "orange";
-        AmberTokens => amber, "amber";
-        YellowTokens => yellow, "yellow";
-        LimeTokens => lime, "lime";
-        GreenTokens => green, "green";
-        TealTokens => teal, "teal";
-        CyanTokens => cyan, "cyan";
-        BlueTokens => blue, "blue";
-        IndigoTokens => indigo, "indigo";
-        VioletTokens => violet, "violet";
-        PinkTokens => pink, "pink";
-    }
-}
-
-/// The seven intent palettes, each reached as `t.intent.<name>.<slot>()`.
-#[derive(Default, Clone, Copy, Debug)]
-pub struct IntentTokens {
-    pub primary: PrimaryTokens,
-    pub secondary: SecondaryTokens,
-    pub neutral: NeutralTokens,
-    pub success: SuccessTokens,
-    pub danger: DangerTokens,
-    pub warning: WarningTokens,
-    pub info: InfoTokens,
-}
-
-/// The twelve general-purpose hues (see [`crate::theme::Palette`]), each
-/// reached as `t.palette.<hue>.<slot>()`.
-#[derive(Default, Clone, Copy, Debug)]
-pub struct PaletteTokens {
-    pub red: RedTokens,
-    pub orange: OrangeTokens,
-    pub amber: AmberTokens,
-    pub yellow: YellowTokens,
-    pub lime: LimeTokens,
-    pub green: GreenTokens,
-    pub teal: TealTokens,
-    pub cyan: CyanTokens,
-    pub blue: BlueTokens,
-    pub indigo: IndigoTokens,
-    pub violet: VioletTokens,
-    pub pink: PinkTokens,
-}
+/// The computed tokens — no struct field behind them.
+const COMPUTED: &[&str] = &["radius-pill"];
 
 /// Every token in the idea vocabulary, described as data — the whole
-/// palette an editor can offer, in declaration order (neutrals, the
-/// seven intents, the twelve palette hues, effects, spacing, radius,
+/// palette an editor can offer, in install order (neutrals, the seven
+/// intents, the twelve palette hues, effects, spacing, radius,
 /// typography).
 ///
 /// Ungated, unlike the catalog slice: this is the enumeration a theme
@@ -577,42 +142,40 @@ pub struct PaletteTokens {
 /// assert_eq!(d.kind, TokenKind::Color);
 /// ```
 pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
-    // Order mirrors `ColorTokens::NAMES` + the intents + the length
-    // namespaces, which is the order `declared_names()` builds in the
-    // tests — `descriptors_match_the_accessor_vocabulary` compares the
-    // two sequence-wise, so the two lists cannot drift apart in
-    // content OR order.
-    ColorTokens::DESCRIPTORS
+    static DESCRIPTORS: OnceLock<Vec<TokenDescriptor>> = OnceLock::new();
+    DESCRIPTORS
+        .get_or_init(|| {
+            let values = light_theme().token_entries();
+            Root::NAMES
+                .iter()
+                .zip(Root::PATHS)
+                .zip(values)
+                .map(|((name, path), entry)| {
+                    let namespace = path.split('.').next().unwrap_or(path);
+                    let field_path = (!COMPUTED.contains(name)).then(|| {
+                        let rest = &path[namespace.len()..];
+                        &*Box::leak(format!("{}{rest}", group_field(namespace)).into_boxed_str())
+                    });
+                    let kind = match entry.value {
+                        TokenValue::Color(_) => TokenKind::Color,
+                        TokenValue::Length(_) => TokenKind::Length,
+                        TokenValue::Number(_) => unreachable!("idea's vocabulary has no number tokens"),
+                    };
+                    TokenDescriptor { name, path, namespace, field_path, kind }
+                })
+                .collect()
+        })
         .iter()
-        .chain(PrimaryTokens::DESCRIPTORS)
-        .chain(SecondaryTokens::DESCRIPTORS)
-        .chain(NeutralTokens::DESCRIPTORS)
-        .chain(SuccessTokens::DESCRIPTORS)
-        .chain(DangerTokens::DESCRIPTORS)
-        .chain(WarningTokens::DESCRIPTORS)
-        .chain(InfoTokens::DESCRIPTORS)
-        .chain(RedTokens::DESCRIPTORS)
-        .chain(OrangeTokens::DESCRIPTORS)
-        .chain(AmberTokens::DESCRIPTORS)
-        .chain(YellowTokens::DESCRIPTORS)
-        .chain(LimeTokens::DESCRIPTORS)
-        .chain(GreenTokens::DESCRIPTORS)
-        .chain(TealTokens::DESCRIPTORS)
-        .chain(CyanTokens::DESCRIPTORS)
-        .chain(BlueTokens::DESCRIPTORS)
-        .chain(IndigoTokens::DESCRIPTORS)
-        .chain(VioletTokens::DESCRIPTORS)
-        .chain(PinkTokens::DESCRIPTORS)
-        .chain(EffectTokens::DESCRIPTORS)
-        .chain(SpacingTokens::DESCRIPTORS)
-        .chain(RadiusTokens::DESCRIPTORS)
-        .chain(RadiusTokens::PILL_DESCRIPTOR)
-        .chain(TypographyTokens::DESCRIPTORS)
 }
 
+// =============================================================================
+// The vocabulary — idea's names for the derived accessor types
+// =============================================================================
+
 /// idea-ui's token vocabulary — the root namespace bound as `t` inside a
-/// `stylesheet!` block. See the [module docs](self) for the accessor-path-
-/// is-the-token-name invariant.
+/// `stylesheet!` block declared `<IdeaThemeRef>` (or `<IdeaTokens>`). The
+/// accessors [`IdeaThemeDefaults`]'s `#[derive(Tokens)]` generates; see
+/// the [module docs](self).
 ///
 /// ```
 /// let t = idea_theme::IdeaTokens::default();
@@ -624,23 +187,53 @@ pub fn token_descriptors() -> impl Iterator<Item = &'static TokenDescriptor> {
 ///
 /// A token that doesn't exist is a compile error rather than a reference
 /// that resolves to nothing. `"typography-size-md"` — a plausible-looking
-/// name two sheets in this repo actually shipped, silently rendering the
+/// name two sheets in this repo once shipped, silently rendering the
 /// fallback forever — has no accessor:
 ///
 /// ```compile_fail
 /// let t = idea_theme::IdeaTokens::default();
 /// let _ = t.typography.size_md(); // no such token → does not compile
 /// ```
-#[derive(Default, Clone, Copy, Debug)]
-pub struct IdeaTokens {
-    pub color: ColorTokens,
-    pub intent: IntentTokens,
-    pub palette: PaletteTokens,
-    pub effect: EffectTokens,
-    pub spacing: SpacingTokens,
-    pub radius: RadiusTokens,
-    pub typography: TypographyTokens,
-}
+pub type IdeaTokens = crate::theme::IdeaThemeDefaultsTokens<Root>;
+
+/// Non-intent neutrals — page background, surfaces, text, borders, focus
+/// ring, overlay, table tints (`t.color.*`).
+pub type ColorTokens = crate::theme::ColorsTokens<Root>;
+/// The seven intent palettes, each reached as `t.intent.<name>.<slot>()`.
+pub type IntentTokens = crate::theme::IntentsTokens<Root>;
+/// The twelve general-purpose hues, each reached as `t.palette.<hue>.<slot>()`.
+pub type PaletteTokens = crate::theme::PaletteTokens<Root>;
+/// Effect colors — shadow, glows, the accent gradient (`t.effect.*`).
+pub type EffectTokens = crate::theme::EffectsTokens<Root>;
+/// The spacing scale (`t.spacing.*`).
+pub type SpacingTokens = crate::theme::SpacingTokens<Root>;
+/// The corner-radius scale, plus the computed `t.radius.pill()`.
+pub type RadiusTokens = crate::theme::RadiusTokens<Root>;
+/// Per-variant font sizes (`t.typography.*`).
+pub type TypographyTokens = crate::theme::TypographyTokens<Root>;
+
+/// One intent's (or hue's) six color slots. Every intent and hue shares
+/// the one derived type; the names below say which one a binding means.
+pub type SwatchTokens = crate::theme::IntentColorsTokens<Root>;
+pub type PrimaryTokens = SwatchTokens;
+pub type SecondaryTokens = SwatchTokens;
+pub type NeutralTokens = SwatchTokens;
+pub type SuccessTokens = SwatchTokens;
+pub type DangerTokens = SwatchTokens;
+pub type WarningTokens = SwatchTokens;
+pub type InfoTokens = SwatchTokens;
+pub type RedTokens = SwatchTokens;
+pub type OrangeTokens = SwatchTokens;
+pub type AmberTokens = SwatchTokens;
+pub type YellowTokens = SwatchTokens;
+pub type LimeTokens = SwatchTokens;
+pub type GreenTokens = SwatchTokens;
+pub type TealTokens = SwatchTokens;
+pub type CyanTokens = SwatchTokens;
+pub type BlueTokens = SwatchTokens;
+pub type IndigoTokens = SwatchTokens;
+pub type VioletTokens = SwatchTokens;
+pub type PinkTokens = SwatchTokens;
 
 /// The vocabulary, for code that isn't inside a `stylesheet!` block.
 ///
@@ -649,7 +242,7 @@ pub struct IdeaTokens {
 /// the same typed reference: `tokens().color.text_muted()` rather than
 /// `Tokenized::token("color-text-muted", Color("#6b7280".into()))` — a
 /// spelling that was not only stringly-typed but carried a restated hex
-/// free to drift from the palette (several in idea-ui had).
+/// free to drift from the palette. Same as `IdeaThemeDefaults::tokens()`.
 ///
 /// ```
 /// use idea_theme::tokens;
@@ -675,7 +268,8 @@ impl TokenVocabulary for IdeaThemeRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme_runtime::{ThemeTokens, TokenValue};
+    use crate::theme_runtime::ThemeTokens;
+    use runtime_core::{Color, Length, Tokenized};
     use std::collections::BTreeMap;
 
     /// Every color accessor in the vocabulary, paired with nothing —
@@ -763,41 +357,28 @@ mod tests {
         ]
     }
 
+    /// The derived name table — what the theme installs and what every
+    /// accessor indexes.
     fn declared_names() -> Vec<&'static str> {
-        let i = IntentTokens::default();
-        let _ = i;
-        let mut names: Vec<&'static str> = ColorTokens::NAMES.to_vec();
-        for ns in [
-            PrimaryTokens::NAMES,
-            SecondaryTokens::NAMES,
-            NeutralTokens::NAMES,
-            SuccessTokens::NAMES,
-            DangerTokens::NAMES,
-            WarningTokens::NAMES,
-            InfoTokens::NAMES,
-            RedTokens::NAMES,
-            OrangeTokens::NAMES,
-            AmberTokens::NAMES,
-            YellowTokens::NAMES,
-            LimeTokens::NAMES,
-            GreenTokens::NAMES,
-            TealTokens::NAMES,
-            CyanTokens::NAMES,
-            BlueTokens::NAMES,
-            IndigoTokens::NAMES,
-            VioletTokens::NAMES,
-            PinkTokens::NAMES,
-            EffectTokens::NAMES,
-        ] {
-            names.extend(ns);
-        }
-        names.extend(SpacingTokens::NAMES);
-        names.extend(RadiusTokens::NAMES);
-        // `pill` is declared outside the macro (it is not a px value), so it is
-        // not in the generated NAMES.
-        names.push(RadiusTokens::PILL);
-        names.extend(TypographyTokens::NAMES);
-        names
+        IdeaThemeDefaults::NAMES.to_vec()
+    }
+
+    /// The names, byte for byte and in the order idea has always installed
+    /// them: neutrals, intents, palette, effects, then the length tokens.
+    /// The order is what a static render's `:root` block is written in, so
+    /// keeping it is what keeps the emitted CSS unchanged.
+    #[test]
+    fn derived_names_are_the_canonical_names_in_install_order() {
+        use crate::theme::{
+            CANONICAL_EFFECT_TOKENS, CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS,
+            CANONICAL_NEUTRAL_TOKENS, CANONICAL_PALETTE_TOKENS,
+        };
+        let mut legacy: Vec<&str> = CANONICAL_NEUTRAL_TOKENS.to_vec();
+        legacy.extend(CANONICAL_INTENT_TOKENS);
+        legacy.extend(CANONICAL_PALETTE_TOKENS);
+        legacy.extend(CANONICAL_EFFECT_TOKENS);
+        legacy.extend(CANONICAL_LENGTH_TOKENS);
+        assert_eq!(declared_names(), legacy);
     }
 
     /// Each accessor reports the name its declaration promised, in
@@ -918,6 +499,7 @@ mod tests {
                 e.path, e.name
             );
             assert!(!e.default_value.get().is_empty(), "`{}` must render a base value", e.name);
+            assert_eq!(e.vocabulary, "IdeaThemeRef", "listed under the type sheets name");
         }
     }
 

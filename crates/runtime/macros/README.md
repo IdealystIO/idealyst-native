@@ -104,7 +104,10 @@ is a theme — installable (`AppTheme::install`, `set`, `follow_system`,
 block), and listed in the MCP catalog. It emits an accessor struct
 (`AppThemeTokens<R>`), the `TokenField` / `Tokens` impls, and for a theme
 the `TokenTheme` + `TokenVocabulary` impls, its const-evaluated name
-table and the catalog registration. The contract (names, fallbacks,
+table and the catalog registration. Attributes: struct-level `default`,
+`prefix`, `vocabulary`, `as`, `computed(…)`; field-level `skip`,
+`rename`, `as`, `flatten` (embed another set under its own names),
+`app_background`. The contract (names, fallbacks,
 install) is documented in `runtime_vocabulary::tokens` and
 `docs/styling.md`.
 

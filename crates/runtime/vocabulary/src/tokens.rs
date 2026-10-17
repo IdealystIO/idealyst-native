@@ -75,6 +75,36 @@
 //! nested in a theme but cannot be installed or named as a stylesheet
 //! vocabulary on its own — the compiler says so via [`TokenTheme`].
 //!
+//! # Composing sets
+//!
+//! - `#[tokens(flatten)]` on a field embeds another set: its tokens keep
+//!   their own names and accessor paths (an app theme that flattens
+//!   idea's reaches `t.color.surface()` through `Deref`), and the
+//!   embedding set adds its own. A name or accessor the two share is a
+//!   compile error (`__assert_unique` / `__assert_no_shadow`).
+//! - `#[tokens(rename = "color")]` names a field's accessor AND its token
+//!   segment (idea stores `colors`, names `color-…`).
+//! - `#[tokens(as = Length)]` (on a field or a whole struct) installs a
+//!   leaf as another registry kind, converted with `From` (idea stores
+//!   spacing as `f32`).
+//! - `#[tokens(computed(pill: Length = Radius::pill))]` declares a token
+//!   with no stored field, valued by `fn(&Self)`.
+//!
+//! # Ownership
+//!
+//! Every token name belongs to ONE set per world. `install` / `set` claim
+//! the theme's names; a set claiming a name owned by an unrelated set
+//! panics, in every build, naming both sets and the token
+//! (`ThemeCtx::claim_token_names`). Sets related by `flatten` may share:
+//! the embedding set installs its base's names by design. Untyped
+//! `install_tokens` / `update_tokens` writes claim nothing.
+//!
+//! # Reading the theme struct
+//!
+//! [`Tokens::current`] returns the active theme (`Rc<Self>`) for code
+//! outside a stylesheet; it is a reactive read (an effect re-runs on a
+//! swap). Stylesheets keep naming tokens, which re-tint without re-running.
+//!
 //! # Install / swap
 //!
 //! The [`Tokens`] methods (`install`, `set`, `follow_system`,
@@ -198,6 +228,19 @@ impl TokenLeaf for f32 {
     }
 }
 
+/// A `Tokenized<T>` field is a leaf whose value is the one it carries — a
+/// literal's value, a token reference's fallback. The reference's NAME is
+/// ignored: the token installs under the field's own derived name, so a
+/// theme field written as `Tokenized::token("anything", v)` still lands
+/// where every stylesheet reads it. (idea-theme's fields are typed this
+/// way so a theme can be assembled from token references.)
+impl<T: TokenPrimitive> TokenLeaf for Tokenized<T> {
+    type Value = T;
+    fn token_value(&self) -> T {
+        self.value().clone()
+    }
+}
+
 /// One field of a token set, as compile-time data. The derive emits one
 /// per field; the theme root walks the tree to build its name table.
 #[derive(Debug, Clone, Copy)]
@@ -211,6 +254,9 @@ pub struct TokenNode {
     pub kind: Option<&'static str>,
     /// A nested set's fields; empty for a leaf.
     pub children: &'static [TokenNode],
+    /// A `#[tokens(flatten)]` field: its children join the PARENT's level —
+    /// no segment of their own in either the name or the path.
+    pub flatten: bool,
 }
 
 /// What a leaf field holds in an accessor struct. A leaf is read by
@@ -250,6 +296,11 @@ pub trait TokenField: 'static {
     fn slot<R: TokenTheme>(index: usize) -> Self::Slot<R>;
     /// Append this field's values, in name-table order.
     fn collect_values(&self, out: &mut Vec<TokenValue>);
+
+    /// Append the `TypeId` of every set this one embeds with
+    /// `#[tokens(flatten)]`, transitively. A set may install names a set it
+    /// embeds already owns (see `ThemeCtx::claim_token_names`).
+    fn embedded_sets(_out: &mut Vec<TypeId>) {}
 }
 
 impl<T: TokenLeaf + 'static> TokenField for T {
@@ -260,7 +311,7 @@ impl<T: TokenLeaf + 'static> TokenField for T {
     type Slot<R: TokenTheme> = LeafSlot;
 
     fn read<R: TokenTheme>(index: usize) -> Tokenized<T::Value> {
-        Tokenized::token(R::NAMES[index], __fallback::<R, T::Value>(index))
+        __read_leaf::<R, T::Value>(index)
     }
 
     fn slot<R: TokenTheme>(_index: usize) -> LeafSlot {
@@ -324,24 +375,73 @@ pub trait Tokens: TokenField + Clone {
 
     /// Install `theme` as the active theme. Once, inside `app()`, before
     /// anything renders.
+    ///
+    /// # Panics
+    ///
+    /// When another token set already owns one of this theme's token
+    /// names in this world (see `ThemeCtx::claim_token_names`).
     fn install(theme: Self)
     where
         Self: TokenTheme,
     {
+        claim::<Self>();
         let entries = theme.token_entries();
         crate::glue::install_tokens(&entries);
         publish_app_background::<Self>(&entries);
+        active::store(Rc::new(theme));
     }
 
     /// Swap the active theme: same names, new values. Everything that
     /// references a token re-resolves. Safe from an event handler.
+    /// Panics like [`install`](Self::install) on a name owned by another set.
     fn set(theme: Self)
     where
         Self: TokenTheme,
     {
+        claim::<Self>();
         let entries = theme.token_entries();
         crate::glue::update_tokens(&entries);
         publish_app_background::<Self>(&entries);
+        active::store(Rc::new(theme));
+    }
+
+    /// The active theme — the value last passed to `install` / `set` (or
+    /// chosen by `follow_system` / `install_reactive`) — for code outside
+    /// a stylesheet that needs the struct itself.
+    ///
+    /// A REACTIVE read: inside an effect or a reactive `ui!` expression it
+    /// subscribes, so the reader re-runs on every swap. A swap is visible
+    /// to a read in the same turn (the slot is written in place, then its
+    /// subscribers are woken at the next flush). Per world; from an event
+    /// handler (outside `World::enter`) it reads the last world that
+    /// installed this theme.
+    ///
+    /// Stylesheets should keep naming tokens (`t.surface()`): a token
+    /// reference re-tints through the registry without re-running
+    /// anything, while a value read here is a snapshot.
+    ///
+    /// # Panics
+    ///
+    /// Before this theme is installed. See [`try_current`](Self::try_current).
+    fn current() -> Rc<Self>
+    where
+        Self: TokenTheme,
+    {
+        active::current::<Self>().unwrap_or_else(|| {
+            panic!(
+                "`{}::current()` before the theme was installed — call `{0}::install(…)` \
+                 (or `follow_system` / `install_reactive`) first",
+                std::any::type_name::<Self>()
+            )
+        })
+    }
+
+    /// [`current`](Self::current), or `None` before an install.
+    fn try_current() -> Option<Rc<Self>>
+    where
+        Self: TokenTheme,
+    {
+        active::current::<Self>()
     }
 
     /// Install whichever of `light` / `dark` matches the platform's
@@ -435,6 +535,13 @@ fn default_values<R: TokenTheme>() -> Rc<[TokenValue]> {
     values
 }
 
+/// The token reference for leaf `index` of theme `R`. Shared by every leaf
+/// accessor — a plain field, a `#[tokens(as = …)]` field, a computed token.
+#[doc(hidden)]
+pub fn __read_leaf<R: TokenTheme, V: TokenPrimitive>(index: usize) -> Tokenized<V> {
+    Tokenized::token(R::NAMES[index], __fallback::<R, V>(index))
+}
+
 /// The fallback for token `index` of theme `R`: its value in
 /// `R::default_theme()`. See the module docs for why the default theme,
 /// not the installed one.
@@ -450,6 +557,106 @@ pub fn __fallback<R: TokenTheme, V: TokenPrimitive>(index: usize) -> V {
             V::KIND
         )
     })
+}
+
+/// Claim `R`'s names for `R` in the ambient world — the cross-set
+/// collision check (within one set, collisions fail at compile time).
+fn claim<R: TokenTheme>() {
+    let mut embedded = Vec::new();
+    R::embedded_sets(&mut embedded);
+    crate::theme::claim_token_names(
+        crate::theme::TokenOwner { id: TypeId::of::<R>(), name: std::any::type_name::<R>(), embeds: embedded.into() },
+        R::NAMES,
+    );
+}
+
+/// The active-theme slot behind [`Tokens::current`]: one world signal per
+/// theme type, in the world's context (keyed by `ActiveTheme<R>`'s
+/// `TypeId`), so SSR request worlds and the app world each have their own.
+/// A thread-local capture of each slot's handle serves platform event
+/// handlers, which run outside `World::enter` where `inject` would panic —
+/// the same capture-don't-inject rule `crate::theme` follows. A write
+/// through a handle whose world died is a silent no-op, so the capture can
+/// go stale but never dangle.
+mod active {
+    use std::any::{Any, TypeId};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use runtime_world::Signal;
+
+    /// The theme value, compared by identity: every install/swap stores a
+    /// fresh `Rc`, and pointer equality is the honest "same theme" test
+    /// (`Signal` needs `PartialEq`; a theme struct need not implement it).
+    pub(super) struct Slot<R>(pub(super) Rc<R>);
+
+    impl<R> Clone for Slot<R> {
+        fn clone(&self) -> Self {
+            Slot(self.0.clone())
+        }
+    }
+
+    impl<R> PartialEq for Slot<R> {
+        fn eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.0, &other.0)
+        }
+    }
+
+    /// The world-context key.
+    struct ActiveTheme<R: 'static>(Signal<Slot<R>>);
+
+    impl<R> Clone for ActiveTheme<R> {
+        fn clone(&self) -> Self {
+            ActiveTheme(self.0)
+        }
+    }
+
+    runtime_tls::thread_local! {
+        /// `TypeId::of::<R>()` → the last-stored `Signal<Slot<R>>`.
+        static LAST: RefCell<HashMap<TypeId, Box<dyn Any>>> = RefCell::new(HashMap::new());
+    }
+
+    fn slot<R: 'static>() -> Option<Signal<Slot<R>>> {
+        if runtime_world::is_entered() {
+            if let Some(a) = runtime_world::inject::<ActiveTheme<R>>() {
+                return Some(a.0);
+            }
+            return None;
+        }
+        LAST.with(|l| l.borrow().get(&TypeId::of::<R>()).and_then(|b| b.downcast_ref::<Signal<Slot<R>>>().copied()))
+    }
+
+    pub(super) fn store<R: 'static>(theme: Rc<R>) {
+        if let Some(sig) = slot::<R>() {
+            // In place, then touched — not staged: a component body built
+            // right after a (re)install reads the theme untracked, and a
+            // staged value would stay invisible to it for good.
+            sig.set_untracked(Slot(theme));
+            sig.touch();
+            if runtime_world::is_entered() {
+                // Handlers read the slot of the world that stored last.
+                LAST.with(|l| l.borrow_mut().insert(TypeId::of::<R>(), Box::new(sig)));
+            }
+            return;
+        }
+        if !runtime_world::is_entered() {
+            // No world has installed this theme yet and none is ambient:
+            // there is nothing to hold the slot. `install` runs inside
+            // `app()`, so this is only a handler `set` before any install.
+            return;
+        }
+        // World-root-owned, the signal AND its provision: the first install
+        // may run inside some subtree's scope, and a scope-owned slot would
+        // vanish when that subtree unmounts.
+        let sig = runtime_world::unscoped(|| runtime_world::signal(Slot(theme)));
+        runtime_world::unscoped(|| runtime_world::provide(ActiveTheme(sig)));
+        LAST.with(|l| l.borrow_mut().insert(TypeId::of::<R>(), Box::new(sig)));
+    }
+
+    pub(super) fn current<R: 'static>() -> Option<Rc<R>> {
+        slot::<R>().map(|sig| sig.get().0)
+    }
 }
 
 /// Route the `#[tokens(app_background)]` token to the host surface (body,
@@ -516,6 +723,11 @@ const fn walk_len(nodes: &[TokenNode], parent_len: usize, path: bool) -> usize {
     let mut i = 0;
     while i < nodes.len() {
         let node = &nodes[i];
+        if node.flatten {
+            total += walk_len(node.children, parent_len, path);
+            i += 1;
+            continue;
+        }
         let seg = segment(node, path).len();
         let len = if parent_len == 0 { seg } else { parent_len + 1 + seg };
         total += if node.kind.is_some() { len } else { walk_len(node.children, len, path) };
@@ -551,6 +763,11 @@ const fn write_nodes(
     let mut i = 0;
     while i < nodes.len() {
         let node = &nodes[i];
+        if node.flatten {
+            write_nodes(node.children, parent, parent_len, path, cur);
+            i += 1;
+            continue;
+        }
         let seg = segment(node, path).as_bytes();
         let mut len = parent_len;
         if len > 0 {
@@ -668,6 +885,43 @@ pub const fn __assert_unique(names: &[&str]) {
     }
 }
 
+/// Implemented only for [`Color`]: the derive's check that an
+/// `#[tokens(app_background)]` field installs as a colour (the host
+/// surface takes nothing else).
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`#[tokens(app_background)]` needs a token that installs as a `Color`, not `{Self}`",
+    label = "the host surface is painted with a colour"
+)]
+pub trait __IsColor {}
+impl __IsColor for Color {}
+
+/// Fail const evaluation when an accessor of the struct embedding a
+/// `#[tokens(flatten)]` set has the same name as one of the flattened
+/// set's top-level accessors. The embedding struct's own accessor would
+/// win method resolution and silently hide the base's (`t.color` reaching
+/// the app's leaf instead of the base's namespace), so it is refused even
+/// when the TOKEN names happen to differ.
+#[doc(hidden)]
+pub const fn __assert_no_shadow(own: &[&str], base: &[TokenNode]) {
+    let mut i = 0;
+    while i < base.len() {
+        let node = &base[i];
+        if node.flatten {
+            __assert_no_shadow(own, node.children);
+        } else {
+            let mut j = 0;
+            while j < own.len() {
+                if str_eq(own[j], node.path) {
+                    panic!("a field of this token set has the same accessor name as a field of the set it flattens; rename one (`#[tokens(rename = \"…\")]`)");
+                }
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Catalog
 // ---------------------------------------------------------------------------
@@ -748,7 +1002,7 @@ pub fn __catalog_tokens<R: TokenTheme>() -> Vec<mcp_catalog::StyleTokenEntry> {
 mod tests {
     use super::*;
 
-    const LEAF_COLOR: TokenNode = TokenNode { name: "", path: "", kind: Some("Color"), children: &[] };
+    const LEAF_COLOR: TokenNode = TokenNode { name: "", path: "", kind: Some("Color"), children: &[], flatten: false };
 
     const fn leaf(name: &'static str, path: &'static str) -> TokenNode {
         TokenNode { name, path, ..LEAF_COLOR }
@@ -757,9 +1011,16 @@ mod tests {
     const SWATCH: &[TokenNode] = &[leaf("solid-bg", "solid_bg"), leaf("soft-bg", "soft_bg")];
     const TREE: &[TokenNode] = &[
         leaf("surface", "surface"),
-        TokenNode { name: "accent", path: "accent", kind: None, children: SWATCH },
-        TokenNode { name: "danger", path: "danger", kind: None, children: SWATCH },
+        TokenNode { name: "accent", path: "accent", kind: None, children: SWATCH, flatten: false },
+        TokenNode { name: "danger", path: "danger", kind: None, children: SWATCH, flatten: false },
     ];
+    const FLAT: &[TokenNode] = &[
+        leaf("own", "own"),
+        TokenNode { name: "", path: "", kind: None, children: TREE, flatten: true },
+    ];
+    const FLAT_LEN: usize = __table_len(FLAT, "", false);
+    const FLAT_TABLE: ([u8; FLAT_LEN], [usize; 6]) = __table(FLAT, "", false);
+    const FLAT_NAMES: [&str; 6] = __split(&FLAT_TABLE.0, &FLAT_TABLE.1);
 
     const NAME_LEN: usize = __table_len(TREE, "", false);
     const NAME_TABLE: ([u8; NAME_LEN], [usize; 5]) = __table(TREE, "", false);
@@ -792,6 +1053,16 @@ mod tests {
     fn a_prefix_leads_every_name() {
         assert_eq!(PREFIXED[0], "app-surface");
         assert_eq!(PREFIXED[4], "app-danger-soft-bg");
+    }
+
+    /// A flattened set contributes its own names unchanged — no segment
+    /// for the embedding field.
+    #[test]
+    fn a_flattened_set_keeps_its_own_names() {
+        assert_eq!(
+            FLAT_NAMES,
+            ["own", "surface", "accent-solid-bg", "accent-soft-bg", "danger-solid-bg", "danger-soft-bg"]
+        );
     }
 
     #[test]
