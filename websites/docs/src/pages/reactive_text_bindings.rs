@@ -1,7 +1,7 @@
 //! Reactive text bindings page — built via the `docs!` macro.
 //!
 //! Covers f-string text (`text { "count: {count}" }`) and the
-//! `TextSource::JsBinding` structure it produces — the web backend's
+//! pre-decomposed JS binding it lowers to — the web backend's
 //! fast path for hierarchy-scale reactive text. Most app authors only
 //! need the first section; the rest is for people who measured a real
 //! fan-out cost and want to understand the machinery.
@@ -40,8 +40,8 @@ docs! {
                 text { "count: {count} {unit}   doubled: {doubled:.1}" }
             }
         "##),
-        p("Signals and memo outputs (", code("ReadSignal"),
-          ") subscribe automatically — no closure, no ", code(".get()"),
+        p("Signals, read halves (", code("ReadSignal"), "), and memo outputs (",
+          code("Memo"), ") subscribe automatically — no closure, no ", code(".get()"),
           ". Format specs pass through (width, precision, fill); ",
           code("{{"), " / ", code("}}"),
           " escape literal braces. Positional ", code("{}"),
@@ -71,110 +71,79 @@ docs! {
     },
 
     section(heading = "What the lowering produces") {
-        p("A text literal whose slots are all plain values bakes to ",
-          code("TextSource::Static"),
-          " — zero reactive machinery. Signal slots produce a ",
-          code("TextSource::JsBinding(JsBindingSpec)"),
-          " carrying a structured payload:"),
+        p("A text literal whose slots are all plain values bakes to a \
+           constant string — zero reactive machinery. A literal with signal \
+           slots lowers to a pre-decomposed binding that the ", code("text"),
+          " mount handler receives. It carries, per text node:"),
         list(
-            [code("signal_ids"),
-             ": ", code("Vec<u64>"),
-             ", the arena ids of each signal slot, in template order"],
-            [code("template_parts"),
-             ": ", code("Vec<String>"),
+            [code("signal_ids"), ": ", code("Vec<u64>"),
+             ", each signal slot's ", code("raw_id()"), ", in template order"],
+            [code("template_parts"), ": ", code("Vec<String>"),
              ", N+1 static text parts surrounding the N signal slots \
               (baked static slots are pre-formatted into these)"],
-            [code("initial_values"),
-             ": ", code("Vec<String>"),
-             ", the starting value of each signal as a string — used \
-              to seed the JS-side cache and compute the binding's \
-              initial ", code("nodeValue"), " synchronously at mount"],
+            [code("initial_values"), ": ", code("Vec<String>"),
+             ", each signal's starting value as a string — used to compute \
+              the node's first ", code("nodeValue"), " at mount"],
             [code("stringifiers"),
-             ": ", code("Vec<Rc<dyn Fn() -> String>>"),
-             ", one per signal slot — the web backend installs these \
-              as per-signal JS notifiers at bind time, so a ",
-             code("signal.set"),
-             " ships its new value across the wasm→JS boundary in one \
-              FFI hop"],
+             ": one untracked read-and-format closure per signal slot, handed \
+              to the backend at registration"],
+            [code("tracked_reads"),
+             ": one tracked read-and-format closure per signal slot — the body \
+              of that signal's notifier effect (next section)"],
             [code("compute_fallback"),
-             ": ", code("Rc<dyn Fn() -> String>"),
-             ", a closure that re-evaluates the full template — used \
-              by the walker when the active backend does not opt into \
-              JS bindings (everything except web today)."],
+             ": a tracked closure that re-evaluates the whole template — the \
+              effect body on backends without JS bindings (everything except \
+              web today)."],
         ),
         p("A slot that is reactive but has no signal id — a ",
           code("Reactive<T>"),
           " prop whose value is a derived closure — can't ride the \
-           template binding; it routes the whole text through the \
-           regular ", code("Bound"),
-          " Effect path instead. Correct everywhere, just without the \
-           fan-out speedup."),
-        p("You can construct the spec by hand if you're generating \
-           bindings programmatically:"),
-        code(rust, r##"
-            use runtime_core::{text, JsBindingSpec, TextSource};
-            use std::rc::Rc;
-
-            text(TextSource::JsBinding(JsBindingSpec {
-                signal_ids: vec![global.id()],
-                template_parts: vec!["leaf 42: g=".into(), "".into()],
-                initial_values: vec!["0".into()],
-                compute_fallback: Rc::new(move || {
-                    format!("leaf 42: g={}", global.get())
-                }),
-                stringifiers: vec![Rc::new(move || {
-                    runtime_core::untrack(|| global.get()).to_string()
-                })],
-            }))
-        "##),
-        p("The f-string lowering exists so authors don't keep the \
-           template + signal_ids + initials + stringifiers + \
-           compute_fallback in sync by hand — change the literal and \
-           every derived field updates together."),
+           template binding; it routes the whole text through a regular \
+           effect instead. Correct everywhere, just without the fan-out \
+           speedup."),
+        p("The binding type is internal to the framework: there is no public \
+           constructor for apps. The f-string lowering is the way to produce \
+           one, so the template, ids, initial values, and readers can never \
+           drift out of sync — change the literal and every field updates \
+           together."),
     },
 
     section(heading = "Per-signal notifiers") {
-        p("Before a binding can fire for a signal, the web backend \
-           needs to know how to stringify that signal's value when it \
-           changes. The walker auto-installs the spec's ",
-          code("stringifiers"),
-          " as per-signal JS notifiers at bind time (skipping any \
-           signal that already has one, so a custom notifier installed \
-           first — e.g. by a class binding — is never clobbered)."),
-        p("From that point, every ", code("global.set(...)"),
-          " runs the Rust subscriber fan-out AS BEFORE, then ALSO \
-           ships ", code("(sid, stringified_value)"),
-          " across the wasm→JS boundary in one FFI hop. The JS-side \
-           reactive layer holds the binding registry and does the \
-           per-binding fan-out internally — no per-leaf wasm crossing."),
-        p("The stringifiers read ", code("untrack"),
-          "ed: they run from inside ", code("Signal::set"),
-          ", and a tracked read there would subscribe whatever outer \
-           Effect happened to be running to the signal being updated."),
+        p("World signals have no write hook, so nothing happens inside ",
+          code("Signal::set"),
+          ". Instead, the text handler leases ONE notifier effect per signal \
+           in the world. The effect reads the signal (tracked) and calls the \
+           backend's ", code("notify_signal_text_js(signal_id, value)"),
+          ", which ships ", code("(sid, formatted value)"),
+          " across the wasm→JS boundary in one FFI hop. The JS-side layer holds \
+           the binding registry and does the per-binding fan-out internally — \
+           no per-leaf wasm crossing."),
+        p("Every binding to that signal shares the same notifier, whether the \
+           binding is a text node or a class binding — the first one installs \
+           it, later ones take a lease. The notifier lives while any lease is \
+           held and is freed with the last one. Its first run happens when it \
+           is created, before the binding registers, so the JS value cache is \
+           seeded for the first paint."),
+        p("Because the notifier is an ordinary effect, delivery follows the \
+           normal flush: writes stage, the flush commits them, and the \
+           notifier runs once per flush for its signal — then JS updates every \
+           bound node."),
     },
 
     section(heading = "What the fast path saves per fire") {
         p("On a 20 k-leaf fan-out (one signal change, all leaves \
-           subscribe), the difference vs the Effect path:"),
+           subscribe), the difference vs one effect per leaf:"),
         list(
-            ["No per-leaf Rust ", code("Effect"),
-             " runs. ", code("run_effect"),
-             "'s bookkeeping (RefCell borrows, scope stack push/\
-              pop, subscriber HashSet maintenance) at 20 k× was \
-              ~50 ms of the old apply window."],
+            ["One Rust effect run per changed signal instead of one per leaf."],
             ["No per-leaf ", code("format!()"),
              " allocations. The JS-side composer reads cached signal \
               values and concatenates against the prebaked parts; \
               the per-fire ", code("String"),
-             " is built and consumed inside V8's hot loop."],
+             " is built and consumed inside the JS engine's hot loop."],
             ["No per-leaf wasm→JS ", code("update_text"),
              " FFI call. The signal change ships ONCE across the \
-              boundary; the JS shim walks 20 k bindings inside that \
+              boundary; the JS shim walks the bindings inside that \
               single hop."],
-            ["The Rust subscriber list for these signals is empty \
-              (no Effects subscribe to them), so the ",
-             code("collect_subscribers"),
-             " on ", code("Signal::set"), " is a no-op."],
         ),
         p("Result on the hierarchy bench: 283 ms → 20 ms at \
            20 k leaves, below Svelte's ~32 ms for the same shape. \
@@ -183,50 +152,41 @@ docs! {
     },
 
     section(heading = "Cross-backend behaviour") {
-        p("Signal-slot f-strings produce ", code("TextSource::JsBinding"),
-          " unconditionally. The walker, when building it, checks \
-           the active backend's ", code("supports_js_text_bindings()"),
-          ":"),
+        p("Signal-slot f-strings always produce the binding. The text handler \
+           checks the active backend's ", code("supports_js_text_bindings()"),
+          " when it mounts the node:"),
         list(
-            [code("true"), " (web backend with ",
-             code("install_text_batcher(&backend)"),
-             " called): the walker calls ",
-             code("backend.register_reactive_text_binding(...)"),
-             " and does NOT install a Rust Effect. The \
-              JS-side binding registry handles updates."],
+            [code("true"), " (the web backend, once ",
+             code("install_global_self(&backend)"),
+             " has run — the web boot entries call it for you): the handler \
+              calls ", code("register_reactive_text_binding(...)"),
+             ", leases the per-signal notifiers, and installs NO per-leaf \
+              effect. The JS-side binding registry handles updates."],
             [code("false"),
-             " (every native backend today, and web without the \
-              batcher installed): the walker lowers to the legacy ",
-             code("Bound"), " Effect path using ", code("compute_fallback"),
+             " (every native backend today): the handler installs one effect \
+              per node that runs ", code("compute_fallback"),
              ". Output is identical; you just don't get the fan-out \
               speedup. No regression vs a closure-form ",
              code("text"), " node."],
         ),
         p("This is why ", code("compute_fallback"),
-          " is mandatory in the spec — it's the universal path that \
+          " is part of every binding — it's the universal path that \
            makes the same source correct on web (fast), iOS / Android \
-           / wgpu (correct, regular Effect), and the wire/runtime-\
+           / wgpu (correct, regular effect), and the wire/runtime-\
            server generator backends."),
     },
 
     section(heading = "Lifecycle and cleanup") {
-        p("Bindings are registered with the JS-side layer at mount \
-           time. The framework wires a ", code("crate::on_cleanup"),
-          " callback on the surrounding reactive scope so that on \
-           scope drop (switch-arm flip, component unmount, owner \
-           drop) the walker calls ",
-          code("release_reactive_text_binding(text_id)"),
-          " + ", code("release_text_id(text_id)"),
-          " on the backend, which removes the binding from the JS \
-           registry. There's no leak across mount/unmount cycles."),
-        p("Per-signal notifier closures are dropped automatically \
-           when their signal's slot is freed (",
-          code("take_signals_batched"),
-          " removes them from ", code("signal_js_notifiers"),
-          " when the slot is recycled). Manual ",
-          code("unregister_signal_js_notifier"),
-          " exists if you want to detach a still-live signal from \
-           JS subscription (rare)."),
+        p("Bindings are registered with the JS-side layer at mount. The \
+           handler registers a teardown on the node, so when the node is torn \
+           down (an ", code("if"), " branch flips, a component unmounts) it \
+           calls ", code("release_reactive_text_binding(text_id)"),
+          " and ", code("release_text_id(text_id)"),
+          " on the backend, removing the binding from the JS registry, and \
+           then drops the binding's notifier leases. There's no leak across \
+           mount/unmount cycles."),
+        p("A notifier is freed when the last binding that leased it goes \
+           away, so it never outlives the bindings — or the signal — it serves."),
     },
 
     section(heading = "When to reach for the closure form instead") {
@@ -241,7 +201,7 @@ docs! {
               keep those in the closure form (Effect path)."],
         ),
         p("Derived values need no special handling: a ",
-          code("memo"), " output is a ", code("ReadSignal"),
+          code("memo"), " output is a ", code("Memo<T>"),
           " and interpolates as a live slot like any signal."),
     },
 
@@ -278,7 +238,7 @@ docs! {
            Rust subscriber list, JS bindings update on the JS-side \
            fan-out triggered by the notifier. The framework simply \
            does both. For signal-slot f-string leaves, there is no \
-           Rust Effect by design — the JS binding is the sole DOM \
+           per-leaf Rust effect by design — the JS binding is the sole DOM \
            writer for those nodes — so there's no \"two sources of \
            truth\" problem in practice."),
         p("The whole feature is a backend optimization, not a \

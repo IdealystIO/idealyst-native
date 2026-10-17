@@ -65,8 +65,10 @@ docs! {
             count.update(|n| n + 1);      // read-modify-write
         "##),
 
-        p(code(".get()"), " returns a clone of the current value (",
-          code("T: Clone"), " is the only bound). ", code(".set(v)"),
+        p(code(".get()"), " returns a clone of the current value, so it needs ",
+          code("T: Clone"), ". Every signal also needs ",
+          code("T: PartialEq + 'static"), " (writes are equality-guarded, below). ",
+          code(".set(v)"),
           " stages a replacement. ", code(".update(|cur| next)"),
           " takes the current value by reference and returns the next one."),
 
@@ -103,16 +105,17 @@ docs! {
           " writes the committed value directly, bypassing both staging and \
            notification."),
 
-        p("Every signal has a stable slot id:"),
+        p("Every signal has a stable identity key:"),
 
         code(rust, r##"
-            let id: u32 = count.id();
+            let id: u64 = count.raw_id();
         "##),
 
-        p("You rarely need this — it's the hook the wire protocol uses to \
-           refer to a signal across processes. If you find yourself reaching \
-           for ", code(".id()"), " from app code, there's probably a more \
-           direct API you want instead."),
+        p("You rarely need this. It is a key for external registries — the \
+           web backend's JS text bindings use it to name a signal. It can't be \
+           turned back into a handle. If you find yourself reaching for ",
+          code(".raw_id()"), " from app code, there's probably a more direct \
+           API you want instead."),
 
         compare(from = React) {
             p("A ", code("Signal<T>"), " is a small Copy token. You don't \
@@ -146,12 +149,11 @@ docs! {
             ["Reactive text — ", code("text { format!(\"count: {}\", count.get()) }"),
              ". The expression is wrapped in an Effect that re-fires on signal change."],
             ["Closure props — ", code("label = move || format!(\"...\", count.get())"),
-             ". A closure passed where the framework expected a ",
-             code("Derived<T>"), " or reactive source is wrapped in an Effect."],
+             ". A closure passed to a reactive prop is wrapped in an Effect."],
             ["Reactive ", code("if"), " inside ", code("ui!"), " — an ",
              code("if"), " whose condition contains ", code(".get()"),
-             " lowers to a ", code("When"),
-             " primitive whose conditional Effect re-fires on change."],
+             " lowers to a ", code("when"),
+             " over a condition closure, which re-evaluates on change."],
             ["Reactive ", code("for"), " inside ", code("ui!"), " — a ",
              code("for"), " over a signal-backed source is wrapped so the \
               list rebuilds when the source changes."],
@@ -201,8 +203,10 @@ docs! {
 
         p("The macro inserts the ", code("move ||"),
           " for you (always implied — signal handles are ", code("Copy"),
-          ") and debug-asserts that a reactive scope is active, because a \
-           scope-owned effect only makes sense inside the tree. You rarely \
+          "). It takes a block: ", code("effect!({ ... })"),
+          ". A closure argument (", code("effect!(move || ...)"),
+          ") compiles but only builds the closure, so the body never runs. \
+           The macro discards the block's value. You rarely \
            write effects by hand anyway — most of the time the framework \
            installs them for you via ", code("Text"), ", reactive props, ",
           code("when"), ", and so on. The cases where a manual effect makes \
@@ -251,16 +255,15 @@ docs! {
 
     section(heading = "watch — reactivity outside the tree") {
         p("Reactivity lives in the component tree. ", code("effect!"),
-          " is owned by the surrounding scope — which is exactly why it \
-           debug-asserts one is active. But sometimes you wire reactivity up \
-           where there is no scope to own it: at app startup, inside an async \
-           callback, in library or platform setup code. That is what ",
-          code("watch"), " is for."),
+          " is owned by the surrounding scope. But sometimes you want an \
+           effect whose lifetime YOU control rather than the component's: a \
+           service set up at app start, library or platform setup code. That \
+           is what ", code("watch"), " is for."),
 
         code(rust, r##"
             use runtime_core::watch;
 
-            // No render scope here — an app-init / async / service context.
+            // Caller-owned: lives as long as `sub`, not as long as a scope.
             let sub = watch(move || apply_drawer_class(is_open.get()));
             // `sub` is a `Subscription` — YOU own it.
         "##),
@@ -269,19 +272,25 @@ docs! {
           " that you own. The effect runs for as long as you hold the handle; \
            dropping it disposes the effect and runs its cleanups. Store it \
            where its lifetime should match — a struct field, a thread-local, \
-           the owning service. For a one-time install that should live for the \
-           whole process, call ", code("Subscription::leak()"),
+           the owning service. For a one-time install that should live as long \
+           as the world, call ", code("Subscription::leak()"),
           " — the honest, greppable \"pin forever\"."),
 
         p("Unlike ", code("effect!"),
           ", a ", code("watch"),
           " is never adopted by an ambient scope, so it behaves identically \
-           whether or not one happens to be active. Reach for it the moment \
-           you are outside a ", code("#[component]"), " body."),
+           whether or not one happens to be active."),
 
-        p("The raw ", code("Effect::new"),
-          " constructor these both build on is sealed — author code uses ",
-          code("effect!"), " or ", code("watch"), ", never it."),
+        p(code("watch"), " still creates a world effect, so it must be \
+           called inside the world: a component build, an effect, or a flush. \
+           Event handlers and async-task continuations run outside the world, \
+           and creating an effect there panics. Set the ", code("watch"),
+          " up at build time and capture what the handler needs."),
+
+        p("Both build on the ", code("effect(|| ...)"),
+          " function, which is public too. It returns a non-owning ",
+          code("Effect"), " handle and, unlike the macro, accepts a cleanup \
+           closure returned from the body."),
     },
 
     section(heading = "on_cleanup — release on drop") {
@@ -302,16 +311,13 @@ docs! {
           code("#[component]"), " body panics with ",
           code("\"on_cleanup called outside an effect\""),
           " — wrap it in an ", code("effect!"),
-          " as above, return the cleanup from the effect body (the shorter \
-           form of the same thing), or, when the resource really belongs to \
+          " as above, or, when the resource really belongs to \
            the component rather than to a reactive run, reach for ",
-          code("on_scope_drop"), " instead:"),
-        code(rust, r##"
-            effect!({
-                let t = start_timer();
-                move || t.cancel()      // runs before each re-run + at teardown
-            });
-        "##),
+          code("on_scope_drop"), " (next section)."),
+        p("Don't return a cleanup closure from an ", code("effect!"),
+          " block: the macro discards the block's value, so the closure is \
+           dropped without running and the resource is never released. Call ",
+          code("on_cleanup"), " instead."),
         p("An effect-owned cleanup is also the correct ownership: it cancels \
            its timers when the effect goes away, so a detached callback can \
            never outlive a remounted world."),
@@ -365,7 +371,7 @@ docs! {
             let total = memo(move || items.get().iter().sum::<i32>());
 
             // Many readers — all subscribe to `total`, not to `items`.
-            text(move || format!("Sum: {}", total.get()))
+            ui! { text { "Sum: {total}" } }
         "##),
         p("Memos are equality-guarded: a recompute that produces a value \
            equal to the cached one does not wake consumers. They also form \
@@ -432,55 +438,61 @@ docs! {
             // on_defer(deps, run) — skips the initial fire; the closure
             // only runs from the FIRST change onward, and receives the
             // new value plus the previous one.
-            on_defer(count, move |c, _prev| save_to_db(c));
+            on_defer(count, move |c, _prev| save_to_db(*c));
 
-            // Multiple deps read as a tuple, firing on either.
-            on_defer((count, mood), move |(c, m), _prev| log(c, m));
+            // Several deps: combine them in a memo and pass that.
+            let both = memo(move || (count.get(), mood.get()));
+            on_defer(both, move |(c, m), _prev| log(*c, m));
         "##),
         p("Deps go through the ", code("Trackable"),
           " trait — ", code("Signal<T>"), ", ", code("ReadSignal<T>"), ", ",
-          code("Memo<T>"), ", ", code("Reactive<T>"),
-          " implement it, and so do tuples. Trackable is the \
-           \"this set of things is observable as a unit\" \
-           abstraction; the Effect uses it to subscribe to all of \
-           them at once and read them as a tuple when re-running."),
+          code("Memo<T>"), ", and ", code("Reactive<T>"),
+          " implement it. Tuples don't, so combine several deps in a ",
+          code("memo"), " as above. The callback receives ",
+          code("&T"), " and ", code("Option<&T>"),
+          " and runs untracked, so reads inside it never widen the \
+           subscription. ", code("on(deps, run)"),
+          " is the same thing without the skipped first run."),
     },
 
     section(heading = "Action-driven state") {
         p("Redux-style state — one closure holding every transition, an \
-           action enum as the write vocabulary — is a shape you compose from \
-           a signal plus ", code("update"),
-          ". There is no separate reducer primitive to learn:"),
+           action enum as the write vocabulary — is what ",
+          code("reducer(initial, fold)"),
+          " gives you. It returns the state signal and a dispatch function:"),
         code(rust, r##"
+            use runtime_core::reducer;
+
             enum CounterAction { Inc, Dec, Reset }
 
-            let count = signal(0i32);
-
-            let dispatch = move |action| count.update(|state| match action {
+            let (count, dispatch) = reducer(0i32, |state: &i32, action: CounterAction| match action {
                 CounterAction::Inc   => state + 1,
                 CounterAction::Dec   => state - 1,
                 CounterAction::Reset => 0,
             });
 
-            // Read: a regular signal.
-            text(move || format!("{}", count.get()));
-
-            // Write: dispatch actions.
-            button("+", move || dispatch(CounterAction::Inc));
+            ui! {
+                // Read: a regular signal.
+                text { "{count}" }
+                // Write: dispatch actions.
+                button(label = "+", on_click = move || dispatch(CounterAction::Inc))
+            }
         "##),
-        p("Because ", code("update"),
-          " composes on the staged value, two dispatches in one turn apply \
-           in order and commit as one logical update. The payoff of the shape \
-           is the same as always: transitions live in one closure (easier to \
+        p("Each dispatch folds against the staged value, so two dispatches \
+           in one turn apply in order and commit as one logical update. A \
+           dispatch always notifies subscribers, even when the fold returns \
+           an equal state. The same shape works by hand with a signal and ",
+          code("update"), " if you'd rather not use the helper."),
+        p("The payoff: transitions live in one closure (easier to \
            test, easier to reason about), and the action enum is the natural \
            form for time-travel and log replay."),
     },
 
     section(heading = "resource() — async data as a primitive") {
         p(code("resource(deps, async fetch)"),
-          " makes async data a reactive value. The fetch runs the \
-           first time you read the resource and re-runs whenever the \
-           ", code("Trackable"),
+          " makes async data a reactive value. The fetch runs once \
+           when the resource is created and again whenever the ",
+          code("Trackable"),
           " deps change. The returned ", code("Resource<T, E>"),
           " exposes ", code("data"), " / ", code("error"), " / ",
           code("loading"),
@@ -496,18 +508,22 @@ docs! {
             });
 
             // Render against the resource's state.
-            text(move || {
-                let s = user.state();
-                if s.loading {
-                    "Loading…".into()
-                } else if let Some(err) = s.error {
-                    format!("Error: {}", err)
-                } else if let Some(u) = s.data {
-                    format!("Hi, {}", u.name)
-                } else {
-                    "".into()
+            ui! {
+                text {
+                    move || {
+                        let s = user.state();
+                        if s.loading {
+                            "Loading…".to_string()
+                        } else if let Some(err) = s.error {
+                            format!("Error: {}", err)
+                        } else if let Some(u) = s.data {
+                            format!("Hi, {}", u.name)
+                        } else {
+                            String::new()
+                        }
+                    }
                 }
-            });
+            }
 
             // Changing `user_id` cancels the in-flight fetch and
             // starts a new one against the new id.
@@ -532,9 +548,9 @@ docs! {
            the value visible to ", code("inject::<T>()"),
           " in any descendant:"),
         code(rust, r##"
-            use runtime_core::{provide, inject, inject_or};
+            use runtime_core::{provide, inject};
 
-            #[derive(Clone)]
+            #[derive(Clone, Default)]
             struct Theme { primary: Color }
 
             // In a parent (or app root):
@@ -543,14 +559,15 @@ docs! {
             // In any descendant:
             let theme: Theme = inject().expect("Theme provided upstream");
             // Or with a fallback:
-            let theme: Theme = inject_or(Theme::default());
+            let theme: Theme = inject().unwrap_or_default();
         "##),
-        p("Lookup is closest-provider — multiple ", code("provide"),
-          " calls in a chain shadow each other the way scoped \
-           variables do, not the way a global registry would. \
-           ", code("with_inject(|t: &Theme| { ... })"),
-          " is the borrowing variant that lets you read without \
-           cloning."),
+        p(code("inject::<T>()"), " returns ", code("Option<T>"),
+          " — a clone of the most recent live ", code("provide"),
+          " of that type, so ", code("T: Clone"),
+          ". Multiple ", code("provide"),
+          " calls shadow each other the way scoped variables do. Like ",
+          code("signal"), ", both must be called inside the world (at \
+           build time), not from an event handler."),
         p("Reads through ", code("inject"), " are NOT reactive on \
            their own — context is a structural concept, not a \
            reactive one. If you want the provided value itself to be \
@@ -570,29 +587,24 @@ docs! {
     },
 
     section(heading = "use_id() — stable identifiers") {
-        p(code("use_id()"), " returns an opaque, stable string \
-           identifier tied to the current call-site identity. Same \
-           component instance → same id, every render. Different \
-           instances → different ids:"),
+        p(code("use_id()"), " returns a string id of the form ",
+          code("ui-<16 hex chars>"),
+          ", derived from the current component identity. It is stable \
+           and safe to use as an HTML id or ARIA target."),
+        p("It is NOT unique per component today. The realizer doesn't set \
+           a per-position identity, so every ", code("use_id()"),
+          " call in an app returns the same string. When you need distinct \
+           ids — label/input pairing, ", code("aria-controls"),
+          " — use ", code("use_id_keyed(&key)"),
+          " with a key that is unique within the app:"),
         code(rust, r##"
-            use runtime_core::use_id;
+            use runtime_core::use_id_keyed;
 
-            let id = use_id();  // e.g. "ui-1a3f9c0d8e4b2671"
-            ui! {
-                text(style = label_style) { "Label" }
-                // Use `id` to wire ARIA / form labels / unique CSS hooks.
-            }
+            // The key must be unique app-wide: use_id_keyed only mixes it
+            // into the shared base id.
+            let name_id = use_id_keyed(&("signup-form", "name"));
+            let email_id = use_id_keyed(&("signup-form", "email"));
         "##),
-        p("The format is ", code("ui-<16 hex chars>"),
-          " — stable across re-renders, unique within the tree, safe \
-           to use as an HTML id, ARIA target, or analytics key. ",
-          code("use_id_keyed(key)"),
-          " mixes a user-supplied key into the hash for cases where \
-           the same component instance needs multiple distinct ids."),
-        p("Primarily useful for SSR-related work and accessibility \
-           (label/input pairing, ARIA controls/labelledby) — anywhere \
-           you'd reach for ", code("React.useId"),
-          " or a counter that survives reconciliation."),
     },
 
     section(heading = "Untracked reads") {
@@ -629,55 +641,47 @@ docs! {
            derived value reads its inputs reactively, so any tracked context \
            that depends on the derived value re-runs when the inputs change."),
 
-        p("Most of the time you don't construct a ", code("Derived<T>"),
-          " by hand. Inside ", code("ui!"),
-          ", the macro recognizes reactive call shapes and emits a ",
-          code("Derived<T>"), " for you:"),
+        p("Most of the time you don't build one by hand. Inside ", code("ui!"),
+          ", a reactive ", code("if"), " lowers its condition to a closure \
+           that the conditional re-evaluates when the signals it reads change:"),
 
         code(rust, r##"
             ui! {
-                // Reactive: the macro wraps this in a Derived<bool> Effect.
+                // Reactive: the condition becomes a closure the branch re-runs.
                 if count.get() > 10 {
                     text { "Over ten!" }
                 }
             }
         "##),
 
-        p("When you do need an explicit derived value — for example, a \
-           computed value used in two places — you can compose the same \
-           shape manually with an effect that writes to a derived signal:"),
+        p("Any prop that accepts a value also accepts a closure, so a one-off \
+           derived value is just ", code("move || count.get() * 2"),
+          ". When the same derived value is used in several places, or is \
+           expensive, use ", code("memo"), ":"),
 
         code(rust, r##"
             let count = signal(0);
-            let doubled = signal(0);
-            effect!({ doubled.set(count.get() * 2) });
+            let doubled = memo(move || count.get() * 2);
         "##),
 
-        p(code("doubled"), " is now a signal that mirrors ", code("count * 2"),
+        p(code("doubled"), " is a ", code("Memo<i32>"),
           ". Anything that reads ", code("doubled.get()"), " re-runs when ",
-          code("count"), " changes."),
-
-        p("The first-class ", code("Derived<T>"), " type lives in ",
-          code("runtime-core"),
-          " and carries both the runtime closure and a structured description \
-           (method name + input signal ids). The structured form is what lets \
-           generator backends like Roku ship the derived expression to the \
-           device without shipping a closure. You only build one explicitly \
-           when you're writing a primitive or working at the wire-protocol layer."),
+          code("count"), " changes — and only when the doubled value \
+           actually differs. Don't write a derived value as an effect that \
+           sets another signal: ", code("memo"),
+          " settles before effects run, while a mirror signal updates one \
+           round later and can be observed stale."),
 
         compare(from = React) {
-            p("A pattern like the ", code("doubled"),
-              " signal above is the equivalent of ",
+            p(code("memo"), " is the equivalent of ",
               code("useMemo(() => count * 2, [count])"),
               " — but the framework figures out the deps, and the result is \
                a value consumable from anywhere, not bound to a render scope."),
         },
         compare(from = Solid) {
-            p(code("Derived<T>"), " is ", code("createMemo"),
-              "'s structural cousin. Solid's ", code("createMemo"),
-              " lazily caches and recomputes; the ", code("Effect + signal"),
-              " pattern shown above is the manual equivalent. An explicit \
-               memo primitive is on the roadmap."),
+            p(code("memo"), " is ", code("createMemo"),
+              ", with the same caching and equality cut. See the ",
+              code("memo()"), " section above."),
         },
         compare(from = SvelteFive) {
             p("A derived signal is what ", code("$derived(...)"), " is in a ",
@@ -694,32 +698,36 @@ docs! {
            fills with a handle when the primitive mounts."),
 
         code(rust, r##"
-            use runtime_core::{Ref, ButtonHandle};
+            use runtime_core::{Ref, TextInputHandle};
 
-            let btn: Ref<ButtonHandle> = Ref::new();
+            let draft = signal(String::new());
+            let input: Ref<TextInputHandle> = Ref::new();
 
             ui! {
-                button(label = "Increment", on_click = on_click).bind(btn)
+                text_input(value = draft, on_change = move |s: String| draft.set(s), bind = input)
+                button(label = "Focus", on_click = move || {
+                    if let Some(h) = input.get() {
+                        h.focus();
+                    }
+                })
             }
-
-            // Later, from any signal-write context:
-            btn.with(|h| h.trigger());        // call the button's `trigger` method
         "##),
 
-        p(code("Ref::with(|h| ...)"),
-          " runs the closure with the handle if the primitive is currently \
-           mounted; returns ", code("None"), " if it isn't. ",
-          code("Ref::get()"), " and ", code("Ref::is_mounted()"),
-          " are convenience variants."),
+        p(code("Ref::get()"),
+          " returns a clone of the handle once the primitive has mounted, or ",
+          code("None"), " before that. ", code("Ref::with(|h| ...)"),
+          " borrows instead of cloning, and ", code("Ref::is_mounted()"),
+          " reports whether the slot is filled."),
 
         p("A Ref isn't reactive in the signal sense — reading ",
           code("is_mounted()"),
           " doesn't subscribe to its mount state. If you need to react to a \
            ref's lifecycle, drive a signal alongside it."),
 
-        p("Refs have their own page — see Refs for the full surface, \
-           including handles for built-in primitives and how to declare \
-           handles on user components via ", code("methods!"), "."),
+        p("Refs have their own page — see ", link("Refs", to = "refs"),
+          " for the full surface, including handles for built-in primitives \
+           and how to declare handles on user components with ",
+          code("#[method]"), "."),
     },
 
     section(heading = "Scopes and cleanup") {
@@ -815,7 +823,7 @@ docs! {
                     let t1 = after_ms(150, move || phase.set(1));
                     let t2 = after_ms(1050, move || phase.set(2));
                     let t3 = after_ms(2850, move || phase.set(3));
-                    move || { drop(t1); drop(t2); drop(t3); }
+                    on_cleanup(move || { drop(t1); drop(t2); drop(t3); });
                 });
 
                 ui! { /* presences keyed off phase.get() */ }
@@ -829,10 +837,15 @@ docs! {
            once when the component mounts, and its effects' cleanups fire \
            when the owning scope drops."),
 
-        p("A world's lifetime is strict. Writes to a dropped world are \
-           silent no-ops, so an in-flight async task completing after \
-           unmount is harmless; READS from a dropped world panic, surfacing \
-           a handle leak instead of returning garbage."),
+        p("Handles are strict about lifetime. A read or write through a \
+           signal whose scope has dropped — while its world is still alive — \
+           panics with a stale-handle diagnostic. Only a write after the \
+           whole WORLD has dropped is a silent no-op. So an async task that \
+           can finish after its component unmounts must check that it is \
+           still live before it writes; ", code("resource"), ", ",
+          code("mutation"), ", and ", code("async_reducer"),
+          " do this for you (see ",
+          link("Async reactivity", to = "async-reactivity"), ")."),
 
         compare(from = React) {
             p("The boot entry plays the role of ",
@@ -931,8 +944,8 @@ docs! {
         list(
             ["Signals are Copy. Passing a signal into a closure, a child \
               component, or a slot doesn't clone anything heap-allocated; the ",
-             code("Signal<T>"), " itself is two ", code("u32"),
-             "s. The closure environment doesn't grow with the number of \
+             code("Signal<T>"), " itself is three ", code("u32"),
+             "s (world, slot, generation). The closure environment doesn't grow with the number of \
               signals captured."],
             ["Arena storage. Signals and effects are slots in the world's \
               arena, not individual heap allocations. The cost of making a \
@@ -966,7 +979,7 @@ docs! {
 
         code(rust, r##"
             #[component]
-            fn counter(count: Signal<i32>) -> Element {
+            fn Counter(count: Signal<i32>) -> Element {
                 ui! {
                     text { format!("Count: {}", count.get()) }
                     button(label = "++", on_click = move || count.update(|n| n + 1))
@@ -974,10 +987,10 @@ docs! {
             }
 
             #[component]
-            fn app() -> Element {
+            fn App() -> Element {
                 let count = signal(0);
                 ui! {
-                    counter(count = count)
+                    Counter(count = count)
                     text { format!("Doubled: {}", count.get() * 2) }
                 }
             }
@@ -1008,8 +1021,7 @@ docs! {
 
         code(rust, r##"
             let count = signal(0);
-            let doubled = signal(0);
-            effect!({ doubled.set(count.get() * 2) });
+            let doubled = memo(move || count.get() * 2);
 
             ui! {
                 text { format!("count={}", count.get()) }
@@ -1029,7 +1041,7 @@ docs! {
 
         code(rust, r##"
             #[component]
-            fn greeting(name: Signal<String>) -> Element {
+            fn Greeting(name: Signal<String>) -> Element {
                 let greeting_text = format!("Hello, {}", name.get());  // computed ONCE
                 ui! {
                     text { greeting_text.clone() }
@@ -1090,18 +1102,18 @@ docs! {
         p("Reading a signal whose scope has dropped:"),
 
         code(rust, r##"
-            let s = signal(0);          // owned by current scope
-            let _ = std::thread::spawn(move || s.get());  // wrong: panic on other thread
-
             // Inside ui! { for ... { let inner_signal = signal(0); ... } }
             // If you hold inner_signal past the iteration, .get() panics later.
         "##),
 
-        p("Signals are scope-bound and single-threaded. Reads after the \
-           scope's drop panic with a diagnostic; WRITES after the world drops \
-           are silent no-ops, which is what makes an async task completing \
-           after unmount harmless. Don't hold signals past their owning \
-           scope's lifetime."),
+        p("Signals are scope-bound and single-threaded. ", code("Signal<T>"),
+          " is not ", code("Send"), ", so moving one into ",
+          code("std::thread::spawn"),
+          " is a compile error. A read OR write through a handle whose scope \
+           has dropped panics with a diagnostic; only a write after the whole \
+           world has dropped is a silent no-op. Don't hold signals past their \
+           owning scope's lifetime, and guard async continuations that might \
+           outlive it."),
 
         p("Forcing a rebuild with ", code("touch()"),
           " on a reactive ", code("match"), " scrutinee. A reactive ",
@@ -1116,8 +1128,8 @@ docs! {
         list(
             ["How a render happens — the mechanism behind cascades, the \
               walker, and reactive subtrees, on the Overview page."],
-            ["Refs — the full ref / handle surface and how ", code("methods!"),
-             " declares user-component handles."],
+            [link("Refs", to = "refs"), " — the full ref / handle surface and how ",
+             code("#[method]"), " declares user-component handles."],
             ["Styles — how the styling system uses the reactive substrate \
               internally."],
             ["The wire protocol — how derived values and structured actions \

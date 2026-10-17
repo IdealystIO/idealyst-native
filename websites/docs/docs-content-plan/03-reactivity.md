@@ -28,39 +28,44 @@ let name = signal(String::from("Ada"));
 let items = signal(Vec::<Item>::new());
 ```
 
-`signal(v)` is shorthand for `Signal::new(v)`. The value is stored
-in a thread-local arena; the `Signal<T>` you hold back is a small
-Copy token (a couple of u32s) that indexes into the arena. This is
-why you can pass signals into closures and child components without
-ever calling `.clone()`.
+`signal(v)` allocates a slot in the enclosing world's arena. The
+`Signal<T>` you hold back is a small `Copy` handle (three `u32`s:
+world, slot, generation) that routes to that slot. This is why you
+can pass signals into closures and child components without ever
+calling `.clone()`.
 
 ### Reading and writing
 
 ```rust
 let n = count.get();          // tracked read
-count.set(7);                 // replace the value
-count.update(|n| n + 1);    // derive the next value from the current one
+count.set(7);                 // stage a replacement value
+count.update(|n| n + 1);      // read-modify-write on the staged value
 ```
 
-`.get()` returns a clone of the current value (`T: Clone` is the
-only bound). `.set(v)` replaces the value. `.update(|v| ...)` is
-the same as `set(f(get()))` but skips the clone — useful for
-collections.
+`.get()` returns a clone of the current value, so it needs
+`T: Clone`; every signal also needs `T: PartialEq + 'static`.
+`.set(v)` stages a replacement. `.update(|cur| next)` takes the
+current value by reference and returns the next one.
 
-Both `.set` and `.update` run synchronously and trigger every
-dependent Effect to re-run before they return. See **Cascades**
-below for what that means in practice.
+Writes **stage**: nothing observable changes until the world
+flushes, and a `.get()` on the next line still returns the committed
+value. The flush runs automatically when your handler returns. Use
+`update` for read-modify-write — `set(get() + 1)` twice in one
+handler nets +1, `update(|n| n + 1)` twice nets +2. `.set` is
+equality-guarded: a staged value equal to the committed one notifies
+nobody. See **The flush** below.
 
 ### Identity
 
 ```rust
-let id: u64 = count.id();
+let id: u64 = count.raw_id();
 ```
 
-Every signal has a stable arena id. You rarely need this — it's the
-hook the wire protocol uses to refer to a signal across processes.
-If you find yourself reaching for `.id()` from app code, there's
-probably a more direct API you want instead.
+Every signal has a stable identity key. You rarely need this — it's
+a key for external registries (the web backend's JS text bindings
+use it) and can't be turned back into a handle. If you find yourself
+reaching for `.raw_id()` from app code, there's probably a more
+direct API you want instead.
 
 > **From React.** A `Signal<T>` is a small Copy token. You don't
 > wrap it in `useRef` to escape the closure rules, you don't pass
@@ -89,11 +94,10 @@ code are:
   The expression is wrapped in an Effect that re-fires on signal
   change.
 - **Closure props** — `label = move || format!("...", count.get())`.
-  A closure passed where the framework expected a `Derived<T>` or
-  reactive source is wrapped in an Effect.
+  A closure passed to a reactive prop is wrapped in an Effect.
 - **Reactive `if` inside `ui!`** — an `if` whose condition contains
-  `.get()` lowers to a `When` primitive whose conditional Effect
-  re-fires on change.
+  `.get()` lowers to a `when` over a condition closure, which
+  re-evaluates on change.
 - **Reactive `for` inside `ui!`** — a `for` over a signal-backed
   source is wrapped so the list rebuilds when the source changes.
 - **Stylesheets** — reading from the active theme is itself a
@@ -153,26 +157,35 @@ on. The cases where a manual effect makes sense are:
 
 `effect!` is owned by the surrounding component scope — there is no
 handle to manage. The effect lives until the scope drops (when the
-component's subtree is replaced or torn down). That's why `effect!`
-debug-asserts a scope is active: a scope-owned effect only makes sense
-inside the tree.
+component's subtree is replaced or torn down).
 
-For reactivity wired up **outside** the component tree — app startup,
-an async callback, library or platform setup — use `watch` instead:
+`effect!` takes a block — `effect!({ ... })`. A closure argument
+(`effect!(move || ...)`) compiles but only builds the closure, so the
+body never runs. The macro discards the block's value, so a cleanup
+closure returned from it is dropped without running — register
+cleanups with `on_cleanup` instead.
+
+For an effect whose lifetime **you** control rather than the
+component's — a service set up at app start, library or platform
+setup — use `watch` instead:
 
 ```rust
 use runtime_core::watch;
 
 let sub = watch(move || apply_class(is_open.get()));
 // `sub` is a `Subscription` — YOU own it. Dropping it disposes the
-// effect; `Subscription::leak()` pins it for the whole process.
+// effect; `Subscription::leak()` pins it for the world's lifetime.
 ```
 
 `watch(f)` returns a caller-owned `Subscription`: store it where its
 lifetime should match (a struct field, the owning service). Unlike
 `effect!`, a `watch` is never adopted by an ambient scope, so it
-behaves the same whether or not one is active. The raw `Effect::new`
-constructor these build on is sealed — use `effect!` or `watch`.
+behaves the same whether or not one is active. It still creates a
+world effect, so it must be called inside the world (a component
+build, an effect, a flush) — not from an event handler or an async
+continuation. Both build on the public `effect(|| ...)` function,
+which returns a non-owning `Effect` handle and, unlike the macro,
+accepts a cleanup closure returned from the body.
 
 > **From React.** `effect!` is in the family of `useEffect`,
 > with three concrete differences:
@@ -182,16 +195,15 @@ constructor these build on is sealed — use `effect!` or `watch`.
 >    out, nothing to forget, no exhaustive-deps lint to fight.
 >    Adding a signal read to the closure body subscribes to it;
 >    removing the read unsubscribes.
-> 2. **No cleanup function.** When the effect's scope drops, its
->    subscriptions are released automatically. If you need to undo
->    a side effect on teardown — close a socket, cancel a timer —
->    you do it by writing a destructor on whatever resource the
->    effect created, not by returning a cleanup function from the
->    effect itself.
-> 3. **Runs synchronously on the change.** Idealyst effects fire on
->    the same call stack as the `signal.set()` that caused them, not
->    after a commit phase. This is faster and more predictable, but
->    means heavy work inside an effect blocks the writer.
+> 2. **Cleanup is separate from the effect.** Call
+>    `on_cleanup(callback)` from inside the effect to register a
+>    teardown that fires before the next re-run and on final
+>    disposal. Don't return a function from an `effect!` block —
+>    the macro discards it.
+> 3. **Effects run at the flush.** Writes stage; when the handler
+>    returns, the flush commits them, settles memos, then runs each
+>    affected effect once — so an effect never sees a fresh signal
+>    next to a stale memo.
 
 > **From Solid.** `effect!` is `createEffect(...)`. Same
 > semantics: runs once eagerly, re-runs on dependency change,
@@ -233,49 +245,42 @@ the derived value reads its inputs reactively, so any tracked
 context that depends on the derived value re-runs when the inputs
 change.
 
-Most of the time you don't construct a `Derived<T>` by hand. Inside
-`ui!`, the macro recognizes reactive call shapes and emits a
-`Derived<T>` for you:
+Most of the time you don't build one by hand. Inside `ui!`, a
+reactive `if` lowers its condition to a closure that the conditional
+re-evaluates when the signals it reads change:
 
 ```rust
 ui! {
-    // Reactive: the macro wraps this in a Derived<bool> Effect.
+    // Reactive: the condition becomes a closure the branch re-runs.
     if count.get() > 10 {
         text { "Over ten!" }
     }
 }
 ```
 
-When you do need an explicit derived value — for example, a
-computed value used in two places — you can compose the same shape
-manually with an effect that writes to a derived signal:
+Any prop that accepts a value also accepts a closure, so a one-off
+derived value is just `move || count.get() * 2`. When the same
+derived value is used in several places, or is expensive, use
+`memo`:
 
 ```rust
 let count = signal(0);
-let doubled = signal(0);
-effect!({ doubled.set(count.get() * 2) });
+let doubled = memo(move || count.get() * 2);
 ```
 
-`doubled` is now a signal that mirrors `count * 2`. Anything that
-reads `doubled.get()` re-runs when `count` changes.
+`doubled` is a `Memo<i32>`. Anything that reads `doubled.get()`
+re-runs when `count` changes — and only when the doubled value
+actually differs. Don't write a derived value as an effect that
+sets another signal: `memo` settles before effects run, while a
+mirror signal updates one round later and can be observed stale.
 
-The first-class `Derived<T>` type lives in `runtime-core` and
-carries both the runtime closure and a structured description
-(method name + input signal ids). The structured form is what lets
-generator backends like Roku ship the derived expression to the
-device without shipping a closure. You only build one explicitly
-when you're writing a primitive or working at the wire-protocol
-layer.
+> **From React.** `memo` is the equivalent of
+> `useMemo(() => count * 2, [count])` — but the framework figures
+> out the deps, and the result is a value consumable from anywhere,
+> not bound to a render scope.
 
-> **From React.** A pattern like the `doubled` signal above is the
-> equivalent of `useMemo(() => count * 2, [count])` — but the
-> framework figures out the deps, and the result is a value
-> consumable from anywhere, not bound to a render scope.
-
-> **From Solid.** `Derived<T>` is `createMemo`'s structural cousin.
-> Solid's `createMemo` lazily caches and recomputes; the
-> `Effect + signal` pattern shown above is the manual equivalent.
-> An explicit memo primitive is on the roadmap.
+> **From Solid.** `memo` is `createMemo`, with the same caching and
+> equality cut on its output.
 
 > **From Svelte 5.** A derived signal is what `$derived(...)` is in
 > a `.svelte` file.
@@ -284,43 +289,47 @@ layer.
 
 ## Refs
 
-A `Ref<H>` is a programmatic handle to a primitive. It's allocated
-in the same arena as signals and effects, but it's not a value type
-— it's a slot that the framework fills with a handle when the
-primitive mounts.
+A `Ref<H>` is a programmatic handle to a primitive: a slot that
+the framework fills with a handle when the primitive mounts. It
+lives in a thread-local ref table, not in the world with your
+signals.
 
 ```rust
-use runtime_core::{Ref, ButtonHandle};
+use runtime_core::{Ref, TextInputHandle};
 
-let btn: Ref<ButtonHandle> = Ref::new();
+let draft = signal(String::new());
+let input: Ref<TextInputHandle> = Ref::new();
 
 ui! {
-    Button(label = "Increment", on_click = on_click).bind(btn)
+    text_input(value = draft, on_change = move |s: String| draft.set(s), bind = input)
+    button(label = "Focus", on_click = move || {
+        if let Some(h) = input.get() {
+            h.focus();
+        }
+    })
 }
-
-// Later, from any signal-write context:
-btn.with(|h| h.trigger());        // call the button's `trigger` method
 ```
 
-`Ref::with(|h| ...)` runs the closure with the handle if the
-primitive is currently mounted; returns `None` if it isn't.
-`Ref::get()` and `Ref::is_mounted()` are convenience variants.
+`Ref::get()` returns a clone of the handle once the primitive has
+mounted, or `None` before that. `Ref::with(|h| ...)` borrows instead
+of cloning, and `Ref::is_mounted()` reports whether the slot is
+filled.
 
 A Ref isn't reactive in the signal sense — reading `is_mounted()`
 doesn't subscribe to its mount state. If you need to react to a
 ref's lifecycle, drive a signal alongside it.
 
-Refs have their own page — see [Refs](#) for the full surface,
+Refs have their own page — see [Refs](refs) for the full surface,
 including handles for built-in primitives and how to declare
-handles on user components via `methods!`.
+handles on user components with `#[method]`.
 
 ## Scopes and cleanup
 
 Every Effect and every Signal is owned by a **Scope**. Scopes form
 a tree:
 
-- The renderer's `Owner` holds the **root scope**. When the owner
-  drops, the entire app's reactive state is freed in one shot.
+- The world holds the **root scope**. When the world drops, the
+  entire app's reactive state is freed in one shot.
 - Reactive subtrees create **nested scopes**:
   - The active branch of a `When` lives in its own scope; flipping
     the condition drops the old scope and builds the new branch in
@@ -350,40 +359,39 @@ owns the lifecycle.
 > Rust type with a `Drop` impl and let the type system handle
 > teardown.
 
-## Cascades — what happens on a signal change
+## The flush — what happens on a signal change
 
-The cascade machinery is documented in detail on the Overview's
-"How a render happens" section. The summary:
+A write does not run anything. It stages, and the driver flushes:
 
-1. `signal.set(v)` writes the new value to the arena.
-2. It snapshots the signal's current subscriber set.
-3. Each subscriber Effect re-runs in turn:
-   - Its previous dependency set is cleared.
-   - The closure runs with `CURRENT` set to its id, so any read
-     records as a fresh dependency.
-   - The closure usually makes one backend call.
-4. If a subscriber's run writes another signal, that signal's
-   subscribers are run **before** the outer write returns.
+1. `signal.set(v)` records the pending value in the signal's slot.
+   Nothing observable changes; reads still return the committed
+   value.
+2. When the author-code entry point returns (event handler, timer,
+   animation frame, async-task poll), the backend's flush driver
+   calls `World::flush`. You never call it yourself.
+3. The flush settles **derivations** first — memos recompute in
+   dependency order, each one equality-guarded.
+4. Then user effects run, once each no matter how many of their
+   dependencies changed in the turn. Each effect's dependency set is
+   rebuilt from what the body reads on this run; the body usually
+   makes one backend call.
+5. Writes made from inside an effect are staged too and settle in a
+   further round of the same flush.
 
-Cascades are synchronous, depth-first, and bounded by the
-re-entry guard (an Effect that fires the signal it's currently
-reading is skipped, matching how Solid, MobX, and Reactively handle
-the same pattern).
+So every handler is implicitly a batch — there is no `batch(|| ...)`
+wrapper. N writes to N signals feeding one effect produce one effect
+run, and an effect can never observe a fresh signal beside a stale
+memo over it.
 
-There is no scheduler queue, no microtask drain, no batch boundary.
-By the time `set` returns, every downstream Effect has either run
-or been skipped, and every backend call those Effects produced has
-been made.
+A flush that doesn't settle within 100 rounds panics ("cyclic signal
+updates?") instead of hanging.
 
 ### Order
 
-For a single signal write, subscribers run in arena-id order — the
-order they were created. You shouldn't rely on this for correctness
-(any Effect should be order-independent given its dependencies),
-but it's stable and useful for debugging.
-
-For chained cascades, the order is depth-first: writes from inside
-an Effect run their consequences before the outer write returns.
+Within a flush, effects run in slot order — the order they were
+created. You shouldn't rely on this for correctness (any effect
+should be order-independent given its dependencies), but it's stable
+and useful for debugging.
 
 ## Dynamic dependencies
 
@@ -427,9 +435,10 @@ code:
 
 - **Signals are Copy.** Passing a signal into a closure, a child
   component, or a slot doesn't clone anything heap-allocated; the
-  `Signal<T>` itself is two `u32`s. The closure environment
-  doesn't grow with the number of signals captured.
-- **Arena storage.** Signals and effects are slots in a thread-local
+  `Signal<T>` itself is three `u32`s (world, slot, generation). The
+  closure environment doesn't grow with the number of signals
+  captured.
+- **Arena storage.** Signals and effects are slots in the world's
   arena, not individual heap allocations. The cost of making a
   signal is bumping an index.
 - **Per-update cost is proportional to changed nodes.** A signal
@@ -452,7 +461,7 @@ The smallest reactive thing:
 let count = signal(0);
 ui! {
     text { format!("Count: {}", count.get()) }
-    Button(label = "++", on_click = move || count.update(|n| n + 1))
+    button(label = "++", on_click = move || count.update(|n| n + 1))
 }
 ```
 
@@ -464,18 +473,18 @@ write the same arena slot.
 
 ```rust
 #[component]
-fn counter(count: Signal<i32>) -> Element {
+fn Counter(count: Signal<i32>) -> Element {
     ui! {
         text { format!("Count: {}", count.get()) }
-        Button(label = "++", on_click = move || count.update(|n| n + 1))
+        button(label = "++", on_click = move || count.update(|n| n + 1))
     }
 }
 
 #[component]
-fn app() -> Element {
+fn App() -> Element {
     let count = signal(0);
     ui! {
-        counter(count = count)
+        Counter(count = count)
         text { format!("Doubled: {}", count.get() * 2) }
     }
 }
@@ -497,7 +506,7 @@ ui! {
     if logged_in.get() {
         text { "Welcome back!" }
     } else {
-        Button(label = "Log in", on_click = move || logged_in.set(true))
+        button(label = "Log in", on_click = move || logged_in.set(true))
     }
 }
 ```
@@ -506,8 +515,7 @@ ui! {
 
 ```rust
 let count = signal(0);
-let doubled = signal(0);
-effect!({ doubled.set(count.get() * 2) });
+let doubled = memo(move || count.get() * 2);
 
 ui! {
     text { format!("count={}", count.get()) }
@@ -528,7 +536,7 @@ If you write:
 
 ```rust
 #[component]
-fn greeting(name: Signal<String>) -> Element {
+fn Greeting(name: Signal<String>) -> Element {
     let greeting_text = format!("Hello, {}", name.get());  // computed ONCE
     ui! {
         text { greeting_text.clone() }
@@ -569,37 +577,40 @@ context. If you want a frozen value, that's already what you have
 let count = signal(0);
 effect!({
     let v = count.get();
-    count.set(v + 1);    // re-entry: this run is skipped, no loop
+    count.set(v + 1);    // loops: every round stages a new value
 });
 ```
 
-The re-entry guard skips an Effect that's already running. The
-write happens, but the Effect doesn't loop. If you needed that
-write to fire other subscribers, it still does — only the self-fire
-is suppressed.
+There is no self-write guard. The write stages, the flush commits
+it in its next round, the effect re-runs because its dependency
+changed, and it stages again — until the flush hits its 100-round
+limit and panics. Derive the value with `memo` instead, or read it
+with `untrack` / `count.update(...)` if the effect must not depend
+on it.
 
 ### Reading a signal whose scope has dropped
 
 ```rust
-let s = signal(0);          // owned by current scope
-let _ = std::thread::spawn(move || s.get());  // wrong: panic on other thread
-
 // Inside ui! { for ... { let inner_signal = signal(0); ... } }
 // If you hold inner_signal past the iteration, .get() panics later.
 ```
 
-Signals are scope-bound and single-threaded. Reads after the
-scope's drop panic with a diagnostic. Don't hold signals past
-their owning scope's lifetime.
+Signals are scope-bound and single-threaded. `Signal<T>` is not
+`Send`, so moving one into `std::thread::spawn` is a compile error.
+A read **or write** through a handle whose scope has dropped panics
+with a stale-handle diagnostic; only a write after the whole world
+has dropped is a silent no-op. Don't hold signals past their owning
+scope's lifetime, and guard async continuations that might outlive
+it.
 
 ## Where to read more
 
 - [How a render happens](#how-a-render-happens) — the mechanism
   behind cascades, realize, and reactive subtrees, on the
   Overview page.
-- [Refs](#) — the full ref / handle surface and how `methods!`
+- [Refs](refs) — the full ref / handle surface and how `#[method]`
   declares user-component handles.
-- [Styles](#) — how the styling system uses the reactive substrate
-  internally.
-- [The wire protocol](#) — how `Derived<T>` and `Action`'s
-  structured form ship to generator backends.
+- [Styles](styles) — how the styling system uses the reactive
+  substrate internally.
+- The wire protocol — how derived values and structured actions
+  ship to generator backends.

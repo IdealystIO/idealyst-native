@@ -83,9 +83,9 @@ For UIs that don't need that subtlety, project to the simpler
 
 ```rust
 match user.network_state() {
-    NetworkState::Loading      => ui!{ Spinner() },
-    NetworkState::Success(u)   => ui!{ text(u.name) },
-    NetworkState::Error(e)     => ui!{ text(format!("{e}")) },
+    NetworkState::Loading      => ui! { activity_indicator() },
+    NetworkState::Success(u)   => ui! { text { u.name } },
+    NetworkState::Error(e)     => ui! { text { format!("{e}") } },
     NetworkState::Idle         => unreachable!(),  // resource always starts Loading
 }
 ```
@@ -134,10 +134,10 @@ let log_event: Mutation<EventName, (), AnalyticsError> =
         analytics::send(name).await
     });
 
+// `Mutation` is `Clone`, not `Copy`: clone it for each closure.
+let log = log_event.clone();
 ui! {
-    Button {
-        on_click: { let log = log_event.clone(); move || log.trigger("clicked_cta") },
-    }
+    button(label = "Sign up", on_click = move || log.trigger("clicked_cta".into()))
 }
 ```
 
@@ -146,9 +146,11 @@ ui! {
 - `.run(input).await` does the same but returns the result inline —
   useful in event handlers that want to navigate / commit a
   follow-up only on success.
-- The handle's state is a `Signal<MutationState<T, E>>`. Same
-  fields as `ResourceState` plus an `Idle` value (no trigger has
-  fired yet) — the default value of `loading` is `false`.
+- `.state()` returns a `MutationState<T, E>` snapshot (a tracked
+  read) with the same fields as `ResourceState`; before the first
+  trigger `loading` is `false` and there is no data.
+  `.state_signal()` hands out the backing
+  `Signal<MutationState<T, E>>` for memos or children.
 
 ### When you should reach for `async_reducer` instead
 
@@ -184,12 +186,10 @@ let create: AsyncReducer<CreateTodo, ServerError> = async_reducer(
 );
 
 ui! {
-    Button {
-        on_click: {
-            let create = create.clone();
-            move || create.trigger(CreateTodo { title: "buy milk".into() })
-        },
-    }
+    button(
+        label = "Add",
+        on_click = move || create.trigger(CreateTodo { title: "buy milk".into() }),
+    )
 }
 ```
 
@@ -199,12 +199,13 @@ The three pieces:
 |---|---|---|
 | `state: Signal<S>` | caller-owned | the data your UI binds to |
 | `perform: I → Future<Result<R, E>>` | passed in | the async action |
-| `apply: (&mut S, R) → ()` | passed in | how to fold the response into state |
+| `apply: Fn(&mut S, R)` | passed in | how to fold the response into state (mutates a copy of the current state) |
 
 On trigger:
 1. The handle's status flips to `Loading`.
 2. `perform(input)` is spawned.
-3. On `Ok(r)`: `state.update(|s| apply(s, r))`. Status flips to `Idle`.
+3. On `Ok(r)`: `apply` runs on a clone of the current state and the
+   result is staged into the signal. Status flips to `Idle`.
 4. On `Err(e)`: status flips to `Error(e)`. State is **not touched**.
 
 Notably the handle's `AsyncStatus<E>` has no `Success(T)` variant —
@@ -304,9 +305,9 @@ lives in the caller's state signal, not on the handle. The
 
 ```rust
 match create.status().get() {
-    AsyncStatus::Loading => ui!{ Spinner() },
-    AsyncStatus::Error(e) => ui!{ text(format!("Couldn't save: {e}")) },
-    _ => ui!{ /* nothing — the list is up-to-date */ },
+    AsyncStatus::Loading => ui! { activity_indicator() },
+    AsyncStatus::Error(e) => ui! { text { format!("Couldn't save: {e}") } },
+    _ => ui! { view() },  // nothing — the list is up-to-date
 }
 ```
 
@@ -346,10 +347,10 @@ for the details.
 
 - Every primitive is built on `Signal` + `Effect` + `spawn_async`.
   No special scheduler, no extra arenas.
-- A `Resource`/`Mutation`/`AsyncReducer` handle is `Rc`-cheap to
-  clone. State signals are `Copy`.
-- The stale-result guard adds one atomic counter increment per
-  trigger. Negligible.
+- A `Resource` is `Copy` (two signal handles). `Mutation` and
+  `AsyncReducer` are `Rc`-cheap to clone. State signals are `Copy`.
+- The stale-result guard adds one `Rc<Cell<u64>>` counter increment
+  per trigger. Negligible.
 - Lifecycle transitions are signal writes — same cost as any other
   signal `set`.
 

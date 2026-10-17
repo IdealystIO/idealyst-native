@@ -80,9 +80,9 @@ docs! {
           code("NetworkState"), " enum via ", code(".network_state()"), ":"),
         code(rust, r##"
             match user.network_state() {
-                NetworkState::Loading      => ui!{ Spinner() },
-                NetworkState::Success(u)   => ui!{ text(u.name) },
-                NetworkState::Error(e)     => ui!{ text(format!("{e}")) },
+                NetworkState::Loading      => ui! { activity_indicator() },
+                NetworkState::Success(u)   => ui! { text { u.name } },
+                NetworkState::Error(e)     => ui! { text { format!("{e}") } },
                 NetworkState::Idle         => unreachable!(),  // resource always starts Loading
             }
         "##),
@@ -125,11 +125,11 @@ docs! {
                     analytics::send(name).await
                 });
 
+            // `Mutation` is `Clone`, not `Copy`: clone it for each closure
+            // that needs its own copy.
+            let log = log_event.clone();
             ui! {
-                button {
-                    on_click: { let log = log_event.clone();
-                                move || log.trigger("clicked_cta") },
-                }
+                button(label = "Sign up", on_click = move || log.trigger("clicked_cta".into()))
             }
         "##),
         list(
@@ -139,10 +139,12 @@ docs! {
             [code(".run(input).await"),
              " does the same but returns the result inline — useful in event \
               handlers that want to navigate / commit a follow-up only on success."],
-            ["The handle's state is a ", code("Signal<MutationState<T, E>>"),
-             ". Same fields as ", code("ResourceState"), " plus an Idle value (no \
-              trigger has fired yet) — the default of ", code("loading"),
-             " is ", code("false"), "."],
+            [code(".state()"), " returns a ", code("MutationState<T, E>"),
+             " snapshot (a tracked read). Same fields as ", code("ResourceState"),
+             "; before the first trigger ", code("loading"), " is ", code("false"),
+             " and there is no data. ", code(".state_signal()"),
+             " hands out the backing ", code("Signal<MutationState<T, E>>"),
+             " for memos or children."],
         ),
         p("If you find yourself writing this in a mutation's on-success path:"),
         code(rust, r##"
@@ -171,25 +173,24 @@ docs! {
             );
 
             ui! {
-                button {
-                    on_click: {
-                        let create = create.clone();
-                        move || create.trigger(CreateTodo { title: "buy milk".into() })
-                    },
-                }
+                button(
+                    label = "Add",
+                    on_click = move || create.trigger(CreateTodo { title: "buy milk".into() }),
+                )
             }
         "##),
         p("The three pieces:"),
         list(
             [code("state: Signal<S>"), " — caller-owned; the data your UI binds to."],
             [code("perform: I → Future<Result<R, E>>"), " — the async action."],
-            [code("apply: (&S, R) → S"),
-             " — how to fold the response into state (takes the current \
-              state by reference, returns the next one)."],
+            [code("apply: Fn(&mut S, R)"),
+             " — how to fold the response into state: it mutates a copy of \
+              the current state in place."],
         ),
         p("On trigger: status flips to Loading; ", code("perform(input)"),
-          " is spawned; on Ok(r), ", code("state.update(|s| apply(s, r))"),
-          " runs and status flips back to Idle; on Err(e), status flips to \
+          " is spawned; on Ok(r), the state is updated by running ",
+          code("apply"), " on a clone of the current value, and status flips \
+           back to Idle; on Err(e), status flips to \
            Error(e). Notably the state is NOT touched on error — the apply closure \
            is the only thing that writes to ", code("Signal<S>"), "."),
         p("The completion is event-boundary work: its write STAGES and \
@@ -274,9 +275,9 @@ docs! {
         p("The ", code("AsyncReducer::status()"), " signal carries one of these:"),
         code(rust, r##"
             match create.status().get() {
-                AsyncStatus::Loading => ui!{ Spinner() },
-                AsyncStatus::Error(e) => ui!{ text(format!("Couldn't save: {e}")) },
-                _ => ui!{ /* nothing — the list is up-to-date */ },
+                AsyncStatus::Loading => ui! { activity_indicator() },
+                AsyncStatus::Error(e) => ui! { text { format!("Couldn't save: {e}") } },
+                _ => ui! { view() },  // nothing — the list is up-to-date
             }
         "##),
     },
@@ -317,11 +318,12 @@ docs! {
         list(
             ["Every primitive is built on Signal + Effect + ",
              code("spawn_async"), ". No special scheduler, no extra arenas."],
-            ["A ", code("Resource"), " / ", code("Mutation"), " / ",
-             code("AsyncReducer"), " handle is ", code("Rc"),
+            ["A ", code("Resource"), " is ", code("Copy"),
+             " (two signal handles). ", code("Mutation"), " and ",
+             code("AsyncReducer"), " are ", code("Rc"),
              "-cheap to clone. State signals are ", code("Copy"), "."],
-            ["The stale-result guard adds one atomic counter increment per \
-              trigger. Negligible."],
+            ["The stale-result guard adds one ", code("Rc<Cell<u64>>"),
+             " counter increment per trigger. Negligible."],
             ["Lifecycle transitions are signal writes — same cost as any other \
               signal ", code("set"), "."],
         ),
