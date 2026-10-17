@@ -34,6 +34,22 @@ pub fn derive_key(input: TokenStream) -> TokenStream {
     expand::derive_key(input.into()).into()
 }
 
+/// `#[derive(Tokens)]` — an ordinary struct becomes a token set: every
+/// field is a token (`Color`, `Length`, `f32`, or a `TokenLeaf` newtype)
+/// named by its kebab-case field path, or a namespace (another
+/// `#[derive(Tokens)]` struct). With `#[tokens(default = path::to::fn)]`
+/// the struct is a THEME: it can be installed and swapped
+/// (`AppTheme::install(light())`, `AppTheme::set(dark())`,
+/// `AppTheme::follow_system(light(), dark())`), named as a stylesheet's
+/// vocabulary (`stylesheet! { pub Card<AppTheme> { base(t) { background:
+/// t.surface() } } }`), and its tokens are listed in the MCP catalog. See
+/// `runtime_vocabulary::tokens` for the contract, and `tokens_derive` for
+/// what is emitted.
+#[proc_macro_derive(Tokens, attributes(tokens))]
+pub fn derive_tokens(input: TokenStream) -> TokenStream {
+    expand::derive_tokens(input.into()).into()
+}
+
 /// `#[derive(IdealystSchema)]` — registers a props struct's per-field
 /// information into the MCP catalog. Used alongside `#[component]`
 /// on the struct that the component takes as its props parameter.

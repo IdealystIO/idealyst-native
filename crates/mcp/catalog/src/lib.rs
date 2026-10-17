@@ -183,6 +183,7 @@ inventory::collect!(UtilityEntry);
 inventory::collect!(MacroEntry);
 inventory::collect!(StateEntry);
 inventory::collect!(StyleTokenEntry);
+inventory::collect!(StyleTokenSetEntry);
 inventory::collect!(GuideEntry);
 inventory::collect!(MethodEntry);
 inventory::collect!(AnimationEntry);
@@ -486,6 +487,25 @@ pub struct StyleTokenEntry {
     /// (`IdeaThemeRef`), so tooling can tell which sheets the token
     /// applies to when more than one vocabulary is registered.
     pub vocabulary: &'static str,
+}
+
+/// A whole token vocabulary registered as one set — what
+/// `#[derive(Tokens)]` emits for a theme (`runtime_vocabulary::tokens`).
+///
+/// A derived theme cannot submit one [`StyleTokenEntry`] per token: its
+/// token names are computed by const evaluation over nested shapes that
+/// live in other derives' expansions, so no single expansion can spell
+/// them out. It registers this instead, and [`style_tokens`] expands every
+/// set into ordinary entries — consumers see one flat token slice either
+/// way. Expanded entries carry [`TokenDefault::Value`]: `tokens` already
+/// rendered the default from the theme's default instance.
+#[derive(Debug)]
+pub struct StyleTokenSetEntry {
+    /// The theme type that names the vocabulary in a sheet's `<…>` slot.
+    pub vocabulary: &'static str,
+    /// Produces the set's entries. Called once per process, on the first
+    /// [`style_tokens`] iteration.
+    pub tokens: fn() -> Vec<StyleTokenEntry>,
 }
 
 /// A framework-defined interaction state — `hovered`, `pressed`,
@@ -1086,9 +1106,22 @@ pub fn states() -> impl Iterator<Item = &'static StateEntry> {
 }
 
 /// Iterate every registered [`StyleTokenEntry`] — the theme tokens a
-/// `stylesheet!` can name through its block binding.
+/// `stylesheet!` can name through its block binding: each one registered
+/// directly, then every [`StyleTokenSetEntry`] expanded.
 pub fn style_tokens() -> impl Iterator<Item = &'static StyleTokenEntry> {
-    inventory::iter::<StyleTokenEntry>()
+    inventory::iter::<StyleTokenEntry>().chain(expanded_token_sets().iter().copied())
+}
+
+/// The entries of every [`StyleTokenSetEntry`], built and leaked once:
+/// the set is fixed at link time, so one expansion serves every caller.
+fn expanded_token_sets() -> &'static [&'static StyleTokenEntry] {
+    static EXPANDED: std::sync::OnceLock<Vec<&'static StyleTokenEntry>> = std::sync::OnceLock::new();
+    EXPANDED.get_or_init(|| {
+        inventory::iter::<StyleTokenSetEntry>()
+            .flat_map(|set| (set.tokens)())
+            .map(|entry| &*Box::leak(Box::new(entry)))
+            .collect()
+    })
 }
 
 /// Iterate every bundled [`GuideEntry`].

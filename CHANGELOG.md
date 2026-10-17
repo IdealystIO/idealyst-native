@@ -603,6 +603,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   longer signed `--deep` (dev `run` and `publish macos`). A declared
   bundle forces the dev run's `.app`. Documented in `crates/sdk/README.md`.
 
+- **`#[derive(Tokens)]` — an app's own theme as plain structs**
+  (`runtime-macros`, `runtime-macros-expand`, `runtime-vocabulary`,
+  `runtime-core`, `mcp-catalog`, `catalog-scan`). Each field is a token
+  (`Color`, `Length`, `f32`, or a `TokenLeaf` newtype) named by its
+  kebab-case path (`accent.soft_bg` → `accent-soft-bg`), or a nested
+  derived struct (a namespace, reusable under several fields). With
+  `#[tokens(default = light)]` the struct is a theme: `AppTheme::install`,
+  `set`, `follow_system(light, dark)` (declares both palettes for static
+  render), `install_reactive(|| …)`, `.with(|t| …)` for variants, and
+  `stylesheet! { pub Card<AppTheme> { base(t) { background: t.surface() } } }`.
+  A misspelled token, an incomplete theme, or two fields colliding on one
+  name fail to compile; fallbacks come from the `default` theme, so no
+  value is restated. Every token is listed by the MCP catalog. See
+  `docs/styling.md` ("Your own tokens").
+
 - **Slider `thumb_icon`, Popover `min_width`, SegmentedControl `block`**
   (`idea-ui`, `idea-theme`). `Slider(thumb_icon = Some(ICON))` draws the
   icon centred in the thumb, tinted with the variant foreground; an icon

@@ -297,6 +297,7 @@ pub mod key_input;
 pub mod app_input;
 pub mod user_activity;
 pub mod theme;
+pub mod tokens;
 pub mod viewport;
 
 pub use builders::{
@@ -367,6 +368,40 @@ macro_rules! register_style_token {
 #[macro_export]
 macro_rules! register_style_token {
     ($name:expr, $path:expr, $ns:expr, $ty:expr, $vocab:expr, $default:block) => {};
+}
+
+/// Register every token of a `#[derive(Tokens)]` theme into the MCP
+/// catalog, one `StyleTokenEntry` per token — emitted by the derive on a
+/// struct with `#[tokens(default = …)]`, never written by hand.
+///
+/// A whole SET is registered rather than one `register_style_token!` per
+/// token because the derive cannot enumerate the tokens: a nested shape's
+/// fields live in another derive's expansion, and the full names exist
+/// only as the theme's const-evaluated name table. The catalog expands the
+/// set when it is iterated (`mcp_catalog::style_tokens`).
+///
+/// Gated here for the same reason as [`register_style_token!`]: the
+/// calling crate's own features never see `runtime-core/catalog`.
+#[cfg(feature = "catalog")]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! register_style_token_set {
+    ($theme:ty) => {
+        $crate::glue::__mcp::inventory::submit! {
+            $crate::glue::__mcp::StyleTokenSetEntry {
+                vocabulary: <$theme as $crate::tokens::TokenTheme>::NAME,
+                tokens: $crate::tokens::__catalog_tokens::<$theme>,
+            }
+        }
+    };
+}
+
+/// No-op form when the catalog is off.
+#[cfg(not(feature = "catalog"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! register_style_token_set {
+    ($theme:ty) => {};
 }
 
 /// Wraps an expression as a reactive prop value

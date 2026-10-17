@@ -10836,6 +10836,7 @@ dependencies = [
  "runtime-vocabulary",
  "runtime-world",
  "serde",
+ "trybuild",
 ]
 
 [[package]]

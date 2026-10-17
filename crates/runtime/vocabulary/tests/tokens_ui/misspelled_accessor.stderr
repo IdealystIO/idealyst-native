@@ -1,0 +1,28 @@
+error[E0599]: no method named `surfce` found for struct `AppThemeTokens<R>` in the current scope
+  --> tests/tokens_ui/misspelled_accessor.rs:24:15
+   |
+11 | #[derive(Tokens, Clone)]
+   |          ------ method `surfce` not found for this struct
+...
+24 |     let _ = t.surfce();
+   |               ^^^^^^
+   |
+help: there is a method `surface` with a similar name
+   |
+24 |     let _ = t.surface();
+   |                   +
+
+error[E0599]: no method named `soft_gb` found for struct `SwatchTokens<R>` in the current scope
+  --> tests/tokens_ui/misspelled_accessor.rs:25:22
+   |
+ 6 | #[derive(Tokens, Clone)]
+   |          ------ method `soft_gb` not found for this struct
+...
+25 |     let _ = t.accent.soft_gb();
+   |                      ^^^^^^^
+   |
+help: there is a method `soft_bg` with a similar name
+   |
+25 -     let _ = t.accent.soft_gb();
+25 +     let _ = t.accent.soft_bg();
+   |

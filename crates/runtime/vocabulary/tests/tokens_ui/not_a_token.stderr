@@ -1,0 +1,312 @@
+error[E0277]: `Font` is not a token value
+ --> tests/tokens_ui/not_a_token.rs:9:10
+  |
+9 | #[derive(Tokens, Clone)]
+  |          ^^^^^^ not a `TokenLeaf`
+  |
+help: the trait `TokenLeaf` is not implemented for `Font`
+ --> tests/tokens_ui/not_a_token.rs:7:1
+  |
+7 | pub struct Font(pub String);
+  | ^^^^^^^^^^^^^^^
+  = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+ --> src/tokens.rs
+  |
+  | impl TokenLeaf for Color {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+  | impl TokenLeaf for Length {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+  | impl TokenLeaf for f32 {
+  | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+  = note: required for `Font` to implement `TokenField`
+  = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` is not a token value
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ not a `TokenLeaf`
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required because it appears within the type `AppThemeTokens<R>`
+  --> tests/tokens_ui/not_a_token.rs:10:12
+   |
+10 | pub struct AppTheme {
+   |            ^^^^^^^^
+note: required by a bound in `Clone`
+  --> $RUST/core/src/clone.rs
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` is not a token value
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ not a `TokenLeaf`
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required because it appears within the type `AppThemeTokens<R>`
+  --> tests/tokens_ui/not_a_token.rs:10:12
+   |
+10 | pub struct AppTheme {
+   |            ^^^^^^^^
+   = note: required for `AppThemeTokens<R>` to implement `Clone`
+note: required by a bound in `Copy`
+  --> $RUST/core/src/marker.rs
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` is not a token value
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ not a `TokenLeaf`
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required because it appears within the type `AppThemeTokens<R>`
+  --> tests/tokens_ui/not_a_token.rs:10:12
+   |
+10 | pub struct AppTheme {
+   |            ^^^^^^^^
+note: required by a bound in `std::default::Default`
+  --> $RUST/core/src/default.rs
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` is not a token value
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ not a `TokenLeaf`
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required because it appears within the type `AppThemeTokens<R>`
+  --> tests/tokens_ui/not_a_token.rs:10:12
+   |
+10 | pub struct AppTheme {
+   |            ^^^^^^^^
+note: required by a bound in `runtime_vocabulary::glue::TokenField::Read`
+  --> src/tokens.rs
+   |
+   |     type Read<R: TokenTheme>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `TokenField::Read`
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` is not a token value
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ not a `TokenLeaf`
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required because it appears within the type `AppThemeTokens<R>`
+  --> tests/tokens_ui/not_a_token.rs:10:12
+   |
+10 | pub struct AppTheme {
+   |            ^^^^^^^^
+   = note: required for `<AppTheme as TokenField>::Slot<R>` to implement `Copy`
+note: required by a bound in `runtime_vocabulary::glue::TokenField::Slot`
+  --> src/tokens.rs
+   |
+   |     type Slot<R: TokenTheme>: Copy;
+   |                               ^^^^ required by this bound in `TokenField::Slot`
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` is not a token value
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ not a `TokenLeaf`
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required because it appears within the type `AppThemeTokens<R>`
+  --> tests/tokens_ui/not_a_token.rs:10:12
+   |
+10 | pub struct AppTheme {
+   |            ^^^^^^^^
+   = note: the return type of a function must have a statically known size
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` cannot be a field of a `#[derive(Tokens)]` struct
+  --> tests/tokens_ui/not_a_token.rs:12:15
+   |
+12 |     pub font: Font,
+   |               ^^^^ neither a token value nor a token set
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+
+error[E0277]: `Font` cannot be a field of a `#[derive(Tokens)]` struct
+ --> tests/tokens_ui/not_a_token.rs:9:10
+  |
+9 | #[derive(Tokens, Clone)]
+  |          ^^^^^^ neither a token value nor a token set
+  |
+help: the trait `TokenLeaf` is not implemented for `Font`
+ --> tests/tokens_ui/not_a_token.rs:7:1
+  |
+7 | pub struct Font(pub String);
+  | ^^^^^^^^^^^^^^^
+  = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+ --> src/tokens.rs
+  |
+  | impl TokenLeaf for Color {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+  | impl TokenLeaf for Length {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+  | impl TokenLeaf for f32 {
+  | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+  = note: required for `Font` to implement `TokenField`
+  = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `Font` cannot be a field of a `#[derive(Tokens)]` struct
+  --> tests/tokens_ui/not_a_token.rs:12:15
+   |
+12 |     pub font: Font,
+   |               ^^^^ neither a token value nor a token set
+   |
+help: the trait `TokenLeaf` is not implemented for `Font`
+  --> tests/tokens_ui/not_a_token.rs:7:1
+   |
+ 7 | pub struct Font(pub String);
+   | ^^^^^^^^^^^^^^^
+   = note: a leaf token is a `Color`, a `Length`, an `f32`, or a type implementing `TokenLeaf`; a nested namespace is another `#[derive(Tokens)]` struct; a field that is not a token takes `#[tokens(skip)]`
+help: the following other types implement trait `TokenLeaf`
+  --> src/tokens.rs
+   |
+   | impl TokenLeaf for Color {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Color`
+...
+   | impl TokenLeaf for Length {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^ `runtime_vocabulary::glue::Length`
+...
+   | impl TokenLeaf for f32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^ `f32`
+   = note: required for `Font` to implement `TokenField`
+note: required by a bound in `__is_token_field`
+  --> tests/tokens_ui/not_a_token.rs:9:10
+   |
+ 9 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ required by this bound in `__is_token_field`
+   = note: this error originates in the derive macro `Tokens` (in Nightly builds, run with -Z macro-backtrace for more info)

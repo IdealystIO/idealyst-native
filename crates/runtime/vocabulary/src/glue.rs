@@ -155,6 +155,10 @@ pub use crate::callback_guard::ScopeAlive;
 // the slot type, so an app that names none codegens none of it.
 pub use crate::slots::{fill_slot, fill_slot_at, slot_is_filled, slot_outlet, Slot};
 pub use crate::theme;
+// Author-defined token sets: `#[derive(Tokens)]` implements these (the
+// derive macro itself is re-exported by `runtime-core`, so
+// `use runtime_core::Tokens` imports the derive AND the trait's methods).
+pub use crate::tokens::{LeafSlot, TokenField, TokenLeaf, TokenNode, TokenPrimitive, TokenTheme, Tokens};
 pub use runtime_shared::{
     cached_stylesheet, derived, Breakpoint, IntoOverrideSource, IntoVariantSource, Length,
     NoTokens, StateBits, StyleApplication, StyleRules, StyleSheet, ThemePalette, TokenEntry,

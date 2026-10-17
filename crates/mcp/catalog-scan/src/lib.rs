@@ -32,7 +32,8 @@
 //! A crate holding anything the scan cannot reproduce — an invocation no
 //! rule of its `macro_rules!` matches, a catalog literal holding a
 //! `const`, a catalog type registered by hand (`register_style_token!`
-//! computes its default at run time) — is refused with a [`ScanError`],
+//! computes its default at run time), a `#[derive(Tokens)]` theme (its
+//! token names are const-evaluated) — is refused with a [`ScanError`],
 //! and the caller compiles that crate instead. The scan never guesses,
 //! and one refused crate costs no other crate its scan.
 //!
@@ -126,6 +127,7 @@ pub(crate) const CATALOG_TYPES: &[&str] = &[
     "MacroEntry",
     "StateEntry",
     "StyleTokenEntry",
+    "StyleTokenSetEntry",
     "GuideEntry",
     "SdkEntry",
     "IconSetEntry",
@@ -497,16 +499,18 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Whether `tokens` (a macro body) use a catalog macro: one of the
-/// [`ATTR_MACROS`] as an attribute, `IdealystSchema`, `recipe!`,
-/// `doc_scope!`, a catalog type or the catalog crate (a registration by
-/// hand), or a macro in `triggers`.
+/// [`ATTR_MACROS`] as an attribute, `#[tokens(…)]` (a `#[derive(Tokens)]`
+/// theme), `IdealystSchema`, `recipe!`, `doc_scope!`, a catalog type or
+/// the catalog crate (a registration by hand), or a macro in `triggers`.
 fn mentions_catalog(tokens: &TokenStream, triggers: &HashSet<String>) -> bool {
     let tts: Vec<TokenTree> = tokens.clone().into_iter().collect();
     for (i, tt) in tts.iter().enumerate() {
         match tt {
             TokenTree::Punct(p) if p.as_char() == '#' => {
                 if let Some(TokenTree::Group(g)) = tts.get(i + 1) {
-                    if attr_path_last(&g.stream()).is_some_and(|n| ATTR_MACROS.contains(&n.as_str())) {
+                    // `#[tokens(…)]` is `#[derive(Tokens)]`'s helper attribute: a
+                    // macro stamping one out may be stamping out a theme.
+                    if attr_path_last(&g.stream()).is_some_and(|n| ATTR_MACROS.contains(&n.as_str()) || n == "tokens") {
                         return true;
                     }
                 }
@@ -652,6 +656,14 @@ impl Scanner<'_> {
             let out = runtime_macros_expand::derive_idealyst_schema(item.tokens());
             return self.expansion(out, &ctx.inside(item.line));
         }
+        if derives_token_theme(&item.attrs) {
+            return Err(ctx.err(
+                item.line as usize,
+                "a `#[derive(Tokens)]` theme registers its tokens as a `StyleTokenSetEntry`, whose \
+                 names come from const evaluation over nested token sets and whose defaults come \
+                 from calling the theme's default fn — neither is readable from source",
+            ));
+        }
         Ok(())
     }
 
@@ -690,6 +702,29 @@ impl Scanner<'_> {
 
 fn last_ident(path: &syn::Path) -> Option<String> {
     path.segments.last().map(|s| s.ident.to_string())
+}
+
+/// Whether `attrs` make a `#[derive(Tokens)]` THEME — the derive plus a
+/// `#[tokens(…)]` naming a `default`. Only a theme registers catalog
+/// entries; a shape (no `default`) registers nothing, so it scans fine.
+fn derives_token_theme(attrs: &[Attribute]) -> bool {
+    let derives = attrs.iter().filter(|a| a.path().is_ident("derive")).any(|a| {
+        a.parse_args_with(syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated)
+            .is_ok_and(|paths| paths.iter().any(|p| last_ident(p).as_deref() == Some("Tokens")))
+    });
+    derives
+        && attrs.iter().filter(|a| a.path().is_ident("tokens")).any(|a| {
+            let mut has_default = false;
+            let _ = a.parse_nested_meta(|meta| {
+                has_default |= meta.path.is_ident("default");
+                // Consume a `= value` so the parser moves on to the next item.
+                if meta.input.peek(syn::Token![=]) {
+                    let _: syn::Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            });
+            has_default
+        })
 }
 
 /// Whether `#[derive(…)]` among `attrs` names `IdealystSchema`.

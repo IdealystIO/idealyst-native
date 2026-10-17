@@ -1,6 +1,7 @@
 # runtime-macros
 
-The author-facing proc macros: `#[component]`, `ui!`, `jsx!`, `stylesheet!`.
+The author-facing proc macros: `#[component]`, `ui!`, `jsx!`, `stylesheet!`,
+`#[derive(Tokens)]`.
 
 This crate is one thin `proc_macro` shim per macro; every expansion lives
 in the plain library [`runtime-macros-expand`](../macros-expand) (so the
@@ -88,7 +89,24 @@ entry fn; `#[cfg]` / lint attributes land on every generated item.
 
 The macro does not own the theme; it operates against whatever token set
 the consumer hands it via `runtime_core::install_tokens(...)` — which is
-what `idea_theme::install_theme(...)` forwards to.
+what both `AppTheme::install(...)` (a `#[derive(Tokens)]` theme) and
+`idea_theme::install_theme(...)` forward to.
+
+### `#[derive(Tokens)]`
+
+Turns an ordinary struct into a token set: each field is a token (a
+`Color`, `Length`, `f32`, or a `TokenLeaf` newtype) named by its
+kebab-case field path, or a namespace (another derived struct, reusable
+under several fields). With `#[tokens(default = path::to::fn)]` the struct
+is a theme — installable (`AppTheme::install`, `set`, `follow_system`,
+`install_reactive`), nameable as a `stylesheet!` vocabulary
+(`pub Card<AppTheme>`, then `t.surface()` / `t.accent.soft_bg()` in a
+block), and listed in the MCP catalog. It emits an accessor struct
+(`AppThemeTokens<R>`), the `TokenField` / `Tokens` impls, and for a theme
+the `TokenTheme` + `TokenVocabulary` impls, its const-evaluated name
+table and the catalog registration. The contract (names, fallbacks,
+install) is documented in `runtime_vocabulary::tokens` and
+`docs/styling.md`.
 
 The generated `*_style()` function memoizes resolved `Rc<StyleRules>` in a
 **thread-local** `Rc<StyleSheet>` cache keyed by `(variant tuple, theme

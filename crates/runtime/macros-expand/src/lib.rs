@@ -116,6 +116,7 @@ mod host_fn;
 mod robot_fn;
 mod key_derive;
 mod stylesheet;
+mod tokens_derive;
 mod ui;
 mod ui_overlay;
 
@@ -167,6 +168,16 @@ pub fn derive_remote(input: TokenStream) -> TokenStream {
 pub fn derive_key(input: TokenStream) -> TokenStream {
     let parsed = parse_or_return!(input => syn::DeriveInput);
     match key_derive::derive(parsed) {
+        Ok(out) => out,
+        Err(e) => e.to_compile_error(),
+    }
+}
+
+/// `#[derive(Tokens)]`. See `tokens_derive`. Emits absolute
+/// `::runtime_vocabulary::tokens` paths directly (no retarget needed).
+pub fn derive_tokens(input: TokenStream) -> TokenStream {
+    let parsed = parse_or_return!(input => syn::DeriveInput);
+    match tokens_derive::derive(parsed) {
         Ok(out) => out,
         Err(e) => e.to_compile_error(),
     }
