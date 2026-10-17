@@ -19,7 +19,7 @@ use runtime_scene::{item, Element};
 
 use crate::prims::{
     MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim, PrimCell, Screen,
-    StackNavigatorPrim, StackRetention, SwapNavigatorPrim,
+    ScreenBehavior, StackNavigatorPrim, StackRetention, SwapNavigatorPrim,
 };
 use crate::style_attach::IntoStyleProp;
 
@@ -117,6 +117,7 @@ pub fn stack_navigator(initial: &Route<()>) -> StackNavigatorBuilder {
             },
             layout: None,
             retention: StackRetention::default(),
+            screen_behavior: None,
             style: None,
             a11y: AccessibilityProps::default(),
             on_handle: None,
@@ -154,6 +155,14 @@ impl StackNavigatorBuilder {
     /// Covered-screen lifecycle — see [`StackRetention`].
     pub fn retention(mut self, r: StackRetention) -> Self {
         self.prim.retention = r;
+        self
+    }
+
+    /// How to read a [`ScreenBehavior`] (back lock, full-screen) out of a
+    /// screen's SDK-defined options. Screens without options get the
+    /// default.
+    pub fn screen_behavior(mut self, f: impl Fn(&dyn Any) -> ScreenBehavior + 'static) -> Self {
+        self.prim.screen_behavior = Some(Rc::new(f));
         self
     }
 

@@ -40,7 +40,9 @@ import androidx.activity.OnBackPressedCallback
  * # System Back
  *
  * [backCallback] is enabled while more than one screen is stacked. Back
- * pops natively and then reports through [nativeUserPop]; the handler
+ * pops natively and then reports through [nativeUserPop] — unless the top
+ * screen locked it ([setBackEnabled]), when Back is consumed and nothing
+ * pops (at the root the callback is off, so Back still leaves). The handler
  * reconciles its logical stack WITHOUT calling [pop] again (that would
  * pop twice). The dispatcher is LIFO, so a stack mounted inside a pushed
  * screen registers later and takes Back first, which is the nesting
@@ -70,12 +72,22 @@ class RustStackPresenter(private val outlet: ViewGroup) {
      *  listeners run) before any new operation so two never overlap. */
     private var running: AnimatorSet? = null
 
+    /** The top screen locked Back ([setBackEnabled]). */
+    private var backLocked = false
+
     private val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            if (hosts.size <= 1) return
+            if (hosts.size <= 1 || backLocked) return
             pop()
             nativeUserPop(nativePtr)
         }
+    }
+
+    /** Allow or deny system Back (button and edge swipe — both route
+     *  through the dispatcher) for the screen now on top. The handler
+     *  calls this after every navigation. */
+    fun setBackEnabled(enabled: Boolean) {
+        backLocked = !enabled
     }
 
     init {

@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use backend_ios::{mount_screen_in_vc, schedule_layout_pass, IosNode};
 use objc2::rc::Retained;
-use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{MainThreadMarker, NSArray};
 use objc2_ui_kit::{
@@ -277,6 +277,22 @@ impl StackPresenter for IosStackPresenter {
             }) as Rc<dyn Fn(Rc<dyn Fn()>)>
         };
 
+        // The back lock. The swipe-back recognizer belongs to the
+        // CONTROLLER, not to a view controller, so it must describe
+        // whichever screen is on top — the handler calls this after
+        // every navigation with that screen's flag. The native back
+        // chevron needs no lock: the bar is hidden.
+        let set_back_enabled = {
+            let nav = nav.clone();
+            let _d = keep_delegate.clone();
+            Rc::new(move |enabled: bool| unsafe {
+                let recognizer: *mut AnyObject = msg_send![&*nav, interactivePopGestureRecognizer];
+                if !recognizer.is_null() {
+                    let _: () = msg_send![recognizer, setEnabled: enabled];
+                }
+            }) as Rc<dyn Fn(bool)>
+        };
+
         Some(NativePushHandle {
             host: Rc::new(IosNode::View(nav_view)),
             seat,
@@ -285,6 +301,7 @@ impl StackPresenter for IosStackPresenter {
             replace,
             reset,
             set_user_pop,
+            set_back_enabled,
         })
     }
 }

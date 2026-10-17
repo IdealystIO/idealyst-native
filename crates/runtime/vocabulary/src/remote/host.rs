@@ -727,6 +727,9 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                     config: nav_config(conn, config),
                     layout,
                     retention,
+                    // A remote stack's screen options live in the bundle;
+                    // its screens get the default behavior.
+                    screen_behavior: None,
                     style: st.map(|s| style(conn, *s)),
                     a11y: a.map(|a| a11y(conn, *a)).unwrap_or_default(),
                     on_handle: fill_handle(conn, on_handle, Held::Nav),

@@ -148,7 +148,7 @@ use std::rc::Rc;
 
 use runtime_vocabulary::builders::{self, navigator_outlet};
 use runtime_vocabulary::glue::{inject, ChildList, Element, IntoElement, Ref, Signal};
-use runtime_vocabulary::prims::{NavHandle, ScreenChrome, StackNav};
+use runtime_vocabulary::prims::{NavHandle, ScreenBehavior, ScreenChrome, StackNav};
 
 pub use runtime_vocabulary::glue::primitives::navigator::{
     HeaderButton, Route, RouteParams, StackHeaderState,
@@ -220,8 +220,9 @@ pub fn header_state(screen_chrome: &Signal<ScreenChrome>) -> Option<StackHeaderS
 
 /// Per-screen header options for a stack navigator: title,
 /// leading/trailing [`HeaderButton`] slots, `hide_header`, plus the
-/// native-mobile `back_enabled` / `fullscreen` requests (carried on the
-/// options; the stack presenters do not read them). Set them via
+/// what the screen asks of the platform while on top — `back_enabled`
+/// (the swipe-back / system-Back lock) and `fullscreen` — which the stack
+/// applies on iOS and Android (see [`ScreenBehavior`]). Set them via
 /// [`StackScreenExt`] on the [`Screen`] a `.screen(...)` render closure
 /// returns.
 #[derive(Clone)]
@@ -234,11 +235,13 @@ pub struct StackScreenOptions {
     pub header_right: Option<HeaderButton>,
     /// Hide the header entirely for this screen.
     pub hide_header: bool,
-    /// Whether the platform back affordance may pop THIS screen
-    /// (default `true`; native mobile only).
+    /// Whether the platform back affordance — iOS's swipe-back,
+    /// Android's system Back — may pop THIS screen (default `true`). An
+    /// imperative `pop` still works when it's `false`. Web and desktop
+    /// have no back affordance to lock.
     pub back_enabled: bool,
-    /// Request full-screen while THIS screen is on top (default
-    /// `false`; native mobile only).
+    /// Full-screen (system bars hidden) while THIS screen is on top, on
+    /// iOS and Android (default `false`).
     pub fullscreen: bool,
 }
 
@@ -393,7 +396,14 @@ impl StackNavigator {
     pub fn new(initial: &Route<()>) -> Self {
         install_native_presenter();
         Self {
-            b: builders::stack_navigator(initial).nav_label(STACK_LABEL),
+            b: builders::stack_navigator(initial)
+                .nav_label(STACK_LABEL)
+                .screen_behavior(|options| {
+                    options
+                        .downcast_ref::<StackScreenOptions>()
+                        .map(|o| ScreenBehavior { back_enabled: o.back_enabled, fullscreen: o.fullscreen })
+                        .unwrap_or_default()
+                }),
         }
     }
 }
@@ -505,7 +515,9 @@ impl StackBuilder for StackNavigator {
     fn bind(mut self, r: Ref<StackHandle>) -> Self {
         self.b = self
             .b
-            .on_handle(move |handle| r.fill(StackHandle::from_inner(handle)));
+            .on_handle(move |handle| {
+                runtime_vocabulary::glue::fill_ref_while_mounted(r, StackHandle::from_inner(handle))
+            });
         self
     }
 }

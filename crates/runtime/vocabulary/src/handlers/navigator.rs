@@ -913,6 +913,12 @@ pub mod native_push {
         /// notifies url-sync — and must NOT call [`Self::pop`] back into
         /// the presenter.
         pub set_user_pop: Rc<dyn Fn(Rc<dyn Fn()>)>,
+        /// Allow or deny the platform back affordance (swipe-back, system
+        /// Back) for the screen now on top. The handler calls it after
+        /// every navigation with the top screen's
+        /// [`ScreenBehavior::back_enabled`](crate::prims::ScreenBehavior),
+        /// so the presenter only has to apply the flag it is handed.
+        pub set_back_enabled: Rc<dyn Fn(bool)>,
     }
 
     /// The per-host presenter, installed once at boot.
@@ -2444,6 +2450,39 @@ pub fn mount_stack_navigator<H: NavCaps + 'static>(
     }
 
     shared.seat_initial(initial_route, initial_path.clone(), initial_query, initial);
+
+    // What the top screen asks of the platform — the back lock and
+    // full-screen — re-applied on every publish of its chrome (push,
+    // pop, replace, a user swipe-back), so a lock always describes the
+    // screen actually on top. Full-screen is driven only on a change, and
+    // only on the touch platforms, so an app's own `set_fullscreen`
+    // stands between full-screen screens.
+    if let Some(behavior_of) = prim.screen_behavior.clone() {
+        let set_back = shared.presenter.borrow().as_ref().map(|h| h.set_back_enabled.clone());
+        let chrome = shared.screen_chrome;
+        let touch = matches!(
+            runtime_shared::host::platform(),
+            runtime_shared::host::Platform::Ios | runtime_shared::host::Platform::Android
+        );
+        let fullscreen_on = Rc::new(std::cell::Cell::new(false));
+        let fullscreen_driver = fullscreen_on.clone();
+        let _behavior = effect(move || {
+            let published = chrome.get();
+            let behavior = published.options.as_deref().map(|o| behavior_of(o)).unwrap_or_default();
+            if let Some(set_back) = &set_back {
+                set_back(behavior.back_enabled);
+            }
+            if touch && behavior.fullscreen != fullscreen_driver.get() {
+                fullscreen_driver.set(behavior.fullscreen);
+                runtime_shared::host::set_fullscreen(behavior.fullscreen);
+            }
+        });
+        crate::style_attach::on_teardown(move || {
+            if fullscreen_on.get() {
+                runtime_shared::host::set_fullscreen(false);
+            }
+        });
+    }
 
     // URL sync registration — after seat, so `depth` reflects any
     // synthesized deep-link back-stack (the service's history seed).

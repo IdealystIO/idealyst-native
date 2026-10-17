@@ -1654,6 +1654,8 @@ struct PresenterProbe {
     accept: Cell<bool>,
     /// How many times `attach` was consulted.
     attaches: Cell<usize>,
+    /// Every `set_back_enabled` the handler made, in order.
+    back: RefCell<Vec<bool>>,
 }
 
 struct ProbePresenter(Rc<PresenterProbe>);
@@ -1681,6 +1683,10 @@ impl StackPresenter for ProbePresenter {
             set_user_pop: {
                 let p = p.clone();
                 Rc::new(move |cb| *p.user_pop.borrow_mut() = Some(cb))
+            },
+            set_back_enabled: {
+                let p = p.clone();
+                Rc::new(move |enabled| p.back.borrow_mut().push(enabled))
             },
         })
     }
@@ -1839,4 +1845,100 @@ fn native_push_cold_deep_link_seats_the_index_then_pushes() {
     );
     clear_stack_presenter();
     set_initial_path(None);
+}
+
+/// A screen's options marker for the behavior tests: "lock back, go
+/// full-screen while on top".
+struct Locked;
+
+fn behavior_of(options: &dyn Any) -> runtime_vocabulary::prims::ScreenBehavior {
+    let mut b = runtime_vocabulary::prims::ScreenBehavior::default();
+    if options.is::<Locked>() {
+        b.back_enabled = false;
+        b.fullscreen = true;
+    }
+    b
+}
+
+fn behavior_fixture(h: &Harness) -> (runtime_scene::Realized<host_mock::Node>, NavHandle) {
+    let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+    let realized = h.mount({
+        let handle_slot = handle_slot.clone();
+        stack_navigator(&HOME)
+            .screen(HOME, |_| view().child(text().content("HOME")).build())
+            .screen(DETAIL, |_| {
+                runtime_vocabulary::prims::Screen::new(view().child(text().content("DETAIL")).build())
+                    .with(Locked)
+            })
+            .screen_behavior(behavior_of)
+            .layout(|| view().child(navigator_outlet()).build())
+            .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+            .build()
+    });
+    let handle = handle_slot.borrow().clone().expect("bound");
+    (realized, handle)
+}
+
+/// Regression: `back_enabled(false)` was carried on the screen options
+/// and read by nothing, so swipe-back / system Back still popped a
+/// locked screen. The handler hands the presenter the TOP screen's flag
+/// after every navigation — including a user pop, so the screen revealed
+/// underneath gets its own flag back.
+#[test]
+fn regression_native_push_back_lock_follows_the_top_screen() {
+    let probe = probe_presenter();
+    let h = Harness::new();
+    let (_realized, handle) = behavior_fixture(&h);
+    assert_eq!(probe.back.borrow().last(), Some(&true), "the root allows back");
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    assert_eq!(probe.back.borrow().last(), Some(&false), "the locked screen on top locks back");
+
+    handle.pop();
+    h.flush();
+    assert_eq!(probe.back.borrow().last(), Some(&true), "popping it unlocks");
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    let user_pop = probe.user_pop.borrow().clone().expect("logical pop installed");
+    user_pop();
+    h.flush();
+    assert_eq!(probe.back.borrow().last(), Some(&true), "a user pop re-syncs to the revealed screen");
+    clear_stack_presenter();
+}
+
+/// `fullscreen(true)` on the top screen enters full-screen on a touch
+/// platform and leaves it when that screen goes; a navigation that
+/// doesn't change the request doesn't call `set_fullscreen` at all.
+#[test]
+fn regression_full_screen_follows_the_top_screen_on_touch_platforms() {
+    clear_stack_presenter();
+    let calls: Rc<RefCell<Vec<bool>>> = Rc::default();
+    {
+        let calls = calls.clone();
+        runtime_shared::host::install_fullscreen_setter(Some(Rc::new(move |on| calls.borrow_mut().push(on))));
+    }
+    let h = Harness::new();
+    let previous = runtime_shared::host::platform();
+    runtime_shared::host::install_current_platform(runtime_shared::host::Platform::Ios);
+    let (realized, handle) = behavior_fixture(&h);
+    assert!(calls.borrow().is_empty(), "the root asks nothing");
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    handle.replace(&DETAIL, ());
+    h.flush();
+    assert_eq!(calls.borrow().as_slice(), [true], "entered once; an unchanged request calls nothing");
+    handle.pop();
+    h.flush();
+    assert_eq!(calls.borrow().as_slice(), [true, false], "left when the screen went");
+
+    handle.push(&DETAIL, ());
+    h.flush();
+    drop(realized);
+    assert_eq!(calls.borrow().as_slice(), [true, false, true, false], "the navigator going leaves full-screen");
+
+    runtime_shared::host::install_current_platform(previous);
+    runtime_shared::host::install_fullscreen_setter(None);
 }

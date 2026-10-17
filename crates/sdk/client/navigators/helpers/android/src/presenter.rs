@@ -244,6 +244,32 @@ impl StackPresenter for AndroidStackPresenter {
             }) as Rc<dyn Fn(Rc<dyn Fn()>)>
         };
 
+        // The back lock. Additive on the Kotlin side, so an embedded
+        // runtime older than this lib lacks the method: Back then stays
+        // unlocked rather than the stack failing to navigate.
+        let set_back_enabled = {
+            let life = life.clone();
+            Rc::new(move |enabled: bool| {
+                backend_android::with_jni_env(|env| {
+                    let called = env.call_method(
+                        life.state.controller.as_obj(),
+                        "setBackEnabled",
+                        "(Z)V",
+                        &[JValue::Bool(enabled.into())],
+                    );
+                    if called.is_err() {
+                        if env.exception_check().unwrap_or(false) {
+                            let _ = env.exception_clear();
+                        }
+                        log::warn!(
+                            "RustStackPresenter.setBackEnabled unavailable; the back lock is off. \
+                             Rebuild the idealyst CLI to pick up the runtime change."
+                        );
+                    }
+                });
+            }) as Rc<dyn Fn(bool)>
+        };
+
         Some(NativePushHandle {
             host: Rc::new(container),
             seat,
@@ -252,6 +278,7 @@ impl StackPresenter for AndroidStackPresenter {
             replace,
             reset,
             set_user_pop,
+            set_back_enabled,
         })
     }
 }

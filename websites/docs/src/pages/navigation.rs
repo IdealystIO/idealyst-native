@@ -149,13 +149,16 @@ docs! {
             [code(".header_right(...)"), " — trailing header slot."],
             [code(".hide_header(true)"), " — hide the header entirely for \
               this screen."],
-            [code(".back_enabled(false)"), " and ", code(".fullscreen(true)"),
-             " — stored on the screen's options, but no backend reads them \
-              today: the iOS and Android stack presenters ignore both, so \
-              swipe-back and system Back still pop, and the status bar \
-              stays. For full-screen, call ", code("set_fullscreen(true)"),
-             " from the screen yourself; the stack navigator has no working \
-              back lock."],
+            [code(".back_enabled(false)"), " — while this screen is on top, \
+              iOS's swipe-back and Android's system Back don't pop it (an \
+              imperative ", code("pop"), " still does; at the root, Back \
+              still leaves the app). Web and desktop have no back gesture \
+              to lock."],
+            [code(".fullscreen(true)"), " — full-screen (system bars \
+              hidden) while this screen is on top, on iOS and Android. The \
+              stack calls ", code("set_fullscreen"),
+             " only when the top screen's request changes, so your own \
+              calls stand between full-screen screens."],
         ),
 
         p("Swap screens draw no navigator chrome of their own, so they take \

@@ -522,12 +522,38 @@ pub struct StackNavigatorPrim {
     /// The author layout closure (reads [`StackNav`] via `inject`).
     pub layout: Option<Rc<dyn Fn() -> Element>>,
     pub retention: StackRetention,
+    /// Reads a [`ScreenBehavior`] out of a screen's SDK-defined options
+    /// (the stack SDK downcasts its `StackScreenOptions`). `None`: every
+    /// screen gets the default behavior.
+    pub screen_behavior: Option<Rc<dyn Fn(&dyn Any) -> ScreenBehavior>>,
     pub style: Option<StyleProp>,
     pub a11y: AccessibilityProps,
     pub on_handle: Option<Box<dyn FnOnce(NavHandle)>>,
     /// Presentation label for introspection — see
     /// [`SwapNavigatorPrim::nav_label`].
     pub nav_label: Option<&'static str>,
+}
+
+/// What a stack screen asks of the platform while it is on top. The
+/// stack handler reads it from the top screen's options on every
+/// navigation (push, pop, a user swipe-back) and applies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenBehavior {
+    /// The platform back affordance — iOS's swipe-back, Android's system
+    /// Back — may pop this screen. `false` keeps it on top until the app
+    /// pops it; an imperative `pop` still works. Web and desktop have no
+    /// back affordance the app can lock, so it changes nothing there.
+    pub back_enabled: bool,
+    /// Full-screen (system bars hidden) while this screen is on top, on
+    /// iOS and Android. Entering or leaving a full-screen screen calls
+    /// `set_fullscreen`; other screens leave the app's own setting alone.
+    pub fullscreen: bool,
+}
+
+impl Default for ScreenBehavior {
+    fn default() -> Self {
+        Self { back_enabled: true, fullscreen: false }
+    }
 }
 
 /// The `navigator_outlet` primitive — the single hole an author layout

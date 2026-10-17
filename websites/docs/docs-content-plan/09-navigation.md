@@ -100,11 +100,14 @@ For stack screens, `StackScreenExt` adds header options:
   header slot.
 - `.header_right(...)` — trailing header slot.
 - `.hide_header(true)` — hide the header for this screen.
-- `.back_enabled(false)` and `.fullscreen(true)` — stored on the
-  screen's options, but no backend reads them today: the iOS and Android
-  stack presenters ignore both. For full-screen, call
-  `set_fullscreen(true)` from the screen; the stack navigator has no
-  working back lock.
+- `.back_enabled(false)` — while this screen is on top, iOS's
+  swipe-back and Android's system Back don't pop it (an imperative
+  `pop` still does; at the root, Back still leaves the app). Web and
+  desktop have no back gesture to lock.
+- `.fullscreen(true)` — full-screen (system bars hidden) while this
+  screen is on top, on iOS and Android. The stack calls
+  `set_fullscreen` only when the top screen's request changes, so your
+  own calls stand between full-screen screens.
 
 Swap screens draw no navigator chrome, so they take no options. A bare
 `Element` works too — `Into<Screen>` wraps it.

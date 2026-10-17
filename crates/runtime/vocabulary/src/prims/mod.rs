@@ -37,7 +37,7 @@ pub use lazy::LazyPrim;
 pub use media::{IconPrim, ImagePrim, LinkPrim, RouteLink};
 pub use navigator::{
     LinkActivator, MountPolicy, NavConfig, NavHandle, NavScreenEntry, NavigatorOutletPrim,
-    ParamsFromSegments, Screen, ScreenChrome, SelectArgs, StackNav, StackNavigatorPrim,
+    ParamsFromSegments, Screen, ScreenBehavior, ScreenChrome, SelectArgs, StackNav, StackNavigatorPrim,
     StackRetention, SwapNav, SwapNavigatorPrim, NavHandleType, ParamsFromUrl,
 };
 pub use portal::{PortalPrim, ScreenNav};
