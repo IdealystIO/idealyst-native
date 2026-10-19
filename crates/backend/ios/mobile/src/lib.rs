@@ -64,7 +64,7 @@ mod key_input_policy;
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 mod pointer_input_policy;
 /// How the layout pass treats a root that is a `virtual_grid` cell.
-mod grid_cell_root_policy;
+mod root_box_policy;
 // Which windows the `user_activity()` source observes. Un-gated so the
 // tests run from any host; the UIKit recognizer is ios-only
 // (`imp/activity.rs`).

@@ -247,14 +247,14 @@ pub struct IosBackend {
     /// the "layout runs on every press" churn. Keyed by the view
     /// pointer that keys `view_to_layout`; dropped in `release_view`.
     pub(crate) layout_style_keys: HashMap<usize, String>,
-    /// Viewport size at the last layout pass. When this changes
-    /// (device rotation, window resize) every persistent root needs
-    /// `mark_dirty` before the dirty-skip in `run_layout_pass_global`
-    /// can safely opt out of computing clean roots — otherwise a
-    /// rotation would leave hidden screens cached at the old
-    /// dimensions and they'd render with stale sizes the moment the
-    /// user navigates back.
-    pub(crate) last_viewport: Option<(f32, f32)>,
+    /// The box each Taffy root (keyed by view pointer) was last computed
+    /// against. A root whose box changes needs `mark_dirty` before the
+    /// dirty-skip in `run_layout_pass_global` can safely opt out of
+    /// computing clean roots — otherwise a rotation, or a controller
+    /// view resized under a stack screen, would leave hidden screens
+    /// cached at the old dimensions and they'd render with stale sizes
+    /// the moment the user navigates back.
+    pub(crate) root_boxes: HashMap<usize, (f32, f32)>,
     /// Height (points) of the soft keyboard currently overlapping the host
     /// view's bottom, or `0.0` when no keyboard is shown. UIKit overlays the
     /// keyboard without resizing the host; this value is what author code
@@ -766,7 +766,7 @@ impl IosBackend {
             label_texts: HashMap::new(),
             applied_frames: HashMap::new(),
             layout_style_keys: HashMap::new(),
-            last_viewport: None,
+            root_boxes: HashMap::new(),
             keyboard_overlap: 0.0,
             keyboard_animating: false,
             keyboard_avoiders: HashMap::new(),
@@ -1456,7 +1456,48 @@ pub fn mount_screen_in_vc(mtm: MainThreadMarker, screen: &UIView) -> Retained<UI
         let _: () = unsafe { msg_send![&c, setActive: true] };
     }
 
+    // The layout pass computes this screen against `vc_view`'s bounds
+    // (`vc_container_box`), and UIKit resizes `vc_view` on its own
+    // schedule: when the navigation controller first lays it out (after
+    // this pass may already have run), on rotation, and when a parent's
+    // `safe_area` padding lands after mount. The host's
+    // `LayoutObserverView` sees none of those that leave the window
+    // size alone, so the controller view gets its own observer.
+    let observer = callbacks::ScreenBoxObserverView::new(mtm);
+    let vc_bounds: objc2_foundation::CGRect = unsafe { msg_send![&vc_view, bounds] };
+    let _: () = unsafe { msg_send![&observer, setFrame: vc_bounds] };
+    // autoresizingMask = .flexibleWidth | .flexibleHeight = 0x12
+    let _: () = unsafe { msg_send![&observer, setAutoresizingMask: 0x12u64] };
+    let _: () = unsafe { msg_send![&observer, setHidden: true] };
+    let _: () = unsafe { msg_send![&observer, setUserInteractionEnabled: false] };
+    // Below the screen: hidden, but kept out of its z-order regardless.
+    let _: () = unsafe { msg_send![&vc_view, insertSubview: &*observer, atIndex: 0isize] };
+
     vc
+}
+
+/// The box a Taffy root is computed against when UIKit hosts it in a
+/// `UIViewController`: the bounds of that controller's view. `None`
+/// for every other root (the framework root, portal containers,
+/// collection cells).
+///
+/// Structural rather than a registry of mounted screens: the root's
+/// superview answers it at the moment of the pass, so nothing goes
+/// stale when a screen is released and its pointer recycled.
+/// `mount_screen_in_vc` is the producer of such roots.
+fn vc_container_box(view: &UIView) -> Option<(f32, f32)> {
+    let superview: Option<Retained<UIView>> = unsafe { msg_send_id![view, superview] };
+    let superview = superview?;
+    let responder: Option<Retained<NSObject>> = unsafe { msg_send_id![&superview, nextResponder] };
+    let is_vc_view: bool = match &responder {
+        Some(r) => unsafe { msg_send![r, isKindOfClass: objc2::class!(UIViewController)] },
+        None => false,
+    };
+    if !is_vc_view {
+        return None;
+    }
+    let bounds: objc2_foundation::CGRect = unsafe { msg_send![&superview, bounds] };
+    Some((bounds.size.width as f32, bounds.size.height as f32))
 }
 
 // `apply_header_options` / `apply_header_options_with_nav` and the
@@ -4800,38 +4841,45 @@ impl IosBackend {
             return;
         }
 
-        // Find every Taffy root. The framework root is one; each screen
-        // mounted via `mount_screen_in_vc` (which bypasses
-        // `insert`) is another.
-        // Carries the view key as well as the node: a root that is a
-        // mounted `virtual_grid` cell is computed against its own box
-        // rather than the viewport (see `virtual_grid::CELL_BOXES`).
-        let roots: Vec<(usize, runtime_layout::LayoutNode)> = {
+        // Find every Taffy root and the box it is computed against (see
+        // `root_box_policy`): the framework root fills the viewport, a
+        // mounted `virtual_grid` cell its own box, and a screen mounted
+        // via `mount_screen_in_vc` (which bypasses `insert`) the
+        // controller view UIKit pinned it into.
+        let roots: Vec<(usize, runtime_layout::LayoutNode, (f32, f32))> = {
             let _t = phase_timer::PhaseTimer::start("collect_roots");
             self
                 .view_to_layout
                 .iter()
-                .map(|(k, (_, n))| (*k, *n))
-                .filter(|(_, n)| self.layout.is_root(*n))
+                .filter(|(_, (_, n))| self.layout.is_root(*n))
+                .map(|(k, (view, n))| {
+                    let pass = crate::root_box_policy::root_pass(
+                        virtual_grid::cell_box(*k),
+                        vc_container_box(view),
+                        (vw, vh),
+                    );
+                    (*k, *n, pass.compute_against)
+                })
                 .collect()
         };
 
-        // If the viewport changed since the last pass, mark every
-        // root dirty so the skip-clean fast path doesn't lock hidden
-        // screens at stale dimensions.
-        let viewport_changed = self.last_viewport != Some((vw, vh));
-        if viewport_changed {
-            for (_, root_node) in &roots {
+        // A root whose box changed since it was last computed is dirty
+        // even when nothing in its subtree is, or the skip-clean fast
+        // path below locks it (often a hidden screen) at stale
+        // dimensions. Covers rotation, and a controller view resized
+        // under an unchanged viewport (a parent's `safe_area` padding
+        // arriving after the screen mounted).
+        for (key, root_node, root_box) in &roots {
+            if self.root_boxes.insert(*key, *root_box) != Some(*root_box) {
                 self.layout.mark_dirty(*root_node);
             }
-            self.last_viewport = Some((vw, vh));
         }
 
         let mut computed_count = 0usize;
         let mut skipped_count = 0usize;
         {
             let _t = phase_timer::PhaseTimer::start("taffy_compute_all_roots");
-            for (key, root_node) in &roots {
+            for (_, root_node, (rw, rh)) in &roots {
                 if !self.layout.is_dirty(*root_node) {
                     // Skip persistent hidden screens whose subtree
                     // hasn't been touched since the last pass. Taffy's
@@ -4842,16 +4890,7 @@ impl IosBackend {
                     continue;
                 }
                 let _t_one = phase_timer::PhaseTimer::start("taffy_compute_one_root");
-                // A grid cell is a root only because it has no Taffy
-                // parent — it is positioned by the grid engine in the
-                // scroller's content space. Computing it against the
-                // viewport stretches a 40x44 cell to 40x956.
-                let (rw, rh) = crate::grid_cell_root_policy::root_pass(
-                    virtual_grid::cell_box(*key),
-                    (vw, vh),
-                )
-                .compute_against;
-                self.layout.compute(*root_node, rw, rh);
+                self.layout.compute(*root_node, *rw, *rh);
                 computed_count += 1;
             }
         }
@@ -4891,7 +4930,7 @@ impl IosBackend {
             // root at the origin and undo the whole windowing. The
             // cell's CHILDREN are ordinary entries in this loop and
             // still get their frames, which are relative to the cell.
-            if crate::grid_cell_root_policy::root_pass(virtual_grid::cell_box(*key), (vw, vh))
+            if crate::root_box_policy::root_pass(virtual_grid::cell_box(*key), None, (vw, vh))
                 .engine_owns_frame
             {
                 continue;
@@ -5038,6 +5077,9 @@ impl IosBackend {
         // wrongly skip layout). `still_present` is the set of currently
         // registered views, so this drops keys for released views.
         self.layout_style_keys.retain(|k, _| still_present.contains(k));
+        // A recycled view pointer must not inherit a released root's box
+        // either: matching it would skip the new root's first compute.
+        self.root_boxes.retain(|k, _| still_present.contains(k));
         }
         backend_ios_core::ios_log(&format!("[layout] apply_frames done: applied={}", applied));
 

@@ -623,6 +623,69 @@ impl LayoutObserverView {
 }
 
 // =========================================================================
+// ScreenBoxObserverView — the `LayoutObserverView` of a view controller
+// that `mount_screen_in_vc` hosts a screen in.
+//
+// The layout pass computes such a screen against its controller view's
+// bounds, and UIKit sizes that view on its own schedule (the navigation
+// controller's first layout, rotation, a parent's `safe_area` padding
+// arriving after mount) — none of which reaches the host's observer when
+// the window size is unchanged. Same flexible-resize-subview trick.
+//
+// Unlike the host's observer it does NOT skip its first measurement: a
+// pushed screen's controller view is usually sized by UIKit AFTER the
+// mount's layout pass ran against a fallback box, so the first real size
+// is exactly the one that must re-run it. Nor does it touch the viewport
+// or safe-area signals — those describe the window, not this screen.
+// =========================================================================
+
+declare_class!(
+    pub(crate) struct ScreenBoxObserverView;
+
+    unsafe impl ClassType for ScreenBoxObserverView {
+        type Super = UIView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystScreenBoxObserverView";
+    }
+
+    impl DeclaredClass for ScreenBoxObserverView {
+        type Ivars = LayoutObserverIvars;
+    }
+
+    unsafe impl ScreenBoxObserverView {
+        #[method(layoutSubviews)]
+        fn layout_subviews(&self) {
+            let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            let bounds: objc2_foundation::CGRect = unsafe { msg_send![self, bounds] };
+            let w = bounds.size.width as f32;
+            let h = bounds.size.height as f32;
+            let (lw, lh) = self.ivars().last_size.get();
+            if (lw - w).abs() <= 0.5 && (lh - h).abs() <= 0.5 {
+                return;
+            }
+            self.ivars().last_size.set((w, h));
+            // Queue, then drain here in UIKit's layout phase so the
+            // screen's content is re-framed before this commit — a
+            // push animation would otherwise show a frame of content
+            // laid out at the old box. Same drain point and borrow
+            // handling as the host's observer.
+            crate::imp::schedule_layout_pass();
+            crate::imp::drain_queued_layout_pass();
+        }
+    }
+);
+
+impl ScreenBoxObserverView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(LayoutObserverIvars {
+            last_size: std::cell::Cell::new((0.0, 0.0)),
+        });
+        unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// =========================================================================
 // KeyboardObserver — NSObject that observes the soft keyboard's frame and
 // drives the framework's viewport bottom-inset so content reflows above the
 // keyboard (and restores when it dismisses).

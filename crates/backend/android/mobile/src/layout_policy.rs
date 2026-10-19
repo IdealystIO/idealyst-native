@@ -77,7 +77,7 @@ pub(crate) fn non_px_layout_param(length: &runtime_shared::Length) -> Option<i32
 /// `applyFrames`. Kotlin's `setCellFrame` happened to re-apply the
 /// stored frame afterwards, which is why the symptom here was milder
 /// than iOS's full-height cells — but the subtree was still wrong. The
-/// iOS twin is `grid_cell_root_policy`; the JNI half is verified on a
+/// iOS twin is `root_box_policy`; the JNI half is verified on a
 /// device.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
