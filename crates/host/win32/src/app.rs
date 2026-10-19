@@ -188,6 +188,9 @@ where
     // Per-monitor DPI awareness is process-wide and must precede the
     // first window (see `backend_windows::dpi`).
     backend_windows::enable_per_monitor_dpi_awareness();
+    // Themed native controls + placeholders (Common Controls v6), before
+    // any control exists.
+    backend_windows::enable_visual_styles();
 
     // hInstance for the window class — the current executable's module.
     let hmodule = GetModuleHandleW(None).map_err(|e| format!("GetModuleHandleW: {e}"))?;
@@ -258,6 +261,11 @@ where
             // key (`PreventDefault`) skips translation too, so no
             // `WM_CHAR` types it. No backend borrow is held here — the
             // slot is shared.
+            // The focused field's own `on_key_down` first (the DOM's
+            // order: the input's keydown before window listeners).
+            if backend_windows::field_keys::pre_dispatch(&backend, msg) {
+                return;
+            }
             if keyboard.pre_dispatch(msg) {
                 return;
             }

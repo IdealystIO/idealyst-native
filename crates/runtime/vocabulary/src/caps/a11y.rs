@@ -151,7 +151,8 @@ pub trait IntrospectionOps: Host {
 }
 
 /// One step of a [`IntrospectionOps::native_pointer`] gesture: the primary
-/// button (or one finger) going down, moving while down, or lifting, at
+/// button (or one finger) going down, moving while down, or lifting — or a
+/// mouse moving with no button held ([`PointerStepPhase::Hover`]) — at
 /// `(x, y)` logical px in the window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerStep {
@@ -166,6 +167,10 @@ pub enum PointerStepPhase {
     Down,
     Move,
     Up,
+    /// The pointer moves to the point with no button held: what drives
+    /// hover (`on_hover`, the `state hovered` style). Touch backends have
+    /// no hovering pointer and answer `None` for a gesture containing it.
+    Hover,
 }
 
 /// A prepared [`IntrospectionOps::native_pointer`] injection; `Err` says

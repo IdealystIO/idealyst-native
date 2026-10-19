@@ -166,6 +166,13 @@ pub struct ElementState {
     pub focused: Option<bool>,
     /// A scroll view's content offset `(x, y)`, logical px.
     pub scroll: Option<(f64, f64)>,
+    /// Whether the pointer is over the element, as its style sees it (the
+    /// `state hovered` variant). `None` on a node with no interaction
+    /// states to report.
+    pub hovered: Option<bool>,
+    /// Whether the element is being pressed, as its style sees it (the
+    /// `state pressed` variant).
+    pub pressed: Option<bool>,
 }
 
 /// Whether an element can be seen — the rule Playwright uses: the toolkit
@@ -220,7 +227,13 @@ impl ElementState {
             }
             None => {}
         }
-        for (key, v) in [("checked", self.checked), ("disabled", self.disabled), ("focused", self.focused)] {
+        for (key, v) in [
+            ("checked", self.checked),
+            ("disabled", self.disabled),
+            ("focused", self.focused),
+            ("hovered", self.hovered),
+            ("pressed", self.pressed),
+        ] {
             if let Some(v) = v {
                 map.insert(key.into(), serde_json::Value::Bool(v));
             }
@@ -265,6 +278,10 @@ pub(crate) struct ElementActions {
     pub slider_drag: Option<Rc<dyn Fn(f32) -> bool>>,
     /// The element's own state ([`ElementState`]).
     pub state: Option<Rc<dyn Fn() -> ElementState>>,
+    /// The interaction bits its style's state machine holds
+    /// (`style_attach::interaction_mirror`), linked by
+    /// [`link_interaction`]. Fills [`ElementState::hovered`] / `pressed`.
+    pub interaction: Option<Rc<std::cell::Cell<runtime_shared::StateBits>>>,
     /// The toolkit's answer to "is it shown" ([`IntrospectionOps::is_shown`]).
     pub shown: Option<Rc<dyn Fn() -> Option<bool>>>,
     /// Whether a real tap at a window point reaches this element
@@ -740,6 +757,7 @@ pub(crate) fn register_mount<H: IntrospectionOps>(
                 touch: None,
                 slider_drag,
                 state,
+                interaction: None,
                 shown: Some(shown),
                 hit: Some(hit),
                 native_pointer: Some(native_pointer),
@@ -784,6 +802,22 @@ pub(crate) fn attach_touch_action(prim: &RegisteredPrim, handler: runtime_shared
     REGISTRY.with(|r| {
         if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(prim.id.0 as usize) {
             entry.actions.touch = Some(handler);
+        }
+    });
+}
+
+/// Link the interaction cell the handler's own `attach_style` just made (if
+/// it made one: an event-driven backend and a sheet with state variants) to
+/// the element. Call right after that `attach_style`, inside the same
+/// branch, so no other node's cell can be picked up.
+pub(crate) fn link_interaction(prim: &RegisteredPrim) {
+    let Some(cell) = crate::style_attach::interaction_mirror::take() else { return };
+    if !prim.live {
+        return;
+    }
+    REGISTRY.with(|r| {
+        if let Some(Some(entry)) = r.borrow_mut().entries.get_mut(prim.id.0 as usize) {
+            entry.actions.interaction = Some(cell);
         }
     });
 }
@@ -1219,8 +1253,20 @@ fn visibility_of(id: ElementId) -> Option<Visibility> {
 
 /// The registered state of element `id`, if it has any.
 fn state_of(id: ElementId) -> Option<ElementState> {
-    let f = REGISTRY.with(|r| r.borrow().get(id).and_then(|e| e.actions.state.clone()))?;
-    Some(f())
+    let (f, interaction) = REGISTRY.with(|r| {
+        r.borrow().get(id).map(|e| (e.actions.state.clone(), e.actions.interaction.clone())).unwrap_or_default()
+    });
+    let mut state = match (f, &interaction) {
+        (Some(f), _) => f(),
+        (None, Some(_)) => ElementState::default(),
+        (None, None) => return None,
+    };
+    if let Some(cell) = interaction {
+        let bits = cell.get();
+        state.hovered = Some(bits.contains(runtime_shared::StateBits::HOVERED));
+        state.pressed = Some(bits.contains(runtime_shared::StateBits::PRESSED));
+    }
+    Some(state)
 }
 
 runtime_tls::thread_local! {
@@ -1397,6 +1443,54 @@ impl Robot {
             return Ok(TapMechanism::HitTest);
         }
         Err(RobotError::Unsupported(ACTION))
+    }
+
+    /// Move a real platform pointer over `element`'s center with no button
+    /// held, through the toolkit's own event path — what lights `on_hover`
+    /// and the `state hovered` style. Moving it over another element is
+    /// how a test leaves this one. Checked as [`tap_native`](Self::tap_native)
+    /// checks its point. No fallback: a backend without hover injection
+    /// (touch platforms) answers [`RobotError::Unsupported`].
+    pub fn hover_native(&self, element: &Element) -> Result<(), RobotError> {
+        const ACTION: &str = "hover_native";
+        let (x, y) = self.native_point(element.id, None, ACTION)?;
+        self.check_hit(element.id, x, y, ACTION)?;
+        if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::Hover, x, y }])? {
+            Ok(())
+        } else {
+            Err(RobotError::Unsupported(ACTION))
+        }
+    }
+
+    /// Press the primary button (or a finger) down on `element`'s center
+    /// with real platform input, and keep it down: what lights the
+    /// `state pressed` style. [`release_native`](Self::release_native)
+    /// lifts it. Split in two so a test can check the pressed state in
+    /// between; a backend that posts its events (macOS) delivers them on
+    /// the next run-loop turn, so poll for the state. Checked as
+    /// [`tap_native`](Self::tap_native) checks its point.
+    pub fn press_native(&self, element: &Element) -> Result<(), RobotError> {
+        const ACTION: &str = "press_native";
+        let (x, y) = self.native_point(element.id, None, ACTION)?;
+        self.check_hit(element.id, x, y, ACTION)?;
+        if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::Down, x, y }])? {
+            Ok(())
+        } else {
+            Err(RobotError::Unsupported(ACTION))
+        }
+    }
+
+    /// Lift the press [`press_native`](Self::press_native) started, at
+    /// `element`'s center. Not hit-checked: the release goes wherever the
+    /// pointer is, as a real one does.
+    pub fn release_native(&self, element: &Element) -> Result<(), RobotError> {
+        const ACTION: &str = "release_native";
+        let (x, y) = self.native_point(element.id, None, ACTION)?;
+        if self.inject(element.id, &[PointerStep { phase: PointerStepPhase::Up, x, y }])? {
+            Ok(())
+        } else {
+            Err(RobotError::Unsupported(ACTION))
+        }
     }
 
     /// Drag with real platform input along `points` — relative to
@@ -1830,13 +1924,10 @@ impl Robot {
     /// The element's own state ([`ElementState`]); `None` for a primitive
     /// with nothing to report (a view, a text, an image).
     pub fn state(&self, element: &Element) -> Result<Option<ElementState>, RobotError> {
-        let f = REGISTRY.with(|r| {
-            r.borrow()
-                .get(element.id)
-                .map(|e| e.actions.state.clone())
-                .ok_or(RobotError::ElementGone)
-        })?;
-        Ok(f.map(|f| f()))
+        if REGISTRY.with(|r| r.borrow().get(element.id).is_none()) {
+            return Err(RobotError::ElementGone);
+        }
+        Ok(state_of(element.id))
     }
 
     /// Whether the element can be seen, and whether it is on screen
@@ -2072,6 +2163,21 @@ pub mod bridge {
                 let el = resolve_element(args)?;
                 let how = robot.tap_native(&el).map_err(|e| e.to_string())?;
                 Ok(format!("{{\"mechanism\":\"{}\"}}", how.as_str()))
+            }
+            "press_native" => {
+                let el = resolve_element(args)?;
+                robot.press_native(&el).map_err(|e| e.to_string())?;
+                Ok("{\"mechanism\":\"native\"}".into())
+            }
+            "release_native" => {
+                let el = resolve_element(args)?;
+                robot.release_native(&el).map_err(|e| e.to_string())?;
+                Ok("{\"mechanism\":\"native\"}".into())
+            }
+            "hover_native" => {
+                let el = resolve_element(args)?;
+                robot.hover_native(&el).map_err(|e| e.to_string())?;
+                Ok("{\"mechanism\":\"native\"}".into())
             }
             "drag_native" => {
                 let el = resolve_element(args)?;

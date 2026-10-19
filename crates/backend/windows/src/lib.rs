@@ -124,6 +124,8 @@ mod dcomp;
 pub mod dpi;
 mod dwrite_text;
 mod file_drop;
+/// `on_key_down` for text fields, from the host's message pump.
+pub mod field_keys;
 mod font;
 mod gradient_raster;
 mod graphics;
@@ -147,6 +149,7 @@ mod screenshot;
 pub mod user_activity;
 mod scene;
 pub mod view_input;
+mod virtualizer;
 mod wrap;
 
 // =========================================================================
@@ -156,6 +159,8 @@ mod wrap;
 // WM_COMMAND notification codes (HIWORD of wParam):
 const BN_CLICKED: u16 = 0; // button / checkbox pressed
 const EN_CHANGE: u16 = 0x0300; // edit control text changed
+const EN_SETFOCUS: u16 = 0x0100; // edit control took keyboard focus
+const EN_KILLFOCUS: u16 = 0x0200; // edit control lost keyboard focus
 // Checkbox: BS_AUTOCHECKBOX toggles its own check state on click.
 const BS_AUTOCHECKBOX: u32 = 0x0000_0003;
 const BM_GETCHECK: u32 = 0x00F0;
@@ -164,6 +169,21 @@ const BST_CHECKED: isize = 1;
 // Edit control styles.
 const ES_AUTOHSCROLL: u32 = 0x0080;
 const ES_PASSWORD: u32 = 0x0020;
+const ES_MULTILINE: u32 = 0x0004;
+const ES_AUTOVSCROLL: u32 = 0x0040;
+const ES_WANTRETURN: u32 = 0x1000;
+const WS_VSCROLL_STYLE: u32 = 0x0020_0000;
+// Edit control messages.
+pub(crate) const EM_SETSEL: u32 = 0x00B1;
+pub(crate) const EM_GETSEL: u32 = 0x00B0;
+pub(crate) const EM_REPLACESEL: u32 = 0x00C2;
+const EM_SETPASSWORDCHAR: u32 = 0x00CC;
+/// `EM_SETCUEBANNER` (ECM_FIRST + 1): the placeholder. Needs Common
+/// Controls v6 (`enable_visual_styles`).
+const EM_SETCUEBANNER: u32 = 0x1501;
+/// The mask character a secure field draws (U+25CF, what Windows' own
+/// password boxes use).
+const SECURE_MASK_CHAR: usize = 0x25CF;
 
 /// `EDIT` window class (single-line text input).
 fn class_edit() -> PCWSTR {
@@ -212,11 +232,86 @@ pub fn enable_per_monitor_dpi_awareness() -> bool {
     }
 }
 
+/// Use Common Controls v6 for this thread's native controls: themed
+/// buttons, checkboxes and edits instead of the classic Windows 2000 look,
+/// and `EM_SETCUEBANNER` (the `text_input` placeholder), which v5 ignores.
+///
+/// An executable normally asks for v6 in an embedded application
+/// manifest; Windows builds carry none (the GNU toolchains have no
+/// resource compiler we can count on), so the same manifest is activated
+/// at run time instead — what WinForms' `EnableVisualStyles` does. It
+/// must precede the first control (and the first `InitCommonControlsEx`):
+/// a control binds to the comctl32 version active when it is created.
+/// The context stays active for the thread's lifetime and its handle is
+/// never released, as an embedded manifest would be. Idempotent per
+/// thread; the host calls it at boot on the UI thread, and every control
+/// creation calls it too (`create_control_hwnd`).
+pub fn enable_visual_styles() -> bool {
+    use std::cell::Cell;
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::ApplicationInstallationAndServicing::{ActivateActCtx, CreateActCtxW, ACTCTXW};
+    // The context is created once per process; activation is per THREAD
+    // (each thread has its own activation-context stack), so a thread
+    // that creates controls activates it for itself.
+    static CONTEXT: OnceLock<Option<isize>> = OnceLock::new();
+    thread_local! {
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    }
+    if ACTIVE.with(Cell::get) {
+        return true;
+    }
+    let context = *CONTEXT.get_or_init(|| {
+        const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
+        let path = std::env::temp_dir().join("idealyst-common-controls-v6.manifest");
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(MANIFEST) && std::fs::write(&path, MANIFEST).is_err() {
+            return None;
+        }
+        let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+        let ctx = ACTCTXW {
+            cbSize: std::mem::size_of::<ACTCTXW>() as u32,
+            lpSource: PCWSTR(wide.as_ptr()),
+            ..Default::default()
+        };
+        unsafe { CreateActCtxW(&ctx) }.ok().map(|h| h.0 as isize)
+    });
+    let Some(context) = context else { return false };
+    let mut cookie = 0usize;
+    let ok = unsafe { ActivateActCtx(Some(HANDLE(context as *mut std::ffi::c_void)), &mut cookie) }.is_ok();
+    ACTIVE.with(|a| a.set(ok));
+    ok
+}
+
+/// Hand `url` to the shell (`ShellExecuteW` "open"): the default browser
+/// for web URLs, the registered handler for `mailto:` and the like.
+pub(crate) fn open_url_with_shell(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    // Fire-and-forget like every backend's opener; a value <= 32 is an
+    // error (no handler for the scheme), logged for the developer.
+    let r = unsafe { ShellExecuteW(None, PCWSTR(verb.as_ptr()), PCWSTR(wide.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+    if (r.0 as isize) <= 32 {
+        eprintln!("[backend-windows] open_url: no handler for {url} (ShellExecuteW {})", r.0 as isize);
+    }
+}
+
 /// Initialize the comctl32 trackbar + progress window classes once per
 /// process. Required before `CreateWindowExW` on `msctls_*` classes.
 fn ensure_common_controls() {
     use std::sync::Once;
     static INIT: Once = Once::new();
+    enable_visual_styles();
     INIT.call_once(|| unsafe {
         let icc = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -258,6 +353,26 @@ fn value_to_slider_pos(value: f32, min: f32, max: f32) -> i32 {
 
 /// Read an HWND's window text (an EDIT control's current contents)
 /// into a `String`. Returns empty for no text.
+/// The placeholder an empty single-line edit shows (`EM_SETCUEBANNER`;
+/// `TRUE` = also while focused, as a web placeholder does). `None`
+/// clears it.
+fn set_cue_banner(hwnd: HWND, placeholder: Option<&str>) {
+    let wide: Vec<u16> = placeholder.unwrap_or("").encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        SendMessageW(hwnd, EM_SETCUEBANNER, Some(WPARAM(1)), Some(LPARAM(wide.as_ptr() as isize)));
+    }
+}
+
+/// LF → CRLF for a multi-line edit, which breaks lines only on CRLF.
+fn to_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// CRLF → LF: the framework's line break.
+fn from_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 fn window_text(hwnd: HWND) -> String {
     unsafe {
         let len = GetWindowTextLengthW(hwnd);
@@ -380,6 +495,28 @@ pub(crate) struct ScrollInfo {
     pub offset_x: f32,
     pub offset_y: f32,
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
+    /// Content size when the children don't span it: a virtualized list
+    /// mounts only its window of rows, so it reports the summed item
+    /// sizes here (`virtualizer`). `None` = measured from the children.
+    pub extent: Option<(f32, f32)>,
+    /// `ScrollOps::observe_scroll_end`.
+    pub end: Option<ScrollEnd>,
+}
+
+/// An `on_end_reached` watcher: fires once each time the offset comes
+/// within `threshold` px of the end, re-arming when it moves back out.
+pub(crate) struct ScrollEnd {
+    pub threshold: f32,
+    pub on_end: Rc<dyn Fn()>,
+    pub armed: bool,
+}
+
+/// Whether a watcher fires for a scroll position `remaining` px from the
+/// end (`scrollable` = there is anything to scroll at all), and its new
+/// armed state. Pure for testing.
+pub(crate) fn scroll_end_step(armed: bool, remaining: f32, threshold: f32, scrollable: bool) -> (bool, bool) {
+    let at_end = scrollable && remaining <= threshold;
+    (armed && at_end, !at_end)
 }
 
 /// Visuals of a painted container (View / Pressable / ScrollView).
@@ -576,6 +713,17 @@ struct CommandEntry {
     action: Rc<dyn Fn()>,
 }
 
+/// An `EDIT` control's notifications (`text_input`, `text_area`), keyed
+/// by control id beside [`CommandEntry`]: one control answers several
+/// codes — `EN_CHANGE` reports the text, `EN_SETFOCUS` / `EN_KILLFOCUS`
+/// drive `on_focus` and the node's `state focused` style.
+struct EditEntry {
+    node: u64,
+    hwnd: HWND,
+    on_change: Rc<dyn Fn(String)>,
+    on_focus: Option<Rc<dyn Fn(bool)>>,
+}
+
 // =========================================================================
 // Backend
 // =========================================================================
@@ -599,11 +747,21 @@ pub struct WindowsBackend {
     /// Next available Win32 control id (100.. — below is reserved).
     next_control_id: u16,
     command_handlers: HashMap<u16, CommandEntry>,
+    /// Edit controls' notifications, by control id.
+    edits: HashMap<u16, EditEntry>,
+    /// Text areas' `(min_rows, max_rows)`, for re-fitting after a value
+    /// written from code.
+    text_area_rows: HashMap<u64, (Option<u32>, Option<u32>)>,
+    /// Per-field `on_key_down` handlers, by the field's HWND (raw).
+    /// Offered each key message from the host's pump (`field_keys`).
+    pub(crate) field_keys: HashMap<isize, runtime_shared::primitives::key::KeyDownHandler>,
     /// parent node id → child node ids, in insertion order.
     pub(crate) children: HashMap<u64, Vec<u64>>,
     /// Live `GraphicsPrim` nodes: surface + author callbacks +
     /// last reported size. See `graphics.rs` for the dispatch rules.
     graphics: HashMap<u64, graphics::GraphicsState>,
+    /// Virtualized lists (`flat_list`), by node id.
+    pub(crate) virtualizers: HashMap<u64, virtualizer::VirtState>,
     /// DirectComposition device/target/root over the host window —
     /// graphics surfaces are visuals in this tree (see `dcomp.rs`).
     /// Lazily created by the first `create_graphics`; `None` before
@@ -799,8 +957,12 @@ impl WindowsBackend {
             root_id: None,
             next_control_id: 100,
             command_handlers: HashMap::new(),
+            edits: HashMap::new(),
+            text_area_rows: HashMap::new(),
+            field_keys: HashMap::new(),
             children: HashMap::new(),
             graphics: HashMap::new(),
+            virtualizers: HashMap::new(),
             comp: None,
             hwnd_regions: HashMap::new(),
             slider_handlers: HashMap::new(),
@@ -1185,10 +1347,37 @@ impl WindowsBackend {
     /// notification `code` matches the code that control cares about.
     /// The host fires the returned closure after releasing the borrow.
     pub fn command_action(&self, control_id: u16, code: u16) -> Option<Rc<dyn Fn()>> {
-        self.command_handlers
-            .get(&control_id)
-            .filter(|e| e.code == code)
-            .map(|e| e.action.clone())
+        if let Some(e) = self.command_handlers.get(&control_id).filter(|e| e.code == code) {
+            return Some(e.action.clone());
+        }
+        let e = self.edits.get(&control_id)?;
+        match code {
+            // Read the live text so it stays right across IME, paste and
+            // undo.
+            EN_CHANGE => {
+                let (hwnd, f) = (e.hwnd, e.on_change.clone());
+                Some(Rc::new(move || f(window_text(hwnd))))
+            }
+            EN_SETFOCUS | EN_KILLFOCUS => {
+                let on = code == EN_SETFOCUS;
+                let on_focus = e.on_focus.clone();
+                // A text field shows focus however it arrived, so this is
+                // `state focused` (focus-visible) too.
+                let state = self.view_input.states.get(&e.node).cloned();
+                if on_focus.is_none() && state.is_none() {
+                    return None;
+                }
+                Some(Rc::new(move || {
+                    if let Some(s) = &state {
+                        s(runtime_shared::StateBits::FOCUSED, on);
+                    }
+                    if let Some(f) = &on_focus {
+                        f(on);
+                    }
+                }))
+            }
+            _ => None,
+        }
     }
 
     /// Clone out the `on_change` fire closure for the trackbar whose
@@ -1227,6 +1416,8 @@ impl WindowsBackend {
         style: u32,
         control_id: Option<u16>,
     ) -> HWND {
+        // A control binds to the comctl32 active when it is created.
+        enable_visual_styles();
         let text_wide = to_pcwstr(text);
         let hmenu: HMENU = match control_id {
             Some(cid) => HMENU(cid as usize as *mut std::ffi::c_void),
@@ -1451,12 +1642,18 @@ impl WindowsBackend {
         // entry and is dropped.
         self.image_events.remove(&id);
         self.view_input.forget(id);
+        // A list torn down with its subtree: its rows are in `children`
+        // and went with the recursion above.
+        self.virtualizers.remove(&id);
+        self.text_area_rows.remove(&id);
         if let Some(meta) = self.nodes.remove(&id) {
             if let Some(cid) = meta.control_id {
                 self.command_handlers.remove(&cid);
+                self.edits.remove(&cid);
             }
             if let Some(hwnd) = meta.hwnd() {
                 self.slider_handlers.remove(&(hwnd.0 as isize));
+                self.field_keys.remove(&(hwnd.0 as isize));
                 self.hwnd_regions.remove(&(hwnd.0 as isize));
                 if !hwnd.is_invalid() {
                     unsafe {
@@ -1497,6 +1694,9 @@ impl WindowsBackend {
             }
         }
 
+        // Virtualized lists' rows are detached roots sized by the list.
+        self.layout_virtual_rows();
+
         // Parent-relative frames for every laid-out node.
         let ids: Vec<u64> = self.layout_for_id.keys().copied().collect();
         for id in ids {
@@ -1535,6 +1735,7 @@ impl WindowsBackend {
         // Anchored portals' content goes where it was last placed (a fresh
         // placement follows on the next turn — `portal::queue_placement`).
         self.apply_anchor_placements();
+        self.place_virtual_rows();
         self.position_native_children();
 
         // Graphics surfaces: decide which nodes owe an `on_ready` /
@@ -2589,12 +2790,16 @@ impl WindowsBackend {
         self.invalidate();
     }
 
+    /// A single-line `EDIT`. `on_change` and focus ride `WM_COMMAND`
+    /// ([`EditEntry`]); `on_key_down` rides the host's pump
+    /// (`field_keys`). `on_blur` is the platform's "may focus leave?"
+    /// veto: Windows moves focus without asking, so it has no hook here.
     fn create_text_input(
         &mut self,
         initial_value: &str,
-        _placeholder: Option<&str>,
+        placeholder: Option<&str>,
         on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _on_blur: Option<runtime_shared::primitives::text_input::BlurHandler>,
         secure: bool,
         _a11y: &AccessibilityProps,
@@ -2605,36 +2810,133 @@ impl WindowsBackend {
             style |= ES_PASSWORD;
         }
         let hwnd = self.create_control_hwnd(class_edit(), initial_value, style, Some(control_id));
-        // `EN_CHANGE` fires on every content change; the handler reads
-        // the live text so it stays correct across IME / paste / undo.
-        let action: Rc<dyn Fn()> = Rc::new(move || on_change(window_text(hwnd)));
-        self.command_handlers
-            .insert(control_id, CommandEntry { code: EN_CHANGE, action });
         let node = self.add_node(NodeKind::Control { hwnd });
+        self.edits.insert(control_id, EditEntry { node: node.id, hwnd, on_change, on_focus: None });
+        if let Some(f) = on_key_down {
+            self.field_keys.insert(hwnd.0 as isize, f);
+        }
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             meta.control_id = Some(control_id);
         }
+        set_cue_banner(hwnd, placeholder);
         self.set_intrinsic(&node, 160, self.line_height + 8);
         node
     }
 
+    /// A multi-line `EDIT` (`ES_MULTILINE | ES_WANTRETURN`, wrapping
+    /// unless `wrap` is off). It grows with its content between
+    /// `min_rows` and `max_rows` (`resolve_text_area_height`, the shared
+    /// rule): every change re-reads the control's line count. A
+    /// multi-line edit has no cue banner, so `placeholder` is not shown.
     fn create_text_area(
         &mut self,
         initial_value: &str,
         _placeholder: Option<&str>,
-        _wrap: bool,
-        _min_rows: Option<u32>,
-        _max_rows: Option<u32>,
-        _on_change: Rc<dyn Fn(String)>,
-        _on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
+        wrap: bool,
+        min_rows: Option<u32>,
+        max_rows: Option<u32>,
+        on_change: Rc<dyn Fn(String)>,
+        on_key_down: Option<runtime_shared::primitives::key::KeyDownHandler>,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
-        // Read-only painted text for now (parity with the previous
-        // STATIC-based placeholder; a real multi-line EDIT is a later
-        // control refinement).
-        let node = self.add_node(NodeKind::Text(TextVisual::new(initial_value)));
-        self.set_text_measure(node.id);
+        let control_id = self.alloc_control_id();
+        let mut style = ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | WS_VSCROLL_STYLE | WS_BORDER.0;
+        if !wrap {
+            style |= ES_AUTOHSCROLL;
+        }
+        // The edit wants CRLF; the framework's text uses LF.
+        let hwnd = self.create_control_hwnd(class_edit(), &to_crlf(initial_value), style, Some(control_id));
+        let node = self.add_node(NodeKind::Control { hwnd });
+        let id = node.id;
+        let weak = self.self_ref.clone();
+        let report: Rc<dyn Fn(String)> = Rc::new(move |text: String| {
+            on_change(from_crlf(&text));
+            // Grow / shrink to the new line count.
+            if let Some(b) = weak.upgrade() {
+                if let Ok(mut b) = b.try_borrow_mut() {
+                    b.fit_text_area(id, hwnd, min_rows, max_rows);
+                    b.relayout();
+                }
+            }
+        });
+        self.edits.insert(control_id, EditEntry { node: id, hwnd, on_change: report, on_focus: None });
+        if let Some(f) = on_key_down {
+            self.field_keys.insert(hwnd.0 as isize, f);
+        }
+        if let Some(meta) = self.nodes.get_mut(&id) {
+            meta.control_id = Some(control_id);
+        }
+        self.text_area_rows.insert(id, (min_rows, max_rows));
+        self.fit_text_area(id, hwnd, min_rows, max_rows);
         node
+    }
+
+    /// Size a text area to its line count within `min_rows..max_rows`.
+    fn fit_text_area(&mut self, id: u64, hwnd: HWND, min_rows: Option<u32>, max_rows: Option<u32>) {
+        const EM_GETLINECOUNT: u32 = 0x00BA;
+        // Inside the 1px border + the edit's own top/bottom margin.
+        const V_PAD: f32 = 3.0;
+        const MIN_WIDTH: i32 = 200;
+        let lines = unsafe { SendMessageW(hwnd, EM_GETLINECOUNT, Some(WPARAM(0)), Some(LPARAM(0))) }.0.max(1) as f32;
+        let line_h = self.line_height as f32;
+        let h = runtime_shared::primitives::text_area::resolve_text_area_height(lines * line_h, line_h, V_PAD, min_rows, max_rows);
+        let node = WindowsNode { id, hwnd };
+        self.set_intrinsic(&node, MIN_WIDTH, h.ceil() as i32);
+    }
+
+    /// `TextInputOps::update_text_input_value`: a value written from code
+    /// (the bound signal changed). Skipped when the control already shows
+    /// it, so typing doesn't reset the caret; otherwise the caret goes to
+    /// the end. The `EN_CHANGE` the write sends arrives while the backend
+    /// is borrowed and is dropped (host `with_idle_backend`): `on_change`
+    /// reports the user's edits, not the author's own write.
+    pub(crate) fn update_edit_value(&mut self, node: &WindowsNode, value: &str, multiline: bool) {
+        let Some(hwnd) = self.nodes.get(&node.id).and_then(|m| m.hwnd()) else { return };
+        let shown = if multiline { from_crlf(&window_text(hwnd)) } else { window_text(hwnd) };
+        if shown == value {
+            return;
+        }
+        let text = if multiline { to_crlf(value) } else { value.to_string() };
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let _ = SetWindowTextW(hwnd, PCWSTR(wide.as_ptr()));
+            let end = wide.len().saturating_sub(1);
+            SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(end)), Some(LPARAM(end as isize)));
+        }
+        if multiline {
+            if let Some((min, max)) = self.text_area_rows.get(&node.id).copied() {
+                self.fit_text_area(node.id, hwnd, min, max);
+                self.layout_dirty = true;
+            }
+        }
+    }
+
+    /// `TextInputOps::update_text_input_secure`: mask or unmask in place.
+    pub(crate) fn update_text_input_secure(&mut self, node: &WindowsNode, secure: bool) {
+        let Some(hwnd) = self.nodes.get(&node.id).and_then(|m| m.hwnd()) else { return };
+        unsafe {
+            SendMessageW(
+                hwnd,
+                EM_SETPASSWORDCHAR,
+                Some(WPARAM(if secure { SECURE_MASK_CHAR } else { 0 })),
+                Some(LPARAM(0)),
+            );
+            let _ = InvalidateRect(Some(hwnd), None, true);
+        }
+    }
+
+    /// `TextInputOps::update_text_input_placeholder`.
+    pub(crate) fn update_text_input_placeholder(&mut self, node: &WindowsNode, placeholder: Option<&str>) {
+        if let Some(hwnd) = self.nodes.get(&node.id).and_then(|m| m.hwnd()) {
+            set_cue_banner(hwnd, placeholder);
+        }
+    }
+
+    /// `TextInputOps::set_text_input_focus_handler`.
+    pub(crate) fn set_text_input_focus_handler(&mut self, node: &WindowsNode, handler: Rc<dyn Fn(bool)>) {
+        if let Some(e) = self.edits.values_mut().find(|e| e.node == node.id) {
+            e.on_focus = Some(handler);
+        }
     }
 
     fn create_toggle(
@@ -2754,6 +3056,8 @@ impl WindowsBackend {
                 offset_x: 0.0,
                 offset_y: 0.0,
                 on_scroll,
+                extent: None,
+                end: None,
             }),
             ..Default::default()
         }));
@@ -2800,14 +3104,17 @@ impl WindowsBackend {
     }
 
     fn set_node_scroll(&mut self, node: &WindowsNode, x: f32, y: f32) {
+        // Clamped to the scrollable range, as a native scroller clamps.
+        let (max_x, max_y) = scene::max_scroll_offsets(self, node.id);
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::View(v) = &mut meta.kind {
                 if let Some(s) = &mut v.scroll {
-                    s.offset_x = x.max(0.0);
-                    s.offset_y = y.max(0.0);
+                    s.offset_x = x.clamp(0.0, max_x);
+                    s.offset_y = y.clamp(0.0, max_y);
                 }
             }
         }
+        self.scroll_changed(node.id);
         // Same as `wheel_scroll`: HWND children must follow the offset.
         // No synchronous paint here — author code calls this under the
         // backend borrow (same double-borrow hazard as wheel_scroll).
@@ -2833,14 +3140,72 @@ impl WindowsBackend {
         node
     }
 
+    /// A painted scroll view holding only its window of rows — see
+    /// `virtualizer`. The first resync runs once the layout pass gives it
+    /// a viewport.
     fn create_virtualizer(
         &mut self,
-        _callbacks: runtime_shared::VirtualizerCallbacks<WindowsNode>,
-        _overscan: f32,
-        _layout: runtime_shared::VirtualLayout,
+        callbacks: runtime_shared::VirtualizerCallbacks<WindowsNode>,
+        overscan: f32,
+        layout: runtime_shared::VirtualLayout,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
-        self.placeholder("Virtualizer not yet implemented on Windows backend")
+        let horizontal = layout.axis.is_horizontal();
+        let on_scroll = callbacks.on_scroll.clone();
+        let node = self.create_scroll_view(horizontal, on_scroll, _a11y);
+        self.virtualizers.insert(node.id, virtualizer::VirtState::new(callbacks, overscan, layout));
+        virtualizer::schedule(self, node.id);
+        node
+    }
+
+    /// The list's data changed: recycle every row and re-window, on a
+    /// fresh turn (the caller holds the backend; row teardown and row
+    /// realize both re-borrow it).
+    pub(crate) fn virtualizer_data_changed(&mut self, node: &WindowsNode) {
+        if let Some(st) = self.virtualizers.get_mut(&node.id) {
+            st.reload = true;
+        }
+        virtualizer::schedule(self, node.id);
+    }
+
+    pub(crate) fn release_virtualizer(&mut self, node: &WindowsNode) {
+        virtualizer::release(self, node.id);
+    }
+
+    /// After any change to scroll view `id`'s offset (wheel, robot, code):
+    /// re-window a virtualized list, and queue `on_end_reached` if the
+    /// offset arrived at the end. The handler runs on a fresh turn — the
+    /// offset changes inside a backend borrow.
+    pub(crate) fn scroll_changed(&mut self, id: u64) {
+        if self.virtualizers.contains_key(&id) {
+            virtualizer::schedule(self, id);
+        }
+        let (max_x, max_y) = scene::max_scroll_offsets(self, id);
+        let mut fire: Option<Rc<dyn Fn()>> = None;
+        if let Some(meta) = self.nodes.get_mut(&id) {
+            if let NodeKind::View(ViewVisual { scroll: Some(s), .. }) = &mut meta.kind {
+                let (offset, max) = if s.horizontal { (s.offset_x, max_x) } else { (s.offset_y, max_y) };
+                if let Some(end) = &mut s.end {
+                    let (fires, armed) = scroll_end_step(end.armed, max - offset, end.threshold, max > 0.0);
+                    end.armed = armed;
+                    if fires {
+                        fire = Some(end.on_end.clone());
+                    }
+                }
+            }
+        }
+        if let Some(f) = fire {
+            runtime_shared::scheduling::after_ms_detached(0, move || f());
+        }
+    }
+
+    /// `ScrollOps::observe_scroll_end`.
+    pub(crate) fn observe_scroll_end(&mut self, node: &WindowsNode, threshold: f32, on_end: Rc<dyn Fn()>) {
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
+            if let NodeKind::View(ViewVisual { scroll: Some(s), .. }) = &mut meta.kind {
+                s.end = Some(ScrollEnd { threshold: threshold.max(0.0), on_end, armed: true });
+            }
+        }
     }
 
     fn create_graphics(
@@ -3407,6 +3772,8 @@ mod tests {
                 offset_y: 0.0,
                 horizontal: false,
                 on_scroll: None,
+                extent: None,
+                end: None,
             }),
             ..Default::default()
         }));
@@ -4160,10 +4527,294 @@ mod robot_visibility_tests {
         b.apply_style(&parent, &Rc::new(solid));
         assert_eq!(b.is_shown(&child), Some(true));
 
-        let scroller = b.create_scroll_view(false, None, &a11y);
+        // A 100px viewport over 500px of content: 400px to scroll.
+        let mut scroller = b.create_scroll_view(false, None, &a11y);
+        let content = b.create_view(&a11y);
+        b.insert(&mut scroller, content.clone());
+        b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 100.0, 100.0);
+        b.nodes.get_mut(&content.id).unwrap().frame = (0.0, 0.0, 100.0, 500.0);
         assert_eq!(b.node_scroll(&scroller), (0.0, 0.0));
         b.set_node_scroll(&scroller, 0.0, 120.0);
         assert_eq!(ScrollOps::node_scroll(&b, &scroller), (0.0, 120.0));
+        b.set_node_scroll(&scroller, 0.0, 10_000.0);
+        assert_eq!(ScrollOps::node_scroll(&b, &scroller), (0.0, 400.0), "clamped to the content, as a native scroller");
         assert_eq!(ScrollOps::node_scroll(&b, &child), (0.0, 0.0), "not a scroller");
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    //! Regression tests for capabilities that were trait defaults (silent
+    //! no-ops) on this backend: values written from code, focus, the
+    //! placeholder, secure entry, text areas, field key handlers, the
+    //! virtualized list, scroll-end and the URL opener. The capability
+    //! coverage check (`crates/dev/capability-coverage`) lists each.
+    use super::*;
+    use runtime_vocabulary::caps::{AppEnvOps, InputOps, StyleOps, TextInputOps, VirtualizerOps};
+    use std::cell::Cell;
+
+    fn host() -> HWND {
+        let title = to_pcwstr("capability-test");
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                title.as_pcwstr(),
+                windows::Win32::UI::WindowsAndMessaging::WS_POPUP,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window")
+    }
+
+    fn input(b: &mut WindowsBackend, log: &Rc<RefCell<Vec<String>>>) -> (WindowsNode, u16) {
+        let log = log.clone();
+        let node = TextInputOps::create_text_input(
+            b,
+            "",
+            Some("Type here"),
+            Rc::new(move |s: String| log.borrow_mut().push(s)),
+            None,
+            None,
+            false,
+            &AccessibilityProps::default(),
+        );
+        let cid = b.nodes[&node.id].control_id.expect("control id");
+        (node, cid)
+    }
+
+    /// `update_text_input_value` was the trait default, so a field bound to
+    /// a signal kept showing the old text after the app cleared it (the
+    /// "clear after send" case). The write reaches the EDIT; a user edit
+    /// (`EN_CHANGE`) still reports through `on_change`.
+    #[test]
+    fn regression_text_input_value_written_from_code_reaches_the_edit() {
+        let mut b = WindowsBackend::new(host());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (node, cid) = input(&mut b, &log);
+        TextInputOps::update_text_input_value(&mut b, &node, "hello");
+        assert_eq!(window_text(node.hwnd), "hello");
+        TextInputOps::update_text_input_value(&mut b, &node, "");
+        assert_eq!(window_text(node.hwnd), "", "cleared from code");
+        let wide: Vec<u16> = "typed".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { SetWindowTextW(node.hwnd, PCWSTR(wide.as_ptr())).unwrap() };
+        b.command_action(cid, EN_CHANGE).expect("EN_CHANGE handled")();
+        assert_eq!(log.borrow().as_slice(), ["typed"]);
+    }
+
+    /// Focus never reached the app: no `on_focus`, no `state focused` (the
+    /// text field focus ring). Both follow the EDIT's own notifications.
+    #[test]
+    fn regression_text_input_focus_reaches_on_focus_and_the_focused_state() {
+        let mut b = WindowsBackend::new(host());
+        let (node, cid) = input(&mut b, &Rc::default());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let s = seen.clone();
+        TextInputOps::set_text_input_focus_handler(&mut b, &node, Rc::new(move |on| s.borrow_mut().push(format!("focus:{on}"))));
+        let s = seen.clone();
+        StyleOps::attach_states(&mut b, &node, Rc::new(move |bit, on| {
+            if bit == runtime_shared::StateBits::FOCUSED {
+                s.borrow_mut().push(format!("FOCUSED:{on}"));
+            }
+        }));
+        b.command_action(cid, EN_SETFOCUS).expect("set focus handled")();
+        b.command_action(cid, EN_KILLFOCUS).expect("kill focus handled")();
+        assert_eq!(seen.borrow().as_slice(), ["FOCUSED:true", "focus:true", "FOCUSED:false", "focus:false"]);
+    }
+
+    /// The placeholder and live secure toggling were dropped.
+    #[test]
+    fn regression_placeholder_and_secure_toggle_reach_the_edit() {
+        const EM_GETPASSWORDCHAR: u32 = 0x00D2;
+        const EM_GETCUEBANNER: u32 = 0x1502;
+        let mut b = WindowsBackend::new(host());
+        let (node, _) = input(&mut b, &Rc::default());
+        let banner = |h: HWND| {
+            let mut buf = [0u16; 64];
+            unsafe { SendMessageW(h, EM_GETCUEBANNER, Some(WPARAM(buf.as_mut_ptr() as usize)), Some(LPARAM(buf.len() as isize))) };
+            String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(0)])
+        };
+        assert_eq!(banner(node.hwnd), "Type here");
+        TextInputOps::update_text_input_placeholder(&mut b, &node, Some("Something else"));
+        assert_eq!(banner(node.hwnd), "Something else");
+        let mask = |h: HWND| unsafe { SendMessageW(h, EM_GETPASSWORDCHAR, None, None) }.0 as usize;
+        TextInputOps::update_text_input_secure(&mut b, &node, true);
+        assert_eq!(mask(node.hwnd), SECURE_MASK_CHAR);
+        TextInputOps::update_text_input_secure(&mut b, &node, false);
+        assert_eq!(mask(node.hwnd), 0);
+    }
+
+    /// `text_area` was painted, read-only text. It is a multi-line EDIT:
+    /// editable, reporting LF text, and taking values from code.
+    #[test]
+    fn regression_text_area_is_an_editable_multiline_edit() {
+        const EM_GETLINECOUNT: u32 = 0x00BA;
+        let mut b = WindowsBackend::new(host());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        let node = TextInputOps::create_text_area(
+            &mut b,
+            "",
+            None,
+            true,
+            Some(2),
+            Some(6),
+            Rc::new(move |s: String| l.borrow_mut().push(s)),
+            None,
+            &AccessibilityProps::default(),
+        );
+        assert!(matches!(b.nodes[&node.id].kind, NodeKind::Control { .. }), "a real control, not painted text");
+        TextInputOps::update_text_area_value(&mut b, &node, "a\nb\nc");
+        assert_eq!(window_text(node.hwnd), "a\r\nb\r\nc", "the edit breaks lines on CRLF");
+        assert_eq!(unsafe { SendMessageW(node.hwnd, EM_GETLINECOUNT, None, None) }.0, 3);
+        let cid = b.nodes[&node.id].control_id.unwrap();
+        b.command_action(cid, EN_CHANGE).expect("EN_CHANGE handled")();
+        assert_eq!(log.borrow().as_slice(), ["a\nb\nc"], "reported with LF");
+    }
+
+    /// The handle's ops act on the EDIT (they were the no-op handle).
+    #[test]
+    fn text_input_handle_selects_and_inserts() {
+        let mut b = WindowsBackend::new(host());
+        let (node, _) = input(&mut b, &Rc::default());
+        TextInputOps::update_text_input_value(&mut b, &node, "abc");
+        let handle = TextInputOps::make_text_input_handle(&b, &node);
+        handle.select_all();
+        let (mut start, mut end) = (0u32, 0u32);
+        unsafe {
+            SendMessageW(node.hwnd, EM_GETSEL, Some(WPARAM(&mut start as *mut u32 as usize)), Some(LPARAM(&mut end as *mut u32 as isize)))
+        };
+        assert_eq!((start, end), (0, 3));
+        handle.insert_text("xy");
+        assert_eq!(window_text(node.hwnd), "xy", "replaces the selection");
+    }
+
+    /// A field's `on_key_down` was dropped: Enter-to-submit never fired.
+    /// The pump offers the field's key messages to it first.
+    #[test]
+    fn regression_field_on_key_down_hears_enter_and_can_prevent_it() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::VK_RETURN;
+        use windows::Win32::UI::WindowsAndMessaging::{MSG, WM_KEYDOWN};
+        let mut b = WindowsBackend::new(host());
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let k = keys.clone();
+        let node = TextInputOps::create_text_input(
+            &mut b,
+            "",
+            None,
+            Rc::new(|_| {}),
+            Some(Rc::new(move |ev: &runtime_shared::primitives::key::KeyEvent| {
+                k.borrow_mut().push(ev.key.clone());
+                runtime_shared::primitives::key::KeyOutcome::PreventDefault
+            })),
+            None,
+            false,
+            &AccessibilityProps::default(),
+        );
+        let cell = RefCell::new(b);
+        let msg = MSG { hwnd: node.hwnd, message: WM_KEYDOWN, wParam: WPARAM(VK_RETURN.0 as usize), lParam: LPARAM(0x001C_0001), ..Default::default() };
+        assert!(field_keys::pre_dispatch(&cell, &msg), "PreventDefault swallows the key");
+        assert_eq!(keys.borrow().as_slice(), ["Enter"]);
+        let other = MSG { hwnd: HWND(std::ptr::null_mut()), ..msg };
+        assert!(!field_keys::pre_dispatch(&cell, &other), "another window's keys are not the field's");
+    }
+
+    /// `open_url` was a no-op: the backend installed no opener.
+    #[test]
+    fn regression_backend_installs_a_url_opener() {
+        let b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        assert!(AppEnvOps::url_opener(&b).is_some());
+    }
+
+    /// `on_end_reached` never fired. It fires once per arrival at the end
+    /// and re-arms when the offset moves back out.
+    #[test]
+    fn regression_scroll_end_fires_once_per_arrival() {
+        assert_eq!(scroll_end_step(true, 10.0, 20.0, true), (true, false), "arrives: fire, disarm");
+        assert_eq!(scroll_end_step(false, 0.0, 20.0, true), (false, false), "still there: quiet");
+        assert_eq!(scroll_end_step(false, 300.0, 20.0, true), (false, true), "left: re-arm");
+        assert_eq!(scroll_end_step(true, 0.0, 20.0, false), (false, true), "nothing to scroll: no end to reach");
+
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = AccessibilityProps::default();
+        let mut scroller = b.create_scroll_view(false, None, &a11y);
+        let content = b.create_view(&a11y);
+        b.insert(&mut scroller, content.clone());
+        b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 100.0, 100.0);
+        b.nodes.get_mut(&content.id).unwrap().frame = (0.0, 0.0, 100.0, 500.0);
+        let fired = Rc::new(Cell::new(0));
+        let f = fired.clone();
+        b.observe_scroll_end(&scroller, 20.0, Rc::new(move || f.set(f.get() + 1)));
+        b.set_node_scroll(&scroller, 0.0, 10_000.0);
+        // Delivered on a fresh turn (the offset changes under a borrow);
+        // with no scheduler installed the detached task runs inline.
+        runtime_shared::drain_buffered_microtasks();
+        assert!(fired.get() >= 1, "reaching the end fires on_end_reached");
+    }
+
+    /// `flat_list` rendered a placeholder. Rows mount for the window only,
+    /// follow the scroll offset, and recycle on a data change.
+    #[test]
+    fn regression_flat_list_mounts_only_its_window_of_rows() {
+        let cell = Rc::new(RefCell::new(WindowsBackend::new(HWND(std::ptr::null_mut()))));
+        cell.borrow_mut().set_self_ref(Rc::downgrade(&cell));
+        let count = Rc::new(Cell::new(100usize));
+        let mounted: Rc<RefCell<Vec<usize>>> = Rc::default();
+        let released: Rc<RefCell<Vec<u64>>> = Rc::default();
+        let weak = Rc::downgrade(&cell);
+        let (c, m, r) = (count.clone(), mounted.clone(), released.clone());
+        let callbacks = runtime_shared::VirtualizerCallbacks {
+            item_count: Rc::new(move || c.get()),
+            item_key: Rc::new(|i| i as u64),
+            item_size: Rc::new(|_| 40.0),
+            measure_sizes: false,
+            mount_item: Rc::new(move |i| {
+                m.borrow_mut().push(i);
+                let node = weak.upgrade().unwrap().borrow_mut().create_view(&AccessibilityProps::default());
+                (node, 1000 + i as u64)
+            }),
+            release_item: Rc::new(move |scope| r.borrow_mut().push(scope)),
+            set_measured_size: Rc::new(|_, _| {}),
+            on_scroll: None,
+            item_changed: None,
+        };
+        let layout = runtime_shared::VirtualLayout {
+            axis: runtime_shared::primitives::virtualizer::Axis::Vertical,
+            lanes: runtime_shared::primitives::virtualizer::Lanes::Fixed(1),
+            main_spacing: 0.0,
+            cross_spacing: 0.0,
+        };
+        let list = VirtualizerOps::create_virtualizer(&mut *cell.borrow_mut(), callbacks, 0.0, layout, &AccessibilityProps::default());
+        // A 300×200 viewport: rows 0..5 of 40px.
+        cell.borrow_mut().nodes.get_mut(&list.id).unwrap().frame = (0.0, 0.0, 300.0, 200.0);
+        virtualizer::resync(&Rc::downgrade(&cell), list.id);
+        assert_eq!(mounted.borrow().as_slice(), [0, 1, 2, 3, 4]);
+        assert_eq!(cell.borrow().children[&list.id].len(), 5, "only the window is in the scene");
+        assert_eq!(scene::max_scroll_offsets(&cell.borrow(), list.id), (0.0, 3800.0), "scrolls the whole list");
+
+        // Scroll to row 10: rows 0..5 leave, 10..15 arrive.
+        cell.borrow_mut().set_node_scroll(&list, 0.0, 400.0);
+        virtualizer::resync(&Rc::downgrade(&cell), list.id);
+        assert_eq!(released.borrow().as_slice(), [1000, 1001, 1002, 1003, 1004]);
+        assert_eq!(&mounted.borrow()[5..], [10, 11, 12, 13, 14]);
+        cell.borrow_mut().place_virtual_rows();
+        let first = cell.borrow().virtualizers[&list.id].mounted[&10].id;
+        assert_eq!(cell.borrow().nodes[&first].frame.1, 400.0, "row 10 sits at its offset");
+
+        // Data change: every row recycles, the window re-mounts.
+        count.set(3);
+        cell.borrow_mut().set_node_scroll(&list, 0.0, 0.0);
+        VirtualizerOps::virtualizer_data_changed(&mut *cell.borrow_mut(), &list);
+        virtualizer::resync(&Rc::downgrade(&cell), list.id);
+        assert_eq!(cell.borrow().children[&list.id].len(), 3);
+        VirtualizerOps::release_virtualizer(&mut *cell.borrow_mut(), &list);
+        assert!(cell.borrow().virtualizers.is_empty());
     }
 }

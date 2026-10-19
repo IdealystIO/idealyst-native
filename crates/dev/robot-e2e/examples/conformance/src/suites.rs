@@ -22,6 +22,7 @@ pub(crate) fn run_all() {
         idea_ui_suite(),
         component_methods_suite(),
         media_suite(),
+        capabilities_suite(),
     ]);
 }
 
@@ -53,23 +54,31 @@ fn primitives_suite() -> robot_e2e::Suite {
                 expect(&counter).to_have_text("Counter: 6")?;
                 Ok(())
             }),
-            test("toggle mounts/unmounts a when branch", |page: &Page| {
-                // Hidden initially.
-                expect(&page.get_by_test_id("extra")).not_to_be_visible()?;
-                expect(&page.get_by_test_id("slider")).to_have_count(0)?;
+            // A flow: "visible" needs a laid-out, non-empty frame, and a
+            // backend that lays out on the next turn (macOS) has none on the
+            // tick the branch mounts.
+            flow("toggle mounts/unmounts a when branch")
+                .act(|page: &Page| {
+                    // Hidden initially.
+                    expect(&page.get_by_test_id("extra")).not_to_be_visible()?;
+                    expect(&page.get_by_test_id("slider")).to_have_count(0)
+                })
                 // Reveal.
-                page.get_by_test_id("toggle").set_toggle(true)?;
-                expect(&page.get_by_test_id("extra")).to_be_visible()?;
-                expect(&page.get_by_test_id("slider-val")).to_have_text("Slider: 0")?;
-                // Drag the slider — value text updates live.
-                page.get_by_test_id("slider").set_slider(50.0)?;
-                expect(&page.get_by_test_id("slider-val")).to_have_text("Slider: 50")?;
-                // Hide again — the branch is disposed.
-                page.get_by_test_id("toggle").set_toggle(false)?;
-                expect(&page.get_by_test_id("extra")).not_to_be_visible()?;
-                expect(&page.get_by_test_id("slider")).to_have_count(0)?;
-                Ok(())
-            }),
+                .act(|page: &Page| page.get_by_test_id("toggle").set_toggle(true))
+                .poll(|page: &Page| expect(&page.get_by_test_id("extra")).to_be_visible())
+                .act(|page: &Page| {
+                    expect(&page.get_by_test_id("slider-val")).to_have_text("Slider: 0")?;
+                    // Drag the slider — value text updates live.
+                    page.get_by_test_id("slider").set_slider(50.0)?;
+                    expect(&page.get_by_test_id("slider-val")).to_have_text("Slider: 50")?;
+                    // Hide again — the branch is disposed.
+                    page.get_by_test_id("toggle").set_toggle(false)
+                })
+                .poll(|page: &Page| {
+                    expect(&page.get_by_test_id("extra")).not_to_be_visible()?;
+                    expect(&page.get_by_test_id("slider")).to_have_count(0)
+                })
+                .build(),
             test("text input echoes into greeting", |page: &Page| {
                 expect(&page.get_by_test_id("greeting")).to_have_text("Hello, stranger")?;
                 page.get_by_test_id("name").fill("Ada")?;
@@ -98,25 +107,29 @@ fn primitives_suite() -> robot_e2e::Suite {
 fn modal_suite() -> robot_e2e::Suite {
     suite(
         "modal (portal + nested pressable)",
-        vec![test(
-            "confirm button nested in the card pressable still fires",
-            |page: &Page| {
+        // A flow for the same reason as the toggle test: the opened modal
+        // has a frame only after the next layout pass.
+        vec![flow("confirm button nested in the card pressable still fires")
+            .act(|page: &Page| {
                 expect(&page.get_by_test_id("confirmed")).to_have_text("Confirmed: 0")?;
                 // Modal closed: its contents aren't in the tree.
                 expect(&page.get_by_test_id("modal-confirm")).not_to_be_visible()?;
                 // Open it.
-                page.get_by_test_id("open-modal").click()?;
+                page.get_by_test_id("open-modal").click()
+            })
+            .poll(|page: &Page| {
                 expect(&page.get_by_test_id("modal-title")).to_be_visible()?;
-                expect(&page.get_by_test_id("modal-confirm")).to_be_visible()?;
+                expect(&page.get_by_test_id("modal-confirm")).to_be_visible()
+            })
+            .act(|page: &Page| {
                 // THE regression: a button nested inside the modal card's
                 // own tap-recognizing Pressable must still fire its click.
                 page.get_by_test_id("modal-confirm").click()?;
-                expect(&page.get_by_test_id("confirmed")).to_have_text("Confirmed: 1")?;
-                // Confirm closed the modal.
-                expect(&page.get_by_test_id("modal-title")).not_to_be_visible()?;
-                Ok(())
-            },
-        )],
+                expect(&page.get_by_test_id("confirmed")).to_have_text("Confirmed: 1")
+            })
+            // Confirm closed the modal.
+            .poll(|page: &Page| expect(&page.get_by_test_id("modal-title")).not_to_be_visible())
+            .build()],
     )
 }
 
@@ -248,5 +261,73 @@ fn media_suite() -> robot_e2e::Suite {
             .act(|p: &Page| p.get_by_test_id("media-back").click())
             .poll(|p: &Page| expect(&p.get_by_test_id("media-marker")).not_to_be_visible())
             .build()],
+    )
+}
+
+/// The system check's automated half (`system_check.rs`): one test per
+/// backend capability whose trait default silently does nothing. Test
+/// names are what the screen's sections look results up by — rename both
+/// together. Native input (`hover`, `press`) and native readback
+/// (`to_show_native_text`) skip where the platform has neither, so a skip
+/// says "not on this platform", never "broken".
+fn capabilities_suite() -> robot_e2e::Suite {
+    suite(
+        "capabilities",
+        vec![
+            flow("open the system check")
+                .act(|p: &Page| p.get_by_test_id("goto-system-check").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("check-marker")).to_be_visible())
+                .build(),
+            flow("hover lights the hovered state")
+                .act(|p: &Page| p.get_by_test_id("cap-hover").hover())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-hover")).to_be_hovered())
+                .act(|p: &Page| p.get_by_test_id("cap-elsewhere").hover())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-hover")).not_to_be_hovered())
+                .build(),
+            flow("press lights the pressed state")
+                .act(|p: &Page| p.get_by_test_id("cap-hover").press())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-hover")).to_be_pressed())
+                .act(|p: &Page| p.get_by_test_id("cap-hover").release())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-hover")).not_to_be_pressed())
+                .build(),
+            flow("a value written from code reaches the field")
+                .act(|p: &Page| p.get_by_test_id("cap-input").fill("hello"))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input-echo")).to_have_text("value: hello"))
+                .act(|p: &Page| p.get_by_test_id("cap-input-clear").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input-echo")).to_have_text("value: "))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input")).to_show_native_text(""))
+                .build(),
+            flow("focus and blur reach the app")
+                .act(|p: &Page| p.get_by_test_id("cap-input").focus())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input-events")).to_contain_text("focus: 1"))
+                .act(|p: &Page| p.get_by_test_id("cap-input").blur())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-input-events")).to_contain_text("blur: 1"))
+                .build(),
+            flow("a text area is editable")
+                .act(|p: &Page| p.get_by_test_id("cap-area").fill("two\nlines"))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-area-echo")).to_have_text("area: two⏎lines"))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-area")).to_show_native_text("two\nlines"))
+                .build(),
+            flow("a flat_list renders rows and follows its data")
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-row")).to_have_count(3))
+                .act(|p: &Page| p.get_by_test_id("cap-add-row").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-row")).to_have_count(4))
+                .build(),
+            flow("reaching the end of a scroll view is reported")
+                .act(|p: &Page| p.get_by_test_id("cap-scroll").scroll_to(0.0, 10_000.0))
+                .poll(|p: &Page| expect(&p.get_by_test_id("cap-scroll-end")).to_have_text("end reached: 1"))
+                .build(),
+            test("external links have an opener", |_p: &Page| {
+                if runtime_shared::can_open_urls() {
+                    Ok(())
+                } else {
+                    Err("no URL opener installed: open_url (external links) does nothing".into())
+                }
+            }),
+            flow("close the system check")
+                .act(|p: &Page| p.get_by_test_id("check-back").click())
+                .poll(|p: &Page| expect(&p.get_by_test_id("check-marker")).not_to_be_visible())
+                .build(),
+        ],
     )
 }

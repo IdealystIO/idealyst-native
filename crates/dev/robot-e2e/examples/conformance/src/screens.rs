@@ -51,6 +51,9 @@ pub struct State {
     pub name: Signal<String>,
     pub modal_open: Signal<bool>,
     pub confirmed: Signal<i32>,
+    /// The system check's verdicts (`system_check`): filled by the suite
+    /// run before anyone opens that screen.
+    pub checks: crate::system_check::Results,
 }
 
 /// The root screen: the primitives torture layout.
@@ -69,7 +72,26 @@ pub fn app() -> Element {
         name: signal(String::new()),
         modal_open: signal(false),
         confirmed: signal(0),
+        checks: crate::system_check::Results::new(),
     };
+
+    // Every finished test lands on the system check screen.
+    #[cfg(feature = "robot")]
+    {
+        let automated = state.checks.automated;
+        robot_e2e::set_result_listener(Some(Rc::new(move |r: &robot_e2e::TestResult| {
+            let row = crate::system_check::AutoResult {
+                test: r.test.clone(),
+                status: r.status.as_str(),
+                detail: r.detail.clone(),
+            };
+            automated.update(|rows| {
+                let mut rows: Vec<_> = rows.iter().filter(|x| x.test != row.test).cloned().collect();
+                rows.push(row);
+                rows
+            });
+        })));
+    }
 
     let nav: NavCell = Rc::new(RefCell::new(None));
 
@@ -81,11 +103,13 @@ pub fn app() -> Element {
     let nav_fill = nav.clone();
     let nav_components = nav.clone();
     let nav_media = nav.clone();
+    let nav_check = nav.clone();
     runtime_vocabulary::builders::stack_navigator(&crate::ROOT)
         .screen(crate::ROOT, move |_| root_page(state, nav_root.clone()))
         .screen(crate::DETAIL, move |_| detail_page(nav_detail.clone()))
         .screen(crate::COMPONENTS, move |_| components_page(nav_components.clone()))
         .screen(crate::MEDIA, move |_| media_page(nav_media.clone()))
+        .screen(crate::SYSTEM_CHECK, move |_| crate::system_check::system_check_page(state.checks, nav_check.clone()))
         .on_handle(move |h| *nav_fill.borrow_mut() = Some(h))
         .build()
 }
@@ -180,6 +204,12 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
             h.push(&crate::MEDIA, ());
         }
     };
+    let nav_check = nav.clone();
+    let goto_check = move || {
+        if let Some(h) = nav_check.borrow().as_ref() {
+            h.push(&crate::SYSTEM_CHECK, ());
+        }
+    };
     let nav_components = nav.clone();
     let goto_components = move || {
         if let Some(h) = nav_components.borrow().as_ref() {
@@ -224,6 +254,7 @@ pub(crate) fn root_page(state: State, nav: NavCell) -> Element {
             .test_id("goto-components")
             .into_element(),
         button("Media", goto_media).test_id("goto-media").into_element(),
+        button("System check", goto_check).test_id("goto-system-check").into_element(),
     ];
 
     // Wrap in a scroll view (weird condition: scrollable content). The

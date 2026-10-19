@@ -78,7 +78,12 @@ where
             },
         )
     };
-    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
+    let state_setter = prim.style.map(|style| {
+        let setter = attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
+        setter
+    });
     {
         let b = backend.clone();
         let n = node.clone();
@@ -202,7 +207,12 @@ where
             },
         )
     };
-    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
+    let state_setter = prim.style.map(|style| {
+        let setter = attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
+        setter
+    });
     {
         let b = backend.clone();
         let n = node.clone();
@@ -257,6 +267,8 @@ where
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     if let Some(f) = dyn_size {
         let b = backend.clone();
@@ -505,7 +517,12 @@ where
             },
         )
     };
-    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
+    let state_setter = prim.style.map(|style| {
+        let setter = attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
+        setter
+    });
     // Robot builds always watch focus (for `focused`), passing each change
     // on to the author's `on_focus` when there is one.
     #[cfg(feature = "robot")]
@@ -663,7 +680,12 @@ where
             },
         )
     };
-    let state_setter = prim.style.map(|style| attach_style(&backend, &node, style));
+    let state_setter = prim.style.map(|style| {
+        let setter = attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
+        setter
+    });
     {
         let b = backend.clone();
         let n = node.clone();

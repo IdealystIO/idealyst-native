@@ -72,7 +72,7 @@ backend-terminal = { workspace = true }
 name      = "Conformance"
 bundle_id = "ai.truday.idealyst.conformance"
 version   = "0.0.1"
-targets   = ["web", "ios", "android", "macos"]
+targets   = ["web", "ios", "android", "macos", "windows"]
 
 # The media screen's remote images: Android gates outbound network behind
 # the INTERNET permission (the `internet` capability). Apple doesn't gate it.

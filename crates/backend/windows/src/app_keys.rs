@@ -123,7 +123,7 @@ impl KeyboardSlot {
 /// Build the [`AppKeyEvent`] for a key message. `unsafe` for the user32
 /// keyboard-state reads; all of them are plain queries on the calling
 /// (UI) thread's input state.
-unsafe fn translate(down: bool, wparam_vk: u32, lparam: isize) -> AppKeyEvent {
+pub(crate) unsafe fn translate(down: bool, wparam_vk: u32, lparam: isize) -> AppKeyEvent {
     let vk = wparam_vk & 0xFFFF;
     let lp = keymap::decode_lparam(lparam);
     // Injected input (`SendInput` with a VK only) can carry scancode 0;

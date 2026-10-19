@@ -137,6 +137,10 @@ pub(crate) fn native_pointer(
     steps: &[runtime_vocabulary::caps::PointerStep],
 ) -> Option<runtime_vocabulary::caps::NativeInjection> {
     use runtime_vocabulary::caps::PointerStepPhase;
+    // A finger does not hover (`PointerStepPhase::Hover`).
+    if steps.iter().any(|s| s.phase == PointerStepPhase::Hover) {
+        return None;
+    }
     let root = VIEWPORT_ROOT.with(|r| r.borrow().clone())?;
     let steps = steps.to_vec();
     Some(Box::new(move || {
@@ -170,6 +174,7 @@ pub(crate) fn native_pointer(
                     PointerStepPhase::Down => 0,
                     PointerStepPhase::Up => 1,
                     PointerStepPhase::Move => 2,
+                    PointerStepPhase::Hover => unreachable!("refused above"),
                 };
                 let (x, y) = crate::anchored_portal_policy::viewport_dp_to_view_px(
                     (s.x, s.y),

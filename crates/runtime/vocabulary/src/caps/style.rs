@@ -179,7 +179,7 @@ pub trait StyleOps: Host {
     /// | linux    | yes     | yes     | yes     | `EventControllerMotion` / `GestureClick` / `EventControllerFocus` |
     /// | android  | n/a     | yes     | yes     | no hover on a touch device — deliberate |
     /// | ios      | n/a     | **-**   | yes     | only the text-field focus setter is wired |
-    /// | windows  | yes     | yes     | **-**   | hit chain from the host's mouse messages (`view_input.rs`) |
+    /// | windows  | yes     | yes     | text fields | hover/press from the host's mouse messages (`view_input.rs`); focus from the `EDIT`'s notifications |
     /// | terminal, cpu, roku | **-** | **-** | **-** | not overridden at all |
     ///
     /// `DISABLED` is not in the table: it is not input-driven. The

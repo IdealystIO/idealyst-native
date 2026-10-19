@@ -748,6 +748,11 @@ impl caps::ScrollOps for TuiBackend {}
 // …
 ```
 
+An in-tree backend should also be added to
+`crates/dev/capability-coverage/coverage.toml`. The coverage check then
+lists every default it leaves in place that other backends implement
+([`system-check.md`](./system-check.md)).
+
 `crates/runtime/vocabulary/tests/third_party_backend.rs` is the complete
 version of that sketch, written under out-of-tree constraints and
 compiled on every test run.

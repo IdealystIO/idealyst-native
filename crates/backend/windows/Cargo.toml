@@ -60,6 +60,9 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_GdiPlus",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Controls",
+    # CreateActCtxW / ActivateActCtx: Common Controls v6 for the process
+    # (`enable_visual_styles`).
+    "Win32_System_ApplicationInstallationAndServicing",
     # Per-monitor DPI (`dpi.rs`): GetDpiForWindow, the process awareness
     # context, SystemParametersInfoForDpi for the 96-DPI shell font.
     "Win32_UI_HiDpi",

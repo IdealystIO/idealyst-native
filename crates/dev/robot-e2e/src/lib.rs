@@ -17,6 +17,11 @@
 //! | (slider drag)              | [`Locator::set_slider`]       | `Robot::set_slider` |
 //! | `mouse.down/move/up`       | [`Locator::drag`]             | `Robot::drag`       |
 //! | `locator.focus()/.blur()`  | [`Locator::focus`]/[`blur`]   | `Robot::focus`/`blur`|
+//! | `locator.hover()`          | [`Locator::hover`]            | `Robot::hover_native` |
+//! | `mouse.down()/up()`        | [`Locator::press`]/[`release`]| `Robot::press_native`/`release_native` |
+//! | `expect(l).toBeFocused()`  | [`Expect::to_be_focused`]     | `state().focused`   |
+//! | `expect(l).toHaveValue()`  | [`Expect::to_have_value`]     | `state().value`     |
+//! | (`:hover` / `:active`)     | [`Expect::to_be_hovered`]/[`to_be_pressed`] | `state().hovered`/`pressed` |
 //! | `expect(l).toBeVisible()`  | [`Expect::to_be_visible`]     | `visibility().visible` |
 //! | `expect(l).toHaveText()`   | [`Expect::to_have_text`]      | live `label`        |
 //! | `expect(l).toHaveCount()`  | [`Expect::to_have_count`]     | `find_all().len()`  |
@@ -29,8 +34,18 @@
 //! harness emits **one machine-readable line**:
 //!
 //! ```text
-//! [E2E-RESULT] {"suites":3,"tests":42,"pass":42,"fail":0,"failures":[]}
+//! [E2E-RESULT] {"suites":3,"tests":42,"pass":40,"fail":0,"skip":2,"failures":[],"skipped":[…]}
 //! ```
+//!
+//! A test **skips** instead of failing when what it checks does not exist
+//! on the platform — a touch screen cannot hover, CSS owns hover on web.
+//! Native actions turn the robot's `Unsupported` into a skip on their own;
+//! a test can also return [`skip`] itself. A skip is not a pass: the
+//! summary counts it separately, with its reason.
+//!
+//! [`set_result_listener`] hands each test's outcome to the app as it
+//! finishes, so a screen can show the run live (the conformance app's
+//! system check does).
 //!
 //! A cross-platform orchestrator launches the app on each target, scrapes
 //! that target's log channel for `[E2E-RESULT]`, and aggregates the verdict
@@ -41,12 +56,14 @@
 //! sees the post-update value with no explicit wait.
 //!
 //! [`blur`]: Locator::blur
+//! [`release`]: Locator::release
+//! [`to_be_pressed`]: Expect::to_be_pressed
 
 // The introspection registry: `runtime_vocabulary::robot`.
 // `ElementKind` is re-exported so suites written against the harness can
 // spell `page.get_by_role(ElementKind::Button)` without naming the
 // registry crate themselves.
-use runtime_vocabulary::robot::{Element, Query, Robot};
+use runtime_vocabulary::robot::{Element, ElementState, Query, Robot, RobotError, StateValue};
 pub use runtime_vocabulary::robot::ElementKind;
 
 /// Pacing between tests, in ms. Purely cosmetic: it lets the on-screen UI
@@ -96,6 +113,80 @@ fn log(line: impl AsRef<str>) {
 /// `[e2e]`-prefixed error line (failed assertions / actions).
 fn log_fail(line: impl AsRef<str>) {
     runtime_shared::log_error!("[e2e] {}", line.as_ref());
+}
+
+// ---------------------------------------------------------------------------
+// Skips + results
+// ---------------------------------------------------------------------------
+
+/// Marks an `Err` as a skip rather than a failure. Not printable, so no
+/// real failure message starts with it.
+const SKIP_MARK: &str = "\u{1}skip\u{1}";
+
+/// The `Err` a test returns to skip: what it checks does not exist on this
+/// platform (`return Err(skip("no hover on a touch screen"))`).
+pub fn skip(reason: impl AsRef<str>) -> String {
+    format!("{SKIP_MARK}{}", reason.as_ref())
+}
+
+fn skip_reason(e: &str) -> Option<&str> {
+    e.strip_prefix(SKIP_MARK)
+}
+
+/// A robot error as a test `Err`: `Unsupported` (the platform has no such
+/// input) is a skip, anything else a failure.
+fn robot_err(desc: &str, action: &str, e: RobotError) -> String {
+    match e {
+        RobotError::Unsupported(what) => skip(format!("{desc}.{action}(): {what} is not available on this platform")),
+        e => format!("{desc}.{action}() failed: {e:?}"),
+    }
+}
+
+/// How a test ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Pass,
+    Fail,
+    Skip,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Pass => "pass",
+            Status::Fail => "fail",
+            Status::Skip => "skip",
+        }
+    }
+}
+
+/// One finished test, as [`set_result_listener`] reports it.
+#[derive(Clone, Debug)]
+pub struct TestResult {
+    pub suite: String,
+    pub test: String,
+    pub status: Status,
+    /// The failure message, or the skip reason.
+    pub detail: Option<String>,
+}
+
+type Listener = std::rc::Rc<dyn Fn(&TestResult)>;
+
+runtime_tls::thread_local! {
+    static LISTENER: std::cell::RefCell<Option<Listener>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Hand every finished test to `f` (UI thread), replacing any previous
+/// listener. `None` stops reporting.
+pub fn set_result_listener(f: Option<Listener>) {
+    LISTENER.with(|l| *l.borrow_mut() = f);
+}
+
+fn report(result: TestResult) {
+    let f = LISTENER.with(|l| l.borrow().clone());
+    if let Some(f) = f {
+        f(&result);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,6 +331,63 @@ impl Locator {
         r
     }
 
+    /// Move a real mouse over the element (Playwright `hover`). Skips on a
+    /// platform with no hovering pointer.
+    pub fn hover(&self) -> Result<(), String> {
+        log(format!("  ▸ {}.hover()", self.desc));
+        let el = self.resolve()?;
+        let r = Robot::new().hover_native(&el).map_err(|e| robot_err(&self.desc, "hover", e));
+        settle();
+        r
+    }
+
+    /// Press the primary button down on the element with real input and
+    /// hold it (Playwright `mouse.down`). [`release`](Self::release) lifts
+    /// it. Input may arrive on the next event-loop turn: check the pressed
+    /// state from a `poll` step.
+    pub fn press(&self) -> Result<(), String> {
+        log(format!("  ▸ {}.press()", self.desc));
+        let el = self.resolve()?;
+        let r = Robot::new().press_native(&el).map_err(|e| robot_err(&self.desc, "press", e));
+        settle();
+        r
+    }
+
+    /// Lift a [`press`](Self::press) at the element.
+    pub fn release(&self) -> Result<(), String> {
+        log(format!("  ▸ {}.release()", self.desc));
+        let el = self.resolve()?;
+        let r = Robot::new().release_native(&el).map_err(|e| robot_err(&self.desc, "release", e));
+        settle();
+        r
+    }
+
+    /// Tap with real platform input (hit testing and overlays take part),
+    /// where [`click`](Self::click) calls the handler directly.
+    pub fn tap(&self) -> Result<(), String> {
+        log(format!("  ▸ {}.tap()", self.desc));
+        let el = self.resolve()?;
+        let r = Robot::new().tap_native(&el).map(|_| ()).map_err(|e| robot_err(&self.desc, "tap", e));
+        settle();
+        r
+    }
+
+    /// The element's own state (`Robot::state`), if it reports any.
+    fn state(&self) -> Result<Option<ElementState>, String> {
+        let el = self.resolve()?;
+        Robot::new().state(&el).map_err(|e| format!("{}: {e:?}", self.desc))
+    }
+
+    /// Scroll a scroll view to the content offset `(x, y)`, logical px,
+    /// through the native scroller (its scroll events fire as for a user).
+    pub fn scroll_to(&self, x: f32, y: f32) -> Result<(), String> {
+        log(format!("  ▸ {}.scroll_to({x}, {y})", self.desc));
+        let el = self.resolve()?;
+        let r = Robot::new().set_scroll(&el, x, y).map_err(|e| robot_err(&self.desc, "scroll_to", e));
+        settle();
+        r
+    }
+
     /// Focus the element (text inputs).
     pub fn focus(&self) -> Result<(), String> {
         log(format!("  ▸ {}.focus()", self.desc));
@@ -369,6 +517,108 @@ impl Expect {
                 "expect({}).toContainText({substr:?}) — actual text was {:?}",
                 self.loc.desc, other
             )),
+        }
+    }
+
+    /// `expect(locator).toBeHovered()` — the element's `state hovered`
+    /// style is on. Skips where the platform keeps hover in CSS (web),
+    /// which the robot cannot read.
+    pub fn to_be_hovered(self) -> Result<(), String> {
+        self.interaction("toBeHovered", true, |s| s.hovered)
+    }
+
+    pub fn not_to_be_hovered(self) -> Result<(), String> {
+        self.interaction("not.toBeHovered", false, |s| s.hovered)
+    }
+
+    /// `expect(locator).toBePressed()` — the element's `state pressed`
+    /// style is on. Skips as [`to_be_hovered`](Self::to_be_hovered) does.
+    pub fn to_be_pressed(self) -> Result<(), String> {
+        self.interaction("toBePressed", true, |s| s.pressed)
+    }
+
+    pub fn not_to_be_pressed(self) -> Result<(), String> {
+        self.interaction("not.toBePressed", false, |s| s.pressed)
+    }
+
+    fn interaction(&self, what: &str, want: bool, pick: fn(&ElementState) -> Option<bool>) -> Result<(), String> {
+        let desc = &self.loc.desc;
+        match self.loc.state()?.as_ref().and_then(pick) {
+            Some(actual) if actual == want => {
+                log(format!("  ✓ expect({desc}).{what}()"));
+                Ok(())
+            }
+            Some(_) => Err(format!("expect({desc}).{what}() — it is {}", if want { "not" } else { "still" })),
+            None => Err(skip(format!(
+                "expect({desc}).{what}(): no interaction state to read (styled by the platform, e.g. CSS on web, \
+                 or the element's style has no state variants)"
+            ))),
+        }
+    }
+
+    /// `expect(locator).toBeFocused()` — a text field holds focus.
+    pub fn to_be_focused(self) -> Result<(), String> {
+        self.focus_is(true)
+    }
+
+    pub fn not_to_be_focused(self) -> Result<(), String> {
+        self.focus_is(false)
+    }
+
+    fn focus_is(&self, want: bool) -> Result<(), String> {
+        let desc = &self.loc.desc;
+        let what = if want { "toBeFocused" } else { "not.toBeFocused" };
+        match self.loc.state()?.and_then(|s| s.focused) {
+            Some(f) if f == want => {
+                log(format!("  ✓ expect({desc}).{what}()"));
+                Ok(())
+            }
+            other => Err(format!("expect({desc}).{what}() — focused is {other:?}")),
+        }
+    }
+
+    /// `expect(locator).toHaveValue(text)` — a text field's text as the
+    /// native widget holds it.
+    pub fn to_have_value(self, expected: &str) -> Result<(), String> {
+        let desc = &self.loc.desc;
+        match self.loc.state()?.and_then(|s| s.value) {
+            Some(StateValue::Text(t)) if t == expected => {
+                log(format!("  ✓ expect({desc}).toHaveValue({expected:?})"));
+                Ok(())
+            }
+            other => Err(format!("expect({desc}).toHaveValue({expected:?}) — value is {other:?}")),
+        }
+    }
+
+    /// The text the NATIVE widget displays (`Robot::introspect_native`,
+    /// the first `text` in its native subtree) equals `expected`. Where
+    /// [`to_have_value`](Self::to_have_value) reads the robot's own record of
+    /// the field — which follows the bound value whether or not the widget
+    /// did — this reads the widget, so it catches a backend that drops a
+    /// value written from code. Skips on a backend with no native readback.
+    pub fn to_show_native_text(self, expected: &str) -> Result<(), String> {
+        use runtime_shared::introspect::{keys, NativeNode, NativeValue};
+        fn first_text(n: &NativeNode) -> Option<&str> {
+            match n.props.get(keys::TEXT) {
+                Some(NativeValue::Text(t)) => Some(t),
+                _ => n.children.iter().find_map(first_text),
+            }
+        }
+        let desc = &self.loc.desc;
+        let el = self.loc.resolve()?;
+        let node = match Robot::new().introspect_native(&el) {
+            Ok(Some(node)) => node,
+            Ok(None) | Err(RobotError::ActionNotAvailable(_)) => {
+                return Err(skip(format!("expect({desc}).toShowNativeText(): no native readback on this platform")))
+            }
+            Err(e) => return Err(format!("expect({desc}).toShowNativeText(): {e:?}")),
+        };
+        match first_text(&node) {
+            Some(t) if t == expected => {
+                log(format!("  ✓ expect({desc}).toShowNativeText({expected:?})"));
+                Ok(())
+            }
+            other => Err(format!("expect({desc}).toShowNativeText({expected:?}) — the widget shows {other:?}")),
         }
     }
 
@@ -540,6 +790,7 @@ struct RunState {
     suite_count: usize,
     passed: std::cell::Cell<usize>,
     failed: std::cell::Cell<usize>,
+    skipped: std::cell::RefCell<Vec<String>>,
     failures: std::cell::RefCell<Vec<String>>,
     /// Last suite name we logged a header for, so we print one header per
     /// suite as the flat queue crosses suite boundaries.
@@ -579,6 +830,7 @@ pub fn run_suites(suites: Vec<Suite>) {
         suite_count,
         passed: std::cell::Cell::new(0),
         failed: std::cell::Cell::new(0),
+        skipped: std::cell::RefCell::new(Vec::new()),
         failures: std::cell::RefCell::new(Vec::new()),
         last_suite: std::cell::RefCell::new(None),
     });
@@ -665,6 +917,12 @@ fn drive_flow(state: std::rc::Rc<RunState>, i: usize, step_idx: usize, attempt: 
             record_fail(&state, i, &e);
             advance(state, i);
         }
+        // A skip ends the test at once, poll or not: retrying cannot
+        // make the platform grow the feature.
+        (StepKind::Poll, Err(e)) if skip_reason(&e).is_some() => {
+            record_fail(&state, i, &e);
+            advance(state, i);
+        }
         // A poll-step failure retries until the budget is spent.
         (StepKind::Poll, Err(e)) => {
             if attempt + 1 < POLL_MAX_ATTEMPTS {
@@ -688,18 +946,38 @@ fn schedule_step(
 }
 
 fn record_pass(state: &RunState, i: usize) {
+    let q = &state.queue[i];
     state.passed.set(state.passed.get() + 1);
-    log(format!("  ✅ PASS: {}", state.queue[i].test.name));
+    log(format!("  ✅ PASS: {}", q.test.name));
+    report(TestResult { suite: q.suite.clone(), test: q.test.name.clone(), status: Status::Pass, detail: None });
 }
 
+/// A failed test — or a skipped one, when `e` is a [`skip`].
 fn record_fail(state: &RunState, i: usize, e: &str) {
     let q = &state.queue[i];
+    if let Some(reason) = skip_reason(e) {
+        state.skipped.borrow_mut().push(format!("{}/{}: {}", q.suite, q.test.name, reason));
+        log(format!("  ⏭ SKIP: {} — {reason}", q.test.name));
+        report(TestResult {
+            suite: q.suite.clone(),
+            test: q.test.name.clone(),
+            status: Status::Skip,
+            detail: Some(reason.to_string()),
+        });
+        return;
+    }
     state.failed.set(state.failed.get() + 1);
     state
         .failures
         .borrow_mut()
         .push(format!("{}/{}: {}", q.suite, q.test.name, e));
     log_fail(format!("  ❌ FAIL: {} — {e}", q.test.name));
+    report(TestResult {
+        suite: q.suite.clone(),
+        test: q.test.name.clone(),
+        status: Status::Fail,
+        detail: Some(e.to_string()),
+    });
 }
 
 /// Advance to the next test on the scheduler. `after_ms_detached` (vs
@@ -712,10 +990,12 @@ fn advance(state: std::rc::Rc<RunState>, i: usize) {
 
 fn emit_summary(state: &RunState) {
     let (p, f) = (state.passed.get(), state.failed.get());
-    let total = p + f;
+    let skipped = state.skipped.borrow();
+    let s = skipped.len();
+    let total = p + f + s;
     let verdict = if f == 0 { "✅ all green" } else { "❌ failures" };
     log(format!(
-        "■ done — {verdict}: {p}/{total} passed across {} suite(s)",
+        "■ done — {verdict}: {p}/{total} passed, {s} skipped, across {} suite(s)",
         state.suite_count
     ));
     let failures = state.failures.borrow();
@@ -729,13 +1009,20 @@ fn emit_summary(state: &RunState) {
         .map(|s| format!("\"{}\"", json_escape(s)))
         .collect::<Vec<_>>()
         .join(",");
+    let skipped_json = skipped
+        .iter()
+        .map(|s| format!("\"{}\"", json_escape(s)))
+        .collect::<Vec<_>>()
+        .join(",");
     runtime_shared::log_info!(
-        "[E2E-RESULT] {{\"suites\":{},\"tests\":{},\"pass\":{},\"fail\":{},\"failures\":[{}]}}",
+        "[E2E-RESULT] {{\"suites\":{},\"tests\":{},\"pass\":{},\"fail\":{},\"skip\":{},\"failures\":[{}],\"skipped\":[{}]}}",
         state.suite_count,
         total,
         p,
         f,
-        failures_json
+        s,
+        failures_json,
+        skipped_json
     );
 }
 

@@ -53,6 +53,8 @@ where
     cx.realize_children_into(&mut node, children);
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     if !prim.safe_area.is_empty() {
         let (backend, node, sides) = (backend.clone(), node.clone(), prim.safe_area);
@@ -179,7 +181,12 @@ where
     cx.realize_children_into(&mut node, children);
     let state_setter = prim
         .style
-        .map(|style| attach_style(&backend, &node, style));
+        .map(|style| {
+            let setter = attach_style(&backend, &node, style);
+            #[cfg(feature = "robot")]
+            crate::robot::link_interaction(&_robot);
+            setter
+        });
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_pressable_handle(&node);
         fill(handle);
@@ -271,6 +278,8 @@ where
     cx.realize_children_into(&mut node, children);
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     // `Some(NONE)` is an explicit opt-out and MUST reach the backend —
     // that is the whole reason this is an Option. Only silence (`None`)

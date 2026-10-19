@@ -219,6 +219,8 @@ where
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_text_handle(&node);
@@ -293,7 +295,12 @@ where
     };
     let state_setter = prim
         .style
-        .map(|style| attach_style(&backend, &node, style));
+        .map(|style| {
+            let setter = attach_style(&backend, &node, style);
+            #[cfg(feature = "robot")]
+            crate::robot::link_interaction(&_robot);
+            setter
+        });
     if let Some(fill) = prim.ref_fill {
         let handle = backend.borrow().make_button_handle(&node);
         fill(handle);

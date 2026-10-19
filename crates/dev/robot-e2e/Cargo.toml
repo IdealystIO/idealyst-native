@@ -23,3 +23,6 @@ runtime-vocabulary = { workspace = true, features = ["robot"] }
 # itself with (`after_ms_detached`), the microtask drain `settle()` uses,
 # and `ViewportRect` for the layout assertions.
 runtime-shared = { workspace = true }
+# The results listener slot (framework thread_locals go through
+# runtime-tls: Android's per-process TLS key budget).
+runtime-tls = { workspace = true }

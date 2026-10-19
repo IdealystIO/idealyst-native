@@ -1316,6 +1316,7 @@ pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32)
             }
         }
     }
+    b.scroll_changed(target);
     if let Some((f, x, y)) = cb {
         f(x, y);
     }
@@ -1328,12 +1329,18 @@ pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32)
 /// padding isn't in any child frame, so the last child sits flush at
 /// the end — the same approximation the extent-from-children approach
 /// gives on the other immediate-mode backends.
-fn max_scroll_offsets(b: &WindowsBackend, id: u64) -> (f32, f32) {
+pub(crate) fn max_scroll_offsets(b: &WindowsBackend, id: u64) -> (f32, f32) {
     let Some(meta) = b.nodes.get(&id) else {
         return (0.0, 0.0);
     };
     let (_, _, vw, vh) = meta.frame;
-    let (cw, ch) = content_extent(b, id);
+    // A virtualized list knows its full length; its children are only
+    // the mounted window of rows.
+    let reported = match &meta.kind {
+        NodeKind::View(ViewVisual { scroll: Some(s), .. }) => s.extent,
+        _ => None,
+    };
+    let (cw, ch) = reported.unwrap_or_else(|| content_extent(b, id));
     ((cw - vw).max(0.0), (ch - vh).max(0.0))
 }
 
@@ -1560,6 +1567,8 @@ mod tests {
                     offset_y: 0.0,
                     horizontal: false,
                     on_scroll: None,
+                    extent: None,
+                    end: None,
                 }),
                 ..Default::default()
             }),

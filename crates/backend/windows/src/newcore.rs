@@ -598,6 +598,12 @@ impl caps::AppEnvOps for WindowsBackend {
         WindowsBackend::set_pointer_lock_impl(self, locked)
     }
 
+    /// `open_url`: the shell's default handler for the URL (the default
+    /// browser for `http(s)`, the mail client for `mailto:`, …).
+    fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+        Some(Rc::new(|url: &str| crate::open_url_with_shell(url)))
+    }
+
     fn set_cursor_hidden(&mut self, hidden: bool) {
         // WM_SETCURSOR over the client area — `app_pointer.rs`.
         WindowsBackend::set_cursor_hidden_impl(self, hidden)
@@ -873,6 +879,34 @@ impl caps::TextInputOps for WindowsBackend {
             _a11y,
         )
     }
+
+    fn update_text_input_value(&mut self, node: &Self::Node, value: &str) {
+        WindowsBackend::update_edit_value(self, node, value, false)
+    }
+
+    fn update_text_area_value(&mut self, node: &Self::Node, value: &str) {
+        WindowsBackend::update_edit_value(self, node, value, true)
+    }
+
+    fn update_text_input_secure(&mut self, node: &Self::Node, secure: bool) {
+        WindowsBackend::update_text_input_secure(self, node, secure)
+    }
+
+    fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
+        WindowsBackend::update_text_input_placeholder(self, node, placeholder)
+    }
+
+    fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
+        WindowsBackend::set_text_input_focus_handler(self, node, flushing1(handler))
+    }
+
+    fn make_text_input_handle(&self, node: &Self::Node) -> primitives::text_input::TextInputHandle {
+        crate::handles::make_text_input_handle(node)
+    }
+
+    fn make_text_area_handle(&self, node: &Self::Node) -> primitives::text_area::TextAreaHandle {
+        crate::handles::make_text_area_handle(node)
+    }
 }
 
 impl caps::ToggleOps for WindowsBackend {
@@ -960,6 +994,15 @@ impl caps::ScrollOps for WindowsBackend {
     fn set_node_scroll(&mut self, node: &Self::Node, x: f32, y: f32) {
         WindowsBackend::set_node_scroll(self, node, x, y)
     }
+
+    fn observe_scroll_end(&mut self, node: &Self::Node, _horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
+        // The axis is the scroll view's own; `on_end` is a dispatch site.
+        WindowsBackend::observe_scroll_end(self, node, threshold, flushing0(on_end))
+    }
+
+    fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {
+        crate::handles::make_scroll_view_handle(self, node)
+    }
 }
 
 impl caps::SafeAreaOps for WindowsBackend {}
@@ -1034,6 +1077,18 @@ impl caps::VirtualizerOps for WindowsBackend {
             item_changed,
         };
         WindowsBackend::create_virtualizer(self, callbacks, _overscan, _layout, _a11y)
+    }
+
+    fn virtualizer_data_changed(&mut self, node: &Self::Node) {
+        WindowsBackend::virtualizer_data_changed(self, node)
+    }
+
+    fn release_virtualizer(&mut self, node: &Self::Node) {
+        WindowsBackend::release_virtualizer(self, node)
+    }
+
+    fn make_virtualizer_handle(&self, node: &Self::Node) -> primitives::virtualizer::VirtualizerHandle {
+        crate::handles::make_virtualizer_handle(self, node)
     }
 }
 

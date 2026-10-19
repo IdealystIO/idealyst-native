@@ -193,3 +193,187 @@ mod tests {
         assert_eq!(*seen.borrow(), [(226.0, 40.0), (300.0, 40.0)], "and each new size after a pass");
     }
 }
+
+// =========================================================================
+// Scroll view + virtualizer handles
+// =========================================================================
+
+struct Win32ScrollOps;
+static WIN32_SCROLL_OPS: Win32ScrollOps = Win32ScrollOps;
+
+impl runtime_shared::primitives::scroll_view::ScrollViewOps for Win32ScrollOps {
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        if let Some(state) = node.downcast_ref::<HandleState>() {
+            state.with_backend_mut(|b, n| {
+                b.set_node_scroll(n, x, y);
+            });
+        }
+    }
+}
+
+pub(crate) fn make_scroll_view_handle(
+    backend: &WindowsBackend,
+    node: &WindowsNode,
+) -> runtime_shared::primitives::scroll_view::ScrollViewHandle {
+    runtime_shared::primitives::scroll_view::ScrollViewHandle::new(
+        std::rc::Rc::new(HandleState { backend: backend.self_ref(), node: node.clone() }) as std::rc::Rc<dyn Any>,
+        &WIN32_SCROLL_OPS,
+    )
+}
+
+struct Win32VirtualizerOps;
+static WIN32_VIRTUALIZER_OPS: Win32VirtualizerOps = Win32VirtualizerOps;
+
+impl runtime_shared::primitives::virtualizer::VirtualizerOps for Win32VirtualizerOps {
+    /// Bring item `index`'s leading edge to the top (left) of the list.
+    fn scroll_to_index(&self, node: &dyn Any, index: usize) {
+        if let Some(state) = node.downcast_ref::<HandleState>() {
+            state.with_backend_mut(|b, n| {
+                let Some(st) = b.virtualizers.get(&n.id) else { return };
+                let Some(&offset) = st.offsets.get(index) else { return };
+                let horizontal = st.horizontal;
+                let (x, y) = if horizontal { (offset, 0.0) } else { (0.0, offset) };
+                b.set_node_scroll(n, x, y);
+            });
+        }
+    }
+
+    fn scroll_offset(&self, node: &dyn Any) -> (f32, f32) {
+        let Some(state) = node.downcast_ref::<HandleState>() else { return (0.0, 0.0) };
+        let Some(b) = state.backend.upgrade() else { return (0.0, 0.0) };
+        let Ok(b) = b.try_borrow() else { return (0.0, 0.0) };
+        b.node_scroll(&state.node)
+    }
+
+    fn scroll_to(&self, node: &dyn Any, x: f32, y: f32) {
+        if let Some(state) = node.downcast_ref::<HandleState>() {
+            state.with_backend_mut(|b, n| b.set_node_scroll(n, x, y));
+        }
+    }
+}
+
+pub(crate) fn make_virtualizer_handle(
+    backend: &WindowsBackend,
+    node: &WindowsNode,
+) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
+    runtime_shared::primitives::virtualizer::VirtualizerHandle::new(
+        std::rc::Rc::new(HandleState { backend: backend.self_ref(), node: node.clone() }) as std::rc::Rc<dyn Any>,
+        &WIN32_VIRTUALIZER_OPS,
+    )
+}
+
+// =========================================================================
+// Text input / text area handles
+// =========================================================================
+//
+// A field is a child `EDIT` window created already attached to the host,
+// so the attach-safe focus contract is met by focusing at once. The ops act
+// on the HWND alone and never borrow the backend: `EM_REPLACESEL` sends
+// `EN_CHANGE` synchronously, and its `on_change` must find the backend
+// free.
+
+struct Win32FieldOps;
+static WIN32_FIELD_OPS: Win32FieldOps = Win32FieldOps;
+
+/// The field's HWND, carried by its handle.
+struct FieldHandle(windows::Win32::Foundation::HWND);
+
+fn field_hwnd(node: &dyn Any) -> Option<windows::Win32::Foundation::HWND> {
+    node.downcast_ref::<FieldHandle>().map(|h| h.0).filter(|h| !h.is_invalid())
+}
+
+fn field_focus(node: &dyn Any) {
+    if let Some(h) = field_hwnd(node) {
+        unsafe {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(h));
+        }
+    }
+}
+
+/// Hand focus back to the host window, if this field holds it.
+fn field_blur(node: &dyn Any) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    use windows::Win32::UI::WindowsAndMessaging::GetParent;
+    if let Some(h) = field_hwnd(node) {
+        unsafe {
+            if GetFocus() == h {
+                if let Ok(parent) = GetParent(h) {
+                    let _ = SetFocus(Some(parent));
+                }
+            }
+        }
+    }
+}
+
+fn field_select_all(node: &dyn Any) {
+    if let Some(h) = field_hwnd(node) {
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                h,
+                crate::EM_SETSEL,
+                Some(windows::Win32::Foundation::WPARAM(0)),
+                Some(windows::Win32::Foundation::LPARAM(-1)),
+            );
+        }
+    }
+}
+
+/// Replace the selection with `text` (caret after it); the control's
+/// `EN_CHANGE` reports the new value through `on_change`.
+fn field_insert_text(node: &dyn Any, text: &str) {
+    if let Some(h) = field_hwnd(node) {
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                h,
+                crate::EM_REPLACESEL,
+                Some(windows::Win32::Foundation::WPARAM(1)),
+                Some(windows::Win32::Foundation::LPARAM(wide.as_ptr() as isize)),
+            );
+        }
+    }
+}
+
+impl runtime_shared::primitives::text_input::TextInputOps for Win32FieldOps {
+    fn focus(&self, node: &dyn Any) {
+        field_focus(node)
+    }
+    fn blur(&self, node: &dyn Any) {
+        field_blur(node)
+    }
+    fn select_all(&self, node: &dyn Any) {
+        field_select_all(node)
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        field_insert_text(node, text)
+    }
+}
+
+impl runtime_shared::primitives::text_area::TextAreaOps for Win32FieldOps {
+    fn focus(&self, node: &dyn Any) {
+        field_focus(node)
+    }
+    fn blur(&self, node: &dyn Any) {
+        field_blur(node)
+    }
+    fn select_all(&self, node: &dyn Any) {
+        field_select_all(node)
+    }
+    fn insert_text(&self, node: &dyn Any, text: &str) {
+        field_insert_text(node, text)
+    }
+}
+
+pub(crate) fn make_text_input_handle(node: &WindowsNode) -> runtime_shared::primitives::text_input::TextInputHandle {
+    runtime_shared::primitives::text_input::TextInputHandle::new(
+        std::rc::Rc::new(FieldHandle(node.hwnd)) as std::rc::Rc<dyn Any>,
+        &WIN32_FIELD_OPS,
+    )
+}
+
+pub(crate) fn make_text_area_handle(node: &WindowsNode) -> runtime_shared::primitives::text_area::TextAreaHandle {
+    runtime_shared::primitives::text_area::TextAreaHandle::new(
+        std::rc::Rc::new(FieldHandle(node.hwnd)) as std::rc::Rc<dyn Any>,
+        &WIN32_FIELD_OPS,
+    )
+}

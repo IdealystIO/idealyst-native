@@ -49,6 +49,8 @@ where
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     if let Some(h) = prim.on_load {
         backend.borrow_mut().install_image_load_handler(&node, h);
@@ -120,6 +122,8 @@ where
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     if let Some(f) = dyn_data {
         let b = backend.clone();
@@ -243,6 +247,8 @@ where
     cx.realize_children_into(&mut node, children);
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     {
         let b = backend.clone();

@@ -87,11 +87,22 @@ would see on screen — with no help from the app:
 | `disabled` | toggle, slider, text input/area, pressable, button | Whether it refuses input |
 | `focused` | `text_input` | Whether it holds keyboard focus |
 | `scroll` | `scroll_view` | `{x, y}` content offset, read from the native scroller |
+| `hovered`, `pressed` | any element whose style has `state hovered` / `state pressed` variants | Whether that style state is on, as the backend set it |
 
 It is the primitive's view, not the author's: an uncontrolled toggle reports
 what it was last flipped to, a controlled one the author's value after each
 write-back. Fields a primitive doesn't have are left out; a view, text or
 image reports `{}`.
+
+`value` is the robot's own record of the field: it follows both the user's
+edits and the bound value, so it reads the new text even on a backend that
+never pushed a value written from code into the widget. To check what the
+widget itself shows, read `introspect_native` (robot-e2e:
+`expect(…).to_show_native_text(…)`).
+
+`hovered` / `pressed` come from the style's state machine, so they are
+absent on web (CSS `:hover` / `:active` own those states there, and the
+page can't read them) and on elements whose style has no state variants.
 
 ## Actions behave like a user
 
@@ -114,7 +125,7 @@ These actions run inside the app, through the framework: they test the
 framework's logic and the backend's widget updates, not the OS's event
 delivery or hit testing. For that, use the native tier below.
 
-## Native input: `tap_native`, `drag_native`
+## Native input: `tap_native`, `drag_native`, `hover_native`, `press_native`
 
 `tap_native {element_id}` taps the element's center with real platform
 input, through the toolkit's own event path — hit testing, overlays,
@@ -147,6 +158,22 @@ robot-test's `Locator::click()` is native-first: it waits for the element
 to be visible and enabled, then `tap_native`, falling back to the robot's
 `click` only where the backend answers `unsupported`. `tap_native()` has
 no fallback; `dispatch_click()` is the robot's `click` on purpose.
+
+`hover_native {element_id}` moves a real mouse over the element's center
+with no button held (`on_hover`, the `state hovered` style).
+`press_native` / `release_native {element_id}` split a tap in two so a test
+can check the `state pressed` style in between. Same point checks as
+`tap_native`, no fallback:
+
+| Backend | Hover |
+|---|---|
+| Web | `pointerout`/`mouseout`, `pointerleave`/`mouseleave`, `pointerover`/`mouseover`, `pointerenter`/`mouseenter`, then `pointermove`/`mousemove`, as a mouse sends them. Untrusted events don't move CSS `:hover` |
+| macOS | AppKit enters a view from its tracking areas, driven by the window server's cursor, which a posted event doesn't move. The injection hit-tests the point, sends `mouseExited:` / `mouseEntered:` to the tracking areas it left and reached (the events the tracking manager would send), then posts the mouse-moved event |
+| Windows | `WM_MOUSEMOVE` with no button, posted where a real move lands |
+| iOS, Android, Linux | `unsupported` (no hovering pointer; Linux needs XTest) |
+
+macOS posts its mouse events, so a pressed state lands on the next run-loop
+turn: poll for it.
 
 ## Functions
 
@@ -266,11 +293,13 @@ fn sign_in(app: &mut App) {
   then `.nth(i)`.
 - Act: `click` (native tap first, see above), `tap_native`,
   `dispatch_click`, `fill` / `type_text`, `set_toggle`, `set_slider`,
-  `focus`, `blur`, `scroll_to`, `drag`, `drag_with_hold`, `drag_native`.
+  `focus`, `blur`, `scroll_to`, `drag`, `drag_with_hold`, `drag_native`,
+  `hover_native`, `press_native`, `release_native`.
 - Read: `state()` ([`ElementState`]), `is_visible()`, `label()`, `count()`.
 - Assert: `assert_visible`, `assert_hidden`, `assert_in_viewport`, `assert_text`,
   `assert_text_contains`, `assert_value`, `assert_checked`,
-  `assert_enabled`, `assert_disabled`, `assert_focused`, `assert_count`.
+  `assert_enabled`, `assert_disabled`, `assert_focused`, `assert_hovered`,
+  `assert_pressed`, `assert_count`.
 - App: `navigate` / `navigate_with` / `back` / `assert_path` /
   `navigators()`, `open_link(url)`, `call_function(name, args)` /
   `try_call_function` / `functions()` (waits for the function to register
@@ -305,7 +334,7 @@ launch environment, and a web page as a global the dev server injects.
 ### MCP server
 
 Every verb is reachable: dedicated tools for the element verbs (`find_element`, `click`,
-`tap_native`, `drag_native`, `get_state`, `set_scroll`, …), `list_navigators` / `get_navigator_state` /
+`tap_native`, `drag_native`, `pointer_native` (hover / press / release), `get_state`, `set_scroll`, …), `list_navigators` / `get_navigator_state` /
 `navigate`, `list_watched_signals` / `read_signal` / `write_signal`,
 `list_component_instances` / `get_component_instance` / `invoke_method`
 (`list_components` is the *catalog*), `open_link`, `list_functions` /

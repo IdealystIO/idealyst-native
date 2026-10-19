@@ -325,6 +325,12 @@ pub struct ElementState {
     pub focused: Option<bool>,
     /// A scroll view's content offset.
     pub scroll: Option<ScrollOffset>,
+    /// Whether the element's `state hovered` style is on. `None` where the
+    /// platform styles hover itself (CSS on web) or the style has no state
+    /// variants.
+    pub hovered: Option<bool>,
+    /// Whether the element's `state pressed` style is on.
+    pub pressed: Option<bool>,
 }
 
 /// A scroll view's content offset, logical px.
@@ -442,6 +448,23 @@ impl<'a> Locator<'a> {
     /// iOS, where an app can't create touches).
     pub fn tap_native(self) -> String {
         self.tap(false)
+    }
+
+    /// Move a real mouse over the element (no button held). Panics on a
+    /// platform with no hovering pointer.
+    pub fn hover_native(self) {
+        self.act("hover_native", json!({}));
+    }
+
+    /// Press the primary button down on the element with real input and
+    /// keep it down; [`release_native`](Self::release_native) lifts it.
+    pub fn press_native(self) {
+        self.act("press_native", json!({}));
+    }
+
+    /// Lift a [`press_native`](Self::press_native) at the element.
+    pub fn release_native(self) {
+        self.act("release_native", json!({}));
     }
 
     /// Run the element's press handler directly (the robot's `click`),
@@ -681,6 +704,25 @@ impl<'a> Locator<'a> {
         self.expect(&what, |el| {
             let actual = state_of(el).focused;
             (actual == Some(expected)).then_some(()).ok_or(format!("focused is {actual:?}"))
+        });
+    }
+
+    /// Assert whether the element's `state hovered` style is on (waits for
+    /// it, as every assertion does).
+    pub fn assert_hovered(self, expected: bool) {
+        let what = format!("assert_hovered({expected})");
+        self.expect(&what, |el| {
+            let actual = state_of(el).hovered;
+            (actual == Some(expected)).then_some(()).ok_or(format!("hovered is {actual:?}"))
+        });
+    }
+
+    /// Assert whether the element's `state pressed` style is on.
+    pub fn assert_pressed(self, expected: bool) {
+        let what = format!("assert_pressed({expected})");
+        self.expect(&what, |el| {
+            let actual = state_of(el).pressed;
+            (actual == Some(expected)).then_some(()).ok_or(format!("pressed is {actual:?}"))
         });
     }
 

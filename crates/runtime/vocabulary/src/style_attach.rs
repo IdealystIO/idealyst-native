@@ -561,6 +561,10 @@ pub fn attach_style<H: StyleServices>(
     node: &H::Node,
     style: StyleProp,
 ) -> Rc<dyn Fn(StateBits, bool)> {
+    // Every attach overwrites the slot, so a handler that links right
+    // after its own attach can never pick up another node's cell.
+    #[cfg(feature = "robot")]
+    interaction_mirror::clear();
     // Diagnostic only (`--premint-report`); compiled out otherwise. Sits
     // ahead of the match so it sees every shape without touching an arm.
     #[cfg(idealyst_premint_report)]
@@ -776,6 +780,47 @@ pub fn attach_style<H: StyleServices>(
             }
             noop_setter()
         }
+    }
+}
+
+/// The interaction bits a backend flips, mirrored into a plain cell the
+/// robot reads (`ElementState::hovered` / `pressed`): robot state closures
+/// must not read signals (they run outside any reactive context and must
+/// subscribe nothing). The most recent attach parks its cell in a slot; a
+/// handler that registered its node takes it right after its own
+/// `attach_style` (`robot::link_interaction`). Handlers that style a node
+/// without registering it never take the slot, and the next attach
+/// overwrites it.
+#[cfg(feature = "robot")]
+pub(crate) mod interaction_mirror {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use runtime_shared::StateBits;
+
+    runtime_tls::thread_local! {
+        static LAST: RefCell<Option<Rc<Cell<StateBits>>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn clear() {
+        LAST.with(|l| *l.borrow_mut() = None);
+    }
+
+    /// A fresh cell for one node, parked in the slot.
+    pub(crate) fn new_cell() -> Rc<Cell<StateBits>> {
+        let cell = Rc::new(Cell::new(StateBits::NONE));
+        LAST.with(|l| *l.borrow_mut() = Some(cell.clone()));
+        cell
+    }
+
+    pub(crate) fn flip(cell: &Cell<StateBits>, bit: StateBits, on: bool) {
+        let bits = cell.get();
+        cell.set(if on { bits.with(bit) } else { bits.without(bit) });
+    }
+
+    /// The cell the last `attach_style` made, if it made one.
+    pub(crate) fn take() -> Option<Rc<Cell<StateBits>>> {
+        LAST.with(|l| l.borrow_mut().take())
     }
 }
 
@@ -998,8 +1043,12 @@ fn attach_rules_dynamic<H: StyleServices>(
     // stale-handle panic is raised inside a non-unwinding C trampoline and
     // ABORTS the process. See `crate::callback_guard`.
     let alive = crate::callback_guard::ScopeAlive::current();
+    #[cfg(feature = "robot")]
+    let mirror = interaction_mirror::new_cell();
     let raw: Rc<dyn Fn(StateBits, bool)> = Rc::new(move |bit, on| {
         states.update(move |bits| if on { bits.with(bit) } else { bits.without(bit) });
+        #[cfg(feature = "robot")]
+        interaction_mirror::flip(&mirror, bit, on);
     });
     let setter = alive.wrap2(raw);
     backend.borrow_mut().attach_states(node, setter.clone());
@@ -1444,8 +1493,12 @@ fn attach_sheet_dynamic<H: StyleServices>(
     let setter: Rc<dyn Fn(StateBits, bool)> = match states {
         Some(sig) => {
             let alive = crate::callback_guard::ScopeAlive::current();
+            #[cfg(feature = "robot")]
+            let mirror = interaction_mirror::new_cell();
             let raw: Rc<dyn Fn(StateBits, bool)> = Rc::new(move |bit, on| {
                 sig.update(move |bits| if on { bits.with(bit) } else { bits.without(bit) });
+                #[cfg(feature = "robot")]
+                interaction_mirror::flip(&mirror, bit, on);
             });
             alive.wrap2(raw)
         }

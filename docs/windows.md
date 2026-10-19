@@ -2,11 +2,36 @@
 
 The Windows backend (`crates/backend/windows`, hosted by `crates/host/win32`)
 draws an app's views, text, icons and images itself, into the one top-level
-window. Five primitives are real Win32 controls: `button` (a `BUTTON`),
-`text_input` (an `EDIT` control), `toggle` (a checkbox), `slider` (a
-trackbar) and the activity indicator (a progress bar). Pressable views are
-painted like any other view. Layout, input, hit testing and the native
-controls work the same whichever renderer draws the rest.
+window. Six primitives are real Win32 controls: `button` (a `BUTTON`),
+`text_input` (an `EDIT` control), `text_area` (a multi-line `EDIT`),
+`toggle` (a checkbox), `slider` (a trackbar) and the activity indicator (a
+progress bar). Pressable views are painted like any other view. Layout,
+input, hit testing and the native controls work the same whichever renderer
+draws the rest.
+
+The native controls use Common Controls v6, so they are themed like any
+current Windows app. An executable normally asks for v6 in an embedded
+manifest; Windows builds carry none, so the backend activates the same
+manifest when it starts (`enable_visual_styles`), as WinForms does.
+
+Text fields take values written from code (clearing a field after a send),
+show `placeholder` (single-line only: a multi-line edit has no cue
+banner), toggle `secure` live, and report focus through `on_focus` and the
+`state focused` style. A field's `on_key_down` runs from the host's message
+pump before the app keyboard, so Enter-to-submit works and
+`PreventDefault` keeps the key out of the field. `on_blur` is a "may focus
+leave?" veto that Windows never asks, so it has no effect. A `text_area`
+grows with its content between `min_rows` and `max_rows`. Source:
+`lib.rs` (`create_text_input`, `create_text_area`), `field_keys.rs`.
+
+`flat_list` is a painted scroll view holding only the rows in and near the
+viewport. Each row is laid out on its own at the list's width and its item
+size, rows mount and recycle as the list scrolls, and a data change
+recycles them all. `on_end_reached` fires once each time a scroll view or
+list reaches its end. Source: `virtualizer.rs`.
+
+`open_url` hands the URL to the shell (`ShellExecuteW`): the default
+browser, or the registered handler for `mailto:` and other schemes.
 
 Mouse input over painted views lands on the host window, which hit-tests
 the scene (honouring `pointer_events`) and routes it the way every backend
@@ -19,8 +44,9 @@ Ctrl+wheel (zoom) ticks before any scroll view under it, and `on_hover`
 gets enter and leave. A precision touchpad pinch arrives as Ctrl+wheel.
 Style states follow the same chain: every view under the pointer is
 `hovered`, and a left press marks every view under it `pressed` until the
-release, wherever the release happens (CSS `:active`). `focused` is not
-driven yet. The `cursor` style is shown over painted views, inherited from
+release, wherever the release happens (CSS `:active`). `focused` lights on
+text fields, from the edit control's own focus notifications. The `cursor`
+style is shown over painted views, inherited from
 the nearest ancestor that sets one; Windows has no grab cursors, so `grab`
 and `grabbing` show the hand. Native controls (text fields, native buttons)
 keep their own cursor and their own hover and press drawing. Moving onto

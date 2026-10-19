@@ -29,7 +29,7 @@ Walk the element tree from an element: its children, or its parent (`null` at th
 
 ## get_state
 
-An element's own STATE, as a user would see it, with no help from the app: `{ value, checked, disabled, focused }`. `value` is a TextInput's text or a Slider's value; `checked` a Toggle's; `focused` a TextInput's. Fields the element doesn't have are omitted; a View/Text/Image returns `{}`.
+An element's own STATE, as a user would see it, with no help from the app: `{ value, checked, disabled, focused, hovered, pressed }`. `value` is a TextInput's text or a Slider's value; `checked` a Toggle's; `focused` a TextInput's. `hovered` / `pressed` are whether the element's `state hovered` / `state pressed` style is on; they are omitted on web (CSS owns hover there) and on elements whose style has no state variants. Fields the element doesn't have are omitted; a View/Text/Image returns `{}`.
 
 Robot actions on a disabled element fail with "refused: the element is disabled", the same way the control refuses a user.
 
@@ -75,6 +75,16 @@ On a Slider, each point's x across the track sets the value (0 = min, right edge
 ## drag_native
 
 Drags with REAL platform input along `points` (same coordinates as `drag`): down at the first point, moves, up at the last, through the toolkit's event path. The first point is checked like `tap_native`'s. Errors with "unsupported" where the backend can't synthesize input (iOS, Linux); use `drag` there.
+
+## pointer_native
+
+Real platform mouse input on an element, one `action` at a time:
+
+- `"hover"`: the pointer moves over the element's center with no button held. Drives `on_hover` and the `state hovered` style.
+- `"press"`: the primary button goes down on its center and stays down, so `get_state` can show `pressed: true`.
+- `"release"`: the button comes up at its center.
+
+The point is checked like `tap_native`'s. Some backends post their events (macOS), so the state can change a moment later: poll `get_state`. Errors with "unsupported" on touch platforms (iOS, Android) and Linux. On web the events reach `on_hover` handlers, but CSS `:hover` only follows a real pointer.
 
 ## type_text
 

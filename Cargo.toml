@@ -92,6 +92,7 @@ members = [
 
     # Dev mode — wire protocol, hot reload, dev server, app-side replayer.
     "crates/dev/wire",
+    "crates/dev/capability-coverage",
     "crates/dev/hot",
     "crates/dev/client",
     "crates/dev/server",

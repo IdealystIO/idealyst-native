@@ -70,6 +70,7 @@ impl WindowsBackend {
                     PointerStepPhase::Down => (WM_LBUTTONDOWN, MK_LBUTTON, pt),
                     PointerStepPhase::Move => (WM_MOUSEMOVE, MK_LBUTTON, pt),
                     PointerStepPhase::Up => (WM_LBUTTONUP, 0, pt),
+                    PointerStepPhase::Hover => (WM_MOUSEMOVE, 0, pt),
                 }
             })
             .collect();

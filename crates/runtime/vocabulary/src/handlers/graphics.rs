@@ -54,6 +54,8 @@ where
     );
     if let Some(style) = prim.style {
         attach_style(&backend, &node, style);
+        #[cfg(feature = "robot")]
+        crate::robot::link_interaction(&_robot);
     }
     {
         let b = backend.clone();

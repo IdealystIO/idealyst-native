@@ -264,8 +264,8 @@ web_glue::import! {
            const t = document.elementFromPoint(x, y); return t && (t === e || e.contains(t)) ? 1 : 0; }";
 
     /// One step of a synthesized primary-pointer gesture at the viewport
-    /// point `(x, y)`: `phase` 0 down, 1 move, 2 up. Returns 0 when there
-    /// is nothing at the down point.
+    /// point `(x, y)`: `phase` 0 down, 1 move, 2 up, 3 hover. Returns 0
+    /// when there is nothing at the down (or hover) point.
     ///
     /// Dispatched as a browser dispatches a touch: `pointerdown` +
     /// `mousedown` on the topmost element there, moves and the up to that
@@ -274,12 +274,32 @@ web_glue::import! {
     /// ancestor of the down and up targets. An untrusted `mousedown` runs
     /// no default action, so the focus a press gives a focusable target is
     /// given here, unless a listener prevented it.
+    ///
+    /// A hover is a mouse with no button held: `pointerout`/`mouseout` on
+    /// the last hovered element, `pointerleave`/`mouseleave` on each of its
+    /// ancestors the pointer left, `pointerover`/`mouseover` on the new
+    /// target, `pointerenter`/`mouseenter` on each ancestor it entered,
+    /// then `pointermove`/`mousemove` — the order a browser sends. Untrusted
+    /// events do not move CSS `:hover`; only real input does.
     fn js_pointer_step(phase: u32, x: f64, y: f64) -> u32 =
         "(phase, x, y) => { \
            const s = (globalThis.__idealystNativePointer ||= { down: null }); \
            const o = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, \
                        button: 0, buttons: phase === 2 ? 0 : 1, pointerId: 1, pointerType: 'touch', \
                        isPrimary: true, view: window, detail: 1 }; \
+           if (phase === 3) { \
+             const t = document.elementFromPoint(x, y); if (!t) return 0; \
+             const m = { ...o, buttons: 0, pointerType: 'mouse' }; \
+             const prev = s.hover && s.hover.isConnected ? s.hover : null; s.hover = t; \
+             const chain = (e) => { const a = []; for (; e; e = e.parentElement) a.push(e); return a; }; \
+             const was = chain(prev), now = chain(t); \
+             if (prev !== t) { \
+               if (prev) { prev.dispatchEvent(new PointerEvent('pointerout', m)); prev.dispatchEvent(new MouseEvent('mouseout', m)); } \
+               for (const e of was) if (!now.includes(e)) { e.dispatchEvent(new PointerEvent('pointerleave', { ...m, bubbles: false })); e.dispatchEvent(new MouseEvent('mouseleave', { ...m, bubbles: false })); } \
+               t.dispatchEvent(new PointerEvent('pointerover', m)); t.dispatchEvent(new MouseEvent('mouseover', m)); \
+               for (const e of now.slice().reverse()) if (!was.includes(e)) { e.dispatchEvent(new PointerEvent('pointerenter', { ...m, bubbles: false })); e.dispatchEvent(new MouseEvent('mouseenter', { ...m, bubbles: false })); } } \
+             t.dispatchEvent(new PointerEvent('pointermove', m)); t.dispatchEvent(new MouseEvent('mousemove', m)); \
+             return 1; } \
            if (phase === 0) { \
              const t = document.elementFromPoint(x, y); if (!t) return 0; s.down = t; \
              t.dispatchEvent(new PointerEvent('pointerdown', o)); \
@@ -320,6 +340,7 @@ pub(crate) fn native_pointer(
                 PointerStepPhase::Down => 0,
                 PointerStepPhase::Move => 1,
                 PointerStepPhase::Up => 2,
+                PointerStepPhase::Hover => 3,
             };
             if unsafe { js_pointer_step(phase, s.x as f64, s.y as f64) } == 0 {
                 return Err(format!("nothing in the page at ({}, {})", s.x, s.y));

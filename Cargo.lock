@@ -2432,6 +2432,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "capability-coverage"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "syn 2.0.117",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10569,6 +10578,7 @@ name = "robot-e2e"
 version = "1.5.2"
 dependencies = [
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 

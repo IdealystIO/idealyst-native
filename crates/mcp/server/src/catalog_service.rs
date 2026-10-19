@@ -375,6 +375,26 @@ pub struct RobotDragNative {
     pub app: Option<String>,
 }
 
+/// What `pointer_native` does with the mouse.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PointerNativeAction {
+    /// Move over the element with no button held.
+    Hover,
+    /// Press the primary button down on it and keep it down.
+    Press,
+    /// Lift the press at it.
+    Release,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RobotPointerNative {
+    pub element_id: u64,
+    pub action: PointerNativeAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RobotOpenLink {
     /// e.g. `myapp://items/42`.
@@ -1482,7 +1502,20 @@ impl CatalogService {
         self.robot_call("drag_native", app.as_deref(), body).await
     }
 
-    #[tool(description = "An element's user-visible state: value, checked, disabled, focused.")]
+    #[tool(description = "Hover, press (and hold) or release on an element with real platform input.")]
+    async fn pointer_native(
+        &self,
+        Parameters(args): Parameters<RobotPointerNative>,
+    ) -> Result<CallToolResult, McpError> {
+        let verb = match args.action {
+            PointerNativeAction::Hover => "hover_native",
+            PointerNativeAction::Press => "press_native",
+            PointerNativeAction::Release => "release_native",
+        };
+        self.robot_call(verb, args.app.as_deref(), json!({ "element_id": args.element_id })).await
+    }
+
+    #[tool(description = "An element's user-visible state: value, checked, disabled, focused, hovered, pressed.")]
     async fn get_state(
         &self,
         Parameters(args): Parameters<RobotElementId>,
@@ -6393,6 +6426,9 @@ mod tests {
         svc.drag_native(Parameters(RobotDragNative { element_id: 5, points: vec![[1.0, 2.0], [3.0, 4.0]], app: None }))
             .await
             .unwrap();
+        for action in [PointerNativeAction::Hover, PointerNativeAction::Press, PointerNativeAction::Release] {
+            svc.pointer_native(Parameters(RobotPointerNative { element_id: 6, action, app: None })).await.unwrap();
+        }
 
         let seen = seen.lock().unwrap().clone();
         let expected = vec![
@@ -6411,6 +6447,9 @@ mod tests {
             ("open_link", json!({ "url": "myapp://items/4" })),
             ("tap_native", json!({ "element_id": 5 })),
             ("drag_native", json!({ "element_id": 5, "points": [[1.0, 2.0], [3.0, 4.0]] })),
+            ("hover_native", json!({ "element_id": 6 })),
+            ("press_native", json!({ "element_id": 6 })),
+            ("release_native", json!({ "element_id": 6 })),
         ];
         let got: Vec<(&str, serde_json::Value)> = seen.iter().map(|(c, a)| (c.as_str(), a.clone())).collect();
         assert_eq!(got, expected);

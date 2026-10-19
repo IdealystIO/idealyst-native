@@ -97,6 +97,12 @@ If you're new to the codebase, read the docs in this order:
 
 ## Tooling
 
+- [`system-check.md`](./system-check.md). Checking every backend for missing
+  capabilities: the static coverage gate (`cargo test -p
+  capability-coverage`), what it flags and how to record a gap or a
+  not-applicable default; and the conformance app's System check screen,
+  which drives each capability with real input and adds a manual checklist
+  for what a robot can't judge.
 - [`hot-reload.md`](./hot-reload.md). What a save costs. `idealyst dev`
   sorts every save into three outcomes before doing any work — an overlay
   patch (literals only; no compiler), a subsecond hot patch (function

@@ -176,3 +176,41 @@ fn a_native_drag_injects_the_path_in_window_coordinates() {
     assert_eq!(robot.tap_native(&go), Err(RobotError::Native("no window".into())));
     robot.reset();
 }
+
+/// `hover_native` moves the pointer over the element's center with no
+/// button held; `press_native` / `release_native` split a tap so a test can
+/// check the pressed state between them. Same point checks as a tap, and no
+/// fallback where the backend can't inject (a touch platform can't hover).
+#[test]
+fn hover_and_split_press_inject_their_own_steps() {
+    let robot = Robot::new();
+    robot.reset();
+    let h = Harness::new();
+    let _r = fixture(&h, Rc::new(Cell::new(0)));
+    let got: Rc<RefCell<Vec<PointerStep>>> = Rc::default();
+    {
+        let got = got.clone();
+        *h.shared.native_input.borrow_mut() = Some(Rc::new(move |steps: &[PointerStep]| {
+            got.borrow_mut().extend_from_slice(steps);
+            Ok(())
+        }));
+    }
+    let go = find(&robot, "go");
+    assert_eq!(robot.hover_native(&go), Ok(()));
+    assert_eq!(robot.press_native(&go), Ok(()));
+    assert_eq!(robot.release_native(&go), Ok(()));
+    let at = |phase| PointerStep { phase, x: 70.0, y: 40.0 };
+    assert_eq!(
+        got.borrow().as_slice(),
+        &[at(PointerStepPhase::Hover), at(PointerStepPhase::Down), at(PointerStepPhase::Up)]
+    );
+    assert!(invoke_command("hover_native", &json!({ "element_id": go.id.0 })).is_ok(), "bridge verb");
+
+    h.shared.covered.borrow_mut().insert(1);
+    assert!(matches!(robot.hover_native(&go), Err(RobotError::Covered { action: "hover_native", .. })));
+    h.shared.covered.borrow_mut().clear();
+
+    *h.shared.native_input.borrow_mut() = None;
+    assert_eq!(robot.hover_native(&go), Err(RobotError::Unsupported("hover_native")));
+    assert_eq!(robot.press_native(&go), Err(RobotError::Unsupported("press_native")));
+}

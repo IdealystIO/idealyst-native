@@ -264,7 +264,7 @@ pub use assets::{
 };
 pub use host::{
     announce, color_scheme, install_announcer, install_current_color_scheme,
-    install_current_platform, install_fullscreen_setter, install_url_opener, open_url, platform,
+    can_open_urls, install_current_platform, install_fullscreen_setter, install_url_opener, open_url, platform,
     set_fullscreen, ColorScheme, Platform, Screenshot, VirtualizerCallbacks,
 };
 pub use accessibility::{

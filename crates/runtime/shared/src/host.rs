@@ -366,6 +366,14 @@ pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
     URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
 }
 
+/// Whether the active backend installed a URL opener — i.e. whether
+/// [`open_url`] does anything here. For conformance checks (a backend that
+/// forgot `AppEnvOps::url_opener` silently drops every external link);
+/// app code just calls `open_url`.
+pub fn can_open_urls() -> bool {
+    URL_OPENER.with(|cell| cell.borrow().is_some())
+}
+
 runtime_tls::thread_local! {
     static FULLSCREEN_SETTER: std::cell::RefCell<Option<Rc<dyn Fn(bool)>>> =
         const { std::cell::RefCell::new(None) };
@@ -607,6 +615,15 @@ mod tests {
 
     /// `open_url` must route through whatever opener was installed for
     /// the active backend, passing the URL through verbatim.
+    #[test]
+    fn can_open_urls_reports_whether_an_opener_is_installed() {
+        install_url_opener(None);
+        assert!(!can_open_urls());
+        install_url_opener(Some(Rc::new(|_: &str| {})));
+        assert!(can_open_urls());
+        install_url_opener(None);
+    }
+
     #[test]
     fn open_url_dispatches_to_installed_opener() {
         let seen = Rc::new(RefCell::new(Vec::<String>::new()));

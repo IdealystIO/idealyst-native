@@ -1,0 +1,649 @@
+# Capability coverage: every default-bodied `caps::*Ops` method that some
+# backend implements must be implemented by each checked backend, or be
+# listed here. See `src/lib.rs` for the rule.
+#
+#   status = "na"   the default is right for that backend (with the reason)
+#   status = "gap"  missing; implement it and delete the backend from the list
+#
+# `cargo run -p capability-coverage` prints the matrix.
+
+caps = "crates/runtime/vocabulary/src/caps"
+
+[[backend]]
+name = "web"
+src = "crates/backend/web/src"
+
+[[backend]]
+name = "ssr"
+src = "crates/backend/ssr/src"
+
+[[backend]]
+name = "macos"
+src = "crates/backend/macos/src"
+
+[[backend]]
+name = "ios"
+src = "crates/backend/ios/mobile/src"
+
+[[backend]]
+name = "android"
+src = "crates/backend/android/mobile/src"
+
+[[backend]]
+name = "linux"
+src = "crates/backend/linux/src"
+
+[[backend]]
+name = "windows"
+src = "crates/backend/windows/src"
+
+[[backend]]
+name = "gpu"
+src = "crates/gpu-backend/engine/src"
+
+[[backend]]
+name = "terminal"
+src = "crates/backend/terminal/src"
+
+[[backend]]
+name = "cpu"
+src = "crates/backend/cpu/src"
+
+# ===========================================================================
+# Not applicable: web / DOM-only hooks. Natives apply styles, text and
+# layout directly; these exist for the browser's CSS layer, the JS fast
+# paths and SSR hydration.
+# ===========================================================================
+
+[[allow]]
+method = "BatchOps::*"
+backends = ["*"]
+except = ["web"]
+status = "na"
+reason = "web wire batching: natives apply ops directly"
+
+[[allow]]
+method = "DocumentOps::*"
+backends = ["*"]
+except = ["web", "ssr"]
+status = "na"
+reason = "HTML attributes / raw CSS: DOM only"
+
+[[allow]]
+method = "StyleOps::*"
+backends = ["*"]
+except = ["web", "ssr"]
+status = "na"
+reason = "CSS-layer hooks (preminted classes, tokens as CSS variables, container contexts, JS class bindings); natives resolve StyleRules per node. Real native StyleOps gaps are listed by exact method below"
+
+[[allow]]
+method = "TextOps::*"
+backends = ["*"]
+except = ["web", "ssr"]
+status = "na"
+reason = "JS text-binding fast path; natives update text through update_text. Real native TextOps gaps are listed by exact method below"
+
+[[allow]]
+method = "LifecycleOps::*"
+backends = ["*"]
+except = ["web", "ssr"]
+status = "na"
+reason = "SSR hydration / lazy-chunk annotations. Native layout-pass gaps are listed by exact method below"
+
+[[allow]]
+method = "AppEnvOps::set_page_metadata"
+backends = ["*"]
+except = ["ssr"]
+status = "na"
+reason = "document <head> metadata is SSR output"
+
+[[allow]]
+method = "AppEnvOps::set_scrollbar_theme"
+backends = ["*"]
+except = ["web", "ssr"]
+status = "na"
+reason = "CSS scrollbar colors"
+
+[[allow]]
+method = "LinkOps::update_link_url"
+backends = ["*"]
+except = ["web"]
+status = "na"
+reason = "a link's url is the web href; natives navigate through on_activate"
+
+[[allow]]
+method = "A11yOps::dump_accessibility_tree"
+backends = ["*"]
+except = ["gpu"]
+status = "na"
+reason = "a self-drawn backend exports its own semantics tree; native toolkits and the DOM own theirs"
+
+[[allow]]
+method = "ScrollOps::apply_scroll_view_always_bounce"
+backends = ["*"]
+except = ["ios"]
+status = "na"
+reason = "UIScrollView alwaysBounce*: UIKit only"
+
+[[allow]]
+method = "ScrollOps::apply_virtualizer_safe_area_inset"
+backends = ["*"]
+except = ["ios"]
+status = "na"
+reason = "UICollectionView content inset adjustment: UIKit only"
+
+[[allow]]
+method = "ScrollOps::apply_scroll_view_bounces"
+backends = ["*"]
+except = ["web", "ios"]
+status = "na"
+reason = "trait docs: the default is right for scrollers that do not overscroll"
+
+[[allow]]
+method = "IntrospectionOps::device_frame"
+backends = ["*"]
+except = ["android"]
+status = "na"
+reason = "physical-pixel frame for adb input injection; other platforms inject through native_pointer"
+
+[[allow]]
+method = "IntrospectionOps::note_introspection_root"
+backends = ["*"]
+except = ["web", "linux"]
+status = "na"
+reason = "other backends find the framework boundary from their own node registry"
+
+[[allow]]
+method = "PresenceOps::create_presence_placeholder"
+backends = ["*"]
+except = ["macos"]
+status = "na"
+reason = "trait docs: override only to pick a different native view class (macOS deep hit-test view)"
+
+[[allow]]
+method = "SafeAreaOps::apply_safe_area_padding"
+backends = ["macos", "linux", "windows"]
+status = "na"
+reason = "desktop windows have no safe area"
+
+[[allow]]
+method = "SafeAreaOps::apply_scroll_view_safe_area_inset"
+backends = ["macos", "linux", "windows"]
+status = "na"
+reason = "desktop windows have no safe area"
+
+[[allow]]
+method = "SafeAreaOps::mark_keyboard_avoiding"
+backends = ["macos", "linux", "windows"]
+status = "na"
+reason = "trait docs: no soft keyboard"
+
+[[allow]]
+method = "TextInputOps::update_text_input_keyboard"
+backends = ["macos", "linux", "windows"]
+status = "na"
+reason = "trait docs: no soft keyboard"
+
+[[allow]]
+method = "InputOps::claim_touch"
+backends = ["macos", "linux", "windows", "gpu"]
+status = "na"
+reason = "no competing native touch consumers (mouse input; gpu routes its own touches)"
+
+[[allow]]
+method = "InputOps::install_hover_handler"
+backends = ["ios", "android"]
+status = "na"
+reason = "touch-first: no hover pointer (StyleOps::attach_states docs record the same call)"
+
+[[allow]]
+method = "InputOps::install_wheel_handler"
+backends = ["ios", "android"]
+status = "na"
+reason = "touch-first: trackpad scrolling arrives as a pan"
+
+[[allow]]
+method = "IntrospectionOps::capture_screenshot"
+backends = ["web"]
+status = "na"
+reason = "the browser harness (Playwright) takes web screenshots"
+
+[[allow]]
+method = "IntrospectionOps::supports_screenshot"
+backends = ["web"]
+status = "na"
+reason = "the browser harness (Playwright) takes web screenshots"
+
+[[allow]]
+method = "LifecycleOps::run_layout"
+backends = ["web"]
+status = "na"
+reason = "the browser lays out"
+
+[[allow]]
+method = "LifecycleOps::schedule_layout_pass"
+backends = ["web"]
+status = "na"
+reason = "the browser lays out"
+
+[[allow]]
+method = "LifecycleOps::annotate_nav_outlet"
+backends = ["web"]
+status = "na"
+reason = "trait docs: SSR marks outlets for hydration; live backends have nothing to annotate"
+
+[[allow]]
+method = "LifecycleOps::renders_lazy_chunks"
+backends = ["web"]
+status = "na"
+reason = "only SSR stops lazy boundaries at their placeholder"
+
+[[allow]]
+method = "StyleOps::install_theme_palettes"
+backends = ["web"]
+status = "na"
+reason = "trait docs: only static rendering ships inactive palettes; web re-publishes tokens on theme swap"
+
+[[allow]]
+method = "DocumentOps::register_raw_css"
+backends = ["web"]
+status = "gap"
+reason = "verify: a client-rendered web app may drop raw CSS that SSR would have shipped"
+
+# ===========================================================================
+# Partial backends.
+# ===========================================================================
+
+[[allow]]
+method = "*"
+backends = ["ssr"]
+status = "na"
+reason = "static HTML render: no input, no updates after render, no handles or introspection. Exceptions are listed by exact method"
+
+[[allow]]
+method = "A11yOps::update_accessibility"
+backends = ["ssr"]
+status = "gap"
+reason = "server HTML should carry the ARIA attributes the web backend sets"
+
+[[allow]]
+method = "*"
+backends = ["terminal"]
+status = "gap"
+reason = "partial backend, not audited method by method: a new terminal gap does not fail this check until it is"
+
+[[allow]]
+method = "*"
+backends = ["cpu"]
+status = "gap"
+reason = "partial backend (software rasterizer), not audited method by method: a new cpu gap does not fail this check until it is"
+
+# ===========================================================================
+# Gaps: the feature is missing. Implement it, then remove the backend here.
+# ===========================================================================
+
+[[allow]]
+method = "A11yOps::update_accessibility"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "screen readers see nothing"
+
+[[allow]]
+method = "A11yOps::announce_for_accessibility"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "live-region announcements are dropped"
+
+[[allow]]
+method = "ActivityIndicatorOps::update_activity_indicator_size"
+backends = ["macos", "ios", "android", "linux", "windows", "gpu"]
+status = "gap"
+reason = "a live size source is ignored after creation"
+
+[[allow]]
+method = "AppEnvOps::url_opener"
+backends = ["linux", "gpu"]
+status = "gap"
+reason = "open_url (external links) does nothing"
+
+[[allow]]
+method = "AppEnvOps::fullscreen_setter"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "set_fullscreen does nothing"
+
+[[allow]]
+method = "AppEnvOps::set_app_background"
+backends = ["ios", "gpu"]
+status = "gap"
+reason = "the surface behind the tree is not themed"
+
+[[allow]]
+method = "AssetOps::register_typeface"
+backends = ["gpu"]
+status = "gap"
+reason = "custom fonts are not registered"
+
+[[allow]]
+method = "AssetOps::unregister_asset"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "assets are never released"
+
+[[allow]]
+method = "AssetOps::unregister_typeface"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "typefaces are never released"
+
+[[allow]]
+method = "ButtonOps::make_button_handle"
+backends = ["windows", "gpu"]
+status = "gap"
+reason = "button refs are inert"
+
+[[allow]]
+method = "ButtonOps::update_button_label"
+backends = ["web", "android", "gpu"]
+status = "gap"
+reason = "verify: a reactive label may not update"
+
+[[allow]]
+method = "ExternalOps::release_external"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "external primitive state is not torn down"
+
+[[allow]]
+method = "GraphicsOps::make_graphics_handle"
+backends = ["macos", "ios", "linux", "windows"]
+status = "gap"
+reason = "graphics refs are inert"
+
+[[allow]]
+method = "GraphicsOps::release_graphics"
+backends = ["macos", "ios", "linux", "windows", "gpu"]
+status = "gap"
+reason = "verify: surface teardown may only happen on node removal"
+
+[[allow]]
+method = "GridOps::create_virtual_grid"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "virtual_grid renders a placeholder"
+
+[[allow]]
+method = "GridOps::make_virtual_grid_handle"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "virtual_grid missing"
+
+[[allow]]
+method = "GridOps::release_virtual_grid"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "virtual_grid missing"
+
+[[allow]]
+method = "GridOps::virtual_grid_data_changed"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "virtual_grid missing"
+
+[[allow]]
+method = "IconOps::animate_icon_stroke"
+backends = ["macos", "linux", "windows"]
+status = "gap"
+reason = "icon stroke animation does nothing"
+
+[[allow]]
+method = "IconOps::update_icon_stroke"
+backends = ["macos", "linux", "windows"]
+status = "gap"
+reason = "a live stroke width is ignored"
+
+[[allow]]
+method = "IconOps::update_icon_data"
+backends = ["macos", "ios", "android", "gpu"]
+status = "gap"
+reason = "swapping an icon reactively keeps the old glyph"
+
+[[allow]]
+method = "IconOps::make_icon_handle"
+backends = ["web", "macos", "android", "linux", "windows", "gpu"]
+status = "gap"
+reason = "icon refs are inert"
+
+[[allow]]
+method = "ImageOps::update_image_alt"
+backends = ["macos", "ios", "android", "windows"]
+status = "gap"
+reason = "a live alt text is not exposed to accessibility"
+
+[[allow]]
+method = "InputOps::claim_touch"
+backends = ["web"]
+status = "gap"
+reason = "verify: mobile browsers' scroll containers compete for touches"
+
+[[allow]]
+method = "InputOps::install_file_drop_handler"
+backends = ["ios", "android", "gpu"]
+status = "gap"
+reason = "on_file_drop is inert (iPadOS and Android support drag and drop)"
+
+[[allow]]
+method = "InputOps::install_hover_handler"
+backends = ["gpu"]
+status = "gap"
+reason = "on_hover is inert"
+
+[[allow]]
+method = "InputOps::install_wheel_handler"
+backends = ["linux", "gpu"]
+status = "gap"
+reason = "on_wheel is inert"
+
+[[allow]]
+method = "InputOps::mark_preserves_focus"
+backends = ["android", "linux", "windows", "gpu"]
+status = "gap"
+reason = "a press inside a combobox blurs its text input"
+
+[[allow]]
+method = "IntrospectionOps::capture_screenshot"
+backends = ["gpu"]
+status = "gap"
+reason = "robot screenshot unsupported"
+
+[[allow]]
+method = "IntrospectionOps::supports_screenshot"
+backends = ["gpu"]
+status = "gap"
+reason = "robot screenshot unsupported"
+
+[[allow]]
+method = "IntrospectionOps::hit_contains"
+backends = ["android", "linux", "gpu"]
+status = "gap"
+reason = "robot tap_native cannot confirm the hit"
+
+[[allow]]
+method = "IntrospectionOps::introspect_native"
+backends = ["ios", "android", "gpu"]
+status = "gap"
+reason = "native parity reads are stubs (deliberately deferred)"
+
+[[allow]]
+method = "IntrospectionOps::supports_native_introspection"
+backends = ["ios", "android", "gpu"]
+status = "gap"
+reason = "native parity reads are stubs (deliberately deferred)"
+
+[[allow]]
+method = "IntrospectionOps::is_shown"
+backends = ["gpu"]
+status = "gap"
+reason = "robot visibility checks unsupported"
+
+[[allow]]
+method = "IntrospectionOps::native_pointer"
+backends = ["ios", "linux", "gpu"]
+status = "gap"
+reason = "robot tap_native falls back to actions (Linux needs XTest)"
+
+[[allow]]
+method = "LifecycleOps::run_layout"
+backends = ["macos", "windows", "gpu"]
+status = "gap"
+reason = "verify: synchronous layout for runtime-server shells"
+
+[[allow]]
+method = "LifecycleOps::schedule_layout_pass"
+backends = ["linux", "windows", "gpu"]
+status = "gap"
+reason = "verify: navigator driver effects request a layout pass"
+
+[[allow]]
+method = "LinkOps::make_link_handle"
+backends = ["macos", "ios", "android", "linux", "windows", "gpu"]
+status = "gap"
+reason = "link refs are inert"
+
+[[allow]]
+method = "PortalOps::make_portal_handle"
+backends = ["macos", "ios", "android", "linux", "windows", "gpu"]
+status = "gap"
+reason = "portal refs are inert"
+
+[[allow]]
+method = "PortalOps::release_portal"
+backends = ["gpu"]
+status = "gap"
+reason = "portal state is not torn down"
+
+[[allow]]
+method = "PortalOps::set_portal_hidden"
+backends = ["web", "ios", "android", "gpu"]
+status = "gap"
+reason = "verify: overlays on an inactive navigator screen may stay visible"
+
+[[allow]]
+method = "PresenceOps::apply_presence"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "enter/exit transitions snap"
+
+[[allow]]
+method = "PressableOps::make_pressable_handle"
+backends = ["windows", "gpu"]
+status = "gap"
+reason = "pressable refs are inert"
+
+[[allow]]
+method = "SafeAreaOps::apply_safe_area_padding"
+backends = ["web"]
+status = "gap"
+reason = "verify: mobile browsers expose env(safe-area-inset-*)"
+
+[[allow]]
+method = "SafeAreaOps::apply_scroll_view_safe_area_inset"
+backends = ["web"]
+status = "gap"
+reason = "verify: mobile browsers expose env(safe-area-inset-*)"
+
+[[allow]]
+method = "SafeAreaOps::mark_keyboard_avoiding"
+backends = ["gpu"]
+status = "gap"
+reason = "the gpu backend also runs on phones"
+
+[[allow]]
+method = "ScrollOps::make_scroll_view_handle"
+backends = ["gpu"]
+status = "gap"
+reason = "scroll_to and other scroll refs are inert"
+
+[[allow]]
+method = "ScrollOps::node_scroll"
+backends = ["android", "gpu"]
+status = "gap"
+reason = "robot scroll state unsupported"
+
+[[allow]]
+method = "ScrollOps::set_node_scroll"
+backends = ["android", "gpu"]
+status = "gap"
+reason = "robot scroll unsupported"
+
+[[allow]]
+method = "ScrollOps::observe_scroll_end"
+backends = ["android", "linux", "gpu"]
+status = "gap"
+reason = "on_end_reached never fires (infinite scroll)"
+
+[[allow]]
+method = "SliderOps::update_slider_value"
+backends = ["windows"]
+status = "gap"
+reason = "a slider bound to a signal ignores changes from code"
+
+[[allow]]
+method = "StyleOps::on_node_unstyled"
+backends = ["macos", "ios"]
+status = "gap"
+reason = "verify: per-node style state may not be freed"
+
+[[allow]]
+method = "TextInputOps::make_text_input_handle"
+backends = ["gpu"]
+status = "gap"
+reason = "text input refs (focus, select) are inert"
+
+[[allow]]
+method = "TextInputOps::make_text_area_handle"
+backends = ["gpu"]
+status = "gap"
+reason = "text area refs are inert"
+
+[[allow]]
+method = "TextInputOps::set_text_input_focus_handler"
+backends = ["ios", "android", "gpu"]
+status = "gap"
+reason = "on_focus never fires"
+
+[[allow]]
+method = "TextInputOps::update_text_input_placeholder"
+backends = ["ios", "android", "gpu"]
+status = "gap"
+reason = "a live placeholder is ignored"
+
+[[allow]]
+method = "TextInputOps::update_text_input_keyboard"
+backends = ["gpu"]
+status = "gap"
+reason = "the gpu backend also runs on phones"
+
+[[allow]]
+method = "TextOps::create_styled_text"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "styled runs render as plain text"
+
+[[allow]]
+method = "TextOps::update_styled_text"
+backends = ["linux", "windows"]
+status = "gap"
+reason = "styled runs render as plain text"
+
+[[allow]]
+method = "VirtualizerOps::make_virtualizer_handle"
+backends = ["linux", "gpu"]
+status = "gap"
+reason = "scroll_to_index and other list refs are inert"
+
+[[allow]]
+method = "VirtualizerOps::release_virtualizer"
+backends = ["android", "gpu"]
+status = "gap"
+reason = "queued platform events can reach freed row scopes"

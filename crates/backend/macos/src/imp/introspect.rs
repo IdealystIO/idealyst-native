@@ -162,6 +162,15 @@ fn read_view(view: &Retained<NSView>) -> NativeNode {
             node.set(keys::TEXT_COLOR, nscolor_rgba(unsafe { &*tc }).map(NativeValue::Color));
         }
         read_font(view, &mut node);
+    } else if unsafe { msg_send![&**view, isKindOfClass: class!(NSTextView)] } {
+        // A `text_area`'s editor: the text lives in the NSTextView inside
+        // the chrome container's scroll view.
+        node.role = Some("text".to_string());
+        let s: *mut NSString = unsafe { msg_send![&**view, string] };
+        if !s.is_null() {
+            node.set(keys::TEXT, Some(NativeValue::Text(unsafe { &*s }.to_string())));
+        }
+        read_font(view, &mut node);
     }
 
     node

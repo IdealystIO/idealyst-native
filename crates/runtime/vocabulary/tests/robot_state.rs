@@ -400,3 +400,68 @@ fn regression_count_elements_verb_honors_find_criteria() {
     assert_eq!(count(json!({})).unwrap(), listed(json!({})).to_string());
     assert!(count(json!({ "kind": "Buton" })).is_err(), "an unknown kind is an error");
 }
+
+/// A sheet with `hovered` / `pressed` state variants, so an event-driven
+/// backend (the mock: `handles_states_natively` is false) is handed a
+/// state setter for the node.
+fn stateful_sheet() -> Rc<runtime_shared::StyleSheet> {
+    use runtime_shared::{Length, StyleRules, StyleSheet};
+    let w = |px: f32| StyleRules { width: Some(Length::Px(px).into()), ..Default::default() };
+    Rc::new(
+        StyleSheet::new(move |_| w(10.0))
+            .variant("__state_hovered", "on", move |_| w(20.0))
+            .variant("__state_pressed", "on", move |_| w(30.0)),
+    )
+}
+
+/// The robot could not see hover or press at all, so no E2E test could
+/// check that a backend drives `state hovered` / `state pressed` — the
+/// Windows backend shipped with neither and nothing noticed. Element state
+/// now reports what the node's style state machine holds, as the backend
+/// flips it; a node whose sheet has no state variants reports none (a
+/// static sheet attached after a stateful one must not inherit its cell).
+#[test]
+fn regression_element_state_reports_hover_and_press() {
+    use runtime_shared::{StateBits, StyleRules};
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let plain = Rc::new(runtime_shared::StyleSheet::new(|_| StyleRules::default()));
+    let _realized = h.world.enter(|| {
+        realize(
+            &h.backend,
+            &h.registry,
+            view()
+                .child(pressable(|| {}).test_id("p").style(stateful_sheet()).build())
+                .child(button().test_id("b").label("Go").on_press(|| {}).style(stateful_sheet()).build())
+                .child(view().test_id("plain").style(plain).build())
+                .build(),
+        )
+    });
+    let flags = |id: &str| {
+        let s = state(&robot, id);
+        (s.hovered, s.pressed)
+    };
+    assert_eq!(flags("p"), (Some(false), Some(false)));
+    assert_eq!(flags("b"), (Some(false), Some(false)));
+    let plain_state = robot.state(&robot.find(Query::test_id("plain")).unwrap()).unwrap();
+    assert!(plain_state.is_none_or(|s| s.hovered.is_none()), "no state variants, nothing to report");
+
+    // The backend flips bits the way native input would.
+    let setters: Vec<_> = (0..2).map(|i| h.state_setter(i)).collect();
+    h.world.enter(|| setters[0](StateBits::HOVERED, true));
+    assert_eq!(flags("p"), (Some(true), Some(false)));
+    assert_eq!(flags("b"), (Some(false), Some(false)), "only the hovered node");
+    h.world.enter(|| setters[0](StateBits::PRESSED, true));
+    assert_eq!(flags("p"), (Some(true), Some(true)));
+    h.world.enter(|| setters[0](StateBits::PRESSED, false));
+    h.world.enter(|| setters[0](StateBits::HOVERED, false));
+    assert_eq!(flags("p"), (Some(false), Some(false)));
+    h.world.enter(|| setters[1](StateBits::PRESSED, true));
+    assert_eq!(flags("b"), (Some(false), Some(true)));
+
+    // And on the wire.
+    let el = robot.find(Query::test_id("b")).unwrap();
+    let json = invoke_command("get_state", &json!({ "element_id": el.id.0 })).unwrap();
+    assert!(json.contains("\"pressed\":true") && json.contains("\"hovered\":false"), "{json}");
+}
