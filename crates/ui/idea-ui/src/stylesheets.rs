@@ -2976,7 +2976,6 @@ stylesheet! {
         base(t) {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
-            justify_content: JustifyContent::SpaceBetween,
             padding_vertical: t.spacing.md(),
             padding_horizontal: t.spacing.lg(),
             gap: t.spacing.sm(),
@@ -2984,6 +2983,20 @@ stylesheet! {
             font_size: 14.0,
             font_weight: FontWeight::SemiBold,
             text_align: TextAlign::Left,
+        }
+        // Where the chevron sits. `end`: title left, chevron pushed right.
+        // `start`: chevron then title, packed left — the tree convention.
+        variant chevron {
+            #[default]
+            end(_t)   { justify_content: JustifyContent::SpaceBetween }
+            start(_t) { justify_content: JustifyContent::FlexStart }
+        }
+        // `beside`: the header shares its row with a `trailing` element
+        // (outside the toggle), so it takes the row's spare width.
+        variant trailing {
+            #[default]
+            none(_t)   { }
+            beside(_t) { flex_grow: 1.0, min_width: 0.0 }
         }
         state hovered(t) {
             background: t.color.surface_alt(),
@@ -2995,6 +3008,32 @@ stylesheet! {
         transitions {
             background: 150ms EaseOut,
             color: 250ms EaseInOut,
+        }
+    }
+}
+
+stylesheet! {
+    /// A custom `header` element's box inside the toggle: takes the spare
+    /// width so a chevron at the end stays at the end, and may shrink.
+    pub CollapsibleHeaderContent<IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 1.0,
+            min_width: 0.0,
+        }
+    }
+}
+
+stylesheet! {
+    /// The header row when a `trailing` element sits beside the toggle:
+    /// the toggle (growing) then the trailing element, which gets the
+    /// header's end padding since the toggle's padding no longer reaches
+    /// the row's edge.
+    pub CollapsibleHeaderRow<IdeaThemeRef> {
+        base(t) {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            gap: t.spacing.sm(),
+            padding_right: t.spacing.lg(),
         }
     }
 }

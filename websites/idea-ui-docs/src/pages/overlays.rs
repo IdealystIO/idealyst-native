@@ -512,6 +512,9 @@ pub fn collapsible() -> Element {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "title",       ty: "Reactive<String>",      desc: "Header text. Static literal, Signal<String>, or rx!(...)." },
+                    Prop { name: "header",      ty: "Option<Element>",       desc: "Custom header content in place of title (an icon, a name over a count). Inside the toggle." },
+                    Prop { name: "trailing",    ty: "Option<Element>",       desc: "Element at the end of the header row, outside the toggle — its presses don't open or close the body (an IconButton)." },
+                    Prop { name: "chevron_side", ty: "CollapsibleChevronSide", desc: "End (default) — chevron pushed to the end. Start — chevron first, the tree convention." },
                     Prop { name: "value",       ty: "Signal<bool>",          desc: "Controlled open state. The host owns this — pass signal(false) for default-closed." },
                     Prop { name: "on_change",   ty: "Rc<dyn Fn(bool)>",      desc: "Fires on header click with the requested new state. Wire Rc::new(move |v| value.set(v)) for standard toggle." },
                     Prop { name: "transition",  ty: "CollapsibleTransition", desc: "Measured (default) — animates MaxHeight 0↔measured-content-height. Snap — instant." },

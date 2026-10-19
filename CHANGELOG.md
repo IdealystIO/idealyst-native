@@ -625,6 +625,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Collapsible takes a custom header, a trailing element and a chevron
+  side** (`idea-ui`). `header = Some(el)` replaces the title inside the
+  toggle (an icon, a name over a count). `trailing = Some(el)` sits at the
+  end of the header row OUTSIDE the toggle, so its presses don't open or
+  close the body (an "open in new tab" `IconButton`).
+  `chevron_side = CollapsibleChevronSide::Start` puts the chevron first;
+  `End` stays the default.
+
 - **Menus can cap their width, and SubMenu entries carry a leading or
   trailing element** (`idea-ui`). `Menu(max_width = Some(px))` and
   `SubMenu(max_width = Some(px))` cap the panel, and labels longer than

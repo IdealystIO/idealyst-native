@@ -57,7 +57,7 @@ use std::time::Duration;
 use crate::stylesheets::{
     AccordionContainer, AccordionItemSeparator, CollapsibleBody, CollapsibleBodyAnimated,
     CollapsibleBodyAnimatedOpen, CollapsibleBodyOpen, CollapsibleChevron, CollapsibleContainer,
-    CollapsibleHeader,
+    CollapsibleHeader, CollapsibleHeaderContent, CollapsibleHeaderRow,
 };
 
 // =============================================================================
@@ -119,6 +119,17 @@ pub enum CollapsibleTransition {
     Measured,
 }
 
+/// Which end of a [`Collapsible`]'s header the disclosure chevron sits at.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
+pub enum CollapsibleChevronSide {
+    /// Chevron first, then the header content — the tree / disclosure
+    /// list convention.
+    Start,
+    /// Header content, then the chevron pushed to the end.
+    #[default]
+    End,
+}
+
 // =============================================================================
 // Collapsible
 // =============================================================================
@@ -138,6 +149,19 @@ pub struct CollapsibleProps {
     /// a literal, a `Signal<String>`, or `rx!(...)` all work.
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub title: Reactive<String>,
+    /// Custom header content, in place of `title` — an icon, a name over a
+    /// count. Inside the toggle: pressing it opens and closes the body.
+    /// `None` renders `title`.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub header: Option<Element>,
+    /// An element at the end of the header row, OUTSIDE the toggle, so its
+    /// own presses don't open or close the body — an "open in new tab"
+    /// `IconButton`, a menu trigger.
+    #[cfg_attr(feature = "docs", doc_control(skip))]
+    pub trailing: Option<Element>,
+    /// Which end of the header the chevron sits at. Default `End`.
+    #[prop(static)]
+    pub chevron_side: CollapsibleChevronSide,
     /// Controlled open state. Default `false`. The host should pass
     /// its own signal so external triggers (an "Expand all" button,
     /// a URL param) can drive it.
@@ -166,6 +190,9 @@ impl Default for CollapsibleProps {
     fn default() -> Self {
         Self {
             title: Reactive::Static(String::new()),
+            header: None,
+            trailing: None,
+            chevron_side: CollapsibleChevronSide::End,
             value: runtime_core::signal(false),
             on_change: Rc::new(|_| {}),
             transition: Reactive::Static(CollapsibleTransition::default()),
@@ -180,7 +207,13 @@ impl Default for CollapsibleProps {
 #[component(children)]
 pub fn Collapsible(props: CollapsibleProps) -> Element {
     let container = CollapsibleContainer();
-    let header = collapsible_header(props.title, props.value, props.on_change);
+    let header = collapsible_header(
+        HeaderContent::new(props.title, props.header),
+        props.chevron_side,
+        props.trailing,
+        props.value,
+        props.on_change,
+    );
     // TODO(reactive-sweep): route `transition`/`duration_ms` into the body. Both
     // are STRUCTURAL/animation inputs — `transition` selects the Snap-vs-Measured
     // body construction (a tree-shape branch) and `duration_ms` feeds the tween
@@ -202,12 +235,35 @@ pub fn Collapsible(props: CollapsibleProps) -> Element {
     }
 }
 
-/// The clickable header — title on the left, animated chevron on the
-/// right. Click toggles via `on_change` (which the host typically
-/// wires straight back to the `value` signal). Hover highlights via
-/// the `:hovered` state on the framework-side stylesheet.
+/// What the header toggle shows besides the chevron: the `title` text, or
+/// an author-built `header` element in its place.
+enum HeaderContent {
+    Title(Reactive<String>),
+    Custom(Element),
+}
+
+impl HeaderContent {
+    fn new(title: Reactive<String>, header: Option<Element>) -> Self {
+        match header {
+            Some(el) => HeaderContent::Custom(el),
+            None => HeaderContent::Title(title),
+        }
+    }
+}
+
+/// The header: a toggle (content + animated chevron, on the side
+/// `chevron_side` names) and, when given, a `trailing` element beside it.
+/// Click toggles via `on_change` (which the host typically wires straight
+/// back to the `value` signal). Hover highlights via the `:hovered` state on
+/// the framework-side stylesheet.
+///
+/// `trailing` is a SIBLING of the toggle, not inside it: a pressable inside
+/// a pressable is not a reliable press target on every backend (a button
+/// within a button on web), and its press must not open the body.
 fn collapsible_header(
-    title: Reactive<String>,
+    content: HeaderContent,
+    chevron_side: CollapsibleChevronSide,
+    trailing: Option<Element>,
     value: Signal<bool>,
     on_change: Rc<dyn Fn(bool)>,
 ) -> Element {
@@ -220,22 +276,55 @@ fn collapsible_header(
         }
     };
 
-    // Header style is shared between open/closed states (the chevron
-    // carries the open indicator). One reactive style closure keeps
-    // hover behavior intact.
-    let header_style = || StyleApplication::new(CollapsibleHeader::sheet());
+    // The title is a bare `text` straight in the toggle (the header sheet
+    // carries its type); a custom header gets a growing box so a chevron at
+    // the end stays at the end.
+    let content = match content {
+        HeaderContent::Title(title) => text(title).into_element(),
+        HeaderContent::Custom(el) => {
+            let content_style = || StyleApplication::new(CollapsibleHeaderContent::sheet());
+            ui! { view(style = content_style) { el } }
+        }
+    };
+    // Received elements placed in order — `pressable` is a builder, not a
+    // `ui!` tag.
+    let row = match chevron_side {
+        CollapsibleChevronSide::Start => vec![chevron, content],
+        CollapsibleChevronSide::End => vec![content, chevron],
+    };
 
-    let title_text = text(title).into_element();
-    let row = vec![title_text, chevron];
+    let chevron_variant = match chevron_side {
+        CollapsibleChevronSide::Start => "start",
+        CollapsibleChevronSide::End => "end",
+    };
+    let trailing_variant = if trailing.is_some() { "beside" } else { "none" };
+    // One style closure for open and closed (the chevron carries the open
+    // indicator), which keeps hover behaviour intact.
+    let header_style = move || {
+        StyleApplication::new(CollapsibleHeader::sheet())
+            .with("chevron", chevron_variant.to_string())
+            .with("trailing", trailing_variant.to_string())
+    };
 
     let press_handler = move || {
         let next = !value.get();
         (on_change)(next);
     };
 
-    pressable(row, press_handler)
-        .with_style(header_style)
-        .into_element()
+    let toggle = pressable(row, press_handler).with_style(header_style).into_element();
+
+    match trailing {
+        None => toggle,
+        Some(trailing) => {
+            let row_style = || StyleApplication::new(CollapsibleHeaderRow::sheet());
+            ui! {
+                view(style = row_style) {
+                    toggle
+                    trailing
+                }
+            }
+        }
+    }
 }
 
 /// The collapsible body. Dispatches on `transition`:
@@ -576,7 +665,13 @@ pub fn Accordion(props: AccordionProps) -> Element {
 
         // Build the collapsible header + body in a wrapper that
         // contributes the inter-item divider when not first.
-        let header = collapsible_header(item.title, item_open, item_on_change);
+        let header = collapsible_header(
+            HeaderContent::Title(item.title),
+            CollapsibleChevronSide::End,
+            None,
+            item_open,
+            item_on_change,
+        );
         let body = collapsible_body(item_open, transition, duration_ms, vec![item.body]);
 
         let item_block = if idx == 0 {
