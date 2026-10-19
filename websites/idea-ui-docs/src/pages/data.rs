@@ -251,10 +251,7 @@ TableCell {
                     \"fill\" setting). `min_width` floors a column without fixing it. `align` \
                     sets header and body alignment together. `truncate` keeps a sized column \
                     to one line ending in \"…\". `width` and `min_width` are reactive, so a \
-                    column can follow a resize drag. For a column that takes the width the \
-                    others leave while they stay at their content width, use `flex = Some(1.0)` \
-                    (with `truncate`); `flex` or `max_width` on any column lays the table out \
-                    as grid columns, where every unsized column keeps its content width.".to_string())
+                    column can follow a resize drag.".to_string())
                 columns_table()
                 CodePanel(src = r##"TableRow {
     TableCell(header = true, width = Some(140.0), truncate = true, text = Some("Crew".into()))
@@ -267,6 +264,32 @@ TableRow {
     TableCell(text = Some(notes))
     TableCell(width = Some(96.0), align = CellAlign::Center) { Tag(..) }
     TableCell(width = Some(80.0), align = CellAlign::Right, text = Some(hours))
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Fill the rest: flex columns".to_string()) {
+                P(content = "`flex = Some(1.0)` gives a column the width the other columns leave, \
+                    and lets it shrink to nothing — pair it with `truncate` and a long name ends \
+                    in \"…\" instead of pushing the short columns off the edge. `flex` or \
+                    `max_width` on any column lays the table out as grid columns: `width` columns \
+                    are fixed, `flex` columns share the leftover, a `max_width` column is its \
+                    content's width up to the cap, and every other column keeps its content \
+                    width. Narrow the window to watch Name give way while Type and Page hold.".to_string())
+                flex_columns_table()
+                CodePanel(src = r##"Table {
+    TableRow {
+        TableCell(header = true, flex = Some(1.0), truncate = true, text = Some("Name".into()))
+        TableCell(header = true, text = Some("Type".into()))
+        TableCell(header = true, align = CellAlign::Right, text = Some("Page".into()))
+    }
+    for (name, kind, page) in fields {
+        TableRow {
+            TableCell(flex = Some(1.0), truncate = true, text = Some(name))
+            TableCell(text = Some(kind))
+            TableCell(align = CellAlign::Right, text = Some(page))
+        }
+    }
 }"##.to_string())
             }
         },
@@ -523,6 +546,34 @@ fn wide_table() -> Element {
 /// Column layout demo: sized + aligned + truncated columns around one
 /// fill column, a toned clickable row, a full-row blank message, and a
 /// footer totals row.
+/// Flex-column demo: a long Name column fills the rest and truncates
+/// while Type and Page keep their content width — the document-editor
+/// field finder shape.
+fn flex_columns_table() -> Element {
+    let fields = [
+        ("MG-05 Non-Routine Hazardous Task Authorisation — supervisor signature block", "Signature", "12"),
+        ("Permit number", "Text", "1"),
+        ("Isolation points verified by the competent person before work starts", "Checkbox", "4"),
+        ("Gas test reading (ppm)", "Number", "4"),
+    ];
+    ui! {
+        Table {
+            TableRow {
+                TableCell(header = true, flex = Some(1.0), truncate = true, text = Some("Name".to_string()))
+                TableCell(header = true, text = Some("Type".to_string()))
+                TableCell(header = true, align = CellAlign::Right, text = Some("Page".to_string()))
+            }
+            for (name, kind, page) in fields {
+                TableRow {
+                    TableCell(flex = Some(1.0), truncate = true, text = Some(name.to_string()))
+                    TableCell(text = Some(kind.to_string()))
+                    TableCell(align = CellAlign::Right, text = Some(page.to_string()))
+                }
+            }
+        }
+    }
+}
+
 fn columns_table() -> Element {
     let crew = [
         ("Ana Lucía Fernández-Whitmore", "Night shift lead", "On site", "11.5", RowTone::None),

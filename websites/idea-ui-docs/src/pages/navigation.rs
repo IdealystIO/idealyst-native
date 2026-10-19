@@ -13,7 +13,7 @@ use icons_lucide::{CHEVRON_RIGHT, COPY, PENCIL, SHARE_2, TRASH_2};
 use idea_ui::{
     tone, typography_kind, variant, Avatar, AvatarSize, Breadcrumbs, Button, Crumb, Field, Icon, List,
     ListItem, Menu, MenuEntry, MenuItem, MenuLabel, MenuSeparator, Pagination, Stack, StackAxis,
-    StackGap, StackPadding, SubMenu, SubMenuSlot, Tab, TabIndicator, Tabs, Typography,
+    StackGap, StackPadding, SubMenu, SubMenuSlot, Tab, TabIndicator, Tabs, Tag, Typography,
 };
 
 use crate::pages::body;
@@ -409,6 +409,7 @@ ui! {
             }
         },
         searchable_submenu(),
+        capped_submenu(),
         ui! {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
@@ -461,6 +462,74 @@ fn folder_entries(query: &str, open: Signal<bool>) -> Vec<MenuEntry> {
 }
 
 /// A `SubMenu` whose header pins a search field over a live `items` list.
+/// A SubMenu of long names held to a width, each row carrying a status
+/// tag at its end — the CrewForge automation-filter shape.
+fn capped_submenu() -> Element {
+    let open = signal(false);
+    let trigger: Ref<PressableHandle> = Ref::new();
+    let open_menu: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+    let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
+
+    let rules: [(&'static str, bool); 4] = [
+        ("When MG-05 Non-Routine Hazardous Task Authorisation is completed, generate MG-05 permit", true),
+        ("Daily pre-start checklist reminder", true),
+        ("When a gas test reads above the limit, notify the shift supervisor and safety officer", false),
+        ("Weekly crew hours summary", true),
+    ];
+    let picked: Vec<Signal<bool>> = rules.iter().map(|_| signal(false)).collect();
+    let items: Vec<MenuEntry> = rules
+        .iter()
+        .zip(picked.iter().copied())
+        .map(|((name, active), on)| {
+            let active = *active;
+            MenuEntry::checkable(*name, on, Rc::new(move || on.set(!on.get())))
+                .trailing(move || status_tag(active))
+        })
+        .collect();
+
+    ui! {
+        Section(title = "Width-capped submenu".to_string()) {
+            P(content = "`max_width` caps a Menu or SubMenu panel; menu labels are one line, so \
+                a longer one ends in \"…\". `MenuEntry::trailing` (and `::leading`) put an \
+                element on a data-driven row, matching MenuItem's slots — here each rule's \
+                on/off state. They are builders because the flyout rebuilds its rows on every \
+                open.".to_string())
+            DemoSurface {
+                Button(
+                    label = "Filter".to_string(),
+                    on_click = open_menu,
+                    tone = tone::Neutral,
+                    variant = variant::Soft,
+                    bind_to = Some(trigger),
+                )
+                if open.get() {
+                    Menu(target = Some(AnchorTarget::from(trigger)), on_dismiss = Some(close.clone())) {
+                        SubMenu(label = "Automation", items = items.clone(), max_width = Some(280.0))
+                    }
+                }
+            }
+            CodePanel(src = r##"let items: Vec<MenuEntry> = rules.iter().map(|rule| {
+    let active = rule.active;
+    MenuEntry::checkable(rule.name.clone(), rule.picked, toggle(rule))
+        .trailing(move || status_tag(active))
+}).collect();
+
+ui! {
+    Menu(target = Some(AnchorTarget::from(trigger)), on_dismiss = Some(close)) {
+        SubMenu(label = "Automation", items = items, max_width = Some(280.0))
+    }
+}"##.to_string())
+        }
+    }
+}
+
+/// A rule's on/off mark for a menu row's trailing slot.
+fn status_tag(active: bool) -> Element {
+    let (label, t): (&str, idea_ui::ToneRef) =
+        if active { ("On", tone::Success.into()) } else { ("Off", tone::Neutral.into()) };
+    ui! { Tag(label = label.to_string(), tone = t, variant = variant::Soft) }
+}
+
 fn searchable_submenu() -> Element {
     let open = signal(false);
     let query = signal(String::new());

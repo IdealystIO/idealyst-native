@@ -9,10 +9,10 @@
 use std::rc::Rc;
 
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{memo, signal, ui, Element, PressableHandle, Ref};
+use runtime_core::{memo, rx, signal, ui, Element, PressableHandle, Ref};
 use idea_ui::{
     push_toast, push_toast_with, tone, typography_kind, variant, Alert, AlertClose, Button,
-    Collapsible, CollapsibleTransition, Field, Modal, ModalPresentation, Popover, Stack, StackAxis, StackGap, StackJustify,
+    Collapsible, CollapsibleChevronSide, CollapsibleTransition, Field, Icon, IconButton, Modal, ModalPresentation, Popover, Stack, StackAxis, StackGap, StackJustify,
     ToastHost, ToastPlacement, Tooltip, Typography,
 };
 
@@ -503,6 +503,32 @@ pub fn collapsible() -> Element {
                 collapsible_demo_measured()
             }
 
+            Section(title = "Custom header and trailing action".to_string()) {
+                P(content = "`header` replaces the title inside the toggle — here an icon over a \
+                    name and a count. `trailing` sits at the end of the header row OUTSIDE the \
+                    toggle, so pressing it does not open or close the section: try the \
+                    open-in-new-tab button. `chevron_side = Start` puts the chevron first, the \
+                    tree / disclosure-list convention.".to_string())
+                collapsible_demo_header()
+                CodePanel(src = r##"Collapsible(
+    header = Some(ui! {
+        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+            Icon(data = WORKFLOW, size = 16.0)
+            Stack {
+                Typography(content = "Daily permit generation".into())
+                Typography(content = "3 fields".into(), muted = true)
+            }
+        }
+    }),
+    trailing = Some(ui! {
+        IconButton(icon = Some(EXTERNAL_LINK), on_click = open_in_tab, tone = tone::Neutral, variant = variant::Ghost)
+    }),
+    chevron_side = CollapsibleChevronSide::Start,
+    value = open,
+    on_change = on_change,
+) { … }"##.to_string())
+            }
+
             Section(title = "Snap (no animation)".to_string()) {
                 P(content = "Sets transition = Snap — the body appears in one frame. Cheap, \
                     predictable, and the right call for reduced-motion users.".to_string())
@@ -575,6 +601,51 @@ fn collapsible_demo_measured() -> Element {
                         muted = true,
                     )
                 }
+            }
+        }
+    }
+}
+
+fn collapsible_demo_header() -> Element {
+    let open = signal(false);
+    let on_change: Rc<dyn Fn(bool)> = Rc::new(move |v| open.set(v));
+    let opened = signal(0u32);
+    let open_in_tab: Rc<dyn Fn()> = Rc::new(move || opened.set(opened.get() + 1));
+    ui! {
+        DemoSurface {
+            Stack(gap = StackGap::Sm) {
+                Collapsible(
+                    header = Some(ui! {
+                        Stack(axis = StackAxis::Row, gap = StackGap::Sm) {
+                            Icon(data = icons_lucide::WORKFLOW, size = 16.0)
+                            Stack {
+                                Typography(content = "Daily permit generation".to_string())
+                                Typography(content = "3 fields".to_string(), muted = true)
+                            }
+                        }
+                    }),
+                    trailing = Some(ui! {
+                        IconButton(
+                            icon = Some(icons_lucide::EXTERNAL_LINK),
+                            on_click = open_in_tab,
+                            tone = tone::Neutral,
+                            variant = variant::Ghost,
+                        )
+                    }),
+                    chevron_side = CollapsibleChevronSide::Start,
+                    value = open,
+                    on_change = on_change,
+                ) {
+                    Stack(gap = StackGap::Xs) {
+                        Typography(content = "Permit number".to_string())
+                        Typography(content = "Supervisor signature".to_string())
+                        Typography(content = "Gas test reading".to_string())
+                    }
+                }
+                Typography(
+                    content = rx!(format!("Open-in-new-tab pressed {} times", opened.get())),
+                    muted = true,
+                )
             }
         }
     }
