@@ -1591,6 +1591,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A dev app the MCP can't see says why** (`robot-relay`, `mcp-server`,
+  `idealyst-cli`). A relay that could not write its registration under
+  `~/.idealyst/apps` (a root-owned `~/.idealyst`, say) discarded the error:
+  the app served, `list_apps` never showed it, and `wait_for_app` ran its
+  full timeout blaming the build. Failures are now kept as
+  `RelayHandle::registration_errors()`, `idealyst dev` warns in the dev log
+  naming the path, and the `wait_for_app` timeout tells "registered but never
+  answered" from "nothing registered" — describing the apps directory as
+  missing, uncreatable, unwritable or empty.
+
 - **`idealyst run --macos` no longer requires a `bundle_id`** (`run-macos`).
   A dev run signs the `.app` whenever an Apple Development identity exists,
   and resolving the signature's bundle id demanded
