@@ -251,7 +251,10 @@ TableCell {
                     \"fill\" setting). `min_width` floors a column without fixing it. `align` \
                     sets header and body alignment together. `truncate` keeps a sized column \
                     to one line ending in \"…\". `width` and `min_width` are reactive, so a \
-                    column can follow a resize drag.".to_string())
+                    column can follow a resize drag. For a column that takes the width the \
+                    others leave while they stay at their content width, use `flex = Some(1.0)` \
+                    (with `truncate`); `flex` or `max_width` on any column lays the table out \
+                    as grid columns, where every unsized column keeps its content width.".to_string())
                 columns_table()
                 CodePanel(src = r##"TableRow {
     TableCell(header = true, width = Some(140.0), truncate = true, text = Some("Crew".into()))
@@ -446,6 +449,16 @@ table::visit_row_cells(&row, |cell| {
                         desc: "Floor for the column's width (px). Default None.",
                     },
                     Prop {
+                        name: "max_width",
+                        ty: "Option<f32>",
+                        desc: "Cap the column (px): content width up to the cap, or with flex, grow up to it. Switches the table to grid columns. Default None.",
+                    },
+                    Prop {
+                        name: "flex",
+                        ty: "Option<f32>",
+                        desc: "Share of the width the other columns leave; may shrink to min_width (default 0) — pair with truncate. Switches the table to grid columns. Default None.",
+                    },
+                    Prop {
                         name: "align",
                         ty: "CellAlign",
                         desc: "Left (default), Center or Right — on the cell, its text, and rich children. Same value on every cell of the column.",
@@ -453,7 +466,7 @@ table::visit_row_cells(&row, |cell| {
                     Prop {
                         name: "truncate",
                         ty: "bool",
-                        desc: "One line ending in \"…\". Pair with `width`. Default false.",
+                        desc: "One line ending in \"…\". Pair with `width` or `flex`. Default false.",
                     },
                     Prop {
                         name: "span",

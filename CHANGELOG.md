@@ -15,6 +15,14 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **`table` SDK payload changes** (`table`). For code that builds
+  tables below idea-ui: `CellSpanMarker` is now `CellMarker` (it also
+  carries a cell's `ColumnSpec`, so a native cell that sizes its column
+  is wrapped in one); `TableFootPrim` is a struct with a `grid` field
+  (`TableFootPrim::default()`); `TableRowPrim` / `TableCellPrim` gained
+  `grid` (and the cell `column`); `TableCellProps` gained `column`.
+  *Migration:* fill new fields from `Default`, rename the marker.
+
 - **Menu labels are one line; `MenuEntry` has two more fields**
   (`idea-ui`). Every `MenuItem` / `SubMenu` label is a single line ending
   in "…" when its row is narrower than it. A menu panel is sized to its
@@ -624,6 +632,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `light_theme().effects`). `app_theme!` forwards it for you.
 
 ### Added
+
+- **Table columns that fill the rest and truncate** (`idea-ui`, `table`,
+  `runtime-shared`, `runtime-layout`, `css`, `backend-ssr`).
+  `TableCell(flex = Some(1.0), truncate = true)` gives a column the width
+  the others leave and ends its text in "…"; `max_width` caps a column.
+  Either one on any column lays the table out as CSS grid columns on
+  every backend: `width` columns fixed, `flex` columns sharing the
+  leftover, `max_width` columns content-sized up to the cap, every other
+  column at its content width. On web the table stays a `<table>` (grid
+  display, `display: contents` rows and an explicit `<tbody>`, table
+  roles). Tables that set neither keep the browser auto-table layout. New
+  `TrackSize::FitContent` grid track and `table::ColumnTrack` /
+  `ColumnSpec` / `TableCellProps::column`.
 
 - **Collapsible takes a custom header, a trailing element and a chevron
   side** (`idea-ui`). `header = Some(el)` replaces the title inside the

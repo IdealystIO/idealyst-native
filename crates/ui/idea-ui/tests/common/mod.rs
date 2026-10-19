@@ -41,6 +41,8 @@ fn text_measure(content: String) -> runtime_layout::MeasureFn {
 /// A laid-out tree: ABSOLUTE frames (pane coordinates) by host-mock id.
 pub struct Laid {
     pub frames: HashMap<u32, Frame>,
+    /// The last style applied to each node.
+    pub styles: HashMap<u32, StyleRules>,
     pub h: host_mock::Harness,
     pub root: u32,
 }
@@ -138,5 +140,6 @@ pub fn lay_out(pane_width: f32, pane_height: f32, build: impl FnOnce() -> Elemen
             (*n, abs)
         })
         .collect();
-    Laid { frames, h, root }
+    let styles = styles.borrow().clone();
+    Laid { frames, styles, h, root }
 }

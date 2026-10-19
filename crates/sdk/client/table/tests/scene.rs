@@ -1143,3 +1143,261 @@ fn map_cell_application_keeps_static_sheets_static() {
         _ => panic!("a static sheet must stay a static sheet"),
     }
 }
+
+// ===========================================================================
+// Grid columns (`ColumnTrack`): flex / max_width switch the table to
+// explicit grid tracks on both lowerings.
+// ===========================================================================
+
+use runtime_shared::TrackSize;
+use table::{ColumnSpec, ColumnTrack};
+
+fn sized_cell(header: bool, label: &str, track: ColumnTrack) -> Element {
+    table_cell(TableCellProps {
+        header,
+        column: Some(ColumnSpec::new(track)),
+        children: vec![glue::text(label.to_string()).into_element()],
+        ..Default::default()
+    })
+    .into_element()
+}
+
+const FLEX: ColumnTrack = ColumnTrack { width: None, min_width: None, max_width: None, flex: Some(1.0) };
+
+/// The Name | Type | Page shape from the report: Name fills and may
+/// shrink to nothing, Type and Page hug their content.
+fn name_type_page_rows() -> Vec<Element> {
+    vec![
+        row_of(vec![
+            sized_cell(true, "Name", FLEX),
+            sized_cell(true, "Type", ColumnTrack::default()),
+            sized_cell(true, "Page", ColumnTrack::default()),
+        ]),
+        row_of(vec![text_cell("A very long field name"), text_cell("Text"), text_cell("3")]),
+    ]
+}
+
+fn grid_rules(prop: Option<StyleProp>) -> runtime_vocabulary::glue::StyleRules {
+    match prop {
+        Some(StyleProp::Dynamic(f)) => (*f()).clone(),
+        Some(StyleProp::Sheet(app)) => (*resolve_style(&app)).clone(),
+        _ => panic!("grid style is a rules closure or a sheet"),
+    }
+}
+
+#[test]
+fn column_track_maps_to_grid_tracks() {
+    let px = |v| Box::new(TrackSize::Px(v));
+    let t = |width, min_width, max_width, flex| {
+        ColumnTrack { width, min_width, max_width, flex }.track()
+    };
+    assert_eq!(t(Some(120.0), Some(10.0), Some(300.0), Some(1.0)), TrackSize::Px(120.0), "width wins");
+    assert_eq!(
+        t(None, None, None, Some(2.0)),
+        TrackSize::Minmax(px(0.0), Box::new(TrackSize::Fr(2.0))),
+        "flex shares the leftover and may shrink to nothing"
+    );
+    assert_eq!(t(None, Some(80.0), None, Some(1.0)), TrackSize::Minmax(px(80.0), Box::new(TrackSize::Fr(1.0))));
+    assert_eq!(t(None, None, Some(300.0), Some(1.0)), TrackSize::Minmax(px(0.0), px(300.0)), "flex up to max");
+    assert_eq!(t(None, None, Some(300.0), None), TrackSize::FitContent(300.0), "content, capped");
+    assert_eq!(t(None, Some(80.0), None, None), TrackSize::MaxContent, "min floors through the cell style");
+    assert_eq!(t(None, None, None, None), TrackSize::MaxContent, "content-sized, never squeezed");
+    assert!(!ColumnTrack { width: Some(1.0), min_width: Some(1.0), ..Default::default() }.needs_grid());
+    assert!(FLEX.needs_grid());
+    assert!(ColumnTrack { max_width: Some(1.0), ..Default::default() }.needs_grid());
+}
+
+/// Regression (CrewForge, idea-ui 8.0.0): no column could take "the
+/// width the others leave, then truncate". A flex column makes the
+/// native grid's tracks explicit — `minmax(0, 1fr)` for Name,
+/// `max-content` for the rest — instead of the all-`auto` browser-table
+/// sizing.
+#[test]
+fn regression_flex_column_gives_the_native_grid_explicit_tracks() {
+    let t = table(TableProps { children: name_type_page_rows(), ..Default::default() }).into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let rules = grid_rules(take_view_prim(&inner).style);
+    assert_eq!(rules.display, Some(DisplayKind::Grid));
+    assert_eq!(
+        rules.grid_template_columns,
+        Some(vec![
+            TrackSize::Minmax(Box::new(TrackSize::Px(0.0)), Box::new(TrackSize::Fr(1.0))),
+            TrackSize::MaxContent,
+            TrackSize::MaxContent,
+        ])
+    );
+    assert_eq!(item_children(inner).len(), 6, "the sized cells unwrap into the grid like any other");
+}
+
+/// Width / min-width alone keep today's auto-table sizing (all-`auto`
+/// tracks, which `runtime-layout` sizes like a browser table).
+#[test]
+fn width_only_columns_keep_the_auto_table_tracks() {
+    let rows = vec![row_of(vec![
+        sized_cell(true, "Name", ColumnTrack { width: Some(160.0), ..Default::default() }),
+        sized_cell(true, "Type", ColumnTrack { min_width: Some(40.0), ..Default::default() }),
+    ])];
+    let t = table(TableProps { children: rows, ..Default::default() }).into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let rules = grid_rules(take_view_prim(&inner).style);
+    assert_eq!(rules.grid_template_columns, Some(vec![TrackSize::Auto, TrackSize::Auto]));
+}
+
+/// A live column re-reads its sizing each time the grid style is
+/// evaluated, so a width that follows a resize drag moves its track.
+#[test]
+fn live_column_spec_is_re_read_by_the_grid_style() {
+    let width = Rc::new(Cell::new(100.0f32));
+    let w = width.clone();
+    let rows = vec![row_of(vec![
+        table_cell(TableCellProps {
+            header: true,
+            column: Some(ColumnSpec::live(move || ColumnTrack { width: Some(w.get()), ..Default::default() })),
+            ..Default::default()
+        })
+        .into_element(),
+        sized_cell(true, "Rest", FLEX),
+    ])];
+    let t = table(TableProps { children: rows, ..Default::default() }).into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let Some(StyleProp::Dynamic(f)) = take_view_prim(&inner).style else {
+        panic!("a grid-column table's style is a live rules closure");
+    };
+    assert_eq!(f().grid_template_columns.as_ref().unwrap()[0], TrackSize::Px(100.0));
+    width.set(180.0);
+    assert_eq!(f().grid_template_columns.as_ref().unwrap()[0], TrackSize::Px(180.0));
+}
+
+fn web_cell(header: bool, label: &str, track: Option<ColumnTrack>) -> Element {
+    let c = item_lowering::cell_item(header, ColSpan::default(), vec![glue::text(label.to_string()).into_element()], None);
+    item_lowering::set_cell_column(&c, track.map(ColumnSpec::new));
+    c
+}
+
+/// Web: a flex column keeps the real `<table>` (and its semantics, said
+/// explicitly) but lays it out as a CSS grid — rows `display: contents`
+/// so the cells are the grid's items.
+#[test]
+fn regression_flex_column_lays_the_web_table_out_as_a_grid() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::web_table(
+            vec![
+                item_lowering::row_item(
+                    vec![web_cell(true, "Name", Some(FLEX)), web_cell(true, "Type", None)],
+                    None,
+                ),
+                item_lowering::row_item(
+                    vec![web_cell(false, "A very long field name", None), web_cell(false, "Text", None)],
+                    None,
+                ),
+            ],
+            None,
+            false,
+            None,
+            None,
+        )
+    });
+    let html = &page.html;
+    let css = &page.head_css;
+    assert!(html.contains("<table") && html.contains("role=\"table\""), "{html}");
+    assert!(css.contains("display: grid") || css.contains("display:grid"), "grid table: {css}");
+    assert!(css.contains("minmax(0px, 1fr) max-content"), "the column tracks: {css}");
+    assert!(html.contains("role=\"row\""), "explicit row role: {html}");
+    assert!(html.contains("display: contents") || html.contains("display:contents"), "contents rows: {html}");
+    assert!(html.contains("role=\"columnheader\"") && html.contains("role=\"cell\""), "{html}");
+    // Not table cells any more: a `table-cell` whose row is `display:
+    // contents` is wrapped with its siblings in an anonymous table, which
+    // becomes one grid item.
+    assert!(html.contains("<td style=\"display:flex"), "cells are flex boxes: {html}");
+}
+
+/// Regression: prerendered `<table><tr>…` is re-parsed by the browser,
+/// whose parser inserts a `<tbody>` — an ordinary row-group box that
+/// became the grid's only item, every cell stacked in column one
+/// (measured in Chrome). Grid mode emits its own `display: contents`
+/// `<tbody>` so parsed and live DOM match.
+#[test]
+fn regression_web_grid_table_emits_its_own_contents_tbody() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::web_table(
+            vec![item_lowering::row_item(vec![web_cell(true, "Name", Some(FLEX))], None)],
+            None,
+            false,
+            None,
+            None,
+        )
+    });
+    let html = &page.html;
+    let tbody = html.find("<tbody").unwrap_or_else(|| panic!("an explicit tbody: {html}"));
+    assert!(html[tbody..].starts_with("<tbody style=\"display:contents\""), "{html}");
+    assert!(tbody < html.find("<tr").unwrap(), "the rows sit inside it: {html}");
+}
+
+/// The same table without a flex / max column is the unchanged auto
+/// `<table>`: no grid, no role attributes.
+#[test]
+fn web_table_without_grid_columns_is_unchanged() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::web_table(
+            vec![item_lowering::row_item(
+                vec![web_cell(true, "Name", Some(ColumnTrack { width: Some(120.0), ..Default::default() }))],
+                None,
+            )],
+            None,
+            false,
+            None,
+            None,
+        )
+    });
+    let html = &page.html;
+    assert!(!html.contains("role=\"table\"") && !html.contains("contents"), "{html}");
+}
+
+/// Grid mode: a footer section renders after the body rows even when
+/// written first — the browser's `<tfoot>`-last rule does not reach
+/// `display: contents` grid items, so `table` moves it.
+#[test]
+fn web_grid_table_renders_its_footer_last() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::web_table(
+            vec![
+                table::table_foot(table::TableFootProps {
+                    children: vec![item_lowering::row_item(vec![web_cell(false, "TOTALS", None)], None)],
+                }),
+                item_lowering::row_item(vec![web_cell(true, "HEADING", Some(FLEX))], None),
+            ],
+            None,
+            false,
+            None,
+            None,
+        )
+    });
+    let html = &page.html;
+    assert!(
+        html.find("HEADING").unwrap() < html.find("TOTALS").unwrap(),
+        "body before footer: {html}"
+    );
+    assert!(html.contains("role=\"rowgroup\""), "{html}");
+}
+
+/// Grid mode: a `display: contents` `<tr>` has no box, so a bound row
+/// gets the native lowering's backdrop (and every cell an explicit
+/// place) — the row handle still has geometry.
+#[test]
+fn web_grid_table_bound_row_gets_a_backdrop() {
+    let filled = Rc::new(Cell::new(false));
+    let filled_in = filled.clone();
+    let page = backend_ssr::newcore::render_path_with("/", table::register, move || {
+        let r = item_lowering::row_item(vec![web_cell(false, "x", Some(FLEX))], None);
+        let filled = filled_in.clone();
+        bind_row(&r, move |_handle| filled.set(true));
+        item_lowering::web_table(vec![r], None, false, None, None)
+    });
+    let html = &page.html;
+    assert!(filled.get(), "the row handle is filled (from the backdrop): {html}");
+    let tr = html.find("<tr").expect("a row");
+    let after_tr = &html[tr..];
+    let open_end = after_tr.find('>').expect("row tag closes");
+    assert!(after_tr[open_end + 1..].starts_with("<div"), "the backdrop leads the row: {html}");
+    assert!(page.head_css.contains("grid-row"), "cells and backdrop are placed explicitly: {}", page.head_css);
+}

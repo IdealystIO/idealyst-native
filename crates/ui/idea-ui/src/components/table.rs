@@ -38,7 +38,8 @@
 //!   the cell-level padding + row divider, and wraps cell contents in
 //!   a themed `text` node so values without explicit Typography pick
 //!   up the right column treatment. Column layout lives here too —
-//!   `width`, `min_width`, `align`, `truncate`, `span`, `pinned`.
+//!   `width`, `min_width`, `max_width`, `flex`, `align`, `truncate`,
+//!   `span`, `pinned`.
 //! - [`TableFooter`] holds footer rows (`<tfoot>` on web).
 //!
 //! See [Table] / [TableRow] / [TableCell] / [TableFooter] for the full
@@ -63,12 +64,40 @@
 //! - `align` sets the header's and body's alignment together when every
 //!   cell of the column carries it.
 //! - `truncate = true` keeps the content to one line ending in "…" —
-//!   meaningful in a column with a `width` (an unsized column widens to
-//!   fit the line instead).
+//!   meaningful in a column with a `width` or a `flex` (an unsized
+//!   column widens to fit the line instead).
 //!
-//! There is deliberately no `max_width`: a browser ignores `max-width`
-//! on a table cell unless the cell also has a `width`, so it could not
-//! mean the same thing on web as on native.
+//! ## Grid columns: `flex` and `max_width`
+//!
+//! The settings above size columns the way a browser sizes an auto
+//! `<table>`. Two more need a different model, because a table cell
+//! ignores them: `flex = Some(n)` (this column takes a share of the width
+//! the others leave, and may shrink to its `min_width`, default 0) and
+//! `max_width = Some(px)` (no wider than this). Setting either on ANY
+//! column lays the whole table out as CSS grid columns, on every backend:
+//!
+//! - a `width` column is exactly that wide;
+//! - a `flex` column shares the leftover width (relative to the other
+//!   `flex` columns), up to its `max_width` if it has one;
+//! - a `max_width` column is its content's width, capped;
+//! - every other column is its content's width and never shrinks.
+//!
+//! Spare width goes only to `flex` columns, so a grid-column table
+//! without one is as wide as its columns. The everyday use is a long
+//! name beside short columns that must stay readable:
+//!
+//! ```ignore
+//! TableRow {
+//!     TableCell(header = true, text = Some("Name".into()), flex = Some(1.0), truncate = true)
+//!     TableCell(header = true, text = Some("Type".into()))
+//!     TableCell(header = true, text = Some("Page".into()))
+//! }
+//! ```
+//!
+//! The column takes its sizing from its first cell (set it on the header
+//! cell, or on every cell of the column like the other settings). On web
+//! the table stays a real `<table>`, with explicit table roles since its
+//! rows become `display: contents`.
 //!
 //! # Spanning cells
 //!
@@ -688,13 +717,30 @@ pub struct TableCellProps {
     pub width: Option<f32>,
     /// Never let this cell's column be narrower than this (px).
     pub min_width: Option<f32>,
+    /// Never let this cell's column be wider than this (px): it sizes
+    /// to its content up to the cap (or, with `flex`, grows into spare
+    /// width up to it). Setting it on any column makes the table lay out
+    /// as grid columns — see the module docs, "Columns".
+    // STRUCTURAL — decides the table's layout mode at build time.
+    #[prop(static)]
+    pub max_width: Option<f32>,
+    /// Give this column a share of the width the other columns leave —
+    /// `Some(1.0)` for "the rest". Shares are relative to the table's
+    /// other `flex` columns. The column may shrink to its `min_width`
+    /// (default 0), so pair it with `truncate` for a long-name column
+    /// that ends in "…" instead of pushing the others out. Setting it on
+    /// any column makes the table lay out as grid columns.
+    // STRUCTURAL — decides the table's layout mode at build time.
+    #[prop(static)]
+    pub flex: Option<f32>,
     /// How the content sits in the column — `Left` (default), `Center`
     /// or `Right`. Give every cell of the column the same value.
     // STRUCTURAL — selects the `align` arm on three nodes (the cell, its
     // text node, the rich-children wrapper) at build time.
     #[prop(static)]
     pub align: CellAlign,
-    /// Keep the content to one line ending in "…". Pair with `width`.
+    /// Keep the content to one line ending in "…". Pair with `width` or
+    /// `flex`.
     // STRUCTURAL — selects the `truncate` arm on the cell and its text.
     #[prop(static)]
     pub truncate: bool,
@@ -716,6 +762,8 @@ impl Default for TableCellProps {
             pin_offset: None,
             width: Reactive::Static(None),
             min_width: Reactive::Static(None),
+            max_width: None,
+            flex: None,
             align: CellAlign::Left,
             truncate: false,
             span: ColSpan::default(),
@@ -747,7 +795,32 @@ pub fn TableCell(props: TableCellProps) -> Element {
         cell_text_children(header, props.text, align, truncate)
     };
 
-    let bound = sdk_cell(SdkTableCellProps { header, span: props.span, children: cell_children });
+    // The column's sizing, for the table's grid columns. Only a cell that
+    // sizes its column carries one, so an unsized table keeps the
+    // browser auto-table layout untouched. Live: `width` / `min_width`
+    // can follow a resize drag.
+    let column = {
+        let (width, min_width) = (props.width.clone(), props.min_width.clone());
+        let (max_width, flex) = (props.max_width, props.flex);
+        let sized = !matches!(width, Reactive::Static(None))
+            || !matches!(min_width, Reactive::Static(None))
+            || max_width.is_some()
+            || flex.is_some();
+        sized.then(|| {
+            table::ColumnSpec::live(move || table::ColumnTrack {
+                width: width.get(),
+                min_width: min_width.get(),
+                max_width,
+                flex,
+            })
+        })
+    };
+    let bound = sdk_cell(SdkTableCellProps {
+        header,
+        span: props.span,
+        column,
+        children: cell_children,
+    });
     // A cell's style is handed over as an EXPLICIT `StyleProp::Sheet`, not
     // as a bare application. A clickable row composes the `interactive` /
     // `row_hovered` axes onto each cell's own style
@@ -1415,8 +1488,23 @@ mod tests {
     // CrewForge 10-09 table gaps — one regression per gap.
     // =========================================================================
 
+    /// The cell's own node: a cell that sizes its column (`width`,
+    /// `min_width`, `max_width`, `flex`) arrives in the SDK's
+    /// `CellMarker`, which `table` unwraps; a test looking at one cell
+    /// outside a table looks through it (scopes kept alive).
+    fn cell_node(cell: Element) -> Element {
+        match peel_owned_keepalive(cell) {
+            Element::Item { data, mut children, .. }
+                if data.downcast_ref::<runtime_vocabulary::prims::PrimCell<table::CellMarker>>().is_some() =>
+            {
+                children.pop().expect("a cell marker wraps the cell")
+            }
+            other => other,
+        }
+    }
+
     fn cell_app(cell: Element) -> runtime_core::StyleApplication {
-        match classify(cell) {
+        match classify(cell_node(cell)) {
             P::View { style, .. } => style.expect("cell keeps a style").application(),
             _ => panic!("native cell must classify as a View"),
         }
@@ -1432,7 +1520,7 @@ mod tests {
 
     /// The text node a `text = Some(..)` cell renders, classified.
     fn cell_text_rules(cell: Element) -> Rc<StyleRules> {
-        let children = match classify(cell) {
+        let children = match classify(cell_node(cell)) {
             P::View { children, .. } => children,
             _ => panic!("native cell must classify as a View"),
         };
@@ -1495,7 +1583,7 @@ mod tests {
                 width: Reactive::Dynamic(Rc::new(move || w.get())),
                 ..Default::default()
             });
-            let style = match classify(cell) {
+            let style = match classify(cell_node(cell)) {
                 P::View { style, .. } => style.expect("styled"),
                 _ => panic!("view"),
             };

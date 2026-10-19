@@ -965,6 +965,9 @@ impl caps::DocumentOps for SsrBackend {
             "scope" => "scope",
             "headers" => "headers",
             "abbr" => "abbr",
+            // Explicit table roles on a grid-column table, whose rows are
+            // `display: contents` (the `table` SDK).
+            "role" => "role",
             other => {
                 runtime_shared::unsupported::warn_once(
                     "ssr.attach_html_attribute",
