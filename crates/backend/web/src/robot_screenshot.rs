@@ -32,9 +32,13 @@
 //!
 //! **Fidelity caveat:** this is DOM rasterization, not the browser compositor's
 //! output. A *cross-origin* image (no CORS) taints the canvas (→ an error
-//! response); same-origin assets and fonts are inlined and render fine. For
-//! pixel-perfect web capture use Playwright/CDP; this is the *uniform
-//! cross-platform* robot path.
+//! response); same-origin assets and fonts are inlined and render fine;
+//! `<canvas>` pixels are copied in ([`mirror_canvas_pixels`]). Plugin content
+//! (a PDF viewer), WebGL and exact font rendering can still differ. This is
+//! the `dom` source: it needs nothing from the user. The browser's own pixels
+//! come from the `tab` source (the user shares the tab) or the relay's `cdp`
+//! source (a browser the dev session launched) — see
+//! `robot_screenshot_source`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -203,6 +207,7 @@ fn serialize_live_state(window: &Window, target: &Element) -> Result<String, Str
         .dyn_into()
         .map_err(|_| "cloned capture subtree is not an element".to_string())?;
     mirror_input_props_into_attributes(target, &clone);
+    mirror_canvas_pixels(window, target, &clone);
     bake_scroll_offsets(window, target, &clone);
     let serializer =
         web_glue::dom::XmlSerializer::new().map_err(|_| "XMLSerializer unavailable".to_string())?;
@@ -255,6 +260,49 @@ fn mirror_input_props_into_attributes(live_root: &web_glue::dom::Element, clone_
                 let _ = co.remove_attribute("selected");
             }
         }
+    }
+}
+
+/// Paint each live `<canvas>`'s pixels into its clone.
+///
+/// A canvas's drawing is element state, not markup: the serialized clone is
+/// an empty canvas, so a `graphics` surface or a canvas-rendered PDF page
+/// came out blank. Each clone gets the live canvas's PNG as a
+/// `background-image` stretched to its box, and the live canvas's computed
+/// width and height: inside the SVG image the clone ignores its
+/// `width`/`height` attributes and lays out at the default 300×150, so
+/// without the explicit size it covers whatever follows it. A canvas `toDataURL` refuses (tainted by
+/// cross-origin pixels) stays blank. A WebGL canvas created without
+/// `preserveDrawingBuffer` reads back cleared after its frame was
+/// presented, so it is blank here too — the `cdp` and `tab` sources
+/// capture those.
+fn mirror_canvas_pixels(window: &Window, live_root: &Element, clone_root: &Element) {
+    let (Ok(live), Ok(cloned)) =
+        (live_root.query_selector_all("canvas"), clone_root.query_selector_all("canvas"))
+    else {
+        return;
+    };
+    for i in 0..live.length().min(cloned.length()) {
+        let (Some(l), Some(c)) = (live.item(i), cloned.item(i)) else { continue };
+        let (Some(l), Some(c)) = (l.dyn_ref::<HtmlCanvasElement>(), c.dyn_ref::<Element>()) else { continue };
+        // A 0×0 canvas's `toDataURL` is `data:,`, which is no image.
+        let size = |k: &str| l.as_js().get(k).ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if size("width") == 0.0 || size("height") == 0.0 {
+            continue;
+        }
+        let Ok(png) = l.to_data_url_with_type("image/png") else { continue };
+        let Some(cs) = computed(window, l) else { continue };
+        let (w, h) = (
+            cs.get_property_value("width").unwrap_or_default(),
+            cs.get_property_value("height").unwrap_or_default(),
+        );
+        // `url(data:…)` unquoted: a base64 data URL has no quote, paren or
+        // space to escape.
+        let style = format!(
+            "{};width:{w};height:{h};background-image:url({png});background-size:100% 100%;background-repeat:no-repeat",
+            c.get_attribute("style").unwrap_or_default()
+        );
+        let _ = c.set_attribute("style", &style);
     }
 }
 
@@ -830,6 +878,36 @@ mod tests {
         assert_eq!(px[0], BLUE, "sticky header stuck at the top of the scrolled list");
         assert_eq!(px[1], GREEN, "content below it is the scrolled-to content, not the top (red)");
         assert_eq!(scroller.scroll_top(), 500, "capture must not touch the live scroll");
+        root.remove();
+    }
+
+    /// Regression: a `<canvas>` came out blank — its drawing is element
+    /// state, and the serialized clone is an empty canvas — so a
+    /// `graphics` surface or a canvas-rendered PDF page was missing from
+    /// every web screenshot. A 2D canvas filled magenta must capture
+    /// magenta, at its own position, and the live canvas keeps its style.
+    #[wasm_bindgen_test]
+    async fn regression_screenshot_keeps_canvas_pixels() {
+        let root = el("position:fixed;left:0;top:0;width:100px;height:100px;z-index:2147483647;background:#fff");
+        let canvas: HtmlCanvasElement = doc().create_element("canvas").unwrap().dyn_into().unwrap();
+        canvas.set_width(40);
+        canvas.set_height(40);
+        canvas.set_attribute("style", "display:block;margin-left:20px").unwrap();
+        let ctx: CanvasRenderingContext2d = canvas.get_context("2d").unwrap().unwrap().dyn_into().unwrap();
+        ctx.as_js().set("fillStyle", &"rgb(255,0,255)".into()).unwrap();
+        ctx.as_js().call_method("fillRect", &[&0.0.into(), &0.0.into(), &40.0.into(), &40.0.into()]).unwrap();
+        root.append_child(&canvas).unwrap();
+        doc().body().unwrap().append_child(&root).unwrap();
+
+        let (_, _, px) = capture_pixels(&root, &[(30.0, 20.0), (10.0, 20.0), (30.0, 60.0)]).await;
+        assert_eq!(px[0], MAGENTA, "the canvas's drawing is in the capture");
+        assert_eq!(px[1], WHITE, "left of the canvas (its margin) is the page");
+        assert_eq!(px[2], WHITE, "below the canvas is the page");
+        assert_eq!(
+            canvas.get_attribute("style").as_deref(),
+            Some("display:block;margin-left:20px"),
+            "capture must not touch the live canvas"
+        );
         root.remove();
     }
 

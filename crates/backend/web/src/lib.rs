@@ -74,6 +74,8 @@ pub mod robot_transport;
 #[cfg(feature = "robot")]
 #[cfg(feature = "robot")]
 mod robot_screenshot;
+#[cfg(feature = "robot")]
+mod robot_screenshot_source;
 pub mod dispatch_hook;
 pub mod drop_deferral;
 pub mod logger;

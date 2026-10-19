@@ -491,7 +491,7 @@ pub struct RobotScreenshotArgs {
     /// Replay capture height, physical px.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
-    /// `auto` (default), `client`, or `replay`.
+    /// `auto`; web `dom`/`tab`/`cdp`; runtime-server `client`/`replay`. Which to use: get_docs("robot").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
@@ -1649,7 +1649,7 @@ impl CatalogService {
         self.robot_call("invoke_method", app.as_deref(), body).await
     }
 
-    #[tool(description = "Save a PNG screenshot of the running app and return its file path.")]
+    #[tool(description = "Save a PNG screenshot of the running app; returns its path. Web: `source` dom, tab (user shares) or cdp (headless).")]
     async fn screenshot(
         &self,
         Parameters(args): Parameters<RobotScreenshotArgs>,

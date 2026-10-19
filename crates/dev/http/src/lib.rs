@@ -335,8 +335,11 @@ const RELOAD_SCRIPT: &str = r#"<script>
     } catch (_) {}
   }
   window.__idealyst_dev_ack = ack;
+__TAB_CAPTURE__
 __STATUS_OVERLAY__
-  var status = idealystStatusOverlay(document);
+  var capture = idealystTabCapture(window, document);
+  window.__idealyst_tab_capture = capture;
+  var status = idealystStatusOverlay(document, capture);
   // The app's robot client reports its connection here
   // (`backend_web::robot_transport::ROBOT_STATUS_HOOK`), and leaves the
   // latest in `__idealyst_dev_robot` for an overlay that starts after it.
@@ -434,6 +437,16 @@ __STATUS_OVERLAY__
 /// the file's header for what it shows and why it is plain JS.
 pub const STATUS_OVERLAY_JS: &str = include_str!("status_overlay.js");
 
+/// The tab screen-share controller behind the Robot's `screenshot` source
+/// `tab`, spliced into [`RELOAD_SCRIPT`] ahead of the overlay that draws
+/// its button. See the file's header.
+pub const TAB_CAPTURE_JS: &str = include_str!("tab_capture.js");
+
+/// The page global the reload script publishes the tab-capture controller
+/// on. `backend-web`'s `robot_screenshot_source::TAB_CAPTURE_GLOBAL` reads
+/// the same name; the `tab_capture` test holds them together.
+pub const TAB_CAPTURE_GLOBAL: &str = "__idealyst_tab_capture";
+
 /// The livereload + overlay `<script>`, pointed at `sse_url`.
 ///
 /// Parameterised because the page and the stream do not always share an
@@ -482,6 +495,7 @@ pub fn reload_script_tag_with_fallback(sse_url: &str, fallback: Option<&str>) ->
     RELOAD_SCRIPT
         .replace("__SOURCES__", &list)
         .replace("\"__ACK_URL__\"", &ack)
+        .replace("__TAB_CAPTURE__", TAB_CAPTURE_JS)
         .replace("__STATUS_OVERLAY__", STATUS_OVERLAY_JS)
 }
 

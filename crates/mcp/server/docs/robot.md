@@ -152,15 +152,26 @@ Calls any bridge verb by name with JSON `args` and returns its raw result. It co
 
 Captures a PNG of the running app, saves it to disk, and returns `{ path, width, height }`. `path` is absolute (`~/.idealyst/screenshots/<app>-<timestamp>.png` by default). The image bytes are deliberately NOT returned; read the file at `path` to see it.
 
-`source` picks the capture:
+`source` picks the capture, and the result's `source` says which one produced it.
 
-- `client`: the REAL rendered surface (native widgets/fonts on macOS/iOS/Android; web rasterizes the live DOM). Works for a `--local` app and for a runtime-server session, where the connected client captures over the wire.
+A web app has three captures, which trade exactness against needing the user:
+
+- `dom`: copies the page's DOM into an SVG and rasterizes it. Needs nothing from anyone and always works, but it is a copy: WebGL canvases, PDF viewers and other plugin content, and some font rendering can come out wrong or blank. Live input state (checked boxes, typed text, selected options), scroll positions and 2D canvases are carried over.
+- `tab`: the browser's real pixels of the user's own tab. A browser only lets a page share its tab after the user clicks, so the user does it once from the dev overlay's "Share this tab with the agent" button (bottom-right of the page). Before that, `tab` returns an error saying so, and the button lights up as "Agent asks to see this tab": ask the user to click it and allow the share, then call `screenshot` again. The share lasts until the user stops it or the page fully reloads. Chromium offers only that tab in its dialog; other browsers show their full picker, and anything but that tab is refused. This is the way to see what the user is seeing.
+- `cdp`: the browser's real pixels over the DevTools Protocol, with no user step, but only for a tab in a browser the dev session launched: the headless web client (`run_dev` with `headless_client`, or the one `idealyst dev` starts on a machine with no display). Use it to look at your own headless tab. It errors for the user's own browser.
+- `auto` (default): `cdp` when the tab is reachable, else `tab` while it is shared, else `dom`.
+
+The relay serves `cdp` and the robot drives one tab at a time (the one that connected last), so `cdp` and `tab` both picture the tab the other Robot tools act on.
+
+Native apps capture their real rendered surface whatever the `source`. A runtime-server session has its own two:
+
+- `client`: the connected client's real surface, captured over the wire.
 - `replay`: rasterizes the current scene with the framework's wgpu renderer server-side. Always available, even with no client attached, but it is the framework's renderer, not the platform's.
 - `auto` (default): tries `client`, falls back to `replay`.
 
-`width`/`height` (physical px) apply to `replay` only (default: the session's viewport); `client` capture always returns the device's own pixel size.
+`width`/`height` (physical px) apply to `replay` only (default: the session's viewport); every other capture returns the surface's own pixel size.
 
-Web `client` capture mirrors live input state (checked boxes, typed text, selected options) into the DOM clone and replays every scroll position, so the PNG shows what the user sees, sticky headers included. Use `get_snapshot` / `introspect_native` for structured assertions. Errors if the session hasn't registered the screenshot verb.
+Use `get_snapshot` / `introspect_native` for structured assertions. Errors if the session hasn't registered the screenshot verb.
 
 ## introspect_native
 

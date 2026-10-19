@@ -577,6 +577,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Web screenshots from the browser's own pixels** (`robot-relay`,
+  `backend-web`, `dev-http`, `mcp-server`, `idealyst-cli`). The Robot's
+  `screenshot` on web takes a `source`: `dom` (the DOM copied into an SVG;
+  no user step), `tab` (a frame of the tab's screen-share stream, which the
+  user starts once from the dev overlay's "Share this tab with the agent"
+  button), `cdp` (the relay captures a tab in a browser the dev session
+  launched, such as the headless web client, over the DevTools Protocol),
+  or `auto` (`cdp`, else a shared `tab`, else `dom`). Each result names
+  its `source`. The `dom` path now also carries `<canvas>` pixels, which
+  came out blank. See `docs/robot.md`.
+
 - **Windows Arm64 builds** (`build-windows`, `idealyst-cli`). `idealyst build
   --windows --arch arm64` cross-builds a native Arm64 app (and its SDK
   artifacts) with llvm-mingw, linking the C runtime statically; it fails up

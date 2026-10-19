@@ -19,7 +19,7 @@
 //!
 //! App side (WebSocket, text frames):
 //! ```text
-//! app → relay   {"hello":{"platform":"web","label":"Chrome 131"}}               (once, on connect)
+//! app → relay   {"hello":{"platform":"web","label":"Chrome 131","nonce":"…"}}    (once, on connect)
 //! relay → app   {"id":7,"cmd":"find_element","args":{…}}                          (a forwarded request)
 //! app → relay   {"id":7,"ok":{…}}  |  {"id":7,"err":"…"}                          (its response)
 //! app → relay   {"event":"changed","rev":42}                                      (a push, when subscribed)
@@ -27,8 +27,26 @@
 //!
 //! `hello` fields are all optional: `platform` (`web`, `macos`, `ios`, …),
 //! `label` (what tells two apps of one platform apart — a browser's name and
-//! version), and the older `name` / `project_root`, which the relay ignores
-//! (its [`Identity`] comes from the dev session).
+//! version), `nonce` (a web page's pairing token, see [`cdp`]), and the older
+//! `name` / `project_root`, which the relay ignores (its [`Identity`] comes
+//! from the dev session).
+//!
+//! ## `screenshot`
+//!
+//! The relay forwards `screenshot` like any verb, except for a web app it
+//! can capture itself. Its `source` argument picks how:
+//!
+//! - `cdp`: the relay captures the driven tab over the Chrome DevTools
+//!   Protocol ([`cdp`]) — exact pixels, no user action, but only for a tab
+//!   in a browser the dev session launched (the headless web client).
+//! - `tab` / `dom`: forwarded to the page, which captures from the tab's
+//!   screen-share stream (once the user shared it) or by copying its DOM
+//!   into an SVG.
+//! - `auto` (or none): `cdp` when the tab is reachable, else forwarded.
+//!
+//! Every web response names the `source` that produced it. Any other
+//! `source` (a native app's, a runtime-server session's `client` /
+//! `replay`) is forwarded untouched.
 //!
 //! ## Several apps
 //!
@@ -52,6 +70,8 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tungstenite::Message;
+
+pub mod cdp;
 
 /// How long a TCP-side request waits for an app to be connected before failing.
 const APP_WAIT: Duration = Duration::from_secs(3);
@@ -127,6 +147,11 @@ pub struct RelayConfig {
     pub project_registration: Option<PathBuf>,
     /// Told whenever the connected apps change.
     pub on_apps: Option<OnApps>,
+    /// The directory whose subdirectories are the Chromium profiles this
+    /// dev session launched with `--remote-debugging-port` (the CLI passes
+    /// `<project>/.idealyst`). `screenshot` with `source` `cdp` / `auto`
+    /// searches their browsers for the driven tab. `None` disables it.
+    pub cdp_profiles_dir: Option<PathBuf>,
 }
 
 impl Default for RelayConfig {
@@ -140,6 +165,7 @@ impl Default for RelayConfig {
             screenshot_dir: None,
             project_registration: None,
             on_apps: None,
+            cdp_profiles_dir: None,
         }
     }
 }
@@ -179,6 +205,10 @@ struct Inner {
     /// noticed its own socket die.
     apps: Mutex<Vec<(AppInfo, Sender<String>)>>,
     on_apps: Option<OnApps>,
+    /// Each web app session's pairing nonce, from its `hello`.
+    nonces: Mutex<HashMap<u64, String>>,
+    /// See [`RelayConfig::cdp_profiles_dir`].
+    cdp_profiles_dir: Option<PathBuf>,
 }
 
 impl Inner {
@@ -222,6 +252,7 @@ impl Inner {
         let mut out = self.app_outbound.lock().unwrap();
         let was_routed = self.app_session.load(Ordering::SeqCst) == session;
         let mut next = None;
+        self.nonces.lock().unwrap().remove(&session);
         self.update_apps(|apps| {
             apps.retain(|(a, _)| a.id != session);
             if was_routed {
@@ -309,6 +340,8 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         reg_path: Mutex::new(None),
         apps: Mutex::new(Vec::new()),
         on_apps: config.on_apps.clone(),
+        nonces: Mutex::new(HashMap::new()),
+        cdp_profiles_dir: config.cdp_profiles_dir.clone(),
     });
 
     // App side: accept WS dial-ins.
@@ -430,6 +463,9 @@ fn route_from_app(text: &str, inner: &Arc<Inner>, session: u64) {
             hello.get(k).and_then(|p| p.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
         };
         let (platform, label) = (field("platform"), field("label"));
+        if let Some(nonce) = field("nonce") {
+            inner.nonces.lock().unwrap().insert(session, nonce);
+        }
         inner.update_apps(|apps| {
             if let Some((app, _)) = apps.iter_mut().find(|(a, _)| a.id == session) {
                 app.platform = platform;
@@ -484,7 +520,8 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
             continue;
         }
 
-        match forward(inner, &cmd, &args) {
+        let result = if cmd == "screenshot" { screenshot(inner, &args) } else { forward(inner, &cmd, &args) };
+        match result {
             Ok(mut resp) => {
                 if let Value::Object(map) = &mut resp {
                     map.insert("id".into(), id.clone());
@@ -504,6 +541,40 @@ fn tcp_session(stream: TcpStream, inner: &Arc<Inner>) {
             }
             Err(e) => write_json(&writer, &json!({ "id": id, "err": e })),
         }
+    }
+}
+
+/// Serve `screenshot` (see the module docs): capture over CDP when asked
+/// to and possible, else forward to the app.
+fn screenshot(inner: &Arc<Inner>, args: &Value) -> Result<Value, String> {
+    let source = args.get("source").and_then(|s| s.as_str()).unwrap_or("auto");
+    if source != "cdp" && source != "auto" {
+        return forward(inner, "screenshot", args);
+    }
+    let session = inner.app_session.load(Ordering::SeqCst);
+    let nonce = inner.nonces.lock().unwrap().get(&session).cloned();
+    let shot = match (&nonce, &inner.cdp_profiles_dir) {
+        (Some(nonce), Some(dir)) => cdp::capture(&cdp::browser_ports(dir), nonce),
+        (None, _) => Err("the driven app is not a web page that paired with the relay".into()),
+        (_, None) => Err("this relay was started without CDP access".into()),
+    };
+    match shot {
+        Ok(shot) => {
+            use base64::Engine as _;
+            Ok(json!({ "ok": {
+                "png_base64": base64::engine::general_purpose::STANDARD.encode(&shot.png),
+                "width": shot.width,
+                "height": shot.height,
+                "source": "cdp",
+            }}))
+        }
+        Err(e) if source == "cdp" => Err(format!(
+            "cdp screenshot unavailable: {e}. CDP reaches only a tab in a browser the dev session \
+             launched (`idealyst dev --headless-client`, or `run_dev` with `headless_client`); for \
+             the user's own browser use source \"tab\" (they share the tab once from the dev \
+             overlay) or \"dom\""
+        )),
+        Err(_) => forward(inner, "screenshot", args),
     }
 }
 
@@ -688,6 +759,8 @@ mod tests {
                 reg_path: Mutex::new(None),
                 apps: Mutex::new(Vec::new()),
                 on_apps: None,
+                nonces: Mutex::new(HashMap::new()),
+                cdp_profiles_dir: None,
             }),
         };
         // Paths that don't exist: Drop's remove_file is a no-op.

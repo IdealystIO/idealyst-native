@@ -47,7 +47,17 @@ document.createElement = t => new El(t);
 
 __OVERLAY__
 
-const o = idealystStatusOverlay(document);
+// A fake tab-capture controller (`tab_capture.js`'s surface): its state
+// is set by `!capture {…}` lines; the button's clicks are counted.
+const capture = {
+  st: { supported: true, sharing: false, requested: false, lastShot: null, error: null },
+  starts: 0, stops: 0, subs: [],
+  state() { return this.st; },
+  start() { this.starts++; return Promise.resolve(); },
+  stop() { this.stops++; },
+  subscribe(f) { this.subs.push(f); },
+};
+const o = idealystStatusOverlay(document, capture);
 const lines = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
 const out = [];
 for (const line of lines) {
@@ -56,10 +66,17 @@ for (const line of lines) {
     o.robot(line.slice("!robot ".length));
     continue;
   }
+  if (line.startsWith("!capture ")) {
+    Object.assign(capture.st, JSON.parse(line.slice("!capture ".length)));
+    capture.subs.forEach(f => f());
+    continue;
+  }
   if (line.startsWith("#")) {
     const cmd = line.slice(1).trim();
     if (cmd === "esc") document.fire("keydown", { key: "Escape" });
+    if (cmd === "click-share") document.body.children[0].find("share").fire("click", {});
     const host = document.body.children[0];
+    const share = host.find("share");
     const panel = host.find("panel");
     out.push({
       badge: host.find("badge").textContent,
@@ -68,6 +85,10 @@ for (const line of lines) {
       diagnostics: host.findAll("diagnostic").length,
       robot: host.find("robot").style.display === "none" ? null : host.find("robot").textContent,
       robotColor: host.find("robot").style.color || null,
+      share: share.style.display === "none" ? null : share.textContent,
+      shareLit: share.style.background === "#e5b443",
+      starts: capture.starts,
+      stops: capture.stops,
     });
     continue;
   }
@@ -158,7 +179,9 @@ fn a_failure_with_no_diagnostic_shows_the_error_itself() {
 #[test]
 fn the_overlay_is_part_of_the_served_reload_script() {
     let script = dev_http::reload_script_tag("/__idealyst/reload");
-    assert!(script.contains("function idealystStatusOverlay(doc)"));
+    assert!(script.contains("function idealystStatusOverlay(doc, capture)"));
+    assert!(script.contains("function idealystTabCapture(win, doc)"));
+    assert!(!script.contains("__TAB_CAPTURE__"));
     assert!(script.contains(r#"es.addEventListener("dev-state""#));
     assert!(!script.contains("__STATUS_OVERLAY__"));
     // The names `backend_web::robot_transport` publishes under
@@ -282,4 +305,64 @@ fn regression_a_stopped_server_says_why_on_the_page() {
     assert_eq!(out[1]["badge"], "✗ server stopped: exited with exit status: 1: Error: Address already in use (os error 48)");
     let text = out[1]["panelText"].as_str().unwrap();
     assert!(text.contains("Its output is in /cf/server.log"), "{text}");
+}
+
+/// The tab-share button: hidden until the robot is connected, then the
+/// click that starts the share (the browser allows `getDisplayMedia` only
+/// from one). It lights up when an agent asked for the tab, says when it
+/// is sharing, and a click then stops it.
+#[test]
+fn the_share_button_follows_the_robot_and_the_capture() {
+    const CONNECTED: &str = r#"!robot {"state":"connected","url":"ws://h/__idealyst/relay"}"#;
+    let Some(out) = run(&[
+        BUILD,
+        "#",
+        CONNECTED,
+        "#",
+        r#"!capture {"requested":true}"#,
+        "#",
+        "#click-share",
+        r#"!capture {"requested":false,"sharing":true,"lastShot":1760000000000}"#,
+        "#",
+        "#click-share",
+        r#"!capture {"sharing":false,"lastShot":null,"error":"a window was shared, not this tab"}"#,
+        "#",
+        r#"!robot {"state":"dropped","url":"ws://h/__idealyst/relay","error":"close 1006"}"#,
+        "#",
+    ]) else {
+        return skip();
+    };
+    assert_eq!(out[0]["share"], serde_json::Value::Null, "no robot, no agent to share with");
+    assert_eq!(out[1]["share"], "◎ Share this tab with the agent");
+    assert_eq!(out[1]["shareLit"], false);
+    assert_eq!(out[2]["share"], "◎ Agent asks to see this tab: click to share it");
+    assert_eq!(out[2]["shareLit"], true, "an agent's request lights the button");
+    // `#click-share` records a frame of its own: the click, before the
+    // controller reports back.
+    assert_eq!(out[3]["starts"], 1, "the click starts the share");
+    let sharing = out[4]["share"].as_str().unwrap();
+    assert!(sharing.starts_with("◉ Sharing this tab with the agent · last screenshot "), "{sharing}");
+    assert!(sharing.ends_with(" · click to stop"), "{sharing}");
+    assert_eq!(out[4]["shareLit"], false);
+    assert_eq!(out[5]["stops"], 1, "a click while sharing stops it");
+    assert_eq!(out[5]["starts"], 1);
+    assert_eq!(out[6]["share"], "◎ Share this tab with the agent (a window was shared, not this tab)");
+    assert_eq!(out[7]["share"], serde_json::Value::Null, "hidden again while the robot is away");
+}
+
+/// A browser that cannot share a tab shows no button — until an agent
+/// asks, when it says why the agent will not get one.
+#[test]
+fn a_browser_without_tab_sharing_says_so_only_when_asked() {
+    let Some(out) = run(&[
+        r#"!capture {"supported":false}"#,
+        r#"!robot {"state":"connected","url":"ws://h/__idealyst/relay"}"#,
+        "#",
+        r#"!capture {"requested":true}"#,
+        "#",
+    ]) else {
+        return skip();
+    };
+    assert_eq!(out[0]["share"], serde_json::Value::Null);
+    assert_eq!(out[1]["share"], "✗ An agent asked to see this tab, but this browser cannot share one");
 }

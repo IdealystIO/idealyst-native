@@ -3014,6 +3014,9 @@ fn start_robot_relay(dir: &Path, args: &Args, app_name: &str) -> Option<robot_re
         // a random one is not forwarded.
         project_registration: (tcp_port != 0).then(|| robot_registration_path(dir)),
         on_apps: Some(on_apps.clone()),
+        // The headless web client's profiles live here
+        // (`spawn_headless_client`); the relay screenshots its tab over CDP.
+        cdp_profiles_dir: Some(dir.join(".idealyst")),
     };
     let started = match declared {
         Some(port) => {

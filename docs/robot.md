@@ -217,6 +217,27 @@ Deep links need no SDK: `open_link {url}` delivers a URL as the OS would
 | Functions | `list_functions`, `call_function`, `poll_function` (above) |
 | App | `get_logs`, `clear_logs`, `get_identity`, `ping` |
 
+### Screenshots on web
+
+`screenshot` takes a `source`; a web app answers three, and names the one it
+used in the result:
+
+- `dom` — `backend-web/src/robot_screenshot.rs` copies the DOM (live input
+  state, scroll offsets and 2D canvas pixels included) into an SVG
+  `<foreignObject>` and rasterizes it. No user step; WebGL, plugin content
+  (a PDF viewer) and exact font rendering can differ.
+- `tab` — a frame of the tab's screen-share stream (`dev-http`'s
+  `tab_capture.js`). A browser opens `getDisplayMedia` only from a click,
+  so the user starts it from the dev overlay's "Share this tab with the
+  agent" button; until then `tab` errors and the button lights up. Only a
+  browser tab — this one, where capture handles can tell — is accepted.
+- `cdp` — `robot_relay::cdp`: the relay captures the driven tab with
+  `Page.captureScreenshot`, for a tab in a Chromium the dev session
+  launched with `--remote-debugging-port` (the headless web client). It
+  finds the tab by the nonce the page sent in its `hello` and left on
+  `window.__idealyst_robot_nonce`.
+- `auto` — `cdp` if reachable, else `tab` if shared, else `dom`.
+
 ## Clients
 
 ### robot-test (`#[robot_test]`)

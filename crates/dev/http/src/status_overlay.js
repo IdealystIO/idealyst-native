@@ -27,16 +27,22 @@
 //   `window.__idealyst_dev_robot_status` by `backend-web`'s
 //   `robot_transport`): connecting, connected, or what failed and when it
 //   retries. The page reports it itself because the relay cannot: a page
-//   that never reaches the relay is invisible to it.
+//   that never reaches the relay is invisible to it;
+// - above that, while the robot is connected, the "Share tab with agent"
+//   button of the tab capture (`capture`, from `tab_capture.js`): the
+//   click a browser requires before a page may share its tab, after which
+//   the Robot's `screenshot` source "tab" is the browser's real pixels. It
+//   lights up when an agent asked for the tab, and while sharing it says so
+//   and stops the share on a click.
 //
 // DOM use is deliberately narrow (createElement, appendChild, textContent,
 // style.cssText, setAttribute, addEventListener, attachShadow) so the
 // behaviour is testable in node against a small fake DOM
 // (`crates/dev/http/tests/status_overlay.rs`). The shadow root keeps the
 // app's CSS out of the overlay and the overlay's out of the app.
-function idealystStatusOverlay(doc) {
+function idealystStatusOverlay(doc, capture) {
   var FONT = "font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;";
-  var host = null, badge = null, robotBadge = null, panel = null, list = null, title = null;
+  var host = null, badge = null, robotBadge = null, shareButton = null, panel = null, list = null, title = null;
   // This page's Robot connection, as the app's robot client last reported
   // it ({state, url, error, retry_ms}); null until it reports.
   var robot = null;
@@ -141,6 +147,19 @@ function idealystStatusOverlay(doc) {
       "padding:3px 8px;border-radius:4px;background:#111c;color:#eee;" +
       "white-space:normal;overflow-wrap:anywhere;pointer-events:none;" + FONT);
     robotBadge.setAttribute("data-part", "robot");
+    shareButton = el("button",
+      "position:fixed;right:8px;bottom:56px;z-index:2147483647;max-width:60vw;" +
+      "padding:3px 8px;border-radius:4px;border:1px solid #fff3;background:#111c;color:#eee;" +
+      "white-space:normal;overflow-wrap:anywhere;cursor:pointer;text-align:left;display:none;" + FONT);
+    shareButton.setAttribute("data-part", "share");
+    shareButton.setAttribute("type", "button");
+    shareButton.addEventListener("click", function () {
+      if (!capture) return;
+      if (capture.state().sharing) capture.stop();
+      // The browser's dialog follows; its outcome comes back through
+      // `subscribe`. A dismissed dialog is no error to show.
+      else capture.start().catch(function () {});
+    });
     panel = el("div",
       "position:fixed;inset:0;z-index:2147483647;background:#000b;display:none;" +
       "overflow:auto;padding:5vh 5vw;box-sizing:border-box;" + FONT);
@@ -159,6 +178,7 @@ function idealystStatusOverlay(doc) {
     panel.appendChild(card);
     root.appendChild(badge);
     root.appendChild(robotBadge);
+    root.appendChild(shareButton);
     root.appendChild(panel);
     (doc.body || doc.documentElement).appendChild(host);
     panel.addEventListener("click", function (e) {
@@ -346,6 +366,34 @@ function idealystStatusOverlay(doc) {
     }
   }
 
+  function clock(at) {
+    var d = new Date(at);
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
+  }
+
+  // What the share button says, or null when it is not shown: only while
+  // the robot is connected (no agent can ask otherwise) and the browser
+  // can share a tab — or once an agent asked, so a browser that cannot
+  // still says why.
+  function shareText() {
+    if (!capture || !robot || robot.state !== "connected") return null;
+    var c = capture.state();
+    if (!c.supported) {
+      return c.requested ? { text: "✗ An agent asked to see this tab, but this browser cannot share one", color: "#ff8b8b", lit: false } : null;
+    }
+    if (c.sharing) {
+      return {
+        text: "◉ Sharing this tab with the agent" + (c.lastShot ? " · last screenshot " + clock(c.lastShot) : "") + " · click to stop",
+        color: "#8be28b",
+        lit: false
+      };
+    }
+    var t = c.requested ? "◎ Agent asks to see this tab: click to share it" : "◎ Share this tab with the agent";
+    if (c.error) t += " (" + c.error + ")";
+    return { text: t, color: c.requested ? "#111" : "#eee", lit: c.requested };
+  }
+
   var ICON = { idle: "○", change: "…", patching: "↻", building: "⚙", done: "✓", error: "✗" };
 
   function render() {
@@ -371,6 +419,13 @@ function idealystStatusOverlay(doc) {
       var r = robotText();
       robotBadge.textContent = r.text;
       robotBadge.style.color = r.color;
+    }
+    var share = shareText();
+    shareButton.style.display = share ? "block" : "none";
+    if (share) {
+      shareButton.textContent = share.text;
+      shareButton.style.color = share.color;
+      shareButton.style.background = share.lit ? "#e5b443" : "#111c";
     }
 
     var show = !!st.failure && !st.dismissed;
@@ -399,6 +454,8 @@ function idealystStatusOverlay(doc) {
       list.appendChild(item);
     }
   }
+
+  if (capture) capture.subscribe(render);
 
   return { apply: apply, dismiss: dismiss, robot: setRobot, state: st };
 }

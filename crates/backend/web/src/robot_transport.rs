@@ -10,11 +10,15 @@
 //!
 //! Protocol (text frames):
 //! ```text
-//! app → relay   {"hello":{"platform":"web","label":"Chrome 131"}}   once, on open
+//! app → relay   {"hello":{"platform":"web","label":"Chrome 131","nonce":"…"}}   once, on open
 //! relay → app   {"id":N,"cmd":"find_element","args":{…}}  a forwarded request
 //! app → relay   {"id":N,"ok":<value>} | {"id":N,"err":…}  the dispatched result
 //! app → relay   {"event":"changed","rev":R}               a push, while subscribed
 //! ```
+//!
+//! `nonce` is this page's pairing token, also left on
+//! [`ROBOT_NONCE_GLOBAL`]: the relay finds the tab in a browser it can reach
+//! over CDP by evaluating that global (`robot_relay::cdp`).
 //!
 //! `invoke_command` runs the same dispatch the native bridge's `poll` does, on
 //! the UI thread — which on web is exactly where this `onmessage` closure fires,
@@ -165,6 +169,46 @@ impl RelayStatus {
 pub const ROBOT_STATUS_GLOBAL: &str = "__idealyst_dev_robot";
 /// The function the dev overlay defines to be told each change.
 pub const ROBOT_STATUS_HOOK: &str = "__idealyst_dev_robot_status";
+
+/// The page global holding this page's pairing nonce. `robot_relay::cdp`
+/// evaluates the same name (`NONCE_GLOBAL`); a test holds them together.
+pub const ROBOT_NONCE_GLOBAL: &str = "__idealyst_robot_nonce";
+
+/// This page's pairing nonce: made once, kept across redials (it names the
+/// tab, not the connection), and published on [`ROBOT_NONCE_GLOBAL`].
+fn page_nonce() -> String {
+    thread_local! {
+        static NONCE: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+    NONCE.with(|n| {
+        n.borrow_mut()
+            .get_or_insert_with(|| {
+                let global = JsValue::global();
+                let random = global
+                    .get("crypto")
+                    .ok()
+                    .filter(|c| c.is_object())
+                    .and_then(|c| c.call_method("randomUUID", &[]).ok())
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| {
+                        // `randomUUID` needs a secure context; a page on a
+                        // LAN address is not one.
+                        let part = || {
+                            global
+                                .get("Math")
+                                .and_then(|m| m.call_method("random", &[]))
+                                .ok()
+                                .and_then(|v| v.as_f64())
+                                .map_or(0, |f| (f * u32::MAX as f64) as u64)
+                        };
+                        format!("{:08x}{:08x}{:08x}", part(), part(), part())
+                    });
+                let _ = global.set(ROBOT_NONCE_GLOBAL, &JsValue::from_str(&random));
+                random
+            })
+            .clone()
+    })
+}
 
 /// Tell the page's dev overlay (`dev-http`'s `status_overlay.js`) how the
 /// Robot connection is doing. Without it the only sign of a page that could
@@ -397,7 +441,7 @@ fn dial(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
         // No `name`: this crate would say `backend-web` (it once sent
         // `env!("CARGO_PKG_NAME")`); the relay knows the app's name from
         // the dev session. `label` tells this tab from another.
-        let mut hello = serde_json::json!({ "hello": { "platform": "web" } });
+        let mut hello = serde_json::json!({ "hello": { "platform": "web", "nonce": page_nonce() } });
         if let Some(label) = browser_label(&user_agent()) {
             hello["hello"]["label"] = label.into();
         }
@@ -448,23 +492,20 @@ fn dial(dialer: &Rc<RefCell<Dialer>>, idx: usize) {
             return;
         }
 
-        // `screenshot` can't go through the sync `invoke_command` path — DOM
-        // rasterization is async (image load). Capture off-band and send the
-        // bridge response when it completes; the relay just forwards it.
+        // `screenshot` can't go through the sync `invoke_command` path —
+        // both page captures are async (an image or a video frame loads).
+        // Capture off-band and send the bridge response when it completes;
+        // `source` picks the capture (`robot_screenshot_source`).
         if cmd == "screenshot" {
             let socket = socket_for_msg.clone();
             let id_for_shot = id.clone();
-            crate::robot_screenshot::capture(Box::new(move |res| {
+            let source = args.get("source").and_then(|s| s.as_str());
+            crate::robot_screenshot_source::capture(source, Box::new(move |res| {
                 let resp = match res {
-                    Ok((b64, w, h)) => format!(
-                        "{{\"id\":{id_for_shot},\"ok\":{{\"png_base64\":\"{b64}\",\"width\":{w},\"height\":{h}}}}}"
-                    ),
-                    Err(e) => format!(
-                        "{{\"id\":{id_for_shot},\"err\":{}}}",
-                        serde_json::to_string(&e).unwrap_or_else(|_| "\"screenshot error\"".into())
-                    ),
+                    Ok(shot) => serde_json::json!({ "id": id_for_shot, "ok": shot.to_json() }),
+                    Err(e) => serde_json::json!({ "id": id_for_shot, "err": e }),
                 };
-                let _ = socket.send_with_str(&resp);
+                let _ = socket.send_with_str(&resp.to_string());
             }));
             return;
         }
@@ -553,6 +594,26 @@ mod candidate_tests {
             RelayStatus::Connected { url: "ws://h/__idealyst/relay".into() }.to_json(),
             serde_json::json!({ "state": "connected", "url": "ws://h/__idealyst/relay" })
         );
+    }
+
+    /// The relay finds this tab over CDP by evaluating the nonce global by
+    /// name: both sides must spell it the same.
+    #[wasm_bindgen_test]
+    fn the_nonce_global_is_the_one_the_relay_evaluates() {
+        assert_eq!(ROBOT_NONCE_GLOBAL, robot_relay_nonce_global());
+        let nonce = page_nonce();
+        assert!(nonce.len() >= 16, "{nonce}");
+        assert_eq!(page_nonce(), nonce, "one nonce per page, kept across redials");
+        assert_eq!(JsValue::global().get(ROBOT_NONCE_GLOBAL).unwrap().as_string(), Some(nonce));
+    }
+
+    /// `robot_relay::cdp::NONCE_GLOBAL`, read from its source: the relay is
+    /// a host crate that does not build for wasm32.
+    fn robot_relay_nonce_global() -> &'static str {
+        const SRC: &str = include_str!("../../../dev/robot-relay/src/cdp.rs");
+        let at = SRC.find("pub const NONCE_GLOBAL: &str = \"").expect("the relay declares NONCE_GLOBAL");
+        let rest = &SRC[at + "pub const NONCE_GLOBAL: &str = \"".len()..];
+        &rest[..rest.find('"').unwrap()]
     }
 
     #[wasm_bindgen_test]
