@@ -615,6 +615,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Robot hover and press, and Windows' missing capabilities**
+  (`runtime-vocabulary`, `runtime-shared`, `robot-test`, `mcp-server`,
+  `backend-web`, `backend-macos`, `backend-android-mobile`,
+  `backend-windows`, `host-win32`). `ElementState` reports `hovered` and
+  `pressed`, mirrored from the style state machine; `Robot` gains
+  `hover_native` / `press_native` / `release_native` (MCP
+  `pointer_native`), which drive the toolkit's own pointer events. Android
+  refuses hover, since it has none. `runtime_shared::can_open_urls()` says
+  whether the platform can open a link. On Windows, `flat_list`
+  virtualizes, `text_area` is a multi-line field, and `text_input` takes
+  values from code, a placeholder, live `secure`, `on_focus`, `state
+  focused` and `on_key_down`. Links open, `observe_scroll_end` fires, and
+  scroll and virtualizer handles work. See `docs/system-check.md` for
+  the capability coverage gate and the conformance app's System check
+  screen.
+
 - **Web screenshots from the browser's own pixels** (`robot-relay`,
   `backend-web`, `dev-http`, `mcp-server`, `idealyst-cli`). The Robot's
   `screenshot` on web takes a `source`: `dom` (the DOM copied into an SVG;
