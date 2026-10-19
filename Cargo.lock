@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "css",
  "parity-goldens",
@@ -3176,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -6417,7 +6417,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6436,7 +6436,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "6.0.0"
+version = "6.1.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -10737,7 +10737,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -10796,7 +10796,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -12782,7 +12782,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "3.0.1"
+version = "3.1.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",

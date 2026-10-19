@@ -483,7 +483,7 @@ license = "MIT OR Apache-2.0"
 # cargo — there is no CLI-generated web wrapper crate any more.
 idealyst = { path = "crates/idealyst", version = "2.1.1", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "2.2.0", registry = "idealyst" }
-runtime-shared = { path = "crates/runtime/shared", version = "2.3.0", registry = "idealyst" }
+runtime-shared = { path = "crates/runtime/shared", version = "2.4.0", registry = "idealyst" }
 runtime-world = { path = "crates/runtime/world", version = "1.9.0", registry = "idealyst" }
 runtime-tls = { path = "crates/runtime/tls", version = "0.1.0", registry = "idealyst" }
 runtime-scene = { path = "crates/runtime/scene", version = "1.11.0", registry = "idealyst" }
@@ -501,7 +501,7 @@ rustc-hash = "2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-css = { path = "crates/css", version = "2.0.0", registry = "idealyst" }
+css = { path = "crates/css", version = "2.1.0", registry = "idealyst" }
 # Remote components' loader and release format (crates/streaming).
 remote-abi = { path = "crates/streaming/abi", version = "1.0.0", registry = "idealyst" }
 remote-bundle = { path = "crates/streaming/bundle-format", version = "1.2.0", registry = "idealyst" }
@@ -524,7 +524,7 @@ mcp-catalog = { path = "crates/mcp/catalog", version = "1.26.1", registry = "ide
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "1.1.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "1.14.0", registry = "idealyst" }
 docs-macro = { path = "websites/docs-macro" }
-runtime-layout = { path = "crates/runtime/layout", version = "2.0.0", registry = "idealyst" }
+runtime-layout = { path = "crates/runtime/layout", version = "2.1.0", registry = "idealyst" }
 web-glue = { path = "crates/runtime/web-glue", version = "2.1.0", registry = "idealyst" }
 zone-offset = { path = "crates/runtime/zone-offset", version = "1.6.0", registry = "idealyst" }
 wire = { path = "crates/dev/wire", version = "1.11.0", registry = "idealyst" }
@@ -575,7 +575,7 @@ backend-apple-core = { path = "crates/backend/apple/core", version = "2.0.0", re
 backend-image-source = { path = "crates/backend/image-source", version = "2.0.0", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "2.2.0", registry = "idealyst" }
 backend-ios-core = { path = "crates/backend/ios/core", version = "2.0.0", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "2.1.0", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "2.1.1", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "2.0.0", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "2.0.0", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "2.0.0", registry = "idealyst" }
@@ -587,13 +587,13 @@ backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.
 backend-terminal = { path = "crates/backend/terminal", version = "3.0.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "2.0.0", registry = "idealyst" }
 backend-web = { path = "crates/backend/web", version = "3.2.0", registry = "idealyst" }
-backend-ssr = { path = "crates/backend/ssr", version = "2.0.0", registry = "idealyst" }
+backend-ssr = { path = "crates/backend/ssr", version = "2.1.0", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "2.0.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "3.2.0", registry = "idealyst" }
 backend-linux = { path = "crates/backend/linux", version = "2.0.0", registry = "idealyst" }
 host-gtk = { path = "crates/host/gtk", version = "2.0.0", registry = "idealyst" }
 welcome = { path = "examples/welcome" }
-idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "6.0.0", registry = "idealyst" }
+idea-ui-docs = { path = "websites/idea-ui-docs", default-features = false, version = "6.1.0", registry = "idealyst" }
 render-api = { path = "crates/gpu-backend/api", version = "3.0.0", registry = "idealyst" }
 render-wgpu = { path = "crates/gpu-backend/engine", version = "3.0.0", registry = "idealyst" }
 ios-sim = { path = "crates/gpu-backend/painter/ios-sim" }
@@ -619,7 +619,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "4.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "5.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "8.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "8.1.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "2.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "5.0.0", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }
@@ -650,7 +650,7 @@ canvas3d-wgpu = { path = "crates/sdk/client/canvas3d/wgpu", version = "2.0.0", r
 toolbar = { path = "crates/sdk/client/toolbar", version = "3.0.2", registry = "idealyst" }
 pdf = { path = "crates/sdk/client/pdf", version = "2.0.0", registry = "idealyst" }
 form = { path = "crates/sdk/client/form", version = "2.0.1", registry = "idealyst" }
-table = { path = "crates/sdk/client/table", version = "3.0.1", registry = "idealyst" }
+table = { path = "crates/sdk/client/table", version = "3.1.0", registry = "idealyst" }
 virtualized = { path = "crates/sdk/client/virtualized", version = "2.0.0", registry = "idealyst" }
 offload = { path = "crates/sdk/client/offload", version = "2.0.2", registry = "idealyst" }
 menu = { path = "crates/sdk/client/menu", version = "3.0.1", registry = "idealyst" }
