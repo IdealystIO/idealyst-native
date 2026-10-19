@@ -12,7 +12,7 @@
 # which only rebuilds when dependencies change.
 [package]
 name = "catalog-scan"
-version = "1.0.0"
+version = "1.1.0"
 edition.workspace = true
 license.workspace = true
 description = "Read an idealyst app's MCP catalog entries from source by running the catalog macros' own expansion."

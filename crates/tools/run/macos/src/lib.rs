@@ -155,8 +155,14 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
                 // of its own. Restricted ones need a provisioning profile.
                 let profile = std::env::var_os(DEV_PROFILE_ENV).map(PathBuf::from);
                 let manifest = parse_manifest(project_dir)?;
-                let bundle_id = manifest.app.require_bundle_id()?;
-                let dev = dev_entitlements(&built.sdk.app_entitlements, profile.is_some(), team_id.as_deref(), &bundle_id);
+                let executable = app.inner_binary.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                let dev = dev_entitlements_for(
+                    &manifest.app,
+                    executable,
+                    &built.sdk.app_entitlements,
+                    profile.is_some(),
+                    team_id.as_deref(),
+                );
                 if !dev.dropped.is_empty() {
                     eprintln!(
                         "[run-macos] not signing with {} — restricted entitlements need a provisioning \
@@ -383,6 +389,26 @@ struct DevEntitlements {
 /// are dropped (the feature fails at runtime with an error the app can
 /// show). With a profile they are kept, along with the application- and
 /// team-identifier entitlements the profile is matched against.
+/// The app's bundle identifier: the manifest's `bundle_id`, else
+/// `com.example.<executable>`. One rule for the `.app`'s `CFBundleIdentifier`
+/// and the dev signature's `application-identifier`, which must agree; and a
+/// dev run never requires a `bundle_id` the bundle itself doesn't.
+fn app_bundle_id(app: &build_ios::AppMetadata, executable: &str) -> String {
+    app.bundle_id.clone().unwrap_or_else(|| format!("com.example.{executable}"))
+}
+
+/// [`dev_entitlements`] for the app being signed, its bundle id resolved the
+/// way its Info.plist resolves it.
+fn dev_entitlements_for(
+    app: &build_ios::AppMetadata,
+    executable: &str,
+    declared: &[String],
+    has_profile: bool,
+    team: Option<&str>,
+) -> DevEntitlements {
+    dev_entitlements(declared, has_profile, team, &app_bundle_id(app, executable))
+}
+
 fn dev_entitlements(declared: &[String], has_profile: bool, team: Option<&str>, bundle_id: &str) -> DevEntitlements {
     let restricted = |e: &String| e.starts_with("com.apple.developer.");
     if !has_profile {
@@ -743,10 +769,7 @@ fn render_info_plist(
     icon_stem: Option<&str>,
     permissions: &[(String, String)],
 ) -> String {
-    let bundle_id = app
-        .bundle_id
-        .clone()
-        .unwrap_or_else(|| format!("com.example.{}", executable));
+    let bundle_id = app_bundle_id(app, executable);
     let icon_entry = match icon_stem {
         Some(stem) => format!(
             "    <key>CFBundleIconFile</key>\n    <string>{}</string>\n",
@@ -1119,6 +1142,29 @@ mod tests {
         assert_eq!(d.booleans, ["com.apple.security.device.audio-input"]);
         assert_eq!(d.dropped, ["com.apple.developer.system-extension.install"]);
         assert!(d.strings.is_empty());
+    }
+
+    /// A dev run signs every wrapped `.app` when a signing identity exists,
+    /// and resolving the signature's bundle id used to `require_bundle_id()`
+    /// — so an app with no `bundle_id` (which its Info.plist handles with a
+    /// `com.example.<exe>` fallback) failed `idealyst run --macos` outright
+    /// on any Mac with an Apple Development certificate. Signing resolves
+    /// the id exactly as the Info.plist does, and the two agree.
+    #[test]
+    fn regression_dev_signature_needs_no_bundle_id() {
+        let mut app = app_metadata(MacosMetadata::default());
+        app.bundle_id = None;
+        let declared = vec!["com.apple.developer.system-extension.install".to_string()];
+        let d = dev_entitlements_for(&app, "demo-macos", &declared, true, Some("TEAM123456"));
+        assert_eq!(
+            d.strings[0],
+            ("com.apple.application-identifier".to_string(), "TEAM123456.com.example.demo-macos".to_string())
+        );
+        let plist = render_info_plist("Demo", &app, "demo-macos", None, &[]);
+        assert!(
+            plist.contains("<key>CFBundleIdentifier</key>\n    <string>com.example.demo-macos</string>"),
+            "the signature's id is the bundle's id: {plist}"
+        );
     }
 
     #[test]

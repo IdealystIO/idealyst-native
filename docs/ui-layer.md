@@ -400,7 +400,10 @@ free of any reactive machinery, and is why `del_visible` is authored as a
 `memo` rather than a bare `move || …` closure. (`if let PAT = EXPR { … }`
 lowers as `match EXPR { PAT => …, _ => … }`, under the same gate as a
 `match`: `if let Some(x) = sig.get()` re-binds when the signal changes; a
-signal-free scrutinee stays a plain `if let`.)
+signal-free scrutinee stays a plain `if let`. Unlike a reactive `match`,
+whose arms bind references into the keyed value, `if let` binds owned
+values — cloned per rebuild, or by reference when the type isn't `Clone` —
+so a closure in the branch can keep `x`.)
 
 This mirrors the `for` loop's `StaticForEach` / `ReactiveForEach`
 type-dispatch: reactivity lives in the *type*, not in a guess about

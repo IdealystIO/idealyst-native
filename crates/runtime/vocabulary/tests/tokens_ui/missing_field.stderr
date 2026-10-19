@@ -1,0 +1,5 @@
+error[E0063]: missing field `text` in initializer of `AppTheme`
+  --> tests/tokens_ui/missing_field.rs:14:5
+   |
+14 |     AppTheme { surface: "#fff".into() }
+   |     ^^^^^^^^ missing `text`

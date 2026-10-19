@@ -1469,6 +1469,15 @@ impl caps::StyleOps for HostMock {
         self.s.rec("update_tokens", format!("update_tokens {names:?}"));
     }
 
+    fn install_theme_palettes(&mut self, palettes: &[runtime_shared::ThemePalette]) {
+        let described: Vec<String> = palettes
+            .iter()
+            .map(|p| format!("{}({:?})={}", p.name, p.scheme, p.tokens.len()))
+            .collect();
+        self.s
+            .rec_v("install_theme_palettes", format!("install_theme_palettes {described:?}"));
+    }
+
     fn on_node_unstyled(&mut self, node: &Node) {
         self.s
             .rec("on_node_unstyled", format!("on_node_unstyled n{node}"));

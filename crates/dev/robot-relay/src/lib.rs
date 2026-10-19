@@ -279,6 +279,7 @@ pub struct RelayHandle {
     pub tcp_addr: SocketAddr,
     reg_path: Option<PathBuf>,
     project_reg_path: Option<PathBuf>,
+    registration_errors: Vec<String>,
     inner: Arc<Inner>,
 }
 
@@ -289,6 +290,14 @@ impl RelayHandle {
     /// calling `process::exit`) removes them itself.
     pub fn registration_files(&self) -> Vec<PathBuf> {
         self.reg_path.iter().chain(&self.project_reg_path).cloned().collect()
+    }
+
+    /// Registrations the config asked for that could not be written, one
+    /// message each, naming the path. The relay still serves, but a
+    /// registration that isn't on disk is an app no MCP server will find,
+    /// so the caller must surface these rather than advertise discovery.
+    pub fn registration_errors(&self) -> &[String] {
+        &self.registration_errors
     }
 
     /// The apps connected right now, oldest first.
@@ -370,20 +379,27 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         });
     }
 
-    let reg_path = if config.register {
-        config
-            .identity
-            .as_ref()
-            .and_then(|id| write_registration(tcp_addr.port(), id).ok())
-    } else {
-        None
+    let mut registration_errors = Vec::new();
+    let reg_path = match (config.register, &config.identity) {
+        (true, Some(id)) => match home_apps_dir() {
+            Some(dir) => write_registration(&dir, tcp_addr.port(), id)
+                .map_err(|e| registration_errors.push(format!("{e:#}")))
+                .ok(),
+            None => {
+                registration_errors.push("no HOME, so no ~/.idealyst/apps registration".to_string());
+                None
+            }
+        },
+        _ => None,
     };
     // Remember it so the `hello` handler can patch in the app's platform once
     // it dials (we wrote the file before knowing which platform connects).
     *inner.reg_path.lock().unwrap() = reg_path.clone();
 
     let project_reg_path = match (&config.project_registration, &config.identity) {
-        (Some(path), Some(id)) => write_project_registration(path, tcp_addr.port(), id).ok(),
+        (Some(path), Some(id)) => write_project_registration(path, tcp_addr.port(), id)
+            .map_err(|e| registration_errors.push(format!("{e:#}")))
+            .ok(),
         _ => None,
     };
 
@@ -392,6 +408,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         tcp_addr,
         reg_path,
         project_reg_path,
+        registration_errors,
         inner,
     })
 }
@@ -672,12 +689,17 @@ fn write_json(writer: &Arc<Mutex<TcpStream>>, v: &Value) {
     }
 }
 
-/// Write the `~/.idealyst/apps/<name>-<pid>.json` registration the MCP server
-/// discovers. Same JSON shape (and `proto:1`) the native bridge writes.
-fn write_registration(tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("no HOME"))?;
-    let dir = PathBuf::from(home).join(".idealyst").join("apps");
-    std::fs::create_dir_all(&dir)?;
+fn home_apps_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".idealyst").join("apps"))
+}
+
+/// Write the `<dir>/<name>-<pid>.json` registration (`dir` is
+/// `~/.idealyst/apps`) the MCP server discovers. Same JSON shape (and
+/// `proto:1`) the native bridge writes.
+fn write_registration(dir: &Path, tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
+    use anyhow::Context as _;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("cannot create the app registration dir {}", dir.display()))?;
     let pid = std::process::id();
     let label = id.name.replace(['.', ' '], "-");
     let path = dir.join(format!("{label}-{pid}.json"));
@@ -689,7 +711,8 @@ fn write_registration(tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
         "project_root": id.project_root,
         "proto": 1,
     });
-    std::fs::write(&path, body.to_string())?;
+    std::fs::write(&path, body.to_string())
+        .with_context(|| format!("cannot write the app registration {}", path.display()))?;
     Ok(path)
 }
 
@@ -698,8 +721,10 @@ fn write_registration(tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
 /// meaningless outside its container, so a reader checks liveness by
 /// connecting to `port` instead).
 fn write_project_registration(path: &Path, tcp_port: u16, id: &Identity) -> anyhow::Result<PathBuf> {
+    use anyhow::Context as _;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("cannot create the project registration dir {}", dir.display()))?;
     }
     let body = json!({
         "port": tcp_port,
@@ -709,7 +734,8 @@ fn write_project_registration(path: &Path, tcp_port: u16, id: &Identity) -> anyh
         "project_root": id.project_root,
         "proto": 1,
     });
-    std::fs::write(path, body.to_string())?;
+    std::fs::write(path, body.to_string())
+        .with_context(|| format!("cannot write the project registration {}", path.display()))?;
     Ok(path.to_path_buf())
 }
 
@@ -740,6 +766,22 @@ mod tests {
     /// The Inspector opens `idealyst dev --inspect`'s app by this id, and
     /// discovery names apps by their registration's file stem: the two
     /// must agree.
+    /// A registration dir that can't be created (here: its parent is a
+    /// file) is an error naming the dir — the relay surfaces it instead of
+    /// serving an app no MCP server can find.
+    #[test]
+    fn a_registration_dir_that_cannot_be_created_names_the_dir() {
+        let root = std::env::temp_dir().join(format!("relay_blocked_reg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".idealyst"), "not a dir").unwrap();
+        let dir = root.join(".idealyst").join("apps");
+        let id = Identity { name: "todo".into(), bundle_id: None, project_root: None };
+        let err = format!("{:#}", write_registration(&dir, 1, &id).unwrap_err());
+        assert!(err.contains(&dir.display().to_string()), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn app_id_is_the_registration_file_stem() {
         let handle = |reg_path| RelayHandle {
@@ -747,6 +789,7 @@ mod tests {
             tcp_addr: "127.0.0.1:2".parse().unwrap(),
             reg_path,
             project_reg_path: None,
+            registration_errors: Vec::new(),
             inner: Arc::new(Inner {
                 app_outbound: Mutex::new(None),
                 app_session: AtomicU64::new(0),

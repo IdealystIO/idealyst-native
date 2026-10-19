@@ -299,9 +299,106 @@ fn apps_dir() -> Option<PathBuf> {
     Some(home.join(".idealyst").join("apps"))
 }
 
+/// Why `~/.idealyst/apps` might hold no registration, for a `wait_for_app`
+/// that found nothing: missing (nothing registered yet — or nothing could),
+/// not writable (no app on this machine can register), or present and
+/// empty. Read as this process; the dev session writing registrations runs
+/// as the same user, so what this process can write, it can.
+pub(crate) fn describe_apps_dir() -> String {
+    describe_apps_dir_at(apps_dir())
+}
+
+fn describe_apps_dir_at(dir: Option<PathBuf>) -> String {
+    let Some(dir) = dir else {
+        return "there is no HOME, so no ~/.idealyst/apps to register in".to_string();
+    };
+    if dir.is_dir() {
+        return if writable(&dir) {
+            format!("{} holds no live registration", dir.display())
+        } else {
+            format!("{} is not writable by this user, so no app can register there", dir.display())
+        };
+    }
+    // Missing: fine if it can still be created; a dead end if its nearest
+    // existing ancestor can't be written (e.g. a root-owned ~/.idealyst).
+    let mut ancestor = dir.parent();
+    while let Some(a) = ancestor {
+        if a.exists() {
+            if !a.is_dir() || !writable(a) {
+                return format!(
+                    "{} does not exist and can't be created ({} is not a writable directory), \
+                     so no app can register there",
+                    dir.display(),
+                    a.display()
+                );
+            }
+            break;
+        }
+        ancestor = a.parent();
+    }
+    format!("{} does not exist — nothing has registered on this machine", dir.display())
+}
+
+#[cfg(unix)]
+fn writable(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: `c` is a valid NUL-terminated path for the call's duration.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn writable(path: &Path) -> bool {
+    !std::fs::metadata(path).map(|m| m.permissions().readonly()).unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apps_dir_description_names_each_state() {
+        let root = std::env::temp_dir().join(format!("apps_dir_note_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let missing = root.join("a").join(".idealyst").join("apps");
+        assert!(describe_apps_dir_at(Some(missing.clone())).contains("does not exist — nothing has registered"));
+
+        let present = root.join("b").join("apps");
+        std::fs::create_dir_all(&present).unwrap();
+        assert!(describe_apps_dir_at(Some(present)).contains("holds no live registration"));
+
+        // `.idealyst` is a file: the apps dir can never be created.
+        std::fs::create_dir_all(root.join("c")).unwrap();
+        std::fs::write(root.join("c").join(".idealyst"), "").unwrap();
+        let blocked = root.join("c").join(".idealyst").join("apps");
+        assert!(describe_apps_dir_at(Some(blocked)).contains("can't be created"));
+
+        assert!(describe_apps_dir_at(None).contains("no HOME"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The bench failure that motivated the note: a root-owned
+    /// `~/.idealyst` (a bind mount under it made Docker create it) left the
+    /// apps dir uncreatable, and `wait_for_app` blamed the build.
+    #[cfg(unix)]
+    #[test]
+    fn regression_an_unwritable_parent_is_named() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores permission bits
+        }
+        let root = std::env::temp_dir().join(format!("apps_dir_ro_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let idealyst = root.join(".idealyst");
+        std::fs::create_dir_all(&idealyst).unwrap();
+        std::fs::set_permissions(&idealyst, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let note = describe_apps_dir_at(Some(idealyst.join("apps")));
+        std::fs::set_permissions(&idealyst, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(note.contains("can't be created") && note.contains(".idealyst"), "{note}");
+    }
 
     fn write_registration(dir: &Path, port: u16) {
         std::fs::create_dir_all(dir.join(".idealyst")).unwrap();

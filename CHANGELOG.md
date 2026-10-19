@@ -15,6 +15,31 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Token sets own their names; idea's theme is a `#[derive(Tokens)]`
+  set** (`runtime-vocabulary`, `runtime-macros-expand`, `idea-theme`).
+  A token set installing a name another, unrelated set already installed
+  now panics — in release builds too — naming both sets and the token,
+  instead of silently overwriting it. `IdeaThemeDefaults` derives
+  `Tokens` (same token names, same install order, byte-identical CSS —
+  the website's SSG corpus is unchanged), so `install_idea_theme` claims
+  idea's names: an app `#[derive(Tokens)]` set naming `spacing-md`,
+  `color-surface` (…) now fails at install. Untyped `install_tokens` /
+  `update_tokens` writes are not checked. New derive attributes:
+  `#[tokens(flatten)]` (embed another set — an app theme built on idea's
+  keeps idea's names and accessors, and may share them), `rename`, `as`,
+  `computed(…)`, `vocabulary`; and `AppTheme::current()` /
+  `try_current()` read the active theme struct reactively.
+  idea's vocabulary types (`IdeaTokens`, `ColorTokens`, `PrimaryTokens`,
+  `SpacingTokens`, …) are now aliases of the derived accessor types: every
+  accessor (`t.color.surface()`, `t.radius.pill()`) is unchanged, but the
+  seven intent and twelve hue aliases are ONE type, and the per-namespace
+  `NAMES` / `DESCRIPTORS` consts, `RadiusTokens::PILL` and
+  `RadiusTokens::PILL_DESCRIPTOR` are gone. *Migration:* give a colliding
+  app set `#[tokens(prefix = "app")]`, or build it on idea's with
+  `#[tokens(flatten)] idea: IdeaThemeDefaults`; read names from
+  `IdeaThemeDefaults::NAMES` (`use runtime_core::TokenTheme`) or
+  `idea_theme::token_descriptors()` instead of the removed consts.
+
 - **Overlays take taps the same way on every backend** (`runtime-vocabulary`,
   `backend-ios-mobile`). What an `overlay()` blocked differed per backend:
   a native portal container spans the viewport, so on macOS an overlay
@@ -37,7 +62,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   Some(x) = sig.get() { … }` lowered to a plain Rust `if let`: it ran
   once and froze at the first value, silently. It now lowers as `match
   EXPR { PAT => …, _ => … }` under the same gate as `match` (a
-  signal-free scrutinee stays a plain `if let`).
+  signal-free scrutinee stays a plain `if let`). Its bindings are owned,
+  as in a plain `if let` — the value is cloned per rebuild; a non-`Clone`
+  scrutinee binds by reference — so a closure in the branch can keep one
+  (`if let Some(id) = pending.get() { button(on_click = move || … id …) }`).
 
 - **The robot works on Android, and `idealyst test` runs on every platform**
   (`backend-android-mobile`, `build-android`, `run-android`, `run-ios`,
@@ -610,6 +638,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   entitlements and the hardened runtime, and an app holding one is no
   longer signed `--deep` (dev `run` and `publish macos`). A declared
   bundle forces the dev run's `.app`. Documented in `crates/sdk/README.md`.
+
+- **`#[derive(Tokens)]` — an app's own theme as plain structs**
+  (`runtime-macros`, `runtime-macros-expand`, `runtime-vocabulary`,
+  `runtime-core`, `mcp-catalog`, `catalog-scan`). Each field is a token
+  (`Color`, `Length`, `f32`, or a `TokenLeaf` newtype) named by its
+  kebab-case path (`accent.soft_bg` → `accent-soft-bg`), or a nested
+  derived struct (a namespace, reusable under several fields). With
+  `#[tokens(default = light)]` the struct is a theme: `AppTheme::install`,
+  `set`, `follow_system(light, dark)` (declares both palettes for static
+  render), `install_reactive(|| …)`, `.with(|t| …)` for variants, and
+  `stylesheet! { pub Card<AppTheme> { base(t) { background: t.surface() } } }`.
+  A misspelled token, an incomplete theme, or two fields colliding on one
+  name fail to compile; fallbacks come from the `default` theme, so no
+  value is restated. Every token is listed by the MCP catalog. See
+  `docs/styling.md` ("Your own tokens").
 
 - **Slider `thumb_icon`, Popover `min_width`, SegmentedControl `block`**
   (`idea-ui`, `idea-theme`). `Slider(thumb_icon = Some(ICON))` draws the
@@ -1558,6 +1601,25 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A dev app the MCP can't see says why** (`robot-relay`, `mcp-server`,
+  `idealyst-cli`). A relay that could not write its registration under
+  `~/.idealyst/apps` (a root-owned `~/.idealyst`, say) discarded the error:
+  the app served, `list_apps` never showed it, and `wait_for_app` ran its
+  full timeout blaming the build. Failures are now kept as
+  `RelayHandle::registration_errors()`, `idealyst dev` warns in the dev log
+  naming the path, and the `wait_for_app` timeout tells "registered but never
+  answered" from "nothing registered" — describing the apps directory as
+  missing, uncreatable, unwritable or empty.
+
+- **`idealyst run --macos` no longer requires a `bundle_id`** (`run-macos`).
+  A dev run signs the `.app` whenever an Apple Development identity exists,
+  and resolving the signature's bundle id demanded
+  `[package.metadata.idealyst.app].bundle_id` — so an app without one failed
+  outright on any Mac with a development certificate, though its Info.plist
+  falls back to `com.example.<executable>`. Signing now resolves the id the
+  same way, so the signature's `application-identifier` and the bundle's
+  `CFBundleIdentifier` always agree.
 
 - **Out-of-tree apps build for Windows and Linux against a local framework
   checkout** (`build-windows`, `build-linux`). Their wrappers never emitted

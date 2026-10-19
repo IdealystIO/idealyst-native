@@ -11,7 +11,7 @@
 
 [package]
 name = "runtime-vocabulary"
-version = "3.4.0"
+version = "3.5.0"
 edition.workspace = true
 license.workspace = true
 
@@ -169,6 +169,11 @@ runtime-macros = { path = "../macros" }
 # test can assert where a mounted primitive's children actually land —
 # geometry a recording mock cannot see.
 runtime-layout = { path = "../layout" }
+# Compile-fail cases for `#[derive(Tokens)]` (`tests/tokens_compile_fail.rs`):
+# a misspelled token, an incomplete theme, a non-token field and a name
+# collision must each fail to compile. Same harness `i18n` and
+# `ui-lowering-parity` use for their typing proofs.
+trybuild = "1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(idealyst_stream_guest)'] }

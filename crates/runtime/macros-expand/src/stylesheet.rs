@@ -807,7 +807,7 @@ fn emit_premint_registration(decl: &StyleSheetDecl, base_class: &str) -> TokenSt
 /// `bind_tokens` in `emit_stylesheet_fn`). A bare-path match is the right
 /// granularity: `t.spacing.md()` and `t.color.surface()` both parse with
 /// `t` as an `ExprPath` receiver, and a false positive costs only an
-/// unused ZST binding, while a false negative would be a confusing
+/// unused (names-only, near-free) binding, while a false negative would be a confusing
 /// "cannot find value `t`" in author code.
 fn block_uses_binding(rules: &RulesBlock, binding: &Ident) -> bool {
     struct Finder<'a> {
@@ -863,8 +863,8 @@ fn snake_case(ident: &Ident) -> Ident {
 ///
 /// Each rules closure takes `&VariantSet` and opens by binding the
 /// block's declared ident to the vocabulary's token namespace, so a
-/// block can name a token as `t.spacing.md()`. The namespace is a ZST
-/// carrying names only — the theme's *values* still arrive at resolve
+/// block can name a token as `t.spacing.md()`. The namespace carries
+/// names only (no values) — the theme's *values* still arrive at resolve
 /// time through the token registry, which is what keeps a theme swap a
 /// per-token write. A `theme.colors.fg`-style field read gets a type
 /// error naming the vocabulary's namespace.
@@ -876,7 +876,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     // Every block header names a binding (`base(t)`, `md(t)`, …). Bind it
     // to the declared vocabulary's token namespace so the block can spell
     // a token as `t.spacing.md()` instead of a string literal. The
-    // namespace is zero-sized and carries only names — see
+    // namespace carries only names, never values — see
     // `runtime_shared::TokenVocabulary` for why the theme's *values* don't
     // (and must not) flow through here.
     //

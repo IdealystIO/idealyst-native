@@ -1,0 +1,15 @@
+error[E0080]: evaluation panicked: a field of this token set has the same accessor name as a field of the set it flattens; rename one (`#[tokens(rename = "…")]`)
+  --> tests/tokens_ui/flatten_shadowed_accessor.rs:17:10
+   |
+17 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ evaluation of `_` failed inside this call
+   |
+note: inside `runtime_vocabulary::tokens::__assert_no_shadow`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: src/tokens.rs
+   |
+   | ...   panic!("a field of this token set has the same accessor name as a field of the set it flattens; rename one (`#[tokens(rename = \"…\")]`)");
+   |       ------------------------------------------------------------------------------------------------------------------------------------------ in this macro invocation

@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `flatten` embeds a token SET (a `#[derive(Tokens)]` struct), not a leaf
+ --> tests/tokens_ui/flatten_a_leaf.rs:8:16
+  |
+8 |     pub brand: Color,
+  |                ^^^^^ evaluation of `_` failed here

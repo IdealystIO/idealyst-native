@@ -1,0 +1,15 @@
+error[E0080]: evaluation panicked: two fields of this token set produce the same token name (e.g. `a_b` and `a.b` are both `a-b`); rename one
+  --> tests/tokens_ui/flatten_name_collision.rs:17:10
+   |
+17 | #[derive(Tokens, Clone)]
+   |          ^^^^^^ evaluation of `_` failed inside this call
+   |
+note: inside `runtime_vocabulary::tokens::__assert_unique`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: src/tokens.rs
+   |
+   |                 panic!("two fields of this token set produce the same token name (e.g. `a_b` and `a.b` are both `a-b`); rename one");
+   |                 -------------------------------------------------------------------------------------------------------------------- in this macro invocation

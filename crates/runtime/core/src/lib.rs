@@ -46,6 +46,7 @@ pub use runtime_macros::{
     Remote,
     IdealystSchema,
     Key,
+    Tokens,
 };
 
 // Generic `#[host_fn]` bounds (`Key` above is its derive, this the trait).
@@ -126,5 +127,31 @@ mod _scope_alive_reachable {
     fn scope_alive_is_on_the_author_surface() {
         let t = crate::ScopeAlive::immortal();
         assert!(t.get());
+    }
+}
+
+#[cfg(test)]
+mod _tokens_derive_reachable {
+    /// `#[derive(Tokens)]` and the `Tokens` trait share one name on the
+    /// author root, so the single import an app writes —
+    /// `use runtime_core::Tokens` — brings the derive AND `.with` /
+    /// `install` / `tokens()` into scope. Dropping either re-export would
+    /// still compile every vocabulary test while breaking every app.
+    #[test]
+    fn one_import_brings_the_derive_and_its_methods() {
+        use crate::{Color, Tokens};
+
+        #[derive(Tokens, Clone)]
+        #[tokens(default = base)]
+        struct Theme {
+            surface: Color,
+        }
+        fn base() -> Theme {
+            Theme { surface: "#fff".into() }
+        }
+
+        let dark = base().with(|t| t.surface = "#000".into());
+        assert_eq!(dark.surface, Color("#000".into()));
+        assert_eq!(Theme::tokens().surface().name(), Some("surface"));
     }
 }

@@ -25,8 +25,8 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use runtime_core::{watch, Color, FontFamily, Length, Subscription, Tokenized};
-use crate::theme_runtime::{install_theme, set_theme, ThemeTokens, TokenEntry, TokenValue};
+use runtime_core::{watch, Color, FontFamily, Length, Subscription, Tokenized, Tokens};
+use crate::theme_runtime::{ThemeTokens, TokenEntry, TokenValue};
 
 runtime_tls::thread_local! {
     /// Owns [`install_idea_theme_reactive`]'s theme `watch` for the process
@@ -77,7 +77,7 @@ pub const DEFAULT_FONT_STACK: &str =
 /// (A future framework feature for per-state overrides would let us
 /// add `*_hover` / `*_pressed` slots without breaking call sites; the
 /// per-component opacity-dim is a v1 placeholder.)
-#[derive(Clone)]
+#[derive(Clone, Tokens)]
 pub struct IntentColors {
     /// Filled background (Solid kind).
     pub solid_bg: Tokenized<Color>,
@@ -105,7 +105,7 @@ pub struct IntentColors {
 /// All seven intent palettes a theme exposes. Accessed via the
 /// [`Intents`] getters so call sites don't need to know which fields
 /// the struct has.
-#[derive(Clone)]
+#[derive(Clone, Tokens)]
 pub struct Intents {
     pub primary: IntentColors,
     pub secondary: IntentColors,
@@ -136,7 +136,7 @@ pub struct Intents {
 /// components as built-in tones (`tone::Blue`, …) and from a `stylesheet!`
 /// as `t.palette.blue.solid_bg()`. Token names are
 /// `palette-<hue>-<slot>`.
-#[derive(Clone)]
+#[derive(Clone, Tokens)]
 pub struct Palette {
     pub red: IntentColors,
     pub orange: IntentColors,
@@ -166,7 +166,7 @@ pub struct Palette {
 /// component sheet reads it back through [`IdeaThemeRef`]. Keeping the
 /// read half canonical is what lets a customized theme still swap at
 /// runtime — a literal baked into a component's class can never repaint.
-#[derive(Clone)]
+#[derive(Clone, Tokens)]
 pub struct Colors {
     pub background: Tokenized<Color>,
     pub surface: Tokenized<Color>,
@@ -228,7 +228,7 @@ pub struct Colors {
 /// valid for every theme: a theme without glows sets the glow colors fully
 /// transparent rather than removing the shadow, so the minted class is the
 /// same and only the token value differs.
-#[derive(Clone)]
+#[derive(Clone, Tokens)]
 pub struct Effects {
     /// Resting drop-shadow color of raised surfaces (an `Elevated` Card).
     pub shadow: Tokenized<Color>,
@@ -275,7 +275,10 @@ impl Effects {
     }
 }
 
-#[derive(Clone)]
+/// The spacing scale, in px. Stored as bare `f32`; each step installs as a
+/// `Length::Px` token (`spacing-md`).
+#[derive(Clone, Tokens)]
+#[tokens(as = Length)]
 pub struct Spacing {
     pub xs: f32,
     pub sm: f32,
@@ -285,15 +288,25 @@ pub struct Spacing {
     pub xxl: f32,
 }
 
-#[derive(Clone)]
+/// The corner-radius scale, in px (`radius-sm` … `radius-lg`), plus the
+/// computed `radius-pill`.
+#[derive(Clone, Tokens)]
+#[tokens(as = Length, computed(pill: Length = Radius::pill_length))]
 pub struct Radius {
     pub sm: f32,
     pub md: f32,
     pub lg: f32,
     // No `pill` field: "fully round" is a property of the BOX, not a number a
-    // theme can pick. It is emitted as `Length::Full` and resolved against the
-    // element at paint. A number like `999.0` stops being a pill on any box
-    // taller than 1998px.
+    // theme can pick. It is the computed `radius-pill` token (`pill_length`),
+    // always `Length::Full`, resolved against the element at paint. A number
+    // like `999.0` stops being a pill on any box taller than 1998px.
+}
+
+impl Radius {
+    /// The `radius-pill` token's value: `Length::Full`, for every theme.
+    fn pill_length(&self) -> Length {
+        Length::Full
+    }
 }
 
 /// Per-variant font size knobs. Each field corresponds to one
@@ -306,7 +319,8 @@ pub struct Radius {
 /// stylesheet block. Tokenizing every property per variant would emit
 /// 40+ extra tokens per theme; sizes are by far the most-overridden
 /// knob, so they're the only thing pulled up to the theme struct.
-#[derive(Clone)]
+#[derive(Clone, Tokens)]
+#[tokens(as = Length)]
 pub struct Typography {
     pub display_size: f32,
     pub h1_size: f32,
@@ -985,144 +999,18 @@ pub fn theme_length(name: &'static str) -> Tokenized<Length> {
 }
 
 impl ThemeTokens for IdeaThemeRef {
+    /// The theme's token entries, from the derived vocabulary
+    /// ([`IdeaThemeDefaults`]'s `#[derive(Tokens)]`): every field's VALUE
+    /// under the field's derived name, in declaration order (neutrals,
+    /// intents, palette, effects, spacing, radius, typography).
+    ///
+    /// The name a field's `Tokenized` carries is ignored on purpose. A
+    /// rebrand writes `t.colors.surface = color_token!("ok-surface", "#fff")`;
+    /// keying the entry off `"ok-surface"` would land the value where
+    /// nothing reads it and the override would silently no-op. The
+    /// derived name is the one every sheet references.
     fn tokens(&self) -> Vec<TokenEntry> {
-        let c = self.colors();
-        let i = self.intents();
-        let p = self.palette();
-        let s = self.spacing();
-        let r = self.radius();
-        let ty = self.typography();
-        // Register each color VALUE under the CANONICAL token name for
-        // its field — *not* the free-form name the author passed to
-        // `color_token!`. idea-ui's stylesheets reference colors by the
-        // canonical name (`color-surface`, `intent-primary-solid-bg`, …,
-        // see `CANONICAL_NEUTRAL_TOKENS` / `INTENT_SLOT_TOKENS`), and the
-        // runtime resolves a `Tokenized::Token { name, .. }` by that name.
-        //
-        // Why ignore `t.name()`: a rebrand mutates theme fields with
-        // `t.colors.surface = color_token!("ok-surface", "#fff")`. If we
-        // registered under `"ok-surface"` (the field's `.name()`), the
-        // value would land under a key nothing reads and the override
-        // would silently no-op — the whole theme quietly falls back to
-        // idea-ui defaults. Keying off the field's fixed canonical name
-        // makes the override take effect regardless of the `name`
-        // argument, eliminating that footgun (see field report +
-        // `is_canonical_token`).
-        fn entry(name: &'static str, t: &Tokenized<Color>) -> TokenEntry {
-            TokenEntry {
-                name,
-                value: TokenValue::Color(t.value().clone()),
-            }
-        }
-        fn len(name: &'static str, v: f32) -> TokenEntry {
-            TokenEntry {
-                name,
-                value: TokenValue::Length(Length::Px(v)),
-            }
-        }
-        // Helper: emit every field of an IntentColors block under the
-        // intent's canonical slot names.
-        fn intent_entries(intent: &str, ic: &IntentColors, out: &mut Vec<TokenEntry>) {
-            for (slot, value) in [
-                ("solid-bg", &ic.solid_bg),
-                ("solid-text", &ic.solid_text),
-                ("soft-bg", &ic.soft_bg),
-                ("soft-text", &ic.soft_text),
-                ("fg", &ic.fg),
-                ("border", &ic.border),
-            ] {
-                out.push(TokenEntry {
-                    name: intent_slot_token(intent, slot),
-                    value: TokenValue::Color(value.value().clone()),
-                });
-            }
-        }
-        let mut out = vec![
-            entry("color-background", &c.background),
-            entry("color-surface", &c.surface),
-            entry("color-surface-alt", &c.surface_alt),
-            entry("color-text", &c.text),
-            entry("color-text-muted", &c.text_muted),
-            entry("color-text-inverse", &c.text_inverse),
-            entry("color-border", &c.border),
-            entry("color-border-hover", &c.border_hover),
-            entry("color-border-strong", &c.border_strong),
-            entry("color-focus-ring", &c.focus_ring),
-            entry("color-overlay", &c.overlay),
-            entry("color-table-header", &c.table_header),
-            entry("color-table-row-highlight", &c.table_row_highlight),
-            entry("color-table-row-highlight-hover", &c.table_row_highlight_hover),
-            entry("color-table-row-warning", &c.table_row_warning),
-            entry("color-table-row-warning-hover", &c.table_row_warning_hover),
-            entry("color-table-row-danger", &c.table_row_danger),
-            entry("color-table-row-danger-hover", &c.table_row_danger_hover),
-        ];
-        intent_entries("primary", &i.primary, &mut out);
-        intent_entries("secondary", &i.secondary, &mut out);
-        intent_entries("neutral", &i.neutral, &mut out);
-        intent_entries("success", &i.success, &mut out);
-        intent_entries("danger", &i.danger, &mut out);
-        intent_entries("warning", &i.warning, &mut out);
-        intent_entries("info", &i.info, &mut out);
-
-        // Palette: every hue's six slots under `palette-<hue>-<slot>`.
-        // Read off the canonicalized block, whose fields already carry
-        // exactly those names (see `canonicalize_palette`) — so the name
-        // registered and the name a sheet reads are the same `&'static str`.
-        for block in [
-            &p.red, &p.orange, &p.amber, &p.yellow, &p.lime, &p.green,
-            &p.teal, &p.cyan, &p.blue, &p.indigo, &p.violet, &p.pink,
-        ] {
-            for t in [
-                &block.solid_bg, &block.solid_text, &block.soft_bg,
-                &block.soft_text, &block.fg, &block.border,
-            ] {
-                out.push(entry(t.name().expect("canonicalized palette slot is a token"), t));
-            }
-        }
-
-        // Effects: one color token per Effects field, in field order.
-        let e = self.effects();
-        for (name, t) in CANONICAL_EFFECT_TOKENS.iter().zip([
-            &e.shadow, &e.glow_primary, &e.glow_secondary, &e.glow_neutral,
-            &e.glow_success, &e.glow_danger, &e.glow_warning, &e.glow_info,
-            &e.gradient_start, &e.gradient_mid, &e.gradient_end, &e.gradient_text,
-        ]) {
-            out.push(entry(*name, t));
-        }
-
-        // Spacing: one length token per Spacing field.
-        out.push(len("spacing-xs", s.xs));
-        out.push(len("spacing-sm", s.sm));
-        out.push(len("spacing-md", s.md));
-        out.push(len("spacing-lg", s.lg));
-        out.push(len("spacing-xl", s.xl));
-        out.push(len("spacing-xxl", s.xxl));
-
-        // Radius: one length token per Radius field.
-        out.push(len("radius-sm", r.sm));
-        out.push(len("radius-md", r.md));
-        out.push(len("radius-lg", r.lg));
-        // Not a px value: the pill resolves against the box it paints on.
-        out.push(TokenEntry {
-            name: "radius-pill",
-            value: TokenValue::Length(Length::Full),
-        });
-
-        // Typography: one length token per variant. Names match the
-        // variant keys in the Typography stylesheet block.
-        out.push(len("typography-display-size", ty.display_size));
-        out.push(len("typography-h1-size", ty.h1_size));
-        out.push(len("typography-h2-size", ty.h2_size));
-        out.push(len("typography-h3-size", ty.h3_size));
-        out.push(len("typography-body-xl-size", ty.body_xl_size));
-        out.push(len("typography-body-lg-size", ty.body_lg_size));
-        out.push(len("typography-body-size", ty.body_size));
-        out.push(len("typography-body-sm-size", ty.body_sm_size));
-        out.push(len("typography-caption-size", ty.caption_size));
-        out.push(len("typography-overline-size", ty.overline_size));
-
-        out
+        IdeaThemeDefaults::from_theme(self).token_entries()
     }
 }
 
@@ -1130,12 +1018,31 @@ impl ThemeTokens for IdeaThemeRef {
 // Default theme implementation
 // =============================================================================
 
-#[derive(Clone)]
+/// idea's theme as data — and, through `#[derive(Tokens)]`, its token
+/// vocabulary. Every leaf installs under its field path in kebab case, with
+/// the three plural groups named in the singular (`colors.surface_alt` →
+/// `color-surface-alt`, reached as `t.color.surface_alt()`); the derive's
+/// name table is what [`ThemeTokens::tokens`] installs and what
+/// [`IdeaTokens`](crate::IdeaTokens) names, so the two cannot disagree.
+///
+/// Fallbacks (a token's value before a theme installs, and in build-time
+/// CSS) come from [`light_theme`]. As a [`Tokens`] theme it owns its token
+/// names: installing another token set that names a `color-…`, `spacing-…`
+/// (…) token panics rather than silently overwriting idea's.
+///
+/// Apps normally install it through [`install_idea_theme`] (which also
+/// publishes the default font and installs the component sheets) rather
+/// than `IdeaThemeDefaults::install`.
+#[derive(Clone, Tokens)]
+#[tokens(default = light_theme, vocabulary = "IdeaThemeRef")]
 pub struct IdeaThemeDefaults {
+    #[tokens(rename = "color")]
     pub colors: Colors,
+    #[tokens(rename = "intent")]
     pub intents: Intents,
     pub palette: Palette,
     /// Shadow, glow and gradient colors — see [`Effects`].
+    #[tokens(rename = "effect")]
     pub effects: Effects,
     pub spacing: Spacing,
     pub radius: Radius,
@@ -1143,8 +1050,27 @@ pub struct IdeaThemeDefaults {
     /// The default body font family. Defaults to a system-sans stack
     /// ([`DEFAULT_FONT_STACK`]) so web text isn't serif; swap in a
     /// `FontFamily::Typeface(...)` (built via `typeface!`) for a brand
-    /// face, or another system stack string.
+    /// face, or another system stack string. Not a token.
+    #[tokens(skip)]
     pub font: FontFamily,
+}
+
+impl IdeaThemeDefaults {
+    /// Any [`IdeaTheme`] as plain data — the values its getters return
+    /// (through [`IdeaThemeRef`], so already canonical) plus its font.
+    /// What the install path hands the derived token machinery.
+    pub fn from_theme(theme: &dyn IdeaTheme) -> Self {
+        IdeaThemeDefaults {
+            colors: theme.colors().clone(),
+            intents: theme.intents().clone(),
+            palette: theme.palette().clone(),
+            effects: theme.effects().clone(),
+            spacing: theme.spacing().clone(),
+            radius: theme.radius().clone(),
+            typography: theme.typography().clone(),
+            font: theme.font_family(),
+        }
+    }
 }
 
 impl IdeaTheme for IdeaThemeDefaults {
@@ -1515,14 +1441,14 @@ fn sync_default_text_font(theme: &IdeaThemeRef) {
 pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
     let theme = IdeaThemeRef::new(theme);
     sync_default_text_font(&theme);
-    install_theme(theme);
+    crate::theme_runtime::install_idea(theme);
     install_default_idea_sheets();
 }
 
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
     let theme = IdeaThemeRef::new(theme);
     sync_default_text_font(&theme);
-    set_theme(theme);
+    crate::theme_runtime::set_idea(theme);
 }
 
 /// Switch the app between its light and dark themes — the pair
@@ -1546,7 +1472,7 @@ pub fn set_idea_color_scheme(scheme: runtime_core::ColorScheme) {
         None => IdeaThemeRef::new(if dark { dark_theme() } else { light_theme() }),
     };
     sync_default_text_font(&theme);
-    set_theme(theme);
+    crate::theme_runtime::set_idea(theme);
 }
 
 /// Describe one switchable palette to the framework WITHOUT installing
@@ -1646,10 +1572,10 @@ where
         let theme = IdeaThemeRef::new(select());
         sync_default_text_font(&theme);
         if primed {
-            set_theme(theme);
+            crate::theme_runtime::set_idea(theme);
         } else {
             primed = true;
-            install_theme(theme);
+            crate::theme_runtime::install_idea(theme);
         }
     });
     // Single-slot: replacing the keepalive drops any prior Subscription,

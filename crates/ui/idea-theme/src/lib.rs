@@ -28,19 +28,25 @@
 //!   [`extensible::Shape`], [`extensible::TypographyKind`] traits, plus
 //!   built-in ZSTs and [`extensible::ResolutionCtx`] for composing
 //!   variants against modifiers.
-//! - **Token vocabulary** — [`tokens::IdeaTokens`] is the theme's token
-//!   set as a *type*. A `stylesheet!` names a token through the binding in
-//!   its block header (`base(t) { padding: t.spacing.md() }`); code
-//!   outside one uses [`tokens()`]. Either way the name is a path the
-//!   compiler checks and the fallback comes from the base palette, so a
-//!   stylesheet tracks the installed theme without restating any hex and
-//!   a name nothing installs won't compile.
+//! - **Token vocabulary** — [`theme::IdeaThemeDefaults`] is a
+//!   `#[derive(Tokens)]` token set, and [`tokens::IdeaTokens`] is its
+//!   generated accessor tree. A `stylesheet!` names a token through the
+//!   binding in its block header (`base(t) { padding: t.spacing.md() }`);
+//!   code outside one uses [`tokens()`]. Either way the name is a path the
+//!   compiler checks and the fallback comes from [`theme::light_theme`], so
+//!   a stylesheet tracks the installed theme without restating any hex and
+//!   a name nothing installs won't compile. As a token set it owns its
+//!   names: another set installing a `color-…` / `spacing-…` (…) token
+//!   panics instead of silently repainting idea-ui. An app theme builds on
+//!   it with `#[tokens(flatten)] idea: IdeaThemeDefaults` (see
+//!   `docs/styling.md`).
 //! - **Macros** — [`tone!`], [`variant!`], [`theme!`], [`color_token!`]
 //!   make defining custom modifiers and app themes a one-block
 //!   declaration each.
-//! - **Theme runtime** — [`install_theme`], [`set_theme`],
-//!   [`install_themes`], plus [`ThemeTokens`] / [`TokenEntry`] /
-//!   [`TokenValue`] for theme installation and live swap.
+//! - **Theme runtime** — [`install_idea_theme`] / [`set_idea_theme`]
+//!   (through the derived set) and the untyped [`install_theme`],
+//!   [`set_theme`], [`install_themes`], plus [`ThemeTokens`] /
+//!   [`TokenEntry`] / [`TokenValue`] for theme installation and live swap.
 
 pub mod extensible;
 

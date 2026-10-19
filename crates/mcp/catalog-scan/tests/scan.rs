@@ -229,6 +229,27 @@ fn refuses_what_it_cannot_reproduce_crate_by_crate() {
     let out = scan(&[krate("bare", &bare)], &[]);
     assert_eq!(out.refused.len(), 1, "{:?}", out.refused);
 
+    // A `#[derive(Tokens)]` THEME registers a token set whose names and
+    // defaults exist only after compilation: refused. A SHAPE (no
+    // `default`) registers nothing and scans clean.
+    let theme = tree(
+        "theme",
+        &[("src/lib.rs", "#[derive(Tokens, Clone)]\n#[tokens(default = light, prefix = \"app\")]\npub struct AppTheme { pub surface: Color }\n")],
+    );
+    let out = scan(&[krate("theme", &theme)], &[]);
+    assert_eq!(out.refused.len(), 1, "{:?}", out.refused);
+    assert!(out.refused[0].error.message.contains("derive(Tokens)"), "{:?}", out.refused);
+    // …and so is one a local `macro_rules!` stamps out.
+    let stamped = tree(
+        "stamped",
+        &[("src/lib.rs", "macro_rules! theme { ($n:ident) => { #[derive(Tokens, Clone)] #[tokens(default = light)] pub struct $n { pub surface: Color } }; }\ntheme!(AppTheme);\n")],
+    );
+    let out = scan(&[krate("stamped", &stamped)], &[]);
+    assert_eq!(out.refused.len(), 1, "{:?}", out.refused);
+    let shape = tree("shape", &[("src/lib.rs", "#[derive(Tokens, Clone)]\npub struct Swatch { pub soft_bg: Color }\n")]);
+    let out = scan(&[krate("shape", &shape)], &[]);
+    assert!(out.refused.is_empty(), "{:?}", out.refused);
+
     // An inventory registration of something else entirely is not ours.
     let root = tree("otherinventory", &[("src/lib.rs", "inventory::submit! { crate::Plugin { name: \"x\" } }\n")]);
     let out = scan(&[krate("app", &root)], &[]);

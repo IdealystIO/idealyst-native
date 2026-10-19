@@ -17,8 +17,9 @@
 //! `Tokenized::Token { name, fallback }` references. Token values are
 //! installed via [`install_tokens`] and updated via [`update_tokens`].
 //!
-//! The "theme as a typed struct" pattern is provided by `idea-ui`'s
-//! theme runtime as a thin wrapper over these primitives.
+//! The "theme as a typed struct" pattern is layered on these primitives:
+//! an app's own `#[derive(Tokens)]` theme (`runtime_vocabulary::tokens`)
+//! and idea-ui's theme runtime both emit token entries into this table.
 //!
 //! Token updates flow through the existing reactive system: each styled
 //! node's apply-style call lives inside an `Effect` that reads token
@@ -282,9 +283,11 @@ impl<T: Copy> Copy for Tokenized<T> where T: Copy {}
 /// reading the registry, and it's what makes a theme swap a per-token
 /// write instead of a class regeneration. What a stylesheet needs at
 /// authoring time is only the token's *name and type*, which every theme
-/// over that vocabulary shares. So `Tokens` is a zero-sized accessor
-/// namespace: it carries no values, just the names, and each accessor
-/// returns `Tokenized::Token { name, fallback }` exactly as a hand-written
+/// over that vocabulary shares. So `Tokens` is an accessor namespace that
+/// carries no values, just the names (idea-theme's is zero-sized; a
+/// `#[derive(Tokens)]` theme's holds each nested namespace's offset into
+/// the theme's name table), and each accessor returns
+/// `Tokenized::Token { name, fallback }` exactly as a hand-written
 /// `Tokenized::token("spacing-md", …)` would. Nothing about resolution,
 /// premint, or install changes — only how the name is spelled.
 ///

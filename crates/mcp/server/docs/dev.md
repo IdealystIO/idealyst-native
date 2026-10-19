@@ -39,7 +39,7 @@ Blocks until a running app registers its Robot bridge, then returns it in `list_
 - `name` waits for a specific app (the registration name); omit it to wait for ANY app.
 - `timeout_secs` defaults to 60, max 600.
 
-On timeout it returns an error. If you launched with `run_dev`, check `read_dev_log` for a build still running or a compile failure. Errors immediately when robot control is disabled (`--no-robot`).
+On timeout it returns an error that says which wait failed: an app registered but never answered a ping (the page or process hasn't dialed in — for web, `run_dev` needs `local=true` and something must load the page), or nothing registered at all, with the state of `~/.idealyst/apps` (missing, not creatable, not writable, or empty). For the latter, `read_dev_log` shows whether the build is still running or failed, and warns if the relay could not write its registration. Errors immediately when robot control is disabled (`--no-robot`).
 
 ## read_dev_log
 
