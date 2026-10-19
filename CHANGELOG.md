@@ -1591,6 +1591,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst run --macos` no longer requires a `bundle_id`** (`run-macos`).
+  A dev run signs the `.app` whenever an Apple Development identity exists,
+  and resolving the signature's bundle id demanded
+  `[package.metadata.idealyst.app].bundle_id` — so an app without one failed
+  outright on any Mac with a development certificate, though its Info.plist
+  falls back to `com.example.<executable>`. Signing now resolves the id the
+  same way, so the signature's `application-identifier` and the bundle's
+  `CFBundleIdentifier` always agree.
+
 - **Out-of-tree apps build for Windows and Linux against a local framework
   checkout** (`build-windows`, `build-linux`). Their wrappers never emitted
   the framework patch block the macOS / iOS wrappers do, so the app's own
