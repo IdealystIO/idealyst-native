@@ -1612,6 +1612,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Hover and press styles, and `cursor`, work on Windows**
+  (`backend-windows`, `host-win32`). `state hovered` / `state pressed`
+  variants never lit on Windows (idea-ui buttons had no hover highlight or
+  press feedback), and `cursor` was ignored. Hovered follows the same
+  enter/leave rule as `on_hover`; a primary press marks every stateful node
+  on the hit chain pressed until the release or a lost capture, as CSS
+  `:active` does. The cursor comes from the nearest node on the hit chain
+  that sets one; `Grab` / `Grabbing` fall back to the hand. `state focused`
+  is still not driven on Windows.
+
 - **A dev app the MCP can't see says why** (`robot-relay`, `mcp-server`,
   `idealyst-cli`). A relay that could not write its registration under
   `~/.idealyst/apps` (a root-owned `~/.idealyst`, say) discarded the error:
