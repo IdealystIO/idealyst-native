@@ -124,13 +124,15 @@ fn grow() -> Element {
 /// family-wide scrolling panel so a long item list (or a SubMenu with many
 /// entries) scrolls within a height-capped panel instead of running off the
 /// bottom of the viewport; passing `None` for both slots is the plain
-/// scrolling panel, so a slotless menu or flyout is unchanged.
+/// scrolling panel, so a slotless menu or flyout is unchanged. `max_width`
+/// caps the panel (`None` lets it grow to its longest row).
 fn slotted_panel(
     children: Vec<Element>,
     header: Option<Element>,
     footer: Option<Element>,
+    max_width: Option<f32>,
 ) -> Element {
-    crate::components::menu_panel::slotted_menu_panel(children, header, footer)
+    crate::components::menu_panel::slotted_menu_panel(children, header, footer, max_width)
 }
 
 // =============================================================================
@@ -192,6 +194,12 @@ pub struct MenuProps {
     /// action that must stay reachable without scrolling to the end.
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub footer: Option<Element>,
+    /// Caps the panel's width, in pixels. Rows longer than the cap end in
+    /// "…" on one line. `None` (the default) sizes the panel to its longest
+    /// row.
+    #[prop(static)]
+    #[schema(constraint = "pixels, > 0")]
+    pub max_width: Option<f32>,
 }
 
 impl Default for MenuProps {
@@ -205,6 +213,7 @@ impl Default for MenuProps {
             children: Vec::new(),
             header: None,
             footer: None,
+            max_width: None,
         }
     }
 }
@@ -229,7 +238,7 @@ pub fn Menu(props: MenuProps) -> Element {
     // The anchored panel itself carries NO backdrop — the catcher (below) owns
     // outside-click dismissal; this `on_dismiss` is the Escape-key path.
     let mut bound =
-        runtime_core::anchored_overlay(target, vec![slotted_panel(content, props.header, props.footer)])
+        runtime_core::anchored_overlay(target, vec![slotted_panel(content, props.header, props.footer, props.max_width)])
         .side(props.side)
         .align(props.align)
         .offset(props.offset)
@@ -400,11 +409,20 @@ pub struct MenuEntry {
     /// keep it open for the next toggle. `None` is the classic row.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub checked: Option<Reactive<bool>>,
+    /// Optional element before the label (after the checkbox of a
+    /// checkable row) — an icon, a status dot. A BUILDER, not an
+    /// `Element`: the flyout rebuilds its rows on every open, and an
+    /// element mounts once. Set with [`MenuEntry::leading`].
+    pub leading: Option<Rc<dyn Fn() -> Element>>,
+    /// Optional element pushed to the row's end — a status mark, a
+    /// shortcut hint. A builder for the same reason as `leading`. Set with
+    /// [`MenuEntry::trailing`]. Matches [`MenuItemProps::trailing`].
+    pub trailing: Option<Rc<dyn Fn() -> Element>>,
 }
 
 impl MenuEntry {
     pub fn new(label: impl Into<Reactive<String>>, on_select: Rc<dyn Fn()>) -> Self {
-        Self { label: label.into(), on_select, checked: None }
+        Self { label: label.into(), on_select, checked: None, leading: None, trailing: None }
     }
 
     /// A multi-select row: leading checkbox bound to `checked`, and the
@@ -414,7 +432,27 @@ impl MenuEntry {
         checked: impl Into<Reactive<bool>>,
         on_select: Rc<dyn Fn()>,
     ) -> Self {
-        Self { label: label.into(), on_select, checked: Some(checked.into()) }
+        Self {
+            label: label.into(),
+            on_select,
+            checked: Some(checked.into()),
+            leading: None,
+            trailing: None,
+        }
+    }
+
+    /// Put an element before the label: `entry.leading(|| ui! { … })`.
+    /// Built fresh each time the flyout opens.
+    pub fn leading(mut self, build: impl Fn() -> Element + 'static) -> Self {
+        self.leading = Some(Rc::new(build));
+        self
+    }
+
+    /// Push an element to the row's end: `entry.trailing(|| ui! { … })`.
+    /// Built fresh each time the flyout opens.
+    pub fn trailing(mut self, build: impl Fn() -> Element + 'static) -> Self {
+        self.trailing = Some(Rc::new(build));
+        self
     }
 }
 
@@ -654,6 +692,12 @@ pub struct SubMenuProps {
     #[prop(static)]
     #[cfg_attr(feature = "docs", doc_control(skip))]
     pub footer: Option<SubMenuSlot>,
+    /// Caps the flyout's width, in pixels. Entry labels longer than the cap
+    /// end in "…" on one line. `None` (the default) sizes the flyout to its
+    /// longest entry.
+    #[prop(static)]
+    #[schema(constraint = "pixels, > 0")]
+    pub max_width: Option<f32>,
 }
 
 impl Default for SubMenuProps {
@@ -664,21 +708,31 @@ impl Default for SubMenuProps {
             side: ElementSide::End,
             header: None,
             footer: None,
+            max_width: None,
         }
     }
 }
 
-/// One flyout row: the entry's optional checkbox and label in a pressable.
-/// A checkable row keeps the flyout open — multi-select toggles stack
-/// without re-hovering (the checkbox itself re-marks reactively).
+/// One flyout row in a pressable: the entry's optional checkbox and
+/// leading element, its label, and its optional trailing element pushed to
+/// the end — the same shape as a [`MenuItem`]. A checkable row keeps the
+/// flyout open — multi-select toggles stack without re-hovering (the
+/// checkbox itself re-marks reactively).
 fn flyout_row(entry: MenuEntry, close: Rc<dyn Fn()>) -> Element {
     let on_select = entry.on_select;
     let keep_open = entry.checked.is_some();
-    let mut kids: Vec<Element> = Vec::with_capacity(2);
+    let mut kids: Vec<Element> = Vec::with_capacity(5);
     if let Some(c) = entry.checked {
         kids.push(menu_checkbox(c));
     }
+    if let Some(build) = &entry.leading {
+        kids.push(build());
+    }
     kids.push(menu_label(entry.label));
+    if let Some(build) = &entry.trailing {
+        kids.push(grow());
+        kids.push(build());
+    }
     runtime_core::pressable(kids, move || {
         (on_select)();
         if !keep_open {
@@ -741,12 +795,13 @@ fn flyout_panel(
     items: &Reactive<Vec<MenuEntry>>,
     header: Option<&SubMenuSlot>,
     footer: Option<&SubMenuSlot>,
+    max_width: Option<f32>,
     close: Rc<dyn Fn()>,
 ) -> Element {
     let cx = SubMenuSlotCx { dismiss: close.clone() };
     let header = header.map(|s| s.build(cx.clone()));
     let footer = footer.map(|s| s.build(cx));
-    slotted_panel(flyout_rows(items, close), header, footer)
+    slotted_panel(flyout_rows(items, close), header, footer, max_width)
 }
 
 /// Renders a menu row with a trailing chevron whose nested flyout opens on
@@ -781,6 +836,7 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
     let side = props.side;
     let header = props.header;
     let footer = props.footer;
+    let max_width = props.max_width;
 
     // Identity for the level claim, and the hover-out policy: a flyout that
     // carries a slot latches once the pointer has been inside it.
@@ -893,7 +949,7 @@ pub fn SubMenu(props: SubMenuProps) -> Element {
         let schedule_close = schedule_close.clone();
         move || {
             let panel =
-                flyout_panel(&items, header.as_ref(), footer.as_ref(), close.clone());
+                flyout_panel(&items, header.as_ref(), footer.as_ref(), max_width, close.clone());
             let on_enter = open_now.clone();
             let on_leave = schedule_close.clone();
             let latch = latch.clone();
@@ -936,7 +992,7 @@ mod tests {
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use runtime_core::primitives::portal::{PortalTarget, ViewportPlacement};
-    use runtime_core::Ref;
+    use runtime_core::{Length, Ref, Tokenized};
 
     // (ViewHandle is the module's anchor handle type; any anchorable Ref works
     // as a Menu target here.)
@@ -1106,6 +1162,7 @@ mod tests {
                 Some(&SubMenuSlot::new(|_cx| {
                     runtime_core::text("Clear".to_string()).into_element()
                 })),
+                None,
                 noop,
             );
 
@@ -1143,7 +1200,7 @@ mod tests {
 
             let noop: Rc<dyn Fn()> = Rc::new(|| {});
             let items = Reactive::Static(vec![MenuEntry::new("Inbox", noop.clone())]);
-            let panel = flyout_panel(&items, None, None, noop);
+            let panel = flyout_panel(&items, None, None, None, noop);
 
             let P::View { preserves_focus, children, .. } = classify(panel) else {
                 panic!("the flyout panel is a View (the SelectMenu surface)");
@@ -1177,6 +1234,7 @@ mod tests {
                     )
                     .into_element()
                 })),
+                None,
                 close,
             );
 
@@ -1437,6 +1495,93 @@ mod tests {
                 rules.color.is_some(),
                 "and its color, for the same reason native ignores the row's"
             );
+        });
+    }
+
+    fn text_of(el: Element) -> Option<String> {
+        match classify(el) {
+            P::Text { text, .. } => text,
+            _ => None,
+        }
+    }
+
+    /// Regression (CrewForge, idea-ui 8.0.0): a SubMenu flyout grew to its
+    /// longest entry — ~830px for a filter of long automation names — with
+    /// no way to cap it. `max_width` reaches the flyout panel's style.
+    #[test]
+    fn regression_submenu_flyout_panel_caps_its_width() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            let items = Reactive::Static(vec![MenuEntry::new("Inbox", noop.clone())]);
+            let panel_max = |max_width| {
+                let P::View { style, .. } =
+                    classify(flyout_panel(&items, None, None, max_width, noop.clone()))
+                else {
+                    panic!("the flyout panel is a View");
+                };
+                style.expect("the panel is styled").resolve().max_width.clone()
+            };
+            assert_eq!(
+                panel_max(Some(320.0)),
+                Some(Tokenized::Literal(Length::Px(320.0))),
+                "a capped flyout carries the cap"
+            );
+            assert_eq!(panel_max(None), None, "an uncapped flyout sizes to its longest row");
+        });
+    }
+
+    /// Regression (same report): a data-driven `MenuEntry` couldn't carry a
+    /// status mark the way a `MenuItem` can. Its leading and trailing
+    /// builders render around the label, the trailing one pushed to the end
+    /// past a spacer, after a checkable row's checkbox.
+    #[test]
+    fn regression_menu_entry_renders_leading_and_trailing_around_its_label() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            let entry = MenuEntry::checkable("Daily report", false, noop.clone())
+                .leading(|| runtime_core::text("L".to_string()).into_element())
+                .trailing(|| runtime_core::text("Active".to_string()).into_element());
+            let P::Pressable { children, .. } = classify(flyout_row(entry, noop)) else {
+                panic!("a flyout row is a Pressable");
+            };
+            assert_eq!(children.len(), 5, "checkbox, leading, label, spacer, trailing");
+            let mut kids = children.into_iter();
+            assert!(matches!(classify(kids.next().unwrap()), P::View { .. }), "checkbox first");
+            assert_eq!(text_of(kids.next().unwrap()).as_deref(), Some("L"), "then leading");
+            assert_eq!(text_of(kids.next().unwrap()).as_deref(), Some("Daily report"));
+            assert!(matches!(classify(kids.next().unwrap()), P::View { .. }), "spacer");
+            assert_eq!(text_of(kids.next().unwrap()).as_deref(), Some("Active"), "trailing last");
+        });
+    }
+
+    /// The builders are rebuilt per flyout open, so a cloned entry (the
+    /// flyout's copy) builds its own fresh elements.
+    #[test]
+    fn menu_entry_slots_survive_clone() {
+        with_test_world(|| {
+            let noop: Rc<dyn Fn()> = Rc::new(|| {});
+            let entry = MenuEntry::new("Row", noop)
+                .trailing(|| runtime_core::text("Mark".to_string()).into_element());
+            let copy = entry.clone();
+            let build = copy.trailing.expect("the clone keeps its trailing builder");
+            assert_eq!(text_of(build()).as_deref(), Some("Mark"));
+            assert_eq!(text_of(build()).as_deref(), Some("Mark"), "and builds again");
+        });
+    }
+
+    /// Menu labels are one line: a label wider than a capped panel ends in
+    /// "…" instead of wrapping (the layout half is
+    /// `tests/menu_capped_row_layout.rs`).
+    #[test]
+    fn menu_labels_are_single_line() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let P::Text { style, .. } = classify(menu_label(Reactive::Static("x".into()))) else {
+                panic!("a menu label is a Text");
+            };
+            assert_eq!(style.expect("styled").resolve().max_lines, Some(1));
         });
     }
 }

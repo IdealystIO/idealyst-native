@@ -298,7 +298,7 @@ pub fn overlays_demo() -> Element {
                 MenuLabel(text = s("Actions"))
                 MenuItem(label = s("Edit"), on_select = act(|| {}))
                 MenuSeparator()
-                SubMenu(label = s("More"), items = vec![MenuEntry { label: s("Archive").into(), on_select: act(|| {}), checked: None }])
+                SubMenu(label = s("More"), items = vec![MenuEntry::new(s("Archive"), act(|| {}))])
             }
             ToastHost(placement = ToastPlacement::BottomCenter)
             Modal(

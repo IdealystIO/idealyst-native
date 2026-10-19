@@ -424,6 +424,8 @@ ui! {
                     Prop { name: "items",      ty: "Reactive<Vec<MenuEntry>>", desc: "SubMenu: flyout contents as reconstructable data. A bare Vec is snapshotted per open; pass rx!(…) to filter the rows live." },
                     Prop { name: "header",     ty: "Option<SubMenuSlot>",  desc: "SubMenu: slot pinned above the flyout's rows, built per open with a SubMenuSlotCx (cx.dismiss closes the flyout)." },
                     Prop { name: "footer",     ty: "Option<SubMenuSlot>",  desc: "SubMenu: slot pinned below the flyout's rows. Same builder shape as header." },
+                    Prop { name: "max_width",  ty: "Option<f32>",          desc: "Menu / SubMenu: caps the panel's width in pixels. Labels are one line, so a longer one ends in \"…\". None sizes the panel to its longest row." },
+                    Prop { name: "MenuEntry::leading / ::trailing", ty: "impl Fn() -> Element", desc: "SubMenu entry: element before the label / pushed to the row's end (a status mark). A builder, run on each open." },
                 ])
             }
         },

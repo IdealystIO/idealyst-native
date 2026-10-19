@@ -15,6 +15,16 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Menu labels are one line; `MenuEntry` has two more fields**
+  (`idea-ui`). Every `MenuItem` / `SubMenu` label is a single line ending
+  in "…" when its row is narrower than it. A menu panel is sized to its
+  longest row, so this only shows in a panel capped by the new
+  `max_width`, or one narrowed by the viewport, where a label used to
+  wrap. `MenuEntry` gained `leading` and `trailing` (see Added), so a
+  `MenuEntry { label, on_select, checked }` struct literal no longer
+  compiles. *Migration:* build entries with `MenuEntry::new` /
+  `MenuEntry::checkable`.
+
 - **Token sets own their names; idea's theme is a `#[derive(Tokens)]`
   set** (`runtime-vocabulary`, `runtime-macros-expand`, `idea-theme`).
   A token set installing a name another, unrelated set already installed
@@ -614,6 +624,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `light_theme().effects`). `app_theme!` forwards it for you.
 
 ### Added
+
+- **Menus can cap their width, and SubMenu entries carry a leading or
+  trailing element** (`idea-ui`). `Menu(max_width = Some(px))` and
+  `SubMenu(max_width = Some(px))` cap the panel, and labels longer than
+  the cap end in "…". `MenuEntry::leading(|| …)` and
+  `MenuEntry::trailing(|| …)` put an element before the label or at the
+  row's end (a status mark), matching `MenuItem`'s `leading` /
+  `trailing`. They are builders because a flyout rebuilds its rows on
+  every open.
 
 - **Robot hover and press, and Windows' missing capabilities**
   (`runtime-vocabulary`, `runtime-shared`, `robot-test`, `mcp-server`,

@@ -3201,6 +3201,12 @@ stylesheet! {
         base(t) {
             font_size: t.typography.body_size(),
             color: t.color.text(),
+            // One line, ending in "…" when the row is narrower than the
+            // label (a panel capped by `max_width`). A single-line limit
+            // also zeroes the label's automatic minimum width, which is
+            // what lets it shrink inside the row at all. An uncapped panel
+            // is sized to its longest row, so nothing truncates there.
+            max_lines: 1u32,
         }
     }
 }

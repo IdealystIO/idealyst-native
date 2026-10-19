@@ -107,7 +107,7 @@ stylesheet! {
 /// height cap is applied reactively from `viewport_size()` so it tracks
 /// orientation / split-view / window resizes and never exceeds the visible area.
 pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
-    slotted_menu_panel(rows, None, None)
+    slotted_menu_panel(rows, None, None, None)
 }
 
 /// The children every slot-capable panel shares: the pinned `header`, the
@@ -144,15 +144,31 @@ fn slotted_panel_children(
 /// nothing on it is focusable, and flipping the mark for every `Select` /
 /// `Menu` / `SubMenu` dropdown in the app is a change this does not need to
 /// make.
+///
+/// `max_width` caps the panel (`Menu` / `SubMenu`'s `max_width` prop). It
+/// layers on top of `SelectMenu`'s `min_width` floor; a row longer than the
+/// cap ellipsizes, because `MenuItemLabel` is single-line.
 pub(crate) fn slotted_menu_panel(
     rows: Vec<Element>,
     header: Option<Element>,
     footer: Option<Element>,
+    max_width: Option<f32>,
 ) -> Element {
     let slotted = header.is_some() || footer.is_some();
     let panel = runtime_core::view(slotted_panel_children(rows, header, footer));
     let panel = if slotted { panel.preserves_focus(true) } else { panel };
-    panel.with_style(|| StyleApplication::new(SelectMenu::sheet())).into_element()
+    panel
+        .with_style(move || {
+            let app = StyleApplication::new(SelectMenu::sheet());
+            match max_width {
+                Some(w) => app.with_overrides(StyleRules {
+                    max_width: Some(Tokenized::Literal(Length::Px(w))),
+                    ..Default::default()
+                }),
+                None => app,
+            }
+        })
+        .into_element()
 }
 
 /// [`scrolling_menu_panel`] shaped for a combobox (`Autocomplete`): the same
@@ -380,6 +396,7 @@ mod tests {
                 vec![runtime_core::text("Row".to_string()).into_element()],
                 Some(runtime_core::text("Header".to_string()).into_element()),
                 Some(runtime_core::text("Footer".to_string()).into_element()),
+                None,
             );
 
             let P::View { preserves_focus, mut children, .. } = classify(panel) else {
@@ -413,6 +430,7 @@ mod tests {
 
             let panel = slotted_menu_panel(
                 vec![runtime_core::text("Row".to_string()).into_element()],
+                None,
                 None,
                 None,
             );
