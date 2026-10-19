@@ -600,8 +600,13 @@ pub enum TrackSize {
     Px(f32),
     /// `minmax(min, max)` — a floor track plus a (usually flexible)
     /// ceiling track. The only nested form; neither side may itself be
-    /// `Minmax`.
+    /// `Minmax` or `FitContent` (CSS allows `fit-content()` only as a
+    /// whole track).
     Minmax(Box<TrackSize>, Box<TrackSize>),
+    /// `fit-content(px)` — sized to the column's content, but no wider
+    /// than `px` (content longer than that wraps or truncates inside).
+    /// A whole track only, never a `Minmax` side.
+    FitContent(f32),
 }
 
 /// Explicit grid placement for one axis of a grid ITEM —
@@ -2321,6 +2326,10 @@ fn write_track_size(out: &mut String, t: &TrackSize) {
             out.push(':');
             write_track_size(out, hi);
             out.push(']');
+        }
+        TrackSize::FitContent(v) => {
+            out.push('c');
+            push_u32_hex(out, v.to_bits());
         }
     }
 }

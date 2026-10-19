@@ -2614,3 +2614,15 @@ fn restrict_to_keeps_the_transition_set_whole() {
     let no_transitions = full.restrict_to(&StyleRules { min_height: px(0.0), ..Default::default() });
     assert_eq!(no_transitions.background_transition, None, "untouched transitions stay with the base");
 }
+
+#[test]
+fn content_key_distinguishes_fit_content_tracks() {
+    let cols = |t: TrackSize| StyleRules {
+        grid_template_columns: Some(vec![t, TrackSize::Fr(1.0)]),
+        ..Default::default()
+    };
+    let fit = cols(TrackSize::FitContent(100.0));
+    assert_ne!(fit.content_key(), cols(TrackSize::Px(100.0)).content_key());
+    assert_ne!(fit.content_key(), cols(TrackSize::FitContent(120.0)).content_key());
+    assert_eq!(fit.content_key(), cols(TrackSize::FitContent(100.0)).content_key());
+}

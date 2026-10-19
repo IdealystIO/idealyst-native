@@ -2243,6 +2243,8 @@ fn length_to_dim(l: FwLength) -> Dimension {
 //   - keyword  → `minmax(keyword, keyword)`
 //   - `Px(v)`  → fixed both sides
 //   - `Minmax(lo, hi)` takes lo's min and hi's max (the one nested form).
+//   - `FitContent(v)` → `fit-content(v)`: auto min, content max clamped
+//                to `v` (Taffy's `FitContent` max function).
 
 fn track_min(t: &FwTrackSize) -> MinTrackSizingFunction {
     match t {
@@ -2253,6 +2255,7 @@ fn track_min(t: &FwTrackSize) -> MinTrackSizingFunction {
         FwTrackSize::Fr(_) => MinTrackSizingFunction::Auto,
         FwTrackSize::Px(v) => MinTrackSizingFunction::Fixed(LengthPercentage::Length(*v)),
         FwTrackSize::Minmax(lo, _) => track_min(lo),
+        FwTrackSize::FitContent(_) => MinTrackSizingFunction::Auto,
     }
 }
 
@@ -2264,6 +2267,9 @@ fn track_max(t: &FwTrackSize) -> MaxTrackSizingFunction {
         FwTrackSize::Fr(v) => MaxTrackSizingFunction::Fraction(*v),
         FwTrackSize::Px(v) => MaxTrackSizingFunction::Fixed(LengthPercentage::Length(*v)),
         FwTrackSize::Minmax(_, hi) => track_max(hi),
+        FwTrackSize::FitContent(v) => {
+            MaxTrackSizingFunction::FitContent(LengthPercentage::Length(*v))
+        }
     }
 }
 
@@ -3143,6 +3149,50 @@ mod tests {
     /// rather than hugging content and leaving a gap. Guards the
     /// grid-stretch default — without it, `auto` tracks hug content under
     /// the framework's `flex-start` seed and this fails.
+    #[test]
+    fn grid_fit_content_track_hugs_short_content_and_caps_long_content() {
+        // `[fit-content(100px), 1fr]` in a 400px grid: the first column
+        // takes its content's width up to 100 and the `fr` column the
+        // rest. Not an all-`Auto` grid, so the table pass stays out.
+        let lay = |content: f32| {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let grid = t.new_node();
+            let mut gr = StyleRules::default();
+            gr.display = Some(runtime_shared::DisplayKind::Grid);
+            gr.grid_template_columns = Some(vec![
+                runtime_shared::TrackSize::FitContent(100.0),
+                runtime_shared::TrackSize::Fr(1.0),
+            ]);
+            t.set_style(grid, &gr);
+            t.add_child(root, grid);
+            let first = t.new_node();
+            t.set_measure_fn(
+                first,
+                Rc::new(move |known: Size<Option<f32>>, avail: Size<AvailableSpace>| Size {
+                    width: known.width.unwrap_or(match avail.width {
+                        AvailableSpace::Definite(w) => content.min(w),
+                        _ => content,
+                    }),
+                    height: 10.0,
+                }),
+            );
+            t.add_child(grid, first);
+            let second = t.new_node();
+            t.set_intrinsic_size(second, 10.0, 10.0);
+            t.add_child(grid, second);
+            t.compute(root, 400.0, 0.0);
+            assert!(!t.table_grids.contains_key(&grid.0), "a fit-content grid is not a table grid");
+            (t.frame_of(first).width, t.frame_of(second).width)
+        };
+        let (a, b) = lay(40.0);
+        assert!((a - 40.0).abs() < 0.5, "short content hugs: {a}");
+        assert!((b - 360.0).abs() < 0.5, "the fr column takes the rest: {b}");
+        let (a, b) = lay(300.0);
+        assert!((a - 100.0).abs() < 0.5, "long content is capped at 100: {a}");
+        assert!((b - 300.0).abs() < 0.5, "the fr column takes the rest: {b}");
+    }
+
     #[test]
     fn grid_auto_tracks_fill_container_width() {
         let mut t = LayoutTree::new();

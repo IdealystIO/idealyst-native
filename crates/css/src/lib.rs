@@ -1158,6 +1158,7 @@ pub fn track_size_css(t: &runtime_shared::TrackSize) -> String {
         TrackSize::Minmax(lo, hi) => {
             format!("minmax({}, {})", track_size_css(lo), track_size_css(hi))
         }
+        TrackSize::FitContent(v) => format!("fit-content({}px)", css_num(*v)),
     }
 }
 
@@ -2272,6 +2273,7 @@ mod tests {
             )),
             "minmax(min-content, 1fr)"
         );
+        assert_eq!(track_size_css(&TrackSize::FitContent(240.0)), "fit-content(240px)");
     }
 
     // The base reset pins `<img>` to `object-fit: contain` at specificity 0
