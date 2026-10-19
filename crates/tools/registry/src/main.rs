@@ -179,7 +179,7 @@ fn main() -> Result<()> {
             let target = target(&remote)?;
             // The per-crate uploads already happened inside the loop; this
             // just publishes the metadata and clears the edge caches.
-            deploy::put_metadata(&b.out, &target)?;
+            deploy::put_metadata(&b.out, &target, deploy::Metadata::WithReleaseState)?;
             deploy::invalidate(&target)?;
             println!("\npublished {} crates to {}", state.len(), remote.url);
             Ok(())
@@ -877,6 +877,18 @@ fn report(ws: &Workspace, plan: &BTreeMap<String, Release>) {
 // ---------------------------------------------------------------------------
 // build
 
+/// Delete a `releases.json` an earlier run left in the staging dir. It
+/// describes the registry as of that run; the final upload must only ever
+/// send the one this run writes, which carries forward the live copy.
+fn clear_stale_release_state(out: &Path) -> Result<()> {
+    match std::fs::remove_file(out.join("releases.json")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).context("removing a stale releases.json from the staging dir")
+        }
+        _ => Ok(()),
+    }
+}
+
 fn build(
     ws: &Workspace,
     plan: &BTreeMap<String, Release>,
@@ -885,6 +897,7 @@ fn build(
     execute: bool,
 ) -> Result<Vec<String>> {
     let (out, verify) = (b.out.as_path(), b.verify);
+    clear_stale_release_state(out)?;
     if plan.is_empty() {
         // Still refresh the metadata. config.json and the landing page are
         // properties of the registry, not of any release, and a run that
@@ -892,7 +905,7 @@ fn build(
         write_config(out, &r.url)?;
         write_landing_page(out, &r.url, &r.registry_name, published_count(r)?)?;
         if execute {
-            deploy::put_metadata(out, &target(r)?)?;
+            deploy::put_metadata(out, &target(r)?, deploy::Metadata::Config)?;
         }
         return Ok(vec![]);
     }
@@ -914,7 +927,7 @@ fn build(
     // with internal deps is packaged — which is the third crate. Uploading it
     // last means a 403 on `<index>/config.json` mid-run.
     if execute {
-        deploy::put_metadata(out, &target(r)?)?;
+        deploy::put_metadata(out, &target(r)?, deploy::Metadata::Config)?;
     }
 
     let mut released = Vec::new();
@@ -1066,6 +1079,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Regression: the upload that has to precede the first crate (for
+    /// `config.json`) also sent the staging dir's `releases.json` — one an
+    /// earlier run left behind. That overwrote the live state, and the end
+    /// of the run carried forward from the stale copy: a 14-crate publish
+    /// dropped the previous release's 26 entries. The early upload must not
+    /// carry `releases.json`, and a build must start without a leftover one.
+    #[test]
+    fn regression_stale_release_state_is_never_uploaded() {
+        let out = scratch("stale-state");
+        std::fs::create_dir_all(out.join("index")).unwrap();
+        std::fs::write(out.join("index/config.json"), "{}").unwrap();
+        std::fs::write(out.join("releases.json"), r#"{"crates":{}}"#).unwrap();
+
+        let early: Vec<&str> = deploy::metadata_files(&out, deploy::Metadata::Config)
+            .into_iter()
+            .map(|(_, remote, _)| remote)
+            .collect();
+        assert_eq!(early, ["index/config.json"]);
+
+        clear_stale_release_state(&out).unwrap();
+        let last: Vec<&str> = deploy::metadata_files(&out, deploy::Metadata::WithReleaseState)
+            .into_iter()
+            .map(|(_, remote, _)| remote)
+            .collect();
+        assert_eq!(last, ["index/config.json"], "the leftover state file is gone");
+
+        // A missing file is not an error: most builds start without one.
+        clear_stale_release_state(&out).unwrap();
     }
 
     /// Regression: `config.json` used to be written to the staging root, so

@@ -6,7 +6,7 @@
 //! developers both authenticate the CLI the same way, so there is one
 //! credential path instead of two.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -158,17 +158,35 @@ pub fn put_index(target: &Target, name: &str, index_path: &str, index_body: &str
     res
 }
 
-/// Upload `config.json` and `releases.json`.
-pub fn put_metadata(staging: &Path, target: &Target) -> Result<()> {
-    for (local, remote, ctype) in [
+/// Which registry metadata an upload sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Metadata {
+    /// `config.json` and the landing page: properties of the registry, safe
+    /// to send before any crate is packaged (and `config.json` must be).
+    Config,
+    /// Those plus `releases.json`, which describes the registry only once
+    /// this run's crates are in it — send it last.
+    WithReleaseState,
+}
+
+/// The staged files a metadata upload sends, as `(local, remote, content
+/// type)`. Missing files are left out.
+pub fn metadata_files(staging: &Path, which: Metadata) -> Vec<(PathBuf, &'static str, &'static str)> {
+    [
         ("index/config.json", "index/config.json", "application/json"),
         ("releases.json", "releases.json", "application/json"),
         ("index.html", "index.html", "text/html; charset=utf-8"),
-    ] {
-        let p = staging.join(local);
-        if !p.exists() {
-            continue;
-        }
+    ]
+    .into_iter()
+    .filter(|(local, _, _)| which == Metadata::WithReleaseState || *local != "releases.json")
+    .map(|(local, remote, ctype)| (staging.join(local), remote, ctype))
+    .filter(|(p, _, _)| p.exists())
+    .collect()
+}
+
+/// Upload the staged registry metadata (see [`Metadata`]).
+pub fn put_metadata(staging: &Path, target: &Target, which: Metadata) -> Result<()> {
+    for (p, remote, ctype) in metadata_files(staging, which) {
         run(
             Command::new("aws").args([
                 "s3",
@@ -180,7 +198,7 @@ pub fn put_metadata(staging: &Path, target: &Target) -> Result<()> {
                 "--content-type",
                 ctype,
             ]),
-            &format!("aws s3 cp ({local})"),
+            &format!("aws s3 cp ({remote})"),
         )?;
     }
     Ok(())

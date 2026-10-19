@@ -291,7 +291,13 @@ already name it keep working; the tarball stays up.
 `releases.json` in the bucket records the version and commit each crate was
 last cut from. It is our bookkeeping, not part of cargo's schema — an index
 entry records a version but not the commit that produced it, and "what changed
-since?" needs the commit.
+since?" needs the commit. A publish writes it last: the live copy plus this
+run's crates. `config.json` goes up before the first crate, but
+`releases.json` never does, and `build` deletes any copy an earlier run left
+in the staging dir — an old copy uploaded early would replace the live state
+that the end of the run carries forward from. Since the index is the source
+of truth for versions, every entry's `version` should equal the last version
+in that crate's index file; check that after a release.
 
 Releases are cut **by hand**:
 
