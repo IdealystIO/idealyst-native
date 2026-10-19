@@ -116,3 +116,147 @@ fn reactive_if_let_on_a_non_clone_value_still_binds() {
     h.flush();
     assert_eq!(texts(&h.take_log()), ["create n3 text \"some\""]);
 }
+
+type Callback = Option<std::rc::Rc<dyn Fn() -> i32>>;
+
+fn no_anchor(log: &[String]) -> bool {
+    !log.iter().any(|l| l.contains("anchor"))
+}
+
+/// Regression: the gate counted every method call as a possible signal
+/// read, so the common `if let Some(cb) = props.on_add.clone()` lowered to
+/// `switch` and failed on its `PartialEq` bound (E0277 "can't compare `dyn
+/// Fn()`"). A `.clone()` reads no more than its receiver; this does not
+/// compile unless the scrutinee stays a plain `if let`.
+#[test]
+fn regression_if_let_on_a_cloned_callback_stays_static() {
+    let h = Harness::new();
+    let on_add: Callback = Some(std::rc::Rc::new(|| 7));
+    let _r = h.mount(h.world.enter(|| {
+        ui! { view() { if let Some(add) = on_add.clone() { text { format!("add={}", add()) } } } }
+    }));
+    let log = h.take_log();
+    assert!(no_anchor(&log), "no reactive region for a cloned static value: {log:?}");
+    assert_eq!(texts(&log), ["create n1 text \"add=7\""]);
+}
+
+/// Regression: inside a `for` over a borrowed slice, `if let Some(band) =
+/// entry.1.clone()` went down the reactive path, whose `'static` branch
+/// can't hold the borrowed `entry` (E0597 "does not live long enough").
+/// This does not compile unless the scrutinee stays a plain `if let`.
+#[test]
+fn regression_if_let_on_a_cloned_borrowed_field_stays_static() {
+    let h = Harness::new();
+    let rows: Vec<(u32, Option<String>)> = vec![(1, Some("a".into())), (2, None)];
+    let rows_ref = &rows;
+    let _r = h.mount(h.world.enter(|| {
+        ui! {
+            view() {
+                for entry in rows_ref.iter() {
+                    if let Some(band) = entry.1.clone() { text { format!("{}:{band}", entry.0) } }
+                }
+            }
+        }
+    }));
+    let log = h.take_log();
+    assert!(no_anchor(&log), "{log:?}");
+    assert_eq!(texts(&log), ["create n1 text \"1:a\""]);
+}
+
+/// The same gate fix for `match`: a cloned non-`PartialEq` scrutinee is a
+/// plain `match`.
+#[test]
+fn match_on_a_cloned_callback_stays_static() {
+    let h = Harness::new();
+    let on_add: Callback = None;
+    let _r = h.mount(h.world.enter(|| {
+        ui! {
+            view() {
+                match on_add.clone() {
+                    Some(_) => { text { "some" } }
+                    None => { text { "none" } }
+                }
+            }
+        }
+    }));
+    let log = h.take_log();
+    assert!(no_anchor(&log), "{log:?}");
+    assert_eq!(texts(&log), ["create n1 text \"none\""]);
+}
+
+/// A clone keeps type-driven dispatch for a bare `if`: `open.clone()` on a
+/// `Signal<bool>` is still a signal, so the branch stays live.
+#[test]
+fn if_on_a_cloned_signal_stays_reactive() {
+    let h = Harness::new();
+    let open = h.world.enter(|| runtime_world::signal(false));
+    let _r = h.mount(h.world.enter(|| ui! { view() { if open.clone() { text { "open" } } } }));
+    assert!(texts(&h.take_log()).is_empty());
+    h.world.enter(|| open.set(true));
+    h.flush();
+    assert_eq!(texts(&h.take_log()), ["create n3 text \"open\""]);
+}
+
+fn handler_for(n: Option<i32>) -> Callback {
+    n.map(|n| std::rc::Rc::new(move || n * 10) as std::rc::Rc<dyn Fn() -> i32>)
+}
+
+/// A genuinely reactive scrutinee with no `PartialEq` lowers too (it failed
+/// on `switch`'s bound). Nothing can compare two values, so every change
+/// rebuilds the arm — including a change inside the same arm, `Some(a)` to
+/// `Some(b)`.
+#[test]
+fn reactive_if_let_on_a_non_partial_eq_value_rebuilds_on_every_change() {
+    let h = Harness::new();
+    let sig = h.world.enter(|| runtime_world::signal(None::<i32>));
+    let _r = h.mount(h.world.enter(|| {
+        ui! {
+            view() {
+                if let Some(f) = handler_for(sig.get()) { text { format!("v={}", f()) } } else { text { "none" } }
+            }
+        }
+    }));
+    assert_eq!(texts(&h.take_log()), ["create n2 text \"none\""]);
+    h.world.enter(|| sig.set(Some(1)));
+    h.flush();
+    assert_eq!(texts(&h.take_log()), ["create n3 text \"v=10\""]);
+    h.world.enter(|| sig.set(Some(2)));
+    h.flush();
+    assert_eq!(texts(&h.take_log()), ["create n4 text \"v=20\""], "same arm, new value");
+}
+
+/// The `match` counterpart of the test above.
+#[test]
+fn reactive_match_on_a_non_partial_eq_value_rebuilds() {
+    let h = Harness::new();
+    let sig = h.world.enter(|| runtime_world::signal(None::<i32>));
+    let _r = h.mount(h.world.enter(|| {
+        ui! {
+            view() {
+                match handler_for(sig.get()) {
+                    Some(f) => { text { format!("v={}", f()) } }
+                    None => { text { "none" } }
+                }
+            }
+        }
+    }));
+    assert_eq!(texts(&h.take_log()), ["create n2 text \"none\""]);
+    h.world.enter(|| sig.set(Some(3)));
+    h.flush();
+    assert_eq!(texts(&h.take_log()), ["create n3 text \"v=30\""]);
+}
+
+/// A `PartialEq` scrutinee keeps the value dedup: a re-fire that produces
+/// an equal value leaves the mounted arm alone.
+#[test]
+fn reactive_if_let_on_a_partial_eq_value_keeps_its_arm_when_equal() {
+    let h = Harness::new();
+    let sig = h.world.enter(|| runtime_world::signal(Some(4)));
+    let _r = h.mount(h.world.enter(|| {
+        ui! { view() { if let Some(half) = sig.get().map(|v| v / 2) { text { "half={half}" } } } }
+    }));
+    assert_eq!(texts(&h.take_log()), ["create n2 text \"half=2\""]);
+    h.world.enter(|| sig.set(Some(5)));
+    h.flush();
+    assert!(texts(&h.take_log()).is_empty(), "5 / 2 == 4 / 2: no rebuild");
+}

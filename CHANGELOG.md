@@ -66,6 +66,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   as in a plain `if let` — the value is cloned per rebuild; a non-`Clone`
   scrutinee binds by reference — so a closure in the branch can keep one
   (`if let Some(id) = pending.get() { button(on_click = move || … id …) }`).
+  A reactive branch is a `'static` `Fn`, so it cannot borrow a local or
+  move a capture out; a scrutinee that may read a signal must be written
+  with that in mind. Inert value adapters — `.clone()`, `.cloned()`,
+  `.copied()`, `.to_owned()`, `.as_ref()`, `.as_deref()` with no arguments
+  — count as signal-free when their receiver is, so `if let Some(cb) =
+  props.on_add.clone()` stays a plain `if let` (it briefly lowered
+  reactively in `runtime-macros-expand` 1.3.0 and failed to compile). A
+  reactive `match` / `if let` no longer needs a `PartialEq` scrutinee
+  (`runtime-vocabulary`): a comparable value keeps its arm mounted across
+  an equal re-fire, and any other value rebuilds its arm on every change.
 
 - **The robot works on Android, and `idealyst test` runs on every platform**
   (`backend-android-mobile`, `build-android`, `run-android`, `run-ios`,

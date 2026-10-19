@@ -2027,7 +2027,9 @@ fn emit_if(
     //    comparison of call-free operands (`if kind == Kind::Scope`, `if a && b`)
     //    — is a provably signal-free `bool`, so it falls through to
     //    `emit_plain_if` (a plain Rust `if`, captures BORROWED, flat-splat).
-    if !matches!(cond, Expr::Path(_) | Expr::Field(_)) {
+    //    An inert adapter over a path (`if open.clone()`) keeps type-driven
+    //    dispatch: `open` may be a `ReadSignal<bool>`, and the clone is too.
+    if !matches!(strip_inert_adapters(cond), Expr::Path(_) | Expr::Field(_)) {
         return emit_plain_if(cond, then_body, else_body, ctx);
     }
     let then_thunk = {
@@ -2143,19 +2145,19 @@ fn condition_is_reactive(cond: &Expr) -> bool {
 /// signal, so it must lower reactively (`when` / `switch`). The bias is
 /// deliberate and one-directional: any shape we can't prove reads no signal
 /// defaults to reactive, so a genuine reactive read is **never silently
-/// frozen**. The only cost of a false positive (a static expression treated
-/// reactive) is an inert effect that runs once and never re-fires — correct and
-/// ~free. This replaces the pre-0.4.0 gate, which assumed *static* unless it
-/// spotted a top-level call or a literal `.get()`, and so silently froze
-/// reactive reads buried inside a comparison/negation (`if a.get() < b.get()`
-/// stayed live only by the `.get()` string check; `if foo(x) < bar(y)` and
-/// `match x.method()` froze). See the `migration-0-3-0-to-0-4-0` guide.
+/// frozen**. A false positive (a static expression treated reactive) is not
+/// free, though: for an `if` it is only an inert `when` effect, but a `match` /
+/// `if let` lowers through `switch`, whose branch is a `'static` `Fn` — a
+/// branch that borrows a local or moves a capture stops compiling. So shapes
+/// that provably read nothing must be recognized here, not left to the
+/// reactive path. See the `migration-0-3-0-to-0-4-0` guide.
 ///
 /// Provably signal-free = a tree built only from literals, paths, field/index
-/// access, references, and unary/binary/boolean operators over signal-free
-/// operands. **Any** function or method call (`.get()`, `.len()`, `foo(x)`)
-/// makes it non-signal-free, because a call can read a signal — directly via
-/// `.get()`, or inside the callee. A call-free bare path/field is left for the
+/// access, references, unary/binary/boolean operators, and the inert
+/// value adapters in [`is_inert_adapter`] over signal-free operands. Any
+/// other function or method call (`.get()`, `.len()`, `foo(x)`) makes it
+/// non-signal-free, because a call can read a signal — directly via `.get()`,
+/// or inside the callee. A call-free bare path/field is left for the
 /// type-driven `StaticCond` / `ReactiveCond` dispatch in `emit_if` (its *type*
 /// decides). Macros are checked for a literal `.get()` (the one seam we can't
 /// walk structurally); unrecognized exotic shapes default to reactive.
@@ -2180,6 +2182,10 @@ pub(crate) fn condition_may_read_signal(expr: &Expr) -> bool {
         {
             condition_may_read_signal(&m.receiver)
         }
+        // An inert adapter reads no more than its receiver does: `x.clone()`
+        // is as signal-free as `x`, and `sig.get().clone()` stays reactive
+        // through the receiver.
+        Expr::MethodCall(m) if is_inert_adapter(m) => condition_may_read_signal(&m.receiver),
         Expr::Call(_) | Expr::MethodCall(_) => true,
         // Structural operators / wrappers: reactive iff any operand is.
         Expr::Binary(b) => {
@@ -2214,6 +2220,35 @@ pub(crate) fn condition_may_read_signal(expr: &Expr) -> bool {
         // a condition; default to reactive so nothing is silently frozen.
         _ => true,
     }
+}
+
+/// A zero-argument, no-turbofish call to a std value adapter that copies or
+/// re-borrows its receiver: `clone`, `cloned`, `copied`, `to_owned`,
+/// `as_ref`, `as_deref`. None of these subscribes to anything — cloning
+/// even a `Signal` handle reads no value — so `if let Some(cb) =
+/// props.on_add.clone()` is exactly as static as `if let Some(cb) =
+/// props.on_add`. A user type could shadow one of these names with a method
+/// that reads a signal; that is the same trust the gate already extends to
+/// `Deref` behind a field access.
+fn is_inert_adapter(m: &syn::ExprMethodCall) -> bool {
+    m.args.is_empty()
+        && m.turbofish.is_none()
+        && matches!(
+            m.method.to_string().as_str(),
+            "clone" | "cloned" | "copied" | "to_owned" | "as_ref" | "as_deref"
+        )
+}
+
+/// `expr` with any chain of [`is_inert_adapter`] calls peeled off its end:
+/// `props.open.clone()` → `props.open`.
+fn strip_inert_adapters(mut expr: &Expr) -> &Expr {
+    while let Expr::MethodCall(m) = expr {
+        if !is_inert_adapter(m) {
+            break;
+        }
+        expr = &m.receiver;
+    }
+    expr
 }
 
 /// Emit a `match` UI node. Same reactivity heuristic as `emit_if`:
@@ -2332,14 +2367,19 @@ fn emit_match_bindings(
                 (&::runtime_core::__IfLetArm(__v)).__if_let_value()
             }},
         };
-        return quote! {
-            ::runtime_core::switch(
-                move || #scrutinee_expr,
+        // `__SwitchOn` picks the hole by autoref specialization: keyed on the
+        // value (`switch`) when `S: PartialEq`, rebuilt on every re-fire
+        // otherwise — so a scrutinee with no `PartialEq` (an optional
+        // callback) still lowers instead of failing on `switch`'s bound.
+        return quote! {{
+            #[allow(unused_imports)]
+            use ::runtime_core::{__SwitchKeyed as _, __SwitchEach as _};
+            (&::runtime_core::__SwitchOn::new(move || #scrutinee_expr)).__switch(
                 move |__v| match #matched {
                     #( #arm_tokens, )*
                 },
             )
-        };
+        }};
     }
 
     // Static `match` — no reactivity.
@@ -3440,6 +3480,38 @@ mod tests {
             assert!(nested.contains("when("), "{nested}");
         }
 
+        /// Regression: every method call counted as a possible signal read,
+        /// so `if let Some(cb) = props.on_add.clone()` lowered to the
+        /// reactive switch and failed on its `PartialEq` / `'static`
+        /// requirements. An inert adapter is as signal-free as its receiver.
+        #[test]
+        fn regression_cloned_scrutinee_stays_static() {
+            for body in [
+                quote! { if let Some(cb) = props.on_add.clone() { text { "a" } } },
+                quote! { if let Some(s) = entry.2.as_deref() { text { "a" } } },
+                quote! { match mode.clone() { Some(_) => { text { "a" } }, None => { text { "b" } } } },
+            ] {
+                let out = squash(parse_and_emit(body));
+                assert!(!out.contains("__SwitchOn"), "a cloned value must stay static:\n{out}");
+            }
+            // A call under the adapter is still reactive.
+            for body in [
+                quote! { if let Some(cb) = sig.get().clone() { text { "a" } } },
+                quote! { if let Some(cb) = pick(x).clone() { text { "a" } } },
+            ] {
+                let out = squash(parse_and_emit(body));
+                assert!(out.contains("__SwitchOn"), "{out}");
+            }
+            // An adapter with arguments is an ordinary call.
+            let out = squash(parse_and_emit(quote! {
+                if let Some(v) = map.cloned(k) { text { "a" } }
+            }));
+            assert!(out.contains("__SwitchOn"), "{out}");
+            // A bare `if` over a cloned path keeps type-driven dispatch.
+            let out = squash(parse_and_emit(quote! { if open.clone() { text { "a" } } }));
+            assert!(out.contains("__idealyst_if"), "{out}");
+        }
+
         /// Literal-armed reactive `match` must use the closure `switch`
         /// (the structured `Element::Switch` is generator metadata).
         #[test]
@@ -3447,7 +3519,7 @@ mod tests {
             let out = squash(parse_and_emit(quote! {
                 match pick(state) { 0 => { text { "a" } }, _ => { text { "b" } } }
             }));
-            assert!(out.contains("switch("), "{out}");
+            assert!(out.contains("__SwitchOn::new("), "{out}");
             assert!(out.contains("pick((state).get())"), "{out}");
             assert!(!out.contains("Element::Switch"), "{out}");
         }

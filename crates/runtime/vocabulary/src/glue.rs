@@ -2839,6 +2839,80 @@ pub fn switch<S: PartialEq + 'static>(
     dyn_keyed(scrutinee, render)
 }
 
+/// A reactive branch over a scrutinee with no `PartialEq`: nothing can say
+/// two values are equal, so every re-fire of `scrutinee` (it runs tracked)
+/// rebuilds the branch with the new value. `render` runs untracked, as in
+/// [`switch`].
+fn switch_each<S: 'static>(
+    scrutinee: impl Fn() -> S + 'static,
+    render: impl Fn(&S) -> Element + 'static,
+) -> Element {
+    let current: Rc<std::cell::RefCell<Option<S>>> = Rc::new(std::cell::RefCell::new(None));
+    let seen = Rc::clone(&current);
+    runtime_scene::dyn_guarded(
+        move || {
+            // Read before borrowing: the scrutinee may reach a nested hole
+            // that re-enters this cell.
+            let value = scrutinee();
+            *current.borrow_mut() = Some(value);
+            true
+        },
+        move || render(seen.borrow().as_ref().expect("scrutinee is read before the build")),
+    )
+}
+
+/// How `ui!` lowers a reactive `match` / `if let`: as
+/// `(&__SwitchOn::new(scrutinee)).__switch(render)`, where method
+/// resolution picks the hole by autoref specialization, at compile time:
+///
+/// - `S: PartialEq` — [`__SwitchKeyed`] is found at the by-value step and
+///   lowers to [`switch`], so a re-fire with an equal value keeps the arm
+///   mounted;
+/// - otherwise [`__SwitchEach`], one autoref step later, rebuilds the arm
+///   on every re-fire, so a scrutinee such as `Option<Rc<dyn Fn()>>` lowers
+///   instead of failing on `switch`'s bound.
+///
+/// The scrutinee sits in a `Cell` because both methods take `&self` (that
+/// is what lets the two impls sit one autoref apart) and each must move it
+/// into the hole.
+#[doc(hidden)]
+pub struct __SwitchOn<S, F> {
+    scrutinee: std::cell::Cell<Option<F>>,
+    value: std::marker::PhantomData<fn() -> S>,
+}
+
+impl<S, F: Fn() -> S> __SwitchOn<S, F> {
+    pub fn new(scrutinee: F) -> Self {
+        Self { scrutinee: std::cell::Cell::new(Some(scrutinee)), value: std::marker::PhantomData }
+    }
+
+    fn take(&self) -> F {
+        self.scrutinee.take().expect("a __SwitchOn lowers once")
+    }
+}
+
+#[doc(hidden)]
+pub trait __SwitchKeyed<S> {
+    fn __switch(&self, render: impl Fn(&S) -> Element + 'static) -> Element;
+}
+
+impl<S: PartialEq + 'static, F: Fn() -> S + 'static> __SwitchKeyed<S> for __SwitchOn<S, F> {
+    fn __switch(&self, render: impl Fn(&S) -> Element + 'static) -> Element {
+        switch(self.take(), render)
+    }
+}
+
+#[doc(hidden)]
+pub trait __SwitchEach<S> {
+    fn __switch(&self, render: impl Fn(&S) -> Element + 'static) -> Element;
+}
+
+impl<S: 'static, F: Fn() -> S + 'static> __SwitchEach<S> for &__SwitchOn<S, F> {
+    fn __switch(&self, render: impl Fn(&S) -> Element + 'static) -> Element {
+        switch_each(self.take(), render)
+    }
+}
+
 /// How a reactive `if let` binds: `switch` hands each render a `&S`, so a
 /// plain `match` on it binds references into the keyed value, and a
 /// `'static` closure in the branch (`button(on_click = move || … id …)`)

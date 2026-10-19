@@ -37,7 +37,10 @@ the condition tree (`.get()`, `.len()`, `foo(x)`), or an unrecognized shape,
 lowers reactively via `when` / `switch`. Only a provably signal-free condition —
 a bare path/field (routed through the type-driven `StaticCond` / `ReactiveCond`
 dispatch), or a literal / `&&` / `||` / `!` / comparison of **call-free**
-operands — stays a plain static `if` / `match` with borrowed captures.
+operands — stays a plain static `if` / `match` with borrowed captures. The
+inert value adapters `.clone()`, `.cloned()`, `.copied()`, `.to_owned()`,
+`.as_ref()` and `.as_deref()` (no arguments) are not counted as calls: `x.clone()`
+is exactly as signal-free as `x`, and `sig.get().clone()` stays reactive.
 
 **Why.** The pre-0.4.0 gate was a *correctness* heuristic: guess wrong and the
 UI silently freezes. A `.get()` spelled at the condition surface (`if x.get() >
@@ -123,7 +126,10 @@ the old `runtime-core` test suite, which 1.0 deleted.
 - **`if let PAT = EXPR`** lowers as a two-arm `match` under the same gate:
   `if let Some(x) = sig.get()` is reactive; a signal-free scrutinee is static.
   Bindings are owned (cloned per rebuild), so a closure in the branch can
-  keep `x`.
+  keep `x`. A reactive branch is a `'static` `Fn`: it can't borrow a local
+  or move a capture out. A reactive scrutinee needn't be `PartialEq` — one
+  that is keeps its arm across an equal re-fire; one that isn't rebuilds on
+  every change.
 
 ## Lazy loading: component surface + a fallible loader
 

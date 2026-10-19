@@ -59,7 +59,7 @@ subtree is rebuilt, not its siblings.
 
 ```rust
 pub fn when(cond: impl Fn() -> bool, then: …, otherwise: …) -> Element
-pub fn switch<S: PartialEq>(scrutinee: impl Fn() -> S, branches: impl Fn(&S) -> Element) -> Element
+pub fn switch<S: PartialEq + 'static>(scrutinee: impl Fn() -> S, branches: impl Fn(&S) -> Element) -> Element
 ```
 
 `when` is a two-way conditional, `switch` is a multi-way conditional
@@ -70,6 +70,12 @@ keyed on any `PartialEq + 'static` type. Both lower to the scene's
   reads don't tear the branch down.
 - `switch` rebuilds only when the new scrutinee fails equality against
   the previous one. `touch()` on a scrutinee is inert — change the value.
+
+`ui!`'s reactive `match` / `if let` uses `switch` when the scrutinee is
+`PartialEq`. A scrutinee that isn't (an `Option<Rc<dyn Fn()>>`) lowers to
+a guarded hole that rebuilds its arm on every re-fire, since nothing can
+say two values are equal. The macro picks between them at compile time
+(`glue::__SwitchOn`, autoref specialization).
 
 The outgoing subtree's `Realized` drops on rebuild, running effect
 cleanups and freeing every signal and effect inside it. **State in a
@@ -400,7 +406,10 @@ free of any reactive machinery, and is why `del_visible` is authored as a
 `memo` rather than a bare `move || …` closure. (`if let PAT = EXPR { … }`
 lowers as `match EXPR { PAT => …, _ => … }`, under the same gate as a
 `match`: `if let Some(x) = sig.get()` re-binds when the signal changes; a
-signal-free scrutinee stays a plain `if let`. Unlike a reactive `match`,
+signal-free scrutinee stays a plain `if let` — including one behind an
+inert adapter, `if let Some(cb) = props.on_add.clone()`, since `.clone()`
+/ `.cloned()` / `.copied()` / `.to_owned()` / `.as_ref()` / `.as_deref()`
+read nothing their receiver doesn't. Unlike a reactive `match`,
 whose arms bind references into the keyed value, `if let` binds owned
 values — cloned per rebuild, or by reference when the type isn't `Clone` —
 so a closure in the branch can keep `x`.)

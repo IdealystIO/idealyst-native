@@ -179,7 +179,8 @@ lost.**
 - `switch(scrutinee, |&key| …)` — multi-way. `scrutinee` returns any
   `PartialEq + 'static` value (usually an enum); the subtree rebuilds only when
   the key actually changes. **This is what `ui!`'s `match` lowers to** — write
-  `match mode.get() { … }` inside the macro.
+  `match mode.get() { … }` inside the macro. (A `ui!` `match` / `if let` whose
+  scrutinee isn't `PartialEq` still lowers: its arm rebuilds on every change.)
 - `fragment(children)` — a **layout-transparent** sibling group. Return it from
   a `#[component]` that conceptually yields several siblings but must return one
   `Element` — realize splices the children into the parent with no wrapper
@@ -339,7 +340,9 @@ intended.
   that *might read a signal* (a `.get()`, or **any** call anywhere in the
   condition — `if name.get().len() < 3`, `if is_short(name)`) lowers to a
   reactive `when`/`switch`; only a *provably signal-free* condition (a literal,
-  a bare `bool` path, or a comparison of call-free operands) stays static. Rule
+  a bare `bool` path, or a comparison of call-free operands) stays static —
+  `.clone()` / `.as_ref()` and the other no-argument value adapters don't
+  count as calls, so `if let Some(cb) = props.on_add.clone()` is static. Rule
   of thumb: **a `let` freezes, a closure — or a call in the condition — flows.**
   The `snapshot-condition` lint flags the pattern at the `let`; nothing
   warns at runtime (a component body is untracked by construction, so a
