@@ -1628,6 +1628,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A Tooltip no longer moves its trigger** (`idea-ui`). The wrapper
+  around the trigger hugged with `align_self: Center`, which overrides
+  the parent's `align_items`: in a column the trigger was centred
+  horizontally, and `Stack(align = StackAlign::Start)` could not pull it
+  back. The wrapper now follows the parent's alignment, so the trigger
+  sits exactly where it would without a Tooltip, and a hugging trigger
+  (Button, Badge) still stays vertically centred in a stretched row.
+
+- **iOS: screens in a navigator are laid out at their container's size**
+  (`backend-ios-mobile`). A screen in a native view controller (stack
+  pushes, tab and drawer screens, modals) was laid out at the window's
+  height while UIKit held it at the controller's, so inside an app-level
+  `safe_area` the bottom of every stack screen was clipped by the inset
+  total. It is now laid out at the controller view's size and re-laid out
+  when UIKit resizes that view (rotation, safe-area padding arriving after
+  mount). Android already did this.
+
 - **Hover and press styles, and `cursor`, work on Windows**
   (`backend-windows`, `host-win32`). `state hovered` / `state pressed`
   variants never lit on Windows (idea-ui buttons had no hover highlight or

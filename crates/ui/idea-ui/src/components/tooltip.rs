@@ -35,7 +35,8 @@ use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 use runtime_core::{
     after_ms_detached, component, long_press, signal, ui, ChildList, Element, IdealystSchema,
-    IntoElement, LongPressRecognizer, Reactive, Ref, StyleSheet, ViewHandle,
+    IntoElement, JustifyContent, LongPressRecognizer, Reactive, Ref, StyleRules, StyleSheet,
+    ViewHandle,
 };
 
 use crate::stylesheets::{TooltipBubble, TooltipBubbleText};
@@ -86,14 +87,27 @@ impl Default for TooltipProps {
     }
 }
 
-/// Hug sheet for the wrapper so it sizes to the trigger instead of
-/// stretching across a flex parent's cross axis (see
-/// [`crate::components::hug_self`]).
-fn hug_sheet() -> Rc<StyleSheet> {
+/// The trigger wrapper's sheet: layout-transparent, so the trigger lands
+/// where it would without a Tooltip.
+///
+/// - No `align_self`: the wrapper follows the parent's `align_items` like
+///   the bare trigger would. Not `hug_self()` (`align_self: Center`): that
+///   overrides the parent, so a Tooltip centred its trigger in a column
+///   and `Stack(align = Start)` could not pull it back.
+/// - `justify_content: Center`: in a row the parent's default stretch
+///   makes the wrapper as tall as the line, and the trigger is the
+///   wrapper's (column) main axis. A hugging trigger (Button, Badge, Tag)
+///   centres itself on the row's cross axis when bare, so it is centred
+///   in the stretched wrapper too, not dropped to its top. In a column the
+///   wrapper is as tall as its content, so this is a no-op there.
+fn wrapper_sheet() -> Rc<StyleSheet> {
     // `r#static` auto-premints by content, and the wrapper builds with the
     // TRIGGER (crawl-visible), not with the lazily-opened bubble — so the
     // dump does see this construction and its CSS ships.
-    Rc::new(StyleSheet::r#static(crate::components::hug_self()))
+    Rc::new(StyleSheet::r#static(StyleRules {
+        justify_content: Some(JustifyContent::Center),
+        ..Default::default()
+    }))
 }
 
 /// The bubble surface: a `view` BOX carrying the background, border, padding,
@@ -152,8 +166,8 @@ pub fn Tooltip(props: TooltipProps) -> Element {
         // Touch: long-press → show (auto-dismiss). Returns the recognizer's
         // response so the press still bubbles for the trigger's own handler.
         .on_touch(move |ev| lp_handler(ev))
-        // Hug the trigger so the wrapper doesn't stretch in a flex parent.
-        .with_style(hug_sheet())
+        // Layout-transparent: the trigger sits where it would bare.
+        .with_style(wrapper_sheet())
         .into_element();
 
     // The bubble — anchored to the wrapper, present only while `open`. The
