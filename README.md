@@ -1,59 +1,355 @@
 # idealyst-native
 
-A Rust-based cross-platform UI ecosystem. Write your app once (UI tree, styles,
-state, and client-side logic) and let a **backend** decide what "running on a
-platform" actually means.
+A Rust framework for building one app that runs natively on the web, iOS,
+Android, macOS, Windows and Linux.
 
-The ecosystem ships native backends for **web** (WASM + DOM), **iOS** (UIKit via
-objc2), **Android** (JNI + native View hierarchy), **macOS** (AppKit via objc2),
-**Linux** (GTK4), **Windows** (Win32), and **Roku** (BrightScript / SceneGraph
-transpile); headless backends for **SSR / SSG**, **email** HTML, a **terminal**
-character grid, and a **CPU** software rasterizer; and a custom renderer on top
-of [wgpu](https://wgpu.rs/) that paints its own pixels. The backend seam is two
-traits deep: `runtime_scene::Host` (a handful of structural tree operations)
-plus the per-primitive capability traits (`runtime_vocabulary::caps::*Ops`), every
-method of which has a documented default. You can target anything you can drive
-from Rust (a custom renderer, a TUI, an embedded display) without touching app
-code.
+> [!WARNING]
+> **Idealyst is in beta.** Expect frequent breaking changes while we dial in
+> the SDK. APIs, crate names and macro syntax can change between releases;
+> each breaking release ships a migration note in [`docs/`](docs/) and the
+> [CHANGELOG](CHANGELOG.md). Pin exact versions if you build on it today.
 
-> **Status: under construction.** APIs are still under development and may change, use at your own risk.
-> See the [Roadmap](#roadmap) for what's implemented per backend.
+## What is Idealyst?
 
-## What makes this different
+Idealyst takes each platform's functionality (views, text, input, scrolling,
+navigation, the camera, secure storage, notifications, and so on) and bridges
+it to one abstraction. You write your app against that abstraction once: the
+UI tree, styles, state and client-side logic. A **backend** for each platform
+turns it into that platform's real native output: DOM elements on the web,
+UIKit views on iOS, Android Views, AppKit on macOS.
 
-Cross-platform Rust UI is a crowded space. The thing this framework does that
-others don't is bake first-class automation and agentic control into the
-framework itself.
+The abstraction does not pretend the platforms are identical. Each backend
+handles its platform's differences and quirks, such as how a scroll view
+reports its offset, how the keyboard covers content, safe areas, permission
+prompts and text measurement, so the behavior you see is the same everywhere.
+When a difference is real and belongs to the app (a `Cmd` shortcut on macOS
+and `Ctrl` elsewhere), the app can read which platform it is on and branch.
+Everything else stays platform agnostic.
 
-Every mounted primitive registers with a shared introspection registry that
-exposes a stable handle, a `test_id`, a label, and a primitive kind. One
-registry, three consumers:
+### Think of it as a responsive web app
 
-- **E2E test harnesses.** Query by `test_id`, click buttons, type into
-  inputs, read signals, snapshot the tree. The same `Robot` API works on
-  web, iOS, and Android. No separate platform runners per target.
-- **MCP server.** `idealyst mcp` ([`crates/mcp/server`](crates/mcp/server))
-  speaks stdio JSON-RPC and turns each registry capability into an MCP tool
-  (alongside the static component catalog). Drop it into a Claude Code /
-  Desktop config and an LLM can drive a running iOS / Android / web app
-  directly: fill out forms, navigate, assert state. It reaches the app's
-  Robot bridge by discovery (`~/.idealyst/apps/`) or an explicit
-  `--robot-port`.
-- **`#[component]` methods.** Nested `#[method]` fns inside a component
-  is auto-registered as JSON-callable. External automation can invoke
-  component methods by name without per-app glue.
+The most effective way to build an Idealyst app is to design it the way you
+would design a responsive web app:
 
-The same model gets you Detox-style E2E, dev tools, and agentic control
-from one architectural seam. See
-[`crates/runtime/shared/src/robot/`](crates/runtime/shared/src/robot/) for
-the registry + bridge protocol,
-[`crates/runtime/vocabulary/src/robot.rs`](crates/runtime/vocabulary/src/robot.rs)
-for the per-primitive registration, and
-[`crates/mcp/server/`](crates/mcp/server/) (the `idealyst mcp` command) for
-the MCP entry point. Gated on the `robot` Cargo feature; production builds
-leave it off.
+- Lay it out with **flexbox** (and CSS grid). The web backend uses the
+  browser's layout engine; native backends run the same model through
+  [Taffy](https://github.com/DioxusLabs/taffy).
+- Style **mobile first**: write the narrow layout in a stylesheet's `base`
+  block, then widen it with `breakpoint` blocks (`sm`, `md`, `lg`, `xl`).
+- Pull colors, spacing and radii from **style tokens** so the whole app can be
+  restyled, or switched to dark mode, at runtime.
+- Keep state in **signals** and let the UI react to them.
 
-## Installing the CLI
+Build it that way and the same code works in a phone, a tablet, a desktop
+window and a browser tab.
+
+## Core concepts
+
+Everything below is imported from `runtime_core`, the author-facing crate.
+
+### Signals
+
+A signal holds a piece of state. Reading it inside the UI subscribes that
+part of the UI, and writing it updates only what read it.
+
+```rust
+use runtime_core::signal;
+
+let count = signal(0);
+
+count.set(5);
+count.update(|n| n + 1);    // update takes &T and returns the new value
+let now = count.get();      // 6
+```
+
+Writes are batched: everything an event handler, timer or async completion
+writes commits together in one update pass. See
+[`docs/reactivity.md`](docs/reactivity.md) and
+[`docs/automatic-batching.md`](docs/automatic-batching.md).
+
+### Memos
+
+A memo is a derived value. It computes once, is shared by every reader, and
+only notifies readers when its result actually changes.
+
+```rust
+use runtime_core::{memo, signal};
+
+let items = signal(vec![3, 8, 12]);
+let total = memo(move || items.get().iter().sum::<i32>());
+let over_budget = memo(move || total.get() > 20);
+```
+
+For a value read in a single place, a plain closure (`move || count.get() * 2`)
+is enough. Reach for `memo` when a derivation is shared or expensive.
+
+### Components
+
+A component is a function marked `#[component]`. Its parameters become props,
+and its body returns a tree written with the `ui!` macro. Built-in primitives
+are lowercase (`view`, `text`, `button`, …); your components are PascalCase.
+
+```rust
+use runtime_core::{component, memo, signal, ui, Element};
+
+#[component]
+pub fn Counter(label: String, #[prop(default = 1)] step: i32) -> Element {
+    let count = signal(0);
+    let doubled = memo(move || count.get() * 2);
+
+    ui! {
+        view(style = Card().tone(CardTone::Accent)) {
+            text { "{label}: {count} (doubled: {doubled})" }
+            button(
+                label = "Increment",
+                on_click = move || count.update(|n| n + step.get()),
+            )
+            if count.get() >= 10 {
+                text { "That's a lot." }
+            }
+        }
+    }
+}
+
+// Used like a primitive:
+// ui! { Counter(label = "Clicks".to_string(), step = 2) }
+```
+
+`{name}` inside a text string inserts a value; when the value is a signal or
+memo, that text updates live. `if`, `match` and `for` work directly inside
+`ui!`. The full authoring guide is [`docs/ui-layer.md`](docs/ui-layer.md).
+
+### Style tokens
+
+A style token is a named style value, such as a color, a length or a number,
+that stylesheets read by name. Changing a token's value restyles only the
+elements that use it, without recomputing any stylesheet. A **theme** is one
+complete set of token values.
+
+Declare your tokens as a plain struct; the struct is the vocabulary and each
+value of it is a theme:
+
+```rust
+use runtime_core::{Color, Length, Tokens};
+
+#[derive(Tokens, Clone)]
+pub struct Swatch { pub bg: Color, pub text: Color }
+
+#[derive(Tokens, Clone)]
+#[tokens(default = light)]
+pub struct AppTheme {
+    pub surface: Color,
+    pub text: Color,
+    pub accent: Swatch,
+    pub space: Length,
+    pub radius: Length,
+}
+
+fn light() -> AppTheme {
+    AppTheme {
+        surface: "#ffffff".into(),
+        text: "#111827".into(),
+        accent: Swatch { bg: "#eef2ff".into(), text: "#4338ca".into() },
+        space: 12.0.into(),
+        radius: 8.0.into(),
+    }
+}
+
+fn dark() -> AppTheme {
+    light().with(|t| {
+        t.surface = "#111827".into();
+        t.text = "#e5e7eb".into();
+        t.accent.bg = "#1e1b4b".into();
+    })
+}
+
+// At startup, inside your app:
+AppTheme::follow_system(light(), dark());   // match the OS light/dark setting
+// Later, from anywhere (a settings toggle, say):
+AppTheme::set(dark());
+```
+
+### Stylesheets
+
+`stylesheet!` declares a reusable style with variants, interaction states and
+responsive breakpoints. `<AppTheme>` names the token vocabulary, and `t`
+gives typed access to it, so a misspelled token fails the build.
+
+```rust
+use runtime_core::{stylesheet, FlexDirection};
+
+stylesheet! {
+    pub Card<AppTheme> {
+        base(t) {
+            flex_direction: FlexDirection::Column,   // mobile first
+            padding: t.space(),
+            border_radius: t.radius(),
+            background: t.surface(),
+            color: t.text(),
+        }
+        variant tone {
+            #[default]
+            plain(_t) {}
+            accent(t) {
+                background: t.accent.bg(),
+                color: t.accent.text(),
+            }
+        }
+        state hovered(t) {
+            border_color: t.accent.text(),
+        }
+        breakpoint md(_t) {
+            flex_direction: FlexDirection::Row,      // ≥ 768 dp: lay out in a row
+        }
+    }
+}
+```
+
+The macro generates the `Card()` builder and a `CardTone` enum, used above as
+`style = Card().tone(CardTone::Accent)`. A variant can also take a signal or a
+closure, and the style updates when it changes. On the web, stylesheets
+compile to CSS classes, and breakpoints and hover states to `@media` and
+`:hover` rules. Native backends apply the same rules directly. See
+[`docs/styling.md`](docs/styling.md).
+
+### Apps and hosts
+
+An app is one crate that knows nothing about the platform it runs on. A small
+**host** crate per target wires that app to a backend and a mount point; the
+host is the only code that knows which platform it is on. `idealyst new`
+scaffolds both, so most apps never touch a host directly.
+
+## SDKs
+
+The core framework stays small: primitives, layout, styling, reactivity.
+Everything else ships as an opt-in SDK crate that an app adds when it needs
+it. Each SDK exposes one API and implements it per platform. Its README lists
+which platforms it supports and how far each one has been tested. The full
+index is [`crates/sdk/README.md`](crates/sdk/README.md).
+
+Some of these SDKs will likely move out of this repository into their own
+over time. The goal is to keep this repository to the base functionality that
+most apps need, with more specialized SDKs maintained separately.
+
+**UI and rendering**
+- `canvas`: retained-mode 2D drawing (GPU via Vello where available, CPU elsewhere)
+- `canvas3d`: 3D scenes (glTF models, lights, camera)
+- `charts`: reactive charts drawn on a canvas, with native text and tooltips
+- `svg`: vector images
+- `video`: video playback
+- `maps`: a native map view
+- `webview`: embedded web content
+- `markdown`: CommonMark / GFM rendering
+- `codeblock`: syntax-highlighted code
+- `pdf`: render PDF pages
+- `table`: tables (a real `<table>` on web)
+- `form`: a form container (Enter-to-submit and autofill on web)
+- `virtualized`: virtualized lists, grids and responsive grids
+- `toolbar`: window toolbar (`NSToolbar` on macOS)
+- `menu`: the OS menu bar
+- `qr`: show, export and scan QR codes
+
+**Navigation**
+- `stack-navigator`: push / pop stacks with a typed handle
+- `swap-navigator`: flat sets of screens, for tab bars and drawers
+
+**Gestures and input**
+- `pan`, `zoom`: drag and pinch / scroll zoom, the same on mouse, trackpad and touch
+- `gesture`: arbitration between several recognizers on one view
+- `dnd`: in-app drag and drop (reorderable lists, boards)
+
+**Data and networking**
+- `net`: HTTP over each platform's native stack
+- `graphql`: typed GraphQL client and server execution
+- `sync`: offline-first cache that synchronizes with a server
+- `storage`: key-value preferences and cache
+- `credentials`: secure storage for secrets (Keychain, Keystore, …)
+- `files`: app-private file storage
+- `file-picker`, `file-export`: the system open and save dialogs
+- `i18n`: typed translations checked at compile time
+
+**Device and OS**
+- `permissions`: one request / status API for runtime permissions
+- `notifications`: local and scheduled notifications, push tokens
+- `location`: one-shot and continuous geolocation
+- `biometrics`: Face ID / Touch ID / fingerprint / Windows Hello
+- `camera`, `microphone`, `screen-recorder`: live capture
+- `clipboard`, `share`, `haptics`, `deep-link`, `connectivity`
+- `datetime`: current time and local time zone on every target
+- `random`: secure randomness and a seeded generator that matches across platforms
+- `auto-update`: self-update for directly distributed desktop apps
+- `offload`: run CPU-heavy work off the main thread
+
+**Audio and video**
+- `audio`: sound playback
+- `audio-engine`: low-latency, mixable sound for games
+- `synth`: procedural sound effects
+- `denoise`: neural noise suppression for live audio
+- `media-stream`: the shared live audio / video stream type
+- `media-writer`: record streams to a file
+- `video-decode`: decode video files into streams
+- `video-compose`: real-time GPU compositing on video streams
+
+**Server** (runs in the server binary, never in the client)
+- `jobs`: background jobs and queues with retries
+- `pubsub`: publish / subscribe, including WebSocket fan-out across instances
+- `email`: transactional email rendered from Idealyst templates
+- `cache`: key-value cache with TTL (memory or Redis)
+- `idealyst-config`: shared configuration and connection profiles for the server SDKs
+
+The full-stack layer (`#[server]` functions, the server kit and the AWS
+adapter) lives under [`crates/api/`](crates/api/); see
+[`docs/server-functions.md`](docs/server-functions.md).
+
+Building your own SDK uses the same mechanism the built-in ones use: define a
+payload type and register a handler per backend on the scene `Registry`. See
+[`docs/registry.md`](docs/registry.md).
+
+## Platform support
+
+| Platform | Backend | Status |
+| --- | --- | --- |
+| Web | WASM + DOM; client rendering, SSR / SSG and hydration | Supported |
+| iOS | UIKit | Supported |
+| Android | Android Views over JNI | Supported |
+| macOS | AppKit | Supported |
+| Windows | Win32 | **Work in progress** |
+| Linux | GTK4 | **Work in progress** |
+| Server HTML | SSR / SSG and email-safe HTML | Supported |
+
+Experimental targets: a custom GPU renderer on [wgpu](https://wgpu.rs/) that
+draws its own pixels, a terminal UI, a CPU software rasterizer, and Roku. The
+tvOS and Android TV backends are empty skeletons.
+
+### Per-backend primitive coverage
+
+Every backend implements every capability trait; a blank cell means that
+backend leaves the primitive's `create_*` method on the trait default. Those
+defaults degrade rather than crash: a missing widget renders the
+`ExternalOps::missing_primitive_placeholder` box, and a missing container
+lowers to a plain view. What *does* panic is an unregistered third-party
+payload (see [SDKs](#sdks)).
+
+| Primitive | web | iOS | Android | macOS | Linux | Windows | Roku | terminal | CPU | SSR | wgpu |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| view / text / button | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| image / icon / text_input / toggle / activity_indicator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| scroll_view | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| text area (multiline text_input) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | ✓ |
+| slider | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ | ✓ | ✓ |
+| graphics | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ | ✓ | ✓ |
+| link | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ |  | ✓ | ✓ |
+| virtualizer / flat_list | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | ✓ |
+| virtual grid | ✓ | ✓ | ✓ | ✓ |  |  |  |  |  |  |  |
+| overlay / portal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Third-party primitives (an SDK payload type plus a handler registered on the
+scene `Registry`) are covered per SDK, per backend: some SDKs lower to builtin
+primitives on every host, others ship a handler per platform (`video`, `svg`, `codeblock`, `toolbar`, `webview`, …) and
+fall back to the placeholder box where no handler exists. Each SDK's README
+lists the hosts it supports.
+
+## Getting started
 
 The `idealyst` CLI is the entry point for everything user-facing: scaffolding
 new projects, building / running them for web / iOS / Android, the hot-reload
@@ -153,129 +449,39 @@ verbatim: a complete three-act animated intro, full Inter typeface bundle,
 web + iOS + Android wiring already in place. Edit `src/app.rs` and the
 per-element files under `src/components/` to make it yours.
 
-## What is Idealyst?
+## Built-in automation and agent control
 
-I quit my job and got bored, so I started working on this.
+Cross-platform Rust UI is a crowded space. The thing this framework does that
+others don't is bake first-class automation and agentic control into the
+framework itself.
 
-Idealyst is a project started as a way to bring sanity to cross-platform development in a way I felt made sense. This goes beyond defining components that render everywhere, I wanted to standardize everything in the app development ecosystem: from components, theme, navigation, animations, and much, much more.
+Every mounted primitive registers with a shared introspection registry that
+exposes a stable handle, a `test_id`, a label, and a primitive kind. One
+registry, three consumers:
 
-I started building off what I was comfortable with - React and React Native. I am a big fan of the way React works as a framework, and I have nearly a decade of experience working in it. I love the strong and hardworking community it has built, especially on the React Native side, to make app building simple and performant despite the complexities of using Javascript as your runtime in a native environment. It has come a long way. I decided to make a component library, alongside a vast amount of extensions components for things like Camera, Audio, push notifications, that provided a standardized API that ran on Web and Mobile with very high fidelity on both. This project exists as https://github.com/IdealystIO/idealyst-framework, and I've used it in real production apps.
+- **E2E test harnesses.** Query by `test_id`, click buttons, type into
+  inputs, read signals, snapshot the tree. The same `Robot` API works on
+  web, iOS, and Android. No separate platform runners per target.
+- **MCP server.** `idealyst mcp` ([`crates/mcp/server`](crates/mcp/server))
+  speaks stdio JSON-RPC and turns each registry capability into an MCP tool
+  (alongside the static component catalog). Drop it into a Claude Code /
+  Desktop config and an LLM can drive a running iOS / Android / web app
+  directly: fill out forms, navigate, assert state. It reaches the app's
+  Robot bridge by discovery (`~/.idealyst/apps/`) or an explicit
+  `--robot-port`.
+- **`#[component]` methods.** Nested `#[method]` fns inside a component
+  is auto-registered as JSON-callable. External automation can invoke
+  component methods by name without per-app glue.
 
-The past few years I have started to really dig into Rust - and I fell in love with the syntax. I started to think to myself that it would be cool to take my experience working in Web and Mobile app development, and build a framework that could achieve near native performance. I also wanted to step away from being so heavily opinionated, allowing people to extend the framework for themselves. But this was a daunting task, and it's not a project I ever felt I had time for.
-
-Then I quit my job, and with this new free time, I started to tinker. AI became a huge part of my workflow, it allowed me to iterate quickly on ideas I've had without having to spend days or weeks actually writing the implementations myself. I love Rust, but I don't feel like an expert and it was daunting to imagine such a big project written with it. But AI has been a huge help, and after a lot of pondering, this project is the result - and I am super proud of it so far.
-
-## Roadmap
-
-"Working" below means **available on at least one backend**, not "complete on
-all backends." Per-backend parity for the more involved primitives is
-summarised in the matrix further down.
-
-### Framework
-
-| Area | Status |
-| --- | --- |
-| Runtime core: primitives (`runtime-vocabulary`), scene + mount (`runtime-scene`), reactive kernel (`runtime-world`) | Working |
-| `ui!` / `jsx!` / `#[component]` macros | Working |
-| `stylesheet!` macro (themes, variants, overrides) | Working |
-| `Ref<H>`: primitive handles + user-component handles via `#[method]` | Working |
-| Reactive `if` / `when`, `for` loops in DSLs | Working |
-| `idea-ui` component library (Card, Modal, Popover, Select, Switch, Tabs, Field, Alert, …) | Working |
-| Icon registry (`icons-lucide`) | Working |
-| Robot automation + MCP server: introspection registry, `#[component]` + `#[method]`, agent control | Working |
-| Hot reload: dev server + runtime-server (Application-as-a-Service) shell + wire protocol | Working |
-| Server-driven UI: wire protocol + `SceneModel` snapshot | Working |
-| Custom rendering: `render-wgpu` GPU engine (phone / tablet / tv variants, Android / iOS painters) | In progress |
-| Native backend: interactions / media / OS integration | In progress |
-| Async data: `resource` / `mutation` (`runtime_vocabulary::async_reactive`) | Working |
-| Accessibility: `AccessibilityProps` on every primitive + `caps::A11yOps` per backend | Working |
-| SSR / SSG + hydration (`backend-ssr`, byte-identical goldens) | Working |
-
-### Backends
-
-| Backend | Status | Notes |
-| --- | --- | --- |
-| `backend-web` (WASM + DOM) | Working | Reference backend. CSR, hydration, and the framework-owned `web-glue` JS boundary. |
-| `backend-ios-mobile` (UIKit via objc2) | Working | Phone form factor. `backend-ios-tv` is an empty skeleton. |
-| `backend-android-mobile` (JNI + Views) | Working | Phone form factor. `backend-android-tv` is an empty skeleton. |
-| `backend-macos` (AppKit via objc2) | Working | Implements `Host` + every capability trait over AppKit views. |
-| `backend-linux` (GTK4) | Working | Real GTK4 widgets; `host-gtk` is the shell. |
-| `backend-windows` (Win32) | Working | Painted scene (GDI+ or Direct2D) with native child HWNDs for interactive controls; `host-win32` is the shell. See [`docs/windows.md`](docs/windows.md). |
-| `backend-roku` (BrightScript / SceneGraph transpile) | Working | Generator backend; tokens resolve to literals at apply time, so `update_tokens` re-applies styles. |
-| `backend-ssr` / `backend-email` | Working | Headless HTML: SSR / SSG with hydration, and email-safe HTML. |
-| `backend-terminal` / `backend-cpu` | Working | Character-grid TUI, and a pure-Rust software rasterizer behind a `Surface` trait. |
-| `render-wgpu` (custom renderer, embeddable) | In progress | Implements the same `Host` + capability traits over a GPU pipeline; `host-winit` / `host-web` / `host-appkit` / the desktop hosts wire it to OS windows. |
-
-### Per-backend primitive coverage
-
-Every backend implements every capability trait; a blank cell means that
-backend leaves the primitive's `create_*` method on the trait default. Those
-defaults degrade rather than crash: a missing widget renders the
-`ExternalOps::missing_primitive_placeholder` box, and a missing container
-lowers to a plain view. What *does* panic is an unregistered third-party
-payload — see the registration seam below.
-
-| Primitive | web | iOS | Android | macOS | Linux | Windows | Roku | terminal | CPU | SSR | wgpu |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| view / text / button | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| image / icon / text_input / toggle / activity_indicator | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| scroll_view | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| text area (multiline text_input) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | ✓ |
-| slider | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ | ✓ | ✓ |
-| graphics | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ | ✓ | ✓ |
-| link | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ |  | ✓ | ✓ |
-| virtualizer / flat_list | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |  | ✓ | ✓ | ✓ |
-| virtual grid | ✓ | ✓ | ✓ | ✓ |  |  |  |  |  |  |  |
-| overlay / portal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-
-Third-party primitives (an SDK payload type plus a handler registered on the
-scene `Registry`) are covered per SDK, per backend: some SDKs lower to builtin
-primitives on every host, others ship a handler per platform (`video`, `svg`, `codeblock`, `toolbar`, `webview`, …) and
-fall back to the placeholder box where no handler exists. Each SDK's README
-lists the hosts it supports.
-
-## The shape of an app
-
-Application code is one crate that depends on the author surface
-(`runtime-core`, plus `runtime-vocabulary` and `runtime-scene`). It declares
-components, styles, and a root tree, and knows nothing about the platform it
-will run on. `examples/welcome` is the scaffold's source of truth for the dep
-set.
-
-```rust
-use runtime_core::{component, signal, ui, Element};
-
-#[component]
-pub fn App() -> Element {
-    let count = signal(0);
-
-    ui! {
-        text { "Hello from idealyst-native" }
-        button(
-            label = "Increment",
-            on_click = move || count.update(|n| n + 1),
-        )
-        text { move || format!("Count: {}", count.get()) }
-    }
-}
-```
-
-Two things the snippet is showing on purpose: primitives are **snake_case**
-(PascalCase always means a `#[component]`), and `update` takes `&T` and returns
-the new value — writes stage and commit at the driver's flush, so
-`set(count.get() + 1)` twice in one handler would net `+1` while two `update`s
-net `+2`. See
-[`docs/automatic-batching.md`](docs/automatic-batching.md).
-
-A **platform host** is a tiny separate crate per target. It wires the shared
-app to a backend and a mount point. The host is the only place that knows
-what platform it's running on. The same `app()` is byte-for-byte identical
-on every platform.
-
-The full surface of `ui!` / `jsx!` / `#[component]` / `stylesheet!` / `Ref<H>`
-is documented in **[`docs/ui-layer.md`](docs/ui-layer.md)**. Read that for the
-authoring guide. The deep dives on reactivity, styling, primitives, and the
-backend contract live alongside it under [`docs/`](docs/).
+The same model gets you Detox-style E2E, dev tools, and agentic control
+from one architectural seam. See
+[`crates/runtime/shared/src/robot/`](crates/runtime/shared/src/robot/) for
+the registry + bridge protocol,
+[`crates/runtime/vocabulary/src/robot.rs`](crates/runtime/vocabulary/src/robot.rs)
+for the per-primitive registration, and
+[`crates/mcp/server/`](crates/mcp/server/) (the `idealyst mcp` command) for
+the MCP entry point. Gated on the `robot` Cargo feature; production builds
+leave it off.
 
 ## Architecture
 
@@ -302,9 +508,9 @@ backend contract live alongside it under [`docs/`](docs/).
 ```
 
 The framework controls **what** to render and **when** to update. The backend
-controls **how** that happens on the target platform. The seam is small enough
-that a new backend is on the order of "implement a trait" rather than "fork
-the framework."
+controls **how** that happens on the target platform. Because that boundary is
+small, supporting a new platform means writing a new backend. You don't have
+to change the framework itself.
 
 For the long version (the `Host` trait, the capability traits, the mount path,
 the flush driver, and the rules a backend must follow), see
@@ -491,6 +697,22 @@ UI workloads aren't compute-bound, but bytes-over-the-wire matter for the WASM
 target. `opt-level = "z"`, LTO on, single codegen unit, panic = abort,
 symbols stripped. A `release-debug` profile inherits release but keeps DWARF
 so `twiggy` can attribute bytes to specific functions.
+
+## Project goals
+
+- **One app, every platform.** Write the UI, styles, state and logic once and
+  ship it to the web, phones, tablets and desktops, with the same look and
+  behavior on each.
+- **Native output and near-native performance.** Each platform renders with
+  its own toolkit, driven by compiled Rust rather than a JavaScript runtime.
+- **A standard for the whole app, not just components.** Theming, navigation,
+  animation, accessibility, device features and the server side all share
+  one consistent API.
+- **A small core that is easy to extend.** The framework provides the base
+  primitives. Everything else is built as an SDK on the same extension point
+  that third parties use, so you can add what your app needs without forking.
+- **Built for testing and automation.** Every app can be inspected and driven
+  the same way on every platform, by tests, dev tools or AI agents.
 
 ## Special Thanks
 

@@ -64,7 +64,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "backend-image-source"
-version = "1.1.0"
+version = "2.0.0"
 dependencies = [
  "resvg",
  "runtime-shared",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "2.9.1"
+version = "3.1.0"
 dependencies = [
  "css",
  "inventory",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "css"
-version = "1.10.0"
+version = "2.0.0"
 dependencies = [
  "runtime-shared",
 ]
@@ -825,7 +825,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "host-web"
-version = "1.6.0"
+version = "2.0.0"
 dependencies = [
  "backend-web",
  "js-sys",
@@ -1026,18 +1026,20 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "2.0.0"
+version = "3.1.1"
 dependencies = [
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 
 [[package]]
 name = "idea-ui"
-version = "5.1.0"
+version = "7.2.1"
 dependencies = [
  "idea-theme",
  "runtime-core",
+ "runtime-tls",
  "runtime-vocabulary",
  "table",
 ]
@@ -1818,14 +1820,14 @@ dependencies = [
 
 [[package]]
 name = "render-api"
-version = "2.2.0"
+version = "3.0.0"
 dependencies = [
  "runtime-shared",
 ]
 
 [[package]]
 name = "render-wgpu"
-version = "2.4.0"
+version = "3.0.0"
 dependencies = [
  "backend-image-source",
  "bytemuck",
@@ -1937,7 +1939,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "runtime-core"
-version = "1.11.1"
+version = "2.1.0"
 dependencies = [
  "runtime-macros",
  "runtime-shared",
@@ -1946,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "1.12.0"
+version = "2.0.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -1954,14 +1956,14 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros"
-version = "1.18.0"
+version = "1.19.0"
 dependencies = [
  "runtime-macros-expand",
 ]
 
 [[package]]
 name = "runtime-macros-expand"
-version = "1.0.0"
+version = "1.2.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1982,20 +1984,22 @@ dependencies = [
 
 [[package]]
 name = "runtime-scene"
-version = "1.9.0"
+version = "1.11.0"
 dependencies = [
+ "runtime-tls",
  "runtime-world",
  "rustc-hash 2.1.2",
 ]
 
 [[package]]
 name = "runtime-shared"
-version = "1.23.0"
+version = "2.1.0"
 dependencies = [
  "bitflags 2.11.1",
  "log",
  "pollster",
  "raw-window-handle",
+ "runtime-tls",
  "rustc-hash 2.1.2",
  "serde",
  "serde_json",
@@ -2011,19 +2015,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-tls"
+version = "0.1.0"
+
+[[package]]
 name = "runtime-vocabulary"
-version = "2.3.0"
+version = "3.4.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
  "runtime-template",
+ "runtime-tls",
  "runtime-world",
+ "serde",
 ]
 
 [[package]]
 name = "runtime-world"
-version = "1.8.1"
+version = "1.9.0"
 dependencies = [
+ "runtime-tls",
  "rustc-hash 2.1.2",
 ]
 
@@ -2402,10 +2413,11 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "2.1.0"
+version = "3.0.1"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
+ "runtime-tls",
  "runtime-vocabulary",
 ]
 
@@ -3528,7 +3540,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zone-offset"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
