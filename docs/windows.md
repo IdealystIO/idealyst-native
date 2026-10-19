@@ -17,6 +17,15 @@ until the release, so a drag that leaves the view or the window keeps
 reporting to the view that took the press. `on_wheel` gets wheel and
 Ctrl+wheel (zoom) ticks before any scroll view under it, and `on_hover`
 gets enter and leave. A precision touchpad pinch arrives as Ctrl+wheel.
+Style states follow the same chain: every view under the pointer is
+`hovered`, and a left press marks every view under it `pressed` until the
+release, wherever the release happens (CSS `:active`). `focused` is not
+driven yet. The `cursor` style is shown over painted views, inherited from
+the nearest ancestor that sets one; Windows has no grab cursors, so `grab`
+and `grabbing` show the hand. Native controls (text fields, native buttons)
+keep their own cursor and their own hover and press drawing. Moving onto
+one counts as leaving the painted views around it. Source: `view_input.rs`,
+`cursor.rs`.
 Graphics surfaces (a `canvas`, a 3D view) are DirectComposition visuals
 above the painted scene. Painted content that comes after one in the tree
 and overlaps it (a chart's tooltip, a modal over a canvas, a HUD over a 3D

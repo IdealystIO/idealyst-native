@@ -1071,6 +1071,9 @@ pub enum ObjectFit {
 /// - macOS (AppKit): the matching [`NSCursor`] pushed over the view's
 ///   tracking rect; values without a system equivalent fall back to the
 ///   arrow.
+/// - Windows: the matching system cursor (`IDC_*`) answered on
+///   `WM_SETCURSOR` over painted views, inherited from the nearest
+///   ancestor that sets one; `Grab`/`Grabbing` fall back to the hand.
 /// - iOS / Android: no-op (touch has no hover pointer).
 ///
 /// The framework imposes **no** default cursor on any primitive — a bare

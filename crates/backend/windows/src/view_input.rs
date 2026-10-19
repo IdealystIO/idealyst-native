@@ -27,6 +27,16 @@
 //!   views stay hovered as the pointer moves into a child, like
 //!   `mouseenter`); enter / leave fire on the difference. The host calls
 //!   [`mouse_left`] on `WM_MOUSELEAVE`.
+//! - **Interaction states.** Nodes whose sheet has `state hovered` /
+//!   `state pressed` variants get a setter through
+//!   `StyleOps::attach_states`; this backend has no pseudo-class layer, so
+//!   nothing lights those variants unless these entry points flip the bits.
+//!   `HOVERED` follows the hover rule above. `PRESSED` is set on every
+//!   stateful node on the chain when the primary button goes down and
+//!   cleared on its release (or a lost capture) wherever the pointer is —
+//!   CSS `:active` semantics, ancestors included. The host keeps mouse
+//!   capture while a press is held ([`holds_capture`]) so a release outside
+//!   the window still clears it; without that the node would stay pressed.
 //!
 //! - **File drop.** An OS file drag over the window (`crate::file_drop`,
 //!   the window's `IDropTarget`) offers `Entered` along the chain, deepest
@@ -50,11 +60,14 @@ use std::time::Instant;
 
 use runtime_shared::{
     DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase, set_pointer_button, set_pointer_modifiers, HoverHandler, PointerButton, PointerModifiers,
-    TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse, WheelEvent,
+    StateBits, TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint, TouchResponse, WheelEvent,
     WheelHandler, WheelKind,
 };
 
 use crate::{scene, NodeKind, WindowsBackend};
+
+/// A node's interaction-state setter (`StyleOps::attach_states`).
+pub(crate) type StateSetter = std::rc::Rc<dyn Fn(StateBits, bool)>;
 
 /// The mouse's touch id: one pointer, so one id for every gesture.
 pub const MOUSE_TOUCH: TouchId = TouchId(0);
@@ -86,6 +99,12 @@ pub(crate) struct ViewInput {
     active: Option<ActiveTouch>,
     /// Nodes currently hovered (with a hover handler).
     hovered: Vec<u64>,
+    /// Interaction-state setters, by node.
+    pub(crate) states: HashMap<u64, StateSetter>,
+    /// Stateful nodes whose `HOVERED` bit is set.
+    state_hovered: Vec<u64>,
+    /// Stateful nodes whose `PRESSED` bit is set.
+    state_pressed: Vec<u64>,
 }
 
 struct ActiveTouch {
@@ -108,6 +127,9 @@ impl ViewInput {
             self.drag_target = None;
         }
         self.hovered.retain(|h| *h != id);
+        self.states.remove(&id);
+        self.state_hovered.retain(|h| *h != id);
+        self.state_pressed.retain(|h| *h != id);
     }
 }
 
@@ -159,10 +181,13 @@ fn touch_targets(b: &WindowsBackend, point: (f32, f32), stop_at_pressable: bool)
     out
 }
 
-/// A mouse button went down at device `(x, y)`. Returns whether a handler
-/// took the press — the host then captures the mouse and, for the left
-/// button, fires no pressable on the release. A second button pressed
-/// during a gesture is not a new gesture (one pointer, one gesture).
+/// A mouse button went down at device `(x, y)`. Returns whether the host
+/// should capture the mouse: a handler took the press (its gesture keeps
+/// reporting until the release), or the primary button set `PRESSED` on a
+/// stateful node (the release must arrive to clear it). Whether a handler
+/// took the press — the host then fires no pressable on the left release —
+/// is [`mouse_up`]'s answer. A second button pressed during a gesture is
+/// not a new gesture (one pointer, one gesture).
 pub fn mouse_down(
     cell: &RefCell<WindowsBackend>,
     x: f32,
@@ -176,7 +201,9 @@ pub fn mouse_down(
     }
     let point = b.dpi.point_to_logical(x, y);
     let targets = touch_targets(&b, point, true);
+    let chain = chain_ids(&b, point);
     drop(b);
+    let pressed = button == PointerButton::Primary && press_states(cell, &chain);
     for t in targets {
         let r = deliver(&t.handler, &touch_event(TouchPhase::Began, point, t.origin), button, mods);
         if r.consumed {
@@ -186,7 +213,50 @@ pub fn mouse_down(
             return true;
         }
     }
-    false
+    pressed
+}
+
+/// Ids on the hit chain under the logical `point`, deepest first.
+fn chain_ids(b: &WindowsBackend, point: (f32, f32)) -> Vec<u64> {
+    scene::hit_chain(b, point.0, point.1).into_iter().map(|n| n.id).collect()
+}
+
+/// Sets `PRESSED` on every stateful node in `chain` (releasing any press
+/// still held — a release the host never saw). Returns whether any node
+/// is now pressed.
+fn press_states(cell: &RefCell<WindowsBackend>, chain: &[u64]) -> bool {
+    release_pressed(cell);
+    let Ok(mut b) = cell.try_borrow_mut() else { return false };
+    let vi = &mut b.view_input;
+    let ids: Vec<u64> = chain.iter().copied().filter(|id| vi.states.contains_key(id)).collect();
+    let setters: Vec<StateSetter> = ids.iter().filter_map(|id| vi.states.get(id).cloned()).collect();
+    vi.state_pressed = ids;
+    drop(b);
+    for s in &setters {
+        s(StateBits::PRESSED, true);
+    }
+    !setters.is_empty()
+}
+
+/// Clears `PRESSED` on every node holding it.
+fn release_pressed(cell: &RefCell<WindowsBackend>) {
+    let Ok(mut b) = cell.try_borrow_mut() else { return };
+    let vi = &mut b.view_input;
+    let ids = std::mem::take(&mut vi.state_pressed);
+    let setters: Vec<StateSetter> = ids.iter().filter_map(|id| vi.states.get(id).cloned()).collect();
+    drop(b);
+    for s in setters {
+        s(StateBits::PRESSED, false);
+    }
+}
+
+/// Whether the host must keep mouse capture: a handler's gesture is in
+/// progress, or a press is held on a stateful node. The host releases
+/// capture after a button up only when this is `false`.
+pub fn holds_capture(cell: &RefCell<WindowsBackend>) -> bool {
+    cell.try_borrow()
+        .map(|b| b.view_input.active.is_some() || !b.view_input.state_pressed.is_empty())
+        .unwrap_or(false)
 }
 
 /// The mouse moved to device `(x, y)`. During a gesture this is its
@@ -207,13 +277,9 @@ pub fn mouse_moved(cell: &RefCell<WindowsBackend>, x: f32, y: f32, mods: Pointer
         return;
     }
     let targets = touch_targets(&b, point, false);
-    let now_hovered: Vec<u64> = scene::hit_chain(&b, point.0, point.1)
-        .into_iter()
-        .map(|n| n.id)
-        .filter(|id| b.view_input.hover.contains_key(id))
-        .collect();
+    let chain = chain_ids(&b, point);
     drop(b);
-    update_hover(cell, now_hovered);
+    update_hover(cell, &chain);
     for t in targets {
         let ev = touch_event(TouchPhase::Hovered, point, t.origin);
         if deliver(&t.handler, &ev, PointerButton::Primary, mods).consumed {
@@ -222,10 +288,10 @@ pub fn mouse_moved(cell: &RefCell<WindowsBackend>, x: f32, y: f32, mods: Pointer
     }
 }
 
-/// A mouse button came up at device `(x, y)`. Returns whether it ended a
-/// gesture a handler had taken (the host then releases capture and fires
-/// no pressable). The release of a button that did not start the gesture
-/// changes nothing.
+/// A mouse button came up at device `(x, y)`. The primary button's release
+/// clears `PRESSED`. Returns whether it ended a gesture a handler had taken
+/// (the host then fires no pressable). The release of a button that did
+/// not start the gesture changes no gesture.
 pub fn mouse_up(
     cell: &RefCell<WindowsBackend>,
     x: f32,
@@ -237,6 +303,9 @@ pub fn mouse_up(
     let point = b.dpi.point_to_logical(x, y);
     let ends = b.view_input.active.as_ref().is_some_and(|a| a.button == button);
     drop(b);
+    if button == PointerButton::Primary {
+        release_pressed(cell);
+    }
     if ends {
         end_gesture(cell, TouchPhase::Ended, Some(point), mods);
     }
@@ -244,10 +313,12 @@ pub fn mouse_up(
 }
 
 /// The host lost mouse capture mid-gesture (`WM_CAPTURECHANGED`): the
-/// gesture ends as `Cancelled`. A no-op after [`mouse_up`] already ended
-/// it (releasing capture there sends the same message).
+/// gesture ends as `Cancelled` and a held press is released (the release
+/// itself will go to whoever took capture). A no-op after [`mouse_up`]
+/// already ended both (releasing capture there sends the same message).
 pub fn capture_lost(cell: &RefCell<WindowsBackend>) {
     end_gesture(cell, TouchPhase::Cancelled, None, PointerModifiers::default());
+    release_pressed(cell);
 }
 
 /// Clears the active gesture, then reports `phase` to its handler,
@@ -268,31 +339,45 @@ fn end_gesture(cell: &RefCell<WindowsBackend>, phase: TouchPhase, point: Option<
 }
 
 /// The pointer left the window (`WM_MOUSELEAVE`): every hovered node
-/// leaves.
+/// leaves. That includes moving onto a child control (an edit, a native
+/// button): Windows sends the host `WM_MOUSELEAVE` then, and the painted
+/// scene has nothing under the pointer any more.
 pub fn mouse_left(cell: &RefCell<WindowsBackend>) {
-    update_hover(cell, Vec::new());
+    update_hover(cell, &[]);
 }
 
-fn update_hover(cell: &RefCell<WindowsBackend>, now: Vec<u64>) {
+/// Hover the nodes of `chain` (the hit chain under the pointer, deepest
+/// first): `on_hover` handlers and `HOVERED` bits enter / leave on the
+/// difference from the previous chain.
+fn update_hover(cell: &RefCell<WindowsBackend>, chain: &[u64]) {
     let Ok(mut b) = cell.try_borrow_mut() else { return };
-    let before = std::mem::replace(&mut b.view_input.hovered, now.clone());
-    let left: Vec<HoverHandler> = before
-        .iter()
-        .filter(|id| !now.contains(id))
-        .filter_map(|id| b.view_input.hover.get(id).cloned())
-        .collect();
-    let entered: Vec<HoverHandler> = now
-        .iter()
-        .filter(|id| !before.contains(id))
-        .filter_map(|id| b.view_input.hover.get(id).cloned())
-        .collect();
+    let vi = &mut b.view_input;
+    let (left, entered) = rehover(&mut vi.hovered, chain, &vi.hover);
+    let (s_left, s_entered) = rehover(&mut vi.state_hovered, chain, &vi.states);
     drop(b);
     for h in left {
         h(false);
     }
+    for s in s_left {
+        s(StateBits::HOVERED, false);
+    }
     for h in entered {
         h(true);
     }
+    for s in s_entered {
+        s(StateBits::HOVERED, true);
+    }
+}
+
+/// Replaces `hovered` with the nodes of `chain` that have an entry in
+/// `table`; returns the entries of the nodes that left and that entered.
+fn rehover<H: Clone>(hovered: &mut Vec<u64>, chain: &[u64], table: &HashMap<u64, H>) -> (Vec<H>, Vec<H>) {
+    let now: Vec<u64> = chain.iter().copied().filter(|id| table.contains_key(id)).collect();
+    let before = std::mem::replace(hovered, now.clone());
+    let pick = |from: &[u64], not_in: &[u64]| -> Vec<H> {
+        from.iter().filter(|id| !not_in.contains(id)).filter_map(|id| table.get(id).cloned()).collect()
+    };
+    (pick(&before, &now), pick(&now, &before))
 }
 
 fn drop_event(phase: FileDropPhase, point: (f32, f32), origin: (f32, f32)) -> FileDropEvent {
@@ -703,6 +788,99 @@ mod tests {
         let mut left = take(&log);
         left.sort();
         assert_eq!(left, ["child:false", "root:false"]);
+    }
+
+    // --- interaction states ---
+
+    /// Installs a state setter through the backend's `StyleOps`, the path
+    /// the style system takes; it logs `tag:BIT=on`.
+    fn install_states(cell: &RefCell<WindowsBackend>, log: &Log, id: u64, tag: &'static str) {
+        let log = log.clone();
+        let node = crate::WindowsNode { id, hwnd: HWND(std::ptr::null_mut()) };
+        runtime_vocabulary::caps::StyleOps::attach_states(
+            &mut *cell.borrow_mut(),
+            &node,
+            Rc::new(move |bit: StateBits, on: bool| {
+                let name = if bit == StateBits::HOVERED { "HOVERED" } else if bit == StateBits::PRESSED { "PRESSED" } else { "?" };
+                log.borrow_mut().push(format!("{tag}:{name}={on}"));
+            }),
+        );
+    }
+
+    /// `attach_states` was the trait's no-op on Windows, so no
+    /// `state hovered` / `state pressed` variant ever lit: idea-ui buttons
+    /// had no hover highlight and no press feedback. Hover follows the
+    /// chain like `on_hover`; a primary press sets PRESSED on every
+    /// stateful node on the chain and holds capture until the release,
+    /// which clears it even outside the window.
+    #[test]
+    fn regression_hover_and_press_states_flip_along_the_chain() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        install_states(&cell, &log, 1, "root");
+        install_states(&cell, &log, 2, "child");
+
+        mouse_moved(&cell, 10.0, 10.0, NONE);
+        assert_eq!(take(&log), ["root:HOVERED=true"]);
+        mouse_moved(&cell, 150.0, 120.0, NONE);
+        assert_eq!(take(&log), ["child:HOVERED=true"]);
+
+        assert!(mouse_down(&cell, 150.0, 120.0, LEFT, NONE), "a held press asks for capture");
+        assert_eq!(take(&log), ["child:PRESSED=true", "root:PRESSED=true"]);
+        assert!(holds_capture(&cell));
+        mouse_moved(&cell, 900.0, -20.0, NONE);
+        let mut left = take(&log);
+        left.sort();
+        assert_eq!(left, ["child:HOVERED=false", "root:HOVERED=false"], "outside: no hover, still pressed");
+        assert!(!mouse_up(&cell, 900.0, -20.0, LEFT, NONE), "no handler gesture ended");
+        assert_eq!(take(&log), ["child:PRESSED=false", "root:PRESSED=false"]);
+        assert!(!holds_capture(&cell), "the host may release capture");
+
+        mouse_moved(&cell, 150.0, 120.0, NONE);
+        take(&log);
+        mouse_left(&cell);
+        let mut left = take(&log);
+        left.sort();
+        assert_eq!(left, ["child:HOVERED=false", "root:HOVERED=false"]);
+    }
+
+    /// Only the primary button presses (a right-click opens a menu; CSS
+    /// `:active` is primary-only too), and a lost capture releases a held
+    /// press — the release goes to whoever took capture, so waiting for it
+    /// would leave the node pressed.
+    #[test]
+    fn press_is_primary_only_and_lost_capture_releases_it() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        install_states(&cell, &log, 2, "child");
+        assert!(!mouse_down(&cell, 150.0, 120.0, PointerButton::Secondary, NONE));
+        assert!(take(&log).is_empty());
+        mouse_up(&cell, 150.0, 120.0, PointerButton::Secondary, NONE);
+
+        assert!(mouse_down(&cell, 150.0, 120.0, LEFT, NONE));
+        capture_lost(&cell);
+        assert_eq!(take(&log), ["child:PRESSED=true", "child:PRESSED=false"]);
+        assert!(!holds_capture(&cell));
+    }
+
+    /// A node whose style scope dropped (`on_node_unstyled`) or that left
+    /// the tree gets no more flips.
+    #[test]
+    fn unstyled_and_removed_nodes_get_no_state_flips() {
+        let cell = fixture();
+        let log: Log = Default::default();
+        install_states(&cell, &log, 1, "root");
+        install_states(&cell, &log, 2, "child");
+        let node = crate::WindowsNode { id: 2, hwnd: HWND(std::ptr::null_mut()) };
+        runtime_vocabulary::caps::StyleOps::on_node_unstyled(&mut *cell.borrow_mut(), &node);
+        mouse_moved(&cell, 150.0, 120.0, NONE);
+        assert_eq!(take(&log), ["root:HOVERED=true"]);
+        mouse_down(&cell, 150.0, 120.0, LEFT, NONE);
+        take(&log);
+        cell.borrow_mut().view_input.forget(1);
+        mouse_up(&cell, 150.0, 120.0, LEFT, NONE);
+        mouse_left(&cell);
+        assert!(take(&log).is_empty());
     }
 
     // --- file drop ---

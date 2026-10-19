@@ -57,7 +57,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetCapture, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
@@ -67,7 +67,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, MSG, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_COMMAND,
     WM_DESTROY, WM_ERASEBKGND,
     WM_HSCROLL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-    WM_MOUSEMOVE, WM_MOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CAPTURECHANGED, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
+    WM_MOUSEMOVE, WM_MOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CAPTURECHANGED, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
     WS_OVERLAPPEDWINDOW, WM_KEYDOWN,
 };
 
@@ -391,6 +391,15 @@ fn publish_viewport(backend: &Rc<RefCell<WindowsBackend>>) {
 /// notification there). Such notifications come from the backend, not the
 /// user, so dropping them is also right for `on_change`, which fires for user
 /// edits only.
+/// Releases the host's mouse capture once neither a handler's gesture nor
+/// a held press needs it (`view_input::holds_capture`). Only capture this
+/// window holds: a child control's own capture is not ours to drop.
+unsafe fn release_capture_if_done(hwnd: HWND, state: &HostState) {
+    if GetCapture() == hwnd && !view_input::holds_capture(&state.backend) {
+        let _ = ReleaseCapture();
+    }
+}
+
 unsafe fn with_idle_backend<R>(hwnd: HWND, f: impl FnOnce(&WindowsBackend) -> R) -> Option<R> {
     let state = host_state(hwnd)?;
     let backend = state.backend.try_borrow().ok()?;
@@ -584,11 +593,23 @@ unsafe extern "system" fn wnd_proc(
             // default erasing would just flash white under animations.
             LRESULT(1)
         }
+        // The author `cursor` style over painted views (a hidden / locked
+        // pointer was answered above). Over a child control, or where no
+        // node sets a cursor, DefWindowProc shows the class / control cursor.
+        WM_SETCURSOR => {
+            if let Some(state) = host_state(hwnd) {
+                if backend_windows::cursor::window_message(&state.backend, hwnd, wparam, lparam) {
+                    return LRESULT(1);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         // Painted views have no HWNDs, so their `on_touch` / `on_hover` /
-        // `on_wheel` handlers are routed here (`backend_windows::view_input`
-        // walks the hit chain). A handler that takes a press gets mouse
+        // `on_wheel` handlers and hover / press states are routed here
+        // (`backend_windows::view_input` walks the hit chain). A handler
+        // that takes a press, or a press held on a stateful node, gets mouse
         // capture until the release, so a drag that leaves the view (or the
-        // window) keeps reporting to it.
+        // window) keeps reporting to it and the press is always released.
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             if let Some(state) = host_state(hwnd) {
                 let (x, y) = client_point(lparam);
@@ -635,9 +656,8 @@ unsafe extern "system" fn wnd_proc(
             if let Some(state) = host_state(hwnd) {
                 let (x, y) = client_point(lparam);
                 let mods = view_input::current_modifiers();
-                if view_input::mouse_up(&state.backend, x, y, button_of(msg), mods) {
-                    let _ = ReleaseCapture();
-                }
+                view_input::mouse_up(&state.backend, x, y, button_of(msg), mods);
+                release_capture_if_done(hwnd, state);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -647,8 +667,9 @@ unsafe extern "system" fn wnd_proc(
             // pressable (the handler owned it).
             if let Some(state) = host_state(hwnd) {
                 let mods = view_input::current_modifiers();
-                if view_input::mouse_up(&state.backend, x, y, PointerButton::Primary, mods) {
-                    let _ = ReleaseCapture();
+                let ended = view_input::mouse_up(&state.backend, x, y, PointerButton::Primary, mods);
+                release_capture_if_done(hwnd, state);
+                if ended {
                     return LRESULT(0);
                 }
             }

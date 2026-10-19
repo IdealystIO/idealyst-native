@@ -1142,6 +1142,26 @@ impl caps::StyleOps for WindowsBackend {
         // radius, gradient, opacity, transform, overflow).
         WindowsBackend::apply_style(self, node, style)
     }
+
+    /// Hover / press → the node's state signal. The trait default is a
+    /// no-op that lights no `state hovered` / `state pressed` variant ever;
+    /// `view_input` flips the bits from the host's mouse messages (hit
+    /// chain), since painted views have no HWND to observe. Native child
+    /// controls draw their own hover / press. FOCUSED is not driven.
+    fn attach_states(&mut self, node: &Self::Node, setter: Rc<dyn Fn(runtime_shared::StateBits, bool)>) {
+        // A bit flip stages the node's re-resolve; on native this IS the
+        // live state path, so it needs the flush like any author write.
+        let setter: Rc<dyn Fn(runtime_shared::StateBits, bool)> = Rc::new(move |bit, on| {
+            setter(bit, on);
+            schedule_flush();
+        });
+        self.view_input.states.insert(node.id, setter);
+    }
+
+    /// Stop delivering state flips to a node whose style scope is gone.
+    fn on_node_unstyled(&mut self, node: &Self::Node) {
+        self.view_input.states.remove(&node.id);
+    }
 }
 
 impl caps::AssetOps for WindowsBackend {

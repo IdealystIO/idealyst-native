@@ -115,6 +115,8 @@ pub mod app_pointer;
 pub mod app_situation;
 mod border_pattern;
 mod code;
+/// Author `cursor` style → the system cursor over the painted scene.
+pub mod cursor;
 mod d2d;
 mod dcomp;
 /// Logical ↔ device pixel policy (per-monitor DPI). Public so the host
@@ -512,6 +514,10 @@ pub(crate) struct NodeMeta {
     /// nearest explicit ancestor decides). Read by the hit walk
     /// (`scene::hit_chain`).
     pub pointer_events: Option<runtime_shared::PointerEvents>,
+    /// `StyleRules::cursor` as authored (`None` = not set, so the nearest
+    /// ancestor that sets one decides — CSS `cursor` inherits). Read by
+    /// `cursor::cursor_at` when the host answers `WM_SETCURSOR`.
+    pub cursor: Option<runtime_shared::Cursor>,
     /// A reactive anchor (`create_anchor`): layout- and hit-transparent.
     pub contents: bool,
 }
@@ -532,6 +538,7 @@ impl NodeMeta {
             hidden: false,
             content_inset: [0.0; 4],
             pointer_events: None,
+            cursor: None,
             contents: false,
         }
     }
@@ -3097,6 +3104,7 @@ impl WindowsBackend {
             meta.author_transform = style.transform.clone().unwrap_or_default();
             meta.overflow_hidden = matches!(style.overflow, Some(Overflow::Hidden));
             meta.pointer_events = style.pointer_events;
+            meta.cursor = style.cursor;
             meta.content_inset = match &meta.kind {
                 NodeKind::Text(_) | NodeKind::Code(_) | NodeKind::Icon(_) | NodeKind::Image(_) => [
                     resolve_padding(&style.padding_top),
