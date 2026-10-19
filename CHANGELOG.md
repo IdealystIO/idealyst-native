@@ -18,10 +18,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 - **`table` SDK payload changes** (`table`). For code that builds
   tables below idea-ui: `CellSpanMarker` is now `CellMarker` (it also
   carries a cell's `ColumnSpec`, so a native cell that sizes its column
-  is wrapped in one); `TableFootPrim` is a struct with a `grid` field
+  is wrapped in one; the old name stays as a deprecated alias);
+  `TableFootPrim` is a struct with a `grid` field
   (`TableFootPrim::default()`); `TableRowPrim` / `TableCellPrim` gained
   `grid` (and the cell `column`); `TableCellProps` gained `column`.
-  *Migration:* fill new fields from `Default`, rename the marker.
+  *Migration:* fill new fields from `Default`, use `CellMarker`.
 
 - **Menu labels are one line; `MenuEntry` has two more fields**
   (`idea-ui`). Every `MenuItem` / `SubMenu` label is a single line ending

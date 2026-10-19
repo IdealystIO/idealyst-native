@@ -514,6 +514,10 @@ pub struct CellMarker {
     pub column: Option<ColumnSpec>,
 }
 
+/// The marker's name before it also carried a cell's [`ColumnSpec`].
+#[deprecated(note = "renamed to `CellMarker`")]
+pub type CellSpanMarker = CellMarker;
+
 // ============================================================================
 // Builder wrappers — `.with_style(…)` → `IntoElement`, deferred-build
 // so the style lands in the right slot on either lowering.
