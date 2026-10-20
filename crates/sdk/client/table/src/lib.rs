@@ -36,6 +36,10 @@
 //! its own; idea-ui's `TableCell(pinned = …)` axis is the author
 //! surface.
 //!
+//! [`TableBound::on_scroll_edges`] reports which sides of the scroller
+//! have columns scrolled out of view ([`ScrollEdges`]) — what a frozen
+//! column needs to draw its edge only while content slides beneath it.
+//!
 //! # Grid columns
 //!
 //! A cell can size its column ([`TableCellProps::column`], a
@@ -417,6 +421,10 @@ pub struct TablePrim {
     /// `style`, with an explicit `role="table"` because its rows and
     /// sections are `display: contents`. Set by [`table`].
     pub grid: bool,
+    /// Filled with the `<table>`'s handle at mount — how
+    /// [`TableBound::on_scroll_edges`] measures the scrolled content's
+    /// width. Set by [`table`].
+    pub ref_fill: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>>,
 }
 
 /// Scene payload for a table row — the `<tr>` on web, and (since the
@@ -558,8 +566,23 @@ pub struct TableBound {
     scroll_x: bool,
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
+    on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
 }
 table_wrapper_common!(TableBound);
+
+impl TableBound {
+    /// Report which sides of a `scroll_x` table have columns scrolled out
+    /// of view — see [`ScrollEdges`]. Called once the scroller and its
+    /// content are measured, then again whenever the answer changes (a
+    /// scroll, a resize, rows that widen a column); never twice with the
+    /// same value. Ignored without `scroll_x`, where nothing scrolls.
+    ///
+    /// The callback stops when the scope that built the table drops.
+    pub fn on_scroll_edges(mut self, f: impl Fn(ScrollEdges) + 'static) -> Self {
+        self.on_edges = Some(Rc::new(f));
+        self
+    }
+}
 
 impl IntoElement for TableBound {
     fn into_element(self) -> Element {
@@ -569,6 +592,7 @@ impl IntoElement for TableBound {
             scroll_x: self.scroll_x,
             header_slot: self.header_slot,
             footer_slot: self.footer_slot,
+            on_edges: self.on_edges,
         })
     }
 }
@@ -616,6 +640,7 @@ pub fn table(mut props: TableProps) -> TableBound {
         scroll_x: props.scroll_x,
         header_slot: props.header_slot.take(),
         footer_slot: props.footer_slot.take(),
+        on_edges: None,
     }
 }
 
@@ -657,6 +682,7 @@ struct TableParts {
     scroll_x: bool,
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
+    on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
 }
 
 impl TableParts {
@@ -687,6 +713,152 @@ fn surface_with_slots(
         Some(style) => surface.with_style(style).into_element(),
         None => surface.into_element(),
     }
+}
+
+/// Which sides of a `scroll_x` table's scroller have columns out of
+/// view — reported by [`TableBound::on_scroll_edges`]. A frozen column
+/// on that side has content beneath it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScrollEdges {
+    /// Columns are scrolled off the LEFT edge (the offset is past 0).
+    pub left: bool,
+    /// Columns run past the RIGHT edge (the scroll has further to go).
+    pub right: bool,
+}
+
+impl ScrollEdges {
+    /// The edges for a horizontal scroll `offset` into `content` seen
+    /// through a `viewport`, all in logical px. Nothing is hidden until
+    /// both widths are known, so a scroller that has not laid out yet
+    /// does not flash an edge.
+    pub fn measure(offset: f32, viewport: f32, content: f32) -> Self {
+        // Half a pixel of slack either way: a `max-content` table lays
+        // out at a fractional width the scroll offset never quite
+        // reaches, so a table scrolled fully right would keep reporting
+        // a sliver hidden.
+        const SLACK: f32 = 0.5;
+        if viewport <= 0.0 || content <= 0.0 {
+            return Self::default();
+        }
+        Self {
+            left: offset > SLACK,
+            right: offset + viewport < content - SLACK,
+        }
+    }
+}
+
+/// The measurements behind [`TableBound::on_scroll_edges`]: the scroll
+/// offset (from the scroller's `on_scroll`), the viewport width (a
+/// holder view around the scroller) and the content width (the
+/// `<table>` on web, the scroll content view on native). Each feeds in
+/// as it changes, and the callback hears only a CHANGED answer.
+///
+/// Ownership: the scroller's scroll handler holds the strong `Rc`; the
+/// layout callbacks hold `Weak`s, so the subscriptions they live in do
+/// not keep their own owner alive. `disarm` (on the building scope's
+/// drop) drops the subscriptions and the callback — a late
+/// `ResizeObserver` delivery must not write the signals of a scope that
+/// is gone.
+struct EdgeWatch {
+    offset: std::cell::Cell<f32>,
+    viewport: std::cell::Cell<f32>,
+    content: std::cell::Cell<f32>,
+    last: std::cell::Cell<Option<ScrollEdges>>,
+    report: std::cell::RefCell<Option<Rc<dyn Fn(ScrollEdges)>>>,
+    subs: std::cell::RefCell<Vec<runtime_shared::LayoutSubscription>>,
+}
+
+impl EdgeWatch {
+    fn new(report: Rc<dyn Fn(ScrollEdges)>) -> Rc<Self> {
+        let watch = Rc::new(Self {
+            offset: Default::default(),
+            viewport: Default::default(),
+            content: Default::default(),
+            last: Default::default(),
+            report: std::cell::RefCell::new(Some(report)),
+            subs: Default::default(),
+        });
+        let on_drop = watch.clone();
+        glue::on_scope_drop(move || on_drop.disarm());
+        watch
+    }
+
+    fn set_offset(&self, x: f32) {
+        self.offset.set(x);
+        self.update();
+    }
+
+    fn update(&self) {
+        let edges = ScrollEdges::measure(self.offset.get(), self.viewport.get(), self.content.get());
+        if self.last.get() == Some(edges) {
+            return;
+        }
+        self.last.set(Some(edges));
+        // Cloned out so the callback runs with no borrow held.
+        let report = self.report.borrow().clone();
+        if let Some(report) = report {
+            report(edges);
+        }
+    }
+
+    /// Track `handle`'s laid-out width into the slot `pick` names.
+    fn measure(
+        self: &Rc<Self>,
+        handle: runtime_shared::ViewHandle,
+        pick: fn(&EdgeWatch) -> &std::cell::Cell<f32>,
+    ) {
+        if self.report.borrow().is_none() {
+            return;
+        }
+        // Seeded from the current frame where the backend has one, so a
+        // backend whose layout callback only fires on a CHANGE still
+        // starts from a real width.
+        if let Some(frame) = handle.frame() {
+            pick(self).set(frame.width);
+        }
+        let weak = Rc::downgrade(self);
+        let sub = handle.on_layout(move |w, _h| {
+            if let Some(watch) = weak.upgrade() {
+                pick(&watch).set(w);
+                watch.update();
+            }
+        });
+        self.subs.borrow_mut().push(sub);
+        self.update();
+    }
+
+    fn disarm(&self) {
+        self.report.borrow_mut().take();
+        self.subs.borrow_mut().clear();
+    }
+}
+
+/// The horizontal scroller around a scroll-x table's `content`, plus —
+/// when `watch` is set — the scroll and viewport measurements for
+/// [`TableBound::on_scroll_edges`]. The viewport is measured on a
+/// holder view rather than the scroller itself (a scroll view hands out
+/// no layout handle); unstyled, it is exactly the scroller's width. A
+/// table that does not watch keeps the bare scroller.
+fn edge_watched_scroller(
+    scroller: glue::primitives::scroll_view::GlueScrollView,
+    watch: Option<Rc<EdgeWatch>>,
+) -> Element {
+    // `bounces(false)`: a table's column scroller is a bounded pane
+    // INSIDE a page, and an overscroll spring there has no end to
+    // signal — the thing that springs is not the thing the gesture
+    // appears to grab, so it reads as a glitch rather than as a
+    // boundary. On web this also stops the swipe chaining into the
+    // page behind the table once the columns run out.
+    let scroller = scroller.horizontal(true).bounces(false);
+    let Some(watch) = watch else {
+        return scroller.into_element();
+    };
+    let on_scroll = watch.clone();
+    let scroller = scroller.on_scroll(move |x, _y| on_scroll.set_offset(x)).into_element();
+    runtime_vocabulary::builders::view()
+        .children(vec![scroller])
+        .on_handle(move |h| watch.measure(h, |w| &w.viewport))
+        .build()
 }
 
 /// Every row a table child holds: the row itself, or a footer
@@ -970,7 +1142,7 @@ pub mod item_lowering {
     /// `<table>` item. The caller resolves cell spans first
     /// ([`table`] does, through `resolve_spans`).
     pub fn table_item(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
-        item(PrimCell::new(TablePrim { style, scroll_x, grid: false }), children)
+        item(PrimCell::new(TablePrim { style, scroll_x, grid: false, ref_fill: None }), children)
     }
 
     /// The whole web table element — span resolution, the `<table>`
@@ -985,12 +1157,24 @@ pub mod item_lowering {
         header_slot: Option<Element>,
         footer_slot: Option<Element>,
     ) -> Element {
-        let parts = TableParts { rows, style, scroll_x, header_slot, footer_slot };
+        web_table_from(TableParts { rows, style, scroll_x, header_slot, footer_slot, on_edges: None })
+    }
+
+    /// [`web_table`] from gathered parts — what [`table`] builds on
+    /// wasm32, edge watching included.
+    pub(crate) fn web_table_from(parts: TableParts) -> Element {
         let columns = resolve_spans(&parts.rows);
         let specs = column_specs(&parts.rows, columns);
         let grid = needs_grid(&specs);
         let wrapped = parts.wrapped();
-        let TableParts { rows, style, scroll_x, header_slot, footer_slot } = parts;
+        let TableParts { rows, style, scroll_x, header_slot, footer_slot, on_edges } = parts;
+        let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
+        // The `<table>` is the scrolled content, so its width is the
+        // content width the edges are measured against.
+        let ref_fill = watch.clone().map(|watch| {
+            Box::new(move |h| watch.measure(h, |w| &w.content))
+                as Box<dyn FnOnce(runtime_shared::ViewHandle)>
+        });
         // A STYLED plain table is wrapped too, never styled on the
         // `<table>` itself: the reset gives the `<table>` `border-collapse:
         // collapse` (so the cells' dividers merge), and CSS ignores
@@ -1004,11 +1188,12 @@ pub mod item_lowering {
                     style: Some(grid_columns_style(specs)),
                     scroll_x,
                     grid: true,
+                    ref_fill,
                 }),
                 into_grid_rows(rows),
             )
         } else {
-            item_lowering::table_item(rows, None, scroll_x)
+            item(PrimCell::new(TablePrim { style: None, scroll_x, grid: false, ref_fill }), rows)
         };
         if !wrapped && style.is_none() {
             return table;
@@ -1023,16 +1208,7 @@ pub mod item_lowering {
         // Sticky-pinned cells still pin against the scroller (their NEAREST
         // scroll ancestor — the surface's own overflow clip is further out).
         let content = if scroll_x {
-            // `bounces(false)`: a table's column scroller is a bounded pane
-            // INSIDE a page, and an overscroll spring there has no end to
-            // signal — the thing that springs is not the thing the gesture
-            // appears to grab, so it reads as a glitch rather than as a
-            // boundary. On web this also stops the swipe chaining into the
-            // page behind the table once the columns run out.
-            glue::scroll_view(vec![table])
-                .horizontal(true)
-                .bounces(false)
-                .into_element()
+            edge_watched_scroller(glue::scroll_view(vec![table]), watch)
         } else {
             table
         };
@@ -1080,13 +1256,7 @@ pub mod item_lowering {
 
 #[cfg(target_arch = "wasm32")]
 fn build_table(parts: TableParts) -> Element {
-    item_lowering::web_table(
-        parts.rows,
-        parts.style,
-        parts.scroll_x,
-        parts.header_slot,
-        parts.footer_slot,
-    )
+    item_lowering::web_table_from(parts)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1130,7 +1300,8 @@ fn build_cell(
 #[cfg(not(target_arch = "wasm32"))]
 fn build_table(parts: TableParts) -> Element {
     let wrapped = parts.wrapped();
-    let TableParts { rows, style, scroll_x, header_slot, footer_slot } = parts;
+    let TableParts { rows, style, scroll_x, header_slot, footer_slot, on_edges } = parts;
+    let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
     let columns_from_spans = resolve_spans(&rows);
     // Read before the rows are flattened: the specs ride the cells.
     let specs = column_specs(&rows, columns_from_spans);
@@ -1203,15 +1374,19 @@ fn build_table(parts: TableParts) -> Element {
         // least the scroller's width" floor so a narrow table still
         // fills while a wide one overflows and scrolls. Sticky-pinned
         // cells register against this scroll view.
-        let content = glue::view(vec![inner])
-            .with_style(StyleProp::Static(Rc::new(native_styles::scroll_floor_rules())))
-            .into_element();
-        // No overscroll spring — see the web lowering's note.
-        let scroller = glue::scroll_view(vec![content])
-            .horizontal(true)
-            .bounces(false)
-            .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules())))
-            .into_element();
+        // The content node is what scrolls, so its width is the content
+        // width the edges are measured against.
+        let mut content = runtime_vocabulary::builders::view()
+            .children(vec![inner])
+            .style(StyleProp::Static(Rc::new(native_styles::scroll_floor_rules())));
+        if let Some(watch) = watch.clone() {
+            content = content.on_handle(move |h| watch.measure(h, |w| &w.content));
+        }
+        let scroller = edge_watched_scroller(
+            glue::scroll_view(vec![content.build()])
+                .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules()))),
+            watch,
+        );
         surface_with_slots(scroller, style, header_slot, footer_slot)
     } else if wrapped {
         // Slots without scroll-x: surface > [header, grid holder,
@@ -1666,6 +1841,26 @@ pub fn map_cell_application(
     mapped
 }
 
+/// A built cell's sheet application, when its style is a STATIC
+/// [`StyleProp::Sheet`] — `None` for a reactive style (whose application
+/// exists only when it is evaluated) or a non-cell. Lets a table-level
+/// pass read what a cell selected (idea-ui reads its `pinned` arm) and
+/// leave the cells it has no business with static.
+pub fn cell_application(cell: &Element) -> Option<StyleApplication> {
+    let mut app = None;
+    visit_cell(cell, &mut |view, table_cell| {
+        let slot = match (view, table_cell) {
+            (Some(p), _) => &p.style,
+            (_, Some(p)) => &p.style,
+            _ => return,
+        };
+        if let Some(StyleProp::Sheet(a)) = slot {
+            app = Some((**a).clone());
+        }
+    });
+    app
+}
+
 /// Visit every row a table child holds — the row itself, or each row
 /// of a footer section ([`table_foot`]) — in order, Owned-peeled.
 /// Combine with [`visit_row_cells`] to reach every cell of a table
@@ -1925,6 +2120,10 @@ where
     cx.realize_children_into(&mut node, children);
     if let Some(style) = data.style {
         attach_style(&backend, &node, style);
+    }
+    if let Some(fill) = data.ref_fill {
+        let handle = backend.borrow().make_view_handle(&node);
+        fill(handle);
     }
     node
 }
@@ -2201,4 +2400,64 @@ pub mod prelude {
         TableCellBound, TableCellProps, TableFoot, TableFootProps, TableProps, TableRow,
         TableRowBound, TableRowProps,
     };
+}
+
+#[cfg(test)]
+mod scroll_edges_tests {
+    use super::*;
+
+    /// At rest with columns running off the right, only the RIGHT edge
+    /// is hidden; scrolled to the middle, both; scrolled to the end, only
+    /// the left. A table that fits hides neither.
+    #[test]
+    fn edges_follow_the_offset_through_the_scroll() {
+        assert_eq!(ScrollEdges::measure(0.0, 400.0, 900.0), ScrollEdges { left: false, right: true });
+        assert_eq!(ScrollEdges::measure(200.0, 400.0, 900.0), ScrollEdges { left: true, right: true });
+        assert_eq!(ScrollEdges::measure(500.0, 400.0, 900.0), ScrollEdges { left: true, right: false });
+        assert_eq!(ScrollEdges::measure(0.0, 400.0, 400.0), ScrollEdges::default());
+    }
+
+    /// A `max-content` table lays out at a fractional width the offset
+    /// never quite reaches; fully scrolled must still read as the end,
+    /// or the right edge never goes away.
+    #[test]
+    fn subpixel_remainders_are_not_hidden_columns() {
+        assert_eq!(ScrollEdges::measure(499.7, 400.0, 900.1), ScrollEdges { left: true, right: false });
+        assert_eq!(ScrollEdges::measure(0.3, 400.0, 900.0).left, false);
+    }
+
+    /// Before both widths are measured nothing is hidden — a scroller
+    /// that has not laid out yet must not flash an edge.
+    #[test]
+    fn unmeasured_scroller_hides_nothing() {
+        assert_eq!(ScrollEdges::measure(0.0, 0.0, 900.0), ScrollEdges::default());
+        assert_eq!(ScrollEdges::measure(0.0, 400.0, 0.0), ScrollEdges::default());
+    }
+
+    /// The callback hears each CHANGE once — a scroll delivers an event
+    /// per pixel, and every one re-reporting the same edges would
+    /// re-style every frozen cell per pixel — and nothing after disarm.
+    #[test]
+    fn watch_reports_changes_only_and_stops_when_disarmed() {
+        let heard = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = heard.clone();
+        let watch = EdgeWatch::new(Rc::new(move |e| sink.borrow_mut().push(e)));
+        watch.viewport.set(400.0);
+        watch.content.set(900.0);
+        watch.update();
+        watch.set_offset(10.0);
+        watch.set_offset(20.0);
+        watch.set_offset(30.0);
+        watch.set_offset(500.0);
+        watch.disarm();
+        watch.set_offset(0.0);
+        assert_eq!(
+            *heard.borrow(),
+            vec![
+                ScrollEdges { left: false, right: true },
+                ScrollEdges { left: true, right: true },
+                ScrollEdges { left: true, right: false },
+            ]
+        );
+    }
 }

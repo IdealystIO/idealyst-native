@@ -2476,6 +2476,25 @@ stylesheet! {
             // half of its collapsed border.
             overflow: Overflow::Hidden,
         }
+        // `Table(variant = …)`. `plain` drops the card: no border, no
+        // radius, no fill of its own — it sits on the surface around it
+        // (an app that wants a fill styles the container), and the rows'
+        // dividers are the only lines.
+        variant frame {
+            #[default]
+            framed(_t) {}
+            plain(_t) {
+                background: Color("transparent".into()),
+                border_top_width: 0.0,
+                border_right_width: 0.0,
+                border_bottom_width: 0.0,
+                border_left_width: 0.0,
+                border_top_left_radius: 0.0,
+                border_top_right_radius: 0.0,
+                border_bottom_left_radius: 0.0,
+                border_bottom_right_radius: 0.0,
+            }
+        }
         transitions {
             background: 250ms EaseInOut,
             border_top_color: 250ms EaseInOut,
@@ -2606,9 +2625,47 @@ stylesheet! {
             off(_t) {}
             on(t) { background: t.color.surface_alt() }
         }
+        // `Table(variant = Plain)`: no header band — the head row is
+        // muted text over a divider, on whatever the table sits on. A
+        // frozen head cell still has to be opaque (columns slide beneath
+        // it), so it paints the surface, like a frozen body cell.
+        variant frame {
+            #[default]
+            framed(_t) {}
+            plain(_t) {}
+        }
+        compound (frame: plain, row_hovered: off)(_t) {
+            background: Color("transparent".into()),
+        }
+        compound (frame: plain, pinned: left, row_hovered: off)(t) {
+            background: t.color.surface(),
+        }
+        compound (frame: plain, pinned: right, row_hovered: off)(t) {
+            background: t.color.surface(),
+        }
+        // A frozen column's inner-edge hairline, for a `plain` table:
+        // `Table` selects `hidden` while nothing is scrolled beneath that
+        // edge, so the line appears only once content slides under the
+        // column. The colour goes transparent rather than the width to 0,
+        // so the column does not shift a pixel as its edge comes and goes.
+        // Compounds, because `pinned` sorts after `pin_edge` and its
+        // arms would otherwise restate the colour.
+        variant pin_edge {
+            #[default]
+            shown(_t) {}
+            hidden(_t) {}
+        }
+        compound (pinned: left, pin_edge: hidden)(_t) {
+            border_right_color: Color("transparent".into()),
+        }
+        compound (pinned: right, pin_edge: hidden)(_t) {
+            border_left_color: Color("transparent".into()),
+        }
         transitions {
             background: 250ms EaseInOut,
             border_bottom_color: 250ms EaseInOut,
+            border_left_color: 150ms EaseInOut,
+            border_right_color: 150ms EaseInOut,
             opacity: 150ms EaseInOut,
         }
     }
@@ -2807,8 +2864,37 @@ stylesheet! {
             off(_t) {}
             on(t) { background: t.color.surface_alt() }
         }
+        // A frozen column's inner-edge hairline, for a `plain` table:
+        // `Table` selects `hidden` while nothing is scrolled beneath that
+        // edge, so the line appears only once content slides under the
+        // column. The colour goes transparent rather than the width to 0,
+        // so the column does not shift a pixel as its edge comes and goes.
+        // Compounds, because `pinned` sorts after `pin_edge` and its
+        // arms would otherwise restate the colour.
+        variant pin_edge {
+            #[default]
+            shown(_t) {}
+            hidden(_t) {}
+        }
+        compound (pinned: left, pin_edge: hidden)(_t) {
+            border_right_color: Color("transparent".into()),
+        }
+        compound (pinned: right, pin_edge: hidden)(_t) {
+            border_left_color: Color("transparent".into()),
+        }
+        // `Table(variant = …)` — inert here: a body cell has no band to
+        // drop, and its frozen arms already paint the surface. Declared so
+        // the table can select it on every cell without asking which
+        // sheet a cell carries.
+        variant frame {
+            #[default]
+            framed(_t) {}
+            plain(_t) {}
+        }
         transitions {
             border_bottom_color: 250ms EaseInOut,
+            border_left_color: 150ms EaseInOut,
+            border_right_color: 150ms EaseInOut,
             // Fade the whole-row hover highlight the `row_hovered` axis
             // flips on/off.
             background: 150ms EaseInOut,

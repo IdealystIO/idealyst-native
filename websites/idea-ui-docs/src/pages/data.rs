@@ -5,11 +5,12 @@ use std::rc::Rc;
 use runtime_core::{rx, signal, ui, BorderStyle, Element, Signal, StyleRules, StyleSheet};
 use icons_lucide::{PENCIL, TRASH_2};
 use idea_ui::{
-    tone, typography_kind, variant, Button, Card, IconButton, Stack, StackAxis, StackGap, Tag,
+    tone, typography_kind, variant, Button, Card, CardPadding, IconButton, Stack, StackAxis, StackGap, Tag,
     Typography,
 };
 use idea_ui::{
     CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableDensity, TableFooter, TableRow,
+    TableVariant,
 };
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -223,7 +224,7 @@ TableCell {
                     either edge with `pinned` on its cells (pin the SAME cell in every row, header \
                     included): the frozen column stays put while the rest scrolls beneath it, on \
                     every backend.".to_string())
-                wide_table()
+                wide_table(TableVariant::Framed)
                 CodePanel(src = r##"Table(scroll_x = true) {
     TableRow {
         TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
@@ -239,6 +240,30 @@ TableCell {
             Tag(label = "Healthy".into(), tone = tone::Success, variant = variant::Soft)
         }
     }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Plain variant".to_string()) {
+                P(content = "`variant = TableVariant::Plain` drops the card: no frame, no \
+                    rounded corners, no header band and no fill of its own — it sits on the \
+                    surface around it, and the row dividers are its only lines (give the \
+                    container a background if you want one). In a `scroll_x` table a \
+                    frozen column draws its inner edge only while columns are scrolled \
+                    beneath it: at rest the right edge shows (there is more to the right), \
+                    and the left edge appears once you scroll. Frozen cells must stay \
+                    opaque, so they paint `color-surface`: sit a plain table on that \
+                    surface.".to_string())
+                // On a surface, as a plain table belongs: its frozen cells
+                // paint `color-surface`, which the demo ground is not.
+                Card(padding = CardPadding::Md) { wide_table(TableVariant::Plain) }
+                CodePanel(src = r##"Table(scroll_x = true, variant = TableVariant::Plain) {
+    TableRow {
+        TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
+        // …more columns…
+        TableCell(header = true, text = Some("Status".to_string()), pinned = Some(ColumnPin::Right))
+    }
+    // …rows, pinned the same way…
 }"##.to_string())
             }
         },
@@ -390,6 +415,11 @@ table::visit_row_cells(&row, |cell| {
                         desc: "Horizontal-scroll mode: columns at natural width inside a horizontal scroller. Required for pinned columns. Default false.",
                     },
                     Prop {
+                        name: "variant",
+                        ty: "TableVariant",
+                        desc: "Framed (default: the card — frame, rounded corners, surface fill, header band) or Plain (no frame or fill of its own — it sits on the surface around it; row dividers only; a frozen column's edge shows only while columns are scrolled beneath it).",
+                    },
+                    Prop {
                         name: "density",
                         ty: "TableDensity",
                         desc: "Row padding for every cell: Compact, Standard (default) or Comfortable (a one-line row lands in the 44–52pt touch band).",
@@ -505,7 +535,8 @@ table::visit_row_cells(&row, |cell| {
 /// Horizontal-scroll demo: enough columns to overflow the demo surface,
 /// with the identifying column frozen left and the status column frozen
 /// right — the two edges stay put while the middle scrolls beneath them.
-fn wide_table() -> Element {
+/// Shown in both [`TableVariant`]s.
+fn wide_table(frame: TableVariant) -> Element {
     fn status_tone(status: &str) -> idea_ui::ToneRef {
         if status == "Healthy" { tone::Success.into() } else { tone::Danger.into() }
     }
@@ -516,7 +547,7 @@ fn wide_table() -> Element {
         ("media", "us-west-2", "v2.12.9", "4", "95ms", "0.00%", "Healthy"),
     ];
     ui! {
-        Table(scroll_x = true) {
+        Table(scroll_x = true, variant = frame) {
             TableRow {
                 TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
                 TableCell(header = true, text = Some("Region".to_string()))

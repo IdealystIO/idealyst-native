@@ -244,7 +244,7 @@ pub use components::switch::{Switch, SwitchProps};
 #[cfg(feature = "table")]
 pub use components::table::{
     CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableCellProps, TableDensity,
-    TableFooter, TableFooterProps, TableProps, TableRow, TableRowProps,
+    TableFooter, TableFooterProps, TableProps, TableRow, TableRowProps, TableVariant,
 };
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};

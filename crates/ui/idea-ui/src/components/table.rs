@@ -31,7 +31,8 @@
 //! Four components mirror the SDK's shape:
 //! - [`Table`] wraps the SDK's `<table>` with the themed surface
 //!   (rounded corners, hairline border, theme background), and owns the
-//!   table-wide settings: `scroll_x`, `density`, and the frame slots.
+//!   table-wide settings: `variant`, `scroll_x`, `density`, and the
+//!   frame slots.
 //! - [`TableRow`] is a `<tr>`: `on_row_click` for a clickable row,
 //!   `tone` for a whole-row tint, `bind_to` for the row's handle.
 //! - [`TableCell`] wraps `<td>` (or `<th>` when `header = true`) with
@@ -127,6 +128,20 @@
 //! columns before it (a select column 48 wide, then the name column at
 //! `pin_offset = Some(48.0)`). Without the offset they all stick at the edge
 //! and overlap.
+//!
+//! # Plain tables
+//!
+//! `Table(variant = TableVariant::Plain)` drops the card — no frame, no
+//! rounded corners, no header band, no fill of its own — so it sits on
+//! the surface around it with the row dividers as its only lines. In a
+//! `scroll_x` table a frozen column then draws its inner-edge hairline
+//! only while columns are scrolled beneath it: the left-frozen edge once
+//! the scroll offset passes 0, the right-frozen edge while the columns
+//! run on past the right. The table learns that from the SDK's
+//! `on_scroll_edges` and re-styles only its frozen cells (the edge goes
+//! transparent rather than thin, so the column never shifts); every
+//! other cell stays a static selection. Frozen cells must stay opaque
+//! and paint `color-surface`, so a plain table belongs on that surface.
 //!
 //! # Frame slots
 //!
@@ -310,6 +325,37 @@ impl VariantEnum for TableDensity {
     }
 }
 
+/// The [`Table`]'s outer treatment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema, runtime_core::Remote)]
+pub enum TableVariant {
+    /// A card: hairline frame, rounded corners, the surface fill, a
+    /// tinted header band. The default.
+    #[default]
+    Framed,
+    /// No card: no frame, no rounded corners, no header band and no
+    /// fill of its own — the table sits on the surface around it, and
+    /// the row dividers are its only lines. In a `scroll_x` table a
+    /// frozen column draws its inner edge only while columns are
+    /// scrolled beneath it. Frozen cells still paint `color-surface`
+    /// (content slides beneath them), so sit a plain table on that
+    /// surface.
+    Plain,
+}
+
+// The variant string IS the stylesheet arm the value selects.
+impl VariantEnum for TableVariant {
+    fn as_variant_str(self) -> &'static str {
+        match self {
+            TableVariant::Framed => "framed",
+            TableVariant::Plain => "plain",
+        }
+    }
+
+    fn all_variants() -> &'static [Self] {
+        &[TableVariant::Framed, TableVariant::Plain]
+    }
+}
+
 // =============================================================================
 // Table
 // =============================================================================
@@ -338,6 +384,13 @@ pub struct TableProps {
     // built (the cells already exist by then; see `Table`).
     #[prop(static)]
     pub density: TableDensity,
+    /// `Framed` (the default card) or `Plain` (row dividers only, frozen
+    /// edges drawn while content scrolls beneath them) — see
+    /// [`TableVariant`].
+    // STATIC — selected onto the surface and every built cell, and it
+    // decides whether the scroller is watched, all at build.
+    #[prop(static)]
+    pub variant: TableVariant,
     /// Content drawn inside the table's frame ABOVE the rows and
     /// outside the horizontal scroller — it keeps still while a
     /// `scroll_x` table's columns scroll, and shares the table's border.
@@ -362,7 +415,8 @@ pub fn Table(props: TableProps) -> Element {
     // native grid on every table, never on the `<table>`: browsers
     // ignore `border-radius` on a collapsed-border table. The sheet's
     // clip keeps the corner cells inside the rounded frame.
-    let style = TableStyle().into_style_application();
+    let frame = props.variant.as_variant_str();
+    let style = TableStyle().into_style_application().with("frame", frame);
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
@@ -394,6 +448,36 @@ pub fn Table(props: TableProps) -> Element {
             });
         });
     }
+    let plain = props.variant == TableVariant::Plain;
+    if plain {
+        for child in &children {
+            table::visit_rows(child, |row| {
+                table::visit_row_cells(row, |cell| {
+                    table::map_cell_application(cell, Rc::new(|app| app.with("frame", "plain")));
+                });
+            });
+        }
+    }
+    // A plain table's frozen columns draw their inner edge only while
+    // columns are scrolled beneath it. Last, so it composes over every
+    // selection above; and only on cells that may be pinned, so the rest
+    // stay static (a static cell that is not pinned is skipped, a reactive
+    // one is asked when it evaluates — see `pin_edge`).
+    let edges = (plain && props.scroll_x).then(|| {
+        let edges = signal(table::ScrollEdges::default());
+        for child in &children {
+            table::visit_rows(child, |row| {
+                table::visit_row_cells(row, |cell| {
+                    let unpinned = table::cell_application(cell)
+                        .is_some_and(|app| !app.variants.0.contains_key("pinned"));
+                    if !unpinned {
+                        table::map_cell_style(cell, Rc::new(move |app| pin_edge(app, edges)));
+                    }
+                });
+            });
+        }
+        edges
+    });
     let header_slot = props.header_slot.map(|slot| {
         let style = TableSlot().into_style_application().with("edge", "top");
         ui! { view(style = style) { slot } }
@@ -405,14 +489,30 @@ pub fn Table(props: TableProps) -> Element {
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
     // `.with_style(...)` to land the themed style on its surface view,
     // then convert to Element.
-    sdk_table(SdkTableProps {
+    let table = sdk_table(SdkTableProps {
         children,
         scroll_x: props.scroll_x,
         header_slot,
         footer_slot,
     })
-    .with_style(style)
-    .into_element()
+    .with_style(style);
+    match edges {
+        Some(edges) => table.on_scroll_edges(move |e| edges.set(e)).into_element(),
+        None => table.into_element(),
+    }
+}
+
+/// Select the `pin_edge` arm for a frozen cell: its inner-edge hairline
+/// shows only while columns are scrolled beneath that edge. A cell that
+/// is not pinned is returned untouched WITHOUT reading `edges`, so it
+/// never re-styles on a scroll.
+fn pin_edge(app: StyleApplication, edges: Signal<table::ScrollEdges>) -> StyleApplication {
+    let behind = match app.variants.0.get("pinned").map(String::as_str) {
+        Some("left") => edges.get().left,
+        Some("right") => edges.get().right,
+        _ => return app,
+    };
+    app.with("pin_edge", if behind { "shown" } else { "hidden" })
 }
 
 // =============================================================================
@@ -2052,6 +2152,203 @@ mod tests {
                 ..Default::default()
             });
             assert_eq!(dividers(grid_cells(t)), vec![Some(0.0), Some(0.0)]);
+        });
+    }
+
+    /// The cells of a `Plain` + `scroll_x` table: the surface holds the
+    /// viewport holder the edge watch measures, around the scroller.
+    fn plain_scroll_cells(t: Element) -> Vec<Element> {
+        let surface = match peel_owned_keepalive(t) {
+            Element::Item { children, .. } => children,
+            _ => panic!("a scroll-x table lowers to its surface view"),
+        };
+        let holder = match peel_owned_keepalive(surface.into_iter().next().expect("surface holds the rows")) {
+            Element::Item { children, .. } => children,
+            _ => panic!("a watched scroller sits in its viewport holder"),
+        };
+        match peel_owned_keepalive(holder.into_iter().next().expect("the holder wraps the scroller")) {
+            Element::Item { children, .. } => {
+                grid_cells(children.into_iter().next().expect("the scroller wraps the table"))
+            }
+            _ => panic!("the holder's child is the scroller"),
+        }
+    }
+
+    fn pinned_head(text: &str, pin: ColumnPin) -> Element {
+        TableCell(TableCellProps {
+            header: true,
+            text: Reactive::Static(Some(text.into())),
+            pinned: Some(pin),
+            ..Default::default()
+        })
+    }
+
+    fn pinned_body(text: &str, pin: ColumnPin) -> Element {
+        TableCell(TableCellProps {
+            text: Reactive::Static(Some(text.into())),
+            pinned: Some(pin),
+            ..Default::default()
+        })
+    }
+
+    fn is_transparent(c: &Option<Tokenized<runtime_core::Color>>) -> bool {
+        c.as_ref().is_some_and(|c| c.resolve().0 == "transparent")
+    }
+
+    /// `Plain` drops the card: no frame, no radius, no fill of its own —
+    /// and `Framed` (the default) keeps every one of them.
+    #[test]
+    fn plain_table_surface_has_no_frame() {
+        with_test_world(|| {
+            let plain = runtime_core::resolve_style(
+                &TableStyle().into_style_application().with("frame", "plain"),
+            );
+            for w in [
+                &plain.border_top_width,
+                &plain.border_right_width,
+                &plain.border_bottom_width,
+                &plain.border_left_width,
+            ] {
+                assert_eq!(w.as_ref().map(|w| w.resolve()), Some(0.0), "plain draws no frame");
+            }
+            assert!(is_transparent(&plain.background), "plain paints no fill of its own");
+
+            let framed = runtime_core::resolve_style(&TableStyle().into_style_application());
+            assert_eq!(framed.border_top_width.as_ref().map(|w| w.resolve()), Some(1.0));
+            assert_eq!(bg_token(&framed).as_deref(), Some("color-surface"));
+        });
+    }
+
+    /// A plain table has no header band, but a FROZEN head cell must stay
+    /// opaque — the columns slide beneath it — so it paints the surface.
+    /// Every cell of the table takes the selection, as a static one.
+    #[test]
+    fn plain_table_drops_the_header_band_but_frozen_heads_stay_opaque() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![
+                    row_of(vec![pinned_head("Name", ColumnPin::Left), head_cell("Hours")]),
+                    row_of(vec![pinned_body("Ana", ColumnPin::Left), body_cell("8")]),
+                ],
+                variant: TableVariant::Plain,
+                ..Default::default()
+            });
+            let mut cells = grid_cells(t).into_iter();
+            let frozen_head = cell_app(cells.next().unwrap());
+            let head = cell_app(cells.next().unwrap());
+            assert!(head.preminted_class_list().is_some(), "the frame selection premints");
+            assert!(
+                is_transparent(&runtime_core::resolve_style(&head).background),
+                "a plain head cell has no band"
+            );
+            assert_eq!(
+                bg_token(&runtime_core::resolve_style(&frozen_head)).as_deref(),
+                Some("color-surface"),
+                "a frozen plain head cell is opaque"
+            );
+        });
+    }
+
+    /// The whole feature at the component layer: in a plain scroll-x
+    /// table, ONLY the frozen cells go reactive, and they start with their
+    /// inner edge hidden (nothing is measured as scrolled beneath them
+    /// yet). Every other cell stays a static, preminted selection — a
+    /// scroll must not re-style the table.
+    #[test]
+    fn plain_scroll_table_watches_only_the_frozen_cells() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![
+                    row_of(vec![
+                        pinned_head("Name", ColumnPin::Left),
+                        head_cell("Hours"),
+                        pinned_head("", ColumnPin::Right),
+                    ]),
+                    row_of(vec![
+                        pinned_body("Ana", ColumnPin::Left),
+                        body_cell("8"),
+                        pinned_body("…", ColumnPin::Right),
+                    ]),
+                ],
+                variant: TableVariant::Plain,
+                scroll_x: true,
+                ..Default::default()
+            });
+            for (i, cell) in plain_scroll_cells(t).into_iter().enumerate() {
+                let style = match classify(cell_node(cell)) {
+                    P::View { style, .. } => style.expect("cell keeps a style"),
+                    _ => panic!("native cell must classify as a View"),
+                };
+                let rules = runtime_core::resolve_style(&style.application());
+                match i % 3 {
+                    0 => {
+                        assert!(style.is_reactive(), "cell {i}: a left-frozen cell follows the scroll");
+                        assert_eq!(rules.border_right_width.as_ref().map(|w| w.resolve()), Some(1.0));
+                        assert!(
+                            is_transparent(&rules.border_right_color),
+                            "cell {i}: the edge is hidden while nothing is behind it"
+                        );
+                    }
+                    2 => {
+                        assert!(style.is_reactive(), "cell {i}: a right-frozen cell follows the scroll");
+                        assert!(is_transparent(&rules.border_left_color), "cell {i}");
+                    }
+                    _ => assert!(
+                        !style.is_reactive() && style.application().preminted_class_list().is_some(),
+                        "cell {i}: an unfrozen cell stays static"
+                    ),
+                }
+            }
+        });
+    }
+
+    /// The edge follows the scroll: hidden at rest, shown once columns
+    /// are behind THAT edge, for the side the cell is frozen to only.
+    #[test]
+    fn pin_edge_shows_only_the_edge_with_content_behind_it() {
+        with_test_world(|| {
+            let edges = signal(table::ScrollEdges::default());
+            let left = TableBodyCell().into_style_application().with("pinned", "left");
+            let right = TableBodyCell().into_style_application().with("pinned", "right");
+            let colours = || {
+                let l = runtime_core::resolve_style(&pin_edge(left.clone(), edges));
+                let r = runtime_core::resolve_style(&pin_edge(right.clone(), edges));
+                (is_transparent(&l.border_right_color), is_transparent(&r.border_left_color))
+            };
+            assert_eq!(colours(), (true, true), "at rest with nothing behind: both hidden");
+            edges.set(table::ScrollEdges { left: false, right: true });
+            idea_theme::testing::commit();
+            assert_eq!(colours(), (true, false), "columns run off the right: the right edge shows");
+            edges.set(table::ScrollEdges { left: true, right: false });
+            idea_theme::testing::commit();
+            assert_eq!(colours(), (false, true), "scrolled to the end: the left edge shows");
+
+            let shown = pin_edge(left.clone(), edges);
+            assert!(shown.preminted_class_list().is_some(), "both arms premint");
+            let unpinned = TableBodyCell().into_style_application();
+            assert!(
+                !pin_edge(unpinned, edges).variants.0.contains_key("pin_edge"),
+                "an unfrozen cell is returned untouched"
+            );
+        });
+    }
+
+    /// `Framed` (the default) is unchanged: a frozen column in a scroll-x
+    /// table keeps its hairline at rest and stays static — nothing
+    /// watches its scroller.
+    #[test]
+    fn framed_scroll_table_keeps_its_frozen_edge_static() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![pinned_body("Ana", ColumnPin::Left), body_cell("8")])],
+                scroll_x: true,
+                ..Default::default()
+            });
+            let frozen = any_grid_cells(t, true, false, true).into_iter().next().unwrap();
+            let app = cell_app(frozen);
+            assert!(app.preminted_class_list().is_some(), "a framed frozen cell stays static");
+            let rules = runtime_core::resolve_style(&app);
+            assert!(!is_transparent(&rules.border_right_color), "and draws its edge at rest");
         });
     }
 }

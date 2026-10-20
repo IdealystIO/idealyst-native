@@ -634,6 +634,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Plain tables** (`idea-ui`, `table`). `Table(variant =
+  TableVariant::Plain)` drops the card — no frame, rounded corners,
+  header band or fill of its own — so the table sits on the surface
+  around it with row dividers as its only lines. In a `scroll_x` table a
+  frozen column draws its inner edge only while columns are scrolled
+  beneath it (left once the offset passes 0, right while columns run on
+  past the edge); only the frozen cells re-style, every other cell stays
+  a static selection. Frozen cells paint `color-surface`, so a plain
+  table belongs on that surface. `Framed` (the default) is unchanged.
+  Underneath: `TableBound::on_scroll_edges` reports `table::ScrollEdges`
+  for a scroll-x table, and `table::cell_application` reads a built
+  cell's static application. `TablePrim` gained `ref_fill` (fill it with
+  `None` if you build the payload yourself).
+
 - **Table columns that fill the rest and truncate** (`idea-ui`, `table`,
   `runtime-shared`, `runtime-layout`, `css`, `backend-ssr`).
   `TableCell(flex = Some(1.0), truncate = true)` gives a column the width
