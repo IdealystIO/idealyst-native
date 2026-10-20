@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-image-source",
  "gtk4",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -6417,7 +6417,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
@@ -6436,7 +6436,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -12782,7 +12782,7 @@ dependencies = [
 
 [[package]]
 name = "table"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "backend-ssr",
  "runtime-scene",
