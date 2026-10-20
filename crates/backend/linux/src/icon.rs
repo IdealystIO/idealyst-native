@@ -88,10 +88,16 @@ pub fn parse_svg_path(
     let mx = |x: f64| x * sx + ox;
     let my = |y: f64| y * sy + oy;
 
-    let mut cur_x: f64 = 0.0;
-    let mut cur_y: f64 = 0.0;
-    let mut start_x: f64 = 0.0;
-    let mut start_y: f64 = 0.0;
+    // The current point starts at the view box's origin, which is
+    // `(ox, oy)` in destination space, not `(0, 0)`: a path that opens
+    // with a relative command (Lucide's `arrow-right` chevron is
+    // `m12 5 7 7-7 7`) is relative to that origin. Starting at `(0, 0)`
+    // dropped the centering offset, so the chevron sat `oy` px above
+    // its shaft.
+    let mut cur_x: f64 = ox;
+    let mut cur_y: f64 = oy;
+    let mut start_x: f64 = ox;
+    let mut start_y: f64 = oy;
     let mut last_ctrl_x: f64 = 0.0;
     let mut last_ctrl_y: f64 = 0.0;
     let mut last_cmd: char = ' ';
@@ -727,6 +733,21 @@ mod tests {
         let mut e = LogEmitter::default();
         parse_svg_path("M 0 0 1 1 2 2", 1.0, 1.0, 0.0, 0.0, &mut e);
         assert_eq!(e.ops, vec!["M(0,0)", "L(1,1)", "L(2,2)"]);
+    }
+
+    /// Lucide's `arrow-right` drew its chevron above its shaft: the
+    /// chevron path opens with a relative `m`, and the current point
+    /// started at `(0, 0)` instead of the view box's origin `(ox, oy)`,
+    /// dropping the centering offset. Both paths must land in the same
+    /// offset box: the chevron's tip meets the shaft's end.
+    #[test]
+    fn regression_path_opening_with_relative_moveto_keeps_the_offset() {
+        let mut shaft = LogEmitter::default();
+        parse_svg_path("M5 12h14", 1.0, 1.0, 10.0, 3.0, &mut shaft);
+        let mut chevron = LogEmitter::default();
+        parse_svg_path("m12 5 7 7-7 7", 1.0, 1.0, 10.0, 3.0, &mut chevron);
+        assert_eq!(shaft.ops, vec!["M(15,15)", "L(29,15)"]);
+        assert_eq!(chevron.ops, vec!["M(22,8)", "L(29,15)", "L(22,22)"], "the tip is the shaft's end");
     }
 
     #[test]
