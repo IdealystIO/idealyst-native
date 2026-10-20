@@ -33,6 +33,10 @@ pub struct BaseIndex {
     pub exports: HashSet<String>,
     /// Data symbol name → its absolute address in the base's memory.
     pub data: HashMap<String, u32>,
+    /// The same data symbols, grouped for pairing a patch's statics with
+    /// them (`crate::hotpatch_statics`). Built here, once per base,
+    /// because it demangles every name.
+    pub statics: build_runtime_server::hotpatch::statics::ProgramStatics,
     /// Table slot → the signature of the function in it, as
     /// `params>results` in one character per value type (the alphabet
     /// `hotpatch_prepare` compares a patch's import against). The page
@@ -106,6 +110,7 @@ impl BaseIndex {
         }
 
         let exports = parsed.exports;
+        let statics = build_runtime_server::hotpatch::statics::ProgramStatics::new(data.keys().map(String::as_str));
         let data = data.iter().map(|(name, addr)| (name.clone(), *addr)).collect();
         let mut all_funcs: HashSet<String> = parsed.names.into_values().collect();
 
@@ -127,6 +132,7 @@ impl BaseIndex {
             ifunc,
             exports,
             data,
+            statics,
             slot_sigs,
             all_funcs,
         })
@@ -381,6 +387,7 @@ mod tests {
             ifunc: ifunc.iter().map(|(n, i)| (n.to_string(), *i)).collect(),
             exports: Default::default(),
             data: Default::default(),
+            statics: Default::default(),
             slot_sigs: Default::default(),
             all_funcs: ifunc.iter().map(|(n, _)| n.to_string()).collect(),
         }

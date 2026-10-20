@@ -18,8 +18,8 @@
 //!     and every symbol stays in the bin's text section. Both flags
 //!     are dx's idea — we lifted them as-is.
 //!  3. After link succeeds, [`HostBinCache::load`] parses the
-//!     sidecar bin once and stashes a symbol map + `__thread_data`
-//!     + `$tlv$init` size table for the per-patch loop.
+//!     sidecar bin once and stashes its symbol map and the names of its
+//!     statics for the per-patch loop.
 //!
 //! On every source change:
 //!  4. [`HostBinCache`] + a runtime `_main` address (the sidecar
@@ -28,11 +28,13 @@
 //!  5. [`replay::run_rustc_emit_obj`] replays the captured rustc
 //!     invocation for the sidecar bin with `--emit=obj`. Output:
 //!     one or more `.rcgu.o` files containing the tip's fresh code.
-//!  6. [`stub::synthesize`] walks the .rcgu.o for undefined refs,
+//!  6. [`bind::bind`] points the objects' references to statics and
+//!     thread-locals the running binary already has at ITS storage
+//!     (the patch's own copies go unused; see [`statics`]), then
+//!     [`stub::synthesize`] walks the .rcgu.o for undefined refs,
 //!     resolves each against the cache, and writes a Mach-O object
-//!     containing aarch64 trampolines (and, when needed, Mach-O
-//!     `__thread_vars` TLV descriptors copying `__thread_data` from
-//!     the host bin — see [`stub::synthesize`] for the TLS branch).
+//!     containing aarch64 trampolines for functions and absolute
+//!     symbols for data.
 //!  7. [`link::link_dylib`] invokes `cc -dynamiclib -Wl,-dylib` over
 //!     `tip.rcgu.o + stub.o → patch.dylib`. No rlib inputs, no
 //!     framework-crate dylib deps; the stub satisfies everything
@@ -52,6 +54,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+mod bind;
 mod cache;
 mod jumptable;
 mod link;
@@ -61,6 +64,7 @@ mod link;
 /// so replaying one capture is the only way either of them gets a patch
 /// whose symbols match the base's. One mechanism, two consumers.
 pub mod replay;
+pub mod statics;
 mod stub;
 
 pub use cache::HostBinCache;
@@ -195,11 +199,16 @@ impl HotPatchBuilder {
             .map_err(|_| anyhow::anyhow!("host-bin cache lock poisoned"))?;
 
         let t_stub = std::time::Instant::now();
+        // The objects as linked: references to the statics the running
+        // binary already has, pointed at its storage (see `bind`).
+        let (objs, bindings) = bind::bind(&objs, &host_cache, &self.target_dir.join("bound"))
+            .context("binding the patch's statics to the running binary's")?;
         let stub_obj = self.target_dir.join("patch.stub.o");
         let stub_s = self.target_dir.join("patch.stub.s");
         stub::synthesize(
             &objs,
             &host_cache,
+            &bindings,
             runtime_main_addr,
             &stub_s,
             &stub_obj,

@@ -186,8 +186,12 @@ parenthesized binding: `base(t) { … }`, `small(t) { … }`,
 entries become `*_transition` values in the base rules, with no item per
 entry), and keeps the rest. On the running page the
 patched `<name>_style()` keys the stylesheet cache by the address of its
-own function-local `static`, which the patch defines anew, so it builds
-the sheet with the new rules instead of reusing the old one.
+own function-local `static`. A patch binds the statics it defines to the
+running program's ([Statics are the running program's](#statics-are-the-running-programs)),
+but only WRITABLE ones: this key is an immutable `u8`, which keeps a copy
+of its own at a fresh address in every patch, so the patched fn misses
+the cache and builds the sheet with the new rules instead of reusing the
+old one. The key has to stay immutable for that reason.
 
 A premint session is the exception. Its class names were generated at
 session start from a hash of the whole invocation, so there a value edit
@@ -208,10 +212,9 @@ is somewhere a patch does not reach, the edit rebuilds
   assertion. The framework's code compiled against that type is not
   re-emitted.
 - a `static` initializer, including `thread_local!` and a `static`
-  inside a function. A patch never re-initializes a static. For a crate
-  it re-emits, it defines a fresh copy, so patched code and the base code
-  still running read different storage. For any other crate it imports
-  the base's static through `GOT.mem`, which still holds the old value.
+  inside a function. A patch never re-initializes a static: patched code
+  uses the running program's storage, which still holds the old value
+  ([Statics are the running program's](#statics-are-the-running-programs)).
 - a macro whose expansion is unknown. `ui!`, `jsx!` and std's
   formatting and assertion macros are known to expand to plain
   expressions; any other macro might expand to a `static`.
@@ -277,7 +280,8 @@ A decision table, by example:
 | Change a `const`'s value (`const HEADLINE: &str = "…"`, an `impl`'s associated const, a trait's default), when only function bodies read it | Hot patch |
 | Change a `const`'s value when it is read at compile time: an array length, a const generic, an enum discriminant, a `static`, a `const fn`, an unknown macro, or (premint only) a `stylesheet!` | Rebuild ([Const values](#const-values)) |
 | Change a `const`'s type or name | Rebuild |
-| Change a `static` / `static mut` / `thread_local!` initializer | Rebuild |
+| Change a `static` / `static mut` / `thread_local!` initializer — at item level or inside a function body | Rebuild |
+| Add, remove or reorder a `static` / `thread_local!` inside a function body | Rebuild — the patch pairs a body's statics with the running program's by symbol name ([Statics are the running program's](#statics-are-the-running-programs)) |
 | Change an attribute or a doc comment | Rebuild |
 | A rule VALUE inside `stylesheet! { … }` (a number, a token, a rule added or removed in any block, including `state`/`breakpoint`/`container`/`compound` blocks) | Hot patch |
 | Anything in a `stylesheet!`'s `transitions { … }` (a duration, an easing, an entry added or removed) | Hot patch |
@@ -325,9 +329,13 @@ was compiled from; the next literal edit is an overlay patch again.
 2. On a body-only save the host replays the USER crate's captured
    invocation with `--emit=obj`. Framework crates stay cached, so this
    is one crate's codegen, not the graph's.
-3. A stub object is synthesized: every undefined reference in those
-   objects is resolved back into the running sidecar's text as an
-   absolute-address trampoline (plus TLV descriptors for thread-locals).
+3. The objects' references to statics and thread-locals the running
+   sidecar already has are pointed at the sidecar's storage
+   (`hotpatch::bind`; see [Statics are the running program's](#statics-are-the-running-programs)).
+   Then a stub object is synthesized: every undefined reference in those
+   objects is resolved back into the running sidecar — a function as an
+   absolute-address trampoline, a static or a thread-local's descriptor
+   as an absolute symbol.
 4. `cc -dynamiclib` links tip objects + stub into `libpatch-N.dylib`.
 5. Symbols named `__*_hot_impl` — the inner halves of the
    `#[component]` split — are paired between the sidecar binary and the
@@ -339,6 +347,82 @@ was compiled from; the next literal edit is an overlay patch again.
 Everything from step 2 lives in
 `crates/tools/build/runtime-server/src/hotpatch/`; the runtime side is
 `crates/dev/hot`.
+
+### Statics are the running program's
+
+A patch re-emits whole crates, so it DEFINES every `static`,
+`static mut` and `thread_local!` of those crates again, function-local
+ones included. Linked as compiled, each would get storage of its own in
+the patch: patched code would write one copy while the base code still
+running read the other. That is the bug this section exists for —
+CrewForge's kiosk stored the report sign-in from a patched screen, and
+the request headers, built by code the patch had not redirected, read
+"Not signed in".
+
+So before the link, a static the running program already has is BOUND
+to it: every reference the patch's objects make to it is rewritten to
+reach the program's storage, and the patch's own copy goes unused. Only
+a static the program does not have gets storage of its own. The pairing
+is `build_runtime_server::hotpatch::statics`, shared by both targets:
+
+- **What is bound:** writable statics — a writable data or zero-fill
+  section, and thread-locals. An immutable `static` without interior
+  mutability holds no state; it keeps a fresh copy per patch, which is
+  what `stylesheet!`'s cache key relies on (above).
+- **By symbol name, refused when the name could lie.** A static's symbol
+  is its path, and two statics of one name in one scope (two blocks of a
+  function, or two expansions of a macro that declares one) differ only
+  by a disambiguator counting them in source order; one inside a closure
+  carries the closure's index. A body edit that adds such a sibling, or
+  a closure ahead of the one a static sits in, renames statics, and a
+  name could then match a different static of the program — possibly of
+  another type. So statics are grouped by demangled path with every
+  disambiguator and closure index erased, and a group whose members do
+  not all pair by exact name refuses the patch: the dev loop rebuilds.
+- **Declarations are shape.** `shape_of` keeps every `static` and
+  `thread_local!` a function body declares, so adding, removing or
+  editing one rebuilds before a patch is built. The pairing above is what
+  is left for statics a macro expands to inside a body.
+
+How each target points a reference at the program:
+
+- **Native (macOS arm64, `hotpatch::bind`).** Code reaches its own
+  crate's static PC-relatively (`adrp` + `add`) and a thread-local
+  through a TLV fixup; a dylib can reach neither at the program's
+  address, since ld64 rejects a page-relative fixup to an absolute
+  address and a thread-local fixup to anything but its own TLV. Both
+  become GOT loads (`adrp` + `ldr` from a slot the stub's absolute symbol
+  fills), and a thread-local's slot holds the PROGRAM's TLV descriptor, so
+  the patch calls the program's own thunk and gets the program's slot
+  for the thread. A thread-local the patch only references (an
+  `#[inline]` accessor of another crate's `thread_local!`) goes the same
+  way. A load or store folded into the address (`ldr w0, [x8,
+  S@PAGEOFF]`, what an optimized build emits) has no GOT form without one
+  more instruction, so it refuses the patch; the dev profile builds
+  workspace crates at `opt-level = 0`, which always materializes the
+  address with an `add`.
+  dyld runs a dylib's initializers when it loads it, and the patch's
+  copy of a constructor the binary already ran (an `inventory::submit!`)
+  would act on the binary's statics a second time — pushing a registry
+  node onto the list it already heads makes a cycle. Such an entry is
+  pointed at an empty function instead; a constructor new to the binary
+  still runs.
+- **Web (`build_web::hotpatch_statics`).** The patch's definition of the
+  static becomes an undefined symbol, so the references wasm-ld resolves
+  through the GOT import `GOT.mem.<name>` (filled with the base's
+  address, as for any base static). Code that addressed the static
+  relative to the patch's own memory (`i32.const S@MBREL`, then
+  `+ __memory_base`) becomes `global.get` of an imported
+  `idealyst.static.<name>$idealyst_host`, which the page fills with the
+  base's address minus the patch's `__memory_base` (import plan tag 6);
+  the addition that follows then lands on the base's static. Only the
+  page knows `__memory_base`, which is why the page does the
+  subtraction. The page never runs a patch's constructors (its
+  `__wasm_call_ctors` is not exported), so none runs twice.
+
+`build-runtime-server`'s `tests/hotpatch_statics.rs` and `build-web`'s
+`tests/wasm_patch_statics.rs` run a real base, write its statics, apply a
+patch for a body edit, and check the patched function reads them.
 
 ### On the web the base module has to be prepared first
 
@@ -512,8 +596,10 @@ stale. `BaseIndex` and the jump table both consult it.
 
 The base's statics are read the same way, into `<app>.datasyms.tsv`
 (name → address: the symbol's segment offset plus its offset in it). A
-patch imports a static as a `GOT.mem` global, and this file is where its
-address comes from.
+patch imports a static as a `GOT.mem` global or, for one it addressed
+relative to its own memory, an `idealyst.static` global
+([Statics are the running program's](#statics-are-the-running-programs)),
+and this file is where its address comes from.
 
 An import that still cannot be resolved is reported with which of the two
 opposite fixes applies: "the base HAS this function but it is not in the
@@ -1139,13 +1225,12 @@ the framework at a checkout — is watched but rebuilds: cargo builds it
 with the `package."*"` profile, at `opt-level = 3` in the default
 `--dev-opt optimized`, where dependents do inline its bodies.
 
-**Statics.** As in the app crate, a patch defines its own copy of every
-`static` and `thread_local!` of every crate it re-emits. A library's
-world-lifetime caches (CrewForge's `TEAM_LOGO`) start empty in patched
-code and fill again on first use; state that the app installed into a
-library static at boot, once, is not there for the patched code. Keep
-such installs inside a component, or expect the patched code to see the
-static's initial value.
+**Statics.** As in the app crate, patched code uses the running
+program's statics and `thread_local!`s
+([Statics are the running program's](#statics-are-the-running-programs)):
+a library's world-lifetime caches (CrewForge's `TEAM_LOGO`) and state the
+app installed into a library static at boot are what the patched code
+reads.
 
 A body edit in a library costs more than one in the app on the FIRST
 save of a session (two crates replay); see the costs in
@@ -1371,6 +1456,10 @@ is under that parent), the ordinal within that frame, and the value's
 
 - signals created during the mount walk — the app root's own state, and
   every `#[component]` body reached from it.
+- everything in a `static` or a `thread_local!`, in any crate: these are
+  never moved, because patched code uses the running program's storage
+  ([Statics are the running program's](#statics-are-the-running-programs)).
+  A static the patch adds starts at its initializer.
 
 **Not preserved, by design:**
 
@@ -1386,9 +1475,6 @@ is under that parent), the ordinal within that frame, and the value's
   building the same component would compete for one ordinal. Handing one
   region another's state is a worse failure than resetting it, and it
   would be invisible.
-- anything in a `static` or a `thread_local!` in a crate the patch
-  re-emits (the app crate, and on the web any workspace library crate a
-  save touched): the patch gets its own copy.
 
 ## Why a shape change cannot be patched
 

@@ -24,15 +24,16 @@
 //! macOS that saves ~25 ms per patch cycle (one fewer process
 //! spawn).
 //!
-//! ## TLS path (deferred)
+//! ## Statics and thread-locals
 //!
-//! TLS symbols still get a code trampoline, which is fine when
-//! the framework owns the thread-locals (the framework's TLV
-//! opcodes resolve through the host's text, accessing the host's
-//! TLV slots). For tip-side `thread_local!` declarations the
-//! proper fix is `add_symbol_data(SymbolKind::Tls, …)` which the
-//! `object` crate writer auto-synthesizes a `__thread_vars`
-//! descriptor for. Wired in a follow-up.
+//! A data symbol is defined as an ABSOLUTE symbol at the running
+//! binary's address, and a thread-local as the absolute address of the
+//! binary's TLV descriptor. Neither can be reached by a page-relative or
+//! a thread-local fixup from a dylib; [`super::bind`] has already turned
+//! every such reference into a GOT load, which an absolute symbol
+//! satisfies. The statics the patch itself defines and the binary
+//! already has are bound the same way, through the names in
+//! [`Bindings::absolute`].
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -46,11 +47,13 @@ use object::{
     SymbolScope,
 };
 
+use super::bind::Bindings;
 use super::cache::HostBinCache;
 
 pub fn synthesize(
     tip_objs: &[PathBuf],
     cache: &HostBinCache,
+    bindings: &Bindings,
     runtime_main: u64,
     // Kept in the signature for compatibility with the prior
     // assembly-file path; ignored now that the object writer
@@ -60,19 +63,28 @@ pub fn synthesize(
     _stub_s_path: &Path,
     stub_o_path: &Path,
 ) -> Result<()> {
-    // 1. Walk every tip object for undefined externals.
+    // 1. Walk every tip object for undefined externals — undefined in
+    // the PATCH, not in one object of it. A replay compiles the crate in
+    // up to 256 codegen units, and a function one unit calls is very
+    // often defined by another unit of the same replay. Stubbing that
+    // name as well defines it twice, and the link fails with `duplicate
+    // symbol` on every patch of a crate bigger than one unit.
     let mut undefs: HashSet<String> = HashSet::new();
+    let mut defined: HashSet<String> = HashSet::new();
     for obj_path in tip_objs {
         let data = std::fs::read(obj_path)
             .with_context(|| format!("read {}", obj_path.display()))?;
         let file = object::File::parse(&*data)
             .with_context(|| format!("parse {}", obj_path.display()))?;
         for sym in file.symbols() {
-            if !sym.is_undefined() {
-                continue;
-            }
             let Ok(name) = sym.name() else { continue };
             if name.is_empty() {
+                continue;
+            }
+            if !sym.is_undefined() {
+                if sym.is_global() {
+                    defined.insert(name.to_string());
+                }
                 continue;
             }
             if is_system_symbol(name) {
@@ -81,6 +93,10 @@ pub fn synthesize(
             undefs.insert(name.to_string());
         }
     }
+    undefs.retain(|name| !defined.contains(name));
+    // The names `bind` pointed bound statics at are not in the binary;
+    // they are defined below from `bindings`, at the binary's address.
+    undefs.retain(|name| !bindings.absolute.contains_key(name) && name != super::bind::CTOR_RAN);
 
     // 2. Resolve each against the host cache. Symbols we can pin to
     // the host get a trampoline so the patch dylib jumps to the
@@ -193,8 +209,6 @@ pub fn synthesize(
     // verbatim.
     obj.set_mangling(Mangling::None);
     let text_id = obj.section_id(StandardSection::Text);
-    let data_id = obj.section_id(StandardSection::Data);
-    let tls_id = obj.section_id(StandardSection::Tls);
 
     // Each trampoline's instruction sequence aligned to 4 bytes.
     if !has_main_in_tip {
@@ -202,43 +216,21 @@ pub fn synthesize(
         emit_symbol(&mut obj, text_id, "_main", &encode_ret());
     }
 
-    // Dispatch on symbol kind. Mirrors dx's
-    // `create_undefined_symbol_stub` decision tree
-    // (cli/src/build/patch.rs, commit 33159f3). `encode_trampoline` is
-    // correct only for Text symbols, so Tls and Data get their own shape:
+    // Dispatch on symbol kind:
     //
-    // * Text: jump trampolines work because the dylib's `bl` to the
-    //   undefined ref lands on the trampoline, the trampoline jumps to
-    //   the host's runtime address, host code runs, returns through
-    //   the trampoline's `br x16` (tail-jump pattern, lr preserved).
+    // * Text: a jump trampoline. The dylib's `bl` lands on it, it jumps
+    //   to the binary's code, which returns straight to the caller
+    //   (`br x16`, lr untouched).
     //
-    // * Tls: the dylib accesses a
-    //   thread-local via `ldr x16, [tlv_descriptor]; blr x16` — it
-    //   expects to LOAD 8 bytes from the symbol's address and call
-    //   them as a function pointer (the TLV thunk). A code trampoline
-    //   at the symbol's address means those 8 bytes are `movz x16,
-    //   #lo16; movk x16, #hi16, lsl #16` instructions. Loaded as a
-    //   u64 + blr → branches to a wild address (some encoding of the
-    //   thunk-pointer-shaped instructions) → corrupts callee-saved
-    //   regs (including sp) → SIGBUS at the next function entry's
-    //   `stp [sp, #-N]!`.
-    //
-    //   Fix: emit as `SymbolKind::Tls` with the host's `__thread_data`
-    //   init bytes. The `object` crate's Mach-O writer then auto-
-    //   synthesizes a proper `__thread_vars` TLV descriptor (whose
-    //   first 8 bytes are libsystem's `_tlv_bootstrap` thunk, set up
-    //   at dlopen time). The dylib's TLV access lands on a real
-    //   descriptor and works.
-    //
-    // * Data (statics, globals): the dylib does
-    //   `adrp x0, _STATIC; add x0, x0, :lo12:_STATIC` to materialize
-    //   the symbol's address. A code trampoline at that address would
-    //   make the dylib's code "address" be a function-pointer-shaped
-    //   value — readable but wrong: writes to it would corrupt the
-    //   trampoline's instruction bytes. Fix: emit as
-    //   `SymbolSection::Absolute` with `value = abs_addr` so the
-    //   linker resolves the symbol-reference directly to the runtime
-    //   address (no indirection, no trampoline).
+    // * Everything else — statics, globals, and thread-locals — an
+    //   absolute symbol at the binary's runtime address. For a static
+    //   that IS the static. For a thread-local it is the binary's TLV
+    //   descriptor: `bind` rewrote the patch's thread-local loads into
+    //   GOT loads of that address, so the patch calls the binary's own
+    //   thunk and gets the binary's slot for the thread. A code
+    //   trampoline here would be wrong for both — data written through it
+    //   overwrites instructions, and a TLV access loads its first 8 bytes
+    //   as the thunk pointer and branches into them.
     for (name, abs_addr, sym) in &resolved {
         use object::write::SymbolSection as WS;
         use object::{SymbolKind as K, SymbolScope};
@@ -248,55 +240,9 @@ pub fn synthesize(
                 let bytes = encode_trampoline(*abs_addr);
                 emit_symbol(&mut obj, text_id, name, &bytes);
             }
-            K::Tls => {
-                // Look up the matching `$tlv$init` symbol to find the
-                // init bytes inside `__thread_data`. Mach-O TLS layout:
-                // a TLV symbol (e.g. `_FOO`) is a 3-word descriptor in
-                // `__thread_vars`; `_FOO$tlv$init` is the matching
-                // 8-byte (or larger) data slot in `__thread_data`. Our
-                // cache pre-computed the offset+size pair.
-                let init_key = format!("{}$tlv$init", name);
-                let (off, size) = if let Some(&pair) = cache.tls_init_sizes.get(&init_key) {
-                    pair
-                } else if !cache.tls_init_data.is_empty() {
-                    // Fallback: whole tdata. dx does the same when the
-                    // $tlv$init symbol is missing (binary stripped, etc.)
-                    (0, cache.tls_init_data.len() as u64)
-                } else {
-                    // No tdata at all: synthesize pointer-sized zero
-                    // init. The TLV slot will be zero on first access;
-                    // most reasonable defaults for Cell<Option<T>> etc.
-                    (0, 8)
-                };
-                let align = size.min(8).next_power_of_two();
-                let start = off as usize;
-                let end = start + size as usize;
-                let init: Vec<u8> = if end <= cache.tls_init_data.len() {
-                    cache.tls_init_data[start..end].to_vec()
-                } else {
-                    // Past `__thread_data` bounds → it's a tbss slot
-                    // (zero-init by ABI). Just zero the right size.
-                    vec![0u8; size as usize]
-                };
-                let sym_id = obj.add_symbol(WriteSymbol {
-                    name: name.as_bytes().to_vec(),
-                    value: 0,
-                    size: 0,
-                    scope: SymbolScope::Linkage,
-                    kind: K::Tls,
-                    weak: sym.is_weak,
-                    section: WS::Undefined,
-                    flags: SymbolFlags::None,
-                });
-                obj.add_symbol_data(sym_id, tls_id, &init, align);
-                let _ = data_id; // suppress unused warning when only Tls branch fires
-            }
             other => {
-                // Data, Unknown (darwin reports many statics as Unknown),
-                // or anything else: emit as an absolute-address symbol so
-                // PC-relative references in the dylib materialize the host's
-                // runtime address directly.
-                let kind = if matches!(other, K::Unknown) { K::Data } else { other };
+                // Darwin reports many statics as Unknown.
+                let kind = if matches!(other, K::Unknown | K::Tls) { K::Data } else { other };
                 obj.add_symbol(WriteSymbol {
                     name: name.as_bytes().to_vec(),
                     value: *abs_addr,
@@ -307,9 +253,23 @@ pub fn synthesize(
                     section: WS::Absolute,
                     flags: SymbolFlags::None,
                 });
-                let _ = data_id;
             }
         }
+    }
+    if bindings.ctor_ran {
+        emit_symbol(&mut obj, text_id, super::bind::CTOR_RAN, &encode_ret());
+    }
+    for (name, link_addr) in &bindings.absolute {
+        obj.add_symbol(WriteSymbol {
+            name: name.as_bytes().to_vec(),
+            value: (*link_addr as i64 + slide) as u64,
+            size: 0,
+            scope: SymbolScope::Linkage,
+            kind: SymbolKind::Data,
+            weak: false,
+            section: SymbolSection::Absolute,
+            flags: SymbolFlags::None,
+        });
     }
 
     let bytes = obj.write().context("serialize stub Mach-O")?;
@@ -427,4 +387,48 @@ fn is_system_symbol(name: &str) -> bool {
                 | "_setjmp" | "_longjmp" | "__setjmp" | "__longjmp"
                 | "_getrlimit" | "_setrlimit" | "_getrusage"
         )
+}
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod tests {
+    use super::*;
+    use crate::hotpatch::cache::CachedSymbol;
+
+    /// A replay compiles the crate in many codegen units, and one unit
+    /// often calls a function another unit defines. Stubbing that name
+    /// too defined it twice, and every patch of a crate bigger than one
+    /// unit failed to link with `duplicate symbol` — the native tier then
+    /// always fell back to a respawn.
+    #[test]
+    fn regression_a_function_another_unit_defines_is_not_stubbed() {
+        let dir = std::env::temp_dir().join(format!("idealyst-stub-units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let assemble = |name: &str, source: &str| -> PathBuf {
+            let s = dir.join(format!("{name}.s"));
+            let o = dir.join(format!("{name}.o"));
+            std::fs::write(&s, source).unwrap();
+            let ok = std::process::Command::new("cc").args(["-c", "-arch", "arm64"]).arg(&s).arg("-o").arg(&o).status().unwrap();
+            assert!(ok.success());
+            o
+        };
+        let defines = assemble("unit0", ".text\n.globl _helper\n.p2align 2\n_helper:\n  ret\n");
+        let calls = assemble("unit1", ".text\n.globl _caller\n.p2align 2\n_caller:\n  b _helper\n");
+        let mut cache = HostBinCache::default();
+        cache.main_addr = 0x1_0000_0000;
+        for (name, address) in [("_main", 0x1_0000_0000u64), ("_helper", 0x1_0000_1000)] {
+            cache.symbols.insert(name.into(), CachedSymbol { address, kind: SymbolKind::Text, size: 0, is_weak: false });
+        }
+        let objs = vec![defines, calls];
+        let stub = dir.join("stub.o");
+        synthesize(&objs, &cache, &Bindings::default(), 0x1_0000_0000, &dir.join("stub.s"), &stub).unwrap();
+        let data = std::fs::read(&stub).unwrap();
+        let file = object::File::parse(&*data).unwrap();
+        assert!(
+            !file.symbols().any(|s| s.name() == Ok("_helper")),
+            "the stub defines `_helper`, which the patch's own unit0 defines"
+        );
+        crate::hotpatch::link::link_dylib(&objs, &stub, &dir.join("patch.dylib")).expect("the patch links");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

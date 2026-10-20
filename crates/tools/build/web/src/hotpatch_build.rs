@@ -898,7 +898,14 @@ impl WasmPatchBuilder {
             }
             None => objects,
         };
+        // The statics the base already has: the patch's references go to
+        // the base's storage, never to copies of its own.
+        let bound_dir = self.out_dir.join(format!("patch-{serial}.bound"));
+        let _ = std::fs::remove_dir_all(&bound_dir);
+        let objects = &crate::hotpatch_statics::bind(objects, &self.base.statics, &bound_dir)
+            .context("binding the patch's statics to the running module's")?[..];
         self.link(objects, &linked)?;
+        let _ = std::fs::remove_dir_all(&bound_dir);
         steps.push(("link", started.elapsed()));
         if let Err(e) = checkpoint() {
             let _ = std::fs::remove_file(&linked);

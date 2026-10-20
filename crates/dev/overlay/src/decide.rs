@@ -1020,6 +1020,25 @@ fn Screen() -> Element {
         );
     }
 
+    /// A static inside a function body is bound to the running
+    /// program's by name when patched, so changing its declaration
+    /// rebuilds — while the body's other statements still hot patch.
+    #[test]
+    fn regression_changing_a_static_inside_a_body_rebuilds() {
+        let src = format!(
+            "{APP}\n fn visits() -> u32 {{ let x = 1; static VISITS: AtomicU32 = AtomicU32::new(0); x }}\n"
+        );
+        let (_d, archive) = archive_of(&src);
+        assert_eq!(
+            decide(Some(&archive), &changed(&src.replace("AtomicU32::new(0)", "AtomicU32::new(1)"))),
+            Decision::Rebuild(Reason::ShapeChanged { file: "src/app.rs".into() })
+        );
+        assert_eq!(
+            decide(Some(&archive), &changed(&src.replace("let x = 1;", "let x = 2;"))),
+            Decision::HotPatch(vec!["src/app.rs".into()])
+        );
+    }
+
     // --- const values ------------------------------------------------
 
     /// The CrewForge case: a screen's `const HEADLINE: &str`, rendered

@@ -1702,6 +1702,33 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A hot patch uses the running program's statics** (`build-runtime-server`,
+  `build-web`, `backend-web`, `runtime-macros-parse`). A patch re-emits
+  the edited crate, so it defined every `static` and `thread_local!` of
+  that crate a second time: patched code wrote one copy while the code
+  still running read the other — CrewForge's kiosk stored the report
+  sign-in from a patched screen and its request headers, built by
+  unpatched code, read "Not signed in". The patch's references to a
+  writable static or thread-local the program already has now reach the
+  program's storage (native: rewritten to GOT loads of the program's
+  address and TLV descriptor; web: the definition becomes a `GOT.mem`
+  import, and memory-relative addressing an `idealyst.static` import the
+  page fills, import plan version 3). Only a static the program does not
+  have gets storage of its own; an immutable static keeps a fresh copy,
+  which `stylesheet!`'s cache key relies on. A static whose symbol name
+  could match a different static of the program (a same-named sibling or
+  an enclosing closure added ahead of it) refuses the patch, and editing,
+  adding or removing a `static` or `thread_local!` inside a function body
+  now rebuilds. A thread-local the patch only referenced also reads the
+  program's slot instead of a fresh one, and a native patch no longer
+  re-runs a constructor the program already ran (an `inventory` node
+  pushed twice would make its list a cycle). The native tier also links again
+  for a crate compiled in more than one codegen unit: the stub no longer
+  redefines a function another unit of the patch defines (`duplicate
+  symbol`). A page from before this change refuses a new patch and
+  reloads. See
+  [Statics are the running program's](docs/hot-reload.md#statics-are-the-running-programs).
+
 - **Re-applying a gradient no longer crashes iOS** (`backend-ios-core`,
   `backend-apple-core`, `backend-macos`). Replacing a view's old
   `idealyst_gradient` sublayer removed it while walking the layer's live

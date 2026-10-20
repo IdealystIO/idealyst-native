@@ -55,6 +55,7 @@ pub mod hotpatch_build;
 pub mod hotpatch_fndiff;
 pub mod hotpatch_patch;
 pub mod hotpatch_prepare;
+pub mod hotpatch_statics;
 pub mod hotpatch_wasm;
 pub mod own_glue;
 pub mod rustflags;

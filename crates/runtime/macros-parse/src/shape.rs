@@ -24,7 +24,8 @@
 //!
 //! Every function body in the file — free functions, methods, trait
 //! default bodies, nested `fn` items, closures' enclosing fns — is
-//! replaced by `{}`. Everything else survives verbatim as tokens:
+//! replaced by `{}`, save for the `static`s and `thread_local!`s it
+//! declares (see below). Everything else survives verbatim as tokens:
 //! signatures, generics, where clauses, attributes, items, fields,
 //! variants, `static` initializers, a `const`'s name and type, `use`
 //! statements, macro items at item position. A `const` item's
@@ -54,14 +55,16 @@
 //!   a registration — not to be read), and one whose initializer declares
 //!   items (`= { static S: … ; &S }`), whose items are shape like any
 //!   other.
-//! - A `static` / `thread_local!` initializer is NOT blanked, and an
-//!   edit to one rebuilds. A patch never re-initializes a static's
-//!   storage: for a crate it re-emits, the patch defines a FRESH copy, so
-//!   patched code and the base code still running read different storage;
-//!   for any other crate it imports the base's through `GOT.mem`
-//!   (`build-web`'s `hotpatch_prepare`), so patched code keeps reading
-//!   the base's OLD value. Either way the screen would not match the
-//!   source, and `static mut` is no different.
+//! - A `static` / `thread_local!` is NOT blanked — at item level or
+//!   inside a function body — and an edit to one rebuilds. A patch never
+//!   re-initializes a static's storage: it binds the patch's statics to
+//!   the running program's by symbol name
+//!   (`build_runtime_server::hotpatch::statics`), so patched code keeps
+//!   reading the OLD value, and a changed type would read the old storage
+//!   as the new type. A blanked body therefore keeps the statics it
+//!   declares, in order, and only those; adding, removing or reordering
+//!   one rebuilds too, since a static's symbol counts its same-named
+//!   siblings. `static mut` is no different.
 //! - A doc comment on a function is an attribute, so editing one
 //!   rebuilds. Conservative, and it matches what the overlay tier does
 //!   with the same edit today.
@@ -198,20 +201,54 @@ impl VisitMut for BlankBodies {
         // is about to be discarded with it, and a generic parameter's
         // default could itself contain a block.
         self.visit_signature_mut(&mut f.sig);
-        *f.block = empty_block();
+        *f.block = body_statics(&f.block);
     }
 
     fn visit_impl_item_fn_mut(&mut self, f: &mut syn::ImplItemFn) {
         self.visit_signature_mut(&mut f.sig);
-        f.block = empty_block();
+        f.block = body_statics(&f.block);
     }
 
     fn visit_trait_item_fn_mut(&mut self, f: &mut syn::TraitItemFn) {
         self.visit_signature_mut(&mut f.sig);
-        if f.default.is_some() {
-            f.default = Some(empty_block());
+        if let Some(block) = &f.default {
+            f.default = Some(body_statics(block));
         }
     }
+}
+
+/// What a blanked body keeps: every `static` it declares, at any depth
+/// (nested blocks, closures, nested `fn`s), and every `thread_local!`,
+/// in source order — the rest of the body goes.
+///
+/// A patch binds the statics it defines to the running program's by
+/// symbol name (`build_runtime_server::hotpatch::statics`), and a static
+/// declared in a body is one of them. Its type and initializer must
+/// therefore still be the program's: a new type over the old storage is
+/// memory corruption, and a new initializer is never run (the storage
+/// already holds the old value). Keeping the declarations in the shape
+/// makes editing, adding, removing or reordering one a rebuild, while
+/// every other statement of the body stays a hot patch.
+fn body_statics(block: &syn::Block) -> syn::Block {
+    struct Collect(Vec<syn::Stmt>);
+    impl<'ast> syn::visit::Visit<'ast> for Collect {
+        fn visit_item_static(&mut self, s: &'ast syn::ItemStatic) {
+            self.0.push(syn::Stmt::Item(syn::Item::Static(s.clone())));
+        }
+        fn visit_macro(&mut self, m: &'ast syn::Macro) {
+            if m.path.segments.last().is_some_and(|s| s.ident == "thread_local") {
+                self.0.push(syn::Stmt::Item(syn::Item::Macro(syn::ItemMacro {
+                    attrs: Vec::new(),
+                    ident: None,
+                    mac: m.clone(),
+                    semi_token: None,
+                })));
+            }
+        }
+    }
+    let mut collect = Collect(Vec::new());
+    syn::visit::visit_block(&mut collect, block);
+    syn::Block { brace_token: Default::default(), stmts: collect.0 }
 }
 
 /// What a blanked const initializer becomes: nothing, so the shape
@@ -221,12 +258,6 @@ fn blank_value() -> syn::Expr {
     syn::Expr::Verbatim(proc_macro2::TokenStream::new())
 }
 
-fn empty_block() -> syn::Block {
-    syn::Block {
-        brace_token: Default::default(),
-        stmts: Vec::new(),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -339,6 +370,23 @@ mod tests {
     #[test]
     fn changing_a_static_initializer_changes_the_shape() {
         assert!(!same(BASE, &BASE.replace("LIMIT: u32 = 10", "LIMIT: u32 = 20")));
+    }
+
+    /// A static inside a body is bound to the running program's by name,
+    /// so its declaration is shape like an item-level one: a new type
+    /// would read the old storage as the new type.
+    #[test]
+    fn regression_a_static_inside_a_body_is_shape() {
+        let src = format!(
+            "{BASE}\n fn visits() -> u32 {{ let x = 1; {{ static VISITS: AtomicU32 = AtomicU32::new(0); }} \
+             let f = || {{ thread_local! {{ static T: Cell<u8> = Cell::new(0); }} }}; x }}"
+        );
+        // Every other statement of that body is still body.
+        assert!(same(&src, &src.replace("let x = 1;", "let x = 2; let y = 3;")));
+        assert!(!same(&src, &src.replace("AtomicU32::new(0)", "AtomicU32::new(5)")));
+        assert!(!same(&src, &src.replace("VISITS: AtomicU32 = AtomicU32", "VISITS: AtomicU64 = AtomicU64")));
+        assert!(!same(&src, &src.replace("Cell<u8> = Cell::new(0)", "Cell<u16> = Cell::new(0)")));
+        assert!(!same(&src, &src.replace("let x = 1;", "let x = 1; static NEW: u8 = 0;")));
     }
 
     /// A `static mut` too: same storage problem, and more of it.

@@ -18,8 +18,10 @@
 //!    protocol: bump the counter, set a marker on `window`.
 //! 4. Edit a function body. Poll until the new text is on screen, then
 //!    assert the counter kept its value and the marker is still there —
-//!    a reload would have cleared both — and that a `thread_local`
-//!    signal cache still reads (the rebuild keeps the page's world).
+//!    a reload would have cleared both — that a `thread_local` signal
+//!    cache still reads (the rebuild keeps the page's world), and that the
+//!    patched body reads a `static` the base's click handler wrote (the
+//!    patch uses the page's statics, not copies of its own).
 //!    Then edit a `const HEADLINE: &str`'s value: a hot patch too.
 //! 5. Add a prop to the component. Poll until the page shows it, and
 //!    assert the marker is GONE: a shape change must rebuild and reload.
@@ -64,6 +66,7 @@ fn repo_root() -> PathBuf {
 
 const APP_RS: &str = r#"
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use runtime_core::{component, signal, ui, Element, Signal};
 
@@ -88,17 +91,26 @@ fn Badge(label: String) -> Element {
 // new value.
 const HEADLINE: &str = "headline v1";
 
+// Written by the "+1" handler and read by the edited body: the CrewForge
+// sign-in shape. Clicks made before a patch go through the BASE's
+// handler, so the patched `logic_line` shows them only if it reads the
+// running page's copy of the static rather than one of its own.
+static SIGN_INS: AtomicI32 = AtomicI32::new(0);
+
 // The body this test edits. A plain function: it reaches the screen
 // only because `Root` — redirected through the jump table — calls the
 // patch's copy of it.
 fn logic_line(n: i32) -> String {
-    format!("logic v1 -> {}", n * 2)
+    format!("logic v1 -> {} signed {}", n * 2, SIGN_INS.load(Ordering::SeqCst))
 }
 
 #[component]
 fn Root() -> Element {
     let count = signal(0i32);
-    let bump = move || count.set(count.get() + 1);
+    let bump = move || {
+        SIGN_INS.fetch_add(1, Ordering::SeqCst);
+        count.set(count.get() + 1)
+    };
     ui! {
         view {
             Badge(label = "draft".to_string())
@@ -488,6 +500,13 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
         "a thread_local signal cache did not survive the rebuild: {:?}",
         page.text()
     );
+    // The patched `logic_line` reads the static the base's handler wrote,
+    // not a copy of its own that starts at 0.
+    assert!(
+        page.text().contains("logic v2 -> 6 signed 3"),
+        "the patched code does not read the running page's static: {:?}",
+        page.text()
+    );
 
     // What the page fetched is the STRIPPED patch: pairing is done
     // before the `name` and DWARF sections are dropped, and nothing at
@@ -513,7 +532,7 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
             .find(e => e.textContent.trim() === '+1').click()",
     );
     assert!(
-        page.wait_for_text("logic v2 -> 8", Duration::from_secs(5)),
+        page.wait_for_text("logic v2 -> 8 signed 4", Duration::from_secs(5)),
         "{:?}",
         page.text()
     );
@@ -551,7 +570,7 @@ fn a_body_edit_patches_the_running_page_and_a_shape_edit_reloads_it() {
     std::fs::write(
         &app_rs,
         source.replace(
-            "format!(\"logic v2 -> {}\", n * 2)",
+            "format!(\"logic v2 -> {} signed {}\", n * 2, SIGN_INS.load(Ordering::SeqCst))",
             "web_glue::import! { fn js_triple(n: i32) -> i32 = \"(n) => n * 3\"; }\n    \
              format!(\"glue v3 -> {}\", unsafe { js_triple(n) })",
         ),

@@ -8,16 +8,9 @@
 //!  * `main_addr`: the bin's link-time `_main`/`main` address.
 //!    Combined with the running process's `dlsym("main")` it
 //!    yields the ASLR slide.
-//!  * `tls_init_data`: bytes of the bin's `__thread_data` section.
-//!    Used when the stub needs to synthesize a TLV descriptor for
-//!    a thread-local symbol referenced by the patch (TLS init
-//!    bytes have to come from somewhere; copying the host's keeps
-//!    the patch's initial value identical to what the host had).
-//!  * `tls_init_sizes`: per-`{name}$tlv$init`-symbol
-//!    `(offset_in_tdata, size)`. Mach-O nlist carries no size
-//!    field, so we recover sizes by pair-adjacent-diffing sorted
-//!    TLS symbol offsets — same trick dx uses (`patch.rs:319-345`
-//!    in their tree).
+//!  * `state_symbols`: every symbol in a writable-data, zero-fill or
+//!    thread-local-descriptor section — the statics a patch's own
+//!    copies are bound to ([`super::bind`]).
 //!
 //! The cache mirrors `HotpatchModuleCache` in `dx`'s codebase;
 //! the only structural divergence is that we drop the wasm /
@@ -30,15 +23,14 @@ use anyhow::{Context, Result};
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
 /// Per-symbol metadata cached from the host bin. The `kind` field is
-/// load-bearing: the stub generator dispatches on it to decide
-/// whether a symbol gets a code trampoline (Text), a TLS init-data
-/// stub (Tls), or an absolute-address data symbol (everything else).
+/// load-bearing: the stub generator gives a function (Text) a code
+/// trampoline and everything else an absolute-address symbol, and
+/// `bind` turns the patch's references to a thread-local (Tls) into GOT
+/// loads of the binary's TLV descriptor.
 ///
 /// A code trampoline for a TLS symbol SIGBUS-crashes the sidecar: the
 /// dylib's `ldr x16, [tlv_desc]; blr x16` reads the trampoline's
-/// `movz`/`movk` bytes as a function pointer. The stub generator's
-/// Text/Tls/Data dispatch (mirroring dx's `create_undefined_symbol_stub`)
-/// avoids that, and needs the kind from here to decide.
+/// `movz`/`movk` bytes as a function pointer.
 #[derive(Clone)]
 pub struct CachedSymbol {
     pub address: u64,
@@ -64,12 +56,12 @@ pub struct HostBinCache {
     stripped_to_full: HashMap<String, String>,
     /// Link-time address of `_main` / `main`.
     pub main_addr: u64,
-    /// Raw bytes of `__thread_data`. Empty on platforms with no
-    /// TLS section in the bin (rare; most Rust bins have at least
-    /// one `thread_local!`).
-    pub tls_init_data: Vec<u8>,
-    /// For each `{name}$tlv$init` symbol, `(offset_in_tdata, size)`.
-    pub tls_init_sizes: HashMap<String, (u64, u64)>,
+    /// Every symbol in a section that holds state — writable data,
+    /// zero-fill, thread-local descriptors
+    /// ([`super::bind::is_state_section`]), grouped for pairing: a
+    /// patch's static of the same name is bound to this one
+    /// ([`super::statics::pair`]).
+    pub state_symbols: super::statics::ProgramStatics,
 }
 
 impl HostBinCache {
@@ -82,10 +74,27 @@ impl HostBinCache {
         let mut symbols: HashMap<String, CachedSymbol> = HashMap::new();
         let mut stripped_to_full: HashMap<String, String> = HashMap::new();
         let mut main_addr: u64 = 0;
+        let mut state_sections: HashMap<object::SectionIndex, bool> = HashMap::new();
+        let mut state_symbols: Vec<String> = Vec::new();
         for sym in obj.symbols() {
             let Ok(name) = sym.name() else { continue };
             if name.is_empty() || sym.address() == 0 {
                 continue;
+            }
+            if let Some(index) = sym.section_index() {
+                let is_state = *state_sections.entry(index).or_insert_with(|| {
+                    obj.section_by_index(index).is_ok_and(|s| {
+                        let segment = s.segment_name().ok().flatten().unwrap_or("");
+                        let flags = match s.flags() {
+                            object::SectionFlags::MachO { flags } => flags,
+                            _ => 0,
+                        };
+                        super::bind::is_state_section(segment, s.name().unwrap_or(""), flags)
+                    })
+                });
+                if is_state {
+                    state_symbols.push(name.to_string());
+                }
             }
             symbols.insert(
                 name.to_string(),
@@ -124,61 +133,11 @@ impl HostBinCache {
             );
         }
 
-        // Locate `__thread_data` (Mach-O TLS init section). On ELF
-        // this would be `.tdata`. v1 is Mach-O only; we leave the
-        // ELF path as TODO.
-        let mut tls_init_data: Vec<u8> = Vec::new();
-        let mut tls_section_addr: u64 = 0;
-        let mut tls_section_size: u64 = 0;
-        for section in obj.sections() {
-            let Ok(name) = section.name() else { continue };
-            if name == "__thread_data" || name == ".tdata" {
-                tls_init_data = section.data().unwrap_or_default().to_vec();
-                tls_section_addr = section.address();
-                tls_section_size = section.size();
-                break;
-            }
-        }
-
-        // Build `{name}$tlv$init → (offset, size)`. Mach-O `nlist`
-        // doesn't carry size, so we pair-diff sorted symbol offsets
-        // within the TLS section. The final symbol's size is the
-        // distance to the end of the section.
-        let mut tls_init_sizes: HashMap<String, (u64, u64)> = HashMap::new();
-        if tls_section_size > 0 {
-            let mut tls_syms: Vec<(String, u64)> = Vec::new();
-            for sym in obj.symbols() {
-                let Ok(name) = sym.name() else { continue };
-                if !name.ends_with("$tlv$init") {
-                    continue;
-                }
-                let addr = sym.address();
-                if addr < tls_section_addr
-                    || addr >= tls_section_addr + tls_section_size
-                {
-                    continue;
-                }
-                tls_syms.push((name.to_string(), addr - tls_section_addr));
-            }
-            tls_syms.sort_by_key(|(_, o)| *o);
-            for i in 0..tls_syms.len() {
-                let (name, offset) = tls_syms[i].clone();
-                let next_offset = if i + 1 < tls_syms.len() {
-                    tls_syms[i + 1].1
-                } else {
-                    tls_section_size
-                };
-                let size = next_offset.saturating_sub(offset);
-                tls_init_sizes.insert(name, (offset, size));
-            }
-        }
-
         Ok(Self {
             symbols,
             stripped_to_full,
             main_addr,
-            tls_init_data,
-            tls_init_sizes,
+            state_symbols: super::statics::ProgramStatics::new(state_symbols.iter().map(String::as_str)),
         })
     }
 

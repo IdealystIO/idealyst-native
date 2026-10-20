@@ -253,7 +253,7 @@ fn glue_register_records(section: &JsValue) -> Result<(), web_glue::JsError> {
 /// `build_web::hotpatch_prepare`, which owns the format.
 const PLAN_SECTION: &str = "idealyst.hotpatch";
 #[cfg(target_arch = "wasm32")]
-const PLAN_VERSION: u32 = 2;
+const PLAN_VERSION: u32 = 3;
 
 #[cfg(target_arch = "wasm32")]
 /// Where one import comes from (`build_web::hotpatch_prepare::ImportSource`).
@@ -268,6 +268,11 @@ enum ImportSource {
     Trap(String),
     /// A web-glue import: compiled from the JS in its own name.
     Glue,
+    /// An immutable `i32` global holding this address minus the patch's
+    /// `__memory_base`: a base static the patch's code addresses relative
+    /// to its own memory (`build_web::hotpatch_statics`). Only the page
+    /// knows where the patch's memory starts.
+    MemoryRelative(u32),
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -306,6 +311,7 @@ fn decode_plan(bytes: &[u8]) -> Result<Plan, String> {
             1 => ImportSource::Slot(u32le(&mut at)?),
             2 | 3 => ImportSource::Global { value: u32le(&mut at)?, mutable: tag == 2 },
             5 => ImportSource::Glue,
+            6 => ImportSource::MemoryRelative(u32le(&mut at)?),
             4 => {
                 let len = u32le(&mut at)? as usize;
                 let s = bytes.get(at..at + len).ok_or("the import plan is truncated")?;
@@ -429,6 +435,7 @@ async fn load(
                 f
             }
             ImportSource::Global { value, mutable } => i32_global(*value, *mutable)?,
+            ImportSource::MemoryRelative(address) => i32_global(address.wrapping_sub(memory_base), false)?,
             ImportSource::Glue => {
                 let name = name.as_string().unwrap_or_default();
                 glue_compile_import(&name).map_err(|e| {

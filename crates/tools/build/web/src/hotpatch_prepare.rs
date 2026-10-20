@@ -38,6 +38,11 @@
 //!   `call_indirect`;
 //! * [`ImportSource::Global`] — a `GOT` entry: the base slot of a
 //!   function, or the address of a base `static`;
+//! * [`ImportSource::MemoryRelative`] — the address of a base `static`
+//!   minus the patch's `__memory_base`: a static the patch defines that
+//!   the base already has, which `crate::hotpatch_statics` bound to the
+//!   base's storage. Only the page knows `__memory_base`, so the page
+//!   does the subtraction;
 //! * [`ImportSource::Glue`] — a web-glue import
 //!   (`./__idealyst_glue.js`). Its JS is in its own name
 //!   (`<key>\n<flags>\n<js>`, see `wasm_carve::glue`), so the page
@@ -89,7 +94,7 @@ use crate::hotpatch_patch::BaseIndex;
 pub const PLAN_SECTION: &str = "idealyst.hotpatch";
 /// Bumped whenever [`Plan::encode`]'s layout changes; the page refuses a
 /// version it does not know rather than misreading one.
-pub const PLAN_VERSION: u32 = 2;
+pub const PLAN_VERSION: u32 = 3;
 
 /// Where one import comes from. See the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +104,8 @@ pub enum ImportSource {
     Global { value: u32, mutable: bool },
     Trap(String),
     Glue,
+    /// An immutable `i32` global holding `value - __memory_base`.
+    MemoryRelative(u32),
 }
 
 /// What the page needs to load one patch.
@@ -127,6 +134,7 @@ impl Plan {
     ///   3 global   u32 value   (immutable)
     ///   4 trap     u32 len, UTF-8 reason
     ///   5 glue     (the page compiles the import from its name)
+    ///   6 global   u32 value, minus the patch's __memory_base (immutable)
     /// ```
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(20 + self.imports.len() * 5);
@@ -148,6 +156,10 @@ impl Plan {
                     u32le(&mut out, *value);
                 }
                 ImportSource::Glue => out.push(5),
+                ImportSource::MemoryRelative(value) => {
+                    out.push(6);
+                    u32le(&mut out, *value);
+                }
                 ImportSource::Trap(why) => {
                     out.push(4);
                     u32le(&mut out, why.len() as u32);
@@ -191,6 +203,7 @@ impl Plan {
                     ImportSource::Trap(String::from_utf8_lossy(s).into_owned())
                 }
                 5 => ImportSource::Glue,
+                6 => ImportSource::MemoryRelative(u32le(&mut at)?),
                 other => bail!("unknown plan tag {other}"),
             });
         }
@@ -337,6 +350,24 @@ fn resolve_import(
                 ImportSource::Runtime
             }
         },
+
+        // A static the patch defines and the base has: its references
+        // were rewritten to read this (`hotpatch_statics`).
+        crate::hotpatch_statics::STATIC_MODULE => {
+            match (crate::hotpatch_statics::parse_static_import(name), import.ty) {
+                (Some((symbol, addend)), TypeRef::Global(_)) => match base.data.get(symbol) {
+                    Some(&address) => ImportSource::MemoryRelative((address as i64 + addend) as u32),
+                    None => {
+                        unresolved.push(format!("{}.{name} (no data symbol `{symbol}` in the base)", import.module));
+                        ImportSource::Runtime
+                    }
+                },
+                _ => {
+                    unresolved.push(format!("{}.{name} (not a bound static's global)", import.module));
+                    ImportSource::Runtime
+                }
+            }
+        }
 
         // web-glue: the snippet is in the name, the page compiles it.
         wasm_carve::glue::IMPORT_MODULE => match (
@@ -851,7 +882,7 @@ mod tests {
         let ty = module.types.add(&[], &[]);
         let mut called = Vec::new();
         for (namespace, name) in imports {
-            if namespace.starts_with("GOT.") {
+            if namespace.starts_with("GOT.") || *namespace == crate::hotpatch_statics::STATIC_MODULE {
                 module.add_import_global(namespace, name, ValType::I32, true, false);
             } else {
                 let (func, _) = module.add_import_func(namespace, name, ty);
@@ -889,6 +920,7 @@ mod tests {
             ifunc: ifunc.iter().map(|(n, i)| (n.to_string(), *i)).collect(),
             exports: standard.iter().chain(exports.iter()).map(|s| s.to_string()).collect(),
             data: data.iter().map(|(n, a)| (n.to_string(), *a)).collect(),
+            statics: Default::default(),
             slot_sigs: Default::default(),
             all_funcs: ifunc.iter().map(|(n, _)| n.to_string()).collect(),
         }
@@ -1047,6 +1079,28 @@ mod tests {
             source_of(&prepared, "GOT.mem._RNvCs_3app8GREETING"),
             ImportSource::Global { value: 1_048_612, mutable: true }
         );
+    }
+
+    /// A static the patch defines and the base has
+    /// (`hotpatch_statics`): the base's address, addend included, for the
+    /// page to make relative to the patch's `__memory_base`.
+    #[test]
+    fn a_bound_static_is_the_base_address_relative_to_the_patch_memory() {
+        let raw = patch(&[
+            (crate::hotpatch_statics::STATIC_MODULE, "_RNvCs_3app7SESSION$idealyst_host"),
+            (crate::hotpatch_statics::STATIC_MODULE, "_RNvCs_3app7SESSION$idealyst_host+8"),
+        ]);
+        let prepared = prepare_ok(&raw, &base_with(&[], &[], &[("_RNvCs_3app7SESSION", 1_048_612)]));
+        assert_eq!(
+            source_of(&prepared, "idealyst.static._RNvCs_3app7SESSION$idealyst_host"),
+            ImportSource::MemoryRelative(1_048_612)
+        );
+        assert_eq!(
+            source_of(&prepared, "idealyst.static._RNvCs_3app7SESSION$idealyst_host+8"),
+            ImportSource::MemoryRelative(1_048_620)
+        );
+        let message = format!("{:#}", prepare(&raw, &base_with(&[], &[], &[])).unwrap_err());
+        assert!(message.contains("no data symbol `_RNvCs_3app7SESSION`"), "{message}");
     }
 
     /// The failure that must never be silent: an import nothing can
@@ -1284,18 +1338,20 @@ mod tests {
                 ImportSource::Global { value: 10, mutable: false },
                 ImportSource::Trap("ab".into()),
                 ImportSource::Glue,
+                ImportSource::MemoryRelative(0x0304),
             ],
         };
         let bytes = plan.encode();
         #[rustfmt::skip]
         let expected: Vec<u8> = vec![
-            2,0,0,0,  1,0,0,0,  2,1,0,0,  3,0,0,0,  6,0,0,0,
+            3,0,0,0,  1,0,0,0,  2,1,0,0,  3,0,0,0,  7,0,0,0,
             0,
             1, 7,0,0,0,
             2, 9,0,0,0,
             3, 10,0,0,0,
             4, 2,0,0,0, b'a', b'b',
             5,
+            6, 4,3,0,0,
         ];
         assert_eq!(bytes, expected);
         assert_eq!(Plan::decode(&bytes).unwrap(), plan);

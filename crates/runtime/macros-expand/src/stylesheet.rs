@@ -1063,6 +1063,12 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
             // `LazyKey::lazy_init` at mount. Instead every sheet routes
             // through runtime-core's single shared thread-local registry,
             // keyed by this address — one TLS key for all stylesheets.
+            //
+            // Immutable on purpose: a hot patch binds the WRITABLE statics
+            // it defines to the running program's, but an immutable one
+            // gets a fresh address in every patch — so a patched sheet
+            // misses this cache and is built from its new rules. A
+            // `Cell`/atomic key here would be bound and serve the old sheet.
             static __SHEET_KEY: u8 = 0;
             ::runtime_core::cached_stylesheet(
                 &__SHEET_KEY as *const u8 as usize,

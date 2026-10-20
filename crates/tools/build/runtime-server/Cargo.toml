@@ -26,6 +26,10 @@ object = { version = "0.39", default-features = false, features = ["read", "writ
 subsecond-types = "0.7"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Groups a patch's statics by demangled path to tell a static the
+# running program has from one whose name only looks like it
+# (`hotpatch::statics`).
+rustc-demangle = "0.1"
 # `nice` for background replays (`replay::run_rustc_emit_obj_background`).
 libc = "0.2"
 
