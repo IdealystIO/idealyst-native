@@ -52,7 +52,7 @@ use idea_theme::theme::IdeaThemeRef;
 // The `icon` primitive builder — the Select trigger's chevron.
 use runtime_core::icon;
 use crate::stylesheets::{
-    SelectOption as SelectOptionStyle, SelectOptionBody, SelectOptionDescription, SelectTrigger,
+    SelectOption as SelectOptionStyle, SelectOptionBody, SelectOptionDescription, SelectOptionLabel, SelectTrigger,
 };
 
 /// Full-bleed, fully-transparent backdrop for the open menu: it catches the
@@ -226,25 +226,34 @@ impl SelectOption {
 /// The text content of a menu row: the label alone, or — when the option
 /// has a description — a column of the label over the muted description.
 /// Shared by `Select`'s and `Autocomplete`'s rows so both draw the second
-/// line identically. `selected` is read live by the description's style:
-/// the committed row paints solid primary, where the muted color would
-/// lose contrast, so the description takes the row's solid text color
-/// there instead.
+/// line identically. `selected` is read live by both texts' styles: the
+/// committed row paints solid primary, so the label and description take
+/// the solid text color there. Each text carries its own color because
+/// native text widgets don't inherit the row's.
 pub(crate) fn option_text(
     label: Reactive<String>,
     description: Option<Reactive<String>>,
     selected: impl Fn() -> bool + 'static,
 ) -> Element {
+    let selected = Rc::new(selected);
+    let active = {
+        let selected = selected.clone();
+        move || if selected() { "on" } else { "off" }.to_string()
+    };
+    let label_active = active.clone();
     // `label` is a `Reactive<String>` — routed through `IntoTextSource`
     // (Static→Static, Dynamic→Bound) so a live label re-paints its row.
-    let label = runtime_core::text(label).into_element();
+    let label = runtime_core::text(label)
+        .with_style(move || {
+            StyleApplication::new(SelectOptionLabel::sheet()).with("active", label_active())
+        })
+        .into_element();
     let Some(description) = description else {
         return label;
     };
     let description = runtime_core::text(description)
         .with_style(move || {
-            StyleApplication::new(SelectOptionDescription::sheet())
-                .with("active", if selected() { "on" } else { "off" }.to_string())
+            StyleApplication::new(SelectOptionDescription::sheet()).with("active", active())
         })
         .into_element();
     runtime_core::view(vec![label, description])
@@ -680,6 +689,61 @@ mod tests {
             let (label, desc) = row_texts(bare);
             assert_eq!(label.as_deref(), Some("Plain"));
             assert!(desc.is_none(), "no description → the label alone, no second line");
+        });
+    }
+
+    /// The resolved style on a menu row's LABEL text (the bare text, or the
+    /// first child of the `[label, description]` body).
+    fn row_label_style(row: Element) -> Rc<runtime_core::StyleRules> {
+        let P::Pressable { mut children, .. } = classify(row) else {
+            panic!("a menu row is a pressable");
+        };
+        let label = match classify(children.remove(0)) {
+            P::Text { style, .. } => style,
+            P::View { mut children, .. } => match classify(children.remove(0)) {
+                P::Text { style, .. } => style,
+                _ => panic!("the body's first child is the label text"),
+            },
+            _ => panic!("a row body is a text or a [label, description] view"),
+        };
+        label.expect("the label carries its own style").resolve()
+    }
+
+    /// Regression: on iOS the committed row's label rendered black on a
+    /// black primary fill. The row's solid text color was set only on the
+    /// pressable, which reaches the label through the CSS cascade on web
+    /// but not on native (UILabel doesn't inherit color). The label must
+    /// carry the color itself — committed and resting.
+    #[test]
+    fn regression_ios_select_committed_label_black_on_primary() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            let value = runtime_core::signal("a".to_string());
+            let row = |id: &str, desc: Option<&str>| {
+                menu_row(
+                    id.to_string(),
+                    Reactive::Static(id.to_uppercase()),
+                    desc.map(|d| Reactive::Static(d.to_string())),
+                    value,
+                    Rc::new(|_| {}),
+                    Rc::new(|| {}),
+                )
+            };
+            let solid = Some(tokens().intent.primary.solid_text().resolve());
+            let plain = Some(tokens().color.text().resolve());
+            let color = |r: &Rc<runtime_core::StyleRules>| r.color.clone().map(|c| c.resolve());
+
+            assert_eq!(color(&row_label_style(row("a", None))), solid,
+                "the committed bare label takes the solid text color");
+            assert_eq!(color(&row_label_style(row("a", Some("note")))), solid,
+                "the committed described label takes the solid text color");
+            assert_eq!(color(&row_label_style(row("b", None))), plain,
+                "an uncommitted label is the plain text color");
+            assert_eq!(
+                row_label_style(row("b", None)).font_size.clone().map(|f| f.resolve()),
+                Some(tokens().typography.body_size().resolve()),
+                "the label sets the row's body size itself"
+            );
         });
     }
 

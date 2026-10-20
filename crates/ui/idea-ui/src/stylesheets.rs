@@ -1053,6 +1053,31 @@ stylesheet! {
     }
 }
 
+// `SelectOptionLabel` is the row's label text. The row (`SelectOption`)
+// sets `font_size` and `color` on the pressable, which reaches the label
+// only through the CSS cascade: native text widgets (UILabel / TextView /
+// NSTextField) don't inherit from their parent, so without its own rules
+// the label on the committed solid-primary row kept the plain text color
+// on iOS — black on a black primary fill. Its `active` variant tracks the
+// row's `on` (solid) state; `cursor`/hover rows keep the plain text color.
+
+stylesheet! {
+    pub SelectOptionLabel<IdeaThemeRef> {
+        base(t) {
+            font_size: t.typography.body_size(),
+            color: t.color.text(),
+        }
+        variant active {
+            #[default]
+            off(t) { color: t.color.text() }
+            on(t)  { color: t.intent.primary.solid_text() }
+        }
+        transitions {
+            color: 150ms EaseOut,
+        }
+    }
+}
+
 stylesheet! {
     pub SelectOptionDescription<IdeaThemeRef> {
         base(t) {

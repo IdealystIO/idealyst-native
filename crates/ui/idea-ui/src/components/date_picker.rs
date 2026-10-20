@@ -50,7 +50,9 @@ use crate::date::{
     format_date_with, format_datetime_with, CivilDate, CivilDateTime, CivilTime, DateLabels,
     Weekday,
 };
-use crate::stylesheets::{SelectMenu, SelectOption as SelectOptionStyle, SelectTrigger};
+use crate::stylesheets::{
+    SelectMenu, SelectOption as SelectOptionStyle, SelectOptionLabel, SelectTrigger,
+};
 use idea_theme::tokens;
 
 /// Trailing trigger glyph — a calendar. Inline `IconData` like the
@@ -153,7 +155,10 @@ pub(crate) fn anchored_panel(
 /// A quiet footer action row (`Clear`), `SelectOption`-styled so it
 /// reads as part of the menu family.
 fn footer_action(label: String, on_press: impl Fn() + 'static) -> Element {
-    pressable(vec![text(label).into_element()], on_press)
+    // The label carries its own font/color: native text doesn't inherit the
+    // row's.
+    let label = text(label).with_style(StyleApplication::new(SelectOptionLabel::sheet()));
+    pressable(vec![label.into_element()], on_press)
         .with_style(StyleApplication::new(SelectOptionStyle::sheet()))
         .into_element()
 }
