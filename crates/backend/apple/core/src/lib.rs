@@ -147,6 +147,11 @@ pub mod shadow_layer;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod border_dash_layer;
 
+/// Two-phase removal of the backend's tagged sublayers (`idealyst_gradient`),
+/// safe against `CALayer.sublayers` being a live array.
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod sublayers;
+
 /// CSS `pointer-events` hit-test verdict shared by the UIKit + AppKit
 /// hit-test overrides. NOT OS-gated — pure `runtime_shared` logic,
 /// host-testable, so both backends decline/allow hits identically

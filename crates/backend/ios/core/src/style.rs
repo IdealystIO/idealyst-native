@@ -167,31 +167,9 @@ fn build_gradient_layer(
     g: &runtime_shared::Gradient,
 ) -> Option<(Retained<NSObject>, Vec<[f32; 4]>)> {
     // Remove any previously-installed `idealyst_gradient` sublayer
-    // so a re-apply doesn't stack layers. We pay the sublayer walk
-    // only when there IS a gradient — the common no-gradient path
-    // skips this entirely (caller short-circuits before calling).
-    unsafe {
-        let sublayers_ptr: *mut NSObject = msg_send![layer, sublayers];
-        if !sublayers_ptr.is_null() {
-            let count: usize = msg_send![sublayers_ptr, count];
-            for i in 0..count {
-                let sub_ptr: *mut NSObject =
-                    msg_send![sublayers_ptr, objectAtIndex: i];
-                if sub_ptr.is_null() {
-                    continue;
-                }
-                let name_ptr: *mut objc2_foundation::NSString =
-                    msg_send![sub_ptr, name];
-                if name_ptr.is_null() {
-                    continue;
-                }
-                let name_ref = &*name_ptr;
-                if name_ref.to_string() == "idealyst_gradient" {
-                    let _: () = msg_send![sub_ptr, removeFromSuperlayer];
-                }
-            }
-        }
-    }
+    // so a re-apply doesn't stack layers. Two-phase (see
+    // `backend_apple_core::sublayers`): `sublayers` is a live array.
+    backend_apple_core::sublayers::remove_named_sublayers(layer, "idealyst_gradient");
 
     // Sort stops by ascending offset, then snapshot the resolved
     // sRGB colors so the caller can keep mutating them per frame.

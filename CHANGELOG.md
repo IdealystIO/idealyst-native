@@ -1691,6 +1691,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Re-applying a gradient no longer crashes iOS** (`backend-ios-core`,
+  `backend-apple-core`, `backend-macos`). Replacing a view's old
+  `idealyst_gradient` sublayer removed it while walking the layer's live
+  `sublayers` array, so the walk ran past the shrunk end and Core
+  Animation aborted (`-[CALayerArray objectAtIndex:]`). A theme re-render
+  that re-applied a gradient sheet hit it, and `idea-ui-docs` crashed at
+  launch on iPad. Both Apple backends now share
+  `backend_apple_core::sublayers::remove_named_sublayers`, which collects
+  the matches before detaching them.
+- **The selected Select row's label is readable on native** (`idea-ui`).
+  The row set its solid-primary text color on the pressable, which only
+  web's CSS cascade passes to the label; on iOS the label kept the plain
+  text color, black on a black primary. Select, Autocomplete and the
+  DatePicker footer rows now style their label text directly
+  (`SelectOptionLabel`).
 - **A Tooltip no longer moves its trigger** (`idea-ui`). The wrapper
   around the trigger hugged with `align_self: Center`, which overrides
   the parent's `align_items`: in a column the trigger was centred

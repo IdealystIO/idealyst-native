@@ -41,6 +41,12 @@ harness = false
 name = "border_dash_calayer"
 harness = false
 
+# Live-CALayer coverage for `sublayers::remove_named_sublayers` (gradient
+# re-apply). `harness = false` for the same main-thread reason as above.
+[[test]]
+name = "sublayers_calayer"
+harness = false
+
 [dependencies]
 # `embed-font-bytes`: CoreText registers fonts from their raw bytes
 # (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the
