@@ -530,11 +530,16 @@ impl Host for WindowsBackend {
     }
 
     fn clear_children(&mut self, node: &Self::Node) {
-        // Delegates to the inherent body, which drops each child subtree
-        // (`remove_subtree`: node meta, Taffy node, and any real control
-        // HWND). Without it every reactive rebuild would leak the old
-        // subtree and paint it under the new one.
+        // Detach only: the navigator re-inserts a cleared screen. See the
+        // inherent body.
         WindowsBackend::clear_children(self, node)
+    }
+
+    /// Free a discarded subtree (node meta, Taffy node, control HWNDs).
+    /// Reactive regions call this for every branch they throw away, so a
+    /// detach-only `clear_children` leaks nothing.
+    fn release_subtree(&mut self, node: &Self::Node) {
+        WindowsBackend::release_subtree(self, node)
     }
 
     /// A layout- and hit-transparent node: this backend's

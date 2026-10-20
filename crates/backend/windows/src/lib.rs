@@ -749,6 +749,9 @@ pub struct WindowsBackend {
     command_handlers: HashMap<u16, CommandEntry>,
     /// Edit controls' notifications, by control id.
     edits: HashMap<u16, EditEntry>,
+    /// Roots of subtrees `clear_children` detached and nothing has
+    /// re-inserted or released yet.
+    detached: HashSet<u64>,
     /// Text areas' `(min_rows, max_rows)`, for re-fitting after a value
     /// written from code.
     text_area_rows: HashMap<u64, (Option<u32>, Option<u32>)>,
@@ -958,6 +961,7 @@ impl WindowsBackend {
             next_control_id: 100,
             command_handlers: HashMap::new(),
             edits: HashMap::new(),
+            detached: HashSet::new(),
             text_area_rows: HashMap::new(),
             field_keys: HashMap::new(),
             children: HashMap::new(),
@@ -1646,6 +1650,7 @@ impl WindowsBackend {
         // and went with the recursion above.
         self.virtualizers.remove(&id);
         self.text_area_rows.remove(&id);
+        self.detached.remove(&id);
         if let Some(meta) = self.nodes.remove(&id) {
             if let Some(cid) = meta.control_id {
                 self.command_handlers.remove(&cid);
@@ -2683,21 +2688,85 @@ impl WindowsBackend {
         }
         self.layout.add_child(parent_layout, child_layout);
         self.children.entry(parent.id).or_default().push(child.id);
+        // A subtree coming back after `clear_children` detached it (a
+        // stack screen on pop): its native controls show again.
+        if self.detached.remove(&child.id) {
+            self.show_detached(child.id, true);
+        }
         // No HWND re-parenting: painted nodes have no windows, and
         // native controls are direct children of the host, positioned
         // in absolute window coordinates by `layout_pass`.
         self.layout_dirty = true;
     }
 
+    /// DETACH every child (`Host::clear_children`): the subtree is kept,
+    /// because the navigator re-inserts the same node later — a stack
+    /// screen under a pushed one comes back on pop without its route
+    /// re-running. Freeing here deleted that screen's nodes, so the pop
+    /// re-inserted an empty root and the window went blank. Discarded
+    /// subtrees are freed by [`Self::release_subtree`]. Detached native
+    /// controls are hidden: they are windows and would keep drawing.
     fn clear_children(&mut self, node: &WindowsNode) {
         let Some(child_ids) = self.children.remove(&node.id) else {
             return;
         };
+        let parent_layout = self.layout_for_id.get(&node.id).copied();
         for child_id in child_ids {
-            self.remove_subtree(child_id);
+            if let (Some(p), Some(c)) = (parent_layout, self.layout_for_id.get(&child_id).copied()) {
+                self.layout.remove_child(p, c);
+            }
+            self.detached.insert(child_id);
+            self.show_detached(child_id, false);
         }
         self.layout_dirty = true;
         self.invalidate();
+    }
+
+    /// `Host::release_subtree`: the subtree is discarded (a popped or
+    /// evicted screen, a swapped-out reactive branch) — free it.
+    pub(crate) fn release_subtree(&mut self, node: &WindowsNode) {
+        self.detached.remove(&node.id);
+        let id = node.id;
+        for kids in self.children.values_mut() {
+            kids.retain(|k| *k != id);
+        }
+        self.remove_subtree(id);
+        self.layout_dirty = true;
+        self.invalidate();
+    }
+
+    /// Hide (`shown == false`) or re-show a detached subtree's native
+    /// children: control HWNDs via `ShowWindow`, graphics visuals via
+    /// their placement. Re-showing skips anything under a portal-hidden
+    /// node, and lets the next positioning walk place the visuals.
+    fn show_detached(&mut self, root: u64, shown: bool) {
+        use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let Some(meta) = self.nodes.get(&id) else { continue };
+            if shown && meta.hidden {
+                continue;
+            }
+            if let Some(hwnd) = meta.hwnd().filter(|h| !h.is_invalid()) {
+                unsafe {
+                    let _ = ShowWindow(hwnd, if shown { SW_SHOW } else { SW_HIDE });
+                }
+            }
+            if let Some(st) = self.graphics.get_mut(&id) {
+                st.visible.store(shown, std::sync::atomic::Ordering::Relaxed);
+                st.last_placement = None;
+                if !shown {
+                    if let Some(comp) = &self.comp {
+                        let hidden = dcomp::visual_placement((0.0, 0.0, 0.0, 0.0), dcomp::ClipChain::default(), true);
+                        comp.apply_placement(&st.visuals, &hidden);
+                        comp.commit();
+                    }
+                }
+            }
+            if let Some(kids) = self.children.get(&id) {
+                stack.extend(kids.iter().copied());
+            }
+        }
     }
 
     fn update_text(&mut self, node: &WindowsNode, content: &str) {
@@ -4724,6 +4793,48 @@ mod capability_tests {
         assert_eq!(keys.borrow().as_slice(), ["Enter"]);
         let other = MSG { hwnd: HWND(std::ptr::null_mut()), ..msg };
         assert!(!field_keys::pre_dispatch(&cell, &other), "another window's keys are not the field's");
+    }
+
+    /// Popping a stack screen left the window blank: `clear_children`
+    /// FREED the outlet's children, so the screen under a pushed one lost
+    /// its nodes and the pop re-inserted an empty root. It now detaches
+    /// (hiding the subtree's controls) and the navigator's
+    /// `release_subtree` frees what is really discarded.
+    #[test]
+    fn regression_stack_pop_brings_back_the_screen_under_it() {
+        use runtime_scene::Host;
+        use runtime_vocabulary::caps::{TextOps, ViewOps};
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE};
+        // The control's own WS_VISIBLE (what ShowWindow sets); the test
+        // host is never shown, so IsWindowVisible would read false.
+        let shows = |h: HWND| unsafe { GetWindowLongW(h, GWL_STYLE) } as u32 & WS_VISIBLE.0 != 0;
+        let mut b = WindowsBackend::new(host());
+        let a11y = AccessibilityProps::default();
+        let mut outlet = ViewOps::create_view(&mut b, &a11y);
+        b.root_id = Some(outlet.id);
+        // Root screen: a label and a text field (a native control).
+        let mut root_screen = ViewOps::create_view(&mut b, &a11y);
+        let label = TextOps::create_text(&mut b, "Root", &a11y);
+        let (field, _) = input(&mut b, &Rc::default());
+        Host::insert(&mut b, &mut root_screen, label.clone());
+        Host::insert(&mut b, &mut root_screen, field.clone());
+        Host::insert(&mut b, &mut outlet, root_screen.clone());
+
+        // Push: the outlet swaps to the detail screen.
+        let detail = ViewOps::create_view(&mut b, &a11y);
+        Host::clear_children(&mut b, &outlet);
+        Host::insert(&mut b, &mut outlet, detail.clone());
+        assert!(b.nodes.contains_key(&label.id), "the covered screen is kept");
+        assert!(!shows(field.hwnd), "its controls are hidden while covered");
+
+        // Pop: back to the root screen, and the detail screen is freed.
+        Host::clear_children(&mut b, &outlet);
+        Host::insert(&mut b, &mut outlet, root_screen.clone());
+        Host::release_subtree(&mut b, &detail);
+        assert!(b.node_is_shown(label.id), "the root screen paints again");
+        assert!(shows(field.hwnd), "its controls show again");
+        assert!(!b.nodes.contains_key(&detail.id), "the popped screen is freed");
+        assert_eq!(b.children[&outlet.id], [root_screen.id]);
     }
 
     /// `open_url` was a no-op: the backend installed no opener.

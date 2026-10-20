@@ -231,9 +231,11 @@ impl WindowsBackend {
         let mut n = NativeNode::leaf(class, frame);
         let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
         n.set(keys::HIDDEN, Some(NativeValue::Flag(!visible)));
-        if let Some(text) = unsafe { window_text(hwnd) } {
-            n.set(keys::TEXT, Some(NativeValue::Text(text)));
-        }
+        // Every control has a window text, empty included (an empty field
+        // shows ""), in the framework's LF form: a multi-line edit holds
+        // CRLF.
+        let text = unsafe { window_text(hwnd) }.unwrap_or_default().replace("\r\n", "\n");
+        n.set(keys::TEXT, Some(NativeValue::Text(text)));
         // The control's font as GDI realized it, in device px → logical.
         let hfont = HFONT(unsafe { SendMessageW(hwnd, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))) }.0 as _);
         if !hfont.is_invalid() {
@@ -372,5 +374,39 @@ mod tests {
         }
         assert!(matches!(n.props.get(keys::FONT_SIZE), Some(NativeValue::Length(s)) if *s == 18.0));
         assert!(matches!(n.props.get(keys::FONT_WEIGHT), Some(NativeValue::Number(w)) if *w == 400.0));
+    }
+
+    /// The system check reads a field's text back from the widget. An
+    /// empty field reported no text at all (an empty window text was
+    /// skipped), and a text area reported the edit's CRLF line breaks
+    /// where every other backend reports LF.
+    #[test]
+    fn regression_controls_report_empty_text_and_lf_line_breaks() {
+        use runtime_vocabulary::caps::TextInputOps;
+        let host = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+                windows::core::w!("STATIC"),
+                windows::core::w!("introspect-test"),
+                windows::Win32::UI::WindowsAndMessaging::WS_POPUP,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window");
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let field = TextInputOps::create_text_input(&mut b, "", None, Rc::new(|_| {}), None, None, false, &a11y);
+        let area = TextInputOps::create_text_area(&mut b, "", None, true, None, None, Rc::new(|_| {}), None, &a11y);
+        TextInputOps::update_text_area_value(&mut b, &area, "two\nlines");
+        let text = |hwnd| b.read_control(hwnd).props.get(keys::TEXT).cloned();
+        assert_eq!(text(field.hwnd), Some(NativeValue::Text(String::new())), "an empty field shows \"\"");
+        assert_eq!(text(area.hwnd), Some(NativeValue::Text("two\nlines".into())));
     }
 }

@@ -157,6 +157,8 @@ fn idea_ui_suite() -> robot_e2e::Suite {
             // Back to root (async pop).
             .act(|p: &Page| p.get_by_test_id("comp-back").click())
             .poll(|p: &Page| expect(&p.get_by_test_id("components-marker")).not_to_be_visible())
+            // The screen under it comes back (a pop must re-show it, not drop it).
+            .poll(|p: &Page| expect(&p.get_by_test_id("title")).to_be_visible())
             .build()],
     )
 }
@@ -174,6 +176,8 @@ fn navigation_suite() -> robot_e2e::Suite {
             .act(|p: &Page| expect(&p.get_by_test_id("detail-marker")).to_be_visible())
             .act(|p: &Page| p.get_by_test_id("back").click())
             .poll(|p: &Page| expect(&p.get_by_test_id("detail-marker")).not_to_be_visible())
+            // The screen under it comes back (a pop must re-show it, not drop it).
+            .poll(|p: &Page| expect(&p.get_by_test_id("title")).to_be_visible())
             .build()],
     )
 }
@@ -260,6 +264,8 @@ fn media_suite() -> robot_e2e::Suite {
             .act(|p: &Page| expect(&p.get_by_test_id("menu-panel")).not_to_be_visible())
             .act(|p: &Page| p.get_by_test_id("media-back").click())
             .poll(|p: &Page| expect(&p.get_by_test_id("media-marker")).not_to_be_visible())
+            // The screen under it comes back (a pop must re-show it, not drop it).
+            .poll(|p: &Page| expect(&p.get_by_test_id("title")).to_be_visible())
             .build()],
     )
 }
@@ -327,6 +333,8 @@ fn capabilities_suite() -> robot_e2e::Suite {
             flow("close the system check")
                 .act(|p: &Page| p.get_by_test_id("check-back").click())
                 .poll(|p: &Page| expect(&p.get_by_test_id("check-marker")).not_to_be_visible())
+                // The screen under it comes back (a pop must re-show it, not drop it).
+                .poll(|p: &Page| expect(&p.get_by_test_id("title")).to_be_visible())
                 .build(),
         ],
     )

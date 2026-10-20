@@ -13,13 +13,25 @@
 //! pixels. Posting, not sending, puts them through the host's message loop
 //! — its pre-dispatch hooks (the app pointer sink) and then the window
 //! procedure — exactly as input from the system queue.
+//!
+//! A hover is the exception: it MOVES the cursor (`SetCursorPos`) instead
+//! of posting a move. Hover depends on where Windows thinks the cursor is:
+//! the host arms `TrackMouseEvent(TME_LEAVE)` on a move, and Windows
+//! answers with an immediate `WM_MOUSELEAVE` when the real cursor is not
+//! over the window, clearing the hover a posted move just set. Moving the
+//! cursor makes Windows generate the move, the leave tracking and
+//! `WM_SETCURSOR` (the `cursor` style) exactly as for a user's mouse. It
+//! moves the machine's pointer, as a test driver's mouse does.
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::MapWindowPoints;
 use windows::Win32::UI::WindowsAndMessaging::{
-    ChildWindowFromPointEx, PostMessageW, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE,
+    ChildWindowFromPointEx, PostMessageW, SetCursorPos, CWP_SKIPINVISIBLE, CWP_SKIPTRANSPARENT,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
 };
+
+/// Marks a step that moves the cursor rather than posting a message.
+const HOVER: u32 = 0;
 
 use runtime_vocabulary::caps::{NativeInjection, PointerStep, PointerStepPhase};
 
@@ -70,7 +82,7 @@ impl WindowsBackend {
                     PointerStepPhase::Down => (WM_LBUTTONDOWN, MK_LBUTTON, pt),
                     PointerStepPhase::Move => (WM_MOUSEMOVE, MK_LBUTTON, pt),
                     PointerStepPhase::Up => (WM_LBUTTONUP, 0, pt),
-                    PointerStepPhase::Hover => (WM_MOUSEMOVE, 0, pt),
+                    PointerStepPhase::Hover => (HOVER, 0, pt),
                 }
             })
             .collect();
@@ -81,6 +93,14 @@ impl WindowsBackend {
             // gives it the moves and the release.
             let mut captured: Option<HWND> = None;
             for (msg, keys, pt) in messages {
+                if msg == HOVER {
+                    let mut screen = pt;
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::ClientToScreen(host, &mut screen);
+                        SetCursorPos(screen.x, screen.y).map_err(|e| format!("SetCursorPos: {e}"))?;
+                    }
+                    continue;
+                }
                 let (hwnd, local) = match captured {
                     Some(h) => {
                         let mut p = [pt];
