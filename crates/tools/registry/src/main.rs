@@ -10,9 +10,17 @@
 //! else can reach that case: the plan is driven by "did this directory
 //! change?", and correcting recorded metadata never changes a directory.
 //!
+//! The plan also runs an API check (`api.rs`) on every crate that changed:
+//! it parses the crate's source at its last release and at HEAD, and a
+//! breaking change — a field added to an all-pub struct, a variant added to
+//! an exhaustive enum, a removed `pub` item — raises the crate to a major
+//! whatever its commit subjects said. `--skip-api-check <CRATE>` waives it
+//! for a false positive.
+//!
 //! The default host is set by `--bucket` / `IDEALYST_REGISTRY_BUCKET` and
 //! `--distribution-id` / `IDEALYST_REGISTRY_DISTRIBUTION`.
 
+mod api;
 mod deploy;
 mod index;
 mod manifest;
@@ -146,6 +154,12 @@ struct RemoteArgs {
     /// an error, not a silent downgrade.
     #[arg(long = "bump", value_name = "CRATE=LEVEL")]
     bump: Vec<String>,
+    /// Report this crate's API-check findings without raising it to a
+    /// major. For a false positive only — a `pub` item the crate documents
+    /// as internal, a sealed trait gaining a method. The findings still
+    /// print, so the waiver is visible in the plan.
+    #[arg(long = "skip-api-check", value_name = "CRATE")]
+    skip_api_check: Vec<String>,
     /// The registry's name as consumers spell it in `.cargo/config.toml`.
     #[arg(long, env = "IDEALYST_REGISTRY_NAME", default_value = "idealyst")]
     registry_name: String,
@@ -600,6 +614,12 @@ struct Release {
     forced: Forced,
     /// `--bump` raised this level past what the commit subjects earned.
     overridden: bool,
+    /// Breaking public-API changes the API check found since the last
+    /// release (see `api.rs`). Non-empty raises the crate to a major unless
+    /// `api_waived`.
+    api: Vec<String>,
+    /// `--skip-api-check <CRATE>`: the findings are reported, not acted on.
+    api_waived: bool,
 }
 
 /// A crate can be dragged into a release without a diff of its own.
@@ -645,6 +665,8 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
                     from: None,
                     forced: Forced::No,
                     overridden: false,
+                    api: Vec::new(),
+                    api_waived: false,
                 },
             );
             continue;
@@ -663,9 +685,35 @@ fn plan(ws: &Workspace, r: &RemoteArgs) -> Result<BTreeMap<String, Release>> {
                 from: Some(from),
                 forced: Forced::No,
                 overridden: false,
+                api: Vec::new(),
+                api_waived: false,
             },
         );
     }
+
+    // The API check runs on crates that earned a release of their own; a
+    // forced or dragged-in crate has no source change to inspect. Before
+    // `--bump`, so the override sees the level the API demands.
+    for name in &r.skip_api_check {
+        if !ws.packages.contains_key(name) {
+            bail!("--skip-api-check {name}: no such workspace member");
+        }
+    }
+    let mut breaks = BTreeMap::new();
+    for (name, rel) in plan.iter() {
+        if rel.initial || rel.forced != Forced::No {
+            continue;
+        }
+        let p = &ws.packages[name];
+        let Some(lib) = &p.lib_path else { continue };
+        let Some(prev) = state.crates.get(name) else { continue };
+        let found = api::check(&ws.root, &p.rel_dir, lib, &prev.commit)
+            .with_context(|| format!("API check for {name} (waive with --skip-api-check {name})"))?;
+        if !found.is_empty() {
+            breaks.insert(name.clone(), found);
+        }
+    }
+    apply_api_breaks(&mut plan, breaks, &r.skip_api_check);
 
     // `--force` first, so `--bump X=major` can raise a forced crate: an
     // unchanged crate whose published release was the wrong LEVEL (idea-ui-nav
@@ -744,10 +792,42 @@ fn drag_in_dependents_of_majors(
                 from,
                 forced: Forced::DependencyMajor,
                 overridden: false,
+                api: Vec::new(),
+                api_waived: false,
             },
         );
     }
     Ok(())
+}
+
+/// Raise every crate with a breaking public-API change to a major.
+///
+/// The commit subject is a sentence; the source is the contract. A field
+/// added to an all-pub struct under `feat:` (`table` 3.1.0's
+/// `TableCellProps::column`) reads as a minor, and a minor is exactly what
+/// `cargo update` pulls under a dependent's caret requirement — so the
+/// dependent's struct literal stops compiling in a build nobody changed.
+/// `api.rs` says what counts. A crate in `waived` keeps the level its
+/// subjects earned and carries the findings for the report only.
+fn apply_api_breaks(
+    plan: &mut BTreeMap<String, Release>,
+    breaks: BTreeMap<String, Vec<String>>,
+    waived: &[String],
+) {
+    for (name, found) in breaks {
+        let Some(rel) = plan.get_mut(&name) else { continue };
+        rel.api = found;
+        if waived.contains(&name) {
+            rel.api_waived = true;
+            continue;
+        }
+        if rel.bump < Bump::Major {
+            if let Some(from) = &rel.from {
+                rel.bump = Bump::Major;
+                rel.to = Bump::Major.apply(from);
+            }
+        }
+    }
 }
 
 /// Raise the bump level of crates named by `--bump CRATE=LEVEL`.
@@ -785,8 +865,8 @@ fn apply_bump_overrides(plan: &mut BTreeMap<String, Release>, specs: &[String]) 
         })?;
         if want < rel.bump {
             bail!(
-                "--bump {spec}: {name} earned a {} from its commit subjects; \
-                 this flag raises a level, it does not lower one",
+                "--bump {spec}: {name} earned a {} from its commit subjects or the API \
+                 check; this flag raises a level, it does not lower one",
                 rel.bump.label()
             );
         }
@@ -846,6 +926,8 @@ fn force_into_plan(
                 from,
                 forced: Forced::Requested,
                 overridden: false,
+                api: Vec::new(),
+                api_waived: false,
             },
         );
     }
@@ -868,7 +950,15 @@ fn report(ws: &Workspace, plan: &BTreeMap<String, Release>) {
         };
         let label = if r.initial { "initial" } else { r.bump.label() };
         let why = if r.overridden { "  (--bump)" } else { why };
+        let why = match (r.api.is_empty(), r.api_waived) {
+            (true, _) => why,
+            (false, false) => "  (API break)",
+            (false, true) => "  (API check waived)",
+        };
         println!("  {:<28} {:>7}  {} -> {}{}", name, label, from, r.to, why);
+        for finding in &r.api {
+            println!("  {:<28}          - {finding}", "");
+        }
     }
     println!("\n{} crates unchanged and NOT republished — consumers keep their cached builds",
              total - plan.len());
@@ -1209,6 +1299,7 @@ mod tests {
             deps: Default::default(),
             dev_deps: Default::default(),
             has_lib: true,
+            lib_path: None,
             also_watch: Vec::new(),
             prepackage: None,
         };
@@ -1226,6 +1317,8 @@ mod tests {
             to: semver::Version::new(to.0, to.1, to.2),
             forced: Forced::No,
             overridden: false,
+            api: Vec::new(),
+            api_waived: false,
         };
         let plan = BTreeMap::from([
             ("runtime-shared".to_string(), patch((1, 7, 0), (1, 7, 1))),
@@ -1238,6 +1331,7 @@ mod tests {
             from_scratch: false,
             force: vec![],
             bump: vec![],
+            skip_api_check: vec![],
             registry_name: "idealyst".into(),
         };
 
@@ -1270,6 +1364,7 @@ mod tests {
                             deps: Default::default(),
                             dev_deps: Default::default(),
                             has_lib: true,
+                            lib_path: None,
                             also_watch: Vec::new(),
                             prepackage: None,
                         },
@@ -1299,6 +1394,8 @@ mod tests {
             from: Some(from),
             forced: Forced::No,
             overridden: false,
+            api: Vec::new(),
+            api_waived: false,
         }
     }
 
@@ -1360,6 +1457,46 @@ mod tests {
     }
 
     /// No major in the plan: nobody is dragged in, and earned levels stay.
+    /// Regression: `table` 3.1.0 added `pub column` to the all-pub
+    /// `TableCellProps` under a `feat:` subject and shipped as a minor. The
+    /// API finding must raise it to a major — and, being a major, drag its
+    /// library dependents along.
+    #[test]
+    fn regression_api_break_raises_a_minor_to_a_major_and_drags_dependents() {
+        let (ws, state) = idea_ui_family();
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Minor, (4, 1, 0)))]);
+        let breaks = BTreeMap::from([(
+            "idea-ui".to_string(),
+            vec!["added field `column` to `TableCellProps`".to_string()],
+        )]);
+        apply_api_breaks(&mut plan, breaks, &[]);
+        assert_eq!(plan["idea-ui"].bump, Bump::Major);
+        assert_eq!(plan["idea-ui"].to, semver::Version::new(5, 0, 0));
+        assert_eq!(plan["idea-ui"].api.len(), 1);
+        drag_in_dependents_of_majors(&ws, &state, &mut plan).unwrap();
+        assert_eq!(plan["idea-ui-nav"].bump, Bump::Major);
+        // A `--bump` below the API's level is refused, not applied.
+        assert!(apply_bump_overrides(&mut plan, &["idea-ui=minor".to_string()]).is_err());
+    }
+
+    #[test]
+    fn a_waived_api_break_keeps_the_subject_level_but_is_reported() {
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Minor, (4, 1, 0)))]);
+        let breaks = BTreeMap::from([("idea-ui".to_string(), vec!["removed fn `f`".to_string()])]);
+        apply_api_breaks(&mut plan, breaks, &["idea-ui".to_string()]);
+        assert_eq!(plan["idea-ui"].bump, Bump::Minor);
+        assert_eq!(plan["idea-ui"].to, semver::Version::new(4, 2, 0));
+        assert!(plan["idea-ui"].api_waived);
+        assert_eq!(plan["idea-ui"].api.len(), 1);
+    }
+
+    #[test]
+    fn no_api_break_leaves_the_plan_alone() {
+        let mut plan = BTreeMap::from([("idea-ui".to_string(), planned(Bump::Patch, (4, 1, 0)))]);
+        apply_api_breaks(&mut plan, BTreeMap::new(), &[]);
+        assert_eq!(plan["idea-ui"].bump, Bump::Patch);
+    }
+
     #[test]
     fn minor_dependency_drags_nothing_in() {
         let (ws, state) = idea_ui_family();
@@ -1455,6 +1592,8 @@ mod tests {
                 to: semver::Version::new(1, 9, 0),
                 forced: Forced::No,
                 overridden: false,
+                api: Vec::new(),
+                api_waived: false,
             },
         )]);
         force_into_plan(&ws, &state, &mut plan, &["idea-ui".to_string()]).unwrap();

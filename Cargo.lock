@@ -10322,10 +10322,12 @@ dependencies = [
  "anyhow",
  "clap",
  "flate2",
+ "quote",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "syn 2.0.117",
  "tar",
  "toml_edit 0.22.27",
 ]

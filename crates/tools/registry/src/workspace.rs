@@ -63,6 +63,9 @@ impl RawPackage {
 struct RawTarget {
     /// `lib`, `rlib`, `proc-macro`, `bin`, `example`, `test`, …
     kind: Vec<String>,
+    /// Absolute path of the target's root source file.
+    #[serde(default)]
+    src_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +141,10 @@ pub struct Package {
     /// (the CLI, a dev tool) is only ever installed, so nothing it depends
     /// on can leak into a consumer's types.
     pub has_lib: bool,
+    /// The library target's root source file, relative to the workspace
+    /// root (`crates/css/src/lib.rs`). `None` without a library target. The
+    /// API check starts its module walk here.
+    pub lib_path: Option<String>,
     /// `[package.metadata.registry] also-watch` — see [`RegistryMeta`].
     pub also_watch: Vec<String>,
     /// `[package.metadata.registry] prepackage` — see [`RegistryMeta`].
@@ -173,6 +180,7 @@ impl Workspace {
             .map(|p| p.name.clone())
             .collect();
 
+        let ws_root = meta.workspace_root.clone();
         let mut packages = BTreeMap::new();
         for p in &meta.packages {
             if !members.contains(p.id.as_str()) {
@@ -206,9 +214,21 @@ impl Workspace {
             if meta.prepackage.as_ref().is_some_and(|c| c.is_empty()) {
                 bail!("{}: [package.metadata.registry] prepackage is an empty command", p.name);
             }
+            let is_lib = |t: &&RawTarget| {
+                t.kind
+                    .iter()
+                    .any(|k| matches!(k.as_str(), "lib" | "rlib" | "dylib" | "proc-macro"))
+            };
+            let lib_path = p.targets.iter().find(is_lib).and_then(|t| t.src_path.as_ref()).map(|sp| {
+                sp.strip_prefix(&ws_root)
+                    .unwrap_or(sp)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            });
             packages.insert(
                 p.name.clone(),
                 Package {
+                    lib_path,
                     also_watch: meta.also_watch,
                     prepackage: meta.prepackage,
                     name: p.name.clone(),
@@ -221,11 +241,7 @@ impl Workspace {
                     publish: p.publish.as_ref().map(|v| !v.is_empty()).unwrap_or(true),
                     deps,
                     dev_deps,
-                    has_lib: p.targets.iter().any(|t| {
-                        t.kind
-                            .iter()
-                            .any(|k| matches!(k.as_str(), "lib" | "rlib" | "dylib" | "proc-macro"))
-                    }),
+                    has_lib: p.targets.iter().any(|t| is_lib(&t)),
                 },
             );
         }
@@ -499,6 +515,10 @@ runtime-template = { workspace = true }
         assert!(ws.packages["lib-crate"].has_lib);
         assert!(!ws.packages["bin-crate"].has_lib);
         assert!(ws.packages["macro-crate"].has_lib);
+        // The API check walks from `lib_path`, workspace-relative.
+        assert_eq!(ws.packages["lib-crate"].lib_path.as_deref(), Some("lib-crate/src/lib.rs"));
+        assert_eq!(ws.packages["macro-crate"].lib_path.as_deref(), Some("macro-crate/src/lib.rs"));
+        assert_eq!(ws.packages["bin-crate"].lib_path, None);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -521,6 +541,7 @@ runtime-template = { workspace = true }
                             deps: set(deps),
                             dev_deps: set(dev),
                             has_lib: true,
+                            lib_path: None,
                             also_watch: Vec::new(),
                             prepackage: None,
                         },

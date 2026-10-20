@@ -40,3 +40,8 @@ semver = "1"
 # preserves the document byte-for-byte apart from the spans it is asked to
 # change.
 toml_edit = "0.22"
+# The API check (`src/api.rs`) parses each planned crate's source at its
+# last release and at HEAD to find breaking changes the commit subjects
+# under-called.
+syn = { workspace = true }
+quote = { workspace = true }

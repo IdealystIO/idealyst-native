@@ -138,13 +138,48 @@ subject?
   The classifier reads the commit SUBJECT, so a branch that lands new public
   API under a free-form subject ("scroll_view can say when the reader has
   reached the end") cuts as a patch. **The standing rule (set 2026-09-10 on
-  a0265630): additive public API is a minor.** Check every planned crate:
+  a0265630): additive public API is a minor** — new items, new methods. A new
+  field on an all-pub struct is NOT additive; it is a major (next bullet).
+  Check every planned crate:
   `git diff <last-release>..HEAD -- <crate> | grep -E '^\+\s*pub (fn|struct|enum|type|[a-z_]+:)'`
-  and, for anything REMOVED, the same with `^-`. A new `pub` item or prop →
-  `--bump <crate>=minor`; a removed one → stop, that is a major. A private
-  rename (`enum PanState` fields, say) is neither. Raise-only, and refuses a
-  crate that is not already in the plan. Recomputes from the PUBLISHED
-  version, so raising a patch to a minor cannot skip a number.
+  A new `pub` item → `--bump <crate>=minor`. A private rename (`enum PanState`
+  fields, say) is neither. Raise-only, and refuses a crate that is not
+  already in the plan. Recomputes from the PUBLISHED version, so raising a
+  patch to a minor cannot skip a number. Breaking changes need no grep: the
+  API check below raises those to a major on its own.
+- **The API check raises breaking changes to a major automatically.** For
+  every crate that earned its own release, `plan` parses the library source
+  (`syn`) at the crate's recorded release commit and at HEAD and diffs the
+  exported items (`crates/tools/registry/src/api.rs`). A crate with a finding
+  is printed `major … (API break)` with one indented line per finding. What
+  counts:
+  - **a field added to an exported `pub struct` whose fields are all `pub`
+    and which is not `#[non_exhaustive]`** — a struct literal in another
+    crate must name every field. Rule set 2026-10-20 after `table` 3.1.0
+    added `pub column` to `TableCellProps` as a minor and broke a downstream
+    literal. `#[non_exhaustive]` is no way out for props (it forbids
+    literals even with `..Default::default()`, and `ui!` builds props by
+    literal), so a new prop on an explicit `FooProps` struct, or a new
+    parameter on an inline-props `#[component] fn Foo(..)` (its generated
+    `FooProps`), is a major;
+  - a variant added to an exported enum without `#[non_exhaustive]` (see the
+    next bullet), or `#[non_exhaustive]` added to an enum or all-pub struct;
+  - anything exported removed or made non-`pub`: items, `pub` fields,
+    variants, inherent `pub` methods, trait items, `#[macro_export]` macros,
+    `pub use` of another crate's item; a `pub` field or variant retyped; a
+    required (no default) trait item added.
+
+  "Exported" follows `pub mod` chains and `pub use` re-exports (named and
+  glob); `pub(crate)` items and `pub` items in private modules that nothing
+  re-exports are skipped. Macro-generated items other than `#[component]`
+  props are invisible, and fn signature changes are not detected — read the
+  diff for those. **Read every finding.** A real one is a major, and its
+  library dependents come along (see "Only a major bump republishes
+  dependents" below). For a false positive — a `pub` item the crate
+  documents as internal, a sealed trait gaining a method — pass
+  `--skip-api-check <CRATE>` on `plan` / `build` / `publish`: the crate keeps
+  its subject level, the findings still print, labelled
+  `(API check waived)`, and the release commit should say why.
 - **A new variant on a `pub enum` without `#[non_exhaustive]` is a major**, even
   if it looks additive. Every published version of every crate that `match`es
   on the enum exhaustively stops compiling the moment `cargo update` pulls the
@@ -156,8 +191,10 @@ subject?
   same commit, and `runtime-layout 2.0.0` / `css 2.0.0` (`runtime-shared ^2.0.0`)
   then failed with E0004 in CrewForge's lockfile. Find the matches with
   `grep -rn 'Enum::' --include=*.rs crates` over every crate that depends on
-  the changed one. Adding `#[non_exhaustive]` later is also a major, because
-  dependents' exhaustive matches stop compiling without a `_` arm.
+  the changed one. The API check catches the variant itself; this grep is
+  how you explain the major in the release commit. Adding
+  `#[non_exhaustive]` later is also a major, because dependents' exhaustive
+  matches stop compiling without a `_` arm.
 - **A planned crate whose diff is behaviour-free gets excluded.** A comment-
   only or doc-only change to a crate's source still changes its published
   bytes, so the planner wants a patch — and every consumer would rebuild that

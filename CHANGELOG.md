@@ -1461,6 +1461,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Changed
 
+- **The release planner raises breaking API changes to a major on its own**
+  (`registry`). `plan` / `build` / `publish` parse each changed crate's
+  library at its last release and at HEAD and raise the crate to a major
+  for: a field added to an exported all-`pub`, non-`#[non_exhaustive]`
+  struct (a new prop on a `FooProps` struct or an inline-props
+  `#[component]` included — `table` 3.1.0 shipped `TableCellProps::column`
+  as a minor and broke a downstream literal); a variant added to an
+  exhaustive exported enum; anything exported removed, made non-`pub` or
+  retyped. Findings print under the crate. `--skip-api-check <CRATE>`
+  waives a false positive. `docs/registry.md` "The API check".
+
 - **`idealyst mcp`'s tool list is a third of its size; detail moved to
   `get_docs`** (`mcp-server`). Every tool definition sits in an MCP client's
   context for the whole session, and the 80 definitions came to 90.9 KB
