@@ -571,10 +571,10 @@ dev-tui = { path = "crates/tools/dev-tui", version = "4.0.0", registry = "idealy
 lint = { path = "crates/tools/lint", version = "1.5.2", registry = "idealyst" }
 configure = { path = "crates/tools/configure", version = "1.5.2", registry = "idealyst" }
 icon-gen = { path = "crates/tools/icon-gen", version = "1.5.2", registry = "idealyst" }
-backend-apple-core = { path = "crates/backend/apple/core", version = "2.0.0", registry = "idealyst" }
+backend-apple-core = { path = "crates/backend/apple/core", version = "2.1.0", registry = "idealyst" }
 backend-image-source = { path = "crates/backend/image-source", version = "2.0.0", registry = "idealyst" }
-backend-macos = { path = "crates/backend/macos", version = "2.2.0", registry = "idealyst" }
-backend-ios-core = { path = "crates/backend/ios/core", version = "2.0.0", registry = "idealyst" }
+backend-macos = { path = "crates/backend/macos", version = "2.2.1", registry = "idealyst" }
+backend-ios-core = { path = "crates/backend/ios/core", version = "2.0.1", registry = "idealyst" }
 backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "2.1.1", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "2.0.0", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "2.0.0", registry = "idealyst" }
@@ -619,7 +619,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "4.0.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "5.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "8.2.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "8.3.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "2.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "5.0.0", registry = "idealyst" }
 idea-ui-docs-derive = { path = "crates/ui/idea-ui-docs-derive", version = "1.5.2", registry = "idealyst" }

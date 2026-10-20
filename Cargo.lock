@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "backend-apple-core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "backend-image-source",
  "block2 0.5.1",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-core"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "backend-apple-core",
  "block2 0.5.1",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -6417,7 +6417,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "8.2.0"
+version = "8.3.0"
 dependencies = [
  "backend-ssr",
  "host-mock",
