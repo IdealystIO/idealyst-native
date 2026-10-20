@@ -7,7 +7,9 @@
 //!
 //! One GTK `#[test]` per binary — GTK initialises on one thread only.
 
-#![cfg(target_os = "linux")]
+// `is_shown` / `node_scroll` are `robot`-only; without the feature the
+// trait defaults answer `None` and every assertion would fail.
+#![cfg(all(target_os = "linux", feature = "robot"))]
 
 use backend_linux::gtk4;
 use gtk4::prelude::*;
