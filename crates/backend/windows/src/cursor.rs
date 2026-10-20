@@ -15,6 +15,8 @@
 //! A hidden or locked pointer (`app_pointer`) is handled before this.
 //!
 //! [`Cursor::Auto`] and an unset cursor show the class cursor (the arrow).
+//! A `link` shows the hand unless its style says otherwise, as a browser
+//! shows it over `<a>`.
 //! Values Windows has no system cursor for fall back to the nearest one:
 //! `grab` / `grabbing` → the hand (Windows has no open/closed hand),
 //! `move` → the four-way arrow.
@@ -51,10 +53,14 @@ pub(crate) fn system_cursor(cursor: Cursor) -> Option<PCWSTR> {
     })
 }
 
-/// The cursor the author set for the logical point `(x, y)`: the nearest
-/// node on the hit chain (deepest first) with a `cursor` style.
+/// The cursor for the logical point `(x, y)`: the nearest node on the hit
+/// chain (deepest first) with a `cursor` style, or a primitive's own
+/// default (a link's hand) when its style sets none.
 pub(crate) fn cursor_at(b: &WindowsBackend, x: f32, y: f32) -> Option<Cursor> {
-    scene::hit_chain(b, x, y).into_iter().find_map(|n| b.nodes.get(&n.id)?.cursor)
+    scene::hit_chain(b, x, y).into_iter().find_map(|n| {
+        let m = b.nodes.get(&n.id)?;
+        m.cursor.or(m.default_cursor)
+    })
 }
 
 /// Host-`WndProc` hook for `WM_SETCURSOR`. Returns `true` when it set the
@@ -124,6 +130,27 @@ mod tests {
         assert_eq!(cursor_at(&b, 550.0, 250.0), Some(Cursor::Pointer));
 
         assert!(system_cursor(Cursor::Auto).is_none());
+
+        // A link with no `cursor` style shows the hand (browsers' `<a>`,
+        // macOS links); a style still wins. Windows showed the arrow, so
+        // the idea-ui docs' hero links looked dead.
+        // Past the hand-built ids 1..=5, so the real link gets its own.
+        b.next_id = 100;
+        let link = runtime_vocabulary::caps::LinkOps::create_link(
+            &mut b,
+            runtime_shared::primitives::link::LinkConfig {
+                route: "docs",
+                url: "/docs".into(),
+                external: false,
+                on_activate: std::rc::Rc::new(|| {}),
+            },
+            &runtime_shared::AccessibilityProps::default(),
+        );
+        b.nodes.get_mut(&link.id).unwrap().frame = (0.0, 400.0, 100.0, 40.0);
+        b.children.entry(1).or_default().push(link.id);
+        assert_eq!(cursor_at(&b, 50.0, 420.0), Some(Cursor::Pointer));
+        b.nodes.get_mut(&link.id).unwrap().cursor = Some(Cursor::Text);
+        assert_eq!(cursor_at(&b, 50.0, 420.0), Some(Cursor::Text), "the author's cursor wins");
         assert_eq!(system_cursor(Cursor::Pointer).map(|c| c.0), Some(IDC_HAND.0));
         assert_eq!(system_cursor(Cursor::Text).map(|c| c.0), Some(IDC_IBEAM.0));
         assert_eq!(system_cursor(Cursor::NotAllowed).map(|c| c.0), Some(IDC_NO.0));

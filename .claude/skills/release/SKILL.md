@@ -145,6 +145,19 @@ subject?
   rename (`enum PanState` fields, say) is neither. Raise-only, and refuses a
   crate that is not already in the plan. Recomputes from the PUBLISHED
   version, so raising a patch to a minor cannot skip a number.
+- **A new variant on a `pub enum` without `#[non_exhaustive]` is a major**, even
+  if it looks additive. Every published version of every crate that `match`es
+  on the enum exhaustively stops compiling the moment `cargo update` pulls the
+  new version under its caret requirement. Checking the current tree is not
+  enough: if a crate in this same release has to handle the new variant, its
+  *previous published version* is the one that breaks.
+  `runtime-shared 2.4.0` shipped `TrackSize::FitContent` as a minor because "no
+  consumer matches on TrackSize". But `runtime-layout` and `css` did, in the
+  same commit, and `runtime-layout 2.0.0` / `css 2.0.0` (`runtime-shared ^2.0.0`)
+  then failed with E0004 in CrewForge's lockfile. Find the matches with
+  `grep -rn 'Enum::' --include=*.rs crates` over every crate that depends on
+  the changed one. Adding `#[non_exhaustive]` later is also a major, because
+  dependents' exhaustive matches stop compiling without a `_` arm.
 - **A planned crate whose diff is behaviour-free gets excluded.** A comment-
   only or doc-only change to a crate's source still changes its published
   bytes, so the planner wants a patch — and every consumer would rebuild that

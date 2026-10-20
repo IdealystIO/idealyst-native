@@ -47,8 +47,9 @@ Style states follow the same chain: every view under the pointer is
 release, wherever the release happens (CSS `:active`). `focused` lights on
 text fields, from the edit control's own focus notifications. The `cursor`
 style is shown over painted views, inherited from
-the nearest ancestor that sets one; Windows has no grab cursors, so `grab`
-and `grabbing` show the hand. Native controls (text fields, native buttons)
+the nearest ancestor that sets one, and a `link` shows the hand when its
+style sets none (as browsers and macOS do); Windows has no grab cursors, so
+`grab` and `grabbing` show the hand. Native controls (text fields, native buttons)
 keep their own cursor and their own hover and press drawing. Moving onto
 one counts as leaving the painted views around it. Source: `view_input.rs`,
 `cursor.rs`.

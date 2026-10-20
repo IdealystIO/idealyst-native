@@ -655,6 +655,10 @@ pub(crate) struct NodeMeta {
     /// ancestor that sets one decides — CSS `cursor` inherits). Read by
     /// `cursor::cursor_at` when the host answers `WM_SETCURSOR`.
     pub cursor: Option<runtime_shared::Cursor>,
+    /// The primitive's own cursor when its style sets none: the hand for
+    /// a `link`, as browsers give `<a>` and macOS gives its links. Kept
+    /// apart from `cursor`, which every `apply_style` overwrites.
+    pub default_cursor: Option<runtime_shared::Cursor>,
     /// A reactive anchor (`create_anchor`): layout- and hit-transparent.
     pub contents: bool,
 }
@@ -676,6 +680,7 @@ impl NodeMeta {
             content_inset: [0.0; 4],
             pointer_events: None,
             cursor: None,
+            default_cursor: None,
             contents: false,
         }
     }
@@ -2635,10 +2640,14 @@ impl WindowsBackend {
         // `config.url` is deliberately ignored (documented web-only);
         // `on_activate` already wraps in-app push/replace dispatch, and
         // `open_url` for `external` links.
-        self.add_node(NodeKind::View(ViewVisual {
+        let node = self.add_node(NodeKind::View(ViewVisual {
             on_click: Some(config.on_activate.clone()),
             ..Default::default()
-        }))
+        }));
+        if let Some(meta) = self.nodes.get_mut(&node.id) {
+            meta.default_cursor = Some(runtime_shared::Cursor::Pointer);
+        }
+        node
     }
 
     fn create_text(&mut self, content: &str, _a11y: &AccessibilityProps) -> WindowsNode {
