@@ -1248,21 +1248,6 @@ stylesheet! {
 // The disc and the initials are tone × variant sheets built by
 // `idea_theme::extensible::AvatarSheetBuilder` (open tone set: the semantic
 // tones plus the palette hues); only the photo's fill rule lives here.
-stylesheet! {
-    // The photo inside the disc. Fill + `Cover`, because the container
-    // is a fixed-size clipped circle: an UNSIZED image renders at its
-    // natural pixel size and the disc's `overflow: hidden` shows only
-    // its center — a 300px avatar in a 40px disc read as a heavy zoom
-    // onto the middle of the face. Cover keeps the disc filled for any
-    // source aspect without distortion.
-    pub AvatarImage<IdeaThemeRef> {
-        base(_t) {
-            width: Length::pct(100.0),
-            height: Length::pct(100.0),
-            object_fit: runtime_core::ObjectFit::Cover,
-        }
-    }
-}
 
 // =============================================================================
 // Tag — pill container with optional close button.

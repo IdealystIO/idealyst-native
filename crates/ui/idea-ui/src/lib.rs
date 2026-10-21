@@ -179,7 +179,9 @@ pub use components::alert::{Alert, AlertClose, AlertProps, AlertRestyle, AlertSl
 pub use components::autocomplete::{
     Autocomplete, AutocompleteProps, AutocompleteSlot, AutocompleteSlotCx,
 };
-pub use components::avatar::{Avatar, AvatarProps, AvatarSize};
+pub use components::avatar::{
+    Avatar, AvatarProps, AvatarRestyle, AvatarSize, AvatarSlotStyles, AvatarStyles, AvatarVariant,
+};
 pub use components::badge::{Badge, BadgeProps, BadgeRestyle, BadgeSlotStyles, BadgeStyles, BadgeVariant};
 pub use components::button::{
     Button, ButtonBlock, ButtonDimmed, ButtonLayout, ButtonProps, ButtonRestyle, ButtonShape, ButtonSize,
@@ -198,7 +200,9 @@ pub use components::time_input::{TimeInput, TimeInputProps};
 pub use date::{CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday};
 pub use components::center::{Center, CenterProps};
 pub use components::checkbox::{Checkbox, CheckboxProps};
-pub use components::chip::{Chip, ChipProps};
+pub use components::chip::{
+    Chip, ChipInteractive, ChipProps, ChipRestyle, ChipSize, ChipSlotStyles, ChipStyles, ChipVariant,
+};
 pub use components::grid::{Grid, GridProps};
 pub use components::icon::{Icon, IconProps};
 pub use components::image::{Image, ImageProps};

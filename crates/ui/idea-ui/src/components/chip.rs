@@ -27,31 +27,130 @@
 //! callback.
 //!
 //! ## Selected vs unselected appearance
-//! Both states resolve from the installed Tag stylesheet (chips and tags
-//! share the pill shape and the tone × variant axes). The `selected`
-//! state paints with the caller's chosen `variant`; the unselected state
-//! drops to the quieter `Ghost` variant of the same tone, so a row of
-//! chips reads as "one (or some) lit up, the rest muted" without the
-//! caller wiring two stylesheets. Pass an explicit `variant` to set the
-//! *selected* look (e.g. `Filled` for a stronger highlight).
+//! The `selected` state paints with the caller's chosen `variant`; the
+//! unselected state drops to the quieter `Ghost` variant of the same tone,
+//! so a row of chips reads as "one (or some) lit up, the rest muted". Pass
+//! an explicit `variant` to set the *selected* look (e.g. `Filled` for a
+//! stronger highlight).
 //!
 //! ## Size
-//! `size` (`ControlSize::Sm` / `Md` / `Lg`, default `Md`) rides the Tag
-//! sheets' `size` axis: the pill's padding on the container sheet and the
-//! label's font size on the label sheet. `Md` is the Tag's own geometry.
+//! `size` ([`ChipSize`] — `Sm` / `Md` / `Lg`, default `Md`; a
+//! `ControlSize` converts) picks the pill's padding (`root`) and the
+//! label's font (`label`). `Md` is a Tag's geometry.
+//!
+//! ## Styling
+//! [`ChipStyles`]: `root` (the pill — tone × variant compounds over the
+//! categorization tones, `size`, the `interactive` cursor and a themed
+//! focus ring) and `label` (the fill's foreground on its own node).
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, pressable, recipe, ui, view, Element, IdealystSchema, IntoElement, Reactive,
-    StyleApplication,
+    component, component_styles, derived, pressable, recipe, ui, view, AlignItems, AlignSelf, Element,
+    FlexDirection, FontWeight, IdealystSchema, IntoElement, Length, Reactive, SlotRestyle, StateBits, StyleRules,
+    TextAlign,
 };
 
-use idea_theme::extensible::{
-    installed_tag_sheet, installed_tag_text_sheets, tone, variant, ToneRef, Variant, VariantRef,
-};
+use idea_theme::extensible::{categorization_tones, tone, Tone, ToneRef};
 
+use crate::components::tone_slots::{focus_ring, foreground_arms, surface_arms};
 use crate::components::ControlSize;
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Chip`].
+    pub Chip<IdeaThemeRef> {
+        /// The selected look — a tone-aware recipe per value (unselected
+        /// chips draw `ghost`).
+        axis variant { filled, #[default] soft, outlined, ghost }
+
+        /// The pill.
+        slot root {
+            extend(root_surfaces)
+            base(t) {
+                align_self: AlignSelf::Center,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.xs(),
+                border_radius: t.radius.pill(),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.4,
+                text_align: TextAlign::Center,
+            }
+            /// The pill's inset. The vertical padding is a literal: the
+            /// pill's height is set by its label's line box, and the
+            /// theme's smallest spacing step (`xs`, 4) already doubles
+            /// `md`'s 2px.
+            variant size {
+                sm(t) { padding_vertical: Length::Px(1.0), padding_horizontal: t.spacing.xs() }
+                #[default]
+                md(t) { padding_vertical: Length::Px(2.0), padding_horizontal: t.spacing.sm() }
+                lg(t) { padding_vertical: Length::Px(4.0), padding_horizontal: t.spacing.md() }
+            }
+            /// A chip with an `on_select`: the pointer cursor, and a 1px
+            /// border reserved for the focus ring — on a content-sized pill
+            /// the ring would otherwise add 2px per axis on focus, and since
+            /// a press focuses, pressing a chip nudged its neighbours. Sets
+            /// only the WIDTH: an outlined chip keeps its stroke colour, a
+            /// borderless one the transparent colour its recipe gave it.
+            variant interactive {
+                #[default]
+                off(_t) {}
+                on(_t) {
+                    cursor: runtime_core::Cursor::Pointer,
+                    border_width: 1.0,
+                }
+            }
+        }
+
+        /// The label, in the fill's foreground, at the size's type.
+        slot label {
+            extend(label_foregrounds)
+            base(_t) {
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.3,
+            }
+            variant size {
+                sm(t) { font_size: t.typography.caption_size() }
+                #[default]
+                md(t) { font_size: t.typography.body_sm_size() }
+                lg(t) { font_size: t.typography.body_size() }
+            }
+        }
+    }
+}
+
+fn root_surfaces(s: &mut SlotRestyle<'_, ChipStyles>) {
+    surface_arms(s, &categorization_tones());
+    // The themed focus ring (a pressable chip receives FOCUSED): 1px in the
+    // focus-ring color.
+    s.state(StateBits::FOCUSED, |_| focus_ring(1.0));
+}
+
+fn label_foregrounds(s: &mut SlotRestyle<'_, ChipStyles>) {
+    foreground_arms(s, &categorization_tones());
+}
+
+marker_into_axis!(ChipVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
+
+/// The control-wide size scale converts into Chip's own size axis.
+impl From<ControlSize> for ChipSize {
+    fn from(s: ControlSize) -> Self {
+        ChipSize::define(s.as_variant_str())
+    }
+}
+
+impl From<ControlSize> for Reactive<ChipSize> {
+    fn from(s: ControlSize) -> Self {
+        Reactive::Static(s.into())
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps `selected`/`tone`/`variant`/`size` →
 // `Reactive<…>`; `label` is already reactive, and `on_select` (an
@@ -60,7 +159,7 @@ use crate::components::ControlSize;
 // `From`. The style-driving props route into the container and label style
 // sinks, read `.get()` INSIDE so the apply-style Effect subscribes to
 // whichever are live.
-#[runtime_core::props]
+#[runtime_core::props(styles = ChipStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ChipProps {
@@ -81,13 +180,13 @@ pub struct ChipProps {
     /// unselected state is the muted Ghost of the same tone).
     pub tone: ToneRef,
     /// Surface treatment used for the **selected** state (Soft, Filled,
-    /// Outline, …). Default Soft. The unselected state always uses the
-    /// quieter Ghost variant of the same tone.
-    pub variant: VariantRef,
+    /// Outlined, …, or an app value). Default Soft. The unselected state
+    /// always uses the quieter Ghost variant of the same tone.
+    pub variant: ChipVariant,
     /// Size scale (Sm, Md, Lg). Default Md. Picks the pill's padding and
     /// the label's font size (Sm: caption type, tight inset; Md: body-sm
     /// type, the Tag's geometry; Lg: body type, roomier inset).
-    pub size: ControlSize,
+    pub size: ChipSize,
 }
 
 impl Default for ChipProps {
@@ -97,8 +196,9 @@ impl Default for ChipProps {
             selected: Reactive::Static(false),
             on_select: None,
             tone: tone::Neutral.into(),
-            variant: variant::Soft.into(),
-            size: Reactive::Static(ControlSize::Md),
+            variant: Reactive::Static(ChipVariant::default()),
+            size: Reactive::Static(ChipSize::default()),
+            styles: Default::default(),
         }
     }
 }
@@ -114,90 +214,37 @@ pub fn Chip(props: &ChipProps) -> Element {
     let on_select = props.on_select.clone();
     let clickable = on_select.is_some();
 
-    // The styles are REACTIVE when any of selected/tone/variant/size is
-    // live; else the build-time fast path (no first-paint flicker). The
-    // closures read each prop's `.get()` INSIDE so the apply-style Effect
-    // subscribes to whichever are dynamic.
-    let style_is_reactive = !props.selected.is_static()
-        || !props.tone.is_static()
-        || !props.variant.is_static()
-        || !props.size.is_static();
-
-    // Selected → caller's variant (lit); unselected → Ghost (muted) of the
-    // same tone. The container AND the label resolve the same key from the
-    // installed Tag sheets, so a chip looks like a tag of the matching
-    // tone/variant — and the label carries the tone's foreground itself,
-    // because native text inherits no color from its box.
-    let appearance = {
+    // Selected → the caller's variant (lit); unselected → Ghost (muted) of
+    // the same tone. The pill and the label draw the same keys, so the
+    // label carries the tone's foreground itself (native text inherits no
+    // color from its box). The pointer rides the `interactive` axis, so
+    // `clickable` is part of the resolution identity: two chips with the
+    // same tone + variant but different `on_select` never share a cursor.
+    let shown_variant = {
         let selected = props.selected.clone();
-        let tone = props.tone.clone();
         let variant = props.variant.clone();
-        move || {
-            let variant_key = if selected.get() {
-                variant.get().key()
-            } else {
-                variant::Ghost.key()
-            };
-            format!("{}_{}", tone.get().key(), variant_key)
+        match (selected, variant) {
+            (Reactive::Static(sel), Reactive::Static(v)) => {
+                Reactive::Static(if sel { v } else { ChipVariant::Ghost })
+            }
+            (sel, v) => Reactive::Dynamic(std::rc::Rc::new(move || if sel.get() { v.get() } else { ChipVariant::Ghost })),
         }
     };
-    let make_style = {
-        let appearance = appearance.clone();
-        let size = props.size.clone();
-        move || {
-            // Hug lives in the tag sheet's base (it's unconditional); `size`
-            // picks the padding arm. The pointer cursor — "anything
-            // selectable shows a pointer" — rides the sheet's `interactive`
-            // variant, so `clickable` is part of the resolution cache
-            // identity. A `with_computed` layer under a constant key would
-            // leave `clickable` out of that identity and let two chips with
-            // the same tone+variant but different `on_select` share one
-            // resolved style.
-            StyleApplication::new(installed_tag_sheet())
-                .with("appearance", appearance())
-                .with("size", size.get().as_variant_str().to_string())
-                .with("interactive", if clickable { "on" } else { "off" }.to_string())
-        }
-    };
-    let make_label_style = {
-        let size = props.size.clone();
-        let sheet = installed_tag_text_sheets().label.clone();
-        move || {
-            // The label half of the size axis (font size) + the fill's
-            // foreground — see `TagSheetBuilder::build_text`.
-            StyleApplication::new(sheet.clone())
-                .with("appearance", appearance())
-                .with("size", size.get().as_variant_str().to_string())
-        }
-    };
-
-    let label_el: Element = if style_is_reactive {
-        ui! { text(style = make_label_style) { label } }
-    } else {
-        let label_style = make_label_style();
-        ui! { text(style = label_style) { label } }
-    };
+    let values = ChipStyles::values().set(shown_variant).set(props.size.clone());
+    let values = crate::components::tone_slots::with_tone(values, &props.tone);
+    let style = ChipStyles::root()
+        .values(&values)
+        .set(ChipInteractive::from(clickable))
+        .overridden(props.styles.root.as_ref());
+    let label_style = ChipStyles::label().values(&values).overridden(props.styles.label.as_ref());
+    let label_el: Element = ui! { text(style = label_style) { label } };
 
     // §9.6: a pressable only when the host supplied a handler. An inert chip
     // is a plain view — a no-op pressable would swallow the tap and block
     // hit-test fall-through to whatever sits under it.
     match on_select {
-        Some(cb) => {
-            let node = pressable(vec![label_el], move || (cb)());
-            if style_is_reactive {
-                node.with_style(make_style).into_element()
-            } else {
-                node.with_style(make_style()).into_element()
-            }
-        }
-        None => {
-            let node = view(vec![label_el]);
-            if style_is_reactive {
-                node.with_style(make_style).into_element()
-            } else {
-                node.with_style(make_style()).into_element()
-            }
-        }
+        Some(cb) => pressable(vec![label_el], move || (cb)()).with_style(style).into_element(),
+        None => view(vec![label_el]).with_style(style).into_element(),
     }
 }
 
@@ -239,7 +286,7 @@ mod tests {
             let p = ChipProps::default();
             assert!(!p.selected.get());
             assert!(p.on_select.is_none());
-            assert_eq!(p.size.get(), ControlSize::Md);
+            assert_eq!(p.size.get(), ChipSize::Md);
     });
     }
 
@@ -337,7 +384,7 @@ mod tests {
         let el = Chip(&ChipProps {
             label: Reactive::Static("Tag".to_string()),
             on_select: Some(std::rc::Rc::new(|| {})),
-            size: Reactive::Static(size),
+            size: size.into(),
             ..Default::default()
         });
         let (children, style) = match classify(el) {

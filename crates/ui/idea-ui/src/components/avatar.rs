@@ -19,62 +19,106 @@
 //! }
 //! ```
 //!
-//! Styling comes from the installed Avatar sheets
-//! (`idea_theme::extensible::AvatarSheetBuilder`); apps with custom tones
-//! install an extended pair via
-//! `install_avatar_sheets(AvatarSheetBuilder::new().add_tone(..).build())`.
-
-use std::rc::Rc;
+//! Styling is [`AvatarStyles`]: `root` (the disc), `initials` and
+//! `image` (a photo filling the disc). The disc and the initials draw one
+//! compound per `(tone, variant)` over the categorization tones; the
+//! initials carry the fill's foreground on their own node (native text
+//! inherits no color from the disc).
 
 use runtime_core::{
-    component, image_from, ui, Element, IdealystSchema, ImageSource, IntoElement, IntoStyleProp,
-    Reactive, StyleApplication, StyleProp, StyleSheet,
+    component, component_styles, image_from, ui, AlignItems, AlignSelf, Element, FontWeight, IdealystSchema,
+    ImageSource, IntoElement, JustifyContent, Length, ObjectFit, Overflow, Reactive, SlotRestyle, TextAlign,
+    TextTransform,
 };
 
-use idea_theme::extensible::{installed_avatar_sheets, tone, variant, ToneRef, VariantRef};
+use idea_theme::extensible::{categorization_tones, tone, ToneRef};
 
-use crate::stylesheets::AvatarImage;
+use crate::components::tone_slots::{foreground_arms, surface_arms, with_tone};
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
 
-/// Avatar diameter scale. The string keys match the `size` arms the
-/// idea-theme `AvatarSheetBuilder` generates.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, IdealystSchema, runtime_core::Remote)]
-pub enum AvatarSize {
-    /// 24px.
-    Xs,
-    /// 32px.
-    Sm,
-    /// 40px (default).
-    #[default]
-    Md,
-    /// 56px.
-    Lg,
-    /// 80px.
-    Xl,
-}
+component_styles! {
+    /// The styled sections of [`Avatar`].
+    pub Avatar<IdeaThemeRef> {
+        /// The treatment — a tone-aware recipe per value.
+        axis variant { filled, #[default] soft, outlined, ghost }
 
-impl AvatarSize {
-    /// The `size` variant-axis key for this scale.
-    pub fn as_variant_str(self) -> &'static str {
-        match self {
-            AvatarSize::Xs => "xs",
-            AvatarSize::Sm => "sm",
-            AvatarSize::Md => "md",
-            AvatarSize::Lg => "lg",
-            AvatarSize::Xl => "xl",
+        /// The disc: fill, clip, diameter.
+        slot root {
+            extend(root_surfaces)
+            base(t) {
+                border_radius: t.radius.pill(),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                // Hug: a row of mixed-size avatars centers rather than
+                // top-aligning under the parent's `align-items: stretch`.
+                align_self: AlignSelf::Center,
+                overflow: Overflow::Hidden,
+            }
+            /// The diameter: 24 / 32 / 40 / 56 / 80 px.
+            variant size {
+                xs(_t) { width: 24.0, height: 24.0 }
+                sm(_t) { width: 32.0, height: 32.0 }
+                #[default]
+                md(_t) { width: 40.0, height: 40.0 }
+                lg(_t) { width: 56.0, height: 56.0 }
+                xl(_t) { width: 80.0, height: 80.0 }
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                color: 250ms EaseInOut,
+            }
+        }
+
+        /// The initials, in the fill's foreground. The line height is the
+        /// diameter, so the text centers in the disc on every backend
+        /// without relying on flex centering of a text node.
+        slot initials {
+            extend(initials_foregrounds)
+            base(_t) {
+                font_weight: FontWeight::SemiBold,
+                text_align: TextAlign::Center,
+                letter_spacing: 0.5,
+                text_transform: TextTransform::Uppercase,
+            }
+            variant size {
+                xs(_t) { font_size: Length::Px(10.0), line_height: 24.0 }
+                sm(t) { font_size: t.typography.body_sm_size(), line_height: 32.0 }
+                #[default]
+                md(t) { font_size: t.typography.body_size(), line_height: 40.0 }
+                lg(_t) { font_size: Length::Px(20.0), line_height: 56.0 }
+                xl(_t) { font_size: Length::Px(28.0), line_height: 80.0 }
+            }
+        }
+
+        /// The photo inside the disc. Fill + `Cover`: the disc is a
+        /// fixed-size clipped circle, so an UNSIZED image renders at its
+        /// natural size and the clip shows only its center. Cover keeps the
+        /// disc filled for any source aspect without distortion.
+        slot image {
+            base(_t) {
+                width: Length::pct(100.0),
+                height: Length::pct(100.0),
+                object_fit: ObjectFit::Cover,
+            }
         }
     }
 }
 
-// `VariantEnum` lets the docs-app `DocControls` derive render a size
-// picker; the inherent `as_variant_str` above is what the component calls.
-impl runtime_core::VariantEnum for AvatarSize {
-    fn as_variant_str(self) -> &'static str {
-        AvatarSize::as_variant_str(self)
-    }
-    fn all_variants() -> &'static [Self] {
-        &[AvatarSize::Xs, AvatarSize::Sm, AvatarSize::Md, AvatarSize::Lg, AvatarSize::Xl]
-    }
+fn root_surfaces(s: &mut SlotRestyle<'_, AvatarStyles>) {
+    surface_arms(s, &categorization_tones());
 }
+
+fn initials_foregrounds(s: &mut SlotRestyle<'_, AvatarStyles>) {
+    foreground_arms(s, &categorization_tones());
+}
+
+marker_into_axis!(AvatarVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
 
 // Reactive-by-default: `#[props]` wraps `tone`/`variant`/`size` →
 // `Reactive<…>` (and would wrap `src`, but it's `Option<ImageSource>` — see
@@ -82,7 +126,7 @@ impl runtime_core::VariantEnum for AvatarSize {
 // the container/text style sinks, read `.get()` INSIDE so the apply-style
 // Effect subscribes to whichever are live. `src` selects WHICH subtree
 // renders (image vs initials) — a structural branch.
-#[runtime_core::props]
+#[runtime_core::props(styles = AvatarStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct AvatarProps {
@@ -103,8 +147,8 @@ pub struct AvatarProps {
     /// Treatment: Soft (tinted disc, hue-colored initials — default) or
     /// Filled (solid disc, contrasting initials); Outlined / Ghost also
     /// apply.
-    pub variant: VariantRef,
-    /// Diameter scale (Xs/Sm/Md/Lg/Xl).
+    pub variant: AvatarVariant,
+    /// Diameter scale (Xs/Sm/Md/Lg/Xl, or an app-defined size).
     pub size: AvatarSize,
 }
 
@@ -114,8 +158,9 @@ impl Default for AvatarProps {
             src: Reactive::Static(None),
             initials: Reactive::Static(String::new()),
             tone: tone::Neutral.into(),
-            variant: variant::Soft.into(),
+            variant: Reactive::Static(AvatarVariant::default()),
             size: Reactive::Static(AvatarSize::default()),
+            styles: Default::default(),
         }
     }
 }
@@ -124,43 +169,25 @@ impl Default for AvatarProps {
 /// otherwise the `initials` on a `tone`-tinted disc.
 #[component]
 pub fn Avatar(props: &AvatarProps) -> Element {
-    // The disc and the initials apply the SAME `appearance` + `size` keys,
-    // each on its own sheet: native text doesn't inherit color from the
-    // disc, so the initials' sheet carries the appearance's foreground
-    // itself.
-    //
-    // When any style prop is live the style is a closure that reads `.get()`
-    // INSIDE, so the apply-style Effect subscribes to it. When all are static
-    // it is a plain `StyleApplication`, resolved once at build: no per-node
-    // Effect, and — unlike a closure, which always takes the live engine —
-    // it can stamp the sheet's preminted class.
-    let sheets = installed_avatar_sheets();
-    let style_is_reactive =
-        !props.tone.is_static() || !props.variant.is_static() || !props.size.is_static();
-    let make_app = {
-        let tone = props.tone.clone();
-        let variant = props.variant.clone();
-        let size = props.size.clone();
-        move |sheet: &Rc<StyleSheet>| -> StyleApplication {
-            StyleApplication::new(sheet.clone())
-                .with("appearance", format!("{}_{}", tone.get().key(), variant.get().key()))
-                .with("size", size.get().as_variant_str())
-        }
+    // The disc and the initials apply the same tone/variant/size, each on
+    // its own slot: native text doesn't inherit color from the disc.
+    let styles = props.styles.clone();
+    let values =
+        with_tone(AvatarStyles::values().set(props.variant.clone()).set(props.size.clone()), &props.tone);
+    let container_style = {
+        let values = values.clone();
+        let styles = styles.clone();
+        move || AvatarStyles::root().values(&values).overridden(styles.root.as_ref())
     };
-    let style_for = move |sheet: Rc<StyleSheet>| {
-        let make_app = make_app.clone();
-        move || -> StyleProp {
-            if style_is_reactive {
-                let make_app = make_app.clone();
-                let sheet = sheet.clone();
-                (move || make_app(&sheet)).into_style_prop()
-            } else {
-                make_app(&sheet).into_style_prop()
-            }
-        }
+    let text_style = {
+        let values = values.clone();
+        let styles = styles.clone();
+        move || AvatarStyles::initials().values(&values).overridden(styles.initials.as_ref())
     };
-    let container_style = style_for(sheets.container.clone());
-    let text_style = style_for(sheets.text.clone());
+    let image_style = {
+        let styles = styles.clone();
+        move || AvatarStyles::image().values(&values).overridden(styles.image.as_ref())
+    };
 
     let initials = props.initials.clone();
 
@@ -173,6 +200,7 @@ pub fn Avatar(props: &AvatarProps) -> Element {
     let build_image = {
         let src = props.src.clone();
         let container_style = container_style.clone();
+        let image_style = image_style.clone();
         move || {
             // Read `src` INSIDE so the `when` Effect subscribes; the source is
             // `Some` here because the `cond` selected this branch.
@@ -187,9 +215,7 @@ pub fn Avatar(props: &AvatarProps) -> Element {
             // `ImageSource`'s variants here — the dispatch `image_from` owns
             // (including its loud arm for a variant added upstream).
             // idealyst-lint-disable-next-line prefer-ui-macro -- `ui!` `image` has no `ImageSource` prop; `image_from` owns the variant dispatch
-            let img = image_from(source)
-                .with_style(StyleApplication::new(AvatarImage::sheet()))
-                .into_element();
+            let img = image_from(source).with_style(image_style()).into_element();
             ui! {
                 view(style = container_style()) {
                     img
