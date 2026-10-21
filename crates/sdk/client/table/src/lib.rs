@@ -178,6 +178,22 @@
 //! cell's style and writing back a replacement ([`set_cell_style`]) only
 //! works for cells styled with a STATIC sheet and silently skips every
 //! other cell.
+//!
+//! # Theme-layer hooks: a table-level column model, row data, cells added
+//!
+//! A theme layer that owns its columns at the TABLE level (idea-ui's
+//! column model) needs three more seams, because a table's body runs
+//! after its rows and cells are built:
+//!
+//! - [`TableProps::columns`] sizes column `i` from one spec, overriding
+//!   whatever the column's cells declare.
+//! - [`set_row_data`] / [`row_data`] carry a row's own settings (its id,
+//!   whether it may be selected or dragged) from the row to the table.
+//! - [`visit_rows_mut`] + [`row_cells_mut`] insert cells the author never
+//!   wrote (a selection column, a drag grip), [`push_cell_content`] adds
+//!   an overlay to a built cell (a resize handle), [`visit_cell_content`]
+//!   re-styles what a cell already holds, and [`set_cell_hover`] reports
+//!   a cell's hover without touching its touch handler.
 #![deny(missing_docs)]
 
 use std::rc::Rc;
@@ -242,6 +258,14 @@ pub struct TableProps {
     /// horizontal scroller — a blank-state sentence, an "Add entry"
     /// action, a pager. See [`header_slot`](Self::header_slot).
     pub footer_slot: Option<Element>,
+    /// The table's column model: column `i`'s sizing, which takes
+    /// precedence over any [`ColumnSpec`] a cell of that column declares
+    /// ([`TableCellProps::column`]). A `None` entry, and every column past
+    /// the end of the list, keeps reading its cells. A theme layer that
+    /// owns its columns at the table level (idea-ui's `Table(columns =
+    /// …)`) sets this so one spec drives the header and every body cell
+    /// of a column, whatever the cells say.
+    pub columns: Vec<Option<ColumnSpec>>,
 }
 
 /// Props for a footer section (`<tfoot>` on web). Holds one or more
@@ -486,6 +510,11 @@ pub struct TableRowPrim {
     /// Web, grid-column tables only: the `<tr>` is `display: contents`
     /// so its cells are items of the table's grid. Set by [`table`].
     pub grid: bool,
+    /// Opaque data a theme layer attaches to a built row and reads back
+    /// when the table is built ([`set_row_data`] / [`row_data`]) — how a
+    /// row-level setting reaches the table, whose body runs after the
+    /// row's. Never mounted; dropped with the payload.
+    pub data: Option<Rc<dyn std::any::Any>>,
 }
 
 /// Scene payload for a `<td>` / `<th>` (web lowering). The interaction
@@ -599,6 +628,7 @@ pub struct TableBound {
     scroll_y: bool,
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
+    columns: Vec<Option<ColumnSpec>>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
 }
 table_wrapper_common!(TableBound);
@@ -626,6 +656,7 @@ impl IntoElement for TableBound {
             scroll_y: self.scroll_y,
             header_slot: self.header_slot,
             footer_slot: self.footer_slot,
+            columns: self.columns,
             on_edges: self.on_edges,
         })
     }
@@ -675,6 +706,7 @@ pub fn table(mut props: TableProps) -> TableBound {
         scroll_y: props.scroll_y,
         header_slot: props.header_slot.take(),
         footer_slot: props.footer_slot.take(),
+        columns: std::mem::take(&mut props.columns),
         on_edges: None,
     }
 }
@@ -718,6 +750,7 @@ struct TableParts {
     scroll_y: bool,
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
+    columns: Vec<Option<ColumnSpec>>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
 }
 
@@ -953,8 +986,9 @@ fn for_each_row<'a>(el: &'a Element, f: &mut dyn FnMut(&'a Element)) {
     }
 }
 
-/// The span a built cell declares (Owned-peeled; either lowering).
-fn cell_span(cell: &Element) -> ColSpan {
+/// The span a built cell declares (Owned-peeled; either lowering). A
+/// [`ColSpan::Rest`] stays `Rest` until [`table`] resolves it.
+pub fn cell_span(cell: &Element) -> ColSpan {
     match cell {
         Element::Owned { element, .. } => cell_span(element),
         Element::Item { data, .. } => {
@@ -1041,10 +1075,16 @@ fn cell_column(cell: &Element) -> Option<ColumnSpec> {
     }
 }
 
-/// Each column's sizing: the first single-column cell, in row order, that
+/// Each column's sizing: the table-level spec ([`TableProps::columns`])
+/// when it has one, else the first single-column cell, in row order, that
 /// declares a [`ColumnSpec`]. Run after [`resolve_spans`].
-fn column_specs(rows: &[Element], columns: usize) -> Vec<Option<ColumnSpec>> {
-    let mut specs: Vec<Option<ColumnSpec>> = vec![None; columns];
+fn column_specs(
+    rows: &[Element],
+    columns: usize,
+    table_level: &[Option<ColumnSpec>],
+) -> Vec<Option<ColumnSpec>> {
+    let mut specs: Vec<Option<ColumnSpec>> =
+        (0..columns).map(|i| table_level.get(i).cloned().flatten()).collect();
     for r in rows {
         for_each_row(r, &mut |row| {
             let mut at = 0usize;
@@ -1142,6 +1182,7 @@ fn into_grid_rows(rows: Vec<Element>) -> Vec<Element> {
                                     style: p.style.take(),
                                     ref_fill: p.ref_fill.take(),
                                     grid: false,
+                                    data: None,
                                 });
                             }
                         });
@@ -1254,6 +1295,7 @@ pub mod item_lowering {
             scroll_y: false,
             header_slot,
             footer_slot,
+            columns: Vec::new(),
             on_edges: None,
         })
     }
@@ -1273,6 +1315,7 @@ pub mod item_lowering {
             scroll_y,
             header_slot: None,
             footer_slot: None,
+            columns: Vec::new(),
             on_edges: None,
         })
     }
@@ -1281,10 +1324,11 @@ pub mod item_lowering {
     /// wasm32, edge watching included.
     pub(crate) fn web_table_from(parts: TableParts) -> Element {
         let columns = resolve_spans(&parts.rows);
-        let specs = column_specs(&parts.rows, columns);
+        let specs = column_specs(&parts.rows, columns, &parts.columns);
         let grid = needs_grid(&specs);
         let wrapped = parts.wrapped();
-        let TableParts { rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges } = parts;
+        let TableParts { rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges, .. } =
+            parts;
         let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
         // The `<table>` is the scrolled content, so its width is the
         // content width the edges are measured against.
@@ -1345,7 +1389,7 @@ pub mod item_lowering {
 
     /// `<tr>` item.
     pub fn row_item(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-        item(PrimCell::new(TableRowPrim { style, ref_fill: None, grid: false }), children)
+        item(PrimCell::new(TableRowPrim { style, ref_fill: None, grid: false, data: None }), children)
     }
 
     /// `<td>` / `<th>` item.
@@ -1428,11 +1472,12 @@ fn build_cell(
 #[cfg(not(target_arch = "wasm32"))]
 fn build_table(parts: TableParts) -> Element {
     let wrapped = parts.wrapped();
-    let TableParts { rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges } = parts;
+    let TableParts { rows, style, scroll_x, scroll_y, header_slot, footer_slot, columns, on_edges } =
+        parts;
     let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
     let columns_from_spans = resolve_spans(&rows);
     // Read before the rows are flattened: the specs ride the cells.
-    let specs = column_specs(&rows, columns_from_spans);
+    let specs = column_specs(&rows, columns_from_spans, &columns);
     let mut owneds: Vec<glue::Owned> = Vec::new();
     let mut body: Vec<NativeRow> = Vec::new();
     let mut foot: Vec<NativeRow> = Vec::new();
@@ -1584,7 +1629,7 @@ fn build_row_backdrop(row_line: i16, slots: TableRowPrim) -> Element {
 /// the loud failure the scene registry promises.
 #[cfg(not(target_arch = "wasm32"))]
 fn build_row(children: Vec<Element>, style: Option<StyleProp>) -> Element {
-    item(PrimCell::new(TableRowPrim { style, ref_fill: None, grid: false }), children)
+    item(PrimCell::new(TableRowPrim { style, ref_fill: None, grid: false, data: None }), children)
 }
 
 /// Native `TableCell`: a plain view that becomes a grid item; the
@@ -2121,6 +2166,166 @@ pub fn bind_row(row: &Element, fill: impl FnOnce(runtime_shared::ViewHandle) + '
     }
     let mut slot: Option<Box<dyn FnOnce(runtime_shared::ViewHandle)>> = Some(Box::new(fill));
     walk(row, &mut slot);
+}
+
+/// Attach opaque data to a built row ([`TableRowPrim::data`]) — a theme
+/// layer's row-level settings, read back by its table with [`row_data`].
+/// Replaces any data already attached. No-op for a non-row element.
+pub fn set_row_data(row: &Element, data: Rc<dyn std::any::Any>) {
+    let mut data = Some(data);
+    match row {
+        Element::Owned { element, .. } => {
+            if let Some(d) = data.take() {
+                set_row_data(element, d);
+            }
+        }
+        Element::Item { data: payload, .. } => {
+            if let Some(c) = payload.downcast_ref::<PrimCell<TableRowPrim>>() {
+                c.with_mut(|p| p.data = data.take());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The data [`set_row_data`] attached to a built row, if any.
+pub fn row_data(row: &Element) -> Option<Rc<dyn std::any::Any>> {
+    match row {
+        Element::Owned { element, .. } => row_data(element),
+        Element::Item { data, .. } => {
+            let mut out = None;
+            if let Some(c) = data.downcast_ref::<PrimCell<TableRowPrim>>() {
+                c.with_mut(|p| out = p.data.clone());
+            }
+            out
+        }
+        _ => None,
+    }
+}
+
+/// Whether a table child is a footer section ([`table_foot`]),
+/// Owned-peeled.
+pub fn is_footer(el: &Element) -> bool {
+    match el {
+        Element::Owned { element, .. } => is_footer(element),
+        Element::Item { data, .. } => data.downcast_ref::<PrimCell<TableFootPrim>>().is_some(),
+        _ => false,
+    }
+}
+
+/// [`visit_rows`], with mutable access to each row — for a table-level
+/// pass that adds cells to the rows it was handed ([`row_cells_mut`]).
+pub fn visit_rows_mut(el: &mut Element, mut f: impl FnMut(&mut Element)) {
+    fn walk(el: &mut Element, f: &mut dyn FnMut(&mut Element)) {
+        match el {
+            Element::Owned { element, .. } => walk(element, f),
+            Element::Item { data, children, .. }
+                if data.downcast_ref::<PrimCell<TableFootPrim>>().is_some() =>
+            {
+                for r in children.iter_mut() {
+                    walk(r, f);
+                }
+            }
+            other => f(other),
+        }
+    }
+    walk(el, &mut f);
+}
+
+/// A built row's cell list (Owned-peeled), for inserting or removing
+/// cells before the table is built — `None` for a non-row element.
+/// Indices are the row's cell order, which is its column order.
+pub fn row_cells_mut(row: &mut Element) -> Option<&mut Vec<Element>> {
+    match row {
+        Element::Owned { element, .. } => row_cells_mut(element),
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<TableRowPrim>>().is_some() =>
+        {
+            Some(children)
+        }
+        Element::Fragment(children) => Some(children),
+        _ => None,
+    }
+}
+
+/// Visit a built cell's CONTENT — the direct children of the cell node
+/// (the native grid item's or the web `<td>`/`<th>`'s), Owned-peeled and
+/// looking through a [`CellMarker`]. Lets a table-level pass re-select an
+/// axis on what a cell already holds (its text node's alignment).
+pub fn visit_cell_content(cell: &Element, mut f: impl FnMut(&Element)) {
+    fn walk(cell: &Element, f: &mut dyn FnMut(&Element)) {
+        match cell {
+            Element::Owned { element, .. } => walk(element, f),
+            Element::Item { data, children, .. }
+                if data.downcast_ref::<PrimCell<CellMarker>>().is_some() =>
+            {
+                if let Some(inner) = children.first() {
+                    walk(inner, f);
+                }
+            }
+            Element::Item { data, children, .. }
+                if data.downcast_ref::<PrimCell<prims::ViewPrim>>().is_some()
+                    || data.downcast_ref::<PrimCell<TableCellPrim>>().is_some() =>
+            {
+                for c in children {
+                    f(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(cell, &mut f);
+}
+
+/// Append `child` to a built cell's content (Owned-peeled, through a
+/// [`CellMarker`]) — how a theme layer adds an overlay a cell's author
+/// never wrote (a column's resize handle). Returns whether `cell` was a
+/// cell; a non-cell drops `child`.
+pub fn push_cell_content(cell: &mut Element, child: Element) -> bool {
+    match cell {
+        Element::Owned { element, .. } => push_cell_content(element, child),
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<CellMarker>>().is_some() =>
+        {
+            match children.first_mut() {
+                Some(inner) => push_cell_content(inner, child),
+                None => false,
+            }
+        }
+        Element::Item { data, children, .. }
+            if data.downcast_ref::<PrimCell<prims::ViewPrim>>().is_some()
+                || data.downcast_ref::<PrimCell<TableCellPrim>>().is_some() =>
+        {
+            children.push(child);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Install a hover reporter on a built cell WITHOUT touching its touch
+/// handler — a header cell that reveals something while hovered. A
+/// hover reporter the cell already carries (a clickable row's) keeps
+/// running: both hear every change.
+pub fn set_cell_hover(cell: &Element, on_hover: HoverHandler) {
+    let mut handler = Some(on_hover);
+    let compose = |slot: &mut Option<HoverHandler>, h: HoverHandler| {
+        *slot = Some(match slot.take() {
+            Some(prev) => Rc::new(move |entering| {
+                prev(entering);
+                h(entering);
+            }),
+            None => h,
+        });
+    };
+    visit_cell(cell, &mut |view, table_cell| {
+        let Some(h) = handler.take() else { return };
+        if let Some(p) = view {
+            compose(&mut p.on_hover, h);
+        } else if let Some(p) = table_cell {
+            compose(&mut p.on_hover, h);
+        }
+    });
 }
 
 /// Visit a built row's cells in order (Owned-peeled). The visitor gets

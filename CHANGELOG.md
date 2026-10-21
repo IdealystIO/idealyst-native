@@ -26,6 +26,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   after an inner one (a press timestamp, a "handled" flag). An outer
   handler that relied on running after an inner one needs the inner
   handler to call it.
+- **Tables: new prop fields, a reactive `inset_x`, header z-order**
+  (`idea-ui`, `table`). `TableProps` gained `columns`, `column_widths`,
+  `on_column_resize`, `selection`, `on_reorder` and `empty`;
+  `TableRowProps` gained `id`, `selectable`, `draggable`,
+  `reorder_group` (and its `Default` is hand-written: `selectable` and
+  `draggable` default to `true`); `TableCellProps` gained `padding`,
+  `tone`, `sort` and `on_sort`. `Table(inset_x)` is now
+  `Reactive<TableInset>` — a `ui!` call site is unchanged, a struct
+  literal wraps it in `Reactive::Static`. The pinned header row stacks at
+  `z_index` 4 and a frozen header corner at 5 (were 2 and 3), leaving 2–3
+  for a row lifted by a reorder drag. On the SDK, `TableProps` gained
+  `columns` and `TableRowPrim` gained `data`. *Migration:* fill the new
+  fields from `Default`; nothing to change at `ui!` call sites.
+
 - **`table` SDK payload changes** (`table`). For code that builds
   tables below idea-ui: `CellSpanMarker` is now `CellMarker` (it also
   carries a cell's `ColumnSpec`, so a native cell that sizes its column
@@ -655,6 +669,45 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **The table suite** (`idea-ui`, `table`). Every data table builds from
+  `Table` / `TableRow` / `TableCell` alone:
+  - **Column model** — `Table(columns = vec![TableColumn::new("name")…])`
+    applies each column's width, `min_width`/`max_width`, `fill`,
+    `resizable`, `pinned`, `align`, `truncate` and `padding` to every
+    cell of the column, header and body. Frozen columns inset by the
+    widths before them, and only the innermost draws the frozen edge.
+  - **Resizable columns** — a header drag handle, revealed on hover,
+    resizes the whole column live through a screen-owned
+    `Signal<ColumnWidths>` (`column_widths`); `on_column_resize(id,
+    Some(w))` on release, `None` on a double-click reset.
+  - **Selection column** — `Table(selection = Some(set))` adds a
+    tri-state select-all over the visible selectable rows and a box per
+    `TableRow(id = …)`.
+  - **Drag to reorder** — `Table(on_reorder = …)` adds a grip column and
+    lift/slide/drop on the `dnd` SDK; `on_reorder(from, to)` over the
+    draggable rows (`move_in_place`), within `reorder_group`. Frozen
+    columns stay frozen while a row is lifted.
+  - **Actions column** — `TableColumn::actions(id)` (fixed width, frozen
+    right, `CellPadding::Icon`); `TableCell(padding = CellPadding::Icon)`
+    without a column model.
+  - **Empty state** — `Table(empty = Some("…".into()))` spans one row
+    past the added columns.
+  - **Sort headers** — `TableCell(sort = Some(SortState::Asc), on_sort =
+    …)` draws the direction and asks for `SortState::next`.
+  - **Cell tone** — `TableCell(tone = CellTone::Danger)` colours one value.
+  - **Pager** — `TablePager` ("26–50 of 312 projects", a Rows picker,
+    page numbers) for the footer slot.
+  - **Live inset** — `TableInset::by_breakpoint(base, md, lg)`; the table
+    re-pads in place instead of rebuilding.
+  - **Narrow form** — `TableCards` lays rows out as cards from the same
+    column specs (`CardSlot`: title, opposite, actions, labelled fields
+    up to a cap, the rest behind "+N more"), virtualized with measured
+    heights and `on_end_reached` paging.
+  - SDK seams: `TableProps::columns` (a table-level `ColumnSpec` per
+    column), `set_row_data`/`row_data`, `visit_rows_mut`,
+    `row_cells_mut`, `push_cell_content`, `visit_cell_content`,
+    `set_cell_hover`, `is_footer`, and `cell_span` is public.
 
 - **`label_hint` on Field and Textarea** (`idea-ui`). A short muted note
   beside the label ("Full name  Optional"). The Field docs page now shows

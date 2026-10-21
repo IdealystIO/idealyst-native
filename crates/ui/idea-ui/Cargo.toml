@@ -43,7 +43,7 @@ catalog = ["runtime-core/catalog", "idea-theme/catalog", "dep:mcp-catalog"]
 # The themed `Table` component + its `table` SDK dep (ON by default).
 # The only feature on this crate that still removes linked code: without
 # it the `table` crate never enters the graph.
-table = ["dep:table"]
+table = ["dep:table", "dep:dnd"]
 
 # ---------------------------------------------------------------------------
 # WHY THERE IS NO PER-COMPONENT `prim-*` GATING
@@ -85,6 +85,9 @@ idea-ui-docs-derive = { workspace = true, optional = true }
 # and `toggle` (as `Switch`). Optional so a size-restricted build can
 # drop it (the `table` feature).
 table = { workspace = true, optional = true }
+# Drag-to-reorder rows (`Table(on_reorder = …)`) is built on the `dnd`
+# SDK's draggable / droppable handles. Rides the `table` feature.
+dnd = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Integration tests that MOUNT a component (not just resolve its
