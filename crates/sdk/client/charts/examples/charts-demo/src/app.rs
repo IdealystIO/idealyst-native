@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use charts::prelude::*;
 use charts::{ChartHover, DatumRef, MarkBounds, MarkContext, MarkOverride, PolarHover, StyleFn};
-use idea_ui::{install_idea_theme, light_theme, tone, variant, Button, VariantRef};
+use idea_ui::{install_idea_theme, light_theme, tone, variant, Button, ButtonVariant};
 use runtime_core::{after_animation_frame, component, rx, signal, switch, ui,
     AnchorableHandle, Element,
     IntoElement, LayoutSubscription, Length, Position, Ref, Signal, StyleApplication, StyleRules,
@@ -586,9 +586,9 @@ pub fn KindButton(#[prop(static)] kind_of: Kind, active: Signal<Kind>) -> Elemen
             label = this.label().to_string(),
             tone = tone::Primary,
             variant = rx!(if active.get() == this {
-                VariantRef::from(variant::Filled)
+                ButtonVariant::Filled
             } else {
-                VariantRef::from(variant::Outlined)
+                ButtonVariant::Outlined
             }),
             // `on_click` is `Rc<dyn Fn()>`, not a generic closure param —
             // a bare closure does not coerce, so the cast is required.

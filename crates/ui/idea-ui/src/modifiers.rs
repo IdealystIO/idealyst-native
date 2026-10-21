@@ -150,10 +150,7 @@ pub mod variant {
     /// renders it until the app asks — a restyle at boot:
     ///
     /// ```ignore
-    /// ButtonStyles::restyle(|s| {
-    ///     tone_variant_arms(&mut s.root(), &semantic_tones(), "gradient", &variant::Gradient);
-    ///     tone_variant_arms(&mut s.label(), &semantic_tones(), "gradient", &variant::Gradient);
-    /// });
+    /// ButtonStyles::restyle(|s| s.tone_variant(ButtonVariant::Gradient, &variant::Gradient));
     /// ```
     #[derive(Copy, Clone, Default, Debug, IdealystSchema)]
     #[schema(value_of = "ButtonVariant", via = "idea_ui::variant")]

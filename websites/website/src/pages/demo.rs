@@ -384,21 +384,25 @@ fn intents() -> Element {
 }
 
 fn button_kinds() -> Element {
-    let kinds: Vec<(&str, fn() -> idea_ui::VariantRef)> = vec![
-        ("Solid", || idea_ui::variant::Filled.into()),
-        ("Soft", || idea_ui::variant::Soft.into()),
-        ("Outlined", || idea_ui::variant::Outlined.into()),
-        ("Ghost", || idea_ui::variant::Ghost.into()),
+    use idea_ui::ButtonVariant;
+    let kinds = [
+        ("Solid", ButtonVariant::Filled),
+        ("Soft", ButtonVariant::Soft),
+        ("Outlined", ButtonVariant::Outlined),
+        ("Ghost", ButtonVariant::Ghost),
     ];
-    let mut buttons: Vec<Element> = Vec::with_capacity(kinds.len());
-    for (name, make_variant) in kinds {
-        let label = name.to_string();
-        let noop: Rc<dyn Fn()> = Rc::new(|| {});
-        buttons.push(ui! { Button(label = label, on_click = noop, tone = idea_ui::tone::Primary, variant = make_variant()) });
-    }
-    let card_children: Vec<Element> = vec![
-        ui! { Stack(gap = StackGap::Md, axis = StackAxis::Row) { buttons } },
-    ];
+    let card_children: Vec<Element> = vec![ui! {
+        Stack(gap = StackGap::Md, axis = StackAxis::Row) {
+            for (name, kind) in kinds {
+                Button(
+                    label = name.to_string(),
+                    on_click = Rc::new(|| {}) as Rc<dyn Fn()>,
+                    tone = idea_ui::tone::Primary,
+                    variant = kind,
+                )
+            }
+        }
+    }];
     let children: Vec<Element> = vec![
         ui! { Typography(content = "Button kinds".to_string(), kind = idea_ui::typography_kind::H2) },
         ui! {

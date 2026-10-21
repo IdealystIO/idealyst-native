@@ -374,3 +374,16 @@ fn slot_override_sheets_resolve_against_the_slot_selection() {
     let fixed = SlotOverride::from(StyleRules { background: bg("x"), ..Default::default() });
     assert_eq!(bg_of(&fixed.resolve(&VariantSet::new().with("selected", "on"))), "x");
 }
+
+#[test]
+fn composed_slots_names_every_composed_slot_with_its_sheet() {
+    reset();
+    __compose_for_dump::<CardStyles>();
+    let slots: Vec<_> = composed_slots()
+        .into_iter()
+        .filter(|(component, _, _)| *component == CardStyles::NAME)
+        .collect();
+    let names: Vec<_> = slots.iter().map(|(_, slot, _)| *slot).collect();
+    assert_eq!(names, ["root", "title"], "declaration order");
+    assert_eq!(slots[0].2.premint_class(), Some("iy-card00root"), "the composed sheet itself");
+}

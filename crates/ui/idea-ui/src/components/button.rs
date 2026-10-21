@@ -190,17 +190,50 @@ fn root_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
 
 /// The label's `(tone, variant)` foreground — the recipe's `color` alone.
 fn label_tone_variants(s: &mut SlotRestyle<'_, ButtonStyles>) {
+    let tones = semantic_tones();
     for (key, recipe) in variant::builtin_recipes() {
-        idea_theme::extensible::with_idea_theme(|theme| {
-            for tone in semantic_tones() {
-                let ctx = idea_theme::extensible::ResolutionCtx { theme, tone: &*tone.0 };
-                let color = recipe.render(&ctx).color;
-                s.raw_compound(
-                    &[("tone", tone.key()), ("variant", key)],
-                    runtime_core::StyleRules { color, ..Default::default() },
-                );
-            }
-        });
+        label_variant_colors(s, &tones, key, recipe);
+    }
+}
+
+/// One variant's label foreground per tone: the recipe's `color` alone
+/// (a text node takes no surface).
+fn label_variant_colors(
+    s: &mut SlotRestyle<'_, ButtonStyles>,
+    tones: &[ToneRef],
+    key: &str,
+    recipe: &dyn idea_theme::extensible::Variant,
+) {
+    idea_theme::extensible::with_idea_theme(|theme| {
+        for tone in tones {
+            let ctx = idea_theme::extensible::ResolutionCtx { theme, tone: &*tone.0 };
+            let color = recipe.render(&ctx).color;
+            s.raw_compound(
+                &[("tone", tone.key()), ("variant", key)],
+                runtime_core::StyleRules { color, ..Default::default() },
+            );
+        }
+    });
+}
+
+impl ButtonRestyle<'_, '_> {
+    /// Give a variant value a tone-aware look from a surface recipe, the
+    /// way the built-in variants get theirs: the box's fill per tone, its
+    /// hover / press feedback, and the label's foreground.
+    ///
+    /// ```ignore
+    /// // An app variant…
+    /// const RAISED: ButtonVariant = ButtonVariant::define("raised");
+    /// ButtonStyles::restyle(|s| s.tone_variant(RAISED, &Raised));
+    /// // …or the opt-in gradient.
+    /// ButtonStyles::restyle(|s| s.tone_variant(ButtonVariant::Gradient, &variant::Gradient));
+    /// ```
+    pub fn tone_variant(&mut self, value: ButtonVariant, recipe: &dyn idea_theme::extensible::Variant) {
+        let tones = semantic_tones();
+        let mut root = self.root();
+        tone_variant_arms(&mut root, &tones, value.key(), recipe);
+        tone_variant_state_overlays(&mut root, &tones, value.key());
+        label_variant_colors(&mut self.label(), &tones, value.key(), recipe);
     }
 }
 
@@ -1188,6 +1221,34 @@ mod tests {
 
     fn reset_styles() {
         runtime_core::component_styles::__reset::<ButtonStyles>();
+    }
+
+    /// `tone_variant` opts a variant value into a tone-aware look: the
+    /// gradient recipe paints the box (fill + gradient) and the label's
+    /// foreground — on the LABEL node, never a surface on the text.
+    #[test]
+    fn tone_variant_adds_the_gradient_to_box_and_label() {
+        with_test_world(|| {
+            reset_styles();
+            theme();
+            ButtonStyles::restyle(|s| s.tone_variant(ButtonVariant::Gradient, &variant::Gradient));
+            let props = ButtonProps {
+                label: Reactive::Static("Go".to_string()),
+                variant: Reactive::Static(ButtonVariant::Gradient),
+                ..Default::default()
+            };
+            let (children, app) = pressable_parts(Button(&props));
+            let rules = resolve_style(&app);
+            assert!(rules.background_gradient.is_some(), "the box paints the accent gradient");
+            let label = children.into_iter().last().expect("a label");
+            let label_rules = match classify(label) {
+                P::Text { style: Some(TStyle::App(a)), .. } => resolve_style(&a),
+                _ => panic!("the label is a styled text node"),
+            };
+            assert_eq!(label_rules.color.as_ref().and_then(|c| c.name()), Some("effect-gradient-text"));
+            assert!(label_rules.background_gradient.is_none(), "the label takes no surface");
+            reset_styles();
+        });
     }
 
     /// A custom variant: `ButtonVariant::define` plus a restyle arm. The

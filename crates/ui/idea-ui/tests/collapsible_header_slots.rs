@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use common::lay_out;
 use idea_ui::{Collapsible, CollapsibleChevronSide};
-use runtime_core::{signal, text, ui, Element};
+use runtime_core::{signal, ui, Element};
 
 const PANE_WIDTH: f32 = 480.0;
 const PANE_HEIGHT: f32 = 600.0;

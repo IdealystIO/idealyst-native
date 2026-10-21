@@ -17,7 +17,7 @@
 //! comments below rely on ("sorts before").
 
 use runtime_core::{
-    component_styles, AlignItems, Color, Cursor, DisplayKind, FlexDirection, FontWeight, JustifyContent, Length,
+    component_styles, AlignItems, Color, Cursor, FlexDirection, FontWeight, JustifyContent, Length,
     Overflow, Position, TextAlign, TextTransform,
 };
 

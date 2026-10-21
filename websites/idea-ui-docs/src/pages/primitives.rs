@@ -13,7 +13,7 @@ use icons_lucide::{
 use idea_ui::{
     tone, typography_kind, variant, Button, Divider, DividerAxis, Grid, Icon, Image, Spacer,
     Stack, StackAlign, StackAxis, StackGap, StackPadding, Surface, SurfaceColor, ToneRef,
-    Typography, TypographyKindRef,
+    Typography, TypographyKind,
 };
 
 use crate::pages::body;
@@ -44,7 +44,7 @@ pub fn typography() -> Element {
             Section(title = "Props".to_string()) {
                 PropsTable(rows = vec![
                     Prop { name: "content", ty: "Reactive<String>",   desc: "Text. Literal, String, Signal<String>, or rx!(...)." },
-                    Prop { name: "kind",    ty: "TypographyKindRef",  desc: "Display / H1..H3 / BodyXl..BodySm / Caption / Overline. Default: Body." },
+                    Prop { name: "kind",    ty: "TypographyKind",     desc: "Display / H1..H3 / BodyXl..BodySm / Caption / Overline. Default: Body." },
                     Prop { name: "tone",    ty: "Option<ToneRef>",    desc: "Optional semantic color. Overrides the muted flag when Some." },
                     Prop { name: "muted",   ty: "bool",               desc: "Use the theme's muted text color when tone is None." },
                 ])
@@ -69,7 +69,7 @@ fn kind_gallery() -> Element {
     ui! { Stack(gap = StackGap::Md) { rows } }
 }
 
-fn kind_row(name: &str, sample: &str, kind: TypographyKindRef) -> Element {
+fn kind_row(name: &str, sample: &str, kind: TypographyKind) -> Element {
     let label = ui! { Typography(content = name.to_string(), kind = typography_kind::Overline, muted = true) };
     let sample_line = ui! { Typography(content = sample.to_string(), kind = kind) };
     ui! { Stack(gap = StackGap::Xs) { label sample_line } }

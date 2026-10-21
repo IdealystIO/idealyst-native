@@ -27,9 +27,7 @@ use runtime_core::{
 // runtime-shared types).
 use runtime_core::{styled_text, TextRun, TextRunStyle};
 
-use idea_ui::{
-    installed_typography_sheet, Typography, TypographyKindRef, TypographyProps,
-};
+use idea_ui::{Typography, TypographyKind, TypographyProps, TypographyStyles};
 use idea_ui::tokens;
 
 /// One run of a parsed paragraph: either plain prose or the inside of
@@ -99,7 +97,7 @@ pub struct ProseProps {
     /// included.
     pub content: Reactive<String>,
     /// Typographic role of the paragraph, as in `Typography`.
-    pub kind: TypographyKindRef,
+    pub kind: TypographyKind,
     /// Muted text color, as in `Typography`.
     pub muted: bool,
 }
@@ -108,7 +106,7 @@ impl Default for ProseProps {
     fn default() -> Self {
         Self {
             content: Reactive::Static(String::new()),
-            kind: Reactive::Static(TypographyKindRef::default()),
+            kind: Reactive::Static(TypographyKind::default()),
             muted: Reactive::Static(false),
         }
     }
@@ -149,13 +147,12 @@ pub(crate) fn runs_for(segs: Vec<Segment>) -> Vec<TextRun> {
 
 /// Lower parsed segments to one styled-text node carrying the
 /// paragraph's Typography-sheet style (same axes Typography uses).
-fn build(segs: Vec<Segment>, kind: TypographyKindRef, muted: bool) -> Element {
+fn build(segs: Vec<Segment>, kind: TypographyKind, muted: bool) -> Element {
     let runs: Vec<TextRun> = runs_for(segs);
 
-    let color_key = if muted { "muted" } else { "default" };
-    let paragraph_style = StyleApplication::new(installed_typography_sheet())
-        .with("kind", kind.key().to_string())
-        .with("color", color_key.to_string());
+    let paragraph_style = TypographyStyles::text()
+        .set(kind)
+        .raw("tone", if muted { "muted" } else { "default" });
 
     runtime_core::IntoElement::into_element(styled_text(runs).with_style(paragraph_style))
 }

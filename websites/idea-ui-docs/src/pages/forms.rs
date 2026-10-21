@@ -11,15 +11,43 @@
 use std::rc::Rc;
 
 use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, LAYOUT_GRID, LIST, MAP, SEARCH, STAR};
-use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, Signal, StyleRules, StyleSheet};
+use runtime_core::{pressable, rx, signal, stylesheet, ui, Element, IntoElement, Signal, StyleRules};
 use idea_ui::{
     date::{format_date, format_datetime, format_time},
     tone, Adornment, Autocomplete, Button, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
     ControlSize, DateInput, DatePicker, DateRangePicker, DateTimeInput, DateTimePicker, Field,
-    FieldAppearance, FieldSize, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
-    Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput, Typography,
-    Weekday,
+    FieldAppearance, FieldSize, FieldSlotStyles, Icon, RadioGroup, RadioOption, RangeCalendar, SegmentOption, SegmentedControl,
+    SegmentedControlSlotStyles, Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput,
+    Typography, Weekday,
 };
+use idea_ui::theme::IdeaThemeRef;
+
+use crate::restyles::PILL;
+
+stylesheet! {
+    /// The restyled demo's segment: primary-filled when selected.
+    InkSegment<IdeaThemeRef> {
+        base(_t) {}
+        variant selected {
+            #[default]
+            off(_t) {}
+            on(t) { background: t.intent.primary.solid_bg() }
+        }
+    }
+}
+
+stylesheet! {
+    /// The restyled demo's label: light on the ink track, the primary
+    /// fill's text color when selected.
+    InkSegmentLabel<IdeaThemeRef> {
+        base(t) { color: t.color.surface() }
+        variant selected {
+            #[default]
+            off(_t) {}
+            on(t) { color: t.intent.primary.solid_text() }
+        }
+    }
+}
 
 use crate::pages::body;
 use crate::shell::{Callout, CodePanel, Demo, DemoSurface, Prop, PropsTable, Section, H3, P};
@@ -384,6 +412,15 @@ pub fn field() -> Element {
     let on_outlined: Rc<dyn Fn(String)> = Rc::new(move |s| outlined.set(s));
     let bare = signal(String::new());
     let on_bare: Rc<dyn Fn(String)> = Rc::new(move |s| bare.set(s));
+    let pill_text = signal(String::new());
+    let on_pill_text: Rc<dyn Fn(String)> = Rc::new(move |s| pill_text.set(s));
+    let loud = signal(String::new());
+    let on_loud: Rc<dyn Fn(String)> = Rc::new(move |s| loud.set(s));
+    let loud_label = FieldSlotStyles::default().label(StyleRules {
+        text_transform: Some(runtime_core::TextTransform::Uppercase),
+        letter_spacing: Some(runtime_core::Tokenized::Literal(0.8)),
+        ..Default::default()
+    });
 
     // Size demo — one shared value across the three densities.
     let sized = signal(String::new());
@@ -550,6 +587,55 @@ ui! {
 )"##.to_string())
         }
     }, ui! {
+        Section(title = "Your own appearance".to_string()) {
+            P(content = "The appearance axis is open: `FieldAppearance::define(\"pill\")` is a new \
+                value, and one restyle arm on the `input` slot at boot gives it a look. Every \
+                other axis (size, tone, the focus ring) still composes with it.".to_string())
+            DemoSurface {
+                Field(label = Some("Search".to_string()), value = pill_text, on_change = on_pill_text, placeholder = Some("A pill field".to_string()), variant = PILL)
+            }
+            CodePanel(src = r##"pub const PILL: FieldAppearance = FieldAppearance::define("pill");
+
+// At boot, before the first render:
+FieldStyles::restyle(|s| {
+    s.input().arm(PILL, |t| StyleRules {
+        background: Some(t.color.surface_alt()),
+        border_top_left_radius: Some(t.radius.pill()),
+        // …the other corners, and the horizontal padding…
+        ..Default::default()
+    });
+});
+
+// Anywhere:
+Field(value = v, on_change = on_v, variant = PILL)"##.to_string())
+        }
+    }, ui! {
+        Section(title = "Restyling".to_string()) {
+            P(content = "Field's styled sections are slots of `FieldStyles`: `group`, `label`, \
+                `label_row`, `label_hint`, `input`, `help` and `adornment`. Restyle a slot at \
+                boot for every Field (and every Textarea, which draws the same slots), or \
+                override it on one Field through `styles`.".to_string())
+            DemoSurface {
+                Field(label = Some("Shouting label".to_string()), value = loud, on_change = on_loud, styles = loud_label)
+            }
+            CodePanel(src = r##"// Every Field, once at boot:
+FieldStyles::restyle(|s| {
+    s.label().base(|t| StyleRules { color: Some(t.color.text_muted()), ..Default::default() });
+});
+
+// One Field:
+Field(
+    label = Some("Shouting label".to_string()),
+    value = v,
+    on_change = on_v,
+    styles = FieldSlotStyles::default().label(StyleRules {
+        text_transform: Some(TextTransform::Uppercase),
+        letter_spacing: Some(Tokenized::Literal(0.8)),
+        ..Default::default()
+    }),
+)"##.to_string())
+        }
+    }, ui! {
         Section(title = "Sizes".to_string()) {
             P(content = "`size = FieldSize::Sm | Md | Lg` scales padding + font; a leading \
                 `Adornment::Icon` auto-sizes to match.".to_string())
@@ -635,7 +721,8 @@ ui! {
                 Prop { name: "error",       ty: "Reactive<Option<String>>",  desc: "Error text below the input. Takes precedence over help; auto-applies the Danger tone." },
                 Prop { name: "tone",        ty: "Option<ToneRef>",           desc: "Optional border + help-text color overlay." },
                 Prop { name: "size",        ty: "FieldSize",                 desc: "Sm / Md / Lg density." },
-                Prop { name: "variant",     ty: "FieldAppearance",           desc: "Outline (default) / Contained / Bare." },
+                Prop { name: "variant",     ty: "FieldAppearance",           desc: "Outline (default) / Contained / Bare, or an app value (`FieldAppearance::define`)." },
+                Prop { name: "styles",      ty: "FieldSlotStyles",           desc: "Per-instance overrides of the group / label / input / help / adornment slots." },
                 Prop { name: "secure",      ty: "bool",                      desc: "Mask the entered text (password entry)." },
                 Prop { name: "leading",     ty: "Adornment",                 desc: "Icon/element before the input (Adornment::Icon / ::element). Default None." },
                 Prop { name: "trailing",    ty: "Adornment",                 desc: "Icon/element after the input — e.g. a clear button or password-visibility toggle." },
@@ -898,7 +985,7 @@ pub fn segmented_control() -> Element {
 
     // One row per control size: a segmented control beside a Select and an
     // outlined Button of the same size, so the shared heights are visible.
-    let size_row = |seg: ControlSize, sel: idea_ui::SelectSize, btn: idea_ui::ButtonSizeRef, label: &str| {
+    let size_row = |seg: ControlSize, sel: idea_ui::SelectSize, btn: idea_ui::ButtonSize, label: &str| {
         let picked = signal("day".to_string());
         let on_pick: Rc<dyn Fn(String)> = Rc::new(move |v| picked.set(v));
         let choice = signal("a".to_string());
@@ -927,24 +1014,14 @@ pub fn segmented_control() -> Element {
     let theme = signal("light".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
 
-    // A restyled control: an ink track, and a primary-filled selected
-    // segment whose `color` also reaches its label.
+    // One restyled control: an ink track, a primary-filled selected
+    // segment, and labels that read on both.
     let roster = signal("day".to_string());
     let on_roster: Rc<dyn Fn(String)> = Rc::new(move |v| roster.set(v));
-    let t = idea_ui::tokens();
-    let ink_track = Rc::new(StyleSheet::r#static(StyleRules {
-        background: Some(t.color.text()),
-        ..Default::default()
-    }));
-    let light_segment = Rc::new(StyleSheet::r#static(StyleRules {
-        color: Some(t.color.surface()),
-        ..Default::default()
-    }));
-    let primary_selected = Rc::new(StyleSheet::r#static(StyleRules {
-        background: Some(t.intent.primary.solid_bg()),
-        color: Some(t.intent.primary.solid_text()),
-        ..Default::default()
-    }));
+    let ink = SegmentedControlSlotStyles::default()
+        .track(StyleRules { background: Some(idea_ui::tokens().color.text()), ..Default::default() })
+        .segment(InkSegment::sheet())
+        .label(InkSegmentLabel::sheet());
 
     let current = ui! {
         Typography(
@@ -1019,9 +1096,9 @@ ui! {
                 font, so a segmented control lines up beside them in a toolbar.".to_string())
             DemoSurface {
                 Stack(gap = StackGap::Md) {
-                    { size_row(ControlSize::Sm, idea_ui::SelectSize::Sm, idea_ui::size::Sm.into(), "Small") }
-                    { size_row(ControlSize::Md, idea_ui::SelectSize::Md, idea_ui::size::Md.into(), "Medium") }
-                    { size_row(ControlSize::Lg, idea_ui::SelectSize::Lg, idea_ui::size::Lg.into(), "Large") }
+                    { size_row(ControlSize::Sm, idea_ui::SelectSize::Sm, idea_ui::ButtonSize::Sm, "Small") }
+                    { size_row(ControlSize::Md, idea_ui::SelectSize::Md, idea_ui::ButtonSize::Md, "Medium") }
+                    { size_row(ControlSize::Lg, idea_ui::SelectSize::Lg, idea_ui::ButtonSize::Lg, "Large") }
                 }
             }
         }
@@ -1059,14 +1136,12 @@ ui! {
         }
     }, ui! {
         Section(title = "Restyling".to_string()) {
-            P(content = "Three slot overrides restyle the control: `style` for the track, \
-                `segment_style` for every unselected segment and `selected_segment_style` for \
-                the selected one. Each is a plain `StyleSheet` layered on top of the theme \
-                style, so only the fields it sets change. A segment slot's `color` also \
-                reaches the label on every backend, so a dark selected fill can carry light \
-                text. To restyle every SegmentedControl in an app, pass the same three sheets \
-                to `install_segmented_control_style` once at startup; a prop on one control \
-                still wins over the installed slot.".to_string())
+            P(content = "Every styled section is a slot of `SegmentedControlStyles`: `track`, \
+                `segment`, `inner`, `label` and `adornment`. The `styles` prop overrides slots on \
+                one control — plain rules, or a sheet whose `selected` arms resolve against the \
+                segment's own selection. To restyle every SegmentedControl in the app, restyle \
+                the slots once at boot; the restyle composes into the slot sheets (they still \
+                premint), and a `styles` prop on one control still wins over it.".to_string())
             DemoSurface {
                 SegmentedControl(
                     value = roster,
@@ -1076,43 +1151,59 @@ ui! {
                         SegmentOption::new("night", "Night"),
                         SegmentOption::new("off", "Off"),
                     ],
-                    style = Some(ink_track),
-                    segment_style = Some(light_segment),
-                    selected_segment_style = Some(primary_selected),
+                    styles = ink,
                 )
             }
-            CodePanel(src = r##"let t = idea_ui::tokens();
-let ink_track = Rc::new(StyleSheet::r#static(StyleRules {
-    background: Some(t.color.text()),
-    ..Default::default()
-}));
-let primary_selected = Rc::new(StyleSheet::r#static(StyleRules {
-    background: Some(t.intent.primary.solid_bg()),
-    color: Some(t.intent.primary.solid_text()),
-    ..Default::default()
-}));
-
-ui! {
-    SegmentedControl(
-        value = roster,
-        on_change = on_change,
-        options = vec![SegmentOption::new("day", "Day"), SegmentOption::new("night", "Night")],
-        style = Some(ink_track),
-        selected_segment_style = Some(primary_selected),
-    )
+            CodePanel(src = r##"stylesheet! {
+    InkSegment<IdeaThemeRef> {
+        base(_t) {}
+        variant selected {
+            #[default]
+            off(_t) {}
+            on(t) { background: t.intent.primary.solid_bg() }
+        }
+    }
+}
+stylesheet! {
+    InkSegmentLabel<IdeaThemeRef> {
+        base(t) { color: t.color.surface() }
+        variant selected {
+            #[default]
+            off(_t) {}
+            on(t) { color: t.intent.primary.solid_text() }
+        }
+    }
 }
 
-// Or for every SegmentedControl in the app, once at startup:
-install_segmented_control_style(SegmentedControlStyle {
-    track: Some(ink_track),
-    selected_segment: Some(primary_selected),
-    ..Default::default()
+// One control:
+SegmentedControl(
+    value = roster,
+    on_change = on_change,
+    options = vec![SegmentOption::new("day", "Day"), SegmentOption::new("night", "Night")],
+    styles = SegmentedControlSlotStyles::default()
+        .track(StyleRules { background: Some(tokens().color.text()), ..Default::default() })
+        .segment(InkSegment::sheet())
+        .label(InkSegmentLabel::sheet()),
+)
+
+// Or every SegmentedControl in the app, once at boot:
+SegmentedControlStyles::restyle(|s| {
+    s.track().base(|t| StyleRules { background: Some(t.color.text()), ..Default::default() });
+    s.segment().arm(SegmentedControlSelected::On, |t| StyleRules {
+        background: Some(t.intent.primary.solid_bg()),
+        ..Default::default()
+    });
+    s.label().base(|t| StyleRules { color: Some(t.color.surface()), ..Default::default() });
+    s.label().arm(SegmentedControlSelected::On, |t| StyleRules {
+        color: Some(t.intent.primary.solid_text()),
+        ..Default::default()
+    });
 });"##.to_string())
         }
     }, ui! {
         Section(title = "Appearance".to_string()) {
-            P(content = "The control is one bordered, tinted track (the `SegmentedGroup` sheet) \
-                holding a `SegmentButton` per option. The selected segment is filled with the \
+            P(content = "The control is one bordered, tinted `track` holding a `segment` per \
+                option. The selected segment is filled with the \
                 surface color and edged like a raised key; the others are transparent with \
                 muted labels. Hover and press brighten a label without repainting its fill, so \
                 the selection always stays readable, and keyboard focus draws the themed focus \
@@ -1132,9 +1223,8 @@ install_segmented_control_style(SegmentedControlStyle {
                 Prop { name: "size",      ty: "Reactive<ControlSize>", desc: "Sm, Md (default) or Lg — the height and font of a Select / Field / outlined Button of the same size." },
                 Prop { name: "block",     ty: "bool",               desc: "Fill the container's width, segments sharing it evenly. Default: false (hugs its options)." },
                 Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label), plus .leading(Adornment) / .trailing(Adornment) beside the label (Icon recolors with selection; Element is any component)." },
-                Prop { name: "style",     ty: "Option<Rc<StyleSheet>>", desc: "Override layered on the track (fill, border, radius, padding). Wins over the installed app-wide style." },
-                Prop { name: "segment_style", ty: "Option<Rc<StyleSheet>>", desc: "Override layered on every unselected segment; its color/font reach the label." },
-                Prop { name: "selected_segment_style", ty: "Option<Rc<StyleSheet>>", desc: "Override layered on the selected segment; its color/font reach the label." },
+                Prop { name: "size",      ty: "SegmentedControlSize", desc: "A ControlSize converts; an app value adds a size with a restyle arm." },
+                Prop { name: "styles",    ty: "SegmentedControlSlotStyles", desc: "Per-instance overrides of the track / segment / inner / label / adornment slots, layered over the app-wide restyle." },
             ])
         }
     }])

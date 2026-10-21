@@ -36,18 +36,19 @@
 //! # Why the components are RENDERED, not described
 //!
 //! A component's DOM shape and class list are decided by the framework —
-//! `Card` assembles its sheet per variant-set at mount, `Button` picks
-//! `layout-row` only when it carries an icon, several components nest
-//! sub-sheets (`ExtButton` + `ExtButtonLabel`). Inferring that from source
-//! is guesswork that silently drifts. Rendering through `backend_ssr` makes
+//! `Button` picks `layout-row` only when it carries an icon, and most
+//! components stamp several slots (`Button.root` on the box,
+//! `Button.label` on the text). Inferring that from source is guesswork
+//! that silently drifts. Rendering through `backend_ssr` makes
 //! the framework the source of truth.
 //!
 //! # The pass order, and why it is not negotiable
 //!
-//! Sheets reach the premint registry two ways: `stylesheet!` registers at
-//! LINK time, but a component that assembles its sheet AT MOUNT (Select's
-//! dropdown, Slider's container, Table's cells, Toast) only registers once
-//! something renders it. So:
+//! Sheets reach the premint registry three ways: `stylesheet!` registers at
+//! LINK time; a component's `component_styles!` slots compose (restyles
+//! included) when `assembled_sheets()` runs their link-time dump hooks; and
+//! a sheet a component builds AT MOUNT outside its slots (a computed
+//! layer's premint identity) only registers once something renders it. So:
 //!
 //!   1. render every recipe with the minted-class guard DISARMED — this is
 //!      what registers the mount-built sheets;
@@ -183,118 +184,19 @@ fn emit(name: &str, sheet: &Rc<StyleSheet>, out: &mut Vec<String>) {
 fn manifest_json() -> String {
     let mut out: Vec<String> = Vec::new();
 
-    let macro_sheets: Vec<(&str, Rc<StyleSheet>)> = vec![
-        ("Stack", idea_ui::stylesheets::stack_style()),
-        ("Button", idea_ui::stylesheets::button_style()),
-        ("Typography", idea_ui::stylesheets::typography_style()),
-        ("Card", idea_ui::stylesheets::card_style()),
-        ("Field", idea_ui::stylesheets::field_style()),
-        ("FieldGroup", idea_ui::stylesheets::field_group_style()),
-        ("FieldLabel", idea_ui::stylesheets::field_label_style()),
-        ("FieldHelp", idea_ui::stylesheets::field_help_style()),
-        ("Divider", idea_ui::stylesheets::divider_style()),
-        ("Badge", idea_ui::stylesheets::badge_style()),
-        ("SwitchRow", idea_ui::stylesheets::switch_row_style()),
-        ("SwitchThumb", idea_ui::stylesheets::switch_thumb_style()),
-        ("ControlRow", idea_ui::stylesheets::control_row_style()),
-        ("SurfaceSheet", idea_ui::stylesheets::surface_sheet_style()),
-        ("ToastStack", idea_ui::stylesheets::toast_stack_style()),
-        ("SelectTrigger", idea_ui::stylesheets::select_trigger_style()),
-        ("SelectMenu", idea_ui::stylesheets::select_menu_style()),
-        ("SelectOption", idea_ui::stylesheets::select_option_style()),
-        ("AutocompleteBox", idea_ui::stylesheets::autocomplete_box_style()),
-        ("AutocompleteInput", idea_ui::stylesheets::autocomplete_input_style()),
-        ("AutocompleteChevron", idea_ui::stylesheets::autocomplete_chevron_style()),
-        ("AutocompleteEmpty", idea_ui::stylesheets::autocomplete_empty_style()),
-        ("Spacer", idea_ui::stylesheets::spacer_style()),
-        ("Center", idea_ui::stylesheets::center_style()),
-        ("IconButton", idea_ui::stylesheets::icon_button_style()),
-        ("AvatarImage", idea_ui::stylesheets::avatar_image_style()),
-        ("Tag", idea_ui::stylesheets::tag_style()),
-        ("TagLabel", idea_ui::stylesheets::tag_label_style()),
-        ("TagClose", idea_ui::stylesheets::tag_close_style()),
-        ("Alert", idea_ui::stylesheets::alert_style()),
-        ("AlertContent", idea_ui::stylesheets::alert_content_style()),
-        ("Skeleton", idea_ui::stylesheets::skeleton_style()),
-        ("TabBar", idea_ui::stylesheets::tab_bar_style()),
-        ("TabButton", idea_ui::stylesheets::tab_button_style()),
-        ("TabButtonActive", idea_ui::stylesheets::tab_button_active_style()),
-        ("TabButtonDot", idea_ui::stylesheets::tab_button_dot_style()),
-        ("TabDot", idea_ui::stylesheets::tab_dot_style()),
-        ("TabPanel", idea_ui::stylesheets::tab_panel_style()),
-        ("SegmentedGroup", idea_ui::stylesheets::segmented_group_style()),
-        ("SegmentButton", idea_ui::stylesheets::segment_button_style()),
-        ("Modal", idea_ui::stylesheets::modal_style()),
-        ("Popover", idea_ui::stylesheets::popover_style()),
-        ("Table", idea_ui::stylesheets::table_style()),
-        ("TableHeadCell", idea_ui::stylesheets::table_head_cell_style()),
-        ("TableBodyCell", idea_ui::stylesheets::table_body_cell_style()),
-        ("TableHeadText", idea_ui::stylesheets::table_head_text_style()),
-        ("TableBodyText", idea_ui::stylesheets::table_body_text_style()),
-        ("TableCellInner", idea_ui::stylesheets::table_cell_inner_style()),
-        ("CollapsibleContainer", idea_ui::stylesheets::collapsible_container_style()),
-        ("CollapsibleHeader", idea_ui::stylesheets::collapsible_header_style()),
-        ("CollapsibleChevron", idea_ui::stylesheets::collapsible_chevron_style()),
-        ("CollapsibleBody", idea_ui::stylesheets::collapsible_body_style()),
-        ("CollapsibleBodyAnimated", idea_ui::stylesheets::collapsible_body_animated_style()),
-        ("AccordionContainer", idea_ui::stylesheets::accordion_container_style()),
-        ("AccordionItemSeparator", idea_ui::stylesheets::accordion_item_separator_style()),
-        ("TooltipBubble", idea_ui::stylesheets::tooltip_bubble_style()),
-        ("TooltipBubbleText", idea_ui::stylesheets::tooltip_bubble_text_style()),
-        ("MenuItemRow", idea_ui::stylesheets::menu_item_row_style()),
-        ("MenuLabel", idea_ui::stylesheets::menu_label_style()),
-        ("MenuSeparator", idea_ui::stylesheets::menu_separator_style()),
-        ("MenuChevron", idea_ui::stylesheets::menu_chevron_style()),
-        ("MenuCheckbox", idea_ui::stylesheets::menu_checkbox_style()),
-        ("MenuCheckMark", idea_ui::stylesheets::menu_check_mark_style()),
-        ("BreadcrumbRow", idea_ui::stylesheets::breadcrumb_row_style()),
-        ("BreadcrumbItem", idea_ui::stylesheets::breadcrumb_item_style()),
-        ("BreadcrumbSeparator", idea_ui::stylesheets::breadcrumb_separator_style()),
-        ("PaginationRow", idea_ui::stylesheets::pagination_row_style()),
-        ("PageButton", idea_ui::stylesheets::page_button_style()),
-        ("ListContainer", idea_ui::stylesheets::list_container_style()),
-        ("ListItemRow", idea_ui::stylesheets::list_item_row_style()),
-        ("GridContainer", idea_ui::stylesheets::grid_container_style()),
-        ("LinkText", idea_ui::stylesheets::link_text_style()),
-        ("ImageBox", idea_ui::stylesheets::image_box_style()),
-        ("CalendarPanel", idea_ui::stylesheets::calendar_panel_style()),
-        ("CalendarHeader", idea_ui::stylesheets::calendar_header_style()),
-        ("CalendarTitleButton", idea_ui::stylesheets::calendar_title_button_style()),
-        ("CalendarWeekdayCell", idea_ui::stylesheets::calendar_weekday_cell_style()),
-        ("CalendarWeekRow", idea_ui::stylesheets::calendar_week_row_style()),
-        ("CalendarDay", idea_ui::stylesheets::calendar_day_style()),
-        ("CalendarDayLabel", idea_ui::stylesheets::calendar_day_label_style()),
-        ("CalendarZoomCell", idea_ui::stylesheets::calendar_zoom_cell_style()),
-        ("CalendarZoomLabel", idea_ui::stylesheets::calendar_zoom_label_style()),
-    ];
-    for (name, sheet) in &macro_sheets {
-        emit(name, sheet, &mut out);
+    // Every component's slots, by name (`Button.root`, `Field.input`, …).
+    // `assembled_sheets()` first runs each linked component's premint-dump
+    // composition (restyles included), so every slot is composed by the
+    // time `composed_slots` lists them.
+    let _ = runtime_core::premint::assembled_sheets();
+    for (component, slot, sheet) in runtime_core::component_styles::composed_slots() {
+        let name = format!("{}.{slot}", component.trim_end_matches("Styles"));
+        emit(&name, &sheet, &mut out);
     }
 
-    // Trait-driven sheets — assembled at theme install, identity via
-    // `premint_as`. These are the open-extension components whose axes
-    // come from the installed tone/variant/size/shape vocabularies, so
-    // their value lists reflect what an app actually has available.
-    let assembled: Vec<(&str, Rc<StyleSheet>)> = vec![
-        ("ExtButton", idea_theme::extensible::installed_button_sheet()),
-        ("ExtButtonLabel", idea_theme::extensible::installed_button_label_sheet()),
-        ("ExtBadge", idea_theme::extensible::installed_badge_sheet()),
-        ("ExtTag", idea_theme::extensible::installed_tag_sheet()),
-        ("ExtAlert", idea_theme::extensible::installed_alert_sheet()),
-        ("ExtTypography", idea_theme::extensible::installed_typography_sheet()),
-        ("ExtIconButton", idea_theme::extensible::installed_icon_button_sheet()),
-        ("ExtSwitch", idea_theme::extensible::installed_switch_sheet()),
-    ];
-    for (name, sheet) in &assembled {
-        emit(name, sheet, &mut out);
-    }
-
-    // Every OTHER registered assembled sheet — the ones components build at
-    // MOUNT (`Card` assembles per variant-set, `Field` per tone-set, …).
-    // They have no `installed_*` accessor to name them, but their class and
-    // axes are what a consumer must stamp, and without them a component like
-    // Card exports with no documented axes at all. Named by class so the
-    // lookup still works; callers key on `class`, not `name`.
+    // Every OTHER registered assembled sheet — sheets a component builds
+    // outside its slots (a computed layer's premint identity). Named by
+    // class so the lookup still works; callers key on `class`, not `name`.
     let named: std::collections::BTreeSet<String> =
         out.iter().filter_map(|e| {
             e.split("\"class\": \"").nth(1).and_then(|r| r.split('"').next()).map(str::to_string)
@@ -526,9 +428,8 @@ fn main() {
     let (tokens, manifest, components) = harness.world.enter(|| {
         idea_theme::install_idea_theme(light_theme());
         let tokens = tokens_css();
-        // Manifest before the CSS dump: calling each `*_style()` accessor is
-        // what forces the lazily-cached sheet to exist, and `dump_all_css`
-        // walks the registry those calls populate.
+        // Manifest before the CSS dump: composing the slots is what
+        // registers them, and `dump_all_css` walks that registry.
         let manifest = manifest_json();
         let components = premint_dump::dump_all_css();
         (tokens, manifest, components)

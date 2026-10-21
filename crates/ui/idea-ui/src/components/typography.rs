@@ -14,7 +14,7 @@
 //! the theme's default text color.
 
 use runtime_core::{
-    component, component_styles, text, Element, FontFamily, FontWeight, IdealystSchema, IntoElement, Length, Reactive,
+    component, component_styles, text, Element, FontFamily, FontWeight, IdealystSchema, IntoElement, Reactive,
     Role, SlotRestyle, StyleRules, TextAlign,
 };
 

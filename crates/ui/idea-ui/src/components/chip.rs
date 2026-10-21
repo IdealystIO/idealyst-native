@@ -46,12 +46,12 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, component_styles, derived, pressable, recipe, ui, view, AlignItems, AlignSelf, Element,
-    FlexDirection, FontWeight, IdealystSchema, IntoElement, Length, Reactive, SlotRestyle, StateBits, StyleRules,
+    component, component_styles, pressable, recipe, ui, view, AlignItems, AlignSelf, Element,
+    FlexDirection, FontWeight, IdealystSchema, IntoElement, Length, Reactive, SlotRestyle, StyleRules,
     TextAlign,
 };
 
-use idea_theme::extensible::{categorization_tones, tone, Tone, ToneRef};
+use idea_theme::extensible::{categorization_tones, tone, ToneRef};
 
 use crate::components::tone_slots::{focus_ring_compounds, foreground_arms, recipe_compounds, surface_arms};
 use crate::components::ControlSize;

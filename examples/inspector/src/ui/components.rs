@@ -296,8 +296,8 @@ fn mode_badge(mode: &str) -> (&'static str, idea_ui::ToneRef) {
 #[component]
 fn PropLine(#[prop(static)] prop: Prop) -> Element {
     let (label, badge_tone) = mode_badge(&prop.mode);
-    let badge_variant: idea_ui::VariantRef =
-        if prop.mode == "live" { variant::Soft.into() } else { variant::Outlined.into() };
+    let badge_variant =
+        if prop.mode == "live" { idea_ui::BadgeVariant::Soft } else { idea_ui::BadgeVariant::Outlined };
     let value = prop.value.clone().unwrap_or_else(|| "—".to_string());
     ui! {
         view(style = grid_row(&PROP_TRACKS, false, false)) {

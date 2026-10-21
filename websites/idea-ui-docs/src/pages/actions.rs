@@ -7,12 +7,14 @@
 
 use std::rc::Rc;
 
-use runtime_core::{ui, Element};
+use runtime_core::{ui, Element, Length, StyleRules, Tokenized};
 use icons_lucide::{DOWNLOAD, HEART, PENCIL, PLUS, SEARCH, SETTINGS, STAR, TRASH_2, X};
 use idea_ui::{
-    Avatar, AvatarSize, Button, IconButton, IconButtonSize, Link, Stack, StackAlign,
+    Avatar, AvatarSize, Button, ButtonSlotStyles, IconButton, IconButtonSize, Link, Stack, StackAlign,
     StackAxis, StackGap, tone, variant, size,
 };
+
+use crate::restyles::RAISED;
 
 use crate::pages::body;
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, H3, P};
@@ -52,6 +54,26 @@ pub fn button() -> Element {
             }
         },
         ui! {
+            Section(title = "Your own variant".to_string()) {
+                P(content = "Button's variant axis is open. `ButtonVariant::define(\"raised\")` is a \
+                    new value, and one restyle at boot gives it a look — here a tone-aware recipe, \
+                    rendered over every tone the way the built-ins are, so `tone = …` still picks \
+                    the fill. The restyle composes into Button's sheets, so the new arms premint \
+                    like the built-in ones.".to_string())
+                DemoSurface { button_custom_row() }
+                CodePanel(src = CUSTOM_VARIANT.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Restyling".to_string()) {
+                P(content = "Button's styled sections are slots of `ButtonStyles`: `root` (the box), \
+                    `label` and `icon`. A restyle at boot changes a slot for every Button in the \
+                    app; the `styles` prop overrides a slot on one Button.".to_string())
+                DemoSurface { button_restyled_row() }
+                CodePanel(src = RESTYLE.to_string())
+            }
+        },
+        ui! {
             Section(title = "With icon · loading · disabled".to_string()) {
                 P(content = "A leading or trailing icon sits inline with the label; \
                     `disabled` dims the surface and blocks the press.".to_string())
@@ -64,9 +86,10 @@ pub fn button() -> Element {
                     Prop { name: "label",         ty: "Reactive<String>",      desc: "Button text. Static or reactive." },
                     Prop { name: "on_click",      ty: "Rc<dyn Fn()>",          desc: "Callback fired on press." },
                     Prop { name: "tone",          ty: "ToneRef",               desc: "Semantic palette. Default: Primary." },
-                    Prop { name: "variant",       ty: "VariantRef",            desc: "Filled / Soft / Outlined / Ghost. Default: Filled." },
-                    Prop { name: "size",          ty: "ButtonSizeRef",         desc: "Sm / Md / Lg. Default: Md." },
-                    Prop { name: "shape",         ty: "ShapeRef",              desc: "Sharp / Sm / Md / Pill. Default: Md." },
+                    Prop { name: "variant",       ty: "ButtonVariant",         desc: "Filled / Soft / Outlined / Ghost (a `variant::*` marker converts), Gradient once opted in, or an app value. Default: Filled." },
+                    Prop { name: "size",          ty: "ButtonSize",            desc: "Sm / Md / Lg (a `size::*` marker converts). Default: Md." },
+                    Prop { name: "shape",         ty: "ButtonShape",           desc: "Sm / Md / Lg / Pill (a `shape::*` marker converts). Default: Md." },
+                    Prop { name: "styles",        ty: "ButtonSlotStyles",      desc: "Per-instance overrides of the root / label / icon slots." },
                     Prop { name: "disabled",      ty: "bool",                  desc: "Blocks the press and dims the surface. Default: false." },
                     Prop { name: "loading",       ty: "bool",                  desc: "Swaps the leading slot for a spinner and blocks the press (reads as busy, not off). Default: false." },
                     Prop { name: "leading_icon",  ty: "Option<IconData>",      desc: "Vector icon rendered before the label. Inherits the label color." },
@@ -98,7 +121,7 @@ pub fn button() -> Element {
         ui! {
             Callout(label = "Static styles, no flicker".to_string()) {
                 P(content = "Every (tone, variant, size, shape) tuple is pre-generated as a \
-                    className lookup against the installed stylesheet — there's no per-button \
+                    className lookup against Button's composed slot sheets — there's no per-button \
                     apply-style closure. Theme swaps update CSS variables in bulk, and 1000 \
                     buttons sharing a tuple share one class.".to_string())
             }
@@ -118,9 +141,75 @@ fn button_variant_row() -> Element {
     }
 }
 
-const GRADIENT_OPT_IN: &str = "let buttons = || ButtonSheetBuilder::new().add_variant(variant::Gradient);
-install_button_sheet(buttons().build());
-install_button_label_sheet(buttons().build_label());";
+const GRADIENT_OPT_IN: &str = "ButtonStyles::restyle(|s| {
+    s.tone_variant(ButtonVariant::Gradient, &variant::Gradient)
+});";
+
+const CUSTOM_VARIANT: &str = r##"pub const RAISED: ButtonVariant = ButtonVariant::define("raised");
+
+/// The tone's fill and foreground, lifted by a shadow.
+pub struct Raised;
+impl Variant for Raised {
+    fn key(&self) -> &'static str { "raised" }
+    fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
+        let mut s = no_border();
+        s.background = Some(ctx.tone.fill_bg(ctx.theme));
+        s.color = Some(ctx.tone.fill_fg(ctx.theme));
+        s.shadow = Some(Shadow { x: 0.0, y: 3.0, blur: 10.0, color: ctx.theme.effects().shadow.clone() });
+        s
+    }
+}
+
+// At boot, before the first render:
+ButtonStyles::restyle(|s| s.tone_variant(RAISED, &Raised));
+
+// Anywhere:
+Button(label = "Raised".into(), on_click = go, tone = tone::Success, variant = RAISED)"##;
+
+const RESTYLE: &str = r##"// Every Button in the app, once at boot:
+ButtonStyles::restyle(|s| {
+    s.root().base(|t| StyleRules { border_top_left_radius: Some(t.radius.pill()), ..Default::default() });
+});
+
+// One Button:
+Button(
+    label = "Square".into(),
+    on_click = go,
+    styles = ButtonSlotStyles::default().root(StyleRules {
+        border_top_left_radius: Some(Length::Px(0.0).into()),
+        // …the other three corners…
+        ..Default::default()
+    }),
+)"##;
+
+fn button_custom_row() -> Element {
+    let on_click: Rc<dyn Fn()> = Rc::new(|| {});
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
+            Button(label = "Raised".to_string(),  on_click = on_click.clone(), tone = tone::Primary, variant = RAISED)
+            Button(label = "Success".to_string(), on_click = on_click.clone(), tone = tone::Success, variant = RAISED)
+            Button(label = "Danger".to_string(),  on_click = on_click,         tone = tone::Danger,  variant = RAISED)
+        }
+    }
+}
+
+fn button_restyled_row() -> Element {
+    let on_click: Rc<dyn Fn()> = Rc::new(|| {});
+    let square = Some(Tokenized::Literal(Length::Px(0.0)));
+    let square_corners = ButtonSlotStyles::default().root(StyleRules {
+        border_top_left_radius: square.clone(),
+        border_top_right_radius: square.clone(),
+        border_bottom_left_radius: square.clone(),
+        border_bottom_right_radius: square,
+        ..Default::default()
+    });
+    ui! {
+        Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
+            Button(label = "Theme corners".to_string(), on_click = on_click.clone(), tone = tone::Primary, variant = variant::Soft)
+            Button(label = "Square".to_string(), on_click = on_click, tone = tone::Primary, variant = variant::Soft, styles = square_corners)
+        }
+    }
+}
 
 fn button_gradient_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});

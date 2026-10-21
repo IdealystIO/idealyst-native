@@ -34,6 +34,7 @@ use idea_ui::{install_idea_theme, light_theme};
 
 mod lazy_pages;
 mod pages;
+pub mod restyles;
 mod routes;
 mod shell;
 mod styles;
@@ -123,15 +124,18 @@ pub fn route_ids() -> Vec<&'static str> {
 /// `src/main.rs`, the CLI-generated per-platform wrappers, and the
 /// sidecar).
 pub fn app() -> Element {
+    app_with(|| {})
+}
+
+/// The docs app with an extra boot hook, run after the theme and the
+/// docs site's own [`restyles`] install and before the first render — the
+/// seam a branded build (`websites/idea-ui-docs-branded`) installs its
+/// design language through. Restyles installed here compose into every
+/// slot sheet, so the branded build premints like this one.
+pub fn app_with(boot_styles: impl FnOnce()) -> Element {
     install_idea_theme(light_theme());
-    // Opt the Button pages into the accent-gradient variant. It is not a
-    // built-in variant (each one multiplies every Button's appearance
-    // arms), so an app that wants it re-installs the sheets with it added.
-    let buttons = || {
-        idea_theme::extensible::ButtonSheetBuilder::new().add_variant(idea_ui::variant::Gradient)
-    };
-    idea_theme::extensible::install_button_sheet(buttons().build());
-    idea_theme::extensible::install_button_label_sheet(buttons().build_label());
+    restyles::register();
+    boot_styles();
 
     // App-level state surviving navigation — created here because
     // `app` runs inside `World::enter` (the boot entry enters the world

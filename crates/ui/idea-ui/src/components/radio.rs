@@ -41,7 +41,7 @@ use std::rc::Rc;
 use runtime_core::{
     accessibility::Role, component, component_styles, derived, tap, AlignItems, AxisValues, Cursor, Element,
     FlexDirection, FontWeight, IdealystSchema, IntoElement, JustifyContent, Reactive, Signal, SlotRestyle,
-    StyleRules, TapRecognizer, Tokenized,
+    StyleRules, TapRecognizer,
 };
 
 use idea_theme::extensible::{semantic_tones, tone_arms, tone_compounds, ToneRef};

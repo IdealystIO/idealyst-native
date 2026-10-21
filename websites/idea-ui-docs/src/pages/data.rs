@@ -6,8 +6,8 @@ use std::rc::Rc;
 use runtime_core::{current_breakpoint, rx, signal, ui, BorderStyle, Breakpoint, Element, Signal, StyleRules, StyleSheet};
 use icons_lucide::{ELLIPSIS_VERTICAL, PENCIL, TRASH_2};
 use idea_ui::{
-    tone, typography_kind, variant, Button, Card, CardPadding, IconButton, Stack, StackAxis, StackGap, Tag,
-    Typography,
+    tone, typography_kind, variant, Button, Card, CardPadding, CardSlotStyles, IconButton, Stack, StackAxis,
+    StackGap, Tag, Typography,
 };
 use idea_ui::{
     move_in_place, CardSlot, CellAlign, CellTone, ColSpan, ColumnId, ColumnPin, ColumnWidths,
@@ -17,6 +17,7 @@ use idea_ui::{
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
 use idea_ui::components::card::variant as card_variant;
+use crate::restyles::TINTED;
 
 // =============================================================================
 // Card
@@ -71,8 +72,8 @@ Card(variant = card::variant::Outline, style = Some(dashed)) { … }"##.to_strin
                 PropsTable(rows = vec![
                     Prop {
                         name: "variant",
-                        ty: "VariantRef",
-                        desc: "card::variant::Regular (default, page surface + border), Outline (border only, no fill), Flat (secondary surface, no border) or Elevated (raised surface + shadow).",
+                        ty: "CardVariant",
+                        desc: "card::variant::Regular (default, page surface + border), Outline (border only, no fill), Flat (secondary surface, no border), Elevated (raised surface + shadow), or an app value (`CardVariant::define`).",
                     },
                     Prop {
                         name: "padding",
@@ -93,12 +94,31 @@ Card(variant = card::variant::Outline, style = Some(dashed)) { … }"##.to_strin
             }
         },
         ui! {
-            Callout(label = "Custom variants".to_string()) {
-                P(content = "Card's variant trait is open. Implement Variant on a marker type and \
-                    install an extended sheet via install_card_sheet(build_card_sheet(vec![Tinted.into()], tones)) \
-                    before any Card mounts — then use Card(variant = Tinted.into()) anywhere. The built-in \
-                    variants stay registered; pass a variant keyed `regular` (or another built-in's key) to \
-                    replace just that one.".to_string())
+            Section(title = "Your own variant".to_string()) {
+                P(content = "Card's variant axis is open: `CardVariant::define(\"tinted\")` is a new value \
+                    and one restyle arm at boot gives it a look. The built-in variants stay; an arm \
+                    keyed `regular` (or another built-in's key) changes just that one. A Card variant \
+                    is Card's own type, so it does not fit a Button.".to_string())
+                DemoSurface {
+                    Card(variant = TINTED) {
+                        Typography(content = "Tinted".to_string(), kind = typography_kind::H3)
+                        Typography(content = "An app-defined variant.".to_string(), muted = true)
+                    }
+                }
+                CodePanel(src = r##"pub const TINTED: CardVariant = CardVariant::define("tinted");
+
+// At boot, before the first render:
+CardStyles::restyle(|s| {
+    s.root().arm(TINTED, |t| StyleRules {
+        background: Some(t.intent.primary.soft_bg()),
+        border_top_color: Some(t.intent.primary.solid_bg()),
+        // …the other three edges…
+        ..Default::default()
+    });
+});
+
+// Anywhere:
+Card(variant = TINTED) { … }"##.to_string())
             }
         },
     ])
@@ -106,9 +126,8 @@ Card(variant = card::variant::Outline, style = Some(dashed)) { … }"##.to_strin
 
 fn media_card() -> Element {
     let on_act: Rc<dyn Fn()> = Rc::new(|| {});
-    let elevated: idea_ui::VariantRef = card_variant::Elevated.into();
     ui! {
-        Card(variant = elevated) {
+        Card(variant = card_variant::Elevated) {
             Typography(content = "Release notes".to_string(), kind = typography_kind::Overline, muted = true)
             Typography(content = "Spring update".to_string(), kind = typography_kind::H3)
             Typography(content = "New layout primitives, a themed data table, and faster reactive re-renders across every backend.".to_string())
@@ -131,10 +150,10 @@ fn media_card() -> Element {
 }
 
 fn variant_gallery() -> Element {
-    let dashed = Rc::new(StyleSheet::r#static(StyleRules {
+    let dashed = CardSlotStyles::default().root(StyleRules {
         border_style: Some(BorderStyle::Dashed),
         ..Default::default()
-    }));
+    });
     ui! {
         Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Lg) {
             Card(variant = card_variant::Regular) {
@@ -145,7 +164,7 @@ fn variant_gallery() -> Element {
                 Typography(content = "Outline".to_string(), kind = typography_kind::H3)
                 Typography(content = "Border only.".to_string(), muted = true)
             }
-            Card(variant = card_variant::Outline, style = Some(dashed)) {
+            Card(variant = card_variant::Outline, styles = dashed) {
                 Typography(content = "Outline, dashed".to_string(), kind = typography_kind::H3)
                 Typography(content = "border_style: Dashed.".to_string(), muted = true)
             }

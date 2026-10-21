@@ -35,11 +35,10 @@ use std::time::Duration;
 use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::{
     component, component_styles, derived, effect, icon, ui, AlignItems, Color, Cursor, Element, FlexDirection,
-    FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Ref, Signal, SlotRestyle,
-    StyleRules, Tokenized, ViewHandle,
+    FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Reactive, Ref, Signal, SlotRestyle, ViewHandle,
 };
 
-use idea_theme::extensible::{semantic_tones, with_idea_theme, ToneRef};
+use idea_theme::extensible::{semantic_tones, ToneRef};
 use idea_theme::theme::IdeaTheme;
 
 use crate::components::DISABLED_CONTROL_OPACITY;

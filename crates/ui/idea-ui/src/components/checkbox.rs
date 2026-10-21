@@ -32,10 +32,10 @@ use std::rc::Rc;
 use runtime_core::{
     accessibility::Role, component, component_styles, derived, icon, resolve_style, tap, ui, AlignItems, Cursor,
     Element, FlexDirection, FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Reactive, Signal,
-    SlotRestyle, SlotStyle, StyleRules, TapRecognizer, TextAlign, Tokenized,
+    SlotRestyle, SlotStyle, StyleRules, TapRecognizer, TextAlign,
 };
 
-use idea_theme::extensible::{semantic_tones, with_idea_theme, ToneRef};
+use idea_theme::extensible::{semantic_tones, ToneRef};
 use idea_theme::theme::IdeaTheme;
 
 use crate::components::DISABLED_CONTROL_OPACITY;
@@ -378,7 +378,7 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{classify, P, TStyle};
+    use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
     use runtime_core::accessibility::Role;

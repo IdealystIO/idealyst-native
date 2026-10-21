@@ -52,8 +52,7 @@ use std::rc::Rc;
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::{
     component, component_styles, derived, pressable, recipe, ui, AlignItems, Color, Cursor, Element, FlexDirection,
-    FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle,
-    StyleApplication, StyleRules, Tokenized, VariantEnum,
+    FontWeight, IconData, IdealystSchema, IntoElement, JustifyContent, Length, Reactive, Signal, SlotRestyle, StyleRules, Tokenized, VariantEnum,
 };
 
 use crate::components::icon::Icon;

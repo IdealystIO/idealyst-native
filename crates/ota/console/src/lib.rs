@@ -26,7 +26,7 @@ extern crate runtime_core;
 
 use std::rc::Rc;
 
-use idea_ui::{tone, typography_kind, variant, Alert, Badge, Button, Card, Field, Modal, Switch, ToneRef, Tooltip, Typography, VariantRef};
+use idea_ui::{tone, typography_kind, variant, Alert, Badge, Button, ButtonVariant, Card, Field, Modal, Switch, ToneRef, Tooltip, Typography};
 use runtime_core::{component, signal, ui, Element, ReadSignal, Signal};
 use serde::{Deserialize, Serialize};
 use server::{server, ServerError};
@@ -943,10 +943,10 @@ fn GridRow(
 #[component]
 fn GridCellView(#[prop(static)] cell_fit: FitProp, #[prop(static)] detail: String, #[prop(static)] selected: Signal<Option<String>>) -> Element {
     let (label, cell_tone, cell_variant) = match cell_fit.0 {
-        Fit::Runs => ("✓ runs", ToneRef::from(tone::Success), VariantRef::from(variant::Solid)),
-        Fit::Could => ("✓", ToneRef::from(tone::Success), VariantRef::from(variant::Soft)),
-        Fit::Cannot => ("✗", ToneRef::from(tone::Danger), VariantRef::from(variant::Soft)),
-        Fit::Unknown => ("?", ToneRef::from(tone::Neutral), VariantRef::from(variant::Ghost)),
+        Fit::Runs => ("✓ runs", ToneRef::from(tone::Success), ButtonVariant::Filled),
+        Fit::Could => ("✓", ToneRef::from(tone::Success), ButtonVariant::Soft),
+        Fit::Cannot => ("✗", ToneRef::from(tone::Danger), ButtonVariant::Soft),
+        Fit::Unknown => ("?", ToneRef::from(tone::Neutral), ButtonVariant::Ghost),
     };
     let tip = detail.clone();
     ui! {

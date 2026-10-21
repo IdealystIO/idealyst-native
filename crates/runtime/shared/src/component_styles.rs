@@ -333,6 +333,10 @@ type RestyleFn = Rc<dyn Fn(&mut Collector)>;
 /// One composition of a component: its finished slot sheets and what the
 /// debug unknown-value check consults.
 struct Composed {
+    /// `S::NAME` and the slot names, in declaration order — what
+    /// [`composed_slots`] reports.
+    component: &'static str,
+    slot_names: Vec<&'static str>,
     sheets: Vec<Rc<StyleSheet>>,
     identities: Vec<String>,
     /// Every `(axis, value)` some slot styles (an arm or a compound leg),
@@ -564,7 +568,7 @@ fn compose<S: ComponentStyles>(restyles: &[RestyleFn], defaults: &[(&'static str
         sheets.push(rc);
         identities.push(identity);
     }
-    Composed { sheets, identities, known }
+    Composed { component: S::NAME, slot_names: slots.iter().map(|d| d.name).collect(), sheets, identities, known }
 }
 
 fn describe(items: &[Item], defaults: &[&(&str, &str)]) -> String {
@@ -580,6 +584,34 @@ fn describe(items: &[Item], defaults: &[&(&str, &str)]) -> String {
 /// identity. Cached until the next restyle of `S` (or [`invalidate_all`]).
 pub fn slot_sheet<S: ComponentStyles>(index: usize) -> Rc<StyleSheet> {
     ensure_composed::<S>(true).sheets[index].clone()
+}
+
+/// Every component composed so far on this thread, one entry per slot:
+/// `(component, slot, composed sheet)`, components in name order and slots
+/// in declaration order. Tooling that has to NAME preminted classes (the
+/// design-sync exporter) reads it: a slot's class is a one-way hash, so the
+/// CSS alone cannot say which block is `Button.root`. After the premint
+/// dump composed every linked component (`premint::assembled_sheets` runs
+/// the [`PREMINT_COMPONENT_STYLES`](crate::premint::PREMINT_COMPONENT_STYLES)
+/// hooks first) it lists them all.
+pub fn composed_slots() -> Vec<(&'static str, &'static str, Rc<StyleSheet>)> {
+    let mut out: Vec<(&'static str, &'static str, Rc<StyleSheet>)> = REGISTRY.with(|r| {
+        r.borrow()
+            .values()
+            .filter_map(|e| e.composed.clone())
+            .flat_map(|c| {
+                c.slot_names
+                    .iter()
+                    .zip(c.sheets.iter())
+                    .map(|(slot, sheet)| (c.component, *slot, sheet.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    });
+    // Stable order: components by name; a component's slots keep their
+    // declaration order (the sort is stable).
+    out.sort_by_key(|(component, _, _)| *component);
+    out
 }
 
 /// Compose `S` without marking it in use — what the premint dump runs for
