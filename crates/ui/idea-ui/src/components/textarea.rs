@@ -39,16 +39,12 @@
 
 use std::rc::Rc;
 
-use runtime_core::{
-    component, ui, IdealystSchema, IntoElement, Length, Element, Reactive, Signal, StyleApplication,
-    StyleRules, Tokenized, VariantEnum,
-};
+use runtime_core::{component, ui, Element, IdealystSchema, IntoElement, Length, Reactive, Signal, StyleRules, Tokenized};
 
-use idea_theme::extensible::{tone as tones, ToneRef};
+use idea_theme::extensible::ToneRef;
 
-use crate::components::field::{field_help_sheet, field_input_sheet};
-use crate::stylesheets::FieldGroup;
-pub use crate::stylesheets::{FieldAppearance, FieldSize};
+pub use crate::components::field::{FieldAppearance, FieldSize, FieldSlotStyles, FieldStyles};
+use crate::components::field::field_tone_key;
 
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
 // `Reactive<T>` so a `ui!` call site can pass a `Signal`/`rx!` and have it
@@ -57,7 +53,11 @@ pub use crate::stylesheets::{FieldAppearance, FieldSize};
 // `Reactive`). The style-driving props (`tone`/`size`/`variant`/`min_height`/
 // `width`) are routed into the reactive `make_input_style` closure; the
 // row-count props (`rows`/`max_rows`) feed it through the height computation.
-#[runtime_core::props]
+//
+// `styles = FieldStyles`: a Textarea draws Field's slots (it is a
+// multi-line Field), so its per-instance overrides are Field's too, and a
+// `FieldStyles` restyle reaches it.
+#[runtime_core::props(styles = FieldStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TextareaProps {
@@ -153,6 +153,7 @@ impl Default for TextareaProps {
             width: Reactive::Static(None),
             autofocus: false,
             disabled: Reactive::Static(false),
+            styles: Default::default(),
         }
     }
 }
@@ -183,82 +184,58 @@ pub fn Textarea(props: &TextareaProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
 
-    // The effective tone is reactive when the explicit `tone` prop is live,
-    // OR it's *derived* from a live error signal (no explicit tone given AND
-    // `error` is `Dynamic`). (Mirrors Field; see the `INVARIANT (D9)` note.)
+    let styles = props.styles.clone();
     let explicit_tone = props.tone.clone();
     let error = props.error.clone();
-    let tone_is_reactive = !explicit_tone.is_static()
-        || (matches!(explicit_tone, Reactive::Static(None)) && !error.is_static());
-    // The whole input style is reactive when the tone is, or any other
-    // style-driving prop (size/variant/rows/max_rows/dims) is live —
-    // `make_input_style` reads each `.get()` inside so the apply-style
-    // Effect subscribes to them and re-resolves in place.
-    // `rows`/`max_rows` are NOT here: they drive the primitive's `min_rows`/
-    // `max_rows` (snapshotted below), not the style layer, so a live row count
-    // doesn't re-resolve the style.
-    let style_is_reactive = tone_is_reactive
-        || !props.size.is_static()
-        || !props.variant.is_static()
-        || !props.min_height.is_static()
-        || !props.width.is_static();
+    // The effective tone key (mirrors Field; see its `INVARIANT (D9)`
+    // note): read LIVE, so a live `tone` or a live error re-styles the
+    // border in place.
     let tone_key_for = {
         let explicit_tone = explicit_tone.clone();
         let error = error.clone();
-        move || -> String {
-            let tone: Option<ToneRef> = explicit_tone.get().or_else(|| {
-                if error.get().is_some() { Some(tones::Danger.into()) } else { None }
-            });
-            tone.as_ref().map(|t| t.key()).unwrap_or("default").to_string()
-        }
+        move || field_tone_key(explicit_tone.get(), error.get().is_some())
     };
+    let tone_is_static =
+        explicit_tone.is_static() && (!matches!(explicit_tone, Reactive::Static(None)) || error.is_static());
+    let values = FieldStyles::values().set(props.size.clone()).set(props.variant.clone());
 
-    // STATIC style (reuse Field's sheets) + a computed min/max-height +
-    // width layer keyed so identical configs dedupe to one class. The
-    // primitive sizes the box to its content; these bounds set the resting
-    // floor and the grow-then-scroll cap. Every style-driving prop is read
-    // LIVE inside so the apply-style Effect (reactive path) re-resolves the
-    // height bounds + appearance when `rows`/`size`/`variant`/dims change.
-    let make_input_style = {
-        let size = props.size.clone();
-        let variant = props.variant.clone();
-        let min_height_prop = props.min_height.clone();
-        let width_prop = props.width.clone();
-        move |tone_key: String| -> StyleApplication {
-            let size = size.get();
-            let size_key = size.as_variant_str().to_string();
-            let appearance = variant.get().as_variant_str().to_string();
-            // The rows-derived floor/cap now live on the PRIMITIVE
-            // (`min_rows`/`max_rows`), converted to px from the real font line
-            // height per backend. The style layer only carries an explicit px
-            // `min_height` override (when the author pins one) + width.
-            let min_height = min_height_prop.get();
-            let width = width_prop.get();
-            let _dim_key = format!("ta-dim-{:?}-{:?}-{}", min_height, width, size_key);
-            StyleApplication::new(field_input_sheet())
-                .with("size", size_key)
-                .with("appearance", appearance)
-                .with("tone", tone_key)
-                // Author-supplied pixel dims — continuous, so inline.
-                .with_inline(StyleRules {
-                    min_height: min_height.map(|h| Tokenized::Literal(Length::Px(h))),
-                    width: width.map(|w| Tokenized::Literal(Length::Px(w))),
-                    ..Default::default()
-                })
-        }
+    // Field's input slot. The rows-derived floor/cap live on the PRIMITIVE
+    // (`min_rows`/`max_rows`, converted to px from the real font line height
+    // per backend); the style carries only the author's px `min_height`
+    // override + `width`, on the inline layer (continuous values).
+    let mut input_style = FieldStyles::input().values(&values);
+    input_style = if tone_is_static {
+        input_style.raw("tone", tone_key_for())
+    } else {
+        input_style.raw_with("tone", tone_key_for.clone())
     };
+    let dims = |mh: Option<f32>, w: Option<f32>| StyleRules {
+        min_height: mh.map(|h| Tokenized::Literal(Length::Px(h))),
+        width: w.map(|w| Tokenized::Literal(Length::Px(w))),
+        ..Default::default()
+    };
+    input_style = match (props.min_height.clone(), props.width.clone()) {
+        (Reactive::Static(None), Reactive::Static(None)) => input_style,
+        (Reactive::Static(mh), Reactive::Static(w)) => input_style.inline(dims(mh, w)),
+        (mh, w) => input_style.inline_with(move || dims(mh.get(), w.get())),
+    };
+    let input_style = input_style.overridden(styles.input.as_ref());
 
-    let help_style =
-        StyleApplication::new(field_help_sheet()).with("tone", tone_key_for());
+    let help_style = if tone_is_static {
+        FieldStyles::help().values(&values).raw("tone", tone_key_for())
+    } else {
+        FieldStyles::help().values(&values).raw_with("tone", tone_key_for.clone())
+    };
 
     let label_node =
-        crate::components::field_label_line(props.label.clone(), props.label_hint.clone());
+        crate::components::field_label_line(props.label.clone(), props.label_hint.clone(), &styles);
 
     let help_combined = match (props.error.clone(), props.help.clone()) {
         (Reactive::Static(e), Reactive::Static(h)) => Reactive::Static(e.or(h)),
         (e, h) => Reactive::Dynamic(Rc::new(move || e.get().or_else(|| h.get()))),
     };
-    let help_node = crate::components::optional_reactive_text(help_combined, help_style);
+    let help_node =
+        crate::components::optional_reactive_text(help_combined, help_style.overridden(styles.help.as_ref()));
 
     let mut input =
         runtime_core::text_area(value, move |v: String| (on_change)(v)).autofocus(props.autofocus);
@@ -297,23 +274,15 @@ pub fn Textarea(props: &TextareaProps) -> Element {
         live => input.disabled(move || live.get()),
     };
     // INVARIANT (D9): see Field. A live-error-derived (or any live
-    // style-driving) border MUST be a reactive style closure (re-reads
-    // `.get()` inside the apply Effect) or it snapshots the border color at
-    // build time — only the error TEXT would update on validation, not the
-    // border/size/dims. Static fast path stays when every style prop is fixed.
-    let input = if style_is_reactive {
-        let make_input_style = make_input_style.clone();
-        let tone_key_for = tone_key_for.clone();
-        input.with_style(move || make_input_style(tone_key_for()))
-    } else {
-        input.with_style(make_input_style(tone_key_for()))
-    };
-    let input_node = input.into_element();
+    // style-driving) border is a reactive slot style, so it re-resolves in
+    // place; with every style prop fixed it stays a static application.
+    let input_node = input.with_style(input_style).into_element();
+    let group_style = FieldStyles::group().values(&values).overridden(styles.group.as_ref());
 
     // `label_node` / `help_node` are `Option<Element>` — an absent one
     // splats to nothing.
     ui! {
-        view(style = FieldGroup()) {
+        view(style = group_style) {
             label_node
             input_node
             help_node

@@ -80,14 +80,19 @@ pub(crate) fn hug_self() -> StyleRules {
 pub(crate) fn field_label_line(
     label: Reactive<Option<String>>,
     hint: Reactive<Option<String>>,
+    styles: &crate::components::field::FieldSlotStyles,
 ) -> Option<Element> {
-    let label = optional_reactive_text(label, crate::stylesheets::FieldLabel());
-    let Some(hint) = optional_reactive_text(hint, crate::stylesheets::FieldLabelHint()) else {
+    use crate::components::field::FieldStyles;
+    let label = optional_reactive_text(label, FieldStyles::label().overridden(styles.label.as_ref()));
+    let Some(hint) =
+        optional_reactive_text(hint, FieldStyles::label_hint().overridden(styles.label_hint.as_ref()))
+    else {
         return label;
     };
+    let row_style = FieldStyles::label_row().overridden(styles.label_row.as_ref());
     // `label` is an `Option<Element>` — an absent one splats to nothing.
     Some(runtime_core::ui! {
-        view(style = crate::stylesheets::FieldLabelRow()) {
+        view(style = row_style) {
             label
             hint
         }

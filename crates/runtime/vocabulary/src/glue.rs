@@ -3442,6 +3442,19 @@ impl<T: Clone> Reactive<T> {
         }
     }
 
+    /// Map the value, keeping its liveness: a `Static` maps once, a
+    /// `Dynamic` maps on every read (so a `Reactive<bool>` prop becomes an
+    /// on/off variant-axis value without losing its signal).
+    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Reactive<U>
+    where
+        T: 'static,
+    {
+        match self {
+            Reactive::Static(v) => Reactive::Static(f(v)),
+            Reactive::Dynamic(g) => Reactive::Dynamic(Rc::new(move || f(g()))),
+        }
+    }
+
     /// Convert into a closure for APIs that take `Fn() -> T`.
     pub fn into_closure(self) -> Rc<dyn Fn() -> T>
     where
@@ -3490,6 +3503,25 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Reactive<T> {
             Reactive::Static(v) => f.debug_tuple("Reactive::Static").field(v).finish(),
             Reactive::Dynamic(_) => f.write_str("Reactive::Dynamic(<closure>)"),
         }
+    }
+}
+
+/// A `Reactive` variant value selects a sheet axis directly — the shape a
+/// `#[props]`-wrapped axis prop arrives in. `Static` stays a constant source
+/// (the static, preminted fast path); `Dynamic` re-applies the style when
+/// it changes.
+impl<E: runtime_shared::VariantEnum> runtime_shared::IntoVariantSource<E> for Reactive<E> {
+    fn into_variant_source(self) -> Box<dyn Fn() -> &'static str> {
+        match self {
+            Reactive::Static(v) => {
+                let key = v.as_variant_str();
+                Box::new(move || key)
+            }
+            Reactive::Dynamic(f) => Box::new(move || f().as_variant_str()),
+        }
+    }
+    fn is_reactive(&self) -> bool {
+        !self.is_static()
     }
 }
 

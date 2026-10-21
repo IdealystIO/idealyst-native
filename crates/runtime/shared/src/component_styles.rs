@@ -630,39 +630,64 @@ pub fn slot_names<S: ComponentStyles>() -> Vec<&'static str> {
 /// layer ([`StyleApplication::with_inline`](crate::StyleApplication::with_inline)),
 /// so it wins over every class layer, keeps the slot premintable, and needs
 /// no class of its own.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SlotOverride(pub Rc<StyleRules>);
+///
+/// Two forms: plain rules, or a sheet resolved against the slot's CURRENT
+/// variant selection — so one override can differ per axis value (a sheet
+/// with `variant selected { on(_t) { … } }` styles only the selected
+/// segment of a segmented control).
+#[derive(Clone)]
+pub enum SlotOverride {
+    /// Fixed rules.
+    Rules(Rc<StyleRules>),
+    /// A sheet resolved with the slot application's variant set.
+    Sheet(Rc<StyleSheet>),
+}
 
 impl SlotOverride {
-    /// The override's rules.
-    pub fn rules(&self) -> &StyleRules {
-        &self.0
+    /// The override's rules for a slot application selecting `variants`.
+    pub fn resolve(&self, variants: &VariantSet) -> Rc<StyleRules> {
+        match self {
+            SlotOverride::Rules(r) => r.clone(),
+            SlotOverride::Sheet(s) => Rc::new(s.resolve(variants)),
+        }
+    }
+
+    /// Whether the override varies with the slot's variant selection.
+    pub fn is_sheet(&self) -> bool {
+        matches!(self, SlotOverride::Sheet(_))
+    }
+}
+
+impl std::fmt::Debug for SlotOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SlotOverride::Rules(r) => f.debug_tuple("Rules").field(r).finish(),
+            SlotOverride::Sheet(_) => f.write_str("Sheet(..)"),
+        }
     }
 }
 
 impl From<StyleRules> for SlotOverride {
     fn from(r: StyleRules) -> Self {
-        SlotOverride(Rc::new(r))
+        SlotOverride::Rules(Rc::new(r))
     }
 }
 
 impl From<Rc<StyleRules>> for SlotOverride {
     fn from(r: Rc<StyleRules>) -> Self {
-        SlotOverride(r)
+        SlotOverride::Rules(r)
     }
 }
 
-/// A sheet resolves against its own defaults — an override is an ad-hoc
-/// tweak, not variant-driven.
 impl From<Rc<StyleSheet>> for SlotOverride {
     fn from(s: Rc<StyleSheet>) -> Self {
-        SlotOverride(Rc::new(s.resolve(&VariantSet::default())))
+        SlotOverride::Sheet(s)
     }
 }
 
 impl From<StyleSheet> for SlotOverride {
     fn from(s: StyleSheet) -> Self {
-        SlotOverride(Rc::new(s.resolve(&VariantSet::default())))
+        SlotOverride::Sheet(Rc::new(s))
     }
 }
 

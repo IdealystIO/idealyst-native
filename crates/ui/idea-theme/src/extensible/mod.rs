@@ -41,6 +41,7 @@
 //! on the backend.
 
 mod macros;
+mod registry;
 pub mod shape;
 mod sheets;
 pub mod size;
@@ -48,6 +49,11 @@ pub mod tone;
 pub mod typography;
 pub mod variant;
 
+pub use registry::{
+    categorization_tones, register_tone, registered_tones, semantic_tones, tone_arms, tone_compounds,
+    tone_variant_arms, tone_variant_state_overlays, with_idea_theme,
+};
+pub(crate) use registry::register_theme_tones;
 pub use sheets::{
     install_avatar_sheets, install_default_avatar_sheets, installed_avatar_sheets,
     AvatarSheetBuilder, AvatarSheets,

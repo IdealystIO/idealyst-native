@@ -48,52 +48,272 @@
 //! by side.
 //!
 //! ## Appearance
-//! A bordered, tinted track (`SegmentedGroup`) holding one `SegmentButton`
-//! per option; the selected segment is filled in (the `selected` axis flips
-//! between `on` and `off`). It is deliberately unlike [`Tabs`](super::tabs::Tabs):
-//! tabs navigate, a segmented control picks a value, and the two must not
-//! read the same when they share a page.
+//! A bordered, tinted `track` holding one `segment` per option; the selected
+//! segment is filled in (the `selected` axis flips between `on` and `off`)
+//! and its `label` takes the full text color. It is deliberately unlike
+//! [`Tabs`](super::tabs::Tabs): tabs navigate, a segmented control picks a
+//! value, and the two must not read the same when they share a page.
+//!
+//! ## Restyling
+//! Every styled section is a slot of [`SegmentedControlStyles`]: `track`,
+//! `segment`, `inner` (an adorned segment's row), `label` and `adornment`
+//! (a button adornment). Restyle any of them app-wide at boot, or one
+//! control through its `styles` prop:
+//!
+//! ```ignore
+//! SegmentedControlStyles::restyle(|s| {
+//!     s.track().base(|t| StyleRules { background: Some(t.color.text()), ..Default::default() });
+//!     s.segment().arm(SegmentedControlSelected::On, |t| StyleRules {
+//!         background: Some(t.intent.primary.solid_bg()),
+//!         ..Default::default()
+//!     });
+//!     s.label().arm(SegmentedControlSelected::On, |t| StyleRules {
+//!         color: Some(t.intent.primary.solid_text()),
+//!         ..Default::default()
+//!     });
+//! });
+//! ```
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, memo, pressable, recipe, resolve_style, ui, Color, Element, IdealystSchema, IntoElement,
-    Memo, Reactive, StyleApplication, StyleRules, StyleSheet,
+    component, component_styles, derived, memo, pressable, recipe, ui, Color, Cursor, Element, FlexDirection,
+    FontWeight, IdealystSchema, IntoElement, JustifyContent, AlignItems, Length, Memo, Reactive,
 };
 
-use crate::components::field::{adornment_button_sheet, Adornment};
+use crate::components::field::Adornment;
 use crate::components::ControlSize;
-use crate::slot_override::apply_override;
-use crate::stylesheets::{SegmentButton, SegmentInner, SegmentedGroup};
+use crate::theme::IdeaThemeRef;
 use crate::Icon;
 
-/// Point size of an `Icon`/`Button` adornment in a segment at each control
-/// size — the same scale `Field` uses for its adornments, so an icon sits
-/// in proportion to the label beside it.
-fn segment_icon_px(size: ControlSize) -> f32 {
-    match size {
-        ControlSize::Sm => 14.0,
-        ControlSize::Md => 16.0,
-        ControlSize::Lg => 18.0,
+/// How far the selected segment sits inside the track's border, and the
+/// gap between segments. Below the spacing scale on purpose (`xs` is 4):
+/// it is a hairline-scale detail like a border width, and at `xs` the
+/// selected key floated visibly loose inside the track.
+pub const SEGMENT_TRACK_INSET: f32 = 2.0;
+
+/// What a segment's height carries on each vertical side besides its own
+/// padding: the track's 1px border, the track inset, and the segment's 1px
+/// border.
+pub const SEGMENT_CHROME_V: f32 = 1.0 + SEGMENT_TRACK_INSET + 1.0;
+
+/// The border a bordered control (Select, Field, outlined Button) draws on
+/// each side — part of the height a segmented control has to match.
+const CONTROL_BORDER: f32 = 1.0;
+
+/// A segment's vertical padding at a control size whose padding is
+/// `control_pad` (the `spacing-*` token Select / Field / Button use at that
+/// size): that padding plus the control's own border, minus
+/// [`SEGMENT_CHROME_V`]. With it, a segmented control's outer height equals
+/// a bordered control's at the same size — `2 × padding + line height + 2px
+/// border` — so it lines up in a toolbar beside a Select or an outlined
+/// Button.
+///
+/// A literal resolved from the token, not the token itself: lengths have
+/// no arithmetic. It follows the theme installed before the slot is first
+/// composed (the default scale, or an app's own); a spacing change made
+/// while the app runs would not reach it.
+fn segment_pad_v(control_pad: runtime_core::Tokenized<Length>) -> f32 {
+    match control_pad.resolve() {
+        Length::Px(v) => (v + CONTROL_BORDER - SEGMENT_CHROME_V).max(0.0),
+        _ => 0.0,
     }
 }
 
-runtime_tls::thread_local! {
-    static SEG_LABEL_BASE_SHEET: std::cell::RefCell<Option<Rc<StyleSheet>>> =
-        const { std::cell::RefCell::new(None) };
+component_styles! {
+    /// The styled sections of [`SegmentedControl`].
+    pub SegmentedControl<IdeaThemeRef> {
+        /// Control size: each step is the same height as a Select, Field or
+        /// outlined Button at that size, with the same font.
+        axis size { sm, #[default] md, lg }
+
+        /// The track. Hugs its segments on both axes, so a control inside a
+        /// stretching column stays the width of its options — unless
+        /// `block`, which fills the container like Button's `block`.
+        slot track {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Stretch,
+                align_self: runtime_core::AlignSelf::FlexStart,
+                flex_shrink: 0.0,
+                padding: SEGMENT_TRACK_INSET,
+                gap: SEGMENT_TRACK_INSET,
+                background: t.color.surface_alt(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+                border_radius: t.radius.md(),
+            }
+            variant block {
+                #[default]
+                off(_t) {}
+                on(_t) {
+                    width: Length::Percent(100.0),
+                    align_self: runtime_core::AlignSelf::Stretch,
+                    flex_shrink: 1.0,
+                }
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_color: 250ms EaseInOut,
+            }
+        }
+
+        /// One segment (a pressable).
+        slot segment {
+            base(t) {
+                // Hold the label's natural width: segments never squash.
+                flex_shrink: 0.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                // One step below the track's radius, so the selected fill
+                // reads as nested inside the track's corners.
+                border_radius: t.radius.sm(),
+                // A transparent 1px border at rest, so the selected
+                // segment's border and the focus ring change color without
+                // changing size.
+                border_width: 1.0,
+                border_color: Color("transparent".into()),
+                background: Color("transparent".into()),
+                color: t.color.text_muted(),
+                font_weight: FontWeight::Medium,
+                cursor: Cursor::Pointer,
+            }
+            // Select's and Button's horizontal padding per size, and a
+            // vertical padding that makes the whole control the same height
+            // as theirs — see `segment_pad_v`.
+            variant size {
+                sm(t) {
+                    padding_vertical: segment_pad_v(t.spacing.xs()),
+                    padding_horizontal: t.spacing.sm(),
+                    font_size: t.typography.body_sm_size(),
+                }
+                md(t) {
+                    padding_vertical: segment_pad_v(t.spacing.sm()),
+                    padding_horizontal: t.spacing.md(),
+                    font_size: t.typography.body_size(),
+                }
+                lg(t) {
+                    padding_vertical: segment_pad_v(t.spacing.md()),
+                    padding_horizontal: t.spacing.lg(),
+                    font_size: t.typography.body_lg_size(),
+                }
+            }
+            // `block`: segments split the filled track evenly. `flex_basis:
+            // 0` makes the shares equal regardless of label length; the
+            // label's min-content width still floors each one.
+            variant block {
+                #[default]
+                off(_t) {}
+                on(_t) {
+                    flex_grow: 1.0,
+                    flex_shrink: 1.0,
+                    flex_basis: Length::Px(0.0),
+                }
+            }
+            variant selected {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    background: t.color.surface(),
+                    border_color: t.color.border(),
+                    color: t.color.text(),
+                }
+            }
+            // `state` rules win over the variant, so none of them repaint
+            // the background: a hover wash would hide which segment is
+            // selected.
+            state hovered(t) {
+                color: t.color.text(),
+            }
+            state pressed(t) {
+                color: t.color.text(),
+            }
+            state focused(t) {
+                color: t.color.text(),
+                border_color: t.color.focus_ring(),
+            }
+            transitions {
+                color: 150ms EaseOut,
+                background: 120ms EaseOut,
+                border_color: 120ms EaseOut,
+            }
+        }
+
+        /// The row an adorned segment lays out: adornment, label,
+        /// adornment, centred on one line.
+        slot inner {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.sm(),
+            }
+        }
+
+        /// A segment's label text. It carries its own color and font: only
+        /// web's cascade would inherit them from the segment, native text
+        /// never does — so a selected segment's text, a light/dark swap and
+        /// the control size all reach the label on every backend from here.
+        slot label {
+            base(t) {
+                color: t.color.text_muted(),
+                font_weight: FontWeight::Medium,
+            }
+            variant size {
+                sm(t) { font_size: t.typography.body_sm_size() }
+                md(t) { font_size: t.typography.body_size() }
+                lg(t) { font_size: t.typography.body_lg_size() }
+            }
+            variant selected {
+                #[default]
+                off(_t) {}
+                on(t) { color: t.color.text() }
+            }
+            transitions {
+                color: 150ms EaseOut,
+            }
+        }
+
+        /// A `Button` adornment: icon-sized, a pointer cursor and a subtle
+        /// hover/press dim.
+        slot adornment {
+            base(_t) {
+                cursor: Cursor::Pointer,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+            }
+            state hovered(_t) { opacity: 0.65 }
+            state pressed(_t) { opacity: 0.4 }
+        }
+    }
 }
 
-/// A single shared, empty base sheet for segment labels. The per-state color
-/// rides a `with_computed` layer keyed on the selected state, so the resolution
-/// cache key (sheet Rc pointer + computed key) stays stable across renders —
-/// the same shape as `Tabs::tab_label_base_sheet`.
-fn seg_label_base_sheet() -> Rc<StyleSheet> {
-    SEG_LABEL_BASE_SHEET.with(|s| {
-        if s.borrow().is_none() {
-            *s.borrow_mut() = Some(StyleSheet::r#static(StyleRules::default()).premint_as("idea-ui.v1.segmented_control.empty"));
+/// The control-wide size scale converts into the segmented control's own
+/// size axis, so `size = ControlSize::Sm` keeps lining controls up.
+impl From<ControlSize> for SegmentedControlSize {
+    fn from(s: ControlSize) -> Self {
+        match s {
+            ControlSize::Sm => Self::Sm,
+            ControlSize::Md => Self::Md,
+            ControlSize::Lg => Self::Lg,
         }
-        s.borrow().as_ref().cloned().unwrap()
-    })
+    }
+}
+
+impl From<ControlSize> for Reactive<SegmentedControlSize> {
+    fn from(s: ControlSize) -> Self {
+        Reactive::Static(s.into())
+    }
+}
+
+/// Point size of an `Icon`/`Button` adornment in a segment at each control
+/// size — the same scale `Field` uses for its adornments, so an icon sits
+/// in proportion to the label beside it. An app-defined size takes `md`'s.
+fn segment_icon_px(size: SegmentedControlSize) -> f32 {
+    match size {
+        SegmentedControlSize::Sm => 14.0,
+        SegmentedControlSize::Lg => 18.0,
+        _ => 16.0,
+    }
 }
 
 /// One segment in a [`SegmentedControl`]. `id` is the value committed to
@@ -138,9 +358,11 @@ impl SegmentOption {
 }
 
 // Reactive-by-default: `value` is already `Reactive<String>`, `on_change` is a
-// handler (`Rc`) and `options` a `Vec`, all auto-skipped; `size` is wrapped
-// and routed into each segment's style, label and adornments.
-#[runtime_core::props]
+// handler (`Rc`) and `options` a `Vec`, all auto-skipped; `size` and `block`
+// are wrapped and routed into each segment's style, label and adornments.
+// `styles` (from `styles = SegmentedControlStyles`) is the per-instance
+// override for every slot.
+#[runtime_core::props(styles = SegmentedControlStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SegmentedControlProps {
@@ -157,102 +379,28 @@ pub struct SegmentedControlProps {
     pub on_change: Rc<dyn Fn(String)>,
     /// The segments, left-to-right.
     pub options: Vec<SegmentOption>,
-    /// Control size — `Sm`, `Md` (default) or `Lg`. Each size is the same
-    /// height as a Select, Field or outlined Button at that size, with the
-    /// same font size, so the control lines up beside them in a toolbar.
-    pub size: ControlSize,
+    /// Control size — `Sm`, `Md` (default) or `Lg`, or an app-defined
+    /// [`SegmentedControlSize`]. Each built-in size is the same height as a
+    /// Select, Field or outlined Button at that size, with the same font,
+    /// so the control lines up beside them in a toolbar. A `ControlSize`
+    /// converts.
+    pub size: SegmentedControlSize,
     /// When `true`, the control fills its container's width and the
     /// segments share it evenly — like Button's `block`. Default `false`:
     /// the control hugs its options.
     pub block: bool,
-    /// Override layered on the track (the rounded group behind the
-    /// segments): its fill, border, radius, padding. Wins over the
-    /// app-wide [`install_segmented_control_style`]. Default `None`.
-    /// See [`crate::slot_override`].
-    #[prop(static)]
-    pub style: Option<Rc<StyleSheet>>,
-    /// Override layered on every unselected segment. Its `color` and
-    /// font also reach the segment's label. Default `None`.
-    #[prop(static)]
-    pub segment_style: Option<Rc<StyleSheet>>,
-    /// Override layered on the selected segment — its fill, border and
-    /// text `color` (the label takes the color, so a dark selected fill
-    /// can carry light text on every backend). Default `None`.
-    #[prop(static)]
-    pub selected_segment_style: Option<Rc<StyleSheet>>,
-}
-
-/// App-wide SegmentedControl restyle: the same three slots as the
-/// component's `style` / `segment_style` / `selected_segment_style` props,
-/// applied to every SegmentedControl. A prop set on one control wins over
-/// the installed slot. Install once at startup with
-/// [`install_segmented_control_style`].
-#[derive(Clone, Default)]
-pub struct SegmentedControlStyle {
-    /// Layered on the track.
-    pub track: Option<Rc<StyleSheet>>,
-    /// Layered on every unselected segment (and its label's color/font).
-    pub segment: Option<Rc<StyleSheet>>,
-    /// Layered on the selected segment (and its label's color/font).
-    pub selected_segment: Option<Rc<StyleSheet>>,
-}
-
-runtime_tls::thread_local! {
-    static INSTALLED_STYLE: std::cell::RefCell<SegmentedControlStyle> =
-        std::cell::RefCell::new(SegmentedControlStyle::default());
-}
-
-/// Restyle every SegmentedControl in the app. Call before the first one
-/// mounts; installing again replaces the previous style.
-pub fn install_segmented_control_style(style: SegmentedControlStyle) {
-    INSTALLED_STYLE.with(|s| *s.borrow_mut() = style);
-}
-
-/// One control's resolved override slots: each prop, else the installed one.
-#[derive(Clone, Default)]
-struct Overrides {
-    track: Option<Rc<StyleSheet>>,
-    segment: Option<Rc<StyleSheet>>,
-    selected_segment: Option<Rc<StyleSheet>>,
-}
-
-impl Overrides {
-    fn resolve(props: &SegmentedControlProps) -> Self {
-        let installed = INSTALLED_STYLE.with(|s| s.borrow().clone());
-        Self {
-            track: props.style.clone().or(installed.track),
-            segment: props.segment_style.clone().or(installed.segment),
-            selected_segment: props.selected_segment_style.clone().or(installed.selected_segment),
-        }
-    }
-
-    fn any_segment(&self) -> bool {
-        self.segment.is_some() || self.selected_segment.is_some()
-    }
-
-    /// The segment's theme application with the matching slot on top.
-    fn segment_app(&self, selected: bool, size_arm: &'static str) -> StyleApplication {
-        let app = StyleApplication::new(SegmentButton::sheet())
-            .with("selected", selected_arm(selected))
-            .with("size", size_arm);
-        let slot = if selected { &self.selected_segment } else { &self.segment };
-        apply_override(app, slot)
-    }
 }
 
 impl Default for SegmentedControlProps {
-    // Manual impl: `Signal<String>` and `Rc<dyn Fn(String)>` don't derive
-    // `Default`. Mirrors `SelectProps` / `TabsProps`.
+    // Manual impl: `Rc<dyn Fn(String)>` doesn't derive `Default`.
     fn default() -> Self {
         Self {
             value: Reactive::Static(String::new()),
             on_change: Rc::new(|_| {}),
             options: Vec::new(),
-            size: Reactive::Static(ControlSize::Md),
+            size: Reactive::Static(SegmentedControlSize::default()),
             block: Reactive::Static(false),
-            style: None,
-            segment_style: None,
-            selected_segment_style: None,
+            styles: Default::default(),
         }
     }
 }
@@ -263,25 +411,21 @@ impl Default for SegmentedControlProps {
 /// `on_change` — the host owns the selected value.
 #[component]
 pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
-    let overrides = Overrides::resolve(&props);
+    let styles = props.styles;
     let options = props.options;
     let value = props.value;
     let on_change = props.on_change;
     let size = props.size;
-    let block = props.block;
-    let block_group = block.clone();
-    let track = overrides.track.clone();
-    let group_style = move || {
-        apply_override(
-            StyleApplication::new(SegmentedGroup::sheet()).with("block", block_arm(block_group.get())),
-            &track,
-        )
-    };
+    let block = props.block.map(SegmentedControlBlock::from);
+    // The component-level selections every slot sees, so a restyle arm on
+    // `size` or `block` lands on whichever slot it targets.
+    let values = SegmentedControlStyles::values().set(size.clone()).set(block);
+    let track_style = SegmentedControlStyles::track().values(&values).overridden(styles.track.as_ref());
 
     ui! {
-        view(style = group_style) {
+        view(style = track_style) {
             for option in options {
-                segment(option, value.clone(), on_change.clone(), size.clone(), block.clone(), overrides.clone())
+                segment(option, value.clone(), on_change.clone(), size.clone(), values.clone(), styles.clone())
             }
         }
     }
@@ -297,9 +441,9 @@ fn segment(
     option: SegmentOption,
     value: Reactive<String>,
     on_change: Rc<dyn Fn(String)>,
-    size: Reactive<ControlSize>,
-    block: Reactive<bool>,
-    overrides: Overrides,
+    size: Reactive<SegmentedControlSize>,
+    values: runtime_core::AxisValues<SegmentedControlStyles>,
+    styles: SegmentedControlSlotStyles,
 ) -> Element {
     let id = option.id;
 
@@ -311,29 +455,30 @@ fn segment(
     // label, and its adornments' glyphs — a memo, so a value change that leaves
     // this segment's state alone wakes none of them.
     let selected = memo(move || value.get() == id);
+    let picked = derived(move || SegmentedControlSelected::from(selected.get()));
 
-    // Reactive style: re-runs whenever `selected` flips (or a live `size`
-    // changes), switching the `selected` and `size` axes.
-    let size_style = size.clone();
-    let seg_overrides = overrides.clone();
-    let seg_style = move || {
-        seg_overrides
-            .segment_app(selected.get(), size_style.get().as_variant_str())
-            .with("block", block_arm(block.get()))
-    };
+    let seg_style = SegmentedControlStyles::segment()
+        .values(&values)
+        .set(picked)
+        .overridden(styles.segment.as_ref());
+    let label_style = SegmentedControlStyles::label()
+        .values(&values)
+        .set(derived(move || SegmentedControlSelected::from(selected.get())))
+        .overridden(styles.label.as_ref());
 
     let label = option.label;
-    let leading = render_adornment(&option.leading, selected, size.clone());
-    let trailing = render_adornment(&option.trailing, selected, size.clone());
+    let leading = render_adornment(&option.leading, selected, size.clone(), &styles);
+    let trailing = render_adornment(&option.trailing, selected, size, &styles);
     let content = if leading.is_empty() && trailing.is_empty() {
-        ui! { SegmentLabel(text = label, selected = selected, size = size, overrides = overrides) }
+        ui! { text(style = label_style) { label } }
     } else {
+        let inner_style = SegmentedControlStyles::inner().values(&values).overridden(styles.inner.as_ref());
         // `leading` / `trailing` are the adornments the CALLER handed in,
         // already built — splatted, not authored here.
         ui! {
-            view(style = SegmentInner()) {
+            view(style = inner_style) {
                 leading
-                SegmentLabel(text = label, selected = selected, size = size, overrides = overrides)
+                text(style = label_style) { label }
                 trailing
             }
         }
@@ -344,7 +489,12 @@ fn segment(
 /// Build an adornment for a segment (empty for `None` / an empty group).
 /// `Icon` and `Button` glyphs take the segment's own foreground, live on
 /// `selected`, so they recolor with the label; `Element` is left as built.
-fn render_adornment(adornment: &Adornment, selected: Memo<bool>, size: Reactive<ControlSize>) -> Vec<Element> {
+fn render_adornment(
+    adornment: &Adornment,
+    selected: Memo<bool>,
+    size: Reactive<SegmentedControlSize>,
+    styles: &SegmentedControlSlotStyles,
+) -> Vec<Element> {
     // The plain segment's on/off foreground, from style tokens (no sheet
     // resolve, so this also holds on a `--premint-only` build).
     let glyph_color = move || -> Option<Color> {
@@ -367,96 +517,15 @@ fn render_adornment(adornment: &Adornment, selected: Memo<bool>, size: Reactive<
             // An icon-sized pressable inside the segment's: its recognizer
             // consumes the tap, so pressing it does not also select the
             // segment — the same "button in a clickable row" contract as
-            // `TableRow`. Shares `Field`'s icon-button sheet.
+            // `TableRow`.
             vec![pressable(vec![glyph], move || on_press())
-                .with_style(StyleApplication::new(adornment_button_sheet()))
+                .with_style(SegmentedControlStyles::adornment().overridden(styles.adornment.as_ref()))
                 .into_element()]
         }
-        Adornment::Group(items) => items.iter().flat_map(|a| render_adornment(a, selected, size.clone())).collect(),
+        Adornment::Group(items) => {
+            items.iter().flat_map(|a| render_adornment(a, selected, size.clone(), styles)).collect()
+        }
     }
-}
-
-/// The `block` axis arm.
-fn block_arm(block: bool) -> &'static str {
-    if block { "on" } else { "off" }
-}
-
-/// The `selected` axis arm for a segment's state.
-fn selected_arm(selected: bool) -> &'static str {
-    if selected { "on" } else { "off" }
-}
-
-/// A segment's label text: the muted foreground at rest, the full text
-/// color when `selected`, at the control size's font.
-///
-/// The SegmentButton sheet's on/off foreground and per-size font live on
-/// the segment, but native TextView/UILabel/NSTextField don't inherit text
-/// color or font from their parent — only web's CSS cascade does. So this
-/// resolves them and stamps them on the text node itself, reactively
-/// (re-runs on `selected`, `size` and a theme swap). Without it a segment
-/// label renders in the widget default on native: it never flips on
-/// selection, never follows a light/dark swap, and ignores the size. Same
-/// as `Tabs`.
-///
-/// ```ignore
-/// SegmentLabel(text = label, selected = selected, size = size)
-/// ```
-#[component]
-fn SegmentLabel(
-    text: String,
-    selected: bool,
-    size: ControlSize,
-    #[prop(static)] overrides: Overrides,
-) -> Element {
-    let label_style = move || {
-        let arm = selected_arm(selected.get());
-        let size_arm = size.get().as_variant_str();
-        let app = overrides.segment_app(selected.get(), size_arm);
-        let base = StyleApplication::new(seg_label_base_sheet());
-        if overrides.any_segment() {
-            // A restyled segment's color/font differ per control, so they
-            // can't share the keyed computed layer below: stamp them as
-            // this label's own overrides.
-            let rules = resolve_style(&app);
-            return base.with_overrides(StyleRules {
-                color: rules.color.clone(),
-                font_size: rules.font_size.clone(),
-                font_weight: rules.font_weight,
-                ..Default::default()
-            });
-        }
-        if app.attaches_preminted() {
-            // Premint web build: the segment pressable's preminted class
-            // carries the on/off foreground and the label inherits it via
-            // the CSS cascade — the resolve-read below exists ONLY because
-            // native text doesn't inherit, and under `--premint-only` it
-            // would panic (sheets carry no rule closures). Same as `Tabs`.
-            return base;
-        }
-        let rules = resolve_style(&app);
-        let (color, font_size, font_weight) =
-            (rules.color.clone(), rules.font_size.clone(), rules.font_weight);
-        // The computed layer's cache key must name every input it bakes.
-        let key = match (arm, size_arm) {
-            ("on", "sm") => "seg_label_on_sm",
-            ("on", "lg") => "seg_label_on_lg",
-            ("on", _) => "seg_label_on_md",
-            (_, "sm") => "seg_label_off_sm",
-            (_, "lg") => "seg_label_off_lg",
-            _ => "seg_label_off_md",
-        };
-        // ENGINE-PATH ONLY: the `attaches_preminted()` early return
-        // above guarantees this layer never runs on a premint build,
-        // so the computed-layer disqualifier can't fire.
-        // idealyst-lint-disable-next-line premint-computed-layer
-        base.with_computed(key, move || StyleRules {
-            color: color.clone(),
-            font_size: font_size.clone(),
-            font_weight,
-            ..Default::default()
-        })
-    };
-    ui! { text(style = label_style) { text } }
 }
 
 recipe!(
@@ -491,114 +560,148 @@ mod tests {
     use crate::test_support::{classify, P};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::resolve_style;
+    use runtime_core::{resolve_style, StyleApplication, StyleRules, StyleSheet, Tokenized};
 
-    /// Resolved color on a segment's label text node (NOT the pressable's).
-    /// `TStyle::resolve` evaluates the reactive-or-static style either way.
-    fn seg_label_color(seg: Element) -> Option<runtime_core::Color> {
-        let label = match classify(seg) {
-            P::Pressable { mut children, .. } => children.remove(0),
-            _ => panic!("a segment is a Pressable"),
-        };
-        match classify(label) {
-            P::Text { style, .. } => {
-                style.and_then(|s| s.resolve().color.clone().map(|c| c.resolve()))
-            }
-            _ => panic!("a segment label is a Text node"),
+    fn mount(props: SegmentedControlProps) -> (Rc<StyleRules>, Vec<Element>) {
+        match classify(SegmentedControl(props)) {
+            P::View { style, children, .. } => (style.expect("the track is styled").resolve(), children),
+            _ => panic!("SegmentedControl renders a row View"),
         }
     }
 
-    /// The color the SegmentButton sheet resolves for a given selected state.
-    fn segment_color(selected: &str) -> runtime_core::Color {
-        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", selected.to_string());
-        resolve_style(&app)
-            .color
-            .clone()
-            .expect("SegmentButton resolves a foreground")
-            .resolve()
-    }
-
-    fn sheet(rules: StyleRules) -> Rc<StyleSheet> {
-        Rc::new(StyleSheet::r#static(rules))
-    }
-
-    fn fill(hex: &str) -> StyleRules {
-        StyleRules {
-            background: Some(runtime_core::Tokenized::Literal(runtime_core::Color(hex.into()))),
+    fn two(value: &str) -> SegmentedControlProps {
+        SegmentedControlProps {
+            options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
+            value: runtime_core::signal(value.to_string()).into(),
             ..Default::default()
         }
     }
 
-    /// The track and segments had theme-only fills and borders, so an app
-    /// that wanted a different look rebuilt the control by hand. The track,
-    /// segment and selected-segment slots restyle it per control or
-    /// app-wide; a prop wins over the installed slot; the selected slot's
-    /// `color` reaches the label (native text doesn't inherit it).
+    /// `(segment rules, label rules)` for one built segment.
+    fn seg_parts(seg: Element) -> (Rc<StyleRules>, Rc<StyleRules>) {
+        match classify(seg) {
+            P::Pressable { style, mut children, .. } => {
+                let label = match classify(children.remove(0)) {
+                    P::Text { style, .. } => style.expect("label styled").resolve(),
+                    _ => panic!("a bare segment's child is its label"),
+                };
+                (style.expect("segment styled").resolve(), label)
+            }
+            _ => panic!("a segment is a Pressable"),
+        }
+    }
+
+    fn lit(hex: &str) -> Option<Tokenized<runtime_core::Color>> {
+        Some(Tokenized::Literal(runtime_core::Color(hex.into())))
+    }
+
+    fn bg(r: &StyleRules) -> Option<runtime_core::Color> {
+        r.background.as_ref().map(|c| c.resolve())
+    }
+
+    fn fg(r: &StyleRules) -> Option<runtime_core::Color> {
+        r.color.as_ref().map(|c| c.resolve())
+    }
+
+    fn hex(h: &str) -> Option<runtime_core::Color> {
+        Some(runtime_core::Color(h.into()))
+    }
+
+    fn reset() {
+        runtime_core::component_styles::__reset::<SegmentedControlStyles>();
+    }
+
+    /// App-wide restyle through the slot registry: the track, the selected
+    /// segment and its label repaint on EVERY control, unselected segments
+    /// keep the theme, and the selected label's color is on the label's
+    /// own node (native text doesn't inherit it).
     #[test]
-    fn regression_segmented_control_track_and_segments_restyle() {
+    fn restyle_repaints_track_selected_segment_and_label_app_wide() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            install_segmented_control_style(SegmentedControlStyle {
-                track: Some(sheet(fill("#111111"))),
-                selected_segment: Some(sheet(StyleRules {
-                    color: Some(runtime_core::Tokenized::Literal(runtime_core::Color("#fafafa".into()))),
-                    ..fill("#222222")
-                })),
-                ..Default::default()
+            SegmentedControlStyles::restyle(|s| {
+                s.track().base(|_| StyleRules { background: lit("#111111"), ..Default::default() });
+                s.segment().arm(SegmentedControlSelected::On, |_| StyleRules { background: lit("#222222"), ..Default::default() });
+                s.label().arm(SegmentedControlSelected::On, |_| StyleRules { color: lit("#fafafa"), ..Default::default() });
             });
-            let build = |track: Option<Rc<StyleSheet>>| {
-                SegmentedControl(SegmentedControlProps {
-                    options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
-                    value: runtime_core::signal("a".to_string()).into(),
-                    style: track,
-                    ..Default::default()
-                })
-            };
-            let bg = |rules: Rc<StyleRules>| rules.background.clone().map(|c| c.resolve());
-            let hex = |h: &str| Some(runtime_core::Color(h.into()));
-
-            let P::View { style, mut children, .. } = classify(build(None)) else {
-                panic!("SegmentedControl renders a row View");
-            };
-            assert_eq!(bg(style.unwrap().resolve()), hex("#111111"), "installed track fill");
-            let selected = children.remove(0);
-            let unselected = children.remove(0);
-            let P::Pressable { style: sel_style, .. } = classify(selected) else { panic!() };
-            assert_eq!(bg(sel_style.unwrap().resolve()), hex("#222222"), "installed selected fill");
-            let P::Pressable { style: off_style, .. } = classify(unselected) else { panic!() };
-            assert_ne!(bg(off_style.unwrap().resolve()), hex("#222222"), "unselected keeps the theme");
-
-            let P::View { mut children, .. } = classify(build(None)) else { panic!() };
-            assert_eq!(seg_label_color(children.remove(0)), hex("#fafafa"), "selected label color");
-
-            let P::View { style, .. } = classify(build(Some(sheet(fill("#333333"))))) else {
-                panic!()
-            };
-            assert_eq!(bg(style.unwrap().resolve()), hex("#333333"), "the prop wins over the installed slot");
-            install_segmented_control_style(SegmentedControlStyle::default());
+            let (track, mut segs) = mount(two("a"));
+            assert_eq!(bg(&track), hex("#111111"));
+            let (off, off_label) = seg_parts(segs.remove(1));
+            let (on, on_label) = seg_parts(segs.remove(0));
+            assert_eq!(bg(&on), hex("#222222"), "restyled selected fill");
+            assert_ne!(bg(&off), hex("#222222"), "unselected keeps the theme");
+            assert_eq!(fg(&on_label), hex("#fafafa"), "selected label color, on the label node");
+            assert_ne!(fg(&off_label), hex("#fafafa"));
+            // The restyled track still premints: the restyle is composed into
+            // the slot sheet, not layered as a runtime override.
+            assert!(SegmentedControlStyles::track().into_style_application().preminted_class_list().is_some());
+            reset();
         });
     }
 
-    // The `--premint-only` read-back: same shape as `Tabs` — the segment
-    // label resolved the SegmentButton color into a `with_computed` layer, which
-    // disqualifies preminting and panics under `--premint-only`. On a premint
-    // build the label application must premint BARE (the segment pressable's
-    // preminted class carries the foreground; web inherits it); live/native
-    // builds keep the computed stamp.
+    /// The `styles` prop overrides one control's slots and wins over an
+    /// app-wide restyle; a SHEET override follows the slot's selection, so
+    /// it can style only the selected segment.
+    #[test]
+    fn styles_prop_overrides_one_control_over_the_restyle() {
+        with_test_world(|| {
+            reset();
+            install_idea_theme(light_theme());
+            SegmentedControlStyles::restyle(|s| {
+                s.track().base(|_| StyleRules { background: lit("#111111"), ..Default::default() });
+            });
+            let selected_only = Rc::new(
+                StyleSheet::new(|_| StyleRules::default())
+                    .variant("selected", "on", |_| StyleRules { background: lit("#444444"), ..Default::default() })
+                    .variant("selected", "off", |_| StyleRules::default()),
+            );
+            let (track, mut segs) = mount(SegmentedControlProps {
+                styles: SegmentedControlSlotStyles::default()
+                    .track(StyleRules { background: lit("#333333"), ..Default::default() })
+                    .segment(selected_only),
+                ..two("a")
+            });
+            assert_eq!(bg(&track), hex("#333333"), "the instance override wins over the restyle");
+            let (off, _) = seg_parts(segs.remove(1));
+            let (on, _) = seg_parts(segs.remove(0));
+            assert_eq!(bg(&on), hex("#444444"));
+            assert_ne!(bg(&off), hex("#444444"), "a sheet override follows the segment's selection");
+            reset();
+        });
+    }
+
+    /// An app-defined size: a value of the control's own size axis, given its
+    /// look by a restyle arm on the segment and label slots.
+    #[test]
+    fn a_custom_size_value_draws_through_restyle_arms() {
+        const XL: SegmentedControlSize = SegmentedControlSize::define("xl");
+        with_test_world(|| {
+            reset();
+            install_idea_theme(light_theme());
+            SegmentedControlStyles::restyle(|s| {
+                s.segment().arm(XL, |_| StyleRules { padding_top: Some(Length::Px(14.0).into()), ..Default::default() });
+                s.label().arm(XL, |_| StyleRules { font_size: Some(Length::Px(22.0).into()), ..Default::default() });
+            });
+            let (_, mut segs) = mount(SegmentedControlProps { size: Reactive::Static(XL), ..two("a") });
+            let (seg, label) = seg_parts(segs.remove(0));
+            assert_eq!(px(&seg.padding_top), 14.0);
+            assert_eq!(px(&label.font_size), 22.0);
+            reset();
+        });
+    }
+
+    /// The label is its own slot: its application carries no computed or
+    /// override layer, so it premints in every build (the old read-back of
+    /// the segment's resolved color into a computed layer panicked under
+    /// `--premint-only`).
     #[test]
     fn regression_premint_segment_label_application_premints() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            let el = SegmentedControl(SegmentedControlProps {
-                options: vec![SegmentOption::new("a", "A")],
-                value: runtime_core::signal("a".to_string()).into(),
-                ..Default::default()
-            });
-            let mut children = match classify(el) {
-                P::View { children, .. } => children,
-                _ => panic!("SegmentedControl renders a row View"),
-            };
-            let label = match classify(children.remove(0)) {
+            let (_, mut segs) = mount(two("a"));
+            let label = match classify(segs.remove(0)) {
                 P::Pressable { mut children, .. } => children.remove(0),
                 _ => panic!("a segment is a Pressable"),
             };
@@ -606,52 +709,28 @@ mod tests {
                 P::Text { style, .. } => style.expect("segment label carries a style"),
                 _ => panic!("a segment label is a Text node"),
             };
-            let app = style.application();
-            #[cfg(idealyst_premint)]
-            assert!(
-                app.preminted_class_list().is_some(),
-                "premint build: the label application premints bare — no computed layer"
-            );
             #[cfg(not(idealyst_premint))]
-            {
-                assert!(
-                    app.preminted_class_list().is_none(),
-                    "live/native build: the computed color layer rides the application"
-                );
-                assert!(
-                    resolve_style(&app).color.is_some(),
-                    "and it resolves the SegmentButton foreground for the label node"
-                );
-            }
+            assert!(style.application().preminted_class_list().is_some(), "the label slot premints");
+            let _ = style;
         });
     }
 
-    // Regression: the segment label was a bare text node whose color lived only on
-    // the wrapping pressable, so on native (no CSS cascade) it rendered in the
-    // widget default — the selected segment never took the accent color and the
-    // labels never followed a theme swap. Each label must carry its OWN color
-    // matching its selected state, like `Tabs`.
+    /// Regression: the segment label was a bare text node whose color lived
+    /// only on the wrapping pressable, so on native (no CSS cascade) the
+    /// selected segment never took the accent color. Each label carries its
+    /// OWN color for its selected state.
     #[test]
     fn regression_segment_labels_carry_their_own_active_color() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            let el = SegmentedControl(SegmentedControlProps {
-                options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
-                value: runtime_core::signal("a".to_string()).into(),
-                ..Default::default()
-            });
-            let mut children = match classify(el) {
-                P::View { children, .. } => children,
-                _ => panic!("SegmentedControl renders a row View"),
-            };
-            let second = children.remove(1);
-            let first = children.remove(0);
-            let on = seg_label_color(first).expect("selected label carries a color");
-            let off = seg_label_color(second).expect("unselected label carries a color");
-            assert_eq!(on, segment_color("on"), "selected segment label = SegmentButton `on`");
-            assert_eq!(off, segment_color("off"), "unselected segment label = SegmentButton `off`");
-            assert_ne!(on, off, "selection must change the label color");
-    });
+            let c = idea_theme::tokens().color;
+            let (_, mut segs) = mount(two("a"));
+            let (_, off) = seg_parts(segs.remove(1));
+            let (_, on) = seg_parts(segs.remove(0));
+            assert_eq!(fg(&on), Some(c.text().resolve()));
+            assert_eq!(fg(&off), Some(c.text_muted().resolve()));
+        });
     }
 
     #[test]
@@ -660,130 +739,85 @@ mod tests {
             let p = SegmentedControlProps::default();
             assert!(p.options.is_empty());
             assert_eq!(p.value.get(), String::new());
-    });
+            assert!(p.styles.track.is_none());
+        });
     }
 
     /// Regression (CrewForge want_2ed95ee5): SegmentedControl drew with the
-    /// Tabs sheets (`TabBar` + `TabButton`), so a value choice rendered as an
-    /// underlined tab strip, identical to the page's `Tabs`. It must be a
-    /// bordered group whose selected segment is filled in, and must not
-    /// carry the tab underline.
+    /// Tabs sheets, so a value choice rendered as an underlined tab strip.
+    /// It must be a bordered group whose selected segment is filled in, with
+    /// no tab underline.
     #[test]
     fn regression_segmented_control_is_a_bordered_group_not_a_tab_strip() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            let el = SegmentedControl(SegmentedControlProps {
-                options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
-                value: runtime_core::signal("a".to_string()).into(),
-                ..Default::default()
-            });
-            let (group, mut children) = match classify(el) {
-                P::View { style, children, .. } => (style.expect("the group is styled").resolve(), children),
-                _ => panic!("SegmentedControl renders a row View"),
-            };
-            let width = |w: &Option<runtime_core::Tokenized<f32>>| w.as_ref().map_or(0.0, |w| w.resolve());
+            let (group, mut segs) = mount(two("a"));
             assert!(width(&group.border_left_width) > 0.0, "the group draws a border around all segments");
             assert!(group.background.is_some(), "the group is a tinted track");
-
-            let seg_style = |seg: Element| match classify(seg) {
-                P::Pressable { style, .. } => style.expect("a segment is styled").resolve(),
-                _ => panic!("a segment is a Pressable"),
-            };
-            let off = seg_style(children.remove(1));
-            let on = seg_style(children.remove(0));
-            let bg = |s: &StyleRules| s.background.as_ref().map(|c| c.resolve());
+            let (off, _) = seg_parts(segs.remove(1));
+            let (on, _) = seg_parts(segs.remove(0));
             assert_ne!(bg(&on), bg(&off), "the selected segment is filled in");
             for seg in [&on, &off] {
-                assert_eq!(
-                    width(&seg.border_bottom_width),
-                    width(&seg.border_left_width),
-                    "no tab underline: a segment's border is the same on every side"
-                );
+                assert_eq!(width(&seg.border_bottom_width), width(&seg.border_left_width), "no tab underline");
             }
         });
     }
 
-    /// The control's two sheets are its own, not the Tabs sheets: distinct
-    /// sheets with distinct premint identities, a `selected` author axis
-    /// (default `off`) instead of the tab's `active`,
-    /// and the hovered/pressed/focused state overlays — focus draws the
-    /// themed ring rather than the platform default.
+    /// The control's slots are its own, not the Tabs sheets: distinct premint
+    /// identities, a `selected` axis (default `off`), and the hover / press /
+    /// focus overlays — focus draws the themed ring.
     #[test]
-    fn segmented_sheets_are_their_own_not_the_tab_sheets() {
+    fn segmented_slots_are_their_own_not_the_tab_sheets() {
         use crate::stylesheets::{TabBar, TabButton};
         use runtime_core::StateBits;
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
             for (ours, tabs, what) in [
-                (SegmentedGroup::sheet(), TabBar::sheet(), "track"),
-                (SegmentButton::sheet(), TabButton::sheet(), "segment"),
+                (SegmentedControlStyles::track().sheet(), TabBar::sheet(), "track"),
+                (SegmentedControlStyles::segment().sheet(), TabButton::sheet(), "segment"),
             ] {
-                assert!(!Rc::ptr_eq(&ours, &tabs), "the {what} sheet is not the Tabs sheet");
                 assert_ne!(ours.premint_class(), tabs.premint_class(), "the {what} premints under its own class");
             }
-
-            let seg = SegmentButton::sheet();
+            let seg = SegmentedControlStyles::segment().sheet();
             let axes: Vec<_> = seg.premint_author_axes().iter().map(|(a, d)| (a.as_str(), d.as_deref())).collect();
-            assert_eq!(
-                axes,
-                vec![("block", Some("off")), ("selected", Some("off")), ("size", Some("md"))],
-                "a `block` axis resting off, a `selected` axis resting off, and a `size` axis resting md"
-            );
-            let mut arms: Vec<_> = seg
-                .variant_keys()
-                .into_iter()
-                .filter(|(axis, _)| axis == "selected")
-                .map(|(_, v)| v)
-                .collect();
-            arms.sort();
-            assert_eq!(arms, vec!["off".to_string(), "on".to_string()]);
-
+            assert_eq!(axes, vec![("block", Some("off")), ("selected", Some("off")), ("size", Some("md"))]);
             let states: Vec<StateBits> = seg.state_axes().iter().map(|(b, _)| *b).collect();
-            for (bit, name) in [(StateBits::HOVERED, "hovered"), (StateBits::PRESSED, "pressed"), (StateBits::FOCUSED, "focused")] {
-                assert!(states.contains(&bit), "SegmentButton declares a `{name}` state");
+            for bit in [StateBits::HOVERED, StateBits::PRESSED, StateBits::FOCUSED] {
+                assert!(states.contains(&bit));
             }
-            let focused = resolve_style(&StyleApplication::new(seg.clone()).with("__state_focused", "on".to_string()));
-            assert_eq!(
-                focused.border_left_color.as_ref().and_then(|c| c.name()),
-                Some("color-focus-ring"),
-                "focus draws the themed ring"
-            );
+            let focused = resolve_style(&StyleApplication::new(seg).with("__state_focused", "on".to_string()));
+            assert_eq!(focused.border_left_color.as_ref().and_then(|c| c.name()), Some("color-focus-ring"));
         });
     }
 
-    /// Snapshot of the arms, by TOKEN name: every themed value the track and
-    /// the segments paint is a style token, so a theme swap retints them and
-    /// no color or spacing is a literal. The selected segment is a raised
-    /// key — the surface color with a border — on a `surface_alt` track.
+    /// Every themed value the track and segments paint is a style token, so a
+    /// theme swap retints them. The selected segment is a raised key — the
+    /// surface color with a border — on a `surface_alt` track.
     #[test]
     fn segmented_arms_are_built_from_style_tokens() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            let name = |c: &Option<runtime_core::Tokenized<runtime_core::Color>>| c.as_ref().and_then(|c| c.name());
-
-            let group = resolve_style(&StyleApplication::new(SegmentedGroup::sheet()));
-            assert_eq!(name(&group.background), Some("color-surface-alt"), "the track is tinted");
-            assert_eq!(name(&group.border_left_color), Some("color-border"), "and bordered");
-            assert!(group.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some(), "track radius is a token");
-            // The inset is a named hairline constant, not a spacing token
-            // (the scale's smallest step, `xs` = 4, left the selected key
-            // floating loose inside the track).
+            let name = |c: &Option<Tokenized<runtime_core::Color>>| c.as_ref().and_then(|c| c.name());
+            let group = resolve_style(&SegmentedControlStyles::track().into_style_application());
+            assert_eq!(name(&group.background), Some("color-surface-alt"));
+            assert_eq!(name(&group.border_left_color), Some("color-border"));
+            assert!(group.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some());
             assert_eq!(
                 group.padding_left.as_ref().map(|p| p.resolve()),
-                Some(runtime_core::Length::Px(crate::stylesheets::SEGMENT_TRACK_INSET)),
+                Some(Length::Px(SEGMENT_TRACK_INSET)),
                 "the selected segment sits SEGMENT_TRACK_INSET inside the track"
             );
-
-            let seg = |selected: &str| {
-                resolve_style(&StyleApplication::new(SegmentButton::sheet()).with("selected", selected.to_string()))
+            let seg = |sel: SegmentedControlSelected| {
+                resolve_style(&SegmentedControlStyles::segment().set(sel).into_style_application())
             };
-            let (on, off) = (seg("on"), seg("off"));
-            assert_eq!(name(&on.background), Some("color-surface"), "the selected segment is filled in");
-            assert_eq!(name(&on.border_left_color), Some("color-border"), "and edged like a raised key");
+            let (on, off) = (seg(SegmentedControlSelected::On), seg(SegmentedControlSelected::Off));
+            assert_eq!(name(&on.background), Some("color-surface"));
+            assert_eq!(name(&on.border_left_color), Some("color-border"));
             assert_eq!(name(&on.color), Some("color-text"));
-            assert_eq!(name(&off.background), None, "an unselected segment is transparent");
             assert_eq!(name(&off.color), Some("color-text-muted"));
-            assert!(on.border_top_left_radius.as_ref().and_then(|r| r.name()).is_some(), "segment radius is a token");
         });
     }
 
@@ -791,24 +825,13 @@ mod tests {
     #[test]
     fn builds_one_segment_per_option() {
         with_test_world(|| {
-            let el = SegmentedControl(SegmentedControlProps {
-                options: vec![
-                    SegmentOption::new("a", "A"),
-                    SegmentOption::new("b", "B"),
-                    SegmentOption::new("c", "C"),
-                ],
+            let (_, children) = mount(SegmentedControlProps {
+                options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B"), SegmentOption::new("c", "C")],
                 ..Default::default()
             });
-            let children = match classify(el) {
-                P::View { children, .. } => children,
-                _ => panic!("SegmentedControl should render a row View"),
-            };
             assert_eq!(children.len(), 3, "one segment per option");
-            assert!(
-                children.into_iter().all(|c| matches!(classify(c), P::Pressable { .. })),
-                "each segment must be a pressable"
-            );
-    });
+            assert!(children.into_iter().all(|c| matches!(classify(c), P::Pressable { .. })));
+        });
     }
 
     /// The segment's row: leading adornments, the label, trailing ones.
@@ -824,23 +847,19 @@ mod tests {
     }
 
     /// Adornments: the label is rendered ONCE by the control, between the
-    /// leading and trailing adornments — the caller never restates it.
+    /// leading and trailing adornments.
     #[test]
     fn adornments_sit_either_side_of_the_label() {
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let el = SegmentedControl(SegmentedControlProps {
+            let (_, mut segs) = mount(SegmentedControlProps {
                 options: vec![SegmentOption::new("day", "Day shift")
                     .leading(Adornment::element(|| ui! { view() }))
                     .trailing(Adornment::Icon(crate::components::icon::EMPTY_ICON))],
                 value: runtime_core::signal("day".to_string()).into(),
                 ..Default::default()
             });
-            let seg = match classify(el) {
-                P::View { mut children, .. } => children.remove(0),
-                _ => panic!("row view"),
-            };
-            let mut row = segment_row(seg).into_iter();
+            let mut row = segment_row(segs.remove(0)).into_iter();
             assert!(matches!(classify(row.next().unwrap()), P::View { .. }), "leading element first");
             match classify(row.next().unwrap()) {
                 P::Text { text, .. } => assert_eq!(text.as_deref(), Some("Day shift")),
@@ -851,8 +870,7 @@ mod tests {
         });
     }
 
-    /// An `Icon` adornment recolors with its segment, like the label:
-    /// muted at rest, the text color when selected.
+    /// An `Icon` adornment recolors with its segment, like the label.
     #[test]
     fn icon_adornment_follows_the_selected_color() {
         with_test_world(|| {
@@ -861,15 +879,11 @@ mod tests {
             let (on, off) = (Some(c.text().resolve()), Some(c.text_muted().resolve()));
             for (picked, expect) in [("a", [on.clone(), off.clone()]), ("b", [off.clone(), on.clone()])] {
                 let opt = |id: &str| SegmentOption::new(id, id).leading(Adornment::Icon(crate::components::icon::EMPTY_ICON));
-                let el = SegmentedControl(SegmentedControlProps {
+                let (_, segs) = mount(SegmentedControlProps {
                     options: vec![opt("a"), opt("b")],
                     value: runtime_core::signal(picked.to_string()).into(),
                     ..Default::default()
                 });
-                let segs = match classify(el) {
-                    P::View { children, .. } => children,
-                    _ => panic!("row view"),
-                };
                 let colors: Vec<Option<runtime_core::Color>> = segs
                     .into_iter()
                     .map(|seg| match classify(segment_row(seg).remove(0)) {
@@ -882,61 +896,45 @@ mod tests {
         });
     }
 
-    /// No adornment keeps the bare label (no wrapper row), exactly as
-    /// before adornments existed.
+    /// No adornment keeps the bare label (no wrapper row).
     #[test]
     fn unadorned_segment_is_just_its_label() {
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let el = SegmentedControl(SegmentedControlProps {
-                options: vec![SegmentOption::new("a", "A")],
-                ..Default::default()
-            });
-            let seg = match classify(el) {
-                P::View { mut children, .. } => children.remove(0),
-                _ => panic!("row view"),
-            };
-            match classify(seg) {
-                P::Pressable { mut children, .. } => {
-                    assert!(matches!(classify(children.remove(0)), P::Text { .. }))
-                }
+            let (_, mut segs) = mount(SegmentedControlProps { options: vec![SegmentOption::new("a", "A")], ..Default::default() });
+            match classify(segs.remove(0)) {
+                P::Pressable { mut children, .. } => assert!(matches!(classify(children.remove(0)), P::Text { .. })),
                 _ => panic!("pressable"),
             }
         });
     }
 
     /// px of a resolved length, 0 when absent.
-    fn px(l: &Option<runtime_core::Tokenized<runtime_core::Length>>) -> f32 {
+    fn px(l: &Option<Tokenized<Length>>) -> f32 {
         match l.as_ref().map(|t| t.resolve()) {
-            Some(runtime_core::Length::Px(v)) => v,
+            Some(Length::Px(v)) => v,
             _ => 0.0,
         }
     }
 
-    fn width(w: &Option<runtime_core::Tokenized<f32>>) -> f32 {
+    fn width(w: &Option<Tokenized<f32>>) -> f32 {
         w.as_ref().map_or(0.0, |w| w.resolve())
     }
 
-    /// `size` makes the control the SAME HEIGHT as a Select (and a Field or
-    /// an outlined Button, which share Select's per-size padding, font and
-    /// 1px border) at every size. Height is `vertical chrome + line height`;
-    /// equal font sizes give equal line heights, so the check is that the
-    /// segmented control's vertical padding + borders — track border, track
-    /// inset, segment border, segment padding — sum to Select's padding +
-    /// border, and that the fonts match.
+    /// `size` makes the control the SAME HEIGHT as a Select at every size:
+    /// the segmented control's vertical padding + borders (track border,
+    /// track inset, segment border, segment padding) sum to Select's padding
+    /// + border, and the fonts match.
     #[test]
     fn each_size_matches_a_select_of_the_same_size() {
         use crate::stylesheets::SelectTrigger;
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            let group = resolve_style(&StyleApplication::new(SegmentedGroup::sheet()));
-            for size in ["sm", "md", "lg"] {
-                let seg = resolve_style(
-                    &StyleApplication::new(SegmentButton::sheet()).with("size", size.to_string()),
-                );
-                let select = resolve_style(
-                    &StyleApplication::new(SelectTrigger::sheet()).with("size", size.to_string()),
-                );
+            let group = resolve_style(&SegmentedControlStyles::track().into_style_application());
+            for (size, arm) in [(SegmentedControlSize::Sm, "sm"), (SegmentedControlSize::Md, "md"), (SegmentedControlSize::Lg, "lg")] {
+                let seg = resolve_style(&SegmentedControlStyles::segment().set(size).into_style_application());
+                let select = resolve_style(&StyleApplication::new(SelectTrigger::sheet()).with("size", arm.to_string()));
                 let seg_chrome = width(&group.border_top_width)
                     + width(&group.border_bottom_width)
                     + px(&group.padding_top)
@@ -949,45 +947,25 @@ mod tests {
                     + width(&select.border_bottom_width)
                     + px(&select.padding_top)
                     + px(&select.padding_bottom);
-                assert_eq!(seg_chrome, select_chrome, "{size}: same vertical chrome as Select");
-                assert_eq!(
-                    px(&seg.font_size),
-                    px(&select.font_size),
-                    "{size}: same font, so the same line height"
-                );
-                assert_eq!(
-                    px(&seg.padding_left),
-                    px(&select.padding_left),
-                    "{size}: same horizontal padding as Select"
-                );
+                assert_eq!(seg_chrome, select_chrome, "{arm}: same vertical chrome as Select");
+                assert_eq!(px(&seg.font_size), px(&select.font_size), "{arm}: same font");
+                assert_eq!(px(&seg.padding_left), px(&select.padding_left), "{arm}: same horizontal padding");
             }
         });
     }
 
-    /// The label stamps the size's font on its OWN text node (and its
-    /// weight): native text never inherits font from the segment, so a
-    /// `Lg` control would otherwise render its labels at the widget default.
+    /// The label stamps the size's font (and weight) on its OWN text node:
+    /// native text never inherits font from the segment.
     #[test]
     fn label_carries_the_size_font_on_its_own_node() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            let sizes = [(ControlSize::Sm, "sm"), (ControlSize::Md, "md"), (ControlSize::Lg, "lg")];
-            for (size, arm) in sizes {
-                let el = SegmentLabel(
-                    Reactive::Static("x".into()),
-                    Reactive::Static(true),
-                    Reactive::Static(size),
-                    Overrides::default(),
-                );
-                let rules = match classify(el) {
-                    P::Text { style, .. } => style.expect("styled").resolve(),
-                    _ => panic!("text"),
-                };
-                let seg = resolve_style(
-                    &StyleApplication::new(SegmentButton::sheet()).with("size", arm.to_string()),
-                );
-                assert_eq!(px(&rules.font_size), px(&seg.font_size), "{arm} label font");
-                assert_eq!(rules.font_weight, seg.font_weight, "{arm} label weight");
+            for size in [ControlSize::Sm, ControlSize::Md, ControlSize::Lg] {
+                let (_, mut segs) = mount(SegmentedControlProps { size: size.into(), ..two("a") });
+                let (seg, label) = seg_parts(segs.remove(0));
+                assert_eq!(px(&label.font_size), px(&seg.font_size), "{size:?} label font");
+                assert_eq!(label.font_weight, seg.font_weight, "{size:?} label weight");
             }
         });
     }
@@ -997,28 +975,20 @@ mod tests {
     #[test]
     fn size_reaches_segments_and_icon_adornments() {
         with_test_world(|| {
+            reset();
             install_idea_theme(light_theme());
-            for (size, arm, icon_px) in
-                [(ControlSize::Sm, "sm", 14.0), (ControlSize::Md, "md", 16.0), (ControlSize::Lg, "lg", 18.0)]
-            {
-                let el = SegmentedControl(SegmentedControlProps {
-                    options: vec![SegmentOption::new("a", "A")
-                        .leading(Adornment::Icon(crate::components::icon::EMPTY_ICON))],
-                    size: Reactive::Static(size),
+            for (size, icon_px) in [(ControlSize::Sm, 14.0), (ControlSize::Md, 16.0), (ControlSize::Lg, 18.0)] {
+                let (_, mut segs) = mount(SegmentedControlProps {
+                    options: vec![SegmentOption::new("a", "A").leading(Adornment::Icon(crate::components::icon::EMPTY_ICON))],
+                    size: size.into(),
                     ..Default::default()
                 });
-                let seg = match classify(el) {
-                    P::View { mut children, .. } => children.remove(0),
-                    _ => panic!("row"),
-                };
-                let (style, mut children) = match classify(seg) {
+                let (style, mut children) = match classify(segs.remove(0)) {
                     P::Pressable { style, children, .. } => (style.expect("styled"), children),
                     _ => panic!("pressable"),
                 };
-                let expect = resolve_style(
-                    &StyleApplication::new(SegmentButton::sheet()).with("size", arm.to_string()),
-                );
-                assert_eq!(px(&style.resolve().padding_top), px(&expect.padding_top), "{arm} segment");
+                let expect = resolve_style(&SegmentedControlStyles::segment().set(SegmentedControlSize::from(size)).into_style_application());
+                assert_eq!(px(&style.resolve().padding_top), px(&expect.padding_top), "{size:?} segment");
                 let row = match classify(children.remove(0)) {
                     P::View { children, .. } => children,
                     _ => panic!("adorned row"),
@@ -1027,7 +997,7 @@ mod tests {
                     P::Icon { style, .. } => style.expect("icon styled").resolve(),
                     _ => panic!("icon"),
                 };
-                assert_eq!(px(&icon_style.width), icon_px, "{arm} icon size");
+                assert_eq!(px(&icon_style.width), icon_px, "{size:?} icon size");
             }
         });
     }

@@ -215,9 +215,10 @@ pub use components::collapsible::{
     CollapsibleProps, CollapsibleTransition,
 };
 pub use components::divider::{Divider, DividerAxis, DividerProps};
-pub use components::field::{Adornment, Field, FieldProps};
-// Style-level types, not component code — the Field/Textarea shared axes.
-pub use stylesheets::{FieldAppearance, FieldSize};
+pub use components::field::{
+    Adornment, Field, FieldAdorned, FieldAppearance, FieldDimmed, FieldPlacement, FieldProps, FieldRestyle,
+    FieldRing, FieldSize, FieldSlotStyles, FieldStyles, FieldTone,
+};
 pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
 pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
@@ -227,8 +228,8 @@ pub use components::popover::{Popover, PopoverProps};
 pub use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 pub use components::progress::{Progress, ProgressCap, ProgressMode, ProgressProps};
 pub use components::segmented_control::{
-    install_segmented_control_style, SegmentOption, SegmentedControl, SegmentedControlProps,
-    SegmentedControlStyle,
+    SegmentOption, SegmentedControl, SegmentedControlBlock, SegmentedControlProps, SegmentedControlRestyle,
+    SegmentedControlSelected, SegmentedControlSize, SegmentedControlSlotStyles, SegmentedControlStyles,
 };
 pub use components::select::{Select, SelectProps};
 // Data/style types shared with Autocomplete.

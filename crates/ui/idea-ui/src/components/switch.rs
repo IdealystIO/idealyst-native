@@ -41,7 +41,8 @@ use runtime_core::{
 use idea_theme::extensible::{installed_switch_sheet, ToneRef, VariantRef};
 
 use crate::components::ControlSize;
-use crate::stylesheets::{ControlRow, FieldLabel, SwitchThumb};
+use crate::components::field::FieldStyles;
+use crate::stylesheets::{ControlRow, SwitchThumb};
 use idea_theme::tokens;
 
 /// Duration of the thumb-slide / track-color animation.
@@ -213,7 +214,7 @@ pub fn Switch(props: &SwitchProps) -> Element {
     };
     let track = track.into_element();
 
-    match crate::components::optional_reactive_text(props.label.clone(), FieldLabel()) {
+    match crate::components::optional_reactive_text(props.label.clone(), FieldStyles::label()) {
         Some(label) => ui! {
             view(style = ControlRow()) {
                 label

@@ -392,6 +392,14 @@ pub trait IdeaTheme: Any + 'static {
     fn pressed_overlay(&self) -> Tokenized<Color> {
         Tokenized::Literal(Color("rgba(127, 127, 140, 0.24)".into()))
     }
+
+    /// The app's own tones this theme brings. Installing the theme
+    /// registers each one ([`register_tone`](crate::extensible::register_tone)),
+    /// so every tone-aware component draws them — `app_theme! { …, tones:
+    /// [Brand] }` fills this in. Default: none.
+    fn extension_tones(&self) -> Vec<crate::extensible::ToneRef> {
+        Vec::new()
+    }
 }
 
 // =============================================================================
@@ -471,6 +479,9 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn pressed_overlay(&self) -> Tokenized<Color> {
         self.inner.pressed_overlay()
+    }
+    fn extension_tones(&self) -> Vec<crate::extensible::ToneRef> {
+        self.inner.extension_tones()
     }
 }
 

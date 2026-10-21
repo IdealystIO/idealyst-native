@@ -47,7 +47,8 @@ use idea_theme::extensible::{installed_radio_sheets, RadioSheets, ToneRef, Varia
 
 use crate::components::ControlSize;
 use crate::components::stack::{Stack, StackAxis, StackGap};
-use crate::stylesheets::{ControlRow, FieldLabel};
+use crate::components::field::FieldStyles;
+use crate::stylesheets::ControlRow;
 
 // =============================================================================
 // Shared indicator + row builders
@@ -234,7 +235,7 @@ pub fn Radio(props: &RadioProps) -> Element {
     };
     let size = props.size.clone();
     let size_key = move || size.get().as_variant_str().to_string();
-    let label = crate::components::optional_reactive_text(props.label.clone(), FieldLabel())
+    let label = crate::components::optional_reactive_text(props.label.clone(), FieldStyles::label())
         .map(|el| (el, props.label.get()));
     radio_row(
         move || selected.get(),
@@ -369,7 +370,7 @@ pub fn RadioGroup(props: RadioGroupProps) -> Element {
 
         let a11y_label = option.label.get();
         let label = runtime_core::text(option.label)
-            .with_style(|| StyleApplication::new(FieldLabel::sheet()))
+            .with_style(FieldStyles::label())
             .into_element();
 
         radio_row(

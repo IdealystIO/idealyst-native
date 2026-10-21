@@ -373,6 +373,11 @@ macro_rules! app_theme {
             fn font_family(&self) -> ::runtime_core::FontFamily {
                 <$idea_ty as $crate::theme::IdeaTheme>::font_family(&self.idea)
             }
+            fn extension_tones(&self) -> ::std::vec::Vec<$crate::extensible::ToneRef> {
+                // Installing the theme registers these, so every
+                // tone-aware component draws them.
+                ::std::vec![$($( $crate::extensible::ToneRef::from(<$tone as ::core::default::Default>::default()), )*)?]
+            }
         }
 
         impl $crate::ThemeTokens for $name {

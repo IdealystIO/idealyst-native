@@ -160,6 +160,18 @@ fn per_instance_overrides_layer_last_over_restyles_and_states() {
     let o = SegSlotStyles::default().track(sheet);
     let app = app_of(SegStyles::track().overridden(o.track.as_ref()).into_style_prop());
     assert_eq!(pad(&runtime_vocabulary::glue::resolve_style(&app)), 9.0);
+    // A sheet override follows the slot's selection: only the selected
+    // segment takes this one's background.
+    let per_state = Rc::new(
+        StyleSheet::new(|_| StyleRules::default())
+            .variant("selected", "on", |_| StyleRules { background: Some(Tokenized::Literal(Color("picked".into()))), ..Default::default() })
+            .variant("selected", "off", |_| StyleRules::default()),
+    );
+    let o = SegSlotStyles::default().segment(per_state);
+    let on = app_of(SegStyles::segment().set(SegSelected::On).overridden(o.segment.as_ref()).into_style_prop());
+    let off = app_of(SegStyles::segment().set(SegSelected::Off).overridden(o.segment.as_ref()).into_style_prop());
+    assert_eq!(bg(&runtime_vocabulary::glue::resolve_style(&on)), "picked");
+    assert_ne!(bg(&runtime_vocabulary::glue::resolve_style(&off)), "picked");
 }
 
 #[test]
@@ -211,6 +223,21 @@ fn props_styles_argument_adds_the_generated_override_set() {
         ..Default::default()
     };
     assert!(props.styles.track.is_none());
-    assert_eq!(fg(props.styles.segment.as_ref().unwrap().rules()), "instance");
+    assert_eq!(fg(&props.styles.segment.as_ref().unwrap().resolve(&Default::default())), "instance");
     assert!(!props.block.get());
+}
+
+/// A `#[props]`-wrapped axis prop (`Reactive<E>`) selects directly: a static
+/// one stays on the static path, a dynamic one re-applies.
+#[test]
+fn reactive_props_select_axes_statically_or_dynamically() {
+    use runtime_vocabulary::glue::Reactive;
+    reset();
+    let prop = SegStyles::track().set(Reactive::Static(SegDensity::Compact)).into_style_prop();
+    assert!(matches!(prop, StyleProp::Sheet(_)), "a static Reactive keeps the static path");
+    let prop = SegStyles::track()
+        .set(Reactive::Dynamic(Rc::new(|| SegDensity::Compact)))
+        .into_style_prop();
+    let StyleProp::SheetDynamic(f) = prop else { panic!("a dynamic Reactive is dynamic") };
+    assert_eq!(f().variants.0.get("density").map(String::as_str), Some("compact"));
 }

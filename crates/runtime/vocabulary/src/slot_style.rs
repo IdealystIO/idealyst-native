@@ -122,14 +122,21 @@ impl<S: ComponentStyles> AxisValues<S> {
 pub struct SlotStyle<S: ComponentStyles> {
     slot: usize,
     values: AxisValues<S>,
-    inline: Option<Rc<StyleRules>>,
+    overrides: Vec<Layer>,
+}
+
+/// One inline-layer contribution, in application order.
+#[derive(Clone)]
+enum Layer {
+    Fixed(SlotOverride),
+    Live(Rc<dyn Fn() -> StyleRules>),
 }
 
 impl<S: ComponentStyles> SlotStyle<S> {
     /// Slot `index` of `S` (its position in the declaration). The
     /// generated per-slot accessors call this.
     pub fn new(index: usize) -> Self {
-        Self { slot: index, values: AxisValues::new(), inline: None }
+        Self { slot: index, values: AxisValues::new(), overrides: Vec::new() }
     }
 
     /// Select a value on one of `S`'s axes — see [`AxisValues::set`].
@@ -161,14 +168,27 @@ impl<S: ComponentStyles> SlotStyle<S> {
     }
 
     /// Layer this instance's override for the slot over everything else
-    /// (the generated `*SlotStyles` prop field). `None` is a no-op.
+    /// (the generated `*SlotStyles` prop field). `None` is a no-op; several
+    /// layer in call order.
     pub fn overridden(mut self, o: Option<&SlotOverride>) -> Self {
         if let Some(o) = o {
-            self.inline = Some(match self.inline.take() {
-                None => o.0.clone(),
-                Some(prev) => Rc::new((*prev).clone().merge(o.rules())),
-            });
+            self.overrides.push(Layer::Fixed(o.clone()));
         }
+        self
+    }
+
+    /// Per-instance values on the inline layer — continuous geometry the
+    /// component computes (a pinned width, a measured height) that no arm
+    /// can enumerate. Layers in call order with [`Self::overridden`], so
+    /// call this first to let the instance's override win.
+    pub fn inline(mut self, rules: StyleRules) -> Self {
+        self.overrides.push(Layer::Fixed(SlotOverride::from(rules)));
+        self
+    }
+
+    /// Reactive [`Self::inline`]: `rules` re-runs inside the style effect.
+    pub fn inline_with(mut self, rules: impl Fn() -> StyleRules + 'static) -> Self {
+        self.overrides.push(Layer::Live(Rc::new(rules)));
         self
     }
 
@@ -177,9 +197,9 @@ impl<S: ComponentStyles> SlotStyle<S> {
         component_styles::slot_sheet::<S>(self.slot)
     }
 
-    /// Whether any selection is reactive.
+    /// Whether any selection (or inline layer) is reactive.
     pub fn is_reactive(&self) -> bool {
-        self.values.is_reactive()
+        self.values.is_reactive() || self.overrides.iter().any(|l| matches!(l, Layer::Live(_)))
     }
 
     /// The live-engine application this describes — for components that
@@ -188,30 +208,43 @@ impl<S: ComponentStyles> SlotStyle<S> {
     /// subscribe whatever effect is running: call it inside the closure
     /// that should re-run.
     pub fn into_style_application(self) -> StyleApplication {
-        build(&self.sheet(), &self.values, &self.inline)
+        build(&self.sheet(), &self.values, &self.overrides)
     }
 }
 
 fn build<S: ComponentStyles>(
     sheet: &Rc<StyleSheet>,
     values: &AxisValues<S>,
-    inline: &Option<Rc<StyleRules>>,
+    overrides: &[Layer],
 ) -> StyleApplication {
-    let mut app = values.apply(StyleApplication::new(sheet.clone()));
-    if let Some(rules) = inline {
-        app = app.with_inline_shared(rules.clone());
-    }
-    app
+    let app = values.apply(StyleApplication::new(sheet.clone()));
+    let resolve = |l: &Layer| match l {
+        Layer::Fixed(o) => o.resolve(&app.variants),
+        Layer::Live(f) => Rc::new(f()),
+    };
+    let inline = match overrides {
+        [] => return app,
+        [only] => resolve(only),
+        many => {
+            let mut merged = StyleRules::default();
+            for l in many {
+                merged = merged.merge(&resolve(l));
+            }
+            Rc::new(merged)
+        }
+    };
+    app.with_inline_shared(inline)
 }
 
 impl<S: ComponentStyles> IntoStyleProp for SlotStyle<S> {
     fn into_style_prop(self) -> StyleProp {
         let sheet = self.sheet();
-        let SlotStyle { values, inline, .. } = self;
-        if !values.is_reactive() {
+        let reactive = self.is_reactive();
+        let SlotStyle { values, overrides, .. } = self;
+        if !reactive {
             // Static: the `StyleApplication` conversion already premints
             // (guard-aware) and carries the inline layer.
-            return build(&sheet, &values, &inline).into_style_prop();
+            return build(&sheet, &values, &overrides).into_style_prop();
         }
         // Reactive and premintable with no inline layer: every arm of every
         // axis already has a build-time rule, so a selection change is a
@@ -220,12 +253,12 @@ impl<S: ComponentStyles> IntoStyleProp for SlotStyle<S> {
         // `--premint-only` attach premints it too.)
         #[cfg(idealyst_premint)]
         {
-            let eligible = inline.is_none()
+            let eligible = overrides.is_empty()
                 && sheet.premint_class().is_some_and(runtime_shared::minted_class_known);
             if eligible {
                 return StyleProp::PremintedDynamic {
                     class_of: Box::new(move || {
-                        build(&sheet, &values, &None)
+                        build(&sheet, &values, &[])
                             .preminted_class_list()
                             .expect("a premint-classed sheet with no runtime layers has a class list")
                     }),
@@ -233,6 +266,6 @@ impl<S: ComponentStyles> IntoStyleProp for SlotStyle<S> {
                 };
             }
         }
-        StyleProp::SheetDynamic(Box::new(move || build(&sheet, &values, &inline)))
+        StyleProp::SheetDynamic(Box::new(move || build(&sheet, &values, &overrides)))
     }
 }

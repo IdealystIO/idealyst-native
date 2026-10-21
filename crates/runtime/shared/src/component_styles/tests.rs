@@ -358,13 +358,19 @@ fn invalidate_all_recomposes_with_what_extend_hooks_now_read() {
 }
 
 #[test]
-fn slot_override_from_a_sheet_resolves_its_defaults() {
+fn slot_override_sheets_resolve_against_the_slot_selection() {
     let sheet = Rc::new(
         StyleSheet::new(|_| StyleRules { color: bg("green"), ..Default::default() })
-            .variant("k", "a", |_| StyleRules { background: bg("a"), ..Default::default() })
-            .variant_default("k", "a"),
+            .variant("selected", "on", |_| StyleRules { background: bg("on"), ..Default::default() })
+            .variant("selected", "off", |_| StyleRules::default())
+            .variant_default("selected", "off"),
     );
     let o = SlotOverride::from(sheet);
-    assert_eq!(o.rules().color.as_ref().unwrap().value().0, "green");
-    assert_eq!(bg_of(o.rules()), "a");
+    assert!(o.is_sheet());
+    let off = o.resolve(&VariantSet::new());
+    assert_eq!(off.color.as_ref().unwrap().value().0, "green");
+    assert!(off.background.is_none());
+    assert_eq!(bg_of(&o.resolve(&VariantSet::new().with("selected", "on"))), "on");
+    let fixed = SlotOverride::from(StyleRules { background: bg("x"), ..Default::default() });
+    assert_eq!(bg_of(&fixed.resolve(&VariantSet::new().with("selected", "on"))), "x");
 }

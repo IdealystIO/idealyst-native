@@ -37,7 +37,8 @@ use runtime_core::{
 use idea_theme::extensible::{installed_checkbox_sheets, ToneRef, VariantRef};
 
 use crate::components::ControlSize;
-use crate::stylesheets::{ControlRow, FieldLabel};
+use crate::components::field::FieldStyles;
+use crate::stylesheets::ControlRow;
 
 /// Unicode check mark glyph rendered in the box when checked.
 const CHECK_GLYPH: &str = "\u{2713}";
@@ -260,7 +261,7 @@ pub fn Checkbox(props: &CheckboxProps) -> Element {
     };
     let box_el = box_el.into_element();
 
-    let Some(label) = crate::components::optional_reactive_text(props.label.clone(), FieldLabel())
+    let Some(label) = crate::components::optional_reactive_text(props.label.clone(), FieldStyles::label())
     else {
         // No label — the box IS the whole control; skip the wrapper row.
         return box_el;

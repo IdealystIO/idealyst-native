@@ -1,6 +1,6 @@
 //! `SegmentedControl` mounted through the real `realize` path against
 //! `host-mock`: the segment whose `id` equals `value` is painted with the
-//! `SegmentButton` sheet's `selected = on` arm, every other segment with
+//! `segment` slot's `selected = on` arm, every other segment with
 //! the `off` arm, and a press moves the `on` arm to the pressed segment in
 //! place. The build-tree unit tests in `segmented_control.rs` resolve the
 //! style closures directly; this checks what the HOST is actually told to
@@ -8,9 +8,10 @@
 
 use std::rc::Rc;
 
-use idea_ui::stylesheets::SegmentButton;
-use idea_ui::{install_idea_theme, light_theme, SegmentOption, SegmentedControl};
-use runtime_core::{resolve_style, signal, ui, Signal, StyleApplication};
+use idea_ui::{
+    install_idea_theme, light_theme, SegmentOption, SegmentedControl, SegmentedControlSelected, SegmentedControlStyles,
+};
+use runtime_core::{resolve_style, signal, ui, Signal};
 
 /// The host-visible fill of a style: background and border color, token
 /// names included, so the `on` and `off` arms print differently.
@@ -18,10 +19,11 @@ fn fill(r: &runtime_core::StyleRules) -> String {
     format!("bg={:?} border={:?}", r.background, r.border_left_color)
 }
 
-/// What the `SegmentButton` sheet resolves for one `selected` arm.
+/// What the `segment` slot resolves for one `selected` arm.
 fn arm(h: &host_mock::Harness, selected: &str) -> String {
     h.world.enter(|| {
-        let app = StyleApplication::new(SegmentButton::sheet()).with("selected", selected.to_string());
+        let sel = if selected == "on" { SegmentedControlSelected::On } else { SegmentedControlSelected::Off };
+        let app = SegmentedControlStyles::segment().set(sel).into_style_application();
         fill(&resolve_style(&app))
     })
 }
