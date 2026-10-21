@@ -115,7 +115,6 @@ pub mod modifiers;
 // recipe fn by path (`idea_ui::recipes::<name>`) and render it live —
 // the whole module is still nothing in production (catalog off).
 pub mod recipes;
-pub mod slot_override;
 /// Build-tree introspection for this crate's (and idea-ui-nav's) unit
 /// tests — see the module docs. Hidden: test support, not surface.
 #[doc(hidden)]
@@ -239,8 +238,8 @@ pub use components::icon_button::{
     IconButton, IconButtonProps, IconButtonRestyle, IconButtonSelected, IconButtonSize, IconButtonSlotStyles,
     IconButtonStyles, IconButtonVariant,
 };
-pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps};
-pub use components::popover::{Popover, PopoverProps};
+pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps, ModalSlotStyles, ModalStyles};
+pub use components::popover::{Popover, PopoverProps, PopoverSlotStyles, PopoverStyles};
 // The anchoring vocabulary of Popover / Menu / SubMenu / Tooltip props
 // (`target = AnchorTarget::from(trigger)`, `side`, `align`), so an app
 // anchoring an overlay needs no `runtime_core::primitives::portal` path.

@@ -56,21 +56,43 @@ use std::rc::Rc;
 use runtime_core::primitives::overlay::{overlay, BackdropMode};
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide, ViewportPlacement};
 use runtime_core::{
-    component, stylesheet, ui, ChildList, Color, Element, IdealystSchema, IntoElement, Length,
-    Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
+    component, component_styles, stylesheet, ui, ChildList, Color, Element, FlexDirection, IdealystSchema,
+    IntoElement, Length, Position, Reactive, StyleApplication, StyleRules, StyleSheet, Tokenized,
 };
 
-use crate::stylesheets::Popover as PopoverStyle;
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Popover`]. The width floor is the
+    /// component's `min_width` prop (inline layer), not part of the slot.
+    pub Popover<IdeaThemeRef> {
+        slot surface {
+            base(t) {
+                background: t.color.surface(),
+                padding: t.spacing.sm(),
+                border_radius: t.radius.md(),
+                border_width: 1.0,
+                border_color: t.color.border(),
+                gap: t.spacing.xs(),
+                flex_direction: FlexDirection::Column,
+                shadow: runtime_core::Shadow {
+                    x: 0.0,
+                    y: 6.0,
+                    blur: 18.0,
+                    color: Color("rgba(15, 17, 21, 0.18)".into()).into(),
+                },
+            }
+            transitions {
+                background: 250ms EaseInOut,
+                border_color: 250ms EaseInOut,
+            }
+        }
+    }
+}
 
 /// Default `PopoverProps::min_width`, in px.
 pub const POPOVER_DEFAULT_MIN_WIDTH: f32 = 180.0;
 
-/// A full-bleed, fully transparent backdrop sheet. It catches the
-/// outside tap (so the popover can dismiss on outside-click) without
-/// dimming or recoloring the page behind it — the popover stays
-/// scrim-less to the eye. Absolutely positioned with zero insets so it
-/// fills the portal behind the anchored surface. Mirrors `Modal`'s
-/// backdrop, minus the dimming color.
 /// A layout-neutral (out-of-flow) wrapper sheet for the
 /// `view(vec![catcher, anchored])` the Popover returns. Both children are
 /// portals that render at the viewport root, so the wrapper holds no
@@ -97,6 +119,11 @@ stylesheet! {
     }
 }
 
+/// A full-bleed, fully transparent backdrop sheet. It catches the
+/// outside tap (so the popover can dismiss on outside-click) without
+/// dimming or recoloring the page behind it — the popover stays
+/// scrim-less to the eye. Absolutely positioned with zero insets so it
+/// fills the portal behind the anchored surface.
 fn transparent_backdrop_sheet() -> Rc<StyleSheet> {
     PopoverBackdropSheet::sheet()
 }
@@ -151,7 +178,7 @@ pub(crate) fn dismiss_catcher(on_dismiss: Option<Rc<dyn Fn()>>) -> Element {
 // enums, `offset`) → `Reactive<…>`. `target` is an anchor handle
 // (`#[prop(static)]`, ref-like — like `Ref`), `on_dismiss` is an `Rc` handler
 // (auto-skipped), and `children` is a `Vec<Element>` (auto-skipped).
-#[runtime_core::props]
+#[runtime_core::props(styles = PopoverStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct PopoverProps {
@@ -195,6 +222,7 @@ impl Default for PopoverProps {
             min_width: Reactive::Static(POPOVER_DEFAULT_MIN_WIDTH),
             on_dismiss: None,
             children: Vec::new(),
+            styles: Default::default(),
         }
     }
 }
@@ -219,12 +247,12 @@ pub fn Popover(props: PopoverProps) -> Element {
     };
 
     let min_width = props.min_width.clone();
-    let surface_style = move || {
-        StyleApplication::new(PopoverStyle::sheet()).with_inline(StyleRules {
+    let surface_style = PopoverStyles::surface()
+        .inline_with(move || StyleRules {
             min_width: Some(Tokenized::Literal(Length::Px(min_width.get()))),
             ..Default::default()
         })
-    };
+        .overridden(props.styles.surface.as_ref());
 
     let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {

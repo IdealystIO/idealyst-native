@@ -72,9 +72,9 @@
 //! below) — a `max-height`, not a fixed height, so a short modal stays
 //! content-sized. When the content is taller than the cap, the card clips
 //! (`overflow: hidden`, keeping the rounded corners) and an inner
-//! `scroll_view` scrolls the body. The frame keeps `ModalStyle`'s visuals
-//! (bg, radius, border, shadow); its `padding`/`gap` move to the inner body
-//! view so the spacing lives *inside* the scroller. (v1 scrolls the whole
+//! `scroll_view` scrolls the body. The `surface` slot is the frame's look
+//! (bg, radius, border, shadow); the padding lives on the `body` slot, the
+//! view *inside* the scroller. (v1 scrolls the whole
 //! body — a fixed, non-scrolling footer is not split out yet.)
 
 use std::rc::Rc;
@@ -84,15 +84,85 @@ use runtime_core::animation::{AnimProp, AnimatedValue, TweenTo};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    component, effect, presence, EdgeInsets, safe_area_insets, stylesheet, viewport_size, AlignItems, Color,
+    component, component_styles, effect, presence, EdgeInsets, safe_area_insets, stylesheet, viewport_size, AlignItems, Color,
     Easing, Element, FlexDirection, IdealystSchema, IntoElement, JustifyContent, Length, Overflow,
     Position, PresenceAnim, PresenceState, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
     Tokenized, ViewHandle
 };
 
-use crate::slot_override::apply_override;
-use crate::stylesheets::Modal as ModalStyle;
 use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Modal`]. The positioning layers (the
+    /// fullscreen centering container, the animation wrapper, the scroller)
+    /// are structure, not look, and stay private.
+    pub Modal<IdeaThemeRef> {
+        /// The card frame: background, border, radius, shadow. Width and
+        /// height caps are viewport-derived and ride the inline layer; for a
+        /// card the inline `max_width` is the author's `width`, so the
+        /// `max_width` here caps only a sheet.
+        slot surface {
+            base(t) {
+            background: t.color.surface(),
+            border_radius: t.radius.lg(),
+            border_width: 1.0,
+            border_color: t.color.border(),
+            flex_direction: FlexDirection::Column,
+            min_width: 320.0,
+            max_width: 560.0,
+            shadow: runtime_core::Shadow {
+                x: 0.0,
+                y: 12.0,
+                blur: 32.0,
+                color: Color("rgba(15, 17, 21, 0.25)".into()).into(),
+            },
+            }
+            transitions {
+            background: 250ms EaseInOut,
+            border_color: 250ms EaseInOut,
+            }
+        }
+
+        /// The padded column inside the scroller that holds `content`. Set
+        /// its padding to zero (per instance, through `styles`) to let an
+        /// edge-to-edge header sit flush.
+        slot body {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                // Don't shrink inside the scroll viewport. The scroller is
+                // capped at the viewport height (`max_height` on
+                // `modal_scroll_sheet`); without `flex_shrink:0` the body
+                // would shrink to fit the capped scroller and there'd be
+                // nothing to scroll. With it, tall content keeps its full
+                // height and overflows the viewport → it scrolls.
+                flex_shrink: 0.0,
+                gap: t.spacing.md(),
+                padding: t.spacing.lg(),
+            }
+        }
+
+        /// The dimming scrim: a full-bleed, near-black wash, absolutely
+        /// positioned with zero insets so it fills the fullscreen portal
+        /// behind the card. A restyle must keep it full-bleed.
+        ///
+        /// It starts fully transparent so the FIRST painted frame is
+        /// invisible and the `AnimatedValue` fades it up from there: the
+        /// animator's bind runs before the view mounts, so its initial write
+        /// is skipped, and without a static `opacity: 0` the scrim paints
+        /// one full-opacity frame (the open flicker).
+        slot backdrop {
+            base(_t) {
+                position: Position::Absolute,
+                top: Length::Px(0.0),
+                left: Length::Px(0.0),
+                right: Length::Px(0.0),
+                bottom: Length::Px(0.0),
+                background: Color("rgba(15, 17, 21, 0.45)".into()),
+                opacity: 0.0,
+            }
+        }
+    }
+}
 
 /// Desired surface width when the viewport has room for it.
 const DEFAULT_MODAL_WIDTH: f32 = 520.0;
@@ -201,8 +271,8 @@ pub enum ModalPresentation {
 // `width`, `presentation`) → `Reactive<…>`. `open` is already `Reactive<bool>` (structural —
 // drives presence mount/unmount, untouched); `content` is a custom
 // element-builder newtype (`#[prop(static)]`); the `Rc<dyn Fn>` handlers and
-// the `Option<Rc<StyleSheet>>` backdrop are auto-skipped (Rc).
-#[runtime_core::props]
+// the per-slot `styles` overrides are auto-skipped.
+#[runtime_core::props(styles = ModalStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct ModalProps {
@@ -256,15 +326,6 @@ pub struct ModalProps {
     /// 560 `max_width`. Applies to `Centered` and `Top`; ignored by
     /// `ModalPresentation::Sheet`, which spans its container.
     pub width: f32,
-    /// Custom backdrop scrim style. `None` uses the default dimming scrim.
-    /// Must keep the backdrop full-bleed (`position: absolute` + zero
-    /// insets).
-    pub backdrop_style: Option<Rc<StyleSheet>>,
-    /// Style override for the card **surface** (the frame — background, border,
-    /// radius, shadow). Layered on the theme `ModalStyle`. See
-    /// [`crate::slot_override`].
-    #[prop(static)]
-    pub surface_style: Option<Rc<StyleSheet>>,
     /// The sheet's translate-Y animator, handed in by the app so it can drive
     /// the surface itself — drag-to-dismiss, a snap point, a peek state.
     ///
@@ -293,13 +354,6 @@ pub struct ModalProps {
     #[cfg_attr(feature = "docs", doc_control(skip))]
     #[prop(static)]
     pub sheet_slide: Option<AnimatedValue<f32>>,
-    /// Style override for the scrollable **body** that wraps `content`. Its
-    /// most common use is padding: the body hard-codes `spacing-lg` on all four
-    /// sides, so set `padding: 0` here (a "bleed") to let an edge-to-edge
-    /// illustration header sit flush. Layered on the body style. See
-    /// [`crate::slot_override`].
-    #[prop(static)]
-    pub content_style: Option<Rc<StyleSheet>>,
 }
 
 /// The modal body builder. A newtype over `Rc<dyn Fn() -> Element>` whose
@@ -334,10 +388,8 @@ impl Default for ModalProps {
             on_backdrop_press: None,
             dismissable: Reactive::Static(true),
             width: Reactive::Static(DEFAULT_MODAL_WIDTH),
-            backdrop_style: None,
-            surface_style: None,
             sheet_slide: None,
-            content_style: None,
+            styles: Default::default(),
         }
     }
 }
@@ -505,46 +557,9 @@ stylesheet! {
     }
 }
 
-/// The default dimming scrim: a full-bleed, near-black wash matching the
-/// surface shadow's color family. Absolutely positioned with zero insets so
-/// it fills the fullscreen portal behind the centered card.
-fn default_backdrop_sheet() -> Rc<StyleSheet> {
-    ModalBackdropSheet::sheet()
-}
-
-// The Modal sheets are `stylesheet!` declarations, NOT ad-hoc closure
-// sheets, and that choice is load-bearing for `--premint`: a Modal's
-// styles first construct when it OPENS, and the premint dump's crawl
-// mounts routes without opening anything — so a runtime-registered
-// sheet here would get no build-time CSS and `--premint-only` would
-// panic on the first open (it did; the docs search dialog was the
-// repro). The macro registers at LINK time, construction-independent.
-stylesheet! {
-    ModalBackdropSheet<()> {
-        base(_t) {
-            position: Position::Absolute,
-            top: Length::Px(0.0),
-            left: Length::Px(0.0),
-            right: Length::Px(0.0),
-            bottom: Length::Px(0.0),
-            background: Color("rgba(15, 17, 21, 0.45)".into()),
-        // Start fully transparent so the FIRST painted frame is invisible and
-        // the AnimatedValue fades it up from there. Without this, the view
-        // keeps its default alpha 1 until the first animate *tick* fires —
-        // `AnimatedValue::bind` applies its initial value via
-        // `subscribe_and_apply`, but the bind runs before the ref is filled
-        // (view not mounted yet) so that initial write is silently skipped and
-        // never re-applied. The gap = one frame of full-opacity scrim = the
-        // open flicker. A static `opacity` in the stylesheet is applied at
-        // `apply_style` (pre-paint) and covers it.
-            opacity: 0.0,
-        }
-    }
-}
-
 /// Static sheet for the card's animation wrapper: starts at `opacity: 0` so
 /// the card's first painted frame is invisible (the AnimatedValue fades it up
-/// + slides it). Same first-frame-flicker reason as [`default_backdrop_sheet`].
+/// + slides it). Same first-frame-flicker reason as the `backdrop` slot's.
 /// MUST be static (not in the surface's reactive width closure, which re-runs
 /// on viewport change and would re-zero the alpha mid-animation). The AV binds
 /// this view's `ViewHandle` (a pressable can't carry one), so it's a distinct
@@ -553,6 +568,13 @@ fn card_anim_sheet() -> Rc<StyleSheet> {
     ModalCardAnimSheet::sheet()
 }
 
+// The private Modal sheets are `stylesheet!` declarations, NOT ad-hoc
+// closure sheets, and that choice is load-bearing for `--premint`: a
+// Modal's styles first construct when it OPENS, and the premint dump's
+// crawl mounts routes without opening anything — so a runtime-registered
+// sheet here would get no build-time CSS and `--premint-only` would panic
+// on the first open. The macro registers at LINK time, construction-
+// independent (the `component_styles!` slots above register the same way).
 stylesheet! {
     ModalCardAnimSheet<()> {
         base(_t) {
@@ -595,34 +617,6 @@ stylesheet! {
         base(_t) {
             position: Position::Relative,
             flex_direction: FlexDirection::Column,
-        }
-    }
-}
-
-/// The scrolling body's inner layout view. Carries the LAYOUT half of
-/// `ModalStyle` that the frame gives up (flex column + the inter-child
-/// `gap` + the surface `padding`) so the card's look and spacing are
-/// unchanged, while the frame clips and the `scroll_view` between them
-/// handles overflow. Static (token-resolved at apply time) so `padding`
-/// and `gap` emit reliably — the dynamic `with_computed` layer on the
-/// frame is reserved for the viewport-derived width/height caps.
-fn modal_body_sheet() -> Rc<StyleSheet> {
-    ModalBodySheet::sheet()
-}
-
-stylesheet! {
-    ModalBodySheet<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Column,
-            // Don't shrink inside the scroll viewport. The scroller is capped
-            // at the viewport height (`max_height` on `modal_scroll_sheet`);
-            // without `flex_shrink:0` the body would shrink to fit the capped
-            // scroller and there'd be nothing to scroll. With it, tall content
-            // keeps its full height and overflows the viewport → it scrolls.
-            flex_shrink: 0.0,
-            // Mirrors `ModalStyle`'s base `gap`/`padding`.
-            gap: t.spacing.md(),
-            padding: t.spacing.lg(),
         }
     }
 }
@@ -713,10 +707,8 @@ pub fn Modal(props: ModalProps) -> Element {
     // Read LIVE (inside the container/surface style closures), unlike the
     // snapshots above: it moves the card but changes no structure.
     let top_offset = props.top_offset;
-    let backdrop_style = props.backdrop_style;
     let sheet_slide = props.sheet_slide;
-    let surface_style = props.surface_style;
-    let content_style = props.content_style;
+    let styles = props.styles;
 
     // `presence` keeps the portal mounted through the EXIT window, then truly
     // unmounts it — so a closed modal leaves the tree on every backend (no
@@ -739,9 +731,7 @@ pub fn Modal(props: ModalProps) -> Element {
             desired,
             presentation,
             top_offset.clone(),
-            backdrop_style.clone(),
-            surface_style.clone(),
-            content_style.clone(),
+            styles.clone(),
             sheet_slide.clone(),
         )
     };
@@ -778,9 +768,7 @@ fn build_overlay(
     desired: f32,
     presentation: ModalPresentation,
     top_offset: Reactive<Option<f32>>,
-    backdrop_style: Option<Rc<StyleSheet>>,
-    surface_style: Option<Rc<StyleSheet>>,
-    content_style: Option<Rc<StyleSheet>>,
+    styles: ModalSlotStyles,
     // App-owned slide animator, or `None` to make our own — see
     // [`ModalProps::sheet_slide`].
     sheet_slide: Option<AnimatedValue<f32>>,
@@ -859,13 +847,11 @@ fn build_overlay(
         backdrop_ref,
         surface_ref,
         backdrop_handler,
-        backdrop_style,
         desired,
         presentation,
         top_offset,
         platform_dismiss,
-        surface_style,
-        content_style,
+        &styles,
     )
 }
 
@@ -912,17 +898,14 @@ fn assemble_overlay(
     backdrop_ref: Ref<ViewHandle>,
     surface_ref: Ref<ViewHandle>,
     backdrop_handler: Option<Rc<dyn Fn()>>,
-    backdrop_style: Option<Rc<StyleSheet>>,
     desired: f32,
     presentation: ModalPresentation,
     top_offset: Reactive<Option<f32>>,
     on_dismiss: Option<Rc<dyn Fn()>>,
-    surface_style: Option<Rc<StyleSheet>>,
-    content_style: Option<Rc<StyleSheet>>,
+    styles: &ModalSlotStyles,
 ) -> Element {
     // Backdrop layer: a full-bleed view (scrim color) that fades, with a
     // transparent pressable inside catching taps.
-    let backdrop_sheet = backdrop_style.unwrap_or_else(default_backdrop_sheet);
     let backdrop = {
         let h = backdrop_handler.clone();
         let hit = runtime_core::pressable(Vec::new(), move || {
@@ -933,15 +916,14 @@ fn assemble_overlay(
         .with_style(StyleApplication::new(backdrop_hit_sheet()))
         .into_element();
         runtime_core::view(vec![hit])
-            .with_style(StyleApplication::new(backdrop_sheet))
+            .with_style(ModalStyles::backdrop().overridden(styles.backdrop.as_ref()))
             .bind(backdrop_ref)
             .into_element()
     };
 
-    // Card: themed sheet + viewport-capped width AND height. The frame keeps
-    // `ModalStyle`'s VISUALS (bg, radius, border, shadow) but gives up its
-    // `padding`/`gap` (overridden to 0 in the computed layer) — those move to
-    // the inner body view so they live *inside* the scroller. `overflow:
+    // Card: the `surface` slot + viewport-capped width AND height. The
+    // frame carries the look (bg, radius, border, shadow); the padding is
+    // the inner `body` slot's, so it lives *inside* the scroller. `overflow:
     // hidden` clips the scroll content to the rounded corners. Inside the
     // frame, a `scroll_view` (flex_grow: 1) takes the capped height and
     // scrolls its single body child when the content is taller than the cap.
@@ -959,10 +941,7 @@ fn assemble_overlay(
     // view. Inter-item spacing is the content's own concern (wrap it in a
     // `Stack` for a gap); the body supplies padding + scroll behavior.
     let body = runtime_core::view(vec![content])
-        .with_style(apply_override(
-            StyleApplication::new(modal_body_sheet()),
-            &content_style,
-        ))
+        .with_style(ModalStyles::body().overridden(styles.body.as_ref()))
         .into_element();
     // The scroller carries the viewport-derived height cap. It sizes to its
     // body's content (so a short modal hugs its content) until it hits
@@ -1009,8 +988,8 @@ fn assemble_overlay(
     // Both presentations hold the scroller alone. A sheet grabber is the
     // app's to build — see [`ModalProps::sheet_slide`].
     let top_offset_for_surface = top_offset.clone();
-    let surface = runtime_core::view(vec![scroller])
-        .with_style(move || {
+    let surface_style = ModalStyles::surface()
+        .inline_with(move || {
             let vp = viewport.get();
             // Cap width/height to the SAFE rect (subtract the horizontal /
             // vertical safe-area insets) so the card fits inside the notch /
@@ -1040,8 +1019,8 @@ fn assemble_overlay(
                     (Some(Tokenized::Literal(Length::Px(0.0))), insets.bottom)
                 }
             };
-            // `ModalStyle` carries `max_width: 560` as the THEME's default
-            // cap, and a max-width beats `width` in every layout engine — so
+            // The `surface` slot carries `max_width: 560` as the THEME's
+            // default cap, and a max-width beats `width` in every layout engine — so
             // an inline `width` alone could never exceed 560 and
             // `ModalProps::width = 1200` was silently a no-op (#109). For a
             // card the author's width, already viewport-capped by
@@ -1052,31 +1031,22 @@ fn assemble_overlay(
                 ModalPresentation::Centered | ModalPresentation::Top => Some(Tokenized::Literal(width.clone())),
                 ModalPresentation::Sheet => None,
             };
-            let app = StyleApplication::new(ModalStyle::sheet()).with_inline(
-                StyleRules {
-                    width: Some(Tokenized::Literal(width)),
-                    max_width,
-                    max_height: Some(Tokenized::Literal(Length::Px(max_h))),
-                    // Clip the scroll content to the frame's rounded corners.
-                    overflow: Some(Overflow::Hidden),
-                    // The padding/gap baked into `ModalStyle::sheet()` move to
-                    // the inner body view (inside the scroller); zero them on
-                    // the frame so the scroller fills it edge-to-edge.
-                    padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
-                    padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
-                    padding_bottom: Some(Tokenized::Literal(Length::Px(pad_bottom))),
-                    padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
-                    border_bottom_left_radius: bottom_radius.clone(),
-                    border_bottom_right_radius: bottom_radius,
-                    gap: Some(Tokenized::Literal(Length::Px(0.0))),
-                    ..Default::default()
-                },
-            );
-            // Author surface override (frame bg/border/radius/shadow) resolves
-            // last, on top of the computed width/height/clip layer.
-            apply_override(app, &surface_style)
+            StyleRules {
+                width: Some(Tokenized::Literal(width)),
+                max_width,
+                max_height: Some(Tokenized::Literal(Length::Px(max_h))),
+                // Clip the scroll content to the frame's rounded corners.
+                overflow: Some(Overflow::Hidden),
+                padding_bottom: (pad_bottom > 0.0).then(|| Tokenized::Literal(Length::Px(pad_bottom))),
+                border_bottom_left_radius: bottom_radius.clone(),
+                border_bottom_right_radius: bottom_radius,
+                ..Default::default()
+            }
         })
-        .into_element();
+        // The author's per-instance surface override resolves last, on top
+        // of the viewport-derived caps.
+        .overridden(styles.surface.as_ref());
+    let surface = runtime_core::view(vec![scroller]).with_style(surface_style).into_element();
 
     // Animation wrapper: the fade + translateY slide live on this real
     // `view` (`ViewHandle`), driven by `card_opacity`/`card_slide` (bound +
@@ -1170,7 +1140,7 @@ mod tests {
         with_test_world(|| {
             let p = ModalProps::default();
             assert!(p.dismissable.get());
-            assert!(p.backdrop_style.is_none());
+            assert!(p.styles.backdrop.is_none());
             assert!(p.on_backdrop_press.is_none());
             assert_eq!(p.width.get(), DEFAULT_MODAL_WIDTH);
     });
@@ -1301,13 +1271,11 @@ mod tests {
                 Ref::new(),
                 Ref::new(),
                 None,
-                None,
                 DEFAULT_MODAL_WIDTH,
                 ModalPresentation::Centered,
                 Reactive::Static(None),
                 None,
-                None,
-                None,
+                &ModalSlotStyles::default(),
             );
 
             // The portal wraps the Modal's content in a single flex-center
@@ -1410,11 +1378,9 @@ mod tests {
     fn regression_default_modal_styles_all_premint() {
         with_test_world(|| {
             for (name, sheet) in [
-                ("backdrop", default_backdrop_sheet()),
                 ("backdrop_hit", backdrop_hit_sheet()),
                 ("card_anim", card_anim_sheet()),
                 ("card_layer", card_layer_sheet()),
-                ("body", modal_body_sheet()),
                 ("scroll", modal_scroll_sheet()),
                 ("center", center_container_sheet()),
                 ("top", top_container_sheet()),
@@ -1425,6 +1391,16 @@ mod tests {
                     "the {name} sheet must premint — Modal styles first construct \
                      on open, which the dump crawl never does, so only link-time \
                      registration gets them build-time CSS"
+                );
+            }
+            for (name, app) in [
+                ("surface", ModalStyles::surface().into_style_application()),
+                ("body", ModalStyles::body().into_style_application()),
+                ("backdrop", ModalStyles::backdrop().into_style_application()),
+            ] {
+                assert!(
+                    app.preminted_class_list().is_some(),
+                    "the {name} slot must premint without the Modal ever opening"
                 );
             }
             // The safe-area centering layer must ride INLINE, keeping the
@@ -1440,12 +1416,12 @@ mod tests {
         });
     }
 
-    // Regression (edge-to-edge header couldn't sit flush): the body hard-codes
-    // `spacing-lg` padding. A `content_style` override with zero padding must
-    // win, letting an illustration header bleed to the surface edge. This is the
-    // slot-override system applied to Modal's body slot.
+    // Regression (edge-to-edge header couldn't sit flush): the body slot
+    // carries `spacing-lg` padding. A per-instance `styles.body` override with
+    // zero padding must win, letting an illustration header bleed to the
+    // surface edge.
     #[test]
-    fn content_style_override_makes_body_flush() {
+    fn body_slot_override_makes_body_flush() {
         with_test_world(|| {
             install_idea_theme(light_theme());
 
@@ -1454,13 +1430,11 @@ mod tests {
                 Ref::new(),
                 Ref::new(),
                 None,
-                None,
                 DEFAULT_MODAL_WIDTH,
                 ModalPresentation::Centered,
                 Reactive::Static(None),
                 None,
-                None,
-                None,
+                &ModalSlotStyles::default(),
             );
             // Under the premint cfg the DEFAULT body application premints
             // to an opaque class stamp — its rules aren't resolvable from
@@ -1476,30 +1450,28 @@ mod tests {
             #[cfg(idealyst_premint)]
             drop(default_portal);
 
-            let flush = Rc::new(StyleSheet::r#static(StyleRules {
+            let flush = StyleRules {
                 padding_top: Some(Tokenized::Literal(Length::Px(0.0))),
                 padding_right: Some(Tokenized::Literal(Length::Px(0.0))),
                 padding_bottom: Some(Tokenized::Literal(Length::Px(0.0))),
                 padding_left: Some(Tokenized::Literal(Length::Px(0.0))),
                 ..Default::default()
-            }));
+            };
             let flush_portal = assemble_overlay(
                 runtime_core::text("hi").into_element(),
                 Ref::new(),
                 Ref::new(),
                 None,
-                None,
                 DEFAULT_MODAL_WIDTH,
                 ModalPresentation::Centered,
                 Reactive::Static(None),
                 None,
-                None,
-                Some(flush),
+                &ModalSlotStyles::default().body(flush),
             );
             assert_eq!(
                 body_padding_top(flush_portal),
                 0.0,
-                "content_style padding:0 override makes the body flush"
+                "a body padding:0 override makes the body flush"
             );
     });
     }
@@ -1616,13 +1588,11 @@ mod tests {
                 Ref::new(),
                 Ref::new(),
                 None,
-                None,
                 1200.0,
                 ModalPresentation::Centered,
                 Reactive::Static(None),
                 None,
-                None,
-                None,
+                &ModalSlotStyles::default(),
             );
             let w = laid_out_width(&surface_rules(portal));
             assert_eq!(w, 1200.0, "an author width of 1200 lays out at 1200, not the sheet's 560 cap");
@@ -1645,13 +1615,11 @@ mod tests {
                 Ref::new(),
                 Ref::new(),
                 None,
-                None,
                 1200.0,
                 ModalPresentation::Centered,
                 Reactive::Static(None),
                 None,
-                None,
-                None,
+                &ModalSlotStyles::default(),
             );
             assert_eq!(
                 laid_out_width(&surface_rules(portal)),
@@ -1685,13 +1653,11 @@ mod tests {
                     Ref::new(),
                     Ref::new(),
                     None,
-                    None,
                     DEFAULT_MODAL_WIDTH,
                     presentation,
                     Reactive::Static(None),
                     None,
-                    None,
-                    None,
+                    &ModalSlotStyles::default(),
                 );
                 let mut portal_children = match classify(portal) {
                     P::Portal { children, .. } => children,
@@ -1891,13 +1857,11 @@ mod tests {
                 Ref::new(),
                 Ref::new(),
                 None,
-                None,
                 1200.0,
                 ModalPresentation::Top,
                 Reactive::Static(None),
                 None,
-                None,
-                None,
+                &ModalSlotStyles::default(),
             );
             let rules = surface_rules(portal);
             assert_eq!(laid_out_width(&rules), 800.0 - MODAL_EDGE_MARGIN * 2.0);
