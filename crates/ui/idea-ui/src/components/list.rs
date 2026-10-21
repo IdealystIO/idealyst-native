@@ -21,7 +21,8 @@ use runtime_core::{
     component, ui, ChildList, Element, IdealystSchema, IntoElement, Reactive, StyleApplication,
 };
 
-use crate::stylesheets::{Divider, ListContainer, ListItemRow};
+use crate::components::divider::DividerStyles;
+use crate::stylesheets::{ListContainer, ListItemRow};
 
 // =============================================================================
 // List
@@ -57,7 +58,7 @@ pub fn List(props: ListProps) -> Element {
     let mut kids: Vec<Element> = Vec::with_capacity(items.len() * 2);
     for (i, item) in items.into_iter().enumerate() {
         if i > 0 {
-            kids.push(ui! { view(style = Divider()) {} });
+            kids.push(ui! { view(style = DividerStyles::root()) {} });
         }
         kids.push(item);
     }
@@ -105,7 +106,7 @@ impl Default for ListItemProps {
 
 fn spacer() -> Element {
     runtime_core::view(Vec::new())
-        .with_style(|| StyleApplication::new(crate::stylesheets::Spacer::sheet()))
+        .with_style(crate::components::spacer::SpacerStyles::root())
         .into_element()
 }
 

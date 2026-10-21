@@ -319,6 +319,13 @@ pub(crate) fn parse_sheet_body(
         let mut containers = Vec::new();
         let mut compounds = Vec::new();
         while !body.is_empty() {
+            // `///` docs on a section document the source and go nowhere
+            // else; anything else is not part of the grammar.
+            for attr in body.call(Attribute::parse_outer)? {
+                if !attr.path().is_ident("doc") {
+                    return Err(syn::Error::new_spanned(attr, "only doc comments go on a sheet section"));
+                }
+            }
             // `override` is a reserved Rust keyword, so we can't parse
             // it as an Ident. Detect it specifically via Token![override]
             // and treat `variant` / `transitions` / `state` as soft keywords.

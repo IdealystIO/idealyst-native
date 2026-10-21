@@ -24,65 +24,6 @@ use crate::theme::{IdeaTheme, IdeaThemeRef};
 // Layout — Stack
 // =============================================================================
 
-stylesheet! {
-    pub Stack<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Column,
-            gap: t.spacing.md(),
-        }
-        variant gap {
-            none(_t) { gap: Length::Px(0.0) }
-            xs(t)    { gap: t.spacing.xs() }
-            sm(t)    { gap: t.spacing.sm() }
-            #[default]
-            md(t)    { gap: t.spacing.md() }
-            lg(t)    { gap: t.spacing.lg() }
-            xl(t)    { gap: t.spacing.xl() }
-        }
-        variant padding {
-            #[default]
-            none(_t) { padding: Length::Px(0.0) }
-            xs(t)    { padding: t.spacing.xs() }
-            sm(t)    { padding: t.spacing.sm() }
-            md(t)    { padding: t.spacing.md() }
-            lg(t)    { padding: t.spacing.lg() }
-            xl(t)    { padding: t.spacing.xl() }
-        }
-        variant axis {
-            #[default]
-            column(_t) { flex_direction: FlexDirection::Column }
-            row(_t)    { flex_direction: FlexDirection::Row }
-        }
-        variant align {
-            #[default]
-            stretch(_t)  { align_items: AlignItems::Stretch }
-            start(_t)    { align_items: AlignItems::FlexStart }
-            center(_t)   { align_items: AlignItems::Center }
-            end(_t)      { align_items: AlignItems::FlexEnd }
-            // Align children on their text baseline — for inline rows that mix
-            // prose and a Link/Badge so they sit on a common baseline.
-            baseline(_t) { align_items: AlignItems::Baseline }
-        }
-        variant justify {
-            #[default]
-            start(_t)   { justify_content: JustifyContent::FlexStart }
-            center(_t)  { justify_content: JustifyContent::Center }
-            end(_t)     { justify_content: JustifyContent::FlexEnd }
-            between(_t) { justify_content: JustifyContent::SpaceBetween }
-            around(_t)  { justify_content: JustifyContent::SpaceAround }
-        }
-        // Opt-in line wrapping. `off` (default) keeps the row/column on a
-        // single line (may overflow); `on` lets children wrap onto new
-        // lines when they don't fit — the natural choice for a Row of
-        // chips/buttons/badges on a narrow viewport.
-        variant wrap {
-            #[default]
-            off(_t) { flex_wrap: runtime_core::FlexWrap::NoWrap }
-            on(_t)  { flex_wrap: runtime_core::FlexWrap::Wrap }
-        }
-    }
-}
-
 // =============================================================================
 // Button — the styled clickable.
 // =============================================================================
@@ -465,38 +406,6 @@ stylesheet! {
 // Divider
 // =============================================================================
 
-stylesheet! {
-    pub Divider<IdeaThemeRef> {
-        base(t) {
-            background: t.color.border(),
-            height: 1.0,
-            width: Length::pct(100.0),
-        }
-        variant axis {
-            #[default]
-            horizontal(_t) {
-                height: 1.0,
-                width: Length::pct(100.0),
-            }
-            // Vertical dividers fill their parent's cross axis via
-            // `align_self: stretch` (so a vertical divider inside a
-            // flex-row container stretches to the row's height).
-            // `min_height` provides a sensible fallback when the
-            // parent doesn't have a definite height — without it,
-            // `height: 100%` resolves to 0 and the divider becomes
-            // invisible.
-            vertical(_t) {
-                width: 1.0,
-                height: Length::pct(100.0),
-                min_height: 24.0,
-                align_self: runtime_core::AlignSelf::Stretch,
-            }
-        }
-        transitions {
-            background: 250ms EaseInOut,
-        }
-    }
-}
 
 // =============================================================================
 // Badge
@@ -719,36 +628,6 @@ stylesheet! {
     }
 }
 
-// Surface — the themed background container. Two closed axes (which
-// neutral token fills it, which spacing step pads it); the continuous
-// `grow` weight rides the INLINE layer at the call site
-// (`StyleApplication::with_inline`), so the sheet premints. This
-// replaces a per-instance `StyleSheet::new` in `surface.rs` that was
-// invisible to the premint dump.
-stylesheet! {
-    pub SurfaceSheet<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Column,
-            // Children fill the cross axis so inner content spans the surface.
-            align_items: AlignItems::Stretch,
-        }
-        variant bg {
-            background(t) { background: t.color.background() }
-            #[default]
-            surface(t) { background: t.color.surface() }
-            surface_alt(t) { background: t.color.surface_alt() }
-        }
-        variant pad {
-            #[default]
-            none(_t) {}
-            xs(t) { padding: t.spacing.xs() }
-            sm(t) { padding: t.spacing.sm() }
-            md(t) { padding: t.spacing.md() }
-            lg(t) { padding: t.spacing.lg() }
-            xl(t) { padding: t.spacing.xl() }
-        }
-    }
-}
 
 // Toast stack — the column of floating toasts inside the ToastHost
 // overlay. Capped width so a long message wraps rather than spanning
@@ -1156,27 +1035,11 @@ stylesheet! {
 // Spacer — grow to fill.
 // =============================================================================
 
-stylesheet! {
-    pub Spacer<IdeaThemeRef> {
-        base(_t) {
-            flex_grow: 1.0,
-        }
-    }
-}
 
 // =============================================================================
 // Center — align/justify both axes.
 // =============================================================================
 
-stylesheet! {
-    pub Center<IdeaThemeRef> {
-        base(_t) {
-            flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
-            justify_content: JustifyContent::Center,
-        }
-    }
-}
 
 // =============================================================================
 // IconButton — square, content-sized variant of Pressable.
@@ -1756,16 +1619,6 @@ stylesheet! {
 // Skeleton — muted placeholder block.
 // =============================================================================
 
-stylesheet! {
-    pub Skeleton<IdeaThemeRef> {
-        base(t) {
-            background: t.color.surface_alt(),
-        }
-        transitions {
-            background: 250ms EaseInOut,
-        }
-    }
-}
 
 // =============================================================================
 // Tabs — horizontal tab bar + content panel.
@@ -3490,62 +3343,16 @@ stylesheet! {
 // `columns` count, which a static sheet can't express). `gap` applies to both
 // row and column gaps. See `components/grid.rs`.
 
-stylesheet! {
-    pub GridContainer<IdeaThemeRef> {
-        base(t) {
-            display: DisplayKind::Grid,
-            gap: t.spacing.md(),
-        }
-        variant gap {
-            none(_t) { gap: Length::Px(0.0) }
-            xs(t)    { gap: t.spacing.xs() }
-            sm(t)    { gap: t.spacing.sm() }
-            #[default]
-            md(t)    { gap: t.spacing.md() }
-            lg(t)    { gap: t.spacing.lg() }
-            xl(t)    { gap: t.spacing.xl() }
-        }
-    }
-}
 
 // =============================================================================
 // Link — inline navigational text
 // =============================================================================
 
-stylesheet! {
-    pub LinkText<IdeaThemeRef> {
-        base(t) {
-            color: t.intent.primary.fg(),
-            font_size: t.typography.body_size(),
-            font_weight: FontWeight::Medium,
-            // Web gets this free from the UA stylesheet (`a[href]` is
-            // `cursor: pointer`); no native backend has an equivalent, and
-            // the framework imposes no default cursor on any primitive. So
-            // without declaring it the SAME author code shows a hand on web
-            // and an arrow everywhere else — the divergence CLAUDE.md §7
-            // exists to prevent. Declaring it in the sheet converges them
-            // and stays overridable.
-            cursor: Cursor::Pointer,
-        }
-        state hovered(t) { color: t.intent.primary.solid_bg() }
-        // Focus mirrors hover (color brighten) — an inline text link takes a
-        // text affordance, not a box ring. Replaces the native macOS ring.
-        state focused(t) { color: t.intent.primary.solid_bg() }
-        transitions { color: 120ms EaseOut }
-    }
-}
 
 // =============================================================================
 // Image — clipping box
 // =============================================================================
 
-stylesheet! {
-    pub ImageBox<IdeaThemeRef> {
-        base(_t) {
-            overflow: runtime_core::Overflow::Hidden,
-        }
-    }
-}
 
 // =============================================================================
 // Calendar family — month grid shared by Calendar / RangeCalendar and the

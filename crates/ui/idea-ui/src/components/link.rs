@@ -14,15 +14,41 @@
 //! — that needs a typed `Route`, which is app-specific and out of scope
 //! for a generic UI component.
 
-use runtime_core::{component, IdealystSchema, IntoElement, Element, Reactive};
+use runtime_core::{component, component_styles, Cursor, Element, FontWeight, IdealystSchema, IntoElement, Reactive};
 
-use crate::stylesheets::LinkText;
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Link`].
+    pub Link<IdeaThemeRef> {
+        slot text {
+            base(t) {
+                color: t.intent.primary.fg(),
+                font_size: t.typography.body_size(),
+                font_weight: FontWeight::Medium,
+                // Web gets this free from the UA stylesheet (`a[href]` is
+                // `cursor: pointer`); no native backend has an equivalent, and
+                // the framework imposes no default cursor on any primitive. So
+                // without declaring it the SAME author code shows a hand on web
+                // and an arrow everywhere else — the divergence CLAUDE.md §7
+                // exists to prevent. Declaring it in the sheet converges them
+                // and stays overridable.
+                cursor: Cursor::Pointer,
+            }
+            state hovered(t) { color: t.intent.primary.solid_bg() }
+            // Focus mirrors hover (color brighten) — an inline text link takes a
+            // text affordance, not a box ring. Replaces the native macOS ring.
+            state focused(t) { color: t.intent.primary.solid_bg() }
+            transitions { color: 120ms EaseOut }
+        }
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps `url` → `Reactive<String>`; `label` is
 // already reactive. `label` routes to the `text()` sink (live); a live `url`
 // routes to the `external_link` reactive `.url()` setter so the href swaps in
 // place (a `Static` url is set once at construction, no effect).
-#[runtime_core::props]
+#[runtime_core::props(styles = LinkStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct LinkProps {
@@ -39,6 +65,7 @@ impl Default for LinkProps {
         Self {
             label: Reactive::Static(String::new()),
             url: Reactive::Static(String::new()),
+            styles: Default::default(),
         }
     }
 }
@@ -51,7 +78,7 @@ pub fn Link(props: &LinkProps) -> Element {
     // `label` routes live to the `text()` sink — a `Signal`/`rx!` re-renders
     // the link text in place.
     let text = runtime_core::text(props.label.clone())
-        .with_style(LinkText())
+        .with_style(LinkStyles::text().overridden(props.styles.text.as_ref()))
         .into_element();
     // A live `url` routes to the primitive's reactive `.url()` setter (swaps the
     // `<a href>` in place); a `Static` url just seeds `external_link` once.
@@ -65,9 +92,9 @@ pub fn Link(props: &LinkProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use crate::stylesheets::LinkText;
+    use super::LinkStyles;
     use idea_theme::testing::with_test_world;
-    use runtime_core::{resolve_style, Cursor, StyleApplication};
+    use runtime_core::{resolve_style, Cursor};
 
     /// A link must show the pointer affordance on EVERY backend.
     ///
@@ -83,11 +110,11 @@ mod tests {
     fn regression_link_declares_the_pointer_cursor_for_native_backends() {
         with_test_world(|| {
             idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
-            let rules = resolve_style(&StyleApplication::new(LinkText::sheet()));
+            let rules = resolve_style(&LinkStyles::text().into_style_application());
             assert_eq!(
                 rules.cursor,
                 Some(Cursor::Pointer),
-                "LinkText must declare `cursor: Pointer`. Web would still look \
+                "the link text slot must declare `cursor: Pointer`. Web would still look \
                  correct without it (the UA gives `<a href>` a hand), which is \
                  what let this hide — native backends show an arrow.",
             );

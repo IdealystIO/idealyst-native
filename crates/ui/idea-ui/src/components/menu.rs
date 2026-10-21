@@ -108,14 +108,14 @@ use runtime_core::{
 /// intent" delay.
 const SUBMENU_HOVER_GRACE_MS: i32 = 120;
 
-use crate::stylesheets::{MenuItemLabel, MenuCheckMark, MenuCheckbox, MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle, Spacer};
+use crate::stylesheets::{MenuItemLabel, MenuCheckMark, MenuCheckbox, MenuChevron, MenuItemRow, MenuLabel as MenuLabelStyle, MenuSeparator as MenuSeparatorStyle};
 
 /// Right-pointing chevron shown on SubMenu rows.
 const CHEVRON: &str = "\u{203A}";
 
 fn grow() -> Element {
     runtime_core::view(Vec::new())
-        .with_style(|| StyleApplication::new(Spacer::sheet()))
+        .with_style(crate::components::spacer::SpacerStyles::root())
         .into_element()
 }
 

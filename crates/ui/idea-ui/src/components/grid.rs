@@ -24,27 +24,62 @@
 //! recycling, use `virtualized::grid`.
 
 use runtime_core::{
-    component, IdealystSchema, IntoElement, DisplayKind, Element, Reactive, StyleApplication,
-    StyleRules, TrackSize, VariantEnum,
+    component, component_styles, DisplayKind, Element, IdealystSchema, IntoElement, Length, Reactive,
+    StyleRules, TrackSize,
 };
 
 use crate::components::stack::StackGap;
-use crate::stylesheets::GridContainer;
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Grid`].
+    pub Grid<IdeaThemeRef> {
+        slot root {
+            base(t) {
+                display: DisplayKind::Grid,
+                gap: t.spacing.md(),
+            }
+            variant gap {
+                none(_t) { gap: Length::Px(0.0) }
+                xs(t)    { gap: t.spacing.xs() }
+                sm(t)    { gap: t.spacing.sm() }
+                #[default]
+                md(t)    { gap: t.spacing.md() }
+                lg(t)    { gap: t.spacing.lg() }
+                xl(t)    { gap: t.spacing.xl() }
+            }
+        }
+    }
+}
+
+/// The `Stack` spacing scale converts into Grid's gap axis (same arm names).
+impl From<StackGap> for GridGap {
+    fn from(g: StackGap) -> Self {
+        GridGap::define(g.key())
+    }
+}
+
+impl From<StackGap> for Reactive<GridGap> {
+    fn from(g: StackGap) -> Self {
+        Reactive::Static(g.into())
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps `columns`/`gap` → `Reactive<…>`. Both
 // route into the GridContainer style sink reading `.get()` live: `gap` picks the
 // spacing variant, `columns` re-resolves the grid track list (a computed layer),
 // so a live column count re-lays-out in place — no rebuild. `children` is the
 // children category and stays bare.
-#[runtime_core::props]
+#[runtime_core::props(styles = GridStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct GridProps {
     /// Number of columns (>= 1). Default 2.
     #[schema(constraint = ">= 1 (clamped)")]
     pub columns: u32,
-    /// Gap between rows and between columns. Default Md.
-    pub gap: StackGap,
+    /// Gap between rows and between columns — Grid's own axis; a
+    /// `StackGap` converts. Default Md.
+    pub gap: GridGap,
     /// Cells, laid out left-to-right then wrapping to the next row.
     pub children: Vec<Element>,
 }
@@ -53,8 +88,9 @@ impl Default for GridProps {
     fn default() -> Self {
         Self {
             columns: Reactive::Static(2),
-            gap: Reactive::Static(StackGap::default()),
+            gap: Reactive::Static(GridGap::default()),
             children: Vec::new(),
+            styles: Default::default(),
         }
     }
 }
@@ -69,43 +105,29 @@ pub fn Grid(props: GridProps) -> Element {
     // read `.get()` INSIDE the style closure so either changing re-resolves the
     // grid in place (gap variant + the computed track list keyed by count).
     let cols = props.columns.clone();
-    let gap = props.gap.clone();
+    let tracks = |n: u32| StyleRules {
+        display: Some(DisplayKind::Grid),
+        // `minmax(0, 1fr)`, not bare `1fr`: an `fr` track's implied minimum
+        // is the column's min-content, so a cell with unbreakable content
+        // forces the whole grid wider than its container — the classic
+        // CSS-grid horizontal-overflow footgun. A zero floor makes tracks
+        // genuinely equal and lets content wrap/clip inside instead.
+        grid_template_columns: Some(vec![
+            TrackSize::Minmax(Box::new(TrackSize::Px(0.0)), Box::new(TrackSize::Fr(1.0)));
+            n.max(1) as usize
+        ]),
+        ..Default::default()
+    };
+    // The track list is per-instance and unbounded, so it rides the INLINE
+    // layer (out of the cache identity): the slot's base/gap arms ship as
+    // build-time CSS and only the tracks are per-node.
+    let style = GridStyles::root().set(props.gap.clone());
+    let style = match cols {
+        Reactive::Static(n) => style.inline(tracks(n)),
+        live => style.inline_with(move || tracks(live.get())),
+    };
     runtime_core::view(props.children)
-        .with_style(move || {
-            let n = cols.get().max(1) as usize;
-            StyleApplication::new(GridContainer::sheet())
-                .with("gap", gap.get().as_variant_str().to_string())
-                // `grid_template_columns` is a `Vec` (not a string-keyed variant
-                // value), so it rides a computed layer keyed by the count — the
-                // key changes with `n`, re-resolving the tracks on a live change.
-                // The track list is per-instance and unbounded — `columns` is
-                // any `usize`. As a computed layer it was keyed
-                // `grid-cols-{n}`, so every distinct column count minted its
-                // own resolution-cache entry and its own CSS class, and the
-                // whole application stopped preminting. As an INLINE layer it
-                // stays out of the cache identity, so the sheet's base/gap
-                // arms ship as build-time CSS and only the tracks are
-                // per-node. See `StyleApplication::with_inline`.
-                .with_inline(StyleRules {
-                    display: Some(DisplayKind::Grid),
-                    // `minmax(0, 1fr)`, not bare `1fr`: an `fr` track's
-                    // implied minimum is the column's min-content, so a
-                    // cell with unbreakable content (a long word, padded
-                    // card) forces the whole grid wider than its container
-                    // — the classic CSS-grid horizontal-overflow footgun,
-                    // hit by the docs' 4-up stat cards on a phone
-                    // viewport. A zero floor makes tracks genuinely equal
-                    // and lets content wrap/clip inside instead.
-                    grid_template_columns: Some(vec![
-                        TrackSize::Minmax(
-                            Box::new(TrackSize::Px(0.0)),
-                            Box::new(TrackSize::Fr(1.0)),
-                        );
-                        n
-                    ]),
-                    ..Default::default()
-                })
-        })
+        .with_style(style.overridden(props.styles.root.as_ref()))
         .into_element()
 }
 
@@ -140,8 +162,9 @@ mod tests {
             install_idea_theme(light_theme());
             let grid = Grid(GridProps {
                 columns: Reactive::Static(3),
-                gap: Reactive::Static(StackGap::Md),
+                gap: Reactive::Static(GridGap::Md),
                 children: vec![leaf(), leaf(), leaf(), leaf()],
+                styles: Default::default(),
             });
             let rules = container_rules(grid);
             assert_eq!(rules.display, Some(DisplayKind::Grid), "container is display:grid");
@@ -173,8 +196,9 @@ mod tests {
             install_idea_theme(light_theme());
             let grid = Grid(GridProps {
                 columns: Reactive::Static(2),
-                gap: Reactive::Static(StackGap::Md),
+                gap: Reactive::Static(GridGap::Md),
                 children: vec![leaf(), leaf(), leaf()],
+                styles: Default::default(),
             });
             // 3 children in → 3 direct children out (no padding fillers, no row
             // views, no cell wrappers).
@@ -189,8 +213,9 @@ mod tests {
             install_idea_theme(light_theme());
             let grid = Grid(GridProps {
                 columns: Reactive::Static(5),
-                gap: Reactive::Static(StackGap::Sm),
+                gap: Reactive::Static(GridGap::Sm),
                 children: vec![leaf()],
+                styles: Default::default(),
             });
             assert_eq!(
                 container_rules(grid).grid_template_columns.as_ref().map(|t| t.len()),
@@ -201,8 +226,9 @@ mod tests {
             // Clamps to at least one track.
             let zero = Grid(GridProps {
                 columns: Reactive::Static(0),
-                gap: Reactive::Static(StackGap::Sm),
+                gap: Reactive::Static(GridGap::Sm),
                 children: vec![],
+                styles: Default::default(),
             });
             assert_eq!(
                 container_rules(zero).grid_template_columns.as_ref().map(|t| t.len()),

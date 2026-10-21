@@ -13,14 +13,25 @@
 //! }
 //! ```
 
-use runtime_core::{component, ui, Element, IdealystSchema};
+use runtime_core::{component, component_styles, ui, Element, IdealystSchema};
 
-use crate::stylesheets::Spacer as SpacerStyle;
+use crate::theme::IdeaThemeRef;
 
-/// Props for [`Spacer`]. None — the component is configuration-free.
-/// `#[props]` still matters: it is what lets remote code use the app's
-/// `Spacer` (an empty props crossing).
-#[runtime_core::props]
+component_styles! {
+    /// The styled sections of [`Spacer`].
+    pub Spacer<IdeaThemeRef> {
+        slot root {
+            base(_t) {
+                flex_grow: 1.0,
+            }
+        }
+    }
+}
+
+/// Props for [`Spacer`]: configuration-free beyond the per-instance
+/// `styles` override. `#[props]` is also what lets remote code use the
+/// app's `Spacer`.
+#[runtime_core::props(styles = SpacerStyles)]
 #[derive(Default, IdealystSchema)]
 pub struct SpacerProps;
 
@@ -28,7 +39,7 @@ pub struct SpacerProps;
 /// column `Stack` to push them to opposite ends without computing
 /// margins.
 #[component]
-pub fn Spacer(_props: &SpacerProps) -> Element {
-    let style = SpacerStyle();
+pub fn Spacer(props: &SpacerProps) -> Element {
+    let style = SpacerStyles::root().overridden(props.styles.root.as_ref());
     ui! { view(style = style) {} }
 }

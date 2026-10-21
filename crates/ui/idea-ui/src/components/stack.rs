@@ -1,18 +1,75 @@
 //! `Stack` — an opinionated flex container.
 //!
-//! Wraps a `View` with the [`Stack`](crate::stylesheets::Stack) stylesheet
-//! pre-applied. One component covers both column and row layouts via the
-//! `axis` prop; the default is `Column` (the common case for screens and
-//! card bodies). Use `axis = StackAxis::Row` for row layouts (toolbars,
-//! button groups, badge rows).
+//! A `View` with [`StackStyles`]' `root` slot applied. One component covers
+//! both column and row layouts via the `axis` prop; the default is `Column`
+//! (the common case for screens and card bodies). Use `axis = StackAxis::Row`
+//! for row layouts (toolbars, button groups, badge rows).
 
-use runtime_core::{component, derived, ui, ChildList, Element, IdealystSchema, Reactive};
+use runtime_core::{component, component_styles, ui, AlignItems, ChildList, Element, FlexDirection, IdealystSchema, JustifyContent, Length};
 
-use crate::stylesheets::Stack as StackStyle;
-use crate::stylesheets::StackWrap;
+use crate::theme::IdeaThemeRef;
 
-// Re-export the stylesheet-generated variant enums.
-pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify, StackPadding};
+component_styles! {
+    /// The styled sections of [`Stack`].
+    pub Stack<IdeaThemeRef> {
+        slot root {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                gap: t.spacing.md(),
+            }
+            variant gap {
+                none(_t) { gap: Length::Px(0.0) }
+                xs(t)    { gap: t.spacing.xs() }
+                sm(t)    { gap: t.spacing.sm() }
+                #[default]
+                md(t)    { gap: t.spacing.md() }
+                lg(t)    { gap: t.spacing.lg() }
+                xl(t)    { gap: t.spacing.xl() }
+            }
+            variant padding {
+                #[default]
+                none(_t) { padding: Length::Px(0.0) }
+                xs(t)    { padding: t.spacing.xs() }
+                sm(t)    { padding: t.spacing.sm() }
+                md(t)    { padding: t.spacing.md() }
+                lg(t)    { padding: t.spacing.lg() }
+                xl(t)    { padding: t.spacing.xl() }
+            }
+            variant axis {
+                #[default]
+                column(_t) { flex_direction: FlexDirection::Column }
+                row(_t)    { flex_direction: FlexDirection::Row }
+            }
+            variant align {
+                #[default]
+                stretch(_t)  { align_items: AlignItems::Stretch }
+                start(_t)    { align_items: AlignItems::FlexStart }
+                center(_t)   { align_items: AlignItems::Center }
+                end(_t)      { align_items: AlignItems::FlexEnd }
+                // Align children on their text baseline — for inline rows that mix
+                // prose and a Link/Badge so they sit on a common baseline.
+                baseline(_t) { align_items: AlignItems::Baseline }
+            }
+            variant justify {
+                #[default]
+                start(_t)   { justify_content: JustifyContent::FlexStart }
+                center(_t)  { justify_content: JustifyContent::Center }
+                end(_t)     { justify_content: JustifyContent::FlexEnd }
+                between(_t) { justify_content: JustifyContent::SpaceBetween }
+                around(_t)  { justify_content: JustifyContent::SpaceAround }
+            }
+            // Opt-in line wrapping. `off` (default) keeps the row/column on a
+            // single line (may overflow); `on` lets children wrap onto new
+            // lines when they don't fit — the natural choice for a Row of
+            // chips/buttons/badges on a narrow viewport.
+            variant wrap {
+                #[default]
+                off(_t) { flex_wrap: runtime_core::FlexWrap::NoWrap }
+                on(_t)  { flex_wrap: runtime_core::FlexWrap::Wrap }
+            }
+        }
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field → `Reactive<…>`
 // (`gap`/`padding`/`axis`/`align`/`justify`/`wrap`). All drive the Stack
@@ -20,7 +77,7 @@ pub use crate::stylesheets::{StackAlign, StackAxis, StackGap, StackJustify, Stac
 // `children` is the children category and stays bare. A bare value stays a
 // zero-cost `Static` snapshot (keeps the build-time `StyleSource::Static` fast
 // path); a `Signal`/`rx!` re-styles in place.
-#[runtime_core::props]
+#[runtime_core::props(styles = StackStyles)]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct StackProps {
@@ -52,41 +109,16 @@ pub struct StackProps {
 /// driven `gap`/`padding` and the chosen `align`/`justify`.
 #[component(children)]
 pub fn Stack(props: StackProps) -> Element {
-    // Route each prop into the stylesheet's own variant sink (mirrors
-    // `Divider`): a `Static` value takes the build-time fast path, a live one is
-    // passed via `derived(...)` so the generated builder emits
-    // `StyleSource::Reactive` and re-resolves that variant on change. Reading
-    // `prop.get()` INSIDE the `derived` closure is what subscribes the
-    // apply-style Effect to the source.
-    let mut style = StackStyle();
-    style = match props.gap.clone() {
-        Reactive::Static(v) => style.gap(v),
-        dynamic => style.gap(derived(move || dynamic.get())),
-    };
-    style = match props.padding.clone() {
-        Reactive::Static(v) => style.padding(v),
-        dynamic => style.padding(derived(move || dynamic.get())),
-    };
-    style = match props.axis.clone() {
-        Reactive::Static(v) => style.axis(v),
-        dynamic => style.axis(derived(move || dynamic.get())),
-    };
-    style = match props.align.clone() {
-        Reactive::Static(v) => style.align(v),
-        dynamic => style.align(derived(move || dynamic.get())),
-    };
-    style = match props.justify.clone() {
-        Reactive::Static(v) => style.justify(v),
-        dynamic => style.justify(derived(move || dynamic.get())),
-    };
-    style = match props.wrap.clone() {
-        Reactive::Static(v) => {
-            style.wrap(if v { StackWrap::On } else { StackWrap::Off })
-        }
-        dynamic => style.wrap(derived(move || {
-            if dynamic.get() { StackWrap::On } else { StackWrap::Off }
-        })),
-    };
+    // Each prop routes into its own axis: a `Static` value takes the
+    // build-time fast path, a live one re-resolves that axis on change.
+    let style = StackStyles::root()
+        .set(props.gap.clone())
+        .set(props.padding.clone())
+        .set(props.axis.clone())
+        .set(props.align.clone())
+        .set(props.justify.clone())
+        .set(props.wrap.clone().map(StackWrap::from))
+        .overridden(props.styles.root.as_ref());
 
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
@@ -101,7 +133,7 @@ mod tests {
     use crate::test_support::{classify, P, TStyle};
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, AlignItems};
+    use runtime_core::{resolve_style, AlignItems, Reactive};
 
     // A row Stack with `align = Center` (alongside axis/gap/justify) must
     // resolve to `align_items: Center`. Guards that chaining the `align`

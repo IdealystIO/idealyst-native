@@ -90,6 +90,13 @@ pub(crate) fn emit_with(attr: TokenStream2, item: TokenStream2) -> TokenStream2 
     let Data::Struct(data) = &mut input.data else {
         return syn::Error::new_spanned(&input.ident, "#[props] only applies to structs").to_compile_error();
     };
+    // A configuration-free component (`pub struct SpacerProps;`) still has
+    // slots to override: the unit struct becomes a braced one holding just
+    // `styles`.
+    if matches!(data.fields, Fields::Unit) {
+        data.fields = Fields::Named(syn::parse_quote!({}));
+        data.semi_token = None;
+    }
     let Fields::Named(fields) = &mut data.fields else {
         return syn::Error::new_spanned(&input.ident, "`#[props(styles = …)]` needs a struct with named fields")
             .to_compile_error();
@@ -757,6 +764,28 @@ mod tests {
         assert!(out.contains("handle:Ref<H>"), "{out}");
         assert!(out.contains("live:Signal<i32>"), "{out}");
         assert!(!out.contains("Reactive"), "no data field to wrap: {out}");
+    }
+
+    /// `styles = FooStyles` adds the generated override set as a static
+    /// `styles` field — to a unit struct too, which becomes braced.
+    #[test]
+    fn styles_argument_adds_the_slot_override_field() {
+        let out = emit_with(quote! { styles = crate::x::FieldStyles }, quote! {
+            pub struct FieldProps { size: FieldSize }
+        })
+        .to_string()
+        .replace(' ', "");
+        assert!(out.contains("pubstyles:crate::x::FieldSlotStyles"), "{out}");
+        assert!(!out.contains("Reactive<crate::x::FieldSlotStyles"), "styles stays static: {out}");
+        let unit = emit_with(quote! { styles = SpacerStyles }, quote! {
+            #[derive(Default)] pub struct SpacerProps;
+        })
+        .to_string()
+        .replace(' ', "");
+        assert!(unit.contains("pubstructSpacerProps{"), "{unit}");
+        assert!(unit.contains("pubstyles:SpacerSlotStyles"), "{unit}");
+        let err = emit_with(quote! { styles = Field }, quote! { pub struct P { a: i32 } }).to_string();
+        assert!(err.contains("component_styles"), "{err}");
     }
 
     #[test]

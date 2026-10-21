@@ -25,56 +25,66 @@
 //! `Surface` without touching call sites.
 
 use runtime_core::{
-    component, ui, ChildList, Element, Length, StyleApplication, StyleRules, Tokenized,
+    component, component_styles, ui, AlignItems, ChildList, Element, FlexDirection, Length, Reactive, StyleRules,
+    Tokenized,
 };
 
-pub use crate::stylesheets::StackPadding;
+use crate::components::stack::StackPadding;
+use crate::theme::IdeaThemeRef;
 
-/// Which themed neutral fills the surface. Maps to the theme's neutral
-/// color tokens — see [`idea_theme`]'s `background` / `surface` /
-/// `surface_alt`.
-#[derive(Clone, Copy, PartialEq, Eq, runtime_core::Remote)]
-pub enum SurfaceColor {
-    /// The page background — the recessed base (often a light gray).
-    /// Token `color-background`.
-    Background,
-    /// The standard surface — the raised panel (often white).
-    /// Token `color-surface`.
-    Surface,
-    /// An alternate surface, a layer above [`SurfaceColor::Surface`].
-    /// Token `color-surface-alt`.
-    SurfaceAlt,
-}
-
-impl Default for SurfaceColor {
-    fn default() -> Self {
-        SurfaceColor::Surface
-    }
-}
-
-impl SurfaceColor {
-    /// The `SurfaceSheet` `bg` axis arm for this surface. The token +
-    /// fallback pairs live on the sheet's arms now (see
-    /// `stylesheets::SurfaceSheet`).
-    fn bg_key(self) -> &'static str {
-        match self {
-            SurfaceColor::Background => "background",
-            SurfaceColor::Surface => "surface",
-            SurfaceColor::SurfaceAlt => "surface_alt",
+component_styles! {
+    /// The styled sections of [`Surface`].
+    pub Surface<IdeaThemeRef> {
+        /// Which themed neutral fills the surface.
+        axis color {
+            /// The page background — the recessed base. Token `color-background`.
+            background,
+            /// The standard surface — the raised panel. Token `color-surface`.
+            #[default]
+            surface,
+            /// A layer above `Surface`. Token `color-surface-alt`.
+            surface_alt,
+        }
+        /// The container: which neutral token fills it, which spacing step
+        /// pads it. The continuous `grow` weight rides the inline layer, so
+        /// the slot premints whatever the weight.
+        slot root {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                // Children fill the cross axis so inner content spans the surface.
+                align_items: AlignItems::Stretch,
+            }
+            variant color {
+                background(t) { background: t.color.background() }
+                #[default]
+                surface(t) { background: t.color.surface() }
+                surface_alt(t) { background: t.color.surface_alt() }
+            }
+            variant padding {
+                #[default]
+                none(_t) {}
+                xs(t) { padding: t.spacing.xs() }
+                sm(t) { padding: t.spacing.sm() }
+                md(t) { padding: t.spacing.md() }
+                lg(t) { padding: t.spacing.lg() }
+                xl(t) { padding: t.spacing.xl() }
+            }
         }
     }
 }
 
-/// The `SurfaceSheet` `pad` axis arm for a [`StackPadding`] step (shared
-/// scale with `Stack`; the token + fallback pairs live on the arms).
-fn pad_key(p: StackPadding) -> &'static str {
-    match p {
-        StackPadding::None => "none",
-        StackPadding::Xs => "xs",
-        StackPadding::Sm => "sm",
-        StackPadding::Md => "md",
-        StackPadding::Lg => "lg",
-        StackPadding::Xl => "xl",
+/// The `Stack` spacing scale converts into Surface's own padding axis, so
+/// `padding = StackPadding::Md` reads the same on both.
+impl From<StackPadding> for SurfacePadding {
+    fn from(p: StackPadding) -> Self {
+        // Same arm names on both axes.
+        SurfacePadding::define(p.key())
+    }
+}
+
+impl From<StackPadding> for Reactive<SurfacePadding> {
+    fn from(p: StackPadding) -> Self {
+        Reactive::Static(p.into())
     }
 }
 
@@ -83,7 +93,7 @@ fn pad_key(p: StackPadding) -> &'static str {
 // style, so they route into the style sink; `children` is the children
 // category and is left bare. A bare value stays a zero-cost `Static`
 // snapshot (the fast path); a `Signal`/`rx!` re-styles in place.
-#[runtime_core::props]
+#[runtime_core::props(styles = SurfaceStyles)]
 #[derive(Default)]
 pub struct SurfaceProps {
     /// Which themed neutral fills the surface. Default
@@ -94,8 +104,9 @@ pub struct SurfaceProps {
     /// surface also gets `flex-basis: 0` + `min-width: 0` so the ratio
     /// holds and it can shrink below content width.
     pub grow: f32,
-    /// Token-driven inner padding. Default [`StackPadding::None`].
-    pub padding: StackPadding,
+    /// Token-driven inner padding — Surface's own axis; a `StackPadding`
+    /// converts. Default `None`.
+    pub padding: SurfacePadding,
     /// Children, laid out in a column (like a plain `view`).
     pub children: Vec<Element>,
 }
@@ -103,39 +114,30 @@ pub struct SurfaceProps {
 /// A themed background container. See the module docs.
 #[component(children)]
 pub fn Surface(props: SurfaceProps) -> Element {
-    // The style is REACTIVE when any style-driving prop is live; otherwise it's
-    // the build-time fast path. The closure reads each prop's `.get()` INSIDE so
-    // the apply-style Effect subscribes to whichever are dynamic.
-    let style_is_reactive =
-        !props.background.is_static() || !props.grow.is_static() || !props.padding.is_static();
-
-    let make_style = {
-        let background = props.background.clone();
-        let grow_r = props.grow.clone();
-        let padding = props.padding.clone();
-        move || -> StyleApplication {
-            // Closed props ride the sheet's axes; the continuous `grow`
-            // weight rides the INLINE layer, keeping the application
-            // premintable (a per-instance `StyleSheet::new` would be
-            // invisible to the premint dump). `resolve()` folds the
-            // inline layer into the resolved rules on the live path.
-            let grow = grow_r.get();
-            let mut app = StyleApplication::new(crate::stylesheets::SurfaceSheet::sheet())
-                .with("bg", background.get().bg_key().to_string())
-                .with("pad", pad_key(padding.get()).to_string());
-            if grow > 0.0 {
-                app = app.with_inline(StyleRules {
-                    flex_grow: Some(Tokenized::Literal(grow)),
-                    // `flex-basis: 0` + `min-width: 0` so the ratio holds
-                    // and the surface can shrink below content width.
-                    flex_basis: Some(Tokenized::Literal(Length::Px(0.0))),
-                    min_width: Some(Tokenized::Literal(Length::Px(0.0))),
-                    ..Default::default()
-                });
+    // The closed props ride the slot's axes; the continuous `grow` weight
+    // rides the INLINE layer, keeping the slot premintable (a per-instance
+    // sheet would be invisible to the premint dump).
+    let grow_rules = |grow: f32| {
+        if grow > 0.0 {
+            StyleRules {
+                flex_grow: Some(Tokenized::Literal(grow)),
+                // `flex-basis: 0` + `min-width: 0` so the ratio holds and
+                // the surface can shrink below content width.
+                flex_basis: Some(Tokenized::Literal(Length::Px(0.0))),
+                min_width: Some(Tokenized::Literal(Length::Px(0.0))),
+                ..Default::default()
             }
-            app
+        } else {
+            StyleRules::default()
         }
     };
+    let style = SurfaceStyles::root().set(props.background.clone()).set(props.padding.clone());
+    let style = match props.grow.clone() {
+        Reactive::Static(g) if g > 0.0 => style.inline(grow_rules(g)),
+        Reactive::Static(_) => style,
+        live => style.inline_with(move || grow_rules(live.get())),
+    };
+    let style = style.overridden(props.styles.root.as_ref());
 
     // Flatten incoming fragments (mirrors `Card`/`Center`).
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
@@ -143,11 +145,7 @@ pub fn Surface(props: SurfaceProps) -> Element {
         ChildList::append_to(c, &mut children);
     }
 
-    if style_is_reactive {
-        ui! { view(style = make_style) { children } }
-    } else {
-        ui! { view(style = make_style()) { children } }
-    }
+    ui! { view(style = style) { children } }
 }
 
 #[cfg(test)]
@@ -156,19 +154,17 @@ mod tests {
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
 
-    fn app_for(bg: SurfaceColor, grow: f32, pad: StackPadding) -> StyleApplication {
-        let mut app = StyleApplication::new(crate::stylesheets::SurfaceSheet::sheet())
-            .with("bg", bg.bg_key().to_string())
-            .with("pad", pad_key(pad).to_string());
-        if grow > 0.0 {
-            app = app.with_inline(StyleRules {
-                flex_grow: Some(Tokenized::Literal(grow)),
-                flex_basis: Some(Tokenized::Literal(Length::Px(0.0))),
-                min_width: Some(Tokenized::Literal(Length::Px(0.0))),
-                ..Default::default()
-            });
+    fn app_for(bg: SurfaceColor, grow: f32, pad: StackPadding) -> runtime_core::StyleApplication {
+        let el = Surface(SurfaceProps {
+            background: Reactive::Static(bg),
+            grow: Reactive::Static(grow),
+            padding: pad.into(),
+            ..Default::default()
+        });
+        match crate::test_support::classify(el) {
+            crate::test_support::P::View { style, .. } => style.expect("styled").application(),
+            _ => panic!("Surface renders a View"),
         }
-        app
     }
 
     /// Surface used to build a per-instance `StyleSheet::new`, which has

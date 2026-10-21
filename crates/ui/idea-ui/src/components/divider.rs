@@ -1,15 +1,50 @@
 //! `Divider` — thin separator line, horizontal or vertical.
 
-use runtime_core::{component, derived, ui, Element, IdealystSchema, Reactive};
+use runtime_core::{component, component_styles, ui, Element, IdealystSchema, Length};
 
-use crate::stylesheets::Divider as DividerStyle;
-pub use crate::stylesheets::DividerAxis;
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Divider`].
+    pub Divider<IdeaThemeRef> {
+        slot root {
+            base(t) {
+                background: t.color.border(),
+                height: 1.0,
+                width: Length::pct(100.0),
+            }
+            variant axis {
+                #[default]
+                horizontal(_t) {
+                    height: 1.0,
+                    width: Length::pct(100.0),
+                }
+                // Vertical dividers fill their parent's cross axis via
+                // `align_self: stretch` (so a vertical divider inside a
+                // flex-row container stretches to the row's height).
+                // `min_height` provides a sensible fallback when the
+                // parent doesn't have a definite height — without it,
+                // `height: 100%` resolves to 0 and the divider becomes
+                // invisible.
+                vertical(_t) {
+                    width: 1.0,
+                    height: Length::pct(100.0),
+                    min_height: 24.0,
+                    align_self: runtime_core::AlignSelf::Stretch,
+                }
+            }
+            transitions {
+                background: 250ms EaseInOut,
+            }
+        }
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps `axis` → `Reactive<DividerAxis>`. The
 // derived `Default` still works (`Reactive::default()` = `Static(Default)`).
 // `axis` routes into the style sink, read `.get()` INSIDE so the apply-style
 // Effect subscribes when it's live; a bare value stays the static fast path.
-#[runtime_core::props]
+#[runtime_core::props(styles = DividerStyles)]
 #[derive(Default, IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct DividerProps {
@@ -22,15 +57,8 @@ pub struct DividerProps {
 /// `axis`, picking up the theme's border color.
 #[component]
 pub fn Divider(props: &DividerProps) -> Element {
-    // Route `axis` into the stylesheet's own variant sink: a static value
-    // takes the build-time fast path, a live one is passed via `derived(...)`
-    // so the generated builder emits `StyleSource::Reactive` and re-resolves
-    // the variant on change (its `is_reactive()` gates that). Reading
-    // `axis.get()` INSIDE the `derived` closure is what subscribes the
-    // apply-style Effect to the source.
-    let style = match props.axis.clone() {
-        Reactive::Static(axis) => DividerStyle().axis(axis),
-        dynamic => DividerStyle().axis(derived(move || dynamic.get())),
-    };
+    // A static `axis` takes the build-time fast path; a live one re-resolves
+    // the axis in place.
+    let style = DividerStyles::root().set(props.axis.clone()).overridden(props.styles.root.as_ref());
     ui! { view(style = style) {} }
 }

@@ -15,12 +15,28 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, IdealystSchema, ImageLoadEvent, IntoElement, Length, Element, Reactive,
-    StyleApplication, StyleRules, Tokenized,
+    component, component_styles, Element, IdealystSchema, ImageLoadEvent, IntoElement, Length, Overflow, Reactive,
+    StyleRules, Tokenized,
 };
 
-use crate::stylesheets::ImageBox;
-use idea_theme::tokens;
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Image`].
+    pub Image<IdeaThemeRef> {
+        slot root {
+            base(_t) {
+                overflow: Overflow::Hidden,
+            }
+            /// `rounded`: clip to a circle.
+            variant rounded {
+                #[default]
+                off(_t) {}
+                on(t) { border_radius: t.radius.pill() }
+            }
+        }
+    }
+}
 
 // Reactive-by-default: `#[props]` wraps each scalar-DATA field `T` →
 // `Reactive<T>`. `src` routes to the framework `image` primitive's reactive
@@ -29,7 +45,7 @@ use idea_theme::tokens;
 // read INSIDE the closure). A live `alt` routes to the primitive's reactive
 // `.alt_reactive()` sink (swaps the alt / a11y label in place); a `Static` alt
 // is set once. A bare value stays a zero-cost `Static` snapshot.
-#[runtime_core::props]
+#[runtime_core::props(styles = ImageStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ImageProps {
@@ -63,6 +79,7 @@ impl Default for ImageProps {
             rounded: Reactive::Static(false),
             on_load: None,
             on_error: None,
+            styles: Default::default(),
         }
     }
 }
@@ -72,59 +89,27 @@ impl Default for ImageProps {
 /// top of the raw image.
 #[component]
 pub fn Image(props: &ImageProps) -> Element {
-    // The style is REACTIVE when any style-driving dim prop is live; otherwise
-    // the build-time fast path. The closure reads each prop's `.get()` INSIDE so
-    // the apply-style Effect subscribes to whichever are dynamic, and the cache
-    // key tracks the live values.
-    let style_is_reactive =
-        !props.width.is_static() || !props.height.is_static() || !props.rounded.is_static();
-
-    let make_style = {
-        let width = props.width.clone();
-        let height = props.height.clone();
-        let rounded = props.rounded.clone();
-        move || -> StyleApplication {
-            let w = width.get();
-            let h = height.get();
-            let rounded = rounded.get();
-            let _key = format!(
-                "img-{}-{}-{}",
-                w.map(|x| x as i32).unwrap_or(-1),
-                h.map(|x| x as i32).unwrap_or(-1),
-                rounded as u8
-            );
-            // Author-supplied pixel dims are continuous, so the whole layer
-            // goes inline rather than minting a cache entry per (w, h).
-            StyleApplication::new(ImageBox::sheet()).with_inline({
-                let mut r = StyleRules::default();
-                if let Some(w) = w {
-                    r.width = Some(Tokenized::Literal(Length::Px(w)));
-                }
-                if let Some(h) = h {
-                    r.height = Some(Tokenized::Literal(Length::Px(h)));
-                }
-                if rounded {
-                    let pill = tokens().radius.pill();
-                    r.border_top_left_radius = Some(pill.clone());
-                    r.border_top_right_radius = Some(pill.clone());
-                    r.border_bottom_left_radius = Some(pill.clone());
-                    r.border_bottom_right_radius = Some(pill);
-                }
-                r
-            })
-        }
+    // `rounded` is an axis (an enumerated arm with build-time CSS); the
+    // author's pixel dims are continuous, so they ride the inline layer
+    // rather than minting a cache entry per (w, h).
+    let dims = |w: Option<f32>, h: Option<f32>| StyleRules {
+        width: w.map(|w| Tokenized::Literal(Length::Px(w))),
+        height: h.map(|h| Tokenized::Literal(Length::Px(h))),
+        ..Default::default()
     };
+    let style = ImageStyles::root().set(props.rounded.clone().map(ImageRounded::from));
+    let style = match (props.width.clone(), props.height.clone()) {
+        (Reactive::Static(None), Reactive::Static(None)) => style,
+        (Reactive::Static(w), Reactive::Static(h)) => style.inline(dims(w, h)),
+        (w, h) => style.inline_with(move || dims(w.get(), h.get())),
+    };
+    let style = style.overridden(props.styles.root.as_ref());
 
     // `src` routes to the framework `image` primitive's reactive source: a
     // `Reactive::Static` URL is a constant, a `Signal`/`rx!` URL repaints the
     // image in place (the primitive's handler re-runs `update_image_src`).
     let src = props.src.clone();
-    let img = runtime_core::image(move || src.get());
-    let mut img = if style_is_reactive {
-        img.with_style(make_style)
-    } else {
-        img.with_style(make_style())
-    };
+    let mut img = runtime_core::image(move || src.get()).with_style(style);
 
     // A live `alt` routes to the primitive's reactive `.alt_reactive()` sink
     // (the handler installs an Effect → `update_image_alt`); a `Static` alt is

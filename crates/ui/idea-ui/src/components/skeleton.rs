@@ -18,12 +18,23 @@
 //! }
 //! ```
 
-use runtime_core::{
-    component, ui, Element, IdealystSchema, Length, Reactive, StyleApplication, StyleRules,
-};
+use runtime_core::{component, component_styles, ui, Element, IdealystSchema, Length, Reactive, StyleRules};
 
-use crate::stylesheets::Skeleton as SkeletonStyle;
 use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Skeleton`].
+    pub Skeleton<IdeaThemeRef> {
+        slot root {
+            base(t) {
+                background: t.color.surface_alt(),
+            }
+            transitions {
+                background: 250ms EaseInOut,
+            }
+        }
+    }
+}
 
 /// Width preset. Use [`SkeletonWidth::Px`] for an exact pixel width.
 #[derive(Copy, Clone, Default, runtime_core::Remote)]
@@ -44,7 +55,7 @@ pub enum SkeletonWidth {
 // style, so they route into the style sink; a bare value stays a zero-cost
 // `Static` snapshot (the no-flicker fast path), a `Signal`/`rx!` re-styles
 // the block in place.
-#[runtime_core::props]
+#[runtime_core::props(styles = SkeletonStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct SkeletonProps {
@@ -65,6 +76,7 @@ impl Default for SkeletonProps {
             width: Reactive::Static(SkeletonWidth::Full),
             height: Reactive::Static(16.0),
             radius: Reactive::Static(4.0),
+            styles: Default::default(),
         }
     }
 }
@@ -73,51 +85,33 @@ impl Default for SkeletonProps {
 /// loading content (no animation; avoids layout shift on arrival).
 #[component]
 pub fn Skeleton(props: &SkeletonProps) -> Element {
-    // The style is REACTIVE when any dimension prop is live; otherwise it's
-    // the build-time fast path. The closure reads each prop's `.get()` INSIDE
-    // so the apply-style Effect subscribes to whichever are dynamic.
-    let style_is_reactive =
-        !props.width.is_static() || !props.height.is_static() || !props.radius.is_static();
-
-    let make_style = {
-        let width = props.width.clone();
-        let height = props.height.clone();
-        let radius = props.radius.clone();
-        move || {
-            let length = match width.get() {
-                SkeletonWidth::Full => Length::pct(100.0),
-                SkeletonWidth::Half => Length::pct(50.0),
-                SkeletonWidth::ThreeQuarter => Length::pct(75.0),
-                SkeletonWidth::Px(v) => Length::Px(v),
-            };
-            // Ensure the active theme is wrapped in IdeaThemeRef; the
-            // background comes from the stylesheet's base closure
-            // against that theme.
-            let _ = crate::theme_runtime::active_theme_untracked()
-                .downcast_ref::<IdeaThemeRef>()
-                .expect("idea-ui: no IdeaTheme installed — call install_idea_theme(...) first");
-            // Per-instance dimensions + radius ride the INLINE layer, not
-            // overrides: they're continuous values drawn from props, so as
-            // overrides they minted a class per (w, h, r) combination AND
-            // kept every Skeleton on the live engine (`--premint-report`
-            // showed one entry per distinct block on the docs corpus).
-            // Inline stays out of the cache identity and premints.
-            let r = runtime_core::Tokenized::Literal(Length::Px(radius.get()));
-            StyleApplication::new(SkeletonStyle::sheet()).with_inline(StyleRules {
-                width: Some(runtime_core::Tokenized::Literal(length)),
-                height: Some(runtime_core::Tokenized::Literal(Length::Px(height.get()))),
-                border_top_left_radius: Some(r.clone()),
-                border_top_right_radius: Some(r.clone()),
-                border_bottom_left_radius: Some(r.clone()),
-                border_bottom_right_radius: Some(r),
-                ..Default::default()
-            })
+    // Per-instance dimensions + radius ride the INLINE layer: they are
+    // continuous values drawn from props, so as overrides they minted a
+    // class per (w, h, r) and kept every Skeleton on the live engine. The
+    // slot's own fill premints.
+    let dims = |width: SkeletonWidth, height: f32, radius: f32| {
+        let length = match width {
+            SkeletonWidth::Full => Length::pct(100.0),
+            SkeletonWidth::Half => Length::pct(50.0),
+            SkeletonWidth::ThreeQuarter => Length::pct(75.0),
+            SkeletonWidth::Px(v) => Length::Px(v),
+        };
+        let r = runtime_core::Tokenized::Literal(Length::Px(radius));
+        StyleRules {
+            width: Some(runtime_core::Tokenized::Literal(length)),
+            height: Some(runtime_core::Tokenized::Literal(Length::Px(height))),
+            border_top_left_radius: Some(r.clone()),
+            border_top_right_radius: Some(r.clone()),
+            border_bottom_left_radius: Some(r.clone()),
+            border_bottom_right_radius: Some(r),
+            ..Default::default()
         }
     };
-
-    if style_is_reactive {
-        ui! { view(style = make_style) {} }
-    } else {
-        ui! { view(style = make_style()) {} }
-    }
+    let style = SkeletonStyles::root();
+    let style = match (props.width.clone(), props.height.clone(), props.radius.clone()) {
+        (Reactive::Static(w), Reactive::Static(h), Reactive::Static(r)) => style.inline(dims(w, h, r)),
+        (w, h, r) => style.inline_with(move || dims(w.get(), h.get(), r.get())),
+    };
+    let style = style.overridden(props.styles.root.as_ref());
+    ui! { view(style = style) {} }
 }
