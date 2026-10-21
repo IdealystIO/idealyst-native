@@ -27,6 +27,7 @@
 //! [`register_tone`](idea_theme::extensible::register_tone) (or a theme's
 //! `extension_tones`) adds a tone every tone-aware component draws.
 
+use crate::components::DISABLED_CONTROL_OPACITY;
 use std::rc::Rc;
 
 use runtime_core::primitives::activity_indicator::{activity_indicator, ActivityIndicatorSize};
@@ -37,7 +38,7 @@ use runtime_core::{
 };
 
 use idea_theme::extensible::{
-    semantic_tones, tone_variant_arms, tone_variant_state_overlays, Tone, ToneRef, DISABLED_CONTROL_OPACITY,
+    semantic_tones, tone_variant_arms, tone_variant_state_overlays, Tone, ToneRef,
 };
 use idea_theme::theme::IdeaThemeRef;
 

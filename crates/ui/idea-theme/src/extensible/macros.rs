@@ -1,6 +1,6 @@
-//! Declarative macros that collapse the boilerplate of implementing
-//! [`Tone`](super::Tone) and [`Variant`](super::Variant) on custom
-//! marker types.
+//! Declarative macros: `tone!` collapses the boilerplate of implementing
+//! [`Tone`](super::Tone) on a custom marker type; `color_token!` and
+//! `app_theme!` build tokens and app themes.
 //!
 //! Macros are **sugar**, not the canonical API. The underlying traits
 //! remain the source of truth — you can always write the impl by hand,
@@ -47,32 +47,6 @@
 //! Required slots — the compiler enforces all are present because
 //! each maps to a required trait method. Missing one is a compile
 //! error citing the unimplemented `Tone::<slot>`.
-//!
-//! # `variant!`
-//!
-//! ```ignore
-//! use idea_ui::variant;
-//!
-//! variant! {
-//!     pub Elevated {
-//!         key = "elevated",
-//!         render(ctx) {
-//!             runtime_core::StyleRules {
-//!                 background: Some(ctx.tone.fill_bg(ctx.theme)),
-//!                 color: Some(ctx.tone.fill_fg(ctx.theme)),
-//!                 shadow: Some(runtime_core::Shadow {
-//!                     x: 0.0, y: 2.0, blur: 8.0,
-//!                     color: runtime_core::Color("rgba(0,0,0,0.18)".into()),
-//!                 }),
-//!                 ..Default::default()
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! Thin wrapper — the body of `render(ctx)` is a normal Rust block
-//! returning `StyleRules`, with `ctx: &ResolutionCtx` in scope.
 
 /// Construct a `Tokenized<Color>` from a static token name and a hex
 /// fallback. Lowers to `Tokenized::token(name, Color(hex.into()))`.
@@ -99,7 +73,7 @@
 ///
 /// both take effect — the override is keyed by the field, not by the name
 /// you pass. The `name` is only load-bearing for **brand-new
-/// custom tokens** (e.g. a `tone!`/`variant!` slot whose value reaches a
+/// custom tokens** (e.g. a `tone!` slot whose value reaches a
 /// stylesheet that references the same string) — there it must match the
 /// reader exactly.
 #[macro_export]
@@ -224,8 +198,8 @@ macro_rules! tone {
         // Reactive-prop coercion: lets a `ui!` call site pass a bare tone
         // marker (`tone = tone::Primary`) to a `#[props]`-wrapped
         // `Reactive<ToneRef>` field — the marker → ref → `Reactive` chain
-        // can't go through a single `.into()`. See the matching note in
-        // `extensible/typography.rs::builtin_kind!`.
+        // can't go through a single `.into()` (the compiler won't chain two
+        // `From` impls).
         impl ::core::convert::From<$name>
             for ::runtime_core::Reactive<$crate::extensible::ToneRef>
         {
@@ -394,53 +368,6 @@ macro_rules! app_theme {
                     )*
                 )?
                 tokens
-            }
-        }
-    };
-}
-
-/// Declarative variant definition. Generates a ZST + `impl Variant`
-/// with the given `render` body. The body has `ctx: &ResolutionCtx`
-/// in scope and must return a `StyleRules`.
-#[macro_export]
-macro_rules! variant {
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident {
-            key = $key:literal,
-            render($ctx:ident) $body:block $(,)?
-        }
-    ) => {
-        // Registered as a completable `variant = …` value; see `tone!`.
-        $(#[$meta])*
-        #[derive(Copy, Clone, Default, ::runtime_core::IdealystSchema)]
-        #[schema(value_of = "VariantRef")]
-        $vis struct $name;
-
-        $crate::__remote_marker!($crate::extensible::VariantRef, $name);
-
-        impl $crate::extensible::Variant for $name {
-            fn key(&self) -> &'static str {
-                $key
-            }
-            fn render(
-                &self,
-                $ctx: &$crate::extensible::ResolutionCtx,
-            ) -> ::runtime_core::StyleRules {
-                $body
-            }
-        }
-
-        // Reactive-prop coercion: `variant = variant::Filled` into a
-        // `#[props]`-wrapped `Reactive<VariantRef>` field. See the matching
-        // note in `extensible/typography.rs::builtin_kind!`.
-        impl ::core::convert::From<$name>
-            for ::runtime_core::Reactive<$crate::extensible::VariantRef>
-        {
-            fn from(marker: $name) -> Self {
-                ::runtime_core::Reactive::Static(
-                    $crate::extensible::VariantRef::from(marker),
-                )
             }
         }
     };

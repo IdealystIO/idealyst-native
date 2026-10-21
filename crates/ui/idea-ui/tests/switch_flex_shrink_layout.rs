@@ -32,8 +32,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use idea_theme::extensible::{CHECKBOX_DIMS, RADIO_DIMS, SWITCH_TRACK_DIMS};
-use idea_ui::{install_idea_theme, light_theme, Checkbox, Radio, Stack, StackAxis, Switch, Typography};
+use idea_ui::{
+    install_idea_theme, light_theme, Checkbox, CheckboxStyles, Radio, RadioStyles, Stack, StackAxis, Switch,
+    SwitchStyles, Typography,
+};
 use runtime_core::{signal, ui, Element, Length, StyleRules, Tokenized};
 use runtime_layout::{AvailableSpace, LayoutNode, LayoutTree, Size};
 
@@ -151,13 +153,19 @@ fn find(h: &host_mock::Harness, node: u32, prefix: &str) -> Option<u32> {
     h.children_of(node).into_iter().find_map(|c| find(h, c, prefix))
 }
 
-/// The md entry of a `(size, a, b)` dims table — its first dimension.
-fn md(dims: &[(&str, f32, f32)]) -> f32 {
-    dims.iter().find(|(k, _, _)| *k == "md").map(|(_, a, _)| *a).unwrap()
+/// The width a control's slot resolves to at its default (md) size.
+fn slot_width(app: impl FnOnce() -> runtime_core::StyleApplication) -> f32 {
+    idea_theme::testing::with_test_world(|| {
+        install_idea_theme(light_theme());
+        match runtime_core::resolve_style(&app()).width.as_ref().map(|w| w.resolve()) {
+            Some(Length::Px(w)) => w,
+            other => panic!("the slot states a px width, got {other:?}"),
+        }
+    })
 }
 
 fn md_track_width() -> f32 {
-    md(&SWITCH_TRACK_DIMS)
+    slot_width(|| SwitchStyles::track().into_style_application())
 }
 
 #[test]
@@ -239,7 +247,7 @@ fn checkbox_box_and_radio_ring_keep_their_size_beside_wrapping_text() {
     });
     // The box IS the pressable (the focusable host).
     let f = frames[&find(&h, root, "pressable").unwrap()];
-    let side = md(&CHECKBOX_DIMS);
+    let side = slot_width(|| CheckboxStyles::indicator().into_style_application());
     assert!(
         f.width == side && f.height == side,
         "the Checkbox box keeps its {side}px square under squeeze ({f:?}):\n{}",
@@ -260,7 +268,7 @@ fn checkbox_box_and_radio_ring_keep_their_size_beside_wrapping_text() {
     });
     // The ring IS the pressable.
     let f = frames[&find(&h, root, "pressable").unwrap()];
-    let side = md(&RADIO_DIMS);
+    let side = slot_width(|| RadioStyles::ring().into_style_application());
     assert!(
         f.width == side && f.height == side,
         "the Radio ring keeps its {side}px circle under squeeze ({f:?}):\n{}",

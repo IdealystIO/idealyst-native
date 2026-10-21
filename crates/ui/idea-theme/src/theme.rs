@@ -309,8 +309,8 @@ impl Radius {
     }
 }
 
-/// Per-variant font size knobs. Each field corresponds to one
-/// `TypographyKind` variant on the `Typography` component. Themes
+/// Per-kind font size knobs. Each field corresponds to one `kind` value
+/// of the `Typography` component. Themes
 /// override individual fields to retune the type scale without
 /// touching the rest of the stylesheet system.
 ///
@@ -1453,7 +1453,6 @@ pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
     let theme = IdeaThemeRef::new(theme);
     sync_default_text_font(&theme);
     crate::theme_runtime::install_idea(theme);
-    install_default_idea_sheets();
 }
 
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
@@ -1568,15 +1567,13 @@ pub fn install_idea_theme_schemes<T: IdeaTheme + Clone>(light: T, dark: T) {
 /// This is the closure-driven peer of [`install_themes`](crate::install_themes)
 /// (which is keyed by a `Signal<String>`): reach for it when the source of truth
 /// is a `bool`/enum signal you also read elsewhere, so you don't need a parallel
-/// string signal. Component sheets are installed once up front; the internal
-/// effect's first run applies the initial theme (subscribing to whatever `select`
+/// string signal. The internal effect's first run applies the initial theme (subscribing to whatever `select`
 /// reads) and later runs swap it.
 pub fn install_idea_theme_reactive<T, F>(select: F)
 where
     T: IdeaTheme + 'static,
     F: FnMut() -> T + 'static,
 {
-    install_default_idea_sheets();
     let mut select = select;
     let mut primed = false;
     let sub = watch(move || {
@@ -1592,30 +1589,6 @@ where
     // Single-slot: replacing the keepalive drops any prior Subscription,
     // disposing the previous install's effect.
     REACTIVE_THEME_KEEPALIVE.with(|k| *k.borrow_mut() = Some(sub));
-}
-
-/// Install the default stylesheets for every idea-ui component that
-/// uses the extensible modifier system. Called from
-/// [`install_idea_theme`] so apps that don't need custom modifiers
-/// get a working setup with no extra calls.
-///
-/// Apps with custom modifiers (`Hype` tone, `Elevated` variant, etc.)
-/// can override individual sheets by calling
-/// `install_button_sheet(ButtonSheetBuilder::new().add_tone(Hype.into()).build())`
-/// AFTER `install_idea_theme` returns.
-pub fn install_default_idea_sheets() {
-    crate::extensible::install_default_button_sheet();
-    crate::extensible::install_default_badge_sheet();
-    crate::extensible::install_default_tag_sheet();
-    crate::extensible::install_default_avatar_sheets();
-    crate::extensible::install_default_alert_sheet();
-    crate::extensible::install_default_typography_sheet();
-    crate::extensible::install_default_icon_button_sheet();
-    crate::extensible::install_default_switch_sheet();
-    crate::extensible::install_default_checkbox_sheet();
-    crate::extensible::install_default_radio_sheet();
-    crate::extensible::install_default_progress_sheet();
-    crate::extensible::install_default_slider_sheet();
 }
 
 /// Build a reactive color closure for a navigator's `header_*` /

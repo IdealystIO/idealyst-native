@@ -226,7 +226,7 @@ pub use components::radio::{
     Radio, RadioAxis, RadioChecked, RadioDimmed, RadioGroup, RadioGroupProps, RadioOption, RadioProps,
     RadioRestyle, RadioSize, RadioSlotStyles, RadioStyles, RadioVariant,
 };
-pub use components::ControlSize;
+pub use components::{ControlSize, DISABLED_CONTROL_OPACITY};
 pub use components::collapsible::{
     Accordion, AccordionExpand, AccordionItem, AccordionProps, AccordionSlotStyles, AccordionStyles, Collapsible,
     CollapsibleChevron, CollapsibleChevronSide, CollapsibleOpen, CollapsibleProps, CollapsibleSlotStyles,
@@ -309,13 +309,12 @@ pub use components::typography::{
 // Re-exported at the crate root so apps can write
 // `use idea_ui::{tone, variant, size, shape, typography_kind}` for
 // the namespaces.
-pub use idea_theme::extensible::{tone, ResolutionCtx, Tone, ToneRef, Variant, VariantRef};
+pub use idea_theme::extensible::{tone, ResolutionCtx, Tone, ToneRef, Variant};
 pub use modifiers::{shape, size, variant};
 // Macros from idea-theme. `#[macro_export]` macros live at the
-// defining crate's root; re-exported here for convenience. The
-// modifier macros (`tone!`, `variant!`) live in idea-theme's macro
-// namespace; `app_theme!` bundles an app theme.
-pub use idea_theme::{app_theme, color_token, tone, variant};
+// defining crate's root; re-exported here for convenience: `tone!`
+// declares an app tone, `app_theme!` bundles an app theme.
+pub use idea_theme::{app_theme, color_token, tone};
 
 
 // The host functions remote code calling idea-ui's global functions needs:

@@ -44,8 +44,9 @@ use runtime_core::{
     StyleRules, TapRecognizer, Tokenized,
 };
 
-use idea_theme::extensible::{semantic_tones, tone_arms, tone_compounds, ToneRef, DISABLED_CONTROL_OPACITY};
+use idea_theme::extensible::{semantic_tones, tone_arms, tone_compounds, ToneRef};
 
+use crate::components::DISABLED_CONTROL_OPACITY;
 use crate::components::tone_slots::{focus_ring, with_tone};
 use crate::components::ControlSize;
 use crate::modifiers::{marker_into_axis, variant};

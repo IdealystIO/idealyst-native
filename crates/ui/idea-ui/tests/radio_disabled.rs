@@ -11,7 +11,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use idea_theme::extensible::DISABLED_CONTROL_OPACITY;
+use idea_ui::DISABLED_CONTROL_OPACITY;
 use idea_ui::{install_idea_theme, light_theme, Radio, RadioGroup, RadioOption};
 use runtime_core::{rx, signal, ui, Element, Signal, Tokenized};
 

@@ -187,19 +187,6 @@ pub mod variant {
     pub fn builtin_recipes() -> [(&'static str, &'static dyn Variant); 4] {
         [("filled", &Filled), ("soft", &Soft), ("outlined", &Outlined), ("ghost", &Ghost)]
     }
-
-    // A component not yet on its own variant axis still takes a shared
-    // `VariantRef`; the markers coerce into it in a `ui!` call site.
-    macro_rules! variant_ref_coercion {
-        ($($name:ident),*) => { $(
-            impl ::core::convert::From<$name> for ::runtime_core::Reactive<idea_theme::extensible::VariantRef> {
-                fn from(marker: $name) -> Self {
-                    ::runtime_core::Reactive::Static(idea_theme::extensible::VariantRef::from(marker))
-                }
-            }
-        )* };
-    }
-    variant_ref_coercion!(Filled, Soft, Outlined, Ghost, Gradient);
 }
 
 /// Button padding / font scale markers.

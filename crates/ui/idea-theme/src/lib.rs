@@ -23,11 +23,10 @@
 //!   provide opinionated defaults. Apps install one via
 //!   [`theme::install_idea_theme`] (or compose them into a custom
 //!   theme via the [`theme!`] macro).
-//! - **Extensible modifier system** — [`extensible::Tone`],
-//!   [`extensible::Variant`], [`extensible::ButtonSize`],
-//!   [`extensible::Shape`], [`extensible::TypographyKind`] traits, plus
-//!   built-in ZSTs and [`extensible::ResolutionCtx`] for composing
-//!   variants against modifiers.
+//! - **Tones and recipes** — [`extensible::Tone`] (a semantic palette;
+//!   the tone registry every tone-aware component renders from) and
+//!   [`extensible::Variant`] (a tone-aware surface recipe, rendered into a
+//!   component slot's `variant` arms by [`extensible::tone_variant_arms`]).
 //! - **Token vocabulary** — [`theme::IdeaThemeDefaults`] is a
 //!   `#[derive(Tokens)]` token set, and [`tokens::IdeaTokens`] is its
 //!   generated accessor tree. A `stylesheet!` names a token through the
@@ -40,9 +39,8 @@
 //!   panics instead of silently repainting idea-ui. An app theme builds on
 //!   it with `#[tokens(flatten)] idea: IdeaThemeDefaults` (see
 //!   `docs/styling.md`).
-//! - **Macros** — [`tone!`], [`variant!`], [`theme!`], [`color_token!`]
-//!   make defining custom modifiers and app themes a one-block
-//!   declaration each.
+//! - **Macros** — [`tone!`], [`app_theme!`], [`color_token!`] make
+//!   defining custom tones and app themes a one-block declaration each.
 //! - **Theme runtime** — [`install_idea_theme`] / [`set_idea_theme`]
 //!   (through the derived set) and the untyped [`install_theme`],
 //!   [`set_theme`], [`install_themes`], plus [`ThemeTokens`] /
@@ -53,11 +51,10 @@ pub mod extensible;
 #[doc(hidden)]
 pub use runtime_vocabulary as __vocab;
 
-/// Let a remote bundle name `$marker` (a tone, variant, size, shape or
-/// typography kind) by its key: registers the app's own `$ref` built from
-/// it. Emitted next to every marker's declaration — the built-ins here, and
-/// `tone!` / `variant!` in apps. A no-op unless the app hosts remote
-/// components.
+/// Let a remote bundle name the tone `$marker` by its key: registers the
+/// app's own `$ref` built from it. Emitted next to every tone marker's
+/// declaration — the built-ins here, and `tone!` in apps. A no-op unless
+/// the app hosts remote components.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __remote_marker {

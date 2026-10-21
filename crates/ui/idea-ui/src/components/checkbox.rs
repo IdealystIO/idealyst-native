@@ -35,9 +35,10 @@ use runtime_core::{
     SlotRestyle, SlotStyle, StyleRules, TapRecognizer, TextAlign, Tokenized,
 };
 
-use idea_theme::extensible::{semantic_tones, with_idea_theme, ToneRef, DISABLED_CONTROL_OPACITY};
+use idea_theme::extensible::{semantic_tones, with_idea_theme, ToneRef};
 use idea_theme::theme::IdeaTheme;
 
+use crate::components::DISABLED_CONTROL_OPACITY;
 use crate::components::tone_slots::{focus_ring_compounds, recipe_compounds, with_tone};
 use crate::components::ControlSize;
 use crate::modifiers::{marker_into_axis, variant};
