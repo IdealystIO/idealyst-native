@@ -28,11 +28,13 @@ use runtime_core::{
     SlotRestyle, StyleRules, TextAlign, Tokenized, UserSelect,
 };
 
-use crate::components::tone_slots::{foreground_arms, surface_arms, with_tone};
+use crate::components::tone_slots::{foreground_arms, foreground_compounds, surface_arms, with_tone};
 use crate::components::tooltip::Tooltip;
 use crate::modifiers::{marker_into_axis, variant};
 use crate::theme::IdeaThemeRef;
-use idea_theme::extensible::{semantic_tones, tone, tone_compounds, tone_variant_state_overlays, ToneRef};
+use idea_theme::extensible::{
+    semantic_tones, tone, tone_variant_arms, tone_variant_state_overlays, with_idea_theme, ResolutionCtx, ToneRef,
+};
 
 component_styles! {
     /// The styled sections of [`IconButton`].
@@ -135,20 +137,64 @@ fn root_surfaces(s: &mut SlotRestyle<'_, IconButtonStyles>) {
     for (key, _) in variant::builtin_recipes() {
         tone_variant_state_overlays(s, &tones, key);
     }
-    tone_compounds(s, &tones, ("selected", "on"), |ctx| StyleRules {
-        background: Some(ctx.tone.fill_bg(ctx.theme)),
-        color: Some(ctx.tone.fill_fg(ctx.theme)),
-        ..Default::default()
-    });
+    selected_accent(s, &tones, &[], true);
 }
 
 fn glyph_foregrounds(s: &mut SlotRestyle<'_, IconButtonStyles>) {
     let tones = semantic_tones();
     foreground_arms(s, &tones);
-    tone_compounds(s, &tones, ("selected", "on"), |ctx| StyleRules {
-        color: Some(ctx.tone.fill_fg(ctx.theme)),
-        ..Default::default()
+    selected_accent(s, &tones, &[], false);
+}
+
+/// The `selected` accent per tone — the tone's solid fill (`fill`, the
+/// square) and its on-fill text — as a compound on `tone ∧ selected=on`
+/// plus the `extra` legs.
+fn selected_accent(s: &mut SlotRestyle<'_, IconButtonStyles>, tones: &[ToneRef], extra: &[(&str, &str)], fill: bool) {
+    with_idea_theme(|theme| {
+        for tone in tones {
+            let ctx = ResolutionCtx { theme, tone: &*tone.0 };
+            let mut legs = vec![("tone", tone.key()), ("selected", "on")];
+            legs.extend_from_slice(extra);
+            s.raw_compound(
+                &legs,
+                StyleRules {
+                    background: fill.then(|| ctx.tone.fill_bg(ctx.theme)),
+                    color: Some(ctx.tone.fill_fg(ctx.theme)),
+                    ..Default::default()
+                },
+            );
+        }
     });
+}
+
+impl IconButtonRestyle<'_, '_> {
+    /// Give a variant value a tone-aware look from a surface recipe, the
+    /// way the built-in variants get theirs: the square's fill per tone,
+    /// its hover / press feedback, and the text glyph's foreground (a
+    /// vector icon takes the square's foreground). The same helper as
+    /// [`ButtonRestyle::tone_variant`](crate::ButtonRestyle::tone_variant),
+    /// so a design system gives its buttons and icon buttons one recipe.
+    ///
+    /// ```ignore
+    /// const RAISED: IconButtonVariant = IconButtonVariant::define("raised");
+    /// IconButtonStyles::restyle(|s| s.tone_variant(RAISED, &Raised));
+    /// ```
+    ///
+    /// `selected` keeps winning over the new fill: its accent compounds are
+    /// restated with the variant as a third leg, because a restyle's
+    /// compounds come after the declaration's and would otherwise paint
+    /// over a selected button's accent.
+    pub fn tone_variant(&mut self, value: IconButtonVariant, recipe: &dyn idea_theme::extensible::Variant) {
+        let tones = semantic_tones();
+        let key = value.key();
+        let mut root = self.root();
+        tone_variant_arms(&mut root, &tones, key, recipe);
+        tone_variant_state_overlays(&mut root, &tones, key);
+        selected_accent(&mut root, &tones, &[("variant", key)], true);
+        let mut glyph = self.glyph();
+        foreground_compounds(&mut glyph, &tones, key, recipe);
+        selected_accent(&mut glyph, &tones, &[("variant", key)], false);
+    }
 }
 
 marker_into_axis!(IconButtonVariant {
@@ -463,6 +509,59 @@ mod tests {
             }
             _ => panic!("IconButton renders a Pressable"),
         }
+    }
+
+    fn reset_styles() {
+        runtime_core::component_styles::__reset::<IconButtonStyles>();
+    }
+
+    /// The square's style application (the IconButton's pressable).
+    fn root_app(el: Element) -> runtime_core::StyleApplication {
+        match classify(el) {
+            P::Pressable { style, .. } => style.expect("the square is styled").application(),
+            _ => panic!("IconButton renders a Pressable"),
+        }
+    }
+
+    /// `tone_variant` gives an app value Button's treatment: the recipe's
+    /// surface on the square, the hover / press feedback, and the glyph's
+    /// foreground — and a `selected` button of that value still shows the
+    /// tone's accent fill.
+    #[test]
+    fn tone_variant_adds_surface_feedback_and_glyph_color() {
+        with_test_world(|| {
+            reset_styles();
+            theme();
+            const LIFTED: IconButtonVariant = IconButtonVariant::define("lifted");
+            IconButtonStyles::restyle(|s| s.tone_variant(LIFTED, &variant::Gradient));
+            let props = |selected: bool| IconButtonProps {
+                glyph: Reactive::Static("+".into()),
+                tone: Reactive::Static(ToneRef::default()),
+                variant: Reactive::Static(LIFTED),
+                selected: Reactive::Static(selected),
+                ..Default::default()
+            };
+
+            let app = root_app(IconButton(&props(false)));
+            let rest = resolve_style(&app);
+            assert!(rest.background_gradient.is_some(), "the square paints the recipe's gradient");
+            let hovered = resolve_style(&app.clone().with("__state_hovered", "on"));
+            let pressed = resolve_style(&app.with("__state_pressed", "on"));
+            assert_ne!(*hovered, *rest, "hover feedback is drawn for the new value");
+            assert_ne!(*pressed, *rest, "press feedback is drawn for the new value");
+
+            let glyph = match classify(only_child(IconButton(&props(false)))) {
+                P::Text { style, .. } => style.expect("the glyph is styled").resolve(),
+                _ => panic!("expected the text glyph"),
+            };
+            assert!(glyph.color.is_some(), "the glyph carries the recipe's foreground");
+            assert_eq!(glyph.color, rest.color, "glyph and square agree on the foreground");
+
+            let selected = resolve_style(&root_app(IconButton(&props(true))));
+            let accent = with_idea_theme(|t| ToneRef::default().0.fill_bg(t));
+            assert_eq!(selected.background, Some(accent), "selected keeps the accent fill over the new value");
+            reset_styles();
+        });
     }
 
     fn pressable_name(el: Element) -> Option<String> {

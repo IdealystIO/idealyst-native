@@ -6,17 +6,24 @@
 //!
 //! - The accent-gradient Button variant, which idea-ui ships as an opt-in
 //!   recipe rather than a built-in arm.
-//! - An app-defined Button variant ([`RAISED`]) with a tone-aware recipe.
+//! - An app-defined Button variant ([`RAISED`]) with a tone-aware recipe,
+//!   and the same recipe as an IconButton variant ([`RAISED_ICON`]).
 //! - An app-defined Card variant ([`TINTED`]) and Field appearance
 //!   ([`PILL`]), each one restyle arm.
 
 use idea_theme::extensible::{ResolutionCtx, Variant};
 use idea_theme::extensible::variant::no_border;
-use idea_ui::{ButtonStyles, ButtonVariant, CardStyles, CardVariant, FieldAppearance, FieldStyles};
+use idea_ui::{
+    ButtonStyles, ButtonVariant, CardStyles, CardVariant, FieldAppearance, FieldStyles, IconButtonStyles,
+    IconButtonVariant,
+};
 use runtime_core::{Shadow, StyleRules};
 
 /// An app Button variant: a filled surface lifted by a soft shadow.
 pub const RAISED: ButtonVariant = ButtonVariant::define("raised");
+
+/// The same recipe as an IconButton variant.
+pub const RAISED_ICON: IconButtonVariant = IconButtonVariant::define("raised");
 
 /// An app Card variant: the primary tint, with a primary edge.
 pub const TINTED: CardVariant = CardVariant::define("tinted");
@@ -49,6 +56,7 @@ pub fn register() {
         s.tone_variant(ButtonVariant::Gradient, &idea_ui::variant::Gradient);
         s.tone_variant(RAISED, &Raised);
     });
+    IconButtonStyles::restyle(|s| s.tone_variant(RAISED_ICON, &Raised));
     CardStyles::restyle(|s| {
         s.root().arm(TINTED, |t| {
             let edge = Some(t.intent.primary.solid_bg());

@@ -28,14 +28,26 @@ pub(crate) fn surface_arms<S: ComponentStyles>(s: &mut SlotRestyle<'_, S>, tones
 /// fill's foreground on its own node, as enumerated arms that premint.
 pub(crate) fn foreground_arms<S: ComponentStyles>(s: &mut SlotRestyle<'_, S>, tones: &[ToneRef]) {
     for (key, recipe) in variant::builtin_recipes() {
-        with_idea_theme(|theme| {
-            for tone in tones {
-                let ctx = ResolutionCtx { theme, tone: &*tone.0 };
-                let color = recipe.render(&ctx).color;
-                s.raw_compound(&[("tone", tone.key()), ("variant", key)], StyleRules { color, ..Default::default() });
-            }
-        });
+        foreground_compounds(s, tones, key, recipe);
     }
+}
+
+/// One compound per `(tone, variant_key)` carrying ONLY `recipe`'s
+/// foreground `color` — [`foreground_arms`] for a single variant value (an
+/// app value added through a component's `tone_variant` restyle helper).
+pub(crate) fn foreground_compounds<S: ComponentStyles>(
+    s: &mut SlotRestyle<'_, S>,
+    tones: &[ToneRef],
+    variant_key: &str,
+    recipe: &dyn idea_theme::extensible::Variant,
+) {
+    with_idea_theme(|theme| {
+        for tone in tones {
+            let ctx = ResolutionCtx { theme, tone: &*tone.0 };
+            let color = recipe.render(&ctx).color;
+            s.raw_compound(&[("tone", tone.key()), ("variant", variant_key)], StyleRules { color, ..Default::default() });
+        }
+    });
 }
 
 /// The themed focus ring a focusable tone-aware control draws: a border of

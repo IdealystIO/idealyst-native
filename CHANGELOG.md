@@ -730,6 +730,21 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`Link(on_press = …)`** (`idea-ui`): a link that runs an in-app action
+  ("Show 1 archived") instead of opening a URL. It draws as underlined text
+  in the body color (`LinkStyles::text`'s new `action` axis) and renders as
+  a `pressable` — a button to assistive tech, Tab-focusable and pressed by
+  Enter / Space on web, with a soft tint while focused (the new `action`
+  slot). A static `label` names it; a live one leaves the name to the text.
+  `on_press` wins over `url`. Link also takes `test_id`, and idea-ui now
+  exports `LinkStyles`, `LinkRestyle`, `LinkSlotStyles` and `LinkAction`.
+- **`Switch(accessibility_label = …)`** (`idea-ui`): the switch's accessible
+  name, defaulting to `label` — as Field's does. A labelled Switch is now
+  named by its label too; before, its track had no accessible name.
+- **`IconButtonRestyle::tone_variant`** (`idea-ui`): Button's helper for
+  IconButton — an app variant value gets a recipe's fill per tone, the
+  hover / press feedback and the glyph foreground, and `selected` keeps its
+  accent fill over it.
 - **`component_styles!`** (`runtime-macros`, `runtime-shared`,
   `runtime-vocabulary`): declare a component's styled sections once as
   named slots with component-level open axes; generates the registry key
