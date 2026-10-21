@@ -1954,6 +1954,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **file-picker reads a picked file in Chrome on macOS** (`file-picker`).
+  A web pick went through `showOpenFilePicker()`, and Chrome on macOS
+  refused the chosen handle's `getFile()` with `NotAllowedError` (a fresh
+  Desktop screenshot), so `pick()` failed with "could not read the picked
+  file". A pick only reads, and `PickedFile` never exposes a handle, so the
+  web picker now uses a hidden `<input type=file>` in every browser: no
+  handle step that can fail after the dialog, one dialog per pick. The API
+  is unchanged.
 - **An adorned Field's text sits 2px from its adornment at every size**
   (`idea-ui`). The input inside the adorned shell took the `size` axis's
   horizontal padding (12px at `md`) over the shell's 2px inset, because

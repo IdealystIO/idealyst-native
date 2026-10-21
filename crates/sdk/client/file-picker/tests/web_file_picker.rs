@@ -1,7 +1,12 @@
 //! The web file-picker leg in a real browser: a dropped file (as backend-web
 //! hands it over — a `web_glue::dom::File` in `DroppedFile::source`) becomes a
-//! `PickedFile` that streams its bytes; and the `<input type=file>` fallback
-//! resolves a cancel as `Cancelled` and cleans its input up.
+//! `PickedFile` that streams its bytes; and a pick goes through one
+//! `<input type=file>` (never the File System Access picker), returns the
+//! chosen files, resolves a cancel as `Cancelled` and cleans its input up.
+//!
+//! The browser's own file dialog can't be driven from a test, so each test
+//! replaces `HTMLInputElement.prototype.click` with one that sets the
+//! input's `files` and fires `change` / `cancel` the way the dialog does.
 //!
 //! Run with `cargo test -p file-picker --target wasm32-unknown-unknown` (the
 //! workspace runner supplies web-glue's JS).
@@ -65,11 +70,11 @@ async fn dropped_glue_file_streams_through_the_picker() {
     assert_eq!(String::from_utf8(bytes).unwrap(), body);
 }
 
-/// The `<input type=file>` fallback (no File System Access API): dismissing
-/// the dialog resolves `Cancelled` and removes the hidden input.
+/// In a browser without the File System Access API (Safari, Firefox),
+/// dismissing the dialog resolves `Cancelled` and removes the hidden input.
 #[wasm_bindgen_test]
-async fn input_fallback_cancel_is_cancelled() {
-    // Force the fallback, and dismiss the dialog as soon as it opens.
+async fn input_cancel_without_fsa_is_cancelled() {
+    // No FSA, and dismiss the dialog as soon as it opens.
     Function::new_no_args(
         "window.showOpenFilePicker = undefined; \
          HTMLInputElement.prototype.click = function () { \
@@ -86,87 +91,80 @@ async fn input_fallback_cancel_is_cancelled() {
     assert_eq!(left, Some(0.0), "the hidden input is removed");
 }
 
-/// Install a fake `showOpenFilePicker` (body `js`, which sees `opts` and
-/// returns its promise) and an `<input>` `click()` that counts how many
-/// fallback dialogs were opened and dismisses each one.
-fn install_fsa_mock(js: &str) {
+/// Install a File System Access `showOpenFilePicker` that counts its calls
+/// and hands back one handle whose `getFile()` rejects `NotAllowedError` even
+/// after `requestPermission` — Chrome on macOS refusing to read a fresh
+/// Desktop screenshot — plus an `<input>` `click()` that counts the dialogs
+/// it opens and "picks" `files` (a JS array expression) in each one.
+fn install_pickers(files: &str) {
     Function::new_no_args(&format!(
-        "window.__inputDialogs = 0; \
-         window.showOpenFilePicker = function (opts) {{ {js} }}; \
+        "window.__fsaCalls = 0; window.__inputDialogs = 0; \
+         window.showOpenFilePicker = function () {{ window.__fsaCalls++; \
+           return Promise.resolve([{{ name: 'denied.png', \
+             requestPermission: () => Promise.resolve('granted'), \
+             getFile: () => Promise.reject(new DOMException( \
+               'The request is not allowed by the user agent or the platform in the current context.', \
+               'NotAllowedError')) }}]); }}; \
          HTMLInputElement.prototype.click = function () {{ window.__inputDialogs++; \
-           setTimeout(() => this.dispatchEvent(new Event('cancel')), 0); }};"
+           const dt = new DataTransfer(); for (const f of {files}) dt.items.add(f); \
+           this.files = dt.files; \
+           setTimeout(() => this.dispatchEvent(new Event(dt.files.length ? 'change' : 'cancel')), 0); }};"
     ))
     .call0(&JsValue::UNDEFINED)
     .unwrap();
 }
 
-fn input_dialogs_opened() -> Option<f64> {
-    Function::new_no_args("return window.__inputDialogs;").call0(&JsValue::UNDEFINED).unwrap().as_f64()
+fn counter(name: &str) -> Option<f64> {
+    Function::new_no_args(&format!("return window.{name};")).call0(&JsValue::UNDEFINED).unwrap().as_f64()
 }
 
-/// The reported bug (VS Code's embedded Electron browser): the FSA dialog was
-/// shown, the user picked, and the pick was rejected afterwards with a
-/// non-`AbortError` — `pick()` then opened the `<input>` as a SECOND dialog.
-/// A post-dialog rejection must surface as an error, with no second dialog.
+/// The reported bug (CrewForge, Chrome on macOS): `pick()` went through the
+/// File System Access picker, the chosen handle's `getFile()` rejected
+/// `NotAllowedError`, and the pick failed with "could not read the picked
+/// file". A pick only ever reads, so the web picker uses `<input type=file>`
+/// (a `File` the browser already granted) and never asks a handle for one.
+/// The name carries the U+202F macOS puts before "AM" in screenshot names;
+/// it must round-trip unchanged.
 #[wasm_bindgen_test]
-async fn regression_post_dialog_rejection_never_reopens_picker() {
-    install_fsa_mock(
-        "return Promise.reject(new DOMException('The request is not allowed by the user agent', 'NotAllowedError'));",
+async fn regression_read_only_pick_reads_through_the_input_not_fsa() {
+    install_pickers(
+        "[new File([new Uint8Array([137, 80, 78, 71])], 'Screenshot 2026-10-21 at 9.20.40\\u202fAM.png', \
+           { type: 'image/png' })]",
     );
-    let out = FilePicker::new().pick(PickRequest::documents(["text/plain"])).await;
-    let err = out.err().expect("a post-dialog rejection is an error, not a pick or a cancel");
-    assert!(err.to_string().contains("NotAllowedError"), "the reason is kept: {err}");
-    assert_eq!(input_dialogs_opened(), Some(0.0), "no second (input) dialog");
-}
-
-/// Same bug through the other door: the picker returned a handle but its
-/// `getFile()` rejects (and a read-permission request does not help). The
-/// error names the picked file; no second dialog.
-#[wasm_bindgen_test]
-async fn regression_getfile_failure_after_pick_never_reopens_picker() {
-    install_fsa_mock(
-        "return Promise.resolve([{ name: 'report.pdf', \
-           getFile: () => Promise.reject(new DOMException('cannot read', 'NotReadableError')) }]);",
-    );
-    let err = FilePicker::new().pick(PickRequest::documents(["text/plain"])).await.err().expect("an error");
-    let msg = err.to_string();
-    assert!(msg.contains("report.pdf") && msg.contains("NotReadableError"), "{msg}");
-    assert_eq!(input_dialogs_opened(), Some(0.0), "no second (input) dialog");
-}
-
-/// A handle without a read grant yet: `getFile()` rejects `NotAllowedError`;
-/// the picker asks for read permission once and returns the user's file.
-#[wasm_bindgen_test]
-async fn getfile_not_allowed_recovers_through_request_permission() {
-    install_fsa_mock(
-        "let granted = false; \
-         return Promise.resolve([{ name: 'a.txt', \
-           requestPermission: () => { granted = true; return Promise.resolve('granted'); }, \
-           getFile: () => granted ? Promise.resolve(new File(['abc'], 'a.txt', { type: 'text/plain' })) \
-             : Promise.reject(new DOMException('no grant', 'NotAllowedError')) }]);",
-    );
-    let out = FilePicker::new().pick(PickRequest::documents(["text/plain"])).await.expect("pick");
+    let out = FilePicker::new()
+        .pick(PickRequest::documents(["image/png", "image/jpeg", "image/webp"]))
+        .await
+        .expect("the pick reads the chosen file");
     let PickOutcome::Picked(files) = out else { panic!("expected the picked file") };
     assert_eq!(files.len(), 1);
-    assert_eq!(files[0].read_all().await.expect("read"), b"abc");
-    assert_eq!(input_dialogs_opened(), Some(0.0));
+    assert_eq!(files[0].name(), "Screenshot 2026-10-21 at 9.20.40\u{202F}AM.png");
+    assert_eq!(files[0].mime(), "image/png");
+    assert_eq!(files[0].read_all().await.expect("read"), [137, 80, 78, 71]);
+    assert_eq!(counter("__fsaCalls"), Some(0.0), "the File System Access picker is never used");
+    assert_eq!(counter("__inputDialogs"), Some(1.0), "exactly one dialog");
 }
 
-/// A rejection the spec raises BEFORE any dialog (no user activation →
-/// `SecurityError`) still falls back to the `<input>` — exactly once.
+/// `multiple()` picks every selected file through the one input dialog.
 #[wasm_bindgen_test]
-async fn pre_dialog_security_error_falls_back_to_input_once() {
-    install_fsa_mock("return Promise.reject(new DOMException('Must be handling a user gesture', 'SecurityError'));");
-    let out = FilePicker::new().pick(PickRequest::documents(["text/plain"])).await.expect("pick");
-    assert!(matches!(out, PickOutcome::Cancelled));
-    assert_eq!(input_dialogs_opened(), Some(1.0), "exactly one (fallback) dialog");
+async fn input_pick_returns_every_selected_file() {
+    install_pickers(
+        "[new File(['a'], 'a.txt', { type: 'text/plain' }), new File(['bc'], 'b.txt', { type: 'text/plain' })]",
+    );
+    let out = FilePicker::new().pick(PickRequest::documents(["text/plain"]).multiple()).await.expect("pick");
+    let PickOutcome::Picked(files) = out else { panic!("expected the picked files") };
+    let names: Vec<_> = files.iter().map(|f| f.name().to_string()).collect();
+    assert_eq!(names, ["a.txt", "b.txt"]);
+    assert_eq!(files[1].read_all().await.expect("read"), b"bc");
+    assert_eq!(counter("__inputDialogs"), Some(1.0));
 }
 
-/// Dismissing the FSA dialog is a cancel, with no fallback dialog.
+/// Dismissing the dialog is a cancel — even where the File System Access API
+/// exists — and opens no second dialog.
 #[wasm_bindgen_test]
-async fn fsa_abort_is_cancelled_without_fallback() {
-    install_fsa_mock("return Promise.reject(new DOMException('The user aborted a request.', 'AbortError'));");
+async fn input_cancel_with_fsa_present_is_cancelled_once() {
+    install_pickers("[]");
     let out = FilePicker::new().pick(PickRequest::documents(["text/plain"])).await.expect("pick");
     assert!(matches!(out, PickOutcome::Cancelled));
-    assert_eq!(input_dialogs_opened(), Some(0.0));
+    assert_eq!(counter("__fsaCalls"), Some(0.0));
+    assert_eq!(counter("__inputDialogs"), Some(1.0));
 }

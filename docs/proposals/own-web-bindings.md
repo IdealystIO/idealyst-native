@@ -670,7 +670,7 @@ wasm-bindgen nor web-sys any more (`wasm-bindgen-test` stays as its test
 harness). camera, microphone, media-stream, media-writer, screen-recorder,
 video-compose and file-picker run entirely on web-glue (crate-local
 `import!`s for getUserMedia / getDisplayMedia, the canvas pumps, WebAudio,
-MediaRecorder, `requestVideoFrameCallback`, `showOpenFilePicker` and the
+MediaRecorder, `requestVideoFrameCallback`, the `<input type=file>` and the
 Blob reader); `files` stayed on idb until phase 4 ([below](#phase-4--fetch--indexeddb)).
 
 **What still crosses `web_glue::bridge`** is wgpu's, marked

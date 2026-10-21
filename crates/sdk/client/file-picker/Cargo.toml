@@ -14,7 +14,7 @@ license.workspace = true
 #   - Android: ACTION_OPEN_DOCUMENT + the Photo Picker
 #   - Windows: IFileOpenDialog
 #   - Linux:   xdg-desktop-portal FileChooser.OpenFile
-#   - web:     showOpenFilePicker(), with an <input type=file> fallback
+#   - web:     a hidden <input type=file>
 #
 # Like `file-export`, every backend is user-initiated UI that grants access to
 # the chosen file(s), so this SDK needs NO storage/photo permission on any
@@ -63,22 +63,14 @@ jni = "0.21"
 ndk-context = "0.1"
 futures-channel = "0.3"
 
-# Web: showOpenFilePicker() (File System Access API) with an <input type=file>
-# fallback for browsers without it (Safari/Firefox). Reads stream a `Blob` via
-# its ReadableStream reader.
+# Web: a hidden <input type=file> (not showOpenFilePicker(): a pick only reads,
+# see src/web.rs). Reads stream a `Blob` via its ReadableStream reader.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# `showOpenFilePicker` / the `<input type=file>` fallback and the `Blob`
-# `ReadableStream` reader — web-glue bindings declared in `src/web.rs`
-# (docs/proposals/own-web-bindings.md). A dropped file arrives from
-# backend-web as a `web_glue::dom::File` in `DroppedFile::source`.
+# The `<input type=file>` and the `Blob` `ReadableStream` reader — web-glue
+# bindings declared in `src/web.rs` (docs/proposals/own-web-bindings.md). A
+# dropped file arrives from backend-web as a `web_glue::dom::File` in
+# `DroppedFile::source`.
 web-glue = { workspace = true }
-# The framework logger (`runtime_shared::log_warn!`): a rejected
-# `showOpenFilePicker()` logs its reason. Non-optional on web only — every web
-# app already links runtime-shared through backend-web, and backend-web's
-# `console.*` logger is installed in runtime-shared's registry, so this is the
-# one path that reaches the browser console. (Elsewhere it stays behind the
-# `drop` feature.)
-runtime-shared = { workspace = true }
 
 # Browser tests (`tests/web_file_picker.rs`) — run with
 # `cargo test -p file-picker --target wasm32-unknown-unknown` (the workspace
