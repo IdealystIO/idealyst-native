@@ -17,12 +17,62 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, ui, Element, IconData, IdealystSchema, IntoElement, Reactive,
-    StyleApplication,
+    component, component_styles, icon, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
+    IconData, IdealystSchema, IntoElement, Length, Reactive, StyleRules, Tokenized,
 };
 
-use crate::stylesheets::{BreadcrumbItem, BreadcrumbRow, BreadcrumbSeparator};
+use crate::theme::IdeaThemeRef;
 use idea_theme::tokens;
+
+component_styles! {
+    /// The styled sections of [`Breadcrumbs`].
+    pub Breadcrumbs<IdeaThemeRef> {
+        slot row {
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.xs(),
+            }
+        }
+
+        slot crumb {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.body_sm_size(),
+                background: Color("transparent".into()),
+                padding_vertical: 0.0,
+                padding_horizontal: t.spacing.xs(),
+                border_radius: t.radius.sm(),
+            }
+            variant current {
+                #[default]
+                off(_t) {}
+                on(t) {
+                    color: t.color.text(),
+                    font_weight: FontWeight::SemiBold,
+                }
+            }
+            // A linked (non-current) crumb shows a pointer. Variant rather than a
+            // computed layer so the rule premints — see `ListItemRow::interactive`.
+            variant interactive {
+                #[default]
+                off(_t) {}
+                on(_t) { cursor: Cursor::Pointer }
+            }
+            state hovered(t) { color: t.color.text() }
+            // Focus mirrors hover (text brighten) — replaces the native macOS ring.
+            state focused(t) { color: t.color.text() }
+            transitions { color: 120ms EaseOut }
+        }
+
+        slot separator {
+            base(t) {
+                color: t.color.text_muted(),
+                font_size: t.typography.body_sm_size(),
+            }
+        }
+    }
+}
 
 /// Pixel size of an icon separator — matches the crumb text's `body-sm`
 /// line so the glyph sits on the same baseline as the labels.
@@ -54,7 +104,7 @@ impl Crumb {
 // is already reactive and routes live to its `text()` sink. The separator props
 // are snapshotted at build (they drive the imperative separator structure — see
 // the TODO in the body).
-#[runtime_core::props]
+#[runtime_core::props(styles = BreadcrumbsStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct BreadcrumbsProps {
@@ -78,16 +128,11 @@ impl Default for BreadcrumbsProps {
             items: Vec::new(),
             separator: Reactive::Static("/".to_string()),
             separator_icon: Reactive::Static(None),
+            styles: Default::default(),
         }
     }
 }
 
-fn crumb_style(is_current: bool) -> impl Fn() -> StyleApplication + Clone + 'static {
-    move || {
-        StyleApplication::new(BreadcrumbItem::sheet())
-            .with("current", if is_current { "on" } else { "off" }.to_string())
-    }
-}
 
 /// Renders a horizontal trail of crumbs joined by `separator`. Earlier
 /// linked crumbs are clickable; the last crumb is the current page.
@@ -114,10 +159,18 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
                 vec![runtime_core::text(crumb.label).into_element()],
                 move || (cb)(),
             )
-            .with_style(|| crumb_style(false)().with("interactive", "on".to_string()))
+            .with_style(
+                BreadcrumbsStyles::crumb()
+                    .set(BreadcrumbsInteractive::On)
+                    .overridden(props.styles.crumb.as_ref()),
+            )
             .into_element(),
             _ => runtime_core::text(crumb.label)
-                .with_style(crumb_style(is_current))
+                .with_style(
+                    BreadcrumbsStyles::crumb()
+                        .set(BreadcrumbsCurrent::from(is_current))
+                        .overridden(props.styles.crumb.as_ref()),
+                )
                 .into_element(),
         };
         kids.push(item);
@@ -126,18 +179,25 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
             // are supported. The icon is tinted muted to match the glyph.
             let sep_el = match sep_icon {
                 Some(data) => icon(data)
-                    .size(SEPARATOR_ICON_PX)
+                    .with_style(BreadcrumbsStyles::separator().overridden(props.styles.separator.as_ref()).inline(
+                        StyleRules {
+                            width: Some(Tokenized::Literal(Length::Px(SEPARATOR_ICON_PX))),
+                            height: Some(Tokenized::Literal(Length::Px(SEPARATOR_ICON_PX))),
+                            ..Default::default()
+                        },
+                    ))
                     .color(|| {
                         tokens().color.text_muted().resolve()
                     })
                     .into_element(),
                 None => runtime_core::text(sep.clone())
-                    .with_style(BreadcrumbSeparator())
+                    .with_style(BreadcrumbsStyles::separator().overridden(props.styles.separator.as_ref()))
                     .into_element(),
             };
             kids.push(sep_el);
         }
     }
 
-    ui! { view(style = BreadcrumbRow()) { kids } }
+    let row_style = BreadcrumbsStyles::row().overridden(props.styles.row.as_ref());
+    ui! { view(style = row_style) { kids } }
 }

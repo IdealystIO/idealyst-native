@@ -2823,56 +2823,8 @@ stylesheet! {
 // Breadcrumbs
 // =============================================================================
 
-stylesheet! {
-    pub BreadcrumbRow<IdeaThemeRef> {
-        base(t) {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            gap: t.spacing.xs(),
-        }
-    }
-}
 
-stylesheet! {
-    pub BreadcrumbItem<IdeaThemeRef> {
-        base(t) {
-            color: t.color.text_muted(),
-            font_size: t.typography.body_sm_size(),
-            background: Color("transparent".into()),
-            padding_vertical: 0.0,
-            padding_horizontal: t.spacing.xs(),
-            border_radius: t.radius.sm(),
-        }
-        variant current {
-            #[default]
-            off(_t) {}
-            on(t) {
-                color: t.color.text(),
-                font_weight: FontWeight::SemiBold,
-            }
-        }
-        // A linked (non-current) crumb shows a pointer. Variant rather than a
-        // computed layer so the rule premints — see `ListItemRow::interactive`.
-        variant interactive {
-            #[default]
-            off(_t) {}
-            on(_t) { cursor: Cursor::Pointer }
-        }
-        state hovered(t) { color: t.color.text() }
-        // Focus mirrors hover (text brighten) — replaces the native macOS ring.
-        state focused(t) { color: t.color.text() }
-        transitions { color: 120ms EaseOut }
-    }
-}
 
-stylesheet! {
-    pub BreadcrumbSeparator<IdeaThemeRef> {
-        base(t) {
-            color: t.color.text_muted(),
-            font_size: t.typography.body_sm_size(),
-        }
-    }
-}
 
 // =============================================================================
 // Pagination
