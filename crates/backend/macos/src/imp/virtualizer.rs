@@ -287,6 +287,9 @@ impl VirtualizerDataSource {
         let _: () = unsafe { msg_send![child_view, setFrame: bounds] };
         let _: () = unsafe { msg_send![child_view, setAutoresizingMask: 18u64] };
         unsafe { container.addSubview(child_view) };
+        // The row stacks by its item root's z (see "Row stacking"); a
+        // reused item drops the previous item's.
+        sync_item_z(&container);
 
         // Hand the host view the subtree's layout key and lay the
         // subtree out right away if the cell already has its size
@@ -659,6 +662,94 @@ impl VirtualizerItemView {
 }
 
 // =========================================================================
+// Row stacking — `z_index` on a virtualized item.
+//
+// On web a virtualized list's rows are plain siblings in one container,
+// so a `z_index` on an item's root orders that ROW against its
+// neighbours, for paint and for the pointer. Here every row sits inside
+// its own item view (`VirtualizerItemView`), and the item views are the
+// collection view's subviews: the item root's `zPosition` (written by
+// `apply_style` / `AnimProp::ZIndex`) only orders it inside its own item
+// view. So the ITEM VIEW carries its hosted item root's z — written when
+// the item mounts and when the item's z changes later
+// (`sync_item_z_for_child`). Not via the layout attributes' `zIndex`: the
+// z belongs to the mounted item's style, which the layout computes
+// attributes for BEFORE the item mounts, so feeding it through the layout
+// would need a relayout after every mount. A reused item re-reads its NEW
+// item's z, so a raised row never leaks its z into the row that reuses
+// its view.
+//
+// Paint then follows Core Animation's sibling sort; clicks follow it
+// because the collection view is an `IdealystMacCollectionView`, whose
+// `hitTest:` walks the item views in paint order
+// (`view::z_ordered_hit_test`) where AppKit's stock walk goes by subview
+// index.
+// =========================================================================
+
+declare_class!(
+    /// The virtualizer's collection view: its `hitTest:` walks the item
+    /// views in `z_index` paint order. See "Row stacking".
+    pub(crate) struct IdealystMacCollectionView;
+
+    unsafe impl ClassType for IdealystMacCollectionView {
+        type Super = objc2_app_kit::NSCollectionView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystMacCollectionView";
+    }
+
+    impl DeclaredClass for IdealystMacCollectionView {}
+
+    unsafe impl IdealystMacCollectionView {
+        #[method_id(hitTest:)]
+        fn hit_test(&self, point: objc2_foundation::CGPoint) -> Option<Retained<NSView>> {
+            match super::view::z_ordered_hit_test(self, point) {
+                Some(resolved) => resolved,
+                None => unsafe { msg_send_id![super(self), hitTest: point] },
+            }
+        }
+    }
+);
+
+/// Give the item view `container` its hosted item root's `zPosition` (0
+/// when it hosts nothing). See "Row stacking".
+fn sync_item_z(container: &NSView) {
+    let subviews: Retained<objc2_foundation::NSArray<NSView>> =
+        unsafe { msg_send_id![container, subviews] };
+    let z = subviews
+        .iter()
+        .next()
+        .map(|child| {
+            let layer: *mut AnyObject = unsafe { msg_send![child, layer] };
+            if layer.is_null() {
+                0.0
+            } else {
+                let z: CGFloat = unsafe { msg_send![layer, zPosition] };
+                z
+            }
+        })
+        .unwrap_or(0.0);
+    if z != 0.0 {
+        let _: () = unsafe { msg_send![container, setWantsLayer: true] };
+    }
+    let layer: *mut AnyObject = unsafe { msg_send![container, layer] };
+    if !layer.is_null() {
+        let _: () = unsafe { msg_send![layer, setZPosition: z] };
+    }
+}
+
+/// After `view`'s own `zPosition` changed: when `view` is a virtualized
+/// item's root (hosted in a `VirtualizerItemView`), carry the new z to
+/// the item view. No-op for every other view.
+pub(crate) fn sync_item_z_for_child(view: &NSView) {
+    let container: Option<Retained<NSView>> = unsafe { msg_send_id![view, superview] };
+    if let Some(container) = container {
+        if VirtualizerItemView::from_container(&container).is_some() {
+            sync_item_z(&container);
+        }
+    }
+}
+
+// =========================================================================
 // Public entry points.
 // =========================================================================
 
@@ -713,8 +804,7 @@ pub(crate) fn create(
     };
 
     // ── Collection view ───────────────────────────────────────────
-    let cv_cls: &AnyClass = AnyClass::get("NSCollectionView")
-        .expect("NSCollectionView class not registered");
+    let cv_cls: &AnyClass = IdealystMacCollectionView::class();
     let zero_rect = CGRect {
         origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
         size: CGSize { width: 0.0, height: 0.0 },

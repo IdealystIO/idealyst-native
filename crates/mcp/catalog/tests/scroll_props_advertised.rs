@@ -23,6 +23,7 @@ fn scroll_view_advertises_its_behavioural_props() {
     let names = prop_names("scroll_view");
     for want in [
         "horizontal",
+        "axis",
         "on_scroll",
         "on_end_reached",
         "end_reached_threshold",

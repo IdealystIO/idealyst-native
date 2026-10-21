@@ -1491,9 +1491,10 @@ impl Host {
             find_scroll_view_at(&backend, &root, 0.0, 0.0, ev.position)
         };
         let Some(node) = hit else { return };
-        // Vertical scrollviews accept both axes of wheel input
-        // because mice with only a vertical wheel still need to
-        // scroll — winit emits the user's twist on `.1`.
+        // Both wheel axes go to `apply_scroll`, which routes them by
+        // the scroller's axis (a horizontal one also takes the
+        // vertical wheel — mice with only a vertical wheel emit the
+        // user's twist on `.1`).
         let (dx, dy) = (ev.delta.0, ev.delta.1);
         // Wheel doesn't get rubber-band: there's no "release"
         // event to spring back from, and trackpad inertia
@@ -1519,27 +1520,32 @@ impl Host {
                 frame.height.max(1.0),
             )
         };
+        let settle = |raw: f32, max: f32, span: f32| {
+            if rubber_band {
+                rubberband(raw, 0.0, max, span)
+            } else {
+                raw.clamp(0.0, max)
+            }
+        };
         if let NodeKind::ScrollView {
-            horizontal,
+            axis,
             offset_x,
             offset_y,
             ..
         } = &mut sv.borrow_mut().kind
         {
-            if *horizontal {
-                let raw = *offset_x + dx + dy;
-                *offset_x = if rubber_band {
-                    rubberband(raw, 0.0, max_x, span_x)
-                } else {
-                    raw.clamp(0.0, max_x)
-                };
-            } else {
-                let raw = *offset_y + dy;
-                *offset_y = if rubber_band {
-                    rubberband(raw, 0.0, max_y, span_y)
-                } else {
-                    raw.clamp(0.0, max_y)
-                };
+            match axis {
+                // A single-axis scroller folds the other axis's delta
+                // in, so a mouse with only a vertical wheel still
+                // scrolls a horizontal carousel.
+                runtime_shared::ScrollAxis::Horizontal => *offset_x = settle(*offset_x + dx + dy, max_x, span_x),
+                runtime_shared::ScrollAxis::Vertical => *offset_y = settle(*offset_y + dy, max_y, span_y),
+                // Two-axis: each delta drives its own offset, each
+                // clamped (or rubber-banded) to its own axis's range.
+                runtime_shared::ScrollAxis::Both => {
+                    *offset_x = settle(*offset_x + dx, max_x, span_x);
+                    *offset_y = settle(*offset_y + dy, max_y, span_y);
+                }
             }
         }
         crate::node::fire_on_scroll(sv);
@@ -2056,10 +2062,14 @@ fn pick_action(node: &WgpuNode) -> HitAction {
 /// `point - offset` so a click at the user's cursor lines up
 /// with the visually scrolled content.
 /// Return the children of `node` that should receive pointer
-/// events at this moment. For non-navigator nodes that's just
-/// the full `children` Vec, in declaration order; for navigators
-/// it's only the visible subset (stack: top of stack; tabs:
-/// active tab; drawer: active body + sidebar-when-open).
+/// events at this moment, in PAINT order — callers iterate it
+/// reversed so the topmost-painted sibling is tried first. For
+/// non-navigator nodes that's the full `children` Vec sorted the
+/// way the renderer sorts it (`node::sort_into_paint_order`: static
+/// `z_index`, sticky, animated `ZIndex`); for navigators it's only
+/// the visible subset (stack: top of stack; tabs: active tab;
+/// drawer: active body + sidebar-when-open, the sidebar last since
+/// it paints in the overlay pass above the body).
 ///
 /// Centralised here so every input traversal (hit_test,
 /// scrollview lookup, touch responder chain) agrees on which
@@ -2116,7 +2126,11 @@ fn visible_children_for_input(node: &WgpuNode) -> Vec<WgpuNode> {
             }
             out
         }
-        _ => node.borrow().children.clone(),
+        _ => {
+            let mut children = node.borrow().children.clone();
+            crate::node::sort_into_paint_order(&mut children, |c| c);
+            children
+        }
     }
 }
 
@@ -2433,20 +2447,17 @@ fn walk_for_x(
     false
 }
 
-/// Total extent (width, height) of `sv`'s laid-out children in
-/// the scrollview's local content space. Used both for clamping
-/// scroll offsets and for sizing the scrollbar thumb. Computed
-/// from each direct child's Taffy frame.
+/// Total extent (width, height) of `sv`'s laid-out content in the
+/// scrollview's local content space. Used both for clamping scroll
+/// offsets and for sizing the scrollbar thumbs. Delegates to the
+/// shared [`LayoutTree::scroll_content_extent`](runtime_layout::LayoutTree::scroll_content_extent),
+/// which reads the `overflow: scroll` axes `create_scroll_view_impl`
+/// set: every descendant counts (not just direct children — a wide
+/// row inside a stretched content column still extends a horizontal
+/// or two-axis scroller), unclipped on each scrolling axis and clipped
+/// to the frame on a non-scrolling one.
 pub(crate) fn scrollview_content_extent(backend: &WgpuBackend, sv: &WgpuNode) -> (f32, f32) {
-    let children = sv.borrow().children.clone();
-    let mut max_x: f32 = 0.0;
-    let mut max_y: f32 = 0.0;
-    for c in &children {
-        let f = backend.layout.frame_of(c.borrow().layout);
-        max_x = max_x.max(f.x + f.width);
-        max_y = max_y.max(f.y + f.height);
-    }
-    (max_x, max_y)
+    backend.layout.scroll_content_extent(sv.borrow().layout)
 }
 
 /// Locate the absolute `(y, height)` of the node with layout id
@@ -3887,5 +3898,277 @@ mod tests {
             "the keyboard sink's claim stands"
         );
         assert_eq!(user_activity::count(), 1, "claimed key");
+    }
+
+    // -------------------------------------------------------------
+    // Scroll axes — wheel / pan routing, clamping, content extent
+    // -------------------------------------------------------------
+
+    fn px_rules(w: f32, h: f32) -> runtime_shared::StyleRules {
+        use runtime_shared::{Length, Tokenized};
+        runtime_shared::StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(w))),
+            height: Some(Tokenized::Literal(Length::Px(h))),
+            ..Default::default()
+        }
+    }
+
+    /// A 100×100 root view holding a `scroll_view(axis)` whose single
+    /// auto-sized content column holds a 300×300 block — so the content
+    /// overflows the viewport by 200 on both axes only if the scroller
+    /// leaves that axis unconstrained. Returns the host, the scroll
+    /// view, and the log its `on_scroll` writes.
+    fn host_with_scroller(
+        axis: runtime_shared::ScrollAxis,
+    ) -> (Host, WgpuNode, Rc<RefCell<Vec<(f32, f32)>>>) {
+        let host = Host::new(Rc::new(TestPainter), ColorScheme::Light);
+        let log: Rc<RefCell<Vec<(f32, f32)>>> = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        let sv = {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            let mut root = b.create_view_impl(&Default::default());
+            let mut sv = b.create_scroll_view_impl(
+                axis,
+                Some(Rc::new(move |x, y| l.borrow_mut().push((x, y)))),
+                &Default::default(),
+            );
+            let mut content = b.create_view_impl(&Default::default());
+            let block = b.create_view_impl(&Default::default());
+            let block_layout = block.borrow().layout;
+            b.layout.set_style(block_layout, &px_rules(300.0, 300.0));
+            b.insert_impl(&mut content, block);
+            b.insert_impl(&mut sv, content);
+            b.insert_impl(&mut root, sv.clone());
+            b.finish_impl(root.clone());
+            let root_layout = root.borrow().layout;
+            b.layout.compute(root_layout, 100.0, 100.0);
+            sv
+        };
+        (host, sv, log)
+    }
+
+    fn offsets(sv: &WgpuNode) -> (f32, f32) {
+        match &sv.borrow().kind {
+            NodeKind::ScrollView { offset_x, offset_y, .. } => (*offset_x, *offset_y),
+            other => panic!("not a scroll view: {other:?}"),
+        }
+    }
+
+    fn wheel(host: &mut Host, delta: (f32, f32)) {
+        host.scroll(ScrollEvent { position: (50.0, 50.0), delta });
+    }
+
+    /// The scroller's Taffy frame is bounded by its parent on every
+    /// SCROLLING axis (a `flex_grow` scroller must not grow to its
+    /// content there; on a non-scrolling axis it sizes to the content,
+    /// as a CSS horizontal scroller is as tall as its row), and the
+    /// content extent is unclipped exactly on the scrolling axes:
+    /// `Both` reports the 300×300 block on both, `Vertical` clips the
+    /// cross (X) axis to the frame.
+    #[test]
+    fn scroll_content_extent_is_unclipped_on_each_scrolling_axis() {
+        use runtime_shared::ScrollAxis;
+        for (axis, want_frame, want_extent) in [
+            (ScrollAxis::Both, (100.0, 100.0), (300.0, 300.0)),
+            (ScrollAxis::Vertical, (100.0, 100.0), (100.0, 300.0)),
+            (ScrollAxis::Horizontal, (100.0, 300.0), (300.0, 300.0)),
+        ] {
+            let (host, sv, _) = host_with_scroller(axis);
+            let b = host.backend().borrow();
+            let frame = b.layout.frame_of(sv.borrow().layout);
+            assert_eq!((frame.width, frame.height), want_frame, "{axis:?} viewport frame");
+            assert_eq!(scrollview_content_extent(&b, &sv), want_extent, "{axis:?} content extent");
+        }
+    }
+
+    /// `ScrollAxis::Both`: each wheel delta drives its own offset, each
+    /// clamped to its own `[0, content - viewport]` range, and every
+    /// change reports BOTH offsets through `on_scroll`.
+    #[test]
+    fn two_axis_wheel_scrolls_and_clamps_both_offsets() {
+        let (mut host, sv, log) = host_with_scroller(runtime_shared::ScrollAxis::Both);
+        wheel(&mut host, (30.0, 40.0));
+        assert_eq!(offsets(&sv), (30.0, 40.0), "both axes move independently");
+        wheel(&mut host, (1000.0, 1000.0));
+        assert_eq!(offsets(&sv), (200.0, 200.0), "each axis clamps at content - viewport");
+        wheel(&mut host, (-5000.0, 0.0));
+        assert_eq!(offsets(&sv), (0.0, 200.0), "one axis clamps at 0 while the other holds");
+        assert_eq!(
+            log.borrow().as_slice(),
+            &[(30.0, 40.0), (200.0, 200.0), (0.0, 200.0)],
+            "on_scroll reports both offsets on every change",
+        );
+    }
+
+    /// Single-axis scrollers keep their routing: a vertical one ignores
+    /// the horizontal wheel delta; a horizontal one folds the vertical
+    /// wheel into X (a mouse with only a vertical wheel still scrolls a
+    /// carousel), and neither ever moves its cross-axis offset.
+    #[test]
+    fn single_axis_wheel_never_moves_the_cross_offset() {
+        let (mut host, sv, _) = host_with_scroller(runtime_shared::ScrollAxis::Vertical);
+        wheel(&mut host, (30.0, 40.0));
+        assert_eq!(offsets(&sv), (0.0, 40.0));
+
+        let (mut host, sv, _) = host_with_scroller(runtime_shared::ScrollAxis::Horizontal);
+        wheel(&mut host, (30.0, 40.0));
+        assert_eq!(offsets(&sv), (70.0, 0.0));
+    }
+
+    /// A drag pan on a two-axis scroller moves the content with the
+    /// pointer on both axes (content follows the finger: dragging
+    /// up-left scrolls toward the bottom-right).
+    #[test]
+    fn two_axis_drag_pans_both_offsets() {
+        let (mut host, sv, log) = host_with_scroller(runtime_shared::ScrollAxis::Both);
+        host.pointer_down(primary_press((60.0, 70.0)));
+        host.pointer_move(primary_press((30.0, 20.0)));
+        assert_eq!(offsets(&sv), (30.0, 50.0), "pan delta lands on both offsets");
+        assert_eq!(log.borrow().last().copied(), Some((30.0, 50.0)));
+    }
+}
+
+#[cfg(test)]
+mod z_order_tests {
+    //! `StyleRules::z_index` on the GPU engine's pointer routing: the
+    //! host's hit-walks must try siblings in REVERSE paint order so the
+    //! sibling the renderer draws on top receives the pointer.
+    use super::*;
+    use render_api::{PointerButton, PointerEvent, PointerId};
+    use runtime_shared::animation::AnimProp;
+    use runtime_shared::{ColorScheme, Length, Platform, Position, StyleRules, Tokenized};
+
+    type Log = Rc<RefCell<Vec<&'static str>>>;
+
+    /// A 40×40 absolute box at (30, 30) — two of these overlap exactly.
+    fn stacked(z_index: Option<i32>) -> Rc<StyleRules> {
+        let px = |v| Some(Tokenized::Literal(Length::Px(v)));
+        Rc::new(StyleRules {
+            width: px(40.0),
+            height: px(40.0),
+            position: Some(Position::Absolute),
+            left: px(30.0),
+            top: px(30.0),
+            z_index,
+            ..Default::default()
+        })
+    }
+
+    /// Root 100×100 holding `first` then `second`, overlapping pressables
+    /// that log their clicks. `first_z` is `first`'s static `z_index`.
+    fn host_with_overlap(first_z: Option<i32>) -> (Host, WgpuNode, WgpuNode, WgpuNode, Log) {
+        let host = Host::new(Rc::new(crate::native_skin::NativeSkin::new(Platform::MacOs)), ColorScheme::Light);
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let (root, first, second) = {
+            let backend = host.backend().clone();
+            let mut b = backend.borrow_mut();
+            let mut root = b.create_view_impl(&Default::default());
+            b.apply_style_impl(
+                &root,
+                &Rc::new(StyleRules {
+                    width: Some(Tokenized::Literal(Length::Px(100.0))),
+                    height: Some(Tokenized::Literal(Length::Px(100.0))),
+                    ..Default::default()
+                }),
+            );
+            let l = log.clone();
+            let first = b.create_pressable_impl(Rc::new(move || l.borrow_mut().push("first")), &Default::default());
+            b.apply_style_impl(&first, &stacked(first_z));
+            let l = log.clone();
+            let second = b.create_pressable_impl(Rc::new(move || l.borrow_mut().push("second")), &Default::default());
+            b.apply_style_impl(&second, &stacked(None));
+            b.insert_impl(&mut root, first.clone());
+            b.insert_impl(&mut root, second.clone());
+            b.finish_impl(root.clone());
+            (root, first, second)
+        };
+        relayout(&host, &root);
+        (host, root, first, second, log)
+    }
+
+    fn relayout(host: &Host, root: &WgpuNode) {
+        let mut b = host.backend().borrow_mut();
+        let root_layout = root.borrow().layout;
+        b.layout.compute(root_layout, 100.0, 100.0);
+    }
+
+    /// The node `hit_test_node` resolves at the overlap.
+    fn hit_at_overlap(host: &Host, root: &WgpuNode) -> WgpuNode {
+        let b = host.backend().borrow();
+        hit_test_node(&b, root, 0.0, 0.0, (50.0, 50.0)).expect("the overlap is interactive").0
+    }
+
+    /// Clicks the overlap through the host's real pointer path.
+    fn tap_overlap(host: &mut Host, log: &Log) -> &'static str {
+        let ev = PointerEvent { id: PointerId::MOUSE, button: PointerButton::Primary, position: (50.0, 50.0) };
+        host.pointer_down(ev);
+        host.pointer_up(ev);
+        log.borrow_mut().pop().expect("a pressable fired")
+    }
+
+    /// Regression: the engine's hit-walks visited siblings in reverse
+    /// TREE order, ignoring a static `z_index` — the later sibling took
+    /// the pointer although the renderer must paint the raised earlier
+    /// one on top. Removing the `z_index` restores tree order.
+    #[test]
+    fn regression_gpu_static_z_index_routes_pointer_to_raised_earlier_sibling() {
+        let (mut host, root, first, second, log) = host_with_overlap(Some(1));
+        assert!(Rc::ptr_eq(&hit_at_overlap(&host, &root), &first));
+        assert_eq!(tap_overlap(&mut host, &log), "first");
+
+        host.backend().borrow_mut().apply_style_impl(&first, &stacked(None));
+        relayout(&host, &root);
+        assert!(Rc::ptr_eq(&hit_at_overlap(&host, &root), &second));
+        assert_eq!(tap_overlap(&mut host, &log), "second");
+    }
+
+    /// Static and animated z share units: an animated `2.0` against a
+    /// static `2` ties (tree order: the later sibling wins), `3.0` beats
+    /// it, and a style re-apply doesn't clobber the animated value.
+    #[test]
+    fn gpu_static_and_animated_z_index_route_identically() {
+        let (host, root, first, second, _log) = host_with_overlap(None);
+        let anim = |v| host.backend().borrow_mut().set_animated_f32_impl(&first, AnimProp::ZIndex, v);
+        host.backend().borrow_mut().apply_style_impl(&second, &stacked(Some(2)));
+        anim(2.0);
+        assert!(Rc::ptr_eq(&hit_at_overlap(&host, &root), &second));
+        anim(3.0);
+        assert!(Rc::ptr_eq(&hit_at_overlap(&host, &root), &first));
+        host.backend().borrow_mut().apply_style_impl(&first, &stacked(None));
+        relayout(&host, &root);
+        assert!(Rc::ptr_eq(&hit_at_overlap(&host, &root), &first));
+    }
+
+    /// `position: Sticky` with no `z_index` stacks at `STICKY_Z` (1) in
+    /// the hit-walk too — the same `stacking_z()` the renderer sorts by.
+    #[test]
+    fn gpu_sticky_without_z_index_takes_the_pointer_over_later_sibling() {
+        let (host, root, first, _second, _log) = host_with_overlap(None);
+        let mut st = (*stacked(None)).clone();
+        st.position = Some(Position::Sticky);
+        host.backend().borrow_mut().apply_style_impl(&first, &Rc::new(st));
+        relayout(&host, &root);
+        // Sticky lays out as relative: (0, 0)..(40, 40) overlaps the
+        // absolute sibling at (30, 30) around (35, 35).
+        let b = host.backend().borrow();
+        let hit = hit_test_node(&b, &root, 0.0, 0.0, (35.0, 35.0)).expect("hit").0;
+        assert!(Rc::ptr_eq(&hit, &first));
+    }
+
+    /// The shared sort is the identity for all-zero z and keeps ties in
+    /// tree order.
+    #[test]
+    fn paint_order_sort_is_stable() {
+        let host = Host::new(Rc::new(crate::native_skin::NativeSkin::new(Platform::MacOs)), ColorScheme::Light);
+        let mut b = host.backend().borrow_mut();
+        let nodes: Vec<WgpuNode> = (0..4).map(|_| b.create_view_impl(&Default::default())).collect();
+        for (n, z) in nodes.iter().zip([Some(1), None, Some(1), None]) {
+            b.apply_style_impl(n, &stacked(z));
+        }
+        let mut sorted = nodes.clone();
+        crate::node::sort_into_paint_order(&mut sorted, |n| n);
+        let idx: Vec<usize> = sorted.iter().map(|s| nodes.iter().position(|n| Rc::ptr_eq(n, s)).unwrap()).collect();
+        assert_eq!(idx, [1, 3, 0, 2]);
     }
 }

@@ -3349,6 +3349,174 @@ fn web_touch_on_element_release_disarms_shared_net() {
     el.remove();
 }
 
+/// REGRESSION TEST.
+///
+/// A press inside a press — a button in a clickable row, a pressable in a
+/// pressable card — fires only the innermost target, as native toolkits
+/// deliver a tap. `click` bubbles, so both `onclick`s used to run inner then
+/// outer, and apps had to timestamp presses so the outer handler stood down.
+/// A document-level click listener (outside-click dismissal) still sees it.
+#[wasm_bindgen_test]
+fn regression_web_nested_pressables_fire_innermost_only() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let counter = |c: &Rc<Cell<u32>>| {
+        let c = c.clone();
+        Rc::new(move || c.set(c.get() + 1)) as Rc<dyn Fn()>
+    };
+
+    let (outer_n, inner_n, button_n) =
+        (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let outer = backend.create_pressable_impl(counter(&outer_n), &Default::default());
+    let inner = backend.create_pressable_impl(counter(&inner_n), &Default::default());
+    let button =
+        crate::primitives::button::create(&mut backend, "go", counter(&button_n), None, None);
+    let outer_el: web_glue::dom::HtmlElement = outer.clone().unchecked_into();
+    let inner_el: web_glue::dom::HtmlElement = inner.clone().unchecked_into();
+    let button_el: web_glue::dom::HtmlElement = button.clone().unchecked_into();
+    outer_el.append_child(&inner_el).unwrap();
+    outer_el.append_child(&button_el).unwrap();
+    doc.body().unwrap().append_child(&outer_el).unwrap();
+
+    let doc_n = Rc::new(Cell::new(0u32));
+    let d = doc_n.clone();
+    let _doc_listener = crate::glue_dom::listen(&doc, "click", Default::default(), move |_| {
+        d.set(d.get() + 1)
+    });
+
+    inner_el.click();
+    assert_eq!((inner_n.get(), outer_n.get()), (1, 0), "pressable in pressable: inner only");
+    button_el.click();
+    assert_eq!((button_n.get(), outer_n.get()), (1, 0), "button in pressable: button only");
+    outer_el.click();
+    assert_eq!(outer_n.get(), 1, "the outer pressable still fires on its own click");
+    assert_eq!(doc_n.get(), 3, "every click still reaches document listeners");
+    outer_el.remove();
+}
+
+/// REGRESSION TEST.
+///
+/// Virtualized rows are absolutely-positioned siblings, so their DOM order
+/// is their stacking (and overlap hit) order at equal `z-index`. Rows were
+/// appended in MOUNT order: scrolling down and back up put a row that
+/// entered above the window after the rows below it, painting it over
+/// them. Every backend breaks equal-z ties between rows by row index.
+#[wasm_bindgen_test]
+async fn regression_web_virtual_rows_keep_row_order_after_scrolling_back() {
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let callbacks = runtime_shared::VirtualizerCallbacks::<web_glue::dom::Node> {
+        item_count: Rc::new(|| 100usize),
+        item_key: Rc::new(|i| i as u64),
+        item_size: Rc::new(|_| 40.0_f32),
+        measure_sizes: false,
+        mount_item: Rc::new(move |i| {
+            let el = mount_doc.create_element("div").unwrap();
+            let _ = el.set_attribute("data-row", &i.to_string());
+            (el.unchecked_into(), i as u64)
+        }),
+        release_item: Rc::new(|_| {}),
+        set_measured_size: Rc::new(|_, _| {}),
+        on_scroll: None,
+        item_changed: None,
+    };
+    let list = backend.create_virtualizer_impl(
+        callbacks,
+        0.01,
+        runtime_shared::VirtualLayout::default(),
+        &Default::default(),
+    );
+    let list_el: web_glue::dom::HtmlElement = list.clone().unchecked_into();
+    let _ = list_el.set_attribute("style", "height: 200px; overflow-y: auto;");
+    doc.body().unwrap().append_child(&list_el).unwrap();
+    sleep_ms(20).await;
+
+    let scroll_to = |y: f64| {
+        list_el.set_scroll_top(y as i32);
+        let ev = web_glue::dom::Event::new("scroll").unwrap();
+        list_el.dispatch_event(&ev).unwrap();
+    };
+    scroll_to(2000.0);
+    sleep_ms(20).await;
+    scroll_to(1800.0);
+    sleep_ms(20).await;
+
+    let spacer = list_el.first_element_child().expect("the spacer");
+    let rows = spacer.children();
+    let order: Vec<u32> = (0..rows.length())
+        .filter_map(|i| rows.item(i))
+        .filter_map(|r| r.get_attribute("data-row"))
+        .map(|r| r.parse().unwrap())
+        .collect();
+    assert!(order.len() > 2, "a window of rows is mounted: {order:?}");
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(order, sorted, "rows sit in row order, not mount order");
+    list_el.remove();
+}
+
+/// REGRESSION TEST — the 2-D twin of the row-order test above: virtual-grid
+/// cells sit in row-major DOM order, not the order they scrolled in.
+#[wasm_bindgen_test]
+async fn regression_web_virtual_grid_cells_keep_row_major_order_after_scrolling_back() {
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let mount_doc = doc.clone();
+    let callbacks = runtime_shared::primitives::virtual_grid::GridCallbacks::<web_glue::dom::Node> {
+        col_count: Rc::new(|| 3usize),
+        row_count: Rc::new(|| 100usize),
+        col_width: Rc::new(|_| 50.0_f32),
+        row_height: Rc::new(|_| 40.0_f32),
+        cell_key: Rc::new(|c, r| (r * 3 + c) as u64),
+        mount_cell: Rc::new(move |c, r| {
+            let el = mount_doc.create_element("div").unwrap();
+            let _ = el.set_attribute("data-cell", &(r * 3 + c).to_string());
+            (el.unchecked_into(), (r * 3 + c) as u64)
+        }),
+        release_cell: Rc::new(|_| {}),
+        on_scroll: None,
+    };
+    let grid = crate::primitives::virtual_grid::create(&mut backend, callbacks, 0.01);
+    let grid_el: web_glue::dom::HtmlElement = grid.clone().unchecked_into();
+    let _ = grid_el.set_attribute("style", "height: 200px; width: 150px; overflow: auto;");
+    doc.body().unwrap().append_child(&grid_el).unwrap();
+    sleep_ms(20).await;
+
+    let scroll_to = |y: f64| {
+        grid_el.set_scroll_top(y as i32);
+        let ev = web_glue::dom::Event::new("scroll").unwrap();
+        grid_el.dispatch_event(&ev).unwrap();
+    };
+    scroll_to(2000.0);
+    sleep_ms(20).await;
+    scroll_to(1800.0);
+    sleep_ms(20).await;
+
+    let spacer = grid_el.first_element_child().expect("the spacer");
+    let cells = spacer.children();
+    let order: Vec<u32> = (0..cells.length())
+        .filter_map(|i| cells.item(i))
+        .filter_map(|c| c.get_attribute("data-cell"))
+        .map(|c| c.parse().unwrap())
+        .collect();
+    assert!(order.len() > 3, "a window of cells is mounted: {order:?}");
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(order, sorted, "cells sit in row-major order, not mount order");
+    grid_el.remove();
+}
+
 /// Build a `keydown` for `key` that bubbles and is cancelable, dispatch it on
 /// `target`, and return whether its default action ended up prevented.
 fn dispatch_bubbling_keydown(target: &web_glue::dom::Element, key: &str) -> bool {
@@ -4124,7 +4292,7 @@ fn regression_dropped_file_source_is_the_glue_file_file_picker_reads() {
 // ---- the graphics surface's window handle -----------------------------------
 
 /// Await a real macrotask boundary (`setTimeout(ms)`).
-async fn sleep_ms(ms: i32) {
+pub(crate) async fn sleep_ms(ms: i32) {
     let promise = web_glue::js::Promise::new(&mut |resolve, _reject| {
         web_glue::dom::window()
             .unwrap()
@@ -5049,4 +5217,69 @@ fn regression_text_input_keyboard_sets_inputmode_and_composes_with_secure() {
     for name in crate::primitives::text_input::KEYBOARD_ATTRS {
         assert_eq!(el.get_attribute(name), None, "`{name}` cleared for Default");
     }
+}
+
+// ---- scroll_view: two axes ----------------------------------------------------
+
+/// A `ScrollAxis::Both` scroller pans on both axes, `on_scroll` reports
+/// both offsets, and a sticky `top: 0` + `left: 0` child — a pinned table
+/// header's corner cell — stays at the scroller's top-left corner however
+/// far it scrolls either way.
+#[wasm_bindgen_test]
+async fn two_axis_scroll_view_pans_both_ways_and_pins_a_sticky_corner() {
+    use runtime_shared::ScrollAxis;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    install_mount();
+    crate::install_scheduler();
+    let mut backend = WebBackend::new("#app");
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let app = doc.get_element_by_id("app").unwrap();
+
+    let seen = Rc::new(Cell::new((0.0f32, 0.0f32)));
+    let seen_cb = seen.clone();
+    let node = crate::primitives::scroll_view::create(
+        &mut backend,
+        ScrollAxis::Both,
+        Some(Rc::new(move |x, y| seen_cb.set((x, y)))),
+    );
+    let scroller: web_glue::dom::HtmlElement = node.clone().dyn_into().unwrap();
+    let style = scroller.style();
+    style.set_property("width", "300px").unwrap();
+    style.set_property("height", "200px").unwrap();
+    style.set_property("align-items", "flex-start").unwrap();
+    let corner = doc.create_element("div").unwrap();
+    corner
+        .set_attribute("style", "position:sticky;top:0;left:0;z-index:3;width:60px;height:30px;flex-shrink:0")
+        .unwrap();
+    let body = doc.create_element("div").unwrap();
+    body.set_attribute("style", "width:1000px;height:900px;flex-shrink:0").unwrap();
+    scroller.append_child(&corner).unwrap();
+    scroller.append_child(&body).unwrap();
+    app.append_child(&node).unwrap();
+
+    assert!(scroller.scroll_width() >= 1000, "content overflows sideways");
+    assert!(scroller.scroll_height() >= 900, "content overflows downward");
+    scroller.set_scroll_left(150);
+    scroller.set_scroll_top(120);
+    assert_eq!((scroller.scroll_left(), scroller.scroll_top()), (150, 120), "both axes scrolled");
+    sleep_ms(30).await;
+    assert_eq!(seen.get(), (150.0, 120.0), "on_scroll reports both offsets");
+
+    let outer = scroller.get_bounding_client_rect();
+    let pinned = corner.get_bounding_client_rect();
+    assert!(
+        (pinned.left() - outer.left()).abs() < 0.5 && (pinned.top() - outer.top()).abs() < 0.5,
+        "the corner stays at the scroller's top-left on both axes: corner ({}, {}) vs scroller ({}, {})",
+        pinned.left(),
+        pinned.top(),
+        outer.left(),
+        outer.top()
+    );
+
+    // Both axes are real scroll containers the reader can pan, not a
+    // clipped (`hidden`) cross axis that only script can move.
+    assert_eq!(style.get_property_value("overflow-x").unwrap(), "auto");
+    assert_eq!(style.get_property_value("overflow-y").unwrap(), "auto");
+    node.unchecked_ref::<web_glue::dom::Element>().remove();
 }

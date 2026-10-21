@@ -164,7 +164,11 @@ pub struct FlippedViewIvars {
     /// children necessarily are, so `hitTest:` ignores it: try each
     /// subview, never answer with this view. `pointer_events: None` is the
     /// wrong tool — it makes the whole SUBTREE transparent unless a
-    /// descendant opts back in, and an anchor's children never do.
+    /// descendant opts back in, and an anchor's children never do. Its
+    /// parent folds its children into the parent's own z-ordered walk
+    /// (`hit_candidates`), and its layer is a `CATransformLayer`
+    /// (`makeBackingLayer`), so `z_index` on its children stacks against
+    /// its siblings exactly as web stacks a `display: contents` node's.
     layout_transparent: Cell<bool>,
 }
 
@@ -185,6 +189,27 @@ declare_class!(
         #[method(isFlipped)]
         fn is_flipped(&self) -> bool {
             true
+        }
+
+        // A reactive anchor is `display: contents` for paint as well: its
+        // backing layer is a `CATransformLayer`, which does not flatten its
+        // sublayers, so its children are depth-sorted by `zPosition`
+        // together with the anchor's own siblings, ties in tree order —
+        // how web stacks a `display: contents` node's children among its
+        // parent's. A plain layer would sort them only among themselves, so
+        // a `z_index` on an anchor's child could never rise above the
+        // anchor's later sibling. AppKit asks for the layer when the view
+        // first becomes layer-backed, which is after `create_anchor` set
+        // the flag (it is set straight after `new`, before any insert).
+        // The anchor never takes a style, so the transform layer's inert
+        // background/border properties are never set.
+        #[method_id(makeBackingLayer)]
+        fn make_backing_layer(&self) -> Retained<objc2::runtime::NSObject> {
+            if self.ivars().layout_transparent.get() {
+                unsafe { msg_send_id![objc2::class!(CATransformLayer), layer] }
+            } else {
+                unsafe { msg_send_id![super(self), makeBackingLayer] }
+            }
         }
 
         // Register the FIRST click even when the window isn't key, so a tap on
@@ -210,9 +235,9 @@ declare_class!(
             if self.ivars().layout_transparent.get() {
                 // `point` is in the SUPERVIEW's space (AppKit's `hitTest:`
                 // contract); a subview's `hitTest:` expects OUR space. No
-                // superview yet (mid-attach) → already local. Topmost
-                // subview first, as AppKit does; no frame check on self
-                // (see `layout_transparent`).
+                // superview yet (mid-attach) → already local. Topmost-
+                // painted subview first; no frame check on self (see
+                // `layout_transparent`).
                 let this: &NSView = self;
                 let superview: *mut NSView = unsafe { msg_send![this, superview] };
                 let local: CGPoint = if superview.is_null() {
@@ -220,25 +245,19 @@ declare_class!(
                 } else {
                     unsafe { msg_send![this, convertPoint: point, fromView: superview] }
                 };
-                let subviews: Retained<objc2_foundation::NSArray<NSView>> = unsafe { msg_send_id![this, subviews] };
-                let subs: Vec<&NSView> = subviews.iter().collect();
-                let mut hit: Option<Retained<NSView>> = None;
-                for sub in subs.iter().rev() {
-                    let sub: &NSView = sub;
-                    hit = unsafe { msg_send_id![sub, hitTest: local] };
-                    if hit.is_some() {
-                        break;
-                    }
-                }
-                hit
+                walk_subviews_topmost_first(this, local)
             } else {
                 let (tx, ty) = crate::imp::animated::view_layer_translate(self);
                 let adjusted = CGPoint {
                     x: point.x - tx,
                     y: point.y - ty,
                 };
-                let result: Option<Retained<NSView>> =
-                    unsafe { msg_send_id![super(self), hitTest: adjusted] };
+                // AppKit's default walk, reordered by sibling `z_index`
+                // when any subview is raised (`z_ordered_hit_test`).
+                let result: Option<Retained<NSView>> = match z_ordered_hit_test(self, adjusted) {
+                    Some(resolved) => resolved,
+                    None => unsafe { msg_send_id![super(self), hitTest: adjusted] },
+                };
                 // `pointer-events: none` — this subtree is hit-transparent
                 // (return nil so AppKit resolves whatever renders behind it),
                 // EXCEPT descendants that explicitly re-enable with `Auto`.
@@ -702,6 +721,188 @@ declare_class!(
         }
     }
 );
+
+/// `layer.zPosition` of each subview, in `subviews` order — where the
+/// static `z_index` (`StyleRules::stacking_z`) and animated
+/// `AnimProp::ZIndex` both land. A view without a layer reads `0`.
+pub(crate) fn subview_zs(subviews: &[&NSView]) -> Vec<f64> {
+    subviews
+        .iter()
+        .map(|sub| {
+            let layer: *mut AnyObject = unsafe { msg_send![*sub, layer] };
+            if layer.is_null() {
+                0.0
+            } else {
+                let z: CGFloat = unsafe { msg_send![layer, zPosition] };
+                z as f64
+            }
+        })
+        .collect()
+}
+
+/// Whether `view` is a reactive anchor (`create_anchor`: a `FlippedView`
+/// marked `layout_transparent`).
+fn is_anchor(view: &NSView) -> bool {
+    let is_flipped: bool =
+        unsafe { msg_send![view, isKindOfClass: FlippedView::class()] };
+    is_flipped && {
+        // SAFETY: dynamic class just confirmed `IdealystFlippedView`.
+        let fv = unsafe { &*(view as *const NSView as *const FlippedView) };
+        fv.ivars().layout_transparent.get()
+    }
+}
+
+/// The views that compete for a hit directly under `view`, in tree order:
+/// its subviews, with every reactive anchor (the `display: contents` node)
+/// replaced by ITS candidates. On web an anchor's children are flex items
+/// of the anchor's parent and stack against the anchor's siblings by
+/// `z-index`; the anchor's `CATransformLayer` paints them that way
+/// (`makeBackingLayer`), and this list hit-tests them that way. A hidden
+/// anchor contributes nothing, as AppKit's walk would skip it.
+pub(crate) fn hit_candidates(view: &NSView) -> Vec<Retained<NSView>> {
+    fn collect(view: &NSView, out: &mut Vec<Retained<NSView>>) {
+        let subviews: Retained<objc2_foundation::NSArray<NSView>> =
+            unsafe { msg_send_id![view, subviews] };
+        for sub in subviews.iter() {
+            let sub: &NSView = sub;
+            if is_anchor(sub) {
+                let hidden: bool = unsafe { msg_send![sub, isHidden] };
+                if !hidden {
+                    collect(sub, out);
+                }
+            } else if let Some(sub) =
+                unsafe { Retained::retain(sub as *const NSView as *mut NSView) }
+            {
+                out.push(sub);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(view, &mut out);
+    out
+}
+
+/// `hitTest:` on candidate `sub` of `view` with `local` in `view`'s space.
+/// AppKit's `hitTest:` takes the point in the receiver's SUPERVIEW space,
+/// which for a candidate folded up from an anchor is that anchor.
+fn probe(view: &NSView, sub: &NSView, local: CGPoint) -> Option<Retained<NSView>> {
+    let sup: *mut NSView = unsafe { msg_send![sub, superview] };
+    let p: CGPoint = if sup.is_null() || std::ptr::eq(sup as *const NSView, view as *const NSView)
+    {
+        local
+    } else {
+        unsafe { msg_send![sup, convertPoint: local, fromView: view] }
+    };
+    unsafe { msg_send_id![sub, hitTest: p] }
+}
+
+/// Hit-test `view`'s candidates ([`hit_candidates`]) topmost-PAINTED
+/// first with `local` in `view`'s own space, returning the first hit
+/// (`nil` when none claims it). AppKit's subview walk with its index
+/// order replaced by `backend_apple_core::z_order` (reverse paint order:
+/// `zPosition`, ties in tree order — identical to AppKit's walk when every
+/// z is 0 and no anchor sits in between).
+pub(crate) fn walk_subviews_topmost_first(view: &NSView, local: CGPoint) -> Option<Retained<NSView>> {
+    let subs = hit_candidates(view);
+    let refs: Vec<&NSView> = subs.iter().map(|v| &**v).collect();
+    let zs = subview_zs(&refs);
+    backend_apple_core::z_order::first_hit(&zs, |i| probe(view, refs[i], local))
+}
+
+/// AppKit's default `hitTest:` for `view` (`point` in its superview's
+/// space), but walking its candidates ([`hit_candidates`]) in sibling
+/// `z_index` paint order. AppKit's own walk goes by `subviews` index and
+/// ignores `zPosition`, so a sibling raised with `z_index` would paint on
+/// top yet lose the click to the later sibling it covers
+/// (`StyleRules::z_index`: "hit-testing follows paint").
+///
+/// `None` when no candidate has a nonzero `zPosition`: AppKit's walk (an
+/// anchor walking its own children) is then already paint order, and the
+/// caller keeps calling `super`. Otherwise `Some(hit)`, reproducing the
+/// default's checks on `view` itself (hidden → `nil`; the point must fall
+/// in `frame`, tested with the superview's `mouse:inRect:` so the
+/// flipped-edge convention matches AppKit's) and answering with `view`
+/// when no candidate claims the point.
+pub(crate) fn z_ordered_hit_test(view: &NSView, point: CGPoint) -> Option<Option<Retained<NSView>>> {
+    let subs = hit_candidates(view);
+    let refs: Vec<&NSView> = subs.iter().map(|v| &**v).collect();
+    let zs = subview_zs(&refs);
+    if !backend_apple_core::z_order::needs_z_walk(&zs) {
+        return None;
+    }
+    let hidden: bool = unsafe { msg_send![view, isHidden] };
+    if hidden {
+        return Some(None);
+    }
+    let frame: CGRect = unsafe { msg_send![view, frame] };
+    let superview: *mut NSView = unsafe { msg_send![view, superview] };
+    let (inside, local) = if superview.is_null() {
+        let inside = point.x >= frame.origin.x
+            && point.x < frame.origin.x + frame.size.width
+            && point.y >= frame.origin.y
+            && point.y < frame.origin.y + frame.size.height;
+        (inside, CGPoint { x: point.x - frame.origin.x, y: point.y - frame.origin.y })
+    } else {
+        let inside: bool = unsafe { msg_send![superview, mouse: point, inRect: frame] };
+        let local: CGPoint = unsafe { msg_send![view, convertPoint: point, fromView: superview] };
+        (inside, local)
+    };
+    if !inside {
+        return Some(None);
+    }
+    let hit = backend_apple_core::z_order::first_hit(&zs, |i| probe(view, refs[i], local));
+    Some(hit.or_else(|| unsafe { Retained::retain(view as *const NSView as *mut NSView) }))
+}
+
+/// Put the portal containers mounted in `host` (the host content view
+/// they mount into, AppKit's class) into `z_index` paint order within its
+/// `subviews`. AppKit's `hitTest:` walks by index and ignores
+/// `zPosition`: two portals whose z disagrees with their mount order
+/// would paint one way and take clicks the other. Reordering the array
+/// makes index order paint order (`backend_apple_core::z_order::
+/// host_subview_order`, ties by `mount_seq`); a no-op when it already is.
+/// `sortSubviewsUsingFunction:context:` permutes in place, so no view
+/// leaves the window.
+pub(crate) fn order_portals_in_host(
+    host: &NSView,
+    mount_seq: &std::collections::HashMap<usize, u64>,
+) {
+    let subviews: Retained<objc2_foundation::NSArray<NSView>> =
+        unsafe { msg_send_id![host, subviews] };
+    let subs: Vec<&NSView> = subviews.iter().collect();
+    let seqs: Vec<Option<u64>> = subs
+        .iter()
+        .map(|v| mount_seq.get(&(*v as *const NSView as usize)).copied())
+        .collect();
+    let zs = subview_zs(&subs);
+    let order = backend_apple_core::z_order::host_subview_order(&zs, &seqs);
+    if order.iter().enumerate().all(|(i, &j)| i == j) {
+        return;
+    }
+    // Rank of each subview (by pointer) in the desired order; the
+    // comparator reads it through `context`.
+    let rank: std::collections::HashMap<usize, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(r, &i)| (subs[i] as *const NSView as usize, r))
+        .collect();
+    extern "C" fn by_rank(
+        a: *mut NSView,
+        b: *mut NSView,
+        ctx: *mut std::ffi::c_void,
+    ) -> isize {
+        // SAFETY: `ctx` is the `rank` map borrowed for the duration of the
+        // synchronous `sortSubviewsUsingFunction:context:` call below.
+        let rank = unsafe { &*(ctx as *const std::collections::HashMap<usize, usize>) };
+        let ra = rank.get(&(a as usize)).copied().unwrap_or(usize::MAX);
+        let rb = rank.get(&(b as usize)).copied().unwrap_or(usize::MAX);
+        // NSOrderedAscending = -1, NSOrderedSame = 0, NSOrderedDescending = 1.
+        ra.cmp(&rb) as isize
+    }
+    let f: extern "C" fn(*mut NSView, *mut NSView, *mut std::ffi::c_void) -> isize = by_rank;
+    let ctx = &rank as *const _ as *mut std::ffi::c_void;
+    let _: () = unsafe { msg_send![host, sortSubviewsUsingFunction: f, context: ctx] };
+}
 
 impl FlippedView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {

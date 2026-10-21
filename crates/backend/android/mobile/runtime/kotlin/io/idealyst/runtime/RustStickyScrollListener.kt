@@ -7,7 +7,8 @@ import android.view.View
  * into Rust via a cached scroll-view key.
  *
  * The backend's sticky registry installs one of these on each
- * ScrollView that has at least one `Position::Sticky` child. The
+ * scroller (any axis) that has a `Position::Sticky` child or an
+ * `on_scroll` observer. The
  * `scrollKey` carries the JObject raw pointer of the ScrollView's
  * GlobalRef — the same key the registry uses on the Rust side to
  * find the matching `StickyScrollEntry`. On every scroll change

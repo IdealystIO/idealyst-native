@@ -1436,15 +1436,29 @@ impl LayoutTree {
     /// still does its own pixel clipping + content-offset; this call only
     /// fixes the Taffy *sizing* of the viewport node.
     pub fn set_overflow_scroll(&mut self, node: LayoutNode, horizontal: bool) {
+        self.set_overflow_scroll_axis(node, runtime_shared::ScrollAxis::from_horizontal(horizontal));
+    }
+
+    /// [`set_overflow_scroll`](Self::set_overflow_scroll) for any
+    /// [`ScrollAxis`](runtime_shared::ScrollAxis), including
+    /// `Both`: every scrolling axis gets `Overflow::Scroll` (so the
+    /// content's extent on it never feeds the viewport's size), and when X
+    /// scrolls the direct children are exempt from the default
+    /// `max-width: 100%` clamp. A two-axis viewport's content is therefore
+    /// unconstrained on both axes — what the author's own direction and
+    /// alignment give it — and [`scroll_content_extent`](Self::scroll_content_extent)
+    /// reports it unclipped on both.
+    pub fn set_overflow_scroll_axis(&mut self, node: LayoutNode, axis: runtime_shared::ScrollAxis) {
         let _ = self.tree.set_style(node.0, {
             let mut style = self
                 .tree
                 .style(node.0)
                 .cloned()
                 .unwrap_or(Style::default());
-            if horizontal {
+            if axis.scrolls_x() {
                 style.overflow.x = taffy::Overflow::Scroll;
-            } else {
+            }
+            if axis.scrolls_y() {
                 style.overflow.y = taffy::Overflow::Scroll;
             }
             // `flex_basis: 0` + `flex_grow: 1` tells Taffy "fill the
@@ -1469,7 +1483,7 @@ impl LayoutTree {
         // added later. Called at scroll-view create time, so the child
         // list is usually empty here — the `add_child` hook does most of
         // the work.
-        if horizontal {
+        if axis.scrolls_x() {
             self.hscroll_parents.insert(node.0);
             if let Ok(children) = self.tree.children(node.0) {
                 for child in children {
@@ -4336,6 +4350,186 @@ mod tests {
     fn pct(v: f32) -> Tokenized<FwLength> {
         Tokenized::Literal(FwLength::Percent(v))
     }
+
+    /// A two-axis viewport (`ScrollAxis::Both`) bounds ITSELF on both axes
+    /// while its content keeps its natural size on both: an 800×1200 grid
+    /// inside a 393-wide, 300-tall viewport must stay 800×1200 (neither
+    /// the default width clamp nor the viewport's height squeezes it), and
+    /// the content extent — what a native backend writes as
+    /// `contentSize` / the documentView's size — reports both unclipped.
+    /// A one-axis scroller would clip the other axis (see
+    /// `scroll_content_extent_clips_cross_axis`).
+    #[test]
+    fn two_axis_scroll_content_is_unbounded_on_both_axes() {
+        let mut t = LayoutTree::new();
+        let root = t.new_node();
+        let mut rr = StyleRules::default();
+        rr.flex_direction = Some(FwFlexDirection::Column);
+        t.set_style(root, &rr);
+
+        let scroller = t.new_node();
+        t.set_overflow_scroll_axis(scroller, runtime_shared::ScrollAxis::Both);
+        let mut scr = StyleRules::default();
+        scr.width = Some(pct(100.0));
+        // Bound the viewport the way an author does on a seeded scroll
+        // node (`max_height`; a bare `height` is shadowed by the seed's
+        // `flex_basis`).
+        scr.max_height = Some(px(300.0));
+        scr.align_items = Some(runtime_shared::AlignItems::FlexStart);
+        t.set_style(scroller, &scr);
+
+        // A row of four 200px columns, 1200 tall — wider AND taller than
+        // the viewport, with no explicit width of its own.
+        let grid = t.new_node();
+        let mut gr = StyleRules::default();
+        gr.flex_direction = Some(FwFlexDirection::Row);
+        gr.flex_shrink = Some(Tokenized::Literal(0.0));
+        t.set_style(grid, &gr);
+        for _ in 0..4 {
+            let col = t.new_node();
+            let mut cr = StyleRules::default();
+            cr.width = Some(px(200.0));
+            cr.height = Some(px(1200.0));
+            t.set_style(col, &cr);
+            t.add_child(grid, col);
+        }
+
+        t.add_child(root, scroller);
+        t.add_child(scroller, grid);
+        t.compute(root, 393.0, 852.0);
+
+        let viewport = t.frame_of(scroller);
+        assert!((viewport.width - 393.0).abs() < 0.5, "viewport fills its width, got {}", viewport.width);
+        assert!(
+            (viewport.height - 300.0).abs() < 0.5,
+            "viewport is bounded by its max_height, not grown to the content, got {}",
+            viewport.height
+        );
+        let content = t.frame_of(grid);
+        assert!(
+            (content.width - 800.0).abs() < 0.5,
+            "two-axis content keeps its 800px width (no max-width clamp), got {}",
+            content.width
+        );
+        assert!(
+            (content.height - 1200.0).abs() < 0.5,
+            "two-axis content keeps its 1200px height (no shrink to the viewport), got {}",
+            content.height
+        );
+        let (w, h) = t.scroll_content_extent(scroller);
+        assert!((w - 800.0).abs() < 1.0, "extent width unclipped on a two-axis scroller, got {w}");
+        assert!((h - 1200.0).abs() < 1.0, "extent height unclipped on a two-axis scroller, got {h}");
+    }
+
+    /// `set_overflow_scroll(.., horizontal)` is the one-axis spelling of
+    /// [`LayoutTree::set_overflow_scroll_axis`]: each marks exactly the
+    /// axes it names, and `Both` marks both.
+    #[test]
+    fn overflow_scroll_axis_marks_exactly_the_scrolling_axes() {
+        use runtime_shared::ScrollAxis;
+        for (axis, x, y) in [
+            (ScrollAxis::Vertical, false, true),
+            (ScrollAxis::Horizontal, true, false),
+            (ScrollAxis::Both, true, true),
+        ] {
+            let mut t = LayoutTree::new();
+            let n = t.new_node();
+            t.set_overflow_scroll_axis(n, axis);
+            let style = t.tree.style(n.0).unwrap();
+            assert_eq!(style.overflow.x == taffy::Overflow::Scroll, x, "{axis:?} x");
+            assert_eq!(style.overflow.y == taffy::Overflow::Scroll, y, "{axis:?} y");
+        }
+    }
+
+    /// The table SDK's `scroll_y` mode at the layout level: the author's
+    /// `max_height` sits on the styled SURFACE around the scroller, and the
+    /// scroller — content-sized (`flex_grow: 0`, `flex_basis: auto`) but
+    /// shrinkable, since a scroll node's automatic minimum size is 0 — hugs
+    /// a short table and is capped by the surface for a tall one. The
+    /// table inside keeps its full height (so there is something to
+    /// scroll) and, two-axis, floors at the scroller's width while wide
+    /// rows overflow it. `two_axis = false` is the scroll-y-only shape: a
+    /// column scroller whose content stretches to its width.
+    #[test]
+    fn two_axis_table_scroller_hugs_short_content_and_caps_tall_content() {
+        fn heights(rows: usize, two_axis: bool) -> (f32, f32, f32) {
+            let mut t = LayoutTree::new();
+            let root = t.new_node();
+            let mut rr = StyleRules::default();
+            rr.flex_direction = Some(FwFlexDirection::Column);
+            rr.align_items = Some(runtime_shared::AlignItems::FlexStart);
+            t.set_style(root, &rr);
+            // The styled surface: content-sized, as a table card is.
+            let card = t.new_node();
+            let mut cr = StyleRules::default();
+            cr.width = Some(px(300.0));
+            cr.max_height = Some(px(240.0));
+            t.set_style(card, &cr);
+            t.add_child(root, card);
+
+            let scroller = t.new_node();
+            let axis = if two_axis {
+                runtime_shared::ScrollAxis::Both
+            } else {
+                runtime_shared::ScrollAxis::Vertical
+            };
+            t.set_overflow_scroll_axis(scroller, axis);
+            let mut scr = StyleRules::default();
+            if two_axis {
+                scr.flex_direction = Some(FwFlexDirection::Row);
+                scr.align_items = Some(runtime_shared::AlignItems::FlexStart);
+            }
+            scr.flex_grow = Some(Tokenized::Literal(0.0));
+            scr.flex_basis = Some(Tokenized::Literal(FwLength::Auto));
+            t.set_style(scroller, &scr);
+            t.add_child(card, scroller);
+
+            let surface = t.new_node();
+            let mut sr = StyleRules::default();
+            if two_axis {
+                sr.min_width = Some(pct(100.0));
+            }
+            sr.flex_shrink = Some(Tokenized::Literal(0.0));
+            t.set_style(surface, &sr);
+            t.add_child(scroller, surface);
+            for _ in 0..rows {
+                let row = t.new_node();
+                let mut rw = StyleRules::default();
+                if two_axis {
+                    rw.width = Some(px(500.0));
+                }
+                rw.height = Some(px(40.0));
+                t.set_style(row, &rw);
+                t.add_child(surface, row);
+            }
+            t.compute(root, 393.0, 852.0);
+            (
+                t.frame_of(scroller).height,
+                t.frame_of(surface).height,
+                t.frame_of(surface).width,
+            )
+        }
+        for two_axis in [true, false] {
+            let (scroller, surface, width) = heights(3, two_axis);
+            assert!((scroller - 120.0).abs() < 0.5, "{two_axis}: short table hugs 3 rows, got {scroller}");
+            assert!((surface - 120.0).abs() < 0.5, "{two_axis}: short table surface, got {surface}");
+            let want_w = if two_axis { 500.0 } else { 300.0 };
+            assert!(
+                (width - want_w).abs() < 0.5,
+                "{two_axis}: content width {want_w} (wide rows overflow two-axis; fill otherwise), got {width}"
+            );
+            let (scroller, surface, _) = heights(20, two_axis);
+            assert!(
+                (scroller - 240.0).abs() < 0.5,
+                "{two_axis}: tall table's scroller is capped by the surface's max_height, got {scroller}"
+            );
+            assert!(
+                (surface - 800.0).abs() < 0.5,
+                "{two_axis}: tall table keeps its 800px so it scrolls, got {surface}"
+            );
+        }
+    }
+
 
     /// Regression: the idea-ui `Modal`'s safe-area handling relies on two
     /// Taffy behaviors that must not silently change under an engine upgrade.

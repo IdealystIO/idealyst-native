@@ -1,24 +1,29 @@
-//! `ScrollViewPrim` — a `ScrollView` (or `HorizontalScrollView`)
-//! wrapping a `LinearLayout`.
+//! `ScrollViewPrim` — an outer scroller wrapping an inner `FrameLayout`.
+//! The outer's class follows the [`ScrollAxis`]: `ScrollView`,
+//! `HorizontalScrollView`, or the runtime's `RustTwoAxisScrollView` for
+//! `Both` (see `crate::scroll_axis_policy` for why a nested pair of stock
+//! scrollers can't stand in for it).
 //!
-//! We return the *outer* ScrollView as the framework's node so the
+//! We return the *outer* scroller as the framework's node so the
 //! framework's `insert(parent, scrollview)` call works (the inner
-//! LinearLayout is already a child of the outer — re-parenting it
+//! FrameLayout is already a child of the outer — re-parenting it
 //! would trip `addViewInner`'s "child already has a parent" guard).
 //!
-//! Child insertions still need to land on the inner LinearLayout
+//! Child insertions still need to land on the inner FrameLayout
 //! though — that's where multiple children belong. We register the
 //! outer→inner mapping in `AndroidBackend::scroll_view_inner` and
 //! [`super::view::insert`] / [`super::view::clear_children`] redirect
-//! to the inner when the parent is a registered ScrollView outer.
+//! to the inner when the parent is a registered scroller outer.
 
 use backend_android_core::helpers::apply_default_layout_params;
 use crate::imp::{with_env, AndroidBackend};
-use jni::objects::{GlobalRef, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JValue};
+use jni::JNIEnv;
+use runtime_shared::ScrollAxis;
 
-pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
-    // ScrollView is a single-child ViewGroup. To accept multiple
-    // children we wrap a FrameLayout inside the ScrollView; the
+pub(crate) fn create(b: &mut AndroidBackend, axis: ScrollAxis) -> GlobalRef {
+    // Every outer shape is a single-child ViewGroup. To accept multiple
+    // children we wrap a FrameLayout inside the outer; the
     // inner FrameLayout is what receives child `addView` calls (via
     // the outer→inner indirection in `view::insert`).
     //
@@ -32,11 +37,9 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
     // FrameLayout treats topMargin as the absolute y within the
     // container — matching how Taffy + apply_frames model positions.
     let (outer_ref, inner_ref) = with_env(|env| {
-        let outer_class = if horizontal {
-            env.find_class("android/widget/HorizontalScrollView").unwrap()
-        } else {
-            env.find_class("android/widget/ScrollView").unwrap()
-        };
+        let outer_class = env
+            .find_class(crate::scroll_axis_policy::scroller_class(axis))
+            .expect("scroller class — the two-axis one is staged with the Kotlin runtime");
         let outer = env
             .new_object(
                 &outer_class,
@@ -112,34 +115,25 @@ pub(crate) fn create(b: &mut AndroidBackend, horizontal: bool) -> GlobalRef {
     // child), but Android parents content under the scroll node, so it does
     // — same reason macOS/terminal call it. Regression:
     // `regression_scroll_node_bounded_by_overflow_scroll_not_content`.
-    b.layout.set_overflow_scroll(outer_layout, horizontal);
+    // A `Both` scroller is marked on both axes, which also exempts the
+    // inner from the `max-width: 100%` clamp so it can be wider than the
+    // viewport.
+    b.layout.set_overflow_scroll_axis(outer_layout, axis);
 
-    // Inner needs an explicit flex_direction. With Taffy's default
-    // (`Row`) the inner only takes `max(child.height)` as its
-    // intrinsic — children stack horizontally and the inner's
-    // height collapses to one row. For a vertical scroller (the
-    // common case: sidebar, page content) we want `Column` so the
-    // children stack downward and the inner's height = sum of
-    // children. Without this, only one row of items shows and the
-    // rest get clipped because the inner doesn't grow tall enough
-    // to scroll past the viewport. Horizontal scrollers
-    // (`HorizontalScrollView`) get `Row` instead.
-    let mut inner_rules = runtime_shared::StyleRules::default();
-    inner_rules.flex_direction = Some(if horizontal {
-        runtime_shared::FlexDirection::Row
-    } else {
-        runtime_shared::FlexDirection::Column
-    });
-    inner_rules.align_items = Some(runtime_shared::AlignItems::Stretch);
-    b.layout.set_style(inner_layout, &inner_rules);
+    // The inner's direction + cross-axis sizing per axis — see
+    // `scroll_axis_policy::inner_content_rules` (Column for vertical and
+    // two-axis content, Row for horizontal; a two-axis inner sized to its
+    // content width so wide rows aren't clipped at the viewport edge).
+    b.layout
+        .set_style(inner_layout, &crate::scroll_axis_policy::inner_content_rules(axis));
 
     outer_ref
 }
 
 /// Look up the child container for a parent node — used by
 /// [`super::view::insert`] and [`super::view::clear_children`] to
-/// transparently redirect operations targeting a ScrollView outer
-/// onto its inner LinearLayout.
+/// transparently redirect operations targeting a scroller outer
+/// onto its inner FrameLayout.
 pub(crate) fn inner_for(b: &AndroidBackend, parent: &GlobalRef) -> Option<GlobalRef> {
     b.scroll_view_inner
         .get(&AndroidBackend::node_key_of(parent))
@@ -149,8 +143,33 @@ pub(crate) fn inner_for(b: &AndroidBackend, parent: &GlobalRef) -> Option<Global
 /// Drop the outer→inner mapping when the outer is unstyled (the
 /// framework's lifecycle hook for "this node is going away"). The
 /// inner GlobalRef held in the map is the only thing keeping the
-/// inner LinearLayout alive in our state once Java releases its own
+/// inner FrameLayout alive in our state once Java releases its own
 /// reference, so dropping it lets the JVM GC the inner.
 pub(crate) fn forget_inner(b: &mut AndroidBackend, parent: &GlobalRef) {
     b.scroll_view_inner.remove(&AndroidBackend::node_key_of(parent));
+}
+
+/// The JNI classes of every scroller shape the backend creates
+/// ([`crate::scroll_axis_policy::SCROLL_CONTAINER_CLASSES`]), for
+/// [`is_scroll_container`]. A lookup that fails (it cannot for these
+/// framework classes) is skipped with its exception cleared, so it can't
+/// poison the next JNI call.
+pub(crate) fn scroll_container_classes<'a>(env: &mut JNIEnv<'a>) -> Vec<JClass<'a>> {
+    crate::scroll_axis_policy::SCROLL_CONTAINER_CLASSES
+        .iter()
+        .filter_map(|name| match env.find_class(*name) {
+            Ok(class) => Some(class),
+            Err(_) => {
+                let _ = env.exception_clear();
+                None
+            }
+        })
+        .collect()
+}
+
+/// Whether `view` is one of the backend's scroller outers (any axis).
+pub(crate) fn is_scroll_container(env: &mut JNIEnv, view: &JObject, classes: &[JClass]) -> bool {
+    classes
+        .iter()
+        .any(|class| env.is_instance_of(view, class).unwrap_or(false))
 }

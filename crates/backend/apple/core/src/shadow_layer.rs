@@ -419,6 +419,21 @@ pub fn drop_sibling(layer: &NSObject) {
     }
 }
 
+/// Give the sibling its view's `zPosition`. The sibling lives in the
+/// parent's layer, which Core Animation sorts by `zPosition`: at the
+/// default 0 it would stay beneath every sibling between it and a view
+/// raised with `z_index`, so the raised card would float over its own
+/// shadow's gap while its shadow painted under the cards it covers. With
+/// the same z, the tie keeps it directly beneath its view (it is inserted
+/// just below it). Backends call this after every `zPosition` write
+/// (static `z_index` and animated `ZIndex`); [`sync_sibling`] repeats it.
+pub fn sync_sibling_z(layer: &NSObject) {
+    let Some(sib) = sibling(layer) else { return };
+    let _no_anim = NoImplicitAnimations::begin();
+    let z: CGFloat = unsafe { msg_send![layer, zPosition] };
+    let _: () = unsafe { msg_send![&*sib, setZPosition: z] };
+}
+
 /// Parent, position and re-path the sibling against the view's current layout.
 /// No-op for a view with no sibling, so the layout pass can call it blindly.
 pub fn sync_sibling(layer: &NSObject) {
@@ -467,6 +482,7 @@ pub fn sync_sibling(layer: &NSObject) {
         let opacity: f32 = msg_send![layer, opacity];
         let _: () = msg_send![&*sib, setOpacity: opacity];
     }
+    sync_sibling_z(layer);
 
     let radius: CGFloat = unsafe { msg_send![layer, cornerRadius] };
     let bounds = CGRect {

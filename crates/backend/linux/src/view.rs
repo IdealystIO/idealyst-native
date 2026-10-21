@@ -295,8 +295,10 @@ mod imp {
         pub model: RefCell<PaintModel>,
         /// Own Taffy-computed `(w, h)`, reported from `measure`.
         pub layout_size: std::cell::Cell<(i32, i32)>,
-        /// Children in paint order (also the z-order — reordered by the
-        /// backend on animated `ZIndex`).
+        /// Children in paint order — tree order restacked by z (static
+        /// `z_index` and animated `ZIndex`); the GTK sibling list is kept in
+        /// the same order so picking matches. See
+        /// [`IdealystView::reorder_children`](super::IdealystView::reorder_children).
         pub children: RefCell<Vec<Child>>,
         /// Set only on the framework root: run the Taffy layout pass
         /// against the size GTK is allocating us, so every node's size +
@@ -615,22 +617,29 @@ impl IdealystView {
         *self.imp().layout_cb.borrow_mut() = Some(f);
     }
 
-    /// Reorder children to match `order` (by widget identity) — the
-    /// animated z-index restack. Widgets not in `order` keep their
-    /// relative position at the end.
+    /// Reorder children to match `order` (by widget identity) — the z
+    /// restack. Widgets not in `order` keep their relative position at the
+    /// end. Reorders BOTH the paint Vec (`snapshot` walks it) and the GTK
+    /// sibling list (`gtk_widget_pick` walks it last-to-first), so the
+    /// sibling painted on top is the one that takes the pointer.
     pub fn reorder_children(&self, order: &[gtk4::Widget]) {
-        let mut children = self.imp().children.borrow_mut();
-        children.sort_by_key(|c| {
-            order
-                .iter()
-                .position(|w| w == &c.widget)
-                .unwrap_or(usize::MAX)
-        });
-        drop(children);
+        let rank: std::collections::HashMap<&gtk4::Widget, usize> =
+            order.iter().enumerate().map(|(i, w)| (w, i)).collect();
+        let painted: Vec<gtk4::Widget> = {
+            let mut children = self.imp().children.borrow_mut();
+            children.sort_by_key(|c| rank.get(&c.widget).copied().unwrap_or(usize::MAX));
+            children.iter().map(|c| c.widget.clone()).collect()
+        };
+        // Outside the borrow: repositioning a widget can re-enter this
+        // widget's vfuncs (queue_resize, accessibility updates).
+        restack_widgets(self.upcast_ref(), &painted);
         self.queue_allocate();
-        // Snapshot order follows the Vec, so a repaint reflects the
-        // new stacking too.
         self.queue_draw();
+    }
+
+    /// The children in paint order. Test/introspection seam.
+    pub fn paint_order(&self) -> Vec<gtk4::Widget> {
+        self.imp().children.borrow().iter().map(|c| c.widget.clone()).collect()
     }
 
     /// Replace the whole paint model (from `apply_style`) and repaint.
@@ -936,6 +945,26 @@ pub(crate) mod input_transparency_tests {
     }
 }
 
+
+/// Move `parent`'s child widgets into `order` in the GTK sibling list
+/// (`gtk_widget_insert_after` repositions a widget that already has this
+/// parent); widgets of another parent are skipped, and children not named
+/// end up after the named ones. A plain container (`GtkFixed`) snapshots
+/// first-to-last and picks last-to-first in this list, so it sets both its
+/// paint and hit order; for an `IdealystView` it sets the pick order
+/// alongside the paint Vec.
+pub(crate) fn restack_widgets(parent: &gtk4::Widget, order: &[gtk4::Widget]) {
+    let mut prev: Option<gtk4::Widget> = None;
+    for w in order {
+        if w.parent().as_ref() != Some(parent) {
+            continue;
+        }
+        if w.prev_sibling() != prev {
+            w.insert_after(parent, prev.as_ref());
+        }
+        prev = Some(w.clone());
+    }
+}
 
 /// Dashed / dotted borders rasterized by GSK itself (the Cairo renderer,
 /// offscreen). The planning in `border_stroke` is unit-tested without

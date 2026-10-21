@@ -93,7 +93,14 @@ pub(crate) fn set_literal(data: &dyn Any, name: &str, value: &LiteralValue) -> b
     });
     on_prim!(data, PressablePrim, |p| set_a11y(&mut p.a11y, name, value));
     on_prim!(data, ScrollViewPrim, |p| match name {
-            "horizontal" => set_field_bool(&mut p.horizontal, value),
+            "horizontal" => {
+                let mut horizontal = p.axis.scrolls_x();
+                let ok = set_field_bool(&mut horizontal, value);
+                if ok {
+                    p.axis = runtime_shared::ScrollAxis::from_horizontal(horizontal);
+                }
+                ok
+            }
             "end_reached_threshold" => match as_f32(value) {
                 Some(f) => {
                     p.end_reached_threshold = f;

@@ -383,6 +383,25 @@ hit-target sizing. Each backend gets to use its native button
 widget, which gives all of that for free. Building it from a View
 + event handler would mean re-implementing native behavior, badly.
 
+### `pressable` — a tappable container
+
+```rust
+pub fn pressable<F: Fn() + 'static>(children: Vec<Element>, on_click: F) -> GluePressable
+```
+
+A container with a press callback and no chrome of its own: everything
+visual comes from its style and children. It takes `disabled`,
+`preserves_focus`, `bind`, the accessibility setters, and `on_hover`
+(pointer enter/leave, as on a `view`), so a hoverable row is one
+pressable rather than a pressable wrapped in a listening view.
+
+**One press, innermost target.** A press inside a press (a button in a
+clickable row, a pressable in a pressable card) fires only the innermost
+target on every backend. Native toolkits deliver a tap to the innermost
+view; on web, where `click` bubbles, the innermost pressable, button or
+link claims the click and enclosing pressables skip it. The click still
+reaches document-level listeners (outside-click dismissal).
+
 ### `TextInput` — controlled text input
 
 ```rust
@@ -585,15 +604,38 @@ share the same reactive shape: parent owns the signal, the
 primitive flows changes both ways. This is the framework's
 opinionated input model.
 
-### `ScrollView` — single-axis scroll container
+### `ScrollView` — scroll container
 
 ```rust
 pub fn scroll_view(children: Vec<Element>) -> GlueScrollView
 ```
 
-A scrolling container. Children scroll along the configured axis
-(vertical by default; `.horizontal(true)` for left-right). Two-axis
-scrolling isn't supported — pick one direction.
+A scrolling container. Children scroll along the configured axis —
+vertical by default, `.horizontal(true)` for left-right, or
+`.axis(ScrollAxis::Both)` (`scroll_view(axis = ScrollAxis::Both)` in
+`ui!`) for content that overflows in both directions. On a two-axis
+scroller:
+
+- the content is laid out unconstrained on both axes (no width clamp);
+  content with children keeps its full size. A child that is only a
+  declared size with nothing inside it is still a flex item and shrinks
+  to the viewport, as on web, unless it sets `flex_shrink: 0`. The
+  viewport itself is bounded like any scroller (`max_height`, a bounded
+  parent);
+- `on_scroll` reports both offsets;
+- `Position::Sticky` children pin on both axes — `top: 0` + `left: 0`
+  keeps a corner cell put whichever way the reader scrolls (a sticky
+  element pins against its NEAREST scroller, so a header can only stick
+  while a sideways-scrolling table scrolls vertically when one scroller
+  owns both axes);
+- `on_end_reached` watches the bottom.
+
+Mechanism per backend: `overflow: auto` on both axes (web, SSR); a
+`UIScrollView` with directional lock (iOS); an `NSScrollView` with both
+scrollers (macOS); a two-axis `FrameLayout` scroller,
+`RustTwoAxisScrollView` (Android); a `GtkScrolledWindow` scrolling both
+ways (Linux); the painted scroller on Windows, the GPU engine and the
+terminal.
 
 Imperative handle: `scroll_to(x, y)`, `scroll_to_top()`.
 

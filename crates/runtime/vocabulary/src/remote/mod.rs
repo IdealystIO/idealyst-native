@@ -78,7 +78,10 @@ pub mod wasm;
 /// - 4: [`Node::TextInput`], [`Node::TextArea`], [`Node::Toggle`] and
 ///   [`Node::Slider`] carry `disabled`.
 /// - 5: [`Node::TextInput`] carries `keyboard` (the soft-keyboard hint).
-pub const CODEC_VERSION: u32 = 5;
+/// - 6: [`Node::Pressable`] carries `on_hover`.
+/// - 7: [`Node::ScrollView`] carries `axis` (a [`runtime_shared::ScrollAxis`])
+///   in place of `horizontal`.
+pub const CODEC_VERSION: u32 = 7;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -134,6 +137,8 @@ pub enum Node {
     Pressable {
         common: Common,
         on_press: Cb,
+        /// Takes a `bool` (CODEC_VERSION 6).
+        on_hover: Option<Cb>,
         disabled: Option<Val<bool>>,
         preserves_focus: bool,
         children: Vec<Node>,
@@ -230,7 +235,8 @@ pub enum Node {
     },
     ScrollView {
         common: Common,
-        horizontal: bool,
+        /// Which axes scroll (CODEC_VERSION 7).
+        axis: runtime_shared::ScrollAxis,
         /// Takes `(f32, f32)`.
         on_scroll: Option<Cb>,
         on_end_reached: Option<Cb>,

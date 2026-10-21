@@ -335,12 +335,16 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
                 build_all(conn, children)?,
             )
         }
-        Node::Pressable { common, on_press, disabled, preserves_focus, children } => {
+        Node::Pressable { common, on_press, on_hover, disabled, preserves_focus, children } => {
             let (test_id, style, a11y, fill) = self::common(conn, common);
             runtime_scene::item(
                 PrimCell::new(PressablePrim {
                     test_id,
                     on_press: fire(conn, on_press),
+                    on_hover: on_hover.map(|id| {
+                        let h = handler::<bool, ()>(conn, id, || ());
+                        Rc::new(move |v: bool| h(&v)) as _
+                    }),
                     disabled: disabled.map(|v| value(conn, v)),
                     preserves_focus,
                     style,
@@ -547,7 +551,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
         }
         Node::ScrollView {
             common,
-            horizontal,
+            axis,
             on_scroll,
             on_end_reached,
             end_reached_threshold,
@@ -560,7 +564,7 @@ fn build(conn: &Rc<Conn>, node: Node) -> Result<Element, DecodeError> {
             runtime_scene::item(
                 PrimCell::new(ScrollViewPrim {
                     test_id,
-                    horizontal,
+                    axis,
                     on_scroll: on_scroll.map(|id| {
                         let h = handler::<(f32, f32), ()>(conn, id, || ());
                         Rc::new(move |x: f32, y: f32| h(&(x, y))) as _

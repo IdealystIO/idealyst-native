@@ -107,7 +107,7 @@ impl WindowsBackend {
     /// `parent` is the transform the node's parent hands its children.
     fn find_painted(&self, node: u64, parent: Affine, target: u64) -> Option<(f32, f32, f32, f32)> {
         let meta = self.nodes.get(&node)?;
-        let (fx, fy, w, h) = meta.frame;
+        let (fx, fy, w, h) = meta.placed_frame();
         let ops = crate::scene::transform_ops(w, h, &meta.author_transform, &meta.anim);
         let m = parent.node(fx, fy, &ops);
         if node == target {

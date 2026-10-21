@@ -607,6 +607,67 @@ container's placement layout on every native backend, never in place
 of it — the placement's `justify_content` / size would otherwise be
 reset and a `Bottom` overlay would land at the top.
 
+### `z_index` — sibling stacking
+
+`StyleRules::z_index: Option<i32>` orders a node among its SIBLINGS.
+Siblings paint in ascending effective z, ties in tree order, so with no
+`z_index` anywhere the last sibling is on top, as before. The effective
+value is `StyleRules::stacking_z()`: the `z_index`, else `1` for
+`position: Sticky` (a pinned element paints over what scrolls beneath
+it), else `0`.
+
+```rust
+stylesheet! {
+    pub Drawer<IdeaThemeRef> {
+        base(_t) { position: Position::Absolute, z_index: 3 }
+    }
+}
+```
+
+The same rules hold on every backend:
+
+- **No `position` needed.** A plain flex item raises like an absolute
+  one. (CSS honours `z-index` on flex and grid items, which every
+  framework node is on web, so the lowering never forces a position.)
+- **A node with a `z_index` contains its subtree.** Its descendants
+  paint with it; a descendant's own `z_index` orders it among *its*
+  siblings only and never lifts it past an ancestor's siblings. On web
+  that is the stacking context a non-`auto` `z-index` creates; native
+  views always contain their subviews. Setting `z_index: 0` is the way
+  to contain a subtree without raising it.
+- **Hit-testing follows paint.** Where siblings overlap, the one painted
+  on top receives the pointer.
+- **Non-negative.** A negative value is treated as `0`, with a debug
+  warning: CSS would paint it behind its own parent's background, which
+  no native view can do. Raise the sibling that should be on top.
+
+Animated `AnimProp::ZIndex` drives the same channel in the same units,
+so a static `z_index: 2` and an animated `2.0` order identically. Once
+an animation has written `ZIndex`, that value overrides the static
+`z_index` (a style re-apply updates the static value underneath but
+does not cancel the animated one), as animated opacity does.
+
+Per backend: web/SSR emit CSS `z-index`. iOS and macOS write
+`layer.zPosition`, and the framework host views' `hitTest:` walk their
+subviews in the same order (UIKit and AppKit would otherwise hit-test by
+subview index and ignore `zPosition`). A reactive anchor's layer is a
+`CATransformLayer`, so `z_index` on its children stacks against the
+anchor's siblings exactly as web's `display: contents` does; portal
+containers are kept in paint order within the window / host view; macOS
+robot screenshots render in Core Animation paint order. Android writes
+`View.setTranslationZ`, which `ViewGroup` uses for both drawing and
+touch dispatch. One z unit is 0.01 px of Z, so it casts no visible elevation
+shadow (on API 28+ a raised view's outline shadow is disabled outright;
+on API 21–27 a very large `z_index`, around 1000, can cast a faint one). GTK, Win32, the CPU and terminal renderers and the GPU
+engine order each run of siblings with `runtime_shared::style::z_paint_order`.
+Win32 and the CPU, terminal and GPU renderers paint in that order and walk
+it in reverse for hit-testing and wheel routing. GTK reorders the actual
+widget sibling list (and `IdealystView`'s paint list), because GTK picks
+children from the last sibling backward; a scroll view's children are
+reordered in its `GtkFixed` document. On Win32, native controls (buttons,
+text fields, sliders) are child windows and always sit above painted
+views, whatever their `z_index`.
+
 ---
 
 ## Preminted styles (build-time CSS)

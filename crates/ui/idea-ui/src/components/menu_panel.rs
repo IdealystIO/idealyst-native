@@ -106,8 +106,9 @@ stylesheet! {
 /// Structure: `panel(SelectMenu) → scroll_view(height cap) → body(rows)`. The
 /// height cap is applied reactively from `viewport_size()` so it tracks
 /// orientation / split-view / window resizes and never exceeds the visible area.
-pub(crate) fn scrolling_menu_panel(rows: Vec<Element>) -> Element {
-    slotted_menu_panel(rows, None, None, None)
+/// `max_width` caps the panel as in [`slotted_menu_panel`].
+pub(crate) fn scrolling_menu_panel(rows: Vec<Element>, max_width: Option<f32>) -> Element {
+    slotted_menu_panel(rows, None, None, max_width)
 }
 
 /// The children every slot-capable panel shares: the pinned `header`, the
@@ -145,9 +146,11 @@ fn slotted_panel_children(
 /// `Menu` / `SubMenu` dropdown in the app is a change this does not need to
 /// make.
 ///
-/// `max_width` caps the panel (`Menu` / `SubMenu`'s `max_width` prop). It
-/// layers on top of `SelectMenu`'s `min_width` floor; a row longer than the
-/// cap ellipsizes, because `MenuItemLabel` is single-line.
+/// `max_width` caps the panel (the `max_width` prop of `Menu`, `SubMenu`,
+/// `Select` and `Autocomplete`). It layers on top of `SelectMenu`'s
+/// `min_width` floor. What a row longer than the cap does is the row's
+/// text style: `MenuItemLabel` is single-line and ellipsizes, a Select
+/// row's label and description wrap.
 pub(crate) fn slotted_menu_panel(
     rows: Vec<Element>,
     header: Option<Element>,
@@ -183,6 +186,8 @@ pub(crate) fn slotted_menu_panel(
 ///   a row (or dragging the scrollbar) doesn't blur the input; the
 ///   component's close-on-blur only fires on genuine focus departure and a
 ///   row press can never unmount the row before its own click lands.
+/// - **caps its width** at `max_width` when given (`Autocomplete`'s
+///   `max_width` prop); the anchor-width floor still applies under it.
 /// - **pins optional `header`/`footer` slots** as direct panel children
 ///   above/below the capped scroller — a slot (e.g. an "Add ‹query›"
 ///   action) stays visible while the rows scroll, and being inside the
@@ -193,6 +198,7 @@ pub(crate) fn combobox_menu_panel(
     anchor: AnchorTarget,
     header: Option<Element>,
     footer: Option<Element>,
+    max_width: Option<f32>,
 ) -> Element {
     let viewport = viewport_size();
     runtime_core::view(slotted_panel_children(rows, header, footer))
@@ -204,9 +210,18 @@ pub(crate) fn combobox_menu_panel(
             // measure, not a reactive source.
             let _ = viewport.get();
             let app = StyleApplication::new(SelectMenu::sheet());
+            let app = match max_width {
+                Some(w) => app.with_overrides(StyleRules {
+                    max_width: Some(Tokenized::Literal(Length::Px(w))),
+                    ..Default::default()
+                }),
+                None => app,
+            };
             match anchor.rect() {
                 Some(r) if r.width > 0.0 => {
-                    let w = r.width;
+                    // The floor never exceeds the cap: a field wider than
+                    // `max_width` gets a panel exactly `max_width` wide.
+                    let w = max_width.map_or(r.width, |cap| r.width.min(cap));
                     // Measured from the anchor — continuous, so inline.
                     app.with_inline(StyleRules {
                         min_width: Some(Tokenized::Literal(Length::Px(w))),
@@ -309,6 +324,7 @@ mod tests {
                 AnchorTarget::from(anchor_ref),
                 None,
                 None,
+                None,
             );
 
             let P::View { preserves_focus, style, mut children, .. } = classify(panel) else {
@@ -341,6 +357,49 @@ mod tests {
     });
     }
 
+    fn panel_rules(panel: Element) -> Rc<StyleRules> {
+        let P::View { style, .. } = classify(panel) else {
+            panic!("a menu panel is a View (the SelectMenu surface)");
+        };
+        match style.expect("the panel carries the SelectMenu style") {
+            TStyle::AppFn(f) => runtime_core::resolve_style(&f()),
+            _ => panic!("the panel style is a live application"),
+        }
+    }
+
+    /// Select and Autocomplete dropdowns grew to their longest row, so a
+    /// long option description made a page-wide menu instead of wrapping.
+    /// `max_width` caps both panel shapes; on the combobox panel the
+    /// field-width floor never exceeds the cap.
+    #[test]
+    fn regression_select_and_autocomplete_panels_cap_their_width() {
+        with_test_world(|| {
+            idea_theme::theme::install_idea_theme(idea_theme::theme::light_theme());
+            let row = || vec![runtime_core::text("A".to_string()).into_element()];
+            let px = |l: Option<Tokenized<Length>>| l.map(|l| l.resolve());
+
+            let select = panel_rules(scrolling_menu_panel(row(), Some(320.0)));
+            assert_eq!(px(select.max_width.clone()), Some(Length::Px(320.0)));
+            let uncapped = panel_rules(scrolling_menu_panel(row(), None));
+            assert_eq!(px(uncapped.max_width.clone()), None, "no cap unless asked");
+
+            let anchor_ref: runtime_core::Ref<FixedAnchor> = runtime_core::Ref::new();
+            anchor_ref.fill(FixedAnchor);
+            let combo = |cap| {
+                panel_rules(combobox_menu_panel(row(), AnchorTarget::from(anchor_ref), None, None, cap))
+            };
+            let wide = combo(Some(400.0));
+            assert_eq!(px(wide.max_width.clone()), Some(Length::Px(400.0)));
+            assert_eq!(px(wide.min_width.clone()), Some(Length::Px(240.0)), "floor = the 240px field");
+            let narrow = combo(Some(200.0));
+            assert_eq!(
+                px(narrow.min_width.clone()),
+                Some(Length::Px(200.0)),
+                "a field wider than the cap floors at the cap, never past it"
+            );
+        });
+    }
+
     /// The combobox panel's `header`/`footer` slots must land as direct
     /// panel children AROUND the capped scroller — pinned, so an
     /// "Add ‹query›" footer stays visible while a long row list scrolls.
@@ -360,6 +419,7 @@ mod tests {
                 AnchorTarget::from(anchor_ref),
                 Some(runtime_core::text("Header".to_string()).into_element()),
                 Some(runtime_core::text("Footer".to_string()).into_element()),
+                None,
             );
 
             let P::View { preserves_focus, mut children, .. } = classify(panel) else {
@@ -451,10 +511,13 @@ mod tests {
     #[test]
     fn menu_panel_wraps_rows_in_a_scroll_view() {
         with_test_world(|| {
-            let panel = scrolling_menu_panel(vec![
-                runtime_core::text("A".to_string()).into_element(),
-                runtime_core::text("B".to_string()).into_element(),
-            ]);
+            let panel = scrolling_menu_panel(
+                vec![
+                    runtime_core::text("A".to_string()).into_element(),
+                    runtime_core::text("B".to_string()).into_element(),
+                ],
+                None,
+            );
 
             let mut panel_children = match classify(panel) {
                 P::View { children, .. } => children,

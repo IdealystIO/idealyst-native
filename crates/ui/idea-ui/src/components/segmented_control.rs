@@ -63,6 +63,7 @@ use runtime_core::{
 
 use crate::components::field::{adornment_button_sheet, Adornment};
 use crate::components::ControlSize;
+use crate::slot_override::apply_override;
 use crate::stylesheets::{SegmentButton, SegmentInner, SegmentedGroup};
 use crate::Icon;
 
@@ -164,6 +165,79 @@ pub struct SegmentedControlProps {
     /// segments share it evenly — like Button's `block`. Default `false`:
     /// the control hugs its options.
     pub block: bool,
+    /// Override layered on the track (the rounded group behind the
+    /// segments): its fill, border, radius, padding. Wins over the
+    /// app-wide [`install_segmented_control_style`]. Default `None`.
+    /// See [`crate::slot_override`].
+    #[prop(static)]
+    pub style: Option<Rc<StyleSheet>>,
+    /// Override layered on every unselected segment. Its `color` and
+    /// font also reach the segment's label. Default `None`.
+    #[prop(static)]
+    pub segment_style: Option<Rc<StyleSheet>>,
+    /// Override layered on the selected segment — its fill, border and
+    /// text `color` (the label takes the color, so a dark selected fill
+    /// can carry light text on every backend). Default `None`.
+    #[prop(static)]
+    pub selected_segment_style: Option<Rc<StyleSheet>>,
+}
+
+/// App-wide SegmentedControl restyle: the same three slots as the
+/// component's `style` / `segment_style` / `selected_segment_style` props,
+/// applied to every SegmentedControl. A prop set on one control wins over
+/// the installed slot. Install once at startup with
+/// [`install_segmented_control_style`].
+#[derive(Clone, Default)]
+pub struct SegmentedControlStyle {
+    /// Layered on the track.
+    pub track: Option<Rc<StyleSheet>>,
+    /// Layered on every unselected segment (and its label's color/font).
+    pub segment: Option<Rc<StyleSheet>>,
+    /// Layered on the selected segment (and its label's color/font).
+    pub selected_segment: Option<Rc<StyleSheet>>,
+}
+
+runtime_tls::thread_local! {
+    static INSTALLED_STYLE: std::cell::RefCell<SegmentedControlStyle> =
+        std::cell::RefCell::new(SegmentedControlStyle::default());
+}
+
+/// Restyle every SegmentedControl in the app. Call before the first one
+/// mounts; installing again replaces the previous style.
+pub fn install_segmented_control_style(style: SegmentedControlStyle) {
+    INSTALLED_STYLE.with(|s| *s.borrow_mut() = style);
+}
+
+/// One control's resolved override slots: each prop, else the installed one.
+#[derive(Clone, Default)]
+struct Overrides {
+    track: Option<Rc<StyleSheet>>,
+    segment: Option<Rc<StyleSheet>>,
+    selected_segment: Option<Rc<StyleSheet>>,
+}
+
+impl Overrides {
+    fn resolve(props: &SegmentedControlProps) -> Self {
+        let installed = INSTALLED_STYLE.with(|s| s.borrow().clone());
+        Self {
+            track: props.style.clone().or(installed.track),
+            segment: props.segment_style.clone().or(installed.segment),
+            selected_segment: props.selected_segment_style.clone().or(installed.selected_segment),
+        }
+    }
+
+    fn any_segment(&self) -> bool {
+        self.segment.is_some() || self.selected_segment.is_some()
+    }
+
+    /// The segment's theme application with the matching slot on top.
+    fn segment_app(&self, selected: bool, size_arm: &'static str) -> StyleApplication {
+        let app = StyleApplication::new(SegmentButton::sheet())
+            .with("selected", selected_arm(selected))
+            .with("size", size_arm);
+        let slot = if selected { &self.selected_segment } else { &self.segment };
+        apply_override(app, slot)
+    }
 }
 
 impl Default for SegmentedControlProps {
@@ -176,6 +250,9 @@ impl Default for SegmentedControlProps {
             options: Vec::new(),
             size: Reactive::Static(ControlSize::Md),
             block: Reactive::Static(false),
+            style: None,
+            segment_style: None,
+            selected_segment_style: None,
         }
     }
 }
@@ -186,20 +263,25 @@ impl Default for SegmentedControlProps {
 /// `on_change` — the host owns the selected value.
 #[component]
 pub fn SegmentedControl(props: SegmentedControlProps) -> Element {
+    let overrides = Overrides::resolve(&props);
     let options = props.options;
     let value = props.value;
     let on_change = props.on_change;
     let size = props.size;
     let block = props.block;
     let block_group = block.clone();
+    let track = overrides.track.clone();
     let group_style = move || {
-        StyleApplication::new(SegmentedGroup::sheet()).with("block", block_arm(block_group.get()))
+        apply_override(
+            StyleApplication::new(SegmentedGroup::sheet()).with("block", block_arm(block_group.get())),
+            &track,
+        )
     };
 
     ui! {
         view(style = group_style) {
             for option in options {
-                segment(option, value.clone(), on_change.clone(), size.clone(), block.clone())
+                segment(option, value.clone(), on_change.clone(), size.clone(), block.clone(), overrides.clone())
             }
         }
     }
@@ -217,6 +299,7 @@ fn segment(
     on_change: Rc<dyn Fn(String)>,
     size: Reactive<ControlSize>,
     block: Reactive<bool>,
+    overrides: Overrides,
 ) -> Element {
     let id = option.id;
 
@@ -232,10 +315,10 @@ fn segment(
     // Reactive style: re-runs whenever `selected` flips (or a live `size`
     // changes), switching the `selected` and `size` axes.
     let size_style = size.clone();
+    let seg_overrides = overrides.clone();
     let seg_style = move || {
-        StyleApplication::new(SegmentButton::sheet())
-            .with("selected", selected_arm(selected.get()))
-            .with("size", size_style.get().as_variant_str())
+        seg_overrides
+            .segment_app(selected.get(), size_style.get().as_variant_str())
             .with("block", block_arm(block.get()))
     };
 
@@ -243,14 +326,14 @@ fn segment(
     let leading = render_adornment(&option.leading, selected, size.clone());
     let trailing = render_adornment(&option.trailing, selected, size.clone());
     let content = if leading.is_empty() && trailing.is_empty() {
-        ui! { SegmentLabel(text = label, selected = selected, size = size) }
+        ui! { SegmentLabel(text = label, selected = selected, size = size, overrides = overrides) }
     } else {
         // `leading` / `trailing` are the adornments the CALLER handed in,
         // already built — splatted, not authored here.
         ui! {
             view(style = SegmentInner()) {
                 leading
-                SegmentLabel(text = label, selected = selected, size = size)
+                SegmentLabel(text = label, selected = selected, size = size, overrides = overrides)
                 trailing
             }
         }
@@ -319,14 +402,29 @@ fn selected_arm(selected: bool) -> &'static str {
 /// SegmentLabel(text = label, selected = selected, size = size)
 /// ```
 #[component]
-fn SegmentLabel(text: String, selected: bool, size: ControlSize) -> Element {
+fn SegmentLabel(
+    text: String,
+    selected: bool,
+    size: ControlSize,
+    #[prop(static)] overrides: Overrides,
+) -> Element {
     let label_style = move || {
         let arm = selected_arm(selected.get());
         let size_arm = size.get().as_variant_str();
-        let app = StyleApplication::new(SegmentButton::sheet())
-            .with("selected", arm)
-            .with("size", size_arm);
+        let app = overrides.segment_app(selected.get(), size_arm);
         let base = StyleApplication::new(seg_label_base_sheet());
+        if overrides.any_segment() {
+            // A restyled segment's color/font differ per control, so they
+            // can't share the keyed computed layer below: stamp them as
+            // this label's own overrides.
+            let rules = resolve_style(&app);
+            return base.with_overrides(StyleRules {
+                color: rules.color.clone(),
+                font_size: rules.font_size.clone(),
+                font_weight: rules.font_weight,
+                ..Default::default()
+            });
+        }
         if app.attaches_preminted() {
             // Premint web build: the segment pressable's preminted class
             // carries the on/off foreground and the label inherits it via
@@ -418,6 +516,67 @@ mod tests {
             .clone()
             .expect("SegmentButton resolves a foreground")
             .resolve()
+    }
+
+    fn sheet(rules: StyleRules) -> Rc<StyleSheet> {
+        Rc::new(StyleSheet::r#static(rules))
+    }
+
+    fn fill(hex: &str) -> StyleRules {
+        StyleRules {
+            background: Some(runtime_core::Tokenized::Literal(runtime_core::Color(hex.into()))),
+            ..Default::default()
+        }
+    }
+
+    /// The track and segments had theme-only fills and borders, so an app
+    /// that wanted a different look rebuilt the control by hand. The track,
+    /// segment and selected-segment slots restyle it per control or
+    /// app-wide; a prop wins over the installed slot; the selected slot's
+    /// `color` reaches the label (native text doesn't inherit it).
+    #[test]
+    fn regression_segmented_control_track_and_segments_restyle() {
+        with_test_world(|| {
+            install_idea_theme(light_theme());
+            install_segmented_control_style(SegmentedControlStyle {
+                track: Some(sheet(fill("#111111"))),
+                selected_segment: Some(sheet(StyleRules {
+                    color: Some(runtime_core::Tokenized::Literal(runtime_core::Color("#fafafa".into()))),
+                    ..fill("#222222")
+                })),
+                ..Default::default()
+            });
+            let build = |track: Option<Rc<StyleSheet>>| {
+                SegmentedControl(SegmentedControlProps {
+                    options: vec![SegmentOption::new("a", "A"), SegmentOption::new("b", "B")],
+                    value: runtime_core::signal("a".to_string()).into(),
+                    style: track,
+                    ..Default::default()
+                })
+            };
+            let bg = |rules: Rc<StyleRules>| rules.background.clone().map(|c| c.resolve());
+            let hex = |h: &str| Some(runtime_core::Color(h.into()));
+
+            let P::View { style, mut children, .. } = classify(build(None)) else {
+                panic!("SegmentedControl renders a row View");
+            };
+            assert_eq!(bg(style.unwrap().resolve()), hex("#111111"), "installed track fill");
+            let selected = children.remove(0);
+            let unselected = children.remove(0);
+            let P::Pressable { style: sel_style, .. } = classify(selected) else { panic!() };
+            assert_eq!(bg(sel_style.unwrap().resolve()), hex("#222222"), "installed selected fill");
+            let P::Pressable { style: off_style, .. } = classify(unselected) else { panic!() };
+            assert_ne!(bg(off_style.unwrap().resolve()), hex("#222222"), "unselected keeps the theme");
+
+            let P::View { mut children, .. } = classify(build(None)) else { panic!() };
+            assert_eq!(seg_label_color(children.remove(0)), hex("#fafafa"), "selected label color");
+
+            let P::View { style, .. } = classify(build(Some(sheet(fill("#333333"))))) else {
+                panic!()
+            };
+            assert_eq!(bg(style.unwrap().resolve()), hex("#333333"), "the prop wins over the installed slot");
+            install_segmented_control_style(SegmentedControlStyle::default());
+        });
     }
 
     // The `--premint-only` read-back: same shape as `Tabs` — the segment
@@ -818,6 +977,7 @@ mod tests {
                     Reactive::Static("x".into()),
                     Reactive::Static(true),
                     Reactive::Static(size),
+                    Overrides::default(),
                 );
                 let rules = match classify(el) {
                     P::Text { style, .. } => style.expect("styled").resolve(),

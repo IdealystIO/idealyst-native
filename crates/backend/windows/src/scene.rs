@@ -171,13 +171,21 @@ fn resolve_len(l: &Length, basis: f32) -> f32 {
     }
 }
 
-/// Stable z-sort of sibling ids: ascending z, insertion order on ties —
-/// the same tie-break every other backend uses (document order), which
-/// the welcome planets' binary z-flip depends on.
-pub(crate) fn z_sorted(pairs: &[(u64, f32)]) -> Vec<u64> {
-    let mut v: Vec<(u64, f32)> = pairs.to_vec();
-    v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    v.into_iter().map(|(id, _)| id).collect()
+/// `id`'s live children in paint order: ascending [`NodeMeta::z`] (the
+/// slot both a style's `stacking_z()` and animated `ZIndex` write), ties
+/// in tree order — `runtime_shared::style::z_paint_order`, the rule every
+/// backend shares (the welcome planets' binary z-flip depends on the
+/// tie-break). The painters walk it forward; hit-testing and wheel
+/// routing walk it in REVERSE, so where siblings overlap the one painted
+/// on top takes the pointer.
+pub(crate) fn child_paint_order(b: &WindowsBackend, id: u64) -> Vec<u64> {
+    let Some(kids) = b.children.get(&id) else {
+        return Vec::new();
+    };
+    let live: Vec<(u64, f32)> =
+        kids.iter().filter_map(|cid| b.nodes.get(cid).map(|m| (*cid, m.z))).collect();
+    let zs: Vec<f32> = live.iter().map(|(_, z)| *z).collect();
+    runtime_shared::style::z_paint_order(&zs).into_iter().map(|i| live[i].0).collect()
 }
 
 // =========================================================================
@@ -927,7 +935,7 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
     if alpha <= 0.003 {
         return;
     }
-    let (fx, fy, w, h) = meta.frame;
+    let (fx, fy, w, h) = meta.placed_frame();
 
     let mut state: u32 = 0;
     let _ = GdipSaveGraphics(g, &mut state);
@@ -1123,11 +1131,7 @@ unsafe fn paint_node(b: &WindowsBackend, g: *mut GpGraphics, id: u64, alpha: f32
         }
     }
 
-    let pairs: Vec<(u64, f32)> = child_ids
-        .iter()
-        .filter_map(|cid| b.nodes.get(cid).map(|m| (*cid, m.z)))
-        .collect();
-    for cid in z_sorted(&pairs) {
+    for cid in child_paint_order(b, id) {
         paint_node(b, g, cid, alpha, layer);
     }
     let _ = GdipRestoreGraphics(g, state);
@@ -1174,7 +1178,7 @@ pub(crate) fn pressable_at(b: &WindowsBackend, px: f32, py: f32) -> Option<Rc<dy
 
 pub(crate) fn node_origin(b: &WindowsBackend, id: u64, ox: f32, oy: f32) -> Option<(f32, f32, f32, f32)> {
     let meta = b.nodes.get(&id)?;
-    let (fx, fy, w, h) = meta.frame;
+    let (fx, fy, w, h) = meta.placed_frame();
     // Translation-only approximation of the transform chain.
     let mut dx = meta.anim.tx;
     let mut dy = meta.anim.ty;
@@ -1240,18 +1244,13 @@ fn hit_walk(
         Some(PointerEvents::Auto) => false,
         None => none_above,
     };
-    // Children first, topmost (highest z, later insertion) first.
+    // Children first, topmost painted (highest z, later in tree order on
+    // ties) first.
     let (cx, cy) = content_origin(meta, nx, ny);
-    if let Some(child_ids) = b.children.get(&id) {
-        let pairs: Vec<(u64, f32)> = child_ids
-            .iter()
-            .filter_map(|cid| b.nodes.get(cid).map(|m| (*cid, m.z)))
-            .collect();
-        for cid in z_sorted(&pairs).into_iter().rev() {
-            if hit_walk(b, cid, px, py, cx, cy, none, out) {
-                out.push(PathNode { id, origin: (nx, ny) });
-                return true;
-            }
+    for cid in child_paint_order(b, id).into_iter().rev() {
+        if hit_walk(b, cid, px, py, cx, cy, none, out) {
+            out.push(PathNode { id, origin: (nx, ny) });
+            return true;
         }
     }
     // An anchor (`contents`) only passes hits through to its children.
@@ -1283,10 +1282,34 @@ pub(crate) fn window_origin(b: &WindowsBackend, target: u64) -> Option<(f32, f32
     crate::private_layer::all_roots(b).find_map(|root| walk(b, root, target, 0.0, 0.0))
 }
 
-/// Route a mouse-wheel tick to the deepest scroll view under `(px, py)`.
-/// Returns `true` if a scroll node consumed it (offset updated +
-/// `on_scroll` fired + scene invalidated by the caller).
-pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32) -> bool {
+/// The `(dx, dy)` content-scroll delta one wheel tick applies to a
+/// scroller on `axis`. `horizontal_wheel` is a sideways tick
+/// (`WM_MOUSEHWHEEL`, or a vertical wheel with Shift held — the browser
+/// convention for panning a wide scroller with a plain wheel).
+///
+/// - A sideways tick moves X, on any scroller that scrolls X.
+/// - A vertical tick moves Y where Y scrolls; on a horizontal-only
+///   scroller it pans X instead. [`wheel_target`] only hands a vertical
+///   tick to a horizontal-only scroller when nothing under the pointer
+///   scrolls Y, so a plain wheel drives a lone carousel but scrolls the
+///   page when the carousel sits inside one.
+///
+/// An axis that doesn't scroll never moves.
+pub(crate) fn wheel_delta(axis: runtime_shared::ScrollAxis, delta_px: f32, horizontal_wheel: bool) -> (f32, f32) {
+    if horizontal_wheel || !axis.scrolls_y() {
+        (if axis.scrolls_x() { delta_px } else { 0.0 }, 0.0)
+    } else {
+        (0.0, delta_px)
+    }
+}
+
+/// Route a mouse-wheel tick to the scroll view under `(px, py)` that
+/// scrolls the tick's axis — see [`wheel_target`]. `delta_px` > 0
+/// scrolls content down / right; `horizontal_wheel` as in
+/// [`wheel_delta`]. Returns `true` if a scroll node consumed it (offset
+/// updated + `on_scroll` fired + scene invalidated by the caller);
+/// `false` when no scroller under the pointer scrolls that way.
+pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32, horizontal_wheel: bool) -> bool {
     // The root that takes the point (a portal over the page takes its
     // wheel too, as it takes its clicks).
     let root = crate::private_layer::input_roots(b).into_iter().find(|&r| {
@@ -1297,7 +1320,10 @@ pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32)
     let Some(root) = root else {
         return false;
     };
-    let Some(target) = find_scroll_node(b, root, px, py, 0.0, 0.0) else {
+    let Some(chain) = find_scroll_chain(b, root, px, py, 0.0, 0.0) else {
+        return false;
+    };
+    let Some(target) = wheel_target(&chain, horizontal_wheel, |id| scroll_axis_of(b, id)) else {
         return false;
     };
     let (max_x, max_y) = max_scroll_offsets(b, target);
@@ -1305,11 +1331,9 @@ pub(crate) fn scroll_at(b: &mut WindowsBackend, px: f32, py: f32, delta_px: f32)
     if let Some(meta) = b.nodes.get_mut(&target) {
         if let NodeKind::View(v) = &mut meta.kind {
             if let Some(s) = &mut v.scroll {
-                if s.horizontal {
-                    s.offset_x = (s.offset_x + delta_px).clamp(0.0, max_x);
-                } else {
-                    s.offset_y = (s.offset_y + delta_px).clamp(0.0, max_y);
-                }
+                let (dx, dy) = wheel_delta(s.axis, delta_px, horizontal_wheel);
+                s.offset_x = (s.offset_x + dx).clamp(0.0, max_x);
+                s.offset_y = (s.offset_y + dy).clamp(0.0, max_y);
                 if let Some(f) = &s.on_scroll {
                     cb = Some((f.clone(), s.offset_x, s.offset_y));
                 }
@@ -1376,7 +1400,58 @@ fn content_extent(b: &WindowsBackend, id: u64) -> (f32, f32) {
     (cw, ch)
 }
 
-fn find_scroll_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: f32) -> Option<u64> {
+/// Which scroller in `chain` (the scrollers under the pointer, deepest
+/// first — [`find_scroll_chain`]) takes a wheel tick: the deepest one
+/// that scrolls the tick's axis (X for `horizontal_wheel`, else Y). A
+/// vertical tick over a horizontal-only carousel therefore scrolls the
+/// page around it, and a sideways tick over a vertical list pans the
+/// wide scroller it sits in — what the browser, AppKit and UIKit do.
+/// Only when nothing in the chain scrolls Y does a vertical tick fall
+/// back to the deepest horizontal scroller (the carousel pan of
+/// [`wheel_delta`]).
+///
+/// The choice is by axis, never by remaining room: a scroller already
+/// at its limit on that axis still takes the tick (and clamps it)
+/// rather than chaining it outward. That is the native contract every
+/// other native backend keeps — `NSScrollView`, `UIScrollView` and an
+/// Android `ScrollView` do not chain a scroll to an ancestor at the
+/// edge, which is why `OverscrollBehavior::Contain` and `Auto` coincide
+/// off the web (see `runtime_shared::OverscrollBehavior`). Only the
+/// browser chains at a limit by default.
+pub(crate) fn wheel_target(
+    chain: &[u64],
+    horizontal_wheel: bool,
+    axis_of: impl Fn(u64) -> Option<runtime_shared::ScrollAxis>,
+) -> Option<u64> {
+    let scrolls = |id: u64, horizontal: bool| {
+        axis_of(id).is_some_and(|a| if horizontal { a.scrolls_x() } else { a.scrolls_y() })
+    };
+    chain
+        .iter()
+        .copied()
+        .find(|&id| scrolls(id, horizontal_wheel))
+        .or_else(|| {
+            if horizontal_wheel {
+                None
+            } else {
+                chain.iter().copied().find(|&id| scrolls(id, true))
+            }
+        })
+}
+
+/// The axis node `id` scrolls on, or `None` when it is not a scroller.
+fn scroll_axis_of(b: &WindowsBackend, id: u64) -> Option<runtime_shared::ScrollAxis> {
+    match &b.nodes.get(&id)?.kind {
+        NodeKind::View(ViewVisual { scroll: Some(s), .. }) => Some(s.axis),
+        _ => None,
+    }
+}
+
+/// The scroll views under `(px, py)` along the hit path, DEEPEST FIRST:
+/// the deepest scroller in the topmost-painted subtree that has one,
+/// then each enclosing scroller out to the root. `None` when no
+/// scroller is under the point. [`wheel_target`] picks from it.
+fn find_scroll_chain(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: f32) -> Option<Vec<u64>> {
     let (nx, ny, w, h) = node_origin(b, id, ox, oy)?;
     let meta = b.nodes.get(&id)?;
     if meta.hidden {
@@ -1395,21 +1470,20 @@ fn find_scroll_node(b: &WindowsBackend, id: u64, px: f32, py: f32, ox: f32, oy: 
             cy -= s.offset_y;
         }
     }
-    if let Some(child_ids) = b.children.get(&id) {
-        for cid in child_ids.iter().rev() {
-            if let Some(found) = find_scroll_node(b, *cid, px, py, cx, cy) {
-                return Some(found);
+    // Topmost painted first, as `hit_walk` does: a raised scroller over
+    // an earlier one takes the wheel where it paints.
+    let is_scroller = matches!(&meta.kind, NodeKind::View(v) if v.scroll.is_some());
+    for cid in child_paint_order(b, id).into_iter().rev() {
+        if let Some(mut chain) = find_scroll_chain(b, cid, px, py, cx, cy) {
+            // A scroller clips, so reaching a descendant hit means the
+            // point is inside it too.
+            if is_scroller {
+                chain.push(id);
             }
+            return Some(chain);
         }
     }
-    if inside {
-        if let NodeKind::View(v) = &meta.kind {
-            if v.scroll.is_some() {
-                return Some(id);
-            }
-        }
-    }
-    None
+    (inside && is_scroller).then(|| vec![id])
 }
 
 /// Erase-to-background COLORREF used by the host for regions Windows
@@ -1483,13 +1557,108 @@ mod tests {
 
     // --- z ordering ---
 
+    use runtime_shared::StyleRules;
+
+    /// A backend with root `1` (400×300) and one view child per
+    /// `(id, frame, z)`, in that tree order.
+    fn z_fixture(kids: &[(u64, (f32, f32, f32, f32), f32)]) -> WindowsBackend {
+        let mut b = WindowsBackend::new(windows::Win32::Foundation::HWND(std::ptr::null_mut()));
+        let mut root = NodeMeta::new(NodeKind::View(ViewVisual::default()));
+        root.frame = (0.0, 0.0, 400.0, 300.0);
+        b.nodes.insert(1, root);
+        b.root_id = Some(1);
+        for &(id, frame, z) in kids {
+            let mut m = NodeMeta::new(NodeKind::View(ViewVisual::default()));
+            m.frame = frame;
+            m.z = z;
+            b.nodes.insert(id, m);
+            b.children.entry(1).or_default().push(id);
+        }
+        b
+    }
+
+    fn style_z(b: &mut WindowsBackend, id: u64, style: StyleRules) {
+        let node = crate::WindowsNode { id, hwnd: windows::Win32::Foundation::HWND(std::ptr::null_mut()) };
+        runtime_vocabulary::caps::StyleOps::apply_style(b, &node, &Rc::new(style));
+    }
+
     /// Planets z-flip between 0 and 1; equal-z siblings must keep
     /// insertion (document) order — that tie-break is what puts the
     /// content layer above the back-half planets.
     #[test]
     fn z_sort_is_stable_on_ties() {
-        let pairs = [(1, 0.0), (2, 1.0), (3, 0.0), (4, 0.0)];
-        assert_eq!(z_sorted(&pairs), vec![1, 3, 4, 2]);
+        let f = (0.0, 0.0, 10.0, 10.0);
+        let b = z_fixture(&[(2, f, 0.0), (3, f, 1.0), (4, f, 0.0), (5, f, 0.0)]);
+        assert_eq!(child_paint_order(&b, 1), vec![2, 4, 5, 3]);
+    }
+
+    /// A static `z_index: 2` on the FIRST of two overlapping siblings
+    /// paints it over the later one and gives it the click in the
+    /// overlap; a restyle without `z_index` restores tree order for both.
+    /// Before `apply_style` wrote `StyleRules::stacking_z()` into the z
+    /// slot, the static property was ignored and the later sibling kept
+    /// both the paint and the click.
+    #[test]
+    fn regression_static_z_index_raises_an_earlier_sibling_for_paint_and_hit() {
+        let mut b = z_fixture(&[
+            (2, (0.0, 0.0, 200.0, 100.0), 0.0),
+            (3, (100.0, 0.0, 200.0, 100.0), 0.0),
+        ]);
+        let chain = |b: &WindowsBackend| hit_chain(b, 150.0, 50.0).iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(child_paint_order(&b, 1), vec![2, 3]);
+        assert_eq!(chain(&b), [3, 1], "tree order: the later sibling is on top");
+
+        style_z(&mut b, 2, StyleRules { z_index: Some(2), ..StyleRules::default() });
+        assert_eq!(b.nodes[&2].z, 2.0, "static z_index lands in the animated ZIndex slot, same units");
+        assert_eq!(child_paint_order(&b, 1), vec![3, 2], "the raised first sibling paints last");
+        assert_eq!(chain(&b), [2, 1], "and takes the pointer where they overlap");
+        assert_eq!(hit_chain(&b, 50.0, 50.0)[0].id, 2, "outside the overlap nothing changes");
+        assert_eq!(hit_chain(&b, 250.0, 50.0)[0].id, 3);
+
+        style_z(&mut b, 2, StyleRules::default());
+        assert_eq!(b.nodes[&2].z, 0.0, "removing z_index restores the default");
+        assert_eq!(child_paint_order(&b, 1), vec![2, 3]);
+        assert_eq!(chain(&b), [3, 1]);
+    }
+
+    /// `position: Sticky` with no `z_index` stacks at `STICKY_Z` (one
+    /// shared rule, so sticky's raise and an explicit `z_index` can't
+    /// disagree); a negative `z_index` clamps to 0.
+    #[test]
+    fn sticky_and_negative_z_index_resolve_through_stacking_z() {
+        let f = (0.0, 0.0, 10.0, 10.0);
+        let mut b = z_fixture(&[(2, f, 0.0), (3, f, 0.0)]);
+        style_z(&mut b, 2, StyleRules { position: Some(runtime_shared::Position::Sticky), ..StyleRules::default() });
+        assert_eq!(b.nodes[&2].z, runtime_shared::style::STICKY_Z as f32);
+        assert_eq!(child_paint_order(&b, 1), vec![3, 2]);
+        style_z(&mut b, 2, StyleRules { z_index: Some(-4), ..StyleRules::default() });
+        assert_eq!(b.nodes[&2].z, 0.0);
+        assert_eq!(child_paint_order(&b, 1), vec![2, 3]);
+    }
+
+    /// Wheel routing follows paint order too: where a raised scroller
+    /// overlaps a later one, the raised one scrolls.
+    #[test]
+    fn wheel_goes_to_the_topmost_painted_scroller() {
+        let mut b = z_fixture(&[
+            (2, (0.0, 0.0, 200.0, 100.0), 0.0),
+            (3, (100.0, 0.0, 200.0, 100.0), 0.0),
+        ]);
+        for id in [2, 3] {
+            if let NodeKind::View(v) = &mut b.nodes.get_mut(&id).unwrap().kind {
+                v.scroll = Some(crate::ScrollInfo {
+                    axis: runtime_shared::ScrollAxis::Vertical,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    on_scroll: None,
+                    extent: Some((200.0, 1000.0)),
+                    end: None,
+                });
+            }
+        }
+        assert_eq!(find_scroll_chain(&b, 1, 150.0, 50.0, 0.0, 0.0), Some(vec![3]));
+        style_z(&mut b, 2, StyleRules { z_index: Some(1), ..StyleRules::default() });
+        assert_eq!(find_scroll_chain(&b, 1, 150.0, 50.0, 0.0, 0.0), Some(vec![2]));
     }
 
     // --- alpha helpers ---
@@ -1565,7 +1734,7 @@ mod tests {
                 scroll: Some(ScrollInfo {
                     offset_x: 0.0,
                     offset_y: 0.0,
-                    horizontal: false,
+                    axis: runtime_shared::ScrollAxis::Vertical,
                     on_scroll: None,
                     extent: None,
                     end: None,
@@ -1588,6 +1757,103 @@ mod tests {
         b
     }
 
+    /// A scroller on `axis` at `frame` whose content is `extent`.
+    fn scroller(axis: runtime_shared::ScrollAxis, extent: (f32, f32)) -> NodeKind {
+        NodeKind::View(ViewVisual {
+            scroll: Some(ScrollInfo {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                axis,
+                on_scroll: None,
+                extent: Some(extent),
+                end: None,
+            }),
+            ..Default::default()
+        })
+    }
+
+    fn offsets_of(b: &WindowsBackend, id: u64) -> (f32, f32) {
+        match &b.nodes[&id].kind {
+            NodeKind::View(v) => v.scroll.as_ref().map(|s| (s.offset_x, s.offset_y)).unwrap(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Root → `outer` (0,0 400×400) → `inner` (0,0 200×100), both
+    /// scrollers with room to move on every axis they scroll.
+    fn nested_scrollers(outer: runtime_shared::ScrollAxis, inner: runtime_shared::ScrollAxis) -> WindowsBackend {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        put(&mut b, 1, NodeKind::View(ViewVisual::default()), (0.0, 0.0, 800.0, 600.0));
+        put(&mut b, 2, scroller(outer, (1200.0, 1200.0)), (0.0, 0.0, 400.0, 400.0));
+        put(&mut b, 3, scroller(inner, (1000.0, 1000.0)), (0.0, 0.0, 200.0, 100.0));
+        b.root_id = Some(1);
+        b.children.insert(1, vec![2]);
+        b.children.insert(2, vec![3]);
+        b
+    }
+
+    /// The wheel went to the deepest scroller under the pointer whatever
+    /// its axis: a vertical tick over a horizontal carousel inside a
+    /// vertical page panned the carousel sideways and the page never
+    /// moved, and a sideways tick over a vertical list inside a wide
+    /// scroller was swallowed. Each tick now goes to the nearest
+    /// scroller that scrolls its axis, as on web / macOS / iOS.
+    #[test]
+    fn regression_wheel_routes_past_a_scroller_that_does_not_scroll_its_axis() {
+        use runtime_shared::ScrollAxis::{Both, Horizontal, Vertical};
+        // Vertical page around a horizontal carousel.
+        let mut b = nested_scrollers(Vertical, Horizontal);
+        assert!(scroll_at(&mut b, 50.0, 50.0, 40.0, false));
+        assert_eq!(offsets_of(&b, 2), (0.0, 40.0), "a vertical tick scrolls the page");
+        assert_eq!(offsets_of(&b, 3), (0.0, 0.0), "and leaves the carousel alone");
+        assert!(scroll_at(&mut b, 50.0, 10.0, 30.0, true));
+        assert_eq!(offsets_of(&b, 3), (30.0, 0.0), "a sideways tick pans the carousel");
+        assert_eq!(offsets_of(&b, 2), (0.0, 40.0));
+
+        // Wide scroller around a vertical list.
+        let mut b = nested_scrollers(Horizontal, Vertical);
+        assert!(scroll_at(&mut b, 50.0, 50.0, 30.0, true));
+        assert_eq!(offsets_of(&b, 2), (30.0, 0.0), "a sideways tick pans the wide scroller");
+        assert_eq!(offsets_of(&b, 3), (0.0, 0.0));
+        assert!(scroll_at(&mut b, 50.0, 50.0, 40.0, false));
+        assert_eq!(offsets_of(&b, 3), (0.0, 40.0), "a vertical tick scrolls the list");
+
+        // A two-axis inner scroller takes both.
+        let mut b = nested_scrollers(Vertical, Both);
+        scroll_at(&mut b, 50.0, 50.0, 40.0, false);
+        scroll_at(&mut b, 50.0, 50.0, 30.0, true);
+        assert_eq!(offsets_of(&b, 3), (30.0, 40.0));
+        assert_eq!(offsets_of(&b, 2), (0.0, 0.0));
+    }
+
+    /// Routing is by axis, not remaining room: an inner scroller at its
+    /// limit keeps the tick rather than chaining it to the page, as
+    /// `NSScrollView` / `UIScrollView` / Android do (see `wheel_target`).
+    #[test]
+    fn wheel_at_a_scroll_limit_does_not_chain_to_the_ancestor() {
+        use runtime_shared::ScrollAxis::Vertical;
+        let mut b = nested_scrollers(Vertical, Vertical);
+        assert!(scroll_at(&mut b, 50.0, 50.0, -40.0, false), "consumed at the top edge");
+        assert_eq!(offsets_of(&b, 3), (0.0, 0.0));
+        assert_eq!(offsets_of(&b, 2), (0.0, 0.0), "the page does not move");
+    }
+
+    /// With nothing under the pointer scrolling Y, a plain wheel pans a
+    /// lone horizontal scroller; a sideways tick over a lone vertical
+    /// one has nowhere to go and is not consumed.
+    #[test]
+    fn wheel_falls_back_to_a_lone_carousel_and_declines_a_cross_axis_tick() {
+        use runtime_shared::ScrollAxis::{Horizontal, Vertical};
+        let mut b = nested_scrollers(Horizontal, Horizontal);
+        assert!(scroll_at(&mut b, 50.0, 50.0, 40.0, false));
+        assert_eq!(offsets_of(&b, 3), (40.0, 0.0), "the deepest carousel pans");
+        assert_eq!(offsets_of(&b, 2), (0.0, 0.0));
+
+        let mut b = nested_scrollers(Vertical, Vertical);
+        assert!(!scroll_at(&mut b, 50.0, 50.0, 40.0, true), "no scroller scrolls X");
+        assert_eq!(offsets_of(&b, 3), (0.0, 0.0));
+    }
+
     fn offset_y(b: &WindowsBackend) -> f32 {
         match &b.nodes[&2].kind {
             NodeKind::View(v) => v.scroll.as_ref().unwrap().offset_y,
@@ -1603,15 +1869,15 @@ mod tests {
     #[test]
     fn regression_wheel_scroll_clamps_to_content_extent() {
         let mut b = scroll_fixture();
-        assert!(scroll_at(&mut b, 50.0, 150.0, 120.0), "wheel over the box is consumed");
+        assert!(scroll_at(&mut b, 50.0, 150.0, 120.0, false), "wheel over the box is consumed");
         assert_eq!(offset_y(&b), 120.0, "a scrollable box must actually scroll");
         for _ in 0..10 {
-            scroll_at(&mut b, 50.0, 150.0, 120.0);
+            scroll_at(&mut b, 50.0, 150.0, 120.0, false);
         }
         // deep content extent 400 − viewport 200 = 200.
         assert_eq!(offset_y(&b), 200.0, "must stop at content − viewport");
         for _ in 0..10 {
-            scroll_at(&mut b, 50.0, 150.0, -120.0);
+            scroll_at(&mut b, 50.0, 150.0, -120.0, false);
         }
         assert_eq!(offset_y(&b), 0.0, "and at zero on the way back");
     }

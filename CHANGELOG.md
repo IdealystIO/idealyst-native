@@ -15,6 +15,17 @@ Shipped on the 1.x line as fixes and additions, but each changes
 behaviour an app can observe, and the `ui!` one stops code that compiled
 (and silently did nothing) from compiling. Each names its migration.
 
+- **Nested presses fire only the innermost target on web**
+  (`backend-web`). A pressable, button or link inside a pressable used
+  to fire inner then outer, because `click` bubbles; native backends
+  already delivered the tap to the innermost view only. The innermost
+  press target now claims the click and enclosing pressables skip it;
+  document-level click listeners still see it.
+
+  Migration: drop any guard that made an outer press handler stand down
+  after an inner one (a press timestamp, a "handled" flag). An outer
+  handler that relied on running after an inner one needs the inner
+  handler to call it.
 - **`table` SDK payload changes** (`table`). For code that builds
   tables below idea-ui: `CellSpanMarker` is now `CellMarker` (it also
   carries a cell's `ColumnSpec`, so a native cell that sizes its column
@@ -632,8 +643,71 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   hand-written `impl IdeaTheme` returns its `Effects` (start from
   `light_theme().effects`). `app_theme!` forwards it for you.
 
+- **`scroll_view` takes a `ScrollAxis`** (`runtime-shared`,
+  `runtime-vocabulary`, every backend). For backend authors and code that
+  builds scroll payloads by hand: `ScrollOps::create_scroll_view` takes
+  `axis: ScrollAxis` instead of `horizontal: bool`, and
+  `ScrollViewPrim::horizontal` is now `axis`. The remote element codec
+  carries the axis (`CODEC_VERSION` 7), so a remote bundle must be
+  rebuilt against it. The `table` SDK's `TableProps` and `TablePrim`
+  gained `scroll_y`. *Migration:* pass `ScrollAxis::from_horizontal(h)`
+  (or match `axis.scrolls_x()` where you read the field); fill
+  `scroll_y` from `Default`.
+
 ### Added
 
+- **`z_index` style property** (`runtime-shared`, `css`, `wire`,
+  `dev-client`, `dev-server`, `backend-web`, `backend-ios-mobile`,
+  `backend-macos`, `backend-apple-core`, `backend-android-mobile`,
+  `backend-linux`, `backend-windows`, `backend-cpu`, `backend-terminal`,
+  `render-wgpu`). `StyleRules::z_index: Option<i32>` orders a node among
+  its siblings: higher paints on top, ties keep tree order. It needs no
+  `position`, a node with one contains its subtree (a descendant's
+  `z_index` never lifts it past its ancestor's siblings), and where
+  siblings overlap the one on top receives the pointer on every backend.
+  Negative values count as `0`. `StyleRules::stacking_z()` is the
+  effective value every backend writes (`position: Sticky` without a
+  `z_index` stacks at `1`, the existing sticky raise), and
+  `runtime_shared::style::z_paint_order` is the shared sibling order.
+  Mechanism: CSS `z-index` on web/SSR; `layer.zPosition` with
+  z-ordered `hitTest:` walks on iOS/macOS (sticky pins now also take
+  the pointer where they cover content); `setTranslationZ` at 0.01 px
+  per unit on Android; z-sorted paint and hit-test walks on GTK, Win32,
+  CPU, terminal and the GPU engine. Animated `AnimProp::ZIndex` uses the
+  same channel and scale; on Android that changes it from dp to the new
+  0.01 px step. On Android, `button` no longer carries the Material
+  theme's 2dp elevation and press lift (they painted every button above
+  later siblings and overwrote its Z on press), so it loses that native
+  shadow. On iOS/macOS a reactive anchor's layer is a
+  `CATransformLayer`, so `z_index` on its children stacks against the
+  anchor's siblings as web's `display: contents` does; portal containers
+  are kept in paint order; macOS robot screenshots render in Core
+  Animation paint order; a raised card's sibling shadow layer follows its
+  zPosition; and macOS now drops a released subtree's animation state.
+  A `z_index` on a virtualized item's root orders that row against its
+  neighbouring rows on every backend, equal-z rows stacking in row order
+  (on web and Windows rows used to stack in the order they scrolled in;
+  on Android the per-row container no longer clips a row to its slot).
+  An exhaustive `StyleRules` struct literal or destructure needs
+  the new field (or `..Default::default()`).
+
+- **`pressable` takes `on_hover`** (`runtime-vocabulary`). Pointer
+  enter/leave on the pressable itself, installed like a view's, and
+  carried over the remote-component wire (codec version 6). A hoverable
+  row no longer needs a view wrapped around its pressable.
+- **IconButton `label` and `tooltip`** (`idea-ui`). `label` is the
+  button's accessible name, which screen readers announce and robot/e2e
+  lookups match. `tooltip` wraps the button in a `Tooltip` and doubles as
+  the name when `label` is unset (a Tooltip wrapped around an IconButton
+  from outside cannot name it, because the button is built first).
+- **`max_width` on Select and Autocomplete** (`idea-ui`). Caps the
+  dropdown; option labels and descriptions wrap inside it. An
+  Autocomplete's field-width floor never exceeds the cap.
+- **SegmentedControl restyling** (`idea-ui`). `style` (the track),
+  `segment_style` and `selected_segment_style` slot overrides per
+  control, and `install_segmented_control_style` for the whole app (a
+  prop wins over the installed slot). The selected slot's `color` also
+  reaches the label on native.
 - **Plain tables** (`idea-ui`, `table`). `Table(variant =
   TableVariant::Plain)` drops the card — no frame, rounded corners,
   header band or fill of its own — so the table sits on the surface
@@ -1459,6 +1533,40 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   flipping `open` false continues the travel instead of snapping back
   first. `None` (the default) is unchanged behaviour.
 
+- **Two-axis `scroll_view`** (`runtime-shared`, `runtime-vocabulary`,
+  `runtime-layout`, `runtime-macros-expand`, `backend-web`,
+  `backend-ios-mobile`, `backend-macos`, `backend-android-mobile`,
+  `backend-linux`, `backend-windows`, `backend-terminal`, `render-wgpu`,
+  `backend-ssr`, `wire`, `dev-client`, `dev-server`, `mcp-catalog`).
+  `scroll_view(axis = ScrollAxis::Both)` scrolls content that overflows in
+  both directions: the content is laid out unconstrained on both axes
+  (`LayoutTree::set_overflow_scroll_axis`), `on_scroll` reports both
+  offsets, and `Position::Sticky` children pin on both axes at once, so a
+  `top: 0` + `left: 0` corner stays put whichever way the reader scrolls.
+  `.horizontal(bool)` is still the one-axis spelling. Mechanisms:
+  `overflow: auto` on both axes (web), a `UIScrollView` with directional
+  lock (iOS), an `NSScrollView` with both scrollers (macOS), a new
+  two-axis `RustTwoAxisScrollView` (Android), a two-way
+  `GtkScrolledWindow` (Linux), and the painted scrollers on Windows, the
+  GPU engine and the terminal. The terminal backend now implements
+  `Position::Sticky` (it rendered sticky as relative), and the GPU engine
+  pins a sticky node from its first mount (it pinned only after a later
+  restyle).
+- **`Table(scroll_y = true)` — a pinned header** (`idea-ui`, `table`). The
+  rows scroll inside the table's own height and the leading header rows
+  stick to the top. Bound it with `max_height = Some(px)` or let it fill
+  a bounded parent. With `scroll_x` the table owns ONE two-axis scroller,
+  so the header pins to the top while frozen columns keep pinning to the
+  sides, and a frozen header cell (the corner) pins both ways, stacked
+  above the header row, which is stacked above the body (`z_index` 3 / 2
+  / sticky's 1). In the SDK: `TableProps::scroll_y`, a vertical or
+  two-axis scroller, and the separate border model on web.
+- **`Table(inset_x = …)` — an edge inset** (`idea-ui`). Sets the outer
+  padding of every row's first and last cell (and the frame slots) so
+  the row dividers run the table's full width while the text keeps a
+  page margin: `TableInset::{Xs, Sm, Md, Lg, Xl, Xxl}` (spacing tokens,
+  preminted) or `TableInset::Px(f32)` for an exact margin.
+
 ### Changed
 
 - **The release planner raises breaking API changes to a major on its own**
@@ -1702,6 +1810,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Linux virtualizer rows draw at their own slot** (`backend-linux`).
+  Every row was framed at the list origin: the layout pass wrote a
+  detached row root's Taffy frame at (0,0) as its `GtkFixed` transform,
+  replacing the position the virtualizer gave it, so all rows overlapped
+  the first. Rows now keep their slot through every layout pass.
+
 - **A hot patch uses the running program's statics** (`build-runtime-server`,
   `build-web`, `backend-web`, `runtime-macros-parse`). A patch re-emits
   the edited crate, so it defined every `static` and `thread_local!` of
@@ -1728,6 +1842,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   symbol`). A page from before this change refuses a new patch and
   reloads. See
   [Statics are the running program's](docs/hot-reload.md#statics-are-the-running-programs).
+
+- **AppShell's pinned sidebar no longer paints over the content**
+  (`idea-ui-nav`). The panel is absolutely positioned at every width and
+  was the last sibling, so with stacking left to tree order the pinned
+  column covered the page: a page's shadow was cut off along the rail,
+  and a page sliding back while the rail widened slid under it. The shell
+  now stacks with `z_index`: pinned, the column sits under the content;
+  as a drawer it sits over the scrim, over the content. The content
+  always contains its subtree, so a sticky frozen table column inside the
+  page no longer paints over the open drawer and its scrim. `pin_at =
+  Breakpoint::Xs` (pinned at every width) now shows the panel and keeps
+  the scrim inert; it used to offset the content for a column that stayed
+  parked off-canvas.
 
 - **Re-applying a gradient no longer crashes iOS** (`backend-ios-core`,
   `backend-apple-core`, `backend-macos`). Replacing a view's old

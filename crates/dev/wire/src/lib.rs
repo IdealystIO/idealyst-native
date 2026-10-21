@@ -578,6 +578,11 @@ pub enum Command {
     CreateScrollView {
         id: NodeId,
         horizontal: bool,
+        /// A two-axis scroller (`ScrollAxis::Both`); `horizontal` is then
+        /// `false`. Defaulted, so a peer that predates it reads every
+        /// scroller as one-axis.
+        #[serde(default)]
+        both_axes: bool,
         #[serde(default)]
         a11y: WireAccessibilityProps,
     },
@@ -1226,6 +1231,10 @@ pub struct WireStyleRules {
     /// A text's line limit, truncated with "…" (PROTOCOL_VERSION 21).
     #[serde(default)]
     pub max_lines: Option<u32>,
+    /// Sibling stacking order (`StyleRules::z_index`). A peer that
+    /// predates it decodes `None` and stacks in tree order.
+    #[serde(default)]
+    pub z_index: Option<i32>,
 }
 
 /// Wire mirror of `runtime_shared::style::BorderStyle`.

@@ -1122,7 +1122,7 @@ impl caps::ActivityIndicatorOps for WgpuBackend {
 impl caps::ScrollOps for WgpuBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1135,7 +1135,7 @@ impl caps::ScrollOps for WgpuBackend {
                 schedule_flush();
             })
         });
-        WgpuBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
+        WgpuBackend::create_scroll_view_impl(self, axis, on_scroll, a11y)
     }
 }
 

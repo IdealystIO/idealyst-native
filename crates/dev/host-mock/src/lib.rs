@@ -182,6 +182,8 @@ pub struct Shared {
     /// `observe_scroll_end` delivered them: `(horizontal, threshold,
     /// callback)`. A test fires one to stand in for the reader arriving.
     pub end_observers: RefCell<Vec<(Node, bool, f32, Rc<dyn Fn()>)>>,
+    /// The axis each `create_scroll_view` was asked for, by node.
+    pub scroll_axes: RefCell<HashMap<Node, runtime_shared::ScrollAxis>>,
     /// Virtualizer callback bundles.
     pub virtualizers: RefCell<Vec<VirtualizerCallbacks<Node>>>,
     /// `virtual_grid` callback bundles (two-axis).
@@ -279,6 +281,7 @@ impl Default for Shared {
             link_activations: RefCell::new(Vec::new()),
             scroll_handlers: RefCell::new(Vec::new()),
             end_observers: RefCell::new(Vec::new()),
+            scroll_axes: RefCell::new(HashMap::new()),
             virtualizers: RefCell::new(Vec::new()),
             virtual_grids: RefCell::new(Vec::new()),
             graphics: RefCell::new(Vec::new()),
@@ -1121,12 +1124,14 @@ impl caps::ScrollOps for HostMock {
 
     fn create_scroll_view(
         &mut self,
-        _horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Node {
         self.s.scroll_handlers.borrow_mut().push(on_scroll);
-        self.mint("scroll_view".into())
+        let node = self.mint("scroll_view".into());
+        self.s.scroll_axes.borrow_mut().insert(node, axis);
+        node
     }
 
     fn apply_scroll_view_bounces(&mut self, node: &Node, bounces: bool) {

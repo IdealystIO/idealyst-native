@@ -200,7 +200,7 @@ fn primitive_ops_record() {
 #[test]
 fn scroll_safe_area_and_virtualizer_record() {
     let (mut m, s) = mock();
-    let node = <HostMock as caps::ScrollOps>::create_scroll_view(&mut m, false, None, &a11y());
+    let node = <HostMock as caps::ScrollOps>::create_scroll_view(&mut m, runtime_shared::ScrollAxis::Vertical, None, &a11y());
 
     // ScrollOps round-trip: set writes the offset map the read serves.
     assert_eq!(<HostMock as caps::ScrollOps>::node_scroll(&m, &node), (0.0, 0.0));

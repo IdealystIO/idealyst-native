@@ -941,7 +941,7 @@ impl caps::ActivityIndicatorOps for TerminalBackend {
 impl caps::ScrollOps for TerminalBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -966,11 +966,13 @@ impl caps::ScrollOps for TerminalBackend {
         let node = self.alloc_node(NodeKind::ScrollView, String::new());
         let layout = self.nodes.get(&node.id).map(|d| d.layout);
         if let Some(d) = self.nodes.get_mut(&node.id) {
-            d.horizontal = horizontal;
+            d.scroll_axis = axis;
             d.on_scroll = on_scroll;
         }
         // Tell Taffy this node behaves like CSS `overflow: scroll` on
-        // the chosen axis. Without this, Taffy sizes the scroll view
+        // each scrolling axis (`Both` → both, and its content is exempt
+        // from the default `max-width: 100%` clamp so it can be wider
+        // than the viewport). Without this, Taffy sizes the scroll view
         // to its content's intrinsic size — i.e. the content fits
         // inside it exactly and there's nothing to scroll. The
         // helper also sets `flex_grow: 1, flex_basis: 0` so the
@@ -980,7 +982,7 @@ impl caps::ScrollOps for TerminalBackend {
         // set by its parent and content has its own coordinate
         // space).
         if let Some(l) = layout {
-            self.layout.set_overflow_scroll(l, horizontal);
+            self.layout.set_overflow_scroll_axis(l, axis);
         }
         node
     }
@@ -1060,17 +1062,11 @@ impl caps::StyleOps for TerminalBackend {
     }
 
     fn apply_style(&mut self, node: &Self::Node, style: &Rc<StyleRules>) {
-        // Degrade LOUDLY, once. `terminal` has no scrolling gesture model,
-        // so `Position::Sticky` renders as `Relative` and
-        // `overscroll-behavior` has nothing to govern. Warn rather than
-        // drop them silently (`runtime_shared::unsupported`).
-        if matches!(style.position, Some(runtime_shared::Position::Sticky)) {
-            runtime_shared::unsupported::warn_once(
-                "terminal.sticky",
-                "position: Sticky on the terminal backend — rendered as Relative (this backend \
-                 has no scroll gesture model). Web and the native backends pin.",
-            );
-        }
+        // Degrade LOUDLY, once. `terminal` has no overscroll (wheel
+        // offsets hard-clamp, no bounce), so `overscroll-behavior` has
+        // nothing to govern. Warn rather than drop it silently
+        // (`runtime_shared::unsupported`). `Position::Sticky` IS
+        // honored — the paint and hit walks pin it (`crate::scroll`).
         if style.overscroll_behavior.is_some() {
             runtime_shared::unsupported::warn_once(
                 "terminal.overscroll_behavior",
@@ -1171,6 +1167,10 @@ impl caps::StyleOps for TerminalBackend {
             d.bg = bg;
             d.static_translate_x = static_tx;
             d.static_translate_y = static_ty;
+            // Written on every application so removing `z_index`
+            // restores the default; an animated z still wins (see
+            // `NodeData::animated_z`).
+            d.static_z = style.stacking_z() as f32;
             if let Some(o) = static_opacity {
                 d.opacity = o;
             }
@@ -1229,11 +1229,9 @@ impl caps::AnimationOps for TerminalBackend {
             AnimProp::Opacity => d.animated_opacity = Some(value.clamp(0.0, 1.0)),
             AnimProp::TranslateX => d.translate_x = value,
             AnimProp::TranslateY => d.translate_y = value,
-            // Sibling-relative ordering. Higher value renders on top
-            // of lower. Welcome's planets sweep through positive and
-            // negative values as they orbit so they pass in front of
-            // and behind the headline.
-            AnimProp::ZIndex => d.z_index = value,
+            // Sibling-relative ordering; overrides the static
+            // `z_index` (see [`NodeData::animated_z`]).
+            AnimProp::ZIndex => d.animated_z = Some(value),
             // Scale / Rotate don't map cleanly to a cell grid —
             // documented no-ops so author code stays portable.
             _ => {}

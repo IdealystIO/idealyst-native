@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::primitives::scroll_view::ScrollViewHandle;
+use runtime_shared::primitives::scroll_view::{ScrollAxis, ScrollViewHandle};
 use runtime_shared::{
     FileDropHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
     WheelHandler,
@@ -150,6 +150,7 @@ pub fn pressable(on_press: impl Fn() + 'static) -> PressableBuilder {
         prim: PressablePrim {
             test_id: None,
             on_press: Rc::new(on_press),
+            on_hover: None,
             disabled: None,
             preserves_focus: false,
             style: None,
@@ -191,6 +192,12 @@ impl PressableBuilder {
         self
     }
 
+    /// Pointer-enter/leave notifications (`true` on enter), as on a view.
+    pub fn on_hover(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.prim.on_hover = Some(Rc::new(handler));
+        self
+    }
+
     pub fn a11y(mut self, a11y: AccessibilityProps) -> Self {
         self.prim.a11y = a11y;
         self
@@ -219,7 +226,7 @@ pub fn scroll_view() -> ScrollViewBuilder {
     ScrollViewBuilder {
         prim: ScrollViewPrim {
             test_id: None,
-            horizontal: false,
+            axis: ScrollAxis::Vertical,
             on_scroll: None,
             on_end_reached: None,
             end_reached_threshold: 0.0,
@@ -250,8 +257,16 @@ impl ScrollViewBuilder {
         self
     }
 
+    /// `true` scrolls left-right, `false` top-to-bottom (the default).
     pub fn horizontal(mut self, horizontal: bool) -> Self {
-        self.prim.horizontal = horizontal;
+        self.prim.axis = ScrollAxis::from_horizontal(horizontal);
+        self
+    }
+
+    /// Which axes scroll. `ScrollAxis::Both` lets content overflow in
+    /// both directions; sticky children pin on both.
+    pub fn axis(mut self, axis: ScrollAxis) -> Self {
+        self.prim.axis = axis;
         self
     }
 

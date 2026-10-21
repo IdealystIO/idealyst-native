@@ -23,7 +23,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{CGFloat, CGPoint, MainThreadMarker, NSArray, NSSet};
-use objc2_ui_kit::{UIEvent, UITouch, UIView};
+use objc2_ui_kit::{UIEvent, UIScrollView, UITouch, UIView};
 
 pub(crate) struct TouchViewIvars {
     /// Installed by `InputOps::install_touch_handler`. Wrapped in
@@ -47,16 +47,6 @@ pub(crate) struct TouchViewIvars {
     /// because the UIKit flag disables the WHOLE subtree with no way
     /// for a descendant `Auto` to re-enable.
     pointer_events: Cell<Option<runtime_shared::PointerEvents>>,
-    /// A reactive anchor (`Host::create_anchor`): `display: contents` in
-    /// layout (`LayoutTree::new_contents_node`) and, here, in hit-testing.
-    /// The view's own bounds are the ancestor's box, which is not where
-    /// its children necessarily are — under a scroll view the children
-    /// extend past it — so `hitTest:` must ignore the bounds entirely:
-    /// try each subview, never answer with this view. `pointer_events:
-    /// None` is the wrong tool: it makes the whole SUBTREE transparent
-    /// unless a descendant opts back in, and an anchor's children are
-    /// ordinary views that never do.
-    layout_transparent: Cell<bool>,
 }
 
 declare_class!(
@@ -109,39 +99,22 @@ declare_class!(
         // `backend_apple_core::pointer_events_policy`. Without this, an
         // always-mounted full-window scrim styled inert via
         // `PointerEvents::None` (idea-ui-nav's AppShell) captures every
-        // touch. Single tail expression (no early `return`):
-        // `declare_class!` wraps `#[method_id]` bodies.
+        // touch. The subview walk follows sibling `z_index` paint order
+        // (`z_ordered_hit_test`). Single tail expression (no early
+        // `return`): `declare_class!` wraps `#[method_id]` bodies.
         #[method_id(hitTest:withEvent:)]
         fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
-            if self.ivars().layout_transparent.get() {
-                // Topmost subview first, as UIKit does; `convertPoint:`
-                // maps into each subview's own coordinate space. No
-                // bounds check on self (see `layout_transparent`).
-                let self_view: &UIView = self;
-                let subviews = self_view.subviews();
-                let subviews: Vec<&UIView> = subviews.to_vec();
-                let mut hit: Option<Retained<UIView>> = None;
-                for sub in subviews.iter().rev() {
-                    let sub: &UIView = sub;
-                    let p: CGPoint =
-                        unsafe { msg_send![self_view, convertPoint: point, toView: sub] };
-                    hit = unsafe { msg_send_id![sub, hitTest: p, withEvent: event] };
-                    if hit.is_some() {
-                        break;
-                    }
-                }
-                hit
+            let result: Option<Retained<UIView>> = match z_ordered_hit_test(self, point, event) {
+                Some(resolved) => resolved,
+                None => unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] },
+            };
+            if matches!(
+                self.ivars().pointer_events.get(),
+                Some(runtime_shared::PointerEvents::None)
+            ) {
+                result.and_then(|result| resolve_in_none_root(self, result))
             } else {
-                let result: Option<Retained<UIView>> =
-                    unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
-                if matches!(
-                    self.ivars().pointer_events.get(),
-                    Some(runtime_shared::PointerEvents::None)
-                ) {
-                    result.and_then(|result| resolve_in_none_root(self, result))
-                } else {
-                    result
-                }
+                result
             }
         }
 
@@ -157,6 +130,213 @@ declare_class!(
         }
     }
 );
+
+/// `layer.zPosition` of each view — where the static `z_index`
+/// (`StyleRules::stacking_z`) and animated `AnimProp::ZIndex` both land.
+fn layer_zs(views: &[Retained<UIView>]) -> Vec<f64> {
+    views
+        .iter()
+        .map(|v| {
+            let layer: *mut AnyObject = unsafe { msg_send![&**v, layer] };
+            if layer.is_null() {
+                0.0
+            } else {
+                let z: CGFloat = unsafe { msg_send![layer, zPosition] };
+                z as f64
+            }
+        })
+        .collect()
+}
+
+fn is_anchor(view: &UIView) -> bool {
+    // `::class()`, not `class!`: it registers the class on first use, and a
+    // tree with no anchor yet would otherwise abort here.
+    unsafe { msg_send![view, isKindOfClass: IdealystAnchorView::class()] }
+}
+
+/// The views that compete for a hit directly under `view`, in tree order:
+/// its subviews, with every reactive anchor (`IdealystAnchorView`, the
+/// `display: contents` node) replaced by ITS candidates. On web an
+/// anchor's children are flex items of the anchor's parent and stack
+/// against the anchor's siblings by `z-index`; the anchor's
+/// `CATransformLayer` paints them that way, and this list hit-tests them
+/// that way. An anchor UIKit's default would skip (hidden, interaction
+/// off, alpha below the threshold) contributes nothing.
+fn hit_candidates(view: &UIView) -> Vec<Retained<UIView>> {
+    fn collect(view: &UIView, out: &mut Vec<Retained<UIView>>) {
+        let subviews = view.subviews();
+        for sub in subviews.iter() {
+            let sub: &UIView = sub;
+            if is_anchor(sub) {
+                let hidden: bool = unsafe { msg_send![sub, isHidden] };
+                let interactive: bool = unsafe { msg_send![sub, isUserInteractionEnabled] };
+                let alpha: CGFloat = unsafe { msg_send![sub, alpha] };
+                if backend_apple_core::z_order::uikit_accepts_hits(hidden, interactive, alpha as f64)
+                {
+                    collect(sub, out);
+                }
+            } else if let Some(sub) =
+                unsafe { Retained::retain(sub as *const UIView as *mut UIView) }
+            {
+                out.push(sub);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(view, &mut out);
+    out
+}
+
+/// Hit-test `view`'s candidates ([`hit_candidates`]) topmost-PAINTED
+/// first, returning the first hit — `nil` when none claims the point. The
+/// tail of UIKit's default `hitTest:withEvent:` with its index walk
+/// replaced by `backend_apple_core::z_order` (reverse paint order:
+/// `zPosition`, ties in tree order — identical to UIKit's walk when every
+/// z is 0 and no anchor sits in between).
+pub(crate) fn walk_subviews_topmost_first(
+    view: &UIView,
+    point: CGPoint,
+    event: Option<&UIEvent>,
+) -> Option<Retained<UIView>> {
+    let subs = hit_candidates(view);
+    let zs = layer_zs(&subs);
+    backend_apple_core::z_order::first_hit(&zs, |i| {
+        let sub: &UIView = &subs[i];
+        let p: CGPoint = unsafe { msg_send![view, convertPoint: point, toView: sub] };
+        unsafe { msg_send_id![sub, hitTest: p, withEvent: event] }
+    })
+}
+
+/// UIKit's default `hitTest:withEvent:` for `view`, but walking its
+/// candidates ([`hit_candidates`]) in sibling `z_index` paint order.
+/// UIKit's own walk goes by `subviews` index and ignores `zPosition`, so
+/// a sibling raised with `z_index` would paint on top yet lose the touch
+/// to the later sibling it covers (`StyleRules::z_index`: "hit-testing
+/// follows paint").
+///
+/// `None` when no candidate has a nonzero `zPosition`: UIKit's walk (an
+/// anchor walking its own children) is then already paint order, and the
+/// caller keeps calling `super`. Otherwise `Some(hit)`, reproducing the
+/// default's checks on `view` itself (hidden / user interaction / alpha
+/// via `backend_apple_core::z_order::uikit_accepts_hits`, then the
+/// class's own `pointInside:withEvent:`) and answering with `view` when
+/// no candidate claims the point.
+pub(crate) fn z_ordered_hit_test(
+    view: &UIView,
+    point: CGPoint,
+    event: Option<&UIEvent>,
+) -> Option<Option<Retained<UIView>>> {
+    let subs = hit_candidates(view);
+    let zs = layer_zs(&subs);
+    if !backend_apple_core::z_order::needs_z_walk(&zs) {
+        return None;
+    }
+    let hidden: bool = unsafe { msg_send![view, isHidden] };
+    let interactive: bool = unsafe { msg_send![view, isUserInteractionEnabled] };
+    let alpha: CGFloat = unsafe { msg_send![view, alpha] };
+    if !backend_apple_core::z_order::uikit_accepts_hits(hidden, interactive, alpha as f64) {
+        return Some(None);
+    }
+    let inside: bool = unsafe { msg_send![view, pointInside: point, withEvent: event] };
+    if !inside {
+        return Some(None);
+    }
+    let hit = backend_apple_core::z_order::first_hit(&zs, |i| {
+        let sub: &UIView = &subs[i];
+        let p: CGPoint = unsafe { msg_send![view, convertPoint: point, toView: sub] };
+        unsafe { msg_send_id![sub, hitTest: p, withEvent: event] }
+    });
+    Some(hit.or_else(|| unsafe { Retained::retain(view as *const UIView as *mut UIView) }))
+}
+
+declare_class!(
+    /// A reactive anchor (`Host::create_anchor`) — this backend's
+    /// `display: contents`. Layout: a `LayoutTree::new_contents_node`, its
+    /// frame the real ancestor's box at the origin. Paint: its layer is a
+    /// `CATransformLayer`, which does not flatten its sublayers, so its
+    /// children are depth-sorted by `zPosition` together with the
+    /// anchor's own siblings, ties in tree order — exactly how web stacks
+    /// a `display: contents` node's children among its parent's (a plain
+    /// layer would sort them only among themselves, so a `z_index` on an
+    /// anchor's child could never rise above the anchor's later sibling).
+    /// The anchor itself never takes a style, so the transform layer's
+    /// inert background/border properties are never set. Hit-testing:
+    /// never answers with itself and ignores its own bounds (under a
+    /// scroll view its children extend past them); the framework parents
+    /// fold its children into their own z-ordered walk (`hit_candidates`).
+    pub(crate) struct IdealystAnchorView;
+
+    unsafe impl ClassType for IdealystAnchorView {
+        type Super = UIView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystAnchorView";
+    }
+
+    impl DeclaredClass for IdealystAnchorView {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystAnchorView {
+        #[method(layerClass)]
+        fn layer_class() -> &'static objc2::runtime::AnyClass {
+            objc2::class!(CATransformLayer)
+        }
+
+        #[method_id(hitTest:withEvent:)]
+        fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
+            walk_subviews_topmost_first(self, point, event)
+        }
+    }
+);
+
+impl IdealystAnchorView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<UIView> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
+        Retained::into_super(this)
+    }
+}
+
+declare_class!(
+    /// The framework's `scroll_view` (and the virtual grid's scroller):
+    /// a plain `UIScrollView` whose `hitTest:withEvent:` follows sibling
+    /// `z_index` paint order. Scroll content is parented directly under
+    /// the scroll view, so a sticky header (raised by `STICKY_Z`) or an
+    /// author-raised row is a sibling of the rows it covers; without this
+    /// override UIKit's index walk would hand a touch on the overlap to
+    /// the row scrolling underneath.
+    pub(crate) struct IdealystScrollView;
+
+    unsafe impl ClassType for IdealystScrollView {
+        type Super = UIScrollView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystScrollView";
+    }
+
+    impl DeclaredClass for IdealystScrollView {
+        type Ivars = ();
+    }
+
+    unsafe impl IdealystScrollView {
+        #[method_id(hitTest:withEvent:)]
+        fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
+            match z_ordered_hit_test(self, point, event) {
+                Some(resolved) => resolved,
+                None => unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] },
+            }
+        }
+    }
+);
+
+impl IdealystScrollView {
+    pub(crate) fn new(mtm: MainThreadMarker) -> Retained<UIScrollView> {
+        let this = mtm.alloc::<Self>();
+        let this = this.set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
+        Retained::into_super(this)
+    }
+}
 
 /// The `pointer-events: none` verdict for a hit UIKit's default
 /// `hitTest:` resolved inside `root`'s subtree, `root` being a view whose
@@ -209,7 +389,6 @@ impl IdealystTouchView {
             handler: RefCell::new(None),
             active_touches: RefCell::new(HashSet::new()),
             pointer_events: Cell::new(None),
-            layout_transparent: Cell::new(false),
         });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
         // multipleTouchEnabled = YES so every finger reaches us, not
@@ -234,13 +413,6 @@ impl IdealystTouchView {
     /// Consulted by the `hitTest:withEvent:` override above.
     pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
         self.ivars().pointer_events.set(v);
-    }
-
-    /// Mark this view as a reactive anchor: hit-transparent itself, its
-    /// subviews hit-tested without regard to its bounds. See
-    /// `layout_transparent`. Set once at `create_anchor`.
-    pub(crate) fn set_layout_transparent(&self) {
-        self.ivars().layout_transparent.set(true);
     }
 
     /// Whether an `on_touch` handler is currently installed. Every framework

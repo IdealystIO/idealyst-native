@@ -311,6 +311,18 @@ pub fn run() {
             ],
     );
 
+    println!("z_index");
+    // Regression: a card raised with `z_index` (zPosition 2) left its sibling
+    // shadow at z 0 in the parent, so Core Animation painted that shadow
+    // under every sibling between it and the card.
+    let z_of = |l: &NSObject| -> CGFloat { unsafe { msg_send![l, zPosition] } };
+    let _: () = unsafe { msg_send![&*card, setZPosition: 2.0 as CGFloat] };
+    shadow_layer::sync_sibling_z(&card);
+    r.check("the shadow takes its card's zPosition", z_of(&sib) == 2.0);
+    let _: () = unsafe { msg_send![&*card, setZPosition: 0.0 as CGFloat] };
+    shadow_layer::sync_sibling(&card);
+    r.check("a layout-pass sync re-mirrors it", z_of(&sib) == 0.0);
+
     println!("detach / reattach");
     shadow_layer::detach_sibling(&card);
     r.check(

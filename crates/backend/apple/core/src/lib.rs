@@ -158,6 +158,18 @@ pub mod sublayers;
 /// (Rule #7).
 pub mod pointer_events_policy;
 
+/// Sibling `z_index` hit-test order shared by the UIKit + AppKit
+/// `hitTest:` overrides: `layer.zPosition` reorders paint but not the
+/// platforms' index-ordered subview walk. NOT OS-gated — pure
+/// `runtime_shared` logic, host-testable (Rule #7).
+pub mod z_order;
+
+/// Puts a CALayer tree into compositor paint order (`zPosition`, transform
+/// layers folded) for one synchronous software rasterization —
+/// `renderInContext:` ignores both — so snapshots match the screen.
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
+pub mod layer_paint_order;
+
 /// Post-dispatch hook for the backends' flush drivers: a thread-local
 /// `fn()` slot the scheduler/executor fire after timer / frame /
 /// future-poll callbacks that may run author code. No-op until a boot

@@ -1678,13 +1678,13 @@ impl IosBackend {
     /// shares `runtime_layout`, which pins the shapes). So it registers
     /// a contents node, whose children link into the real ancestor and
     /// whose own frame is that ancestor's box at the origin (the
-    /// children's frames stay correct under this view unchanged), and
-    /// the view is hit-transparent for itself with its subviews tested
-    /// regardless of its bounds (`IdealystTouchView::set_layout_transparent`).
+    /// children's frames stay correct under this view unchanged). The
+    /// view (`touch::IdealystAnchorView`) is `display: contents` for paint
+    /// and hit-testing too: its children stack by `z_index` against the
+    /// anchor's siblings, and it is hit-transparent for itself with its
+    /// subviews tested regardless of its bounds.
     pub(crate) fn create_anchor_impl(&mut self) -> IosNode {
-        let touch_view = touch::IdealystTouchView::new(self.mtm);
-        touch_view.set_layout_transparent();
-        let view: Retained<UIView> = Retained::into_super(touch_view);
+        let view: Retained<UIView> = touch::IdealystAnchorView::new(self.mtm);
         let _ = self.layout_for_view_with(&view, |layout| layout.new_contents_node());
         IosNode::View(view)
     }
@@ -2295,24 +2295,37 @@ impl IosBackend {
 
     pub(crate) fn create_scroll_view_impl(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> IosNode {
-        // Plain UIScrollView, frame-based. Children are added directly as
-        // subviews (no inner UIStackView); their frames come from Taffy via
-        // `apply_frames`. We sync `contentSize` to the bounding rect of the Taffy
-        // children at the end of every layout pass so scrolling works.
-        let scroll = unsafe { UIScrollView::new(self.mtm) };
+        // A UIScrollView (`IdealystScrollView`: its only override makes
+        // hit-testing follow sibling `z_index` paint order), frame-based.
+        // Children are added directly as subviews (no inner UIStackView);
+        // their frames come from Taffy via `apply_frames`. We sync
+        // `contentSize` to the bounding rect of the Taffy children at the
+        // end of every layout pass so scrolling works.
+        let scroll = touch::IdealystScrollView::new(self.mtm);
 
         // Always allow scroll gestures even when content fits — UIKit
         // otherwise disables them when contentSize ≤ bounds, which
         // makes the scroll view feel "dead" when content happens to
         // be short. Matches typical iOS app behavior (Settings, Mail).
-        if horizontal {
+        // A two-axis scroller bounces vertically only: a sideways spring
+        // on content that fits its width reads as the table coming loose.
+        if axis == runtime_shared::ScrollAxis::Horizontal {
             let _: () = unsafe { msg_send![&scroll, setAlwaysBounceHorizontal: true] };
         } else {
             let _: () = unsafe { msg_send![&scroll, setAlwaysBounceVertical: true] };
+        }
+        // A two-axis scroller locks each drag to the axis it starts on
+        // (UIKit's `directionalLockEnabled`): a mostly-vertical swipe down
+        // a wide table scrolls the rows without drifting the columns
+        // sideways. A diagonal drag still pans freely. Mobile browsers
+        // rail a mostly-straight touch drag on a two-axis `overflow: auto`
+        // pane the same way.
+        if axis == runtime_shared::ScrollAxis::Both {
+            let _: () = unsafe { msg_send![&scroll, setDirectionalLockEnabled: true] };
         }
 
         // Deliver touches to content IMMEDIATELY rather than delaying them while
@@ -2372,7 +2385,7 @@ impl IosBackend {
         // override with an explicit height. Regression:
         // `regression_scroll_node_bounded_by_overflow_scroll_not_content`
         // (runtime-layout).
-        self.layout.set_overflow_scroll(scroll_layout, horizontal);
+        self.layout.set_overflow_scroll_axis(scroll_layout, axis);
         let key = &*scroll as *const UIScrollView as *const UIView as usize;
         self.scroll_views.insert(key);
         let node = IosNode::ScrollView(scroll);
@@ -2819,14 +2832,19 @@ impl IosBackend {
     }
 
     pub(crate) fn create_link_impl(&mut self, config: LinkConfig, a11y: &runtime_shared::accessibility::AccessibilityProps) -> IosNode {
-        // Plain UIView (was UIStackView). UIStackView injected internal
-        // UISV-canvas-connection constraints that fought Taffy's
-        // frame-based positioning — manifested as sibling links in the
-        // drawer sidebar overlapping with gap=0 instead of honoring
-        // the parent's `gap`, and the Link's own height collapsing.
-        // Children now render via the normal addSubview + Taffy frame
-        // path, identical to `create_view`.
-        let view = unsafe { UIView::new(self.mtm) };
+        // A frame-positioned view, not a UIStackView: UIStackView injects
+        // internal UISV-canvas-connection constraints that fight Taffy's
+        // frame-based positioning (sibling links in the drawer sidebar
+        // overlapping with gap=0, the Link's own height collapsing).
+        // Children render via the normal addSubview + Taffy frame path,
+        // identical to `create_view`. An `IdealystTouchView` like
+        // `create_view` / `create_pressable` (macOS links are its
+        // `FlippedView` too), so a link's children hit-test in `z_index`
+        // paint order and an explicit `pointer_events` on the link is
+        // honored; with no touch handler it forwards touches to `super`,
+        // so the tap recognizer below behaves as on a plain `UIView`.
+        let view: Retained<UIView> =
+            Retained::into_super(touch::IdealystTouchView::new(self.mtm));
         let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: true] };
 
         let target = CallbackTarget::new(self.mtm, config.on_activate);
@@ -3738,6 +3756,47 @@ impl IosBackend {
             _ => {
                 sticky::deregister(&mut self.sticky_registry, view);
                 self.pending_sticky.remove(&view_key);
+            }
+        }
+
+        // Sibling stacking: `stacking_z()` (the `z_index`, else
+        // `STICKY_Z` for Sticky, else 0) → `layer.zPosition`, the channel
+        // `AnimProp::ZIndex` drives in the same units. Written on every
+        // apply so dropping a `z_index` (or leaving Sticky) restores 0;
+        // the sticky registry never touches it, so a deferred sticky
+        // registration in `insert` can't clobber an explicit `z_index`.
+        // Skipped once an animation has written `ZIndex` on this view:
+        // the animated value overrides the static one. Core Animation
+        // paints by it; the framework views' `hitTest:` overrides
+        // (`touch::z_ordered_hit_test`) make touches follow it.
+        let z_animated = self
+            .animated_states
+            .get(&node.view_key())
+            .is_some_and(|s| s.z_index.is_some());
+        if !z_animated {
+            let layer: Option<Retained<objc2::runtime::NSObject>> =
+                unsafe { msg_send_id![view, layer] };
+            if let Some(layer) = layer {
+                let z = style.stacking_z() as f64;
+                let _: () = unsafe { msg_send![&layer, setZPosition: z] };
+                backend_apple_core::shadow_layer::sync_sibling_z(&layer);
+            }
+            // A virtualized item's row stacks by this z too.
+            virtualizer::sync_cell_z_for_item(view);
+            // A portal container sits in the UIWindow, whose stock
+            // `hitTest:` walks by index: re-sort the mounted portals so
+            // touches follow the new z (`order_portals_in_window`).
+            let is_portal: bool = unsafe {
+                msg_send![
+                    view,
+                    isKindOfClass: <callbacks::OverlayPassthroughView as objc2::ClassType>::class()
+                ]
+            };
+            if is_portal {
+                let host: Option<Retained<UIView>> = unsafe { msg_send_id![view, superview] };
+                if let Some(host) = host {
+                    callbacks::order_portals_in_window(&host);
+                }
             }
         }
 

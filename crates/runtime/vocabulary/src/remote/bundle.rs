@@ -453,6 +453,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
         return Node::Pressable {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
             on_press: register(Entry::Fire(p.on_press)),
+            on_hover: p.on_hover.map(|f| handler(move |h: &bool| f(*h))),
             disabled: p.disabled.map(val),
             preserves_focus: p.preserves_focus,
             children: encode_all(children),
@@ -588,7 +589,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
         let fill = super::handles::fill(p.ref_fill, |n| runtime_shared::primitives::scroll_view::ScrollViewHandle::new(n, &super::handles::REMOTE_OPS));
         return Node::ScrollView {
             common: common(p.test_id, p.style, p.a11y).with_fill(fill),
-            horizontal: p.horizontal,
+            axis: p.axis,
             on_scroll: p.on_scroll.map(|f| handler(move |&(x, y): &(f32, f32)| f(x, y))),
             on_end_reached: p.on_end_reached.map(|f| register(Entry::Fire(f))),
             end_reached_threshold: p.end_reached_threshold,

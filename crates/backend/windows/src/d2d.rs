@@ -17,7 +17,7 @@
 //!   offset, then the `scene::transform_ops` chain (composed with
 //!   `painted_geom::Affine`, the same maths the introspection reader uses),
 //!   content inset, own visual, `overflow`/scroll clip, scroll offset,
-//!   children in `scene::z_sorted` order. Group opacity multiplies into each
+//!   children in `scene::child_paint_order`. Group opacity multiplies into each
 //!   drawn color, as the GDI painter does (images use Direct2D's per-draw
 //!   opacity, closing the GDI path's documented image gap).
 //! - **Culling.** A node whose device bounds miss the current clip is not
@@ -445,7 +445,7 @@ impl D2dRenderer {
         if alpha <= 0.003 {
             return;
         }
-        let (fx, fy, w, h) = meta.frame;
+        let (fx, fy, w, h) = meta.placed_frame();
         let ops = scene::transform_ops(w, h, &meta.author_transform, &meta.anim);
         let m = parent.node(fx, fy, &ops);
         let bounds = m.bounds(w, h);
@@ -470,9 +470,9 @@ impl D2dRenderer {
             return;
         }
 
-        let Some(children) = children else {
+        if children.is_none() {
             return;
-        };
+        }
         let mut child_clip = clip;
         let mut layer = false;
         if clips {
@@ -516,9 +516,7 @@ impl D2dRenderer {
                 cm = cm.then_translate(-s.offset_x, -s.offset_y);
             }
         }
-        let pairs: Vec<(u64, f32)> =
-            children.iter().filter_map(|cid| b.nodes.get(cid).map(|cm| (*cid, cm.z))).collect();
-        for cid in scene::z_sorted(&pairs) {
+        for cid in scene::child_paint_order(b, id) {
             self.node(b, cid, &cm, alpha, child_clip);
         }
         if clips {
@@ -1276,7 +1274,7 @@ mod tests {
             b.insert(root, clip);
             // A scroll view scrolled 60px down a stack of bars; bars that
             // scrolled out (and those below) are culled, the rest clipped.
-            let mut scroll = b.create_scroll_view(false, None, &a11y);
+            let mut scroll = b.create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y);
             b.apply_style(&scroll, &placed(200.0, 10.0, 150.0, 100.0, |_| {}));
             let mut column = b.create_view(&a11y);
             b.apply_style(&column, &style(|s| {

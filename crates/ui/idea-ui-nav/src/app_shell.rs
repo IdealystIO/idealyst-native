@@ -55,6 +55,21 @@ use std::rc::Rc;
 
 const SLIDE_MS: u32 = 240;
 
+// Sibling stacking (`StyleRules::z_index`). The content is ALWAYS raised:
+// an explicit z makes it contain its subtree, so nothing inside the page
+// with its own z (a table's frozen column is sticky, which stacks at 1)
+// can compete with the scrim or the drawer at the shell's level.
+const CONTENT_Z: i32 = 1;
+const SCRIM_Z: i32 = 2;
+/// The drawer covers the scrim, which covers the content.
+const DRAWER_Z: i32 = 3;
+/// The pinned column sits UNDER the content: it shares no area with the
+/// content box (the content is offset by the sidebar width), but whatever
+/// the page draws past its own edge — a plate's shadow, a page sliding
+/// back while a rail widens — lands on the rail rather than being cut off
+/// by it.
+const PINNED_PANEL_Z: i32 = 0;
+
 /// Reactive read: is an [`AppShell`] sidebar with this pin threshold currently
 /// pinned in-flow? Call inside `rx!` / an effect so it re-fires on breakpoint
 /// change — e.g. to hide the hamburger, or to close the drawer after a
@@ -187,7 +202,8 @@ pub fn AppShell(props: AppShellProps) -> Element {
     // Main content: fills the shell; the pinned-sidebar offset is a
     // margin applied by the breakpoint overlay (the panel itself stays
     // absolute in BOTH modes, so pin/unpin never reflows the panel
-    // subtree — only this wrapper's margin animates).
+    // subtree — only this wrapper's margin animates). Its stacking is
+    // constant (`CONTENT_Z`); the panel's z is what flips at the pin.
     let content_sheet = runtime_core::cached_stylesheet(
         cache_key(width, pin_axis, 0),
         move || {
@@ -197,6 +213,7 @@ pub fn AppShell(props: AppShellProps) -> Element {
                 min_width: Some(Length::Px(0.0).into()),
                 margin_left: Some(Length::Px(if pin_axis.is_none() { width } else { 0.0 }).into()),
                 margin_left_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                z_index: Some(CONTENT_Z),
                 ..Default::default()
             });
             if let Some(axis) = pin_axis {
@@ -251,11 +268,18 @@ pub fn AppShell(props: AppShellProps) -> Element {
                 opacity: Some(Tokenized::Literal(0.0)),
                 pointer_events: Some(PointerEvents::None),
                 opacity_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                z_index: Some(SCRIM_Z),
                 ..Default::default()
             })
-            .variant("open", "on", |_| StyleRules {
-                opacity: Some(Tokenized::Literal(0.45)),
-                pointer_events: Some(PointerEvents::Auto),
+            .variant("open", "on", move |_| StyleRules {
+                // `Xs` pins at every width: there is never a drawer to
+                // dismiss, so `open` leaves the scrim inert.
+                opacity: Some(Tokenized::Literal(if pin_axis.is_none() { 0.0 } else { 0.45 })),
+                pointer_events: Some(if pin_axis.is_none() {
+                    PointerEvents::None
+                } else {
+                    PointerEvents::Auto
+                }),
                 ..Default::default()
             });
             if let Some(axis) = pin_axis {
@@ -288,10 +312,12 @@ pub fn AppShell(props: AppShellProps) -> Element {
     // Panel: always absolute on the leading edge; the pinned overlay
     // slides it permanently in. Keeping ONE positioning mode (rather
     // than toggling in-flow/absolute) is what makes pin/unpin a pure
-    // style flip with no remount, and — with no z-index in StyleRules —
-    // the panel must stay the LAST sibling to paint above the scrim.
-    // Open state is the `open` axis here too. No compound needed: the
-    // `open` arm and the pinned arm agree (translateX(0)), so merge order
+    // style flip with no remount. Its z flips with the pin: a drawer
+    // over the scrim and the content (`DRAWER_Z`), a pinned column under
+    // the content (`PINNED_PANEL_Z`). With `Xs` (no overlay axis) the
+    // base IS the pinned layout. Open state is the `open` axis here too.
+    // No compound needed: the `open` arm sets only the transform, which
+    // agrees with the pinned arm's (translateX(0)), so merge order
     // between them cannot matter.
     let panel_sheet = runtime_core::cached_stylesheet(
         cache_key(width, pin_axis, 2),
@@ -310,8 +336,13 @@ pub fn AppShell(props: AppShellProps) -> Element {
                 // sidebar `scroll_view` never clamps and can't
                 // scroll.
                 flex_direction: Some(FlexDirection::Column),
-                transform: Some(vec![Transform::TranslateX(Length::Px(-width))]),
+                transform: Some(vec![Transform::TranslateX(Length::Px(if pin_axis.is_none() {
+                    0.0
+                } else {
+                    -width
+                }))]),
                 transform_transition: Some(Transition::new(SLIDE_MS, Easing::EaseOut)),
+                z_index: Some(if pin_axis.is_none() { PINNED_PANEL_Z } else { DRAWER_Z }),
                 ..Default::default()
             })
             .variant("open", "on", |_| StyleRules {
@@ -321,6 +352,7 @@ pub fn AppShell(props: AppShellProps) -> Element {
             if let Some(axis) = pin_axis {
                 sheet = sheet.variant(axis, "on", |_| StyleRules {
                     transform: Some(vec![Transform::TranslateX(Length::Px(0.0))]),
+                    z_index: Some(PINNED_PANEL_Z),
                     ..Default::default()
                 });
             }
@@ -388,9 +420,9 @@ pub fn AppShell(props: AppShellProps) -> Element {
         }
     };
 
-    // Container children: content, then scrim, then panel — DOM order is
-    // stacking order (no z-index in StyleRules), so the panel paints above
-    // the scrim above the content. Same assembled-parts shape as `Drawer`.
+    // Container children: content, then scrim, then panel. Stacking comes
+    // from each part's `z_index`, not from this order. Same assembled-parts
+    // shape as `Drawer`.
     let mut children: Vec<Element> = Vec::with_capacity(3);
     children.push(content_wrapper);
     children.push(scrim);
@@ -609,6 +641,78 @@ mod tests {
             w.set(280.0);
             commit();
             assert_eq!(resolve(&content, true).margin_left, Some(Length::Px(280.0).into()));
+        });
+    }
+
+    /// REGRESSION (CrewForge replaced AppShell with its own shell over
+    /// this): the panel is absolute at every width and was the LAST
+    /// sibling, so with stacking left to tree order the PINNED column
+    /// painted over the page — a page plate's shadow was cut off along
+    /// the rail, and a page sliding back as the rail widened slid UNDER
+    /// it. Pinned, the panel must stack below the content; as a drawer,
+    /// above the scrim, above the content — at every open state.
+    #[test]
+    fn regression_pinned_panel_stacks_under_the_content() {
+        with_test_world(|| {
+            let is_open = runtime_core::signal(false);
+            let (content, scrim, panel) = parts(shell(is_open));
+            for open in [false, true] {
+                is_open.set(open);
+                commit();
+                let z = |s: &TStyle, pinned: bool| resolve(s, pinned).stacking_z();
+                assert!(
+                    z(&panel, true) < z(&content, true),
+                    "pinned (open = {open}): the column paints under the page"
+                );
+                assert!(
+                    z(&content, false) < z(&scrim, false) && z(&scrim, false) < z(&panel, false),
+                    "drawer (open = {open}): content < scrim < panel"
+                );
+            }
+        });
+    }
+
+    /// REGRESSION: the content did not contain its subtree, so anything in
+    /// the page with its own z — a sticky frozen table column stacks at 1
+    /// — competed with the scrim and the drawer at the shell's level and
+    /// beat them both. An explicit `z_index` on the content (a CSS
+    /// stacking context; native views always contain their subviews)
+    /// keeps every page descendant below the scrim and the drawer.
+    #[test]
+    fn regression_content_contains_its_subtree_at_every_width() {
+        with_test_world(|| {
+            let (content, _, _) = parts(shell(runtime_core::signal(false)));
+            for pinned in [false, true] {
+                assert!(
+                    resolve(&content, pinned).z_index.is_some(),
+                    "content sets an explicit z_index (pinned = {pinned})"
+                );
+            }
+        });
+    }
+
+    /// `pin_at = Xs` has no overlay axis: the BASE is the pinned layout at
+    /// every width — panel in view and under the content, scrim inert
+    /// even while `is_open` is true. The content was already offset for a
+    /// pinned column while the panel stayed parked off-canvas.
+    #[test]
+    fn regression_xs_pin_is_pinned_at_every_width() {
+        with_test_world(|| {
+            let is_open = runtime_core::signal(true);
+            let (content, scrim, panel) = parts(AppShell(AppShellProps {
+                sidebar: vec![text("SIDEBAR").into()],
+                is_open,
+                pin_at: Reactive::Static(Breakpoint::Xs),
+                width: Reactive::Static(280.0),
+                children: vec![text("CONTENT").into()],
+            }));
+            let panel = resolve(&panel, false);
+            assert_eq!(translate_x(&panel), 0.0, "the column is in view");
+            assert_eq!(resolve(&content, false).margin_left, Some(Length::Px(280.0).into()));
+            assert!(panel.stacking_z() < resolve(&content, false).stacking_z());
+            let scrim = resolve(&scrim, false);
+            assert_eq!(scrim.pointer_events, Some(PointerEvents::None), "nothing to dismiss");
+            assert_eq!(scrim.opacity, Some(Tokenized::Literal(0.0)));
         });
     }
 

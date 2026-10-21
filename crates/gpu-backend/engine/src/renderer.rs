@@ -2088,13 +2088,13 @@ fn walk<'a>(
 
     // Capture scrollview offsets for the post-children scrollbar
     // overlay, computed before the borrow is released.
-    let scrollbar_state: Option<(bool, f32, f32)> = match &data.kind {
+    let scrollbar_state: Option<(runtime_shared::ScrollAxis, f32, f32)> = match &data.kind {
         NodeKind::ScrollView {
-            horizontal,
+            axis,
             offset_x,
             offset_y,
             ..
-        } => Some((*horizontal, *offset_x, *offset_y)),
+        } => Some((*axis, *offset_x, *offset_y)),
         _ => None,
     };
 
@@ -2210,45 +2210,14 @@ fn walk<'a>(
                 false,
             ),
         };
-    // Z-index ordering. Sibling paint order = document order by
-    // default; an animated `AnimProp::ZIndex` (welcome's planets
-    // use this to swap above/below the content layer) overrides
-    // the tie. Stable sort so equal z preserves document order,
-    // matching CSS / iOS `layer.zPosition` / Android
-    // `setTranslationZ` semantics. The compare touches each
-    // child's `RefCell` once for read; safe because children are
-    // distinct nodes (no aliasing with `data`, still borrowed).
-    //
-    // A sticky-registered sibling gets an implicit z of 1.0 — CSS
-    // paints positioned elements above static siblings, and a pinned
-    // element (frozen table column, pinned header) must draw over the
-    // content that slides beneath it. Without this, a pinned first
-    // cell is drawn before its later siblings and disappears under
-    // them the moment the pin engages. An explicit animated z still
-    // wins (`unwrap_or` the sticky default). The other native
-    // backends raise the same way at register time (`layer.zPosition`
-    // on iOS/macOS, `setTranslationZ` on Android).
-    if visible_children.len() > 1 {
-        let sticky_z = |n: &WgpuNode| -> f32 {
-            let key = std::rc::Rc::as_ptr(n) as usize;
-            if backend.sticky_registry.contains_key(&key) { 1.0 } else { 0.0 }
-        };
-        visible_children.sort_by(|a, b| {
-            let za =
-                a.0.borrow()
-                    .animated
-                    .as_ref()
-                    .and_then(|av| av.z_index)
-                    .unwrap_or_else(|| sticky_z(&a.0));
-            let zb =
-                b.0.borrow()
-                    .animated
-                    .as_ref()
-                    .and_then(|av| av.z_index)
-                    .unwrap_or_else(|| sticky_z(&b.0));
-            za.partial_cmp(&zb).unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
+    // Sibling paint order: ascending effective z (static `z_index` /
+    // sticky's implicit `1` / an animated `ZIndex` override — see
+    // `NodeData::effective_z`), ties in document order. A pinned
+    // sticky element (frozen table column, pinned header) must draw
+    // over the content that slides beneath it, which its implicit z
+    // gives it. The host's hit-walks use the same order reversed, so
+    // the sibling painted on top takes the pointer.
+    crate::node::sort_into_paint_order(&mut visible_children, |c| &c.0);
 
     // While a navigator transition is in flight, narrow the
     // children's clip to the navigator's own rect so neither
@@ -2327,9 +2296,11 @@ fn walk<'a>(
     // Scrollbar overlay. Drawn after children so it sits on top
     // of the content. iOS-style overlay scrollbar: thin gray
     // translucent thumb pinned to the trailing edge of the
-    // scrollview. Only painted when the content overflows.
-    if let Some((horizontal, off_x, off_y)) = scrollbar_state {
-        paint_scrollbar(backend, node, x, y, w, h, horizontal, off_x, off_y, rects);
+    // scrollview, one per scrolling axis (`Both` gets a vertical
+    // and a horizontal thumb). Only painted when the content
+    // overflows on that axis.
+    if let Some((axis, off_x, off_y)) = scrollbar_state {
+        paint_scrollbars(backend, node, x, y, w, h, axis, off_x, off_y, rects);
     }
 
     // Navigator header — painted *last* (see the note where
@@ -2342,20 +2313,58 @@ fn walk<'a>(
     }
 }
 
+/// The overlay scrollbar thumbs of a scroll view, as
+/// `[x, y, w, h]` rects: a vertical thumb on the trailing edge when
+/// `axis` scrolls Y and the content is taller than the frame, a
+/// horizontal one on the bottom edge when it scrolls X and the
+/// content is wider. Each thumb's length is the visible fraction of
+/// its axis (floored at [`SCROLLBAR_MIN_THUMB`]) and its position
+/// tracks that axis's offset.
+pub(crate) fn scrollbar_thumbs(
+    axis: runtime_shared::ScrollAxis,
+    (x, y, w, h): (f32, f32, f32, f32),
+    (content_w, content_h): (f32, f32),
+    (offset_x, offset_y): (f32, f32),
+) -> Vec<[f32; 4]> {
+    // (viewport, content, offset) → (thumb length, thumb travel offset).
+    let thumb = |viewport: f32, content: f32, offset: f32| -> Option<(f32, f32)> {
+        if content <= viewport {
+            return None;
+        }
+        let max_offset = content - viewport;
+        let len = (viewport * (viewport / content)).max(SCROLLBAR_MIN_THUMB);
+        let travel = (viewport - len).max(0.0);
+        let t = (offset / max_offset).clamp(0.0, 1.0);
+        Some((len, travel * t))
+    };
+    let mut out = Vec::with_capacity(2);
+    if axis.scrolls_y() {
+        if let Some((len, at)) = thumb(h, content_h, offset_y) {
+            out.push([x + w - SCROLLBAR_WIDTH - SCROLLBAR_INSET, y + at, SCROLLBAR_WIDTH, len]);
+        }
+    }
+    if axis.scrolls_x() {
+        if let Some((len, at)) = thumb(w, content_w, offset_x) {
+            out.push([x + at, y + h - SCROLLBAR_WIDTH - SCROLLBAR_INSET, len, SCROLLBAR_WIDTH]);
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
-fn paint_scrollbar(
+fn paint_scrollbars(
     backend: &WgpuBackend,
     node: &WgpuNode,
     x: f32,
     y: f32,
     w: f32,
     h: f32,
-    horizontal: bool,
+    axis: runtime_shared::ScrollAxis,
     offset_x: f32,
     offset_y: f32,
     rects: &mut Vec<RectInstance>,
 ) {
-    let (content_w, content_h) = scrollview_content_extent(backend, node);
+    let content = scrollview_content_extent(backend, node);
 
     // Track color: translucent black overlay (works on light + dark
     // backgrounds without a theme-bound resolve). Drawn in sRGB
@@ -2363,50 +2372,9 @@ fn paint_scrollbar(
     const THUMB_SRGB: [f32; 4] = [0.0, 0.0, 0.0, 0.35];
     let radius = SCROLLBAR_WIDTH * 0.5;
 
-    if horizontal {
-        let viewport = w;
-        let content = content_w;
-        if content <= viewport {
-            return;
-        }
-        let max_offset = content - viewport;
-        let thumb_w = (viewport * (viewport / content)).max(SCROLLBAR_MIN_THUMB);
-        let travel = (viewport - thumb_w).max(0.0);
-        let t = if max_offset > 0.0 {
-            (offset_x / max_offset).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let thumb_x = x + travel * t;
-        let thumb_y = y + h - SCROLLBAR_WIDTH - SCROLLBAR_INSET;
+    for rect in scrollbar_thumbs(axis, (x, y, w, h), content, (offset_x, offset_y)) {
         rects.push(RectInstance {
-            rect: [thumb_x, thumb_y, thumb_w, SCROLLBAR_WIDTH],
-            bg: srgb_rgba_to_linear(THUMB_SRGB),
-            corner_radius: [radius; 4],
-            border_color: [0.0; 4],
-            border_width: 0.0,
-            rotation: 0.0,
-            shadow_blur: 0.0,
-            ..no_gradient_fields()
-        });
-    } else {
-        let viewport = h;
-        let content = content_h;
-        if content <= viewport {
-            return;
-        }
-        let max_offset = content - viewport;
-        let thumb_h = (viewport * (viewport / content)).max(SCROLLBAR_MIN_THUMB);
-        let travel = (viewport - thumb_h).max(0.0);
-        let t = if max_offset > 0.0 {
-            (offset_y / max_offset).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let thumb_x = x + w - SCROLLBAR_WIDTH - SCROLLBAR_INSET;
-        let thumb_y = y + travel * t;
-        rects.push(RectInstance {
-            rect: [thumb_x, thumb_y, SCROLLBAR_WIDTH, thumb_h],
+            rect,
             bg: srgb_rgba_to_linear(THUMB_SRGB),
             corner_radius: [radius; 4],
             border_color: [0.0; 4],
@@ -4035,5 +4003,54 @@ mod fit_image_tests {
         let (rect, uv) = fit_image(ObjectFit::Contain, (0.0, 0.0, 100.0, 50.0), (0, 0));
         assert_eq!(rect, [0.0, 0.0, 100.0, 50.0]);
         assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::{scrollbar_thumbs, SCROLLBAR_INSET, SCROLLBAR_MIN_THUMB, SCROLLBAR_WIDTH};
+    use runtime_shared::ScrollAxis;
+
+    const FRAME: (f32, f32, f32, f32) = (10.0, 20.0, 100.0, 100.0);
+
+    /// A two-axis scroller overflowing on both axes paints two thumbs:
+    /// a vertical one on the trailing edge tracking `offset_y` and a
+    /// horizontal one on the bottom edge tracking `offset_x`.
+    #[test]
+    fn two_axis_scroller_paints_a_thumb_per_axis() {
+        // 400×200 content in a 100×100 frame, scrolled halfway on both.
+        let thumbs = scrollbar_thumbs(ScrollAxis::Both, FRAME, (400.0, 200.0), (150.0, 50.0));
+        assert_eq!(thumbs.len(), 2, "one thumb per scrolling axis: {thumbs:?}");
+        let edge = |extent: f32| extent - SCROLLBAR_WIDTH - SCROLLBAR_INSET;
+
+        // Vertical: visible fraction 1/2 → 50 long, halfway along 50 of travel.
+        let v = thumbs[0];
+        assert_eq!(v, [10.0 + edge(100.0), 20.0 + 25.0, SCROLLBAR_WIDTH, 50.0]);
+
+        // Horizontal: visible fraction 1/4 → 25 long (or the floor),
+        // halfway along the remaining travel.
+        let len = 25.0_f32.max(SCROLLBAR_MIN_THUMB);
+        let h = thumbs[1];
+        assert_eq!(h, [10.0 + (100.0 - len) * 0.5, 20.0 + edge(100.0), len, SCROLLBAR_WIDTH]);
+    }
+
+    /// Each axis's thumb is painted only when the content overflows on
+    /// that axis, and a single-axis scroller never paints the cross
+    /// axis's thumb even when its content overflows there.
+    #[test]
+    fn thumbs_follow_the_scrolling_axes_and_overflow() {
+        let overflow_y_only = scrollbar_thumbs(ScrollAxis::Both, FRAME, (100.0, 300.0), (0.0, 0.0));
+        assert_eq!(overflow_y_only.len(), 1);
+        assert_eq!(overflow_y_only[0][2], SCROLLBAR_WIDTH, "the vertical thumb");
+
+        let vertical = scrollbar_thumbs(ScrollAxis::Vertical, FRAME, (300.0, 300.0), (0.0, 0.0));
+        assert_eq!(vertical.len(), 1);
+        assert_eq!(vertical[0][2], SCROLLBAR_WIDTH, "only the vertical thumb");
+
+        let horizontal = scrollbar_thumbs(ScrollAxis::Horizontal, FRAME, (300.0, 300.0), (0.0, 0.0));
+        assert_eq!(horizontal.len(), 1);
+        assert_eq!(horizontal[0][3], SCROLLBAR_WIDTH, "only the horizontal thumb");
+
+        assert!(scrollbar_thumbs(ScrollAxis::Both, FRAME, (100.0, 100.0), (0.0, 0.0)).is_empty());
     }
 }

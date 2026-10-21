@@ -1222,3 +1222,92 @@ pub(crate) fn color_to_srgb(c: &runtime_shared::Color) -> [f32; 4] {
     runtime_shared::color::parse_or(&c.0, runtime_shared::color::Rgba::BLACK).to_srgb_f32()
 }
 
+
+#[cfg(test)]
+mod z_index_tests {
+    use crate::WebBackend;
+    use runtime_shared::{Length, StyleRules, Tokenized};
+    use std::rc::Rc;
+    use wasm_bindgen_test::wasm_bindgen_test;
+    use web_glue::JsCast;
+
+    // `elementsFromPoint` (the whole hit stack), not `elementFromPoint`:
+    // an earlier test in the same page can leave an overlay over the
+    // point, and only the two siblings' relative order is under test.
+    web_glue::import! {
+        fn js_above(a: u32, b: u32, x: f64, y: f64) -> u32 =
+            "(a, b, x, y) => { const s = document.elementsFromPoint(x, y); \
+             const ia = s.indexOf(G.get(a)), ib = s.indexOf(G.get(b)); \
+             return ia >= 0 && (ib < 0 || ia < ib) ? 1 : 0; }";
+    }
+
+    /// Whether `a` is hit before `b` at (x, y) — `a` stacks above `b`.
+    fn above(a: &web_glue::dom::Element, b: &web_glue::dom::Element, x: f64, y: f64) -> bool {
+        let raw = |e: &web_glue::dom::Element| AsRef::<web_glue::JsValue>::as_ref(e).raw();
+        unsafe { js_above(raw(a), raw(b), x, y) == 1 }
+    }
+
+    /// `z_index` raises a PLAIN flex item — no `position` — over a later
+    /// sibling it overlaps, and the raised one is what the pointer hits
+    /// (the contract every native backend matches). Without the property
+    /// the later sibling covers the overlap on DOM order.
+    #[wasm_bindgen_test]
+    async fn z_index_raises_an_unpositioned_view_over_a_later_sibling() {
+        crate::tests::install_mount();
+        // Installed as the app's backend, as at boot: a restyle's class
+        // swap is batched to a microtask flushed on the INSTALLED backend.
+        let shared = Rc::new(std::cell::RefCell::new(WebBackend::new("#app")));
+        crate::install_text_batcher(&shared);
+        let _ = shared.borrow_mut().sheet();
+        let doc = web_glue::dom::window().unwrap().document().unwrap();
+
+        let parent = crate::primitives::view::create(&mut shared.borrow_mut());
+        let parent_el: web_glue::dom::Element = parent.clone().dyn_into().unwrap();
+        // Views are flex columns through the global reset sheet; stated
+        // inline so the test doesn't depend on which sheet an earlier test
+        // in this page left installed. `z-index` on an unpositioned box
+        // needs exactly that: a flex-item parent.
+        parent_el
+            .set_attribute(
+                "style",
+                "position:fixed;left:0;top:0;width:100px;display:flex;flex-direction:column",
+            )
+            .unwrap();
+        doc.get_element_by_id("app").unwrap().append_child(&parent_el).unwrap();
+
+        let first = crate::primitives::view::create(&mut shared.borrow_mut());
+        let second = crate::primitives::view::create(&mut shared.borrow_mut());
+        parent_el.append_child(&first).unwrap();
+        parent_el.append_child(&second).unwrap();
+        let first_el: web_glue::dom::Element = first.clone().dyn_into().unwrap();
+        let second_el: web_glue::dom::Element = second.clone().dyn_into().unwrap();
+        // The only element asked about is `first_el`.
+        let top_is = |e: &web_glue::dom::Element, x, y| above(e, &second_el, x, y);
+
+        let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+        let first_rules = |z: Option<i32>| {
+            Rc::new(StyleRules { height: px(100.0), z_index: z, ..Default::default() })
+        };
+        // Pulled up 50px so the two overlap between y = 50 and y = 100.
+        shared.borrow_mut().apply_style_impl(
+            &second,
+            &Rc::new(StyleRules { height: px(100.0), margin_top: px(-50.0), ..Default::default() }),
+        );
+
+        // Let each batched class swap flush before hit-testing.
+        shared.borrow_mut().apply_style_impl(&first, &first_rules(None));
+        crate::tests::sleep_ms(0).await;
+        assert!(!top_is(&first_el, 50.0, 75.0), "unset: the later sibling covers the overlap");
+
+        shared.borrow_mut().apply_style_impl(&first, &first_rules(Some(2)));
+        crate::tests::sleep_ms(0).await;
+        assert!(top_is(&first_el, 50.0, 75.0), "z_index 2 lifts the first sibling over the second");
+        let cs = web_glue::dom::window().unwrap().get_computed_style(&first_el).unwrap().unwrap();
+        assert_eq!(cs.get_property_value("position").unwrap(), "static", "no position was forced");
+
+        shared.borrow_mut().apply_style_impl(&first, &first_rules(None));
+        crate::tests::sleep_ms(0).await;
+        assert!(!top_is(&first_el, 50.0, 75.0), "removing it restores tree order");
+        parent_el.remove();
+    }
+}

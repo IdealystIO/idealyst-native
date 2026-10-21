@@ -9,8 +9,8 @@ use idea_ui::{
     Typography,
 };
 use idea_ui::{
-    CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableDensity, TableFooter, TableRow,
-    TableVariant,
+    CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableDensity, TableFooter, TableInset,
+    TableRow, TableVariant,
 };
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
@@ -244,6 +244,51 @@ TableCell {
             }
         },
         ui! {
+            Section(title = "Pinned header (vertical scroll)".to_string()) {
+                P(content = "Set `scroll_y = true` and the rows scroll inside the table's own \
+                    height while the header row stays pinned to the top. Bound it with \
+                    `max_height`, or let it fill a bounded parent. With `scroll_x` as well the \
+                    table owns ONE two-axis scroller: the header pins to the top, frozen \
+                    columns pin to the sides, and a frozen header cell — the corner — pins \
+                    both ways, painted above everything sliding beneath it. (In a `scroll_x` \
+                    table that scrolls with the page the header cannot stick: a sticky cell \
+                    pins against its nearest scroller, which is the table's own.)".to_string())
+                pinned_header_table()
+                CodePanel(src = r##"Table(scroll_x = true, scroll_y = true, max_height = Some(240.0)) {
+    TableRow {
+        TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
+        TableCell(header = true, text = Some("Region".to_string()))
+        // …more columns…
+    }
+    for row in rows {
+        TableRow {
+            TableCell(text = Some(row.name.clone()), pinned = Some(ColumnPin::Left))
+            TableCell(text = Some(row.region.clone()))
+            // …
+        }
+    }
+}"##.to_string())
+            }
+        },
+        ui! {
+            Section(title = "Edge inset".to_string()) {
+                P(content = "`inset_x` sets the outer padding of every row's first and last \
+                    cell (and of the frame slots) and leaves the cells between alone, so the \
+                    row dividers run the table's full width while the text lines up with \
+                    the page margin. Token sizes follow the theme's spacing scale; \
+                    `TableInset::Px(28.0)` takes an exact margin. Pair it with the plain \
+                    variant for an edge-to-edge list.".to_string())
+                inset_table()
+                CodePanel(src = r##"Table(variant = TableVariant::Plain, inset_x = TableInset::Xl) {
+    TableRow {
+        TableCell(header = true, text = Some("Crew".to_string()))
+        TableCell(header = true, text = Some("Shift".to_string()), align = CellAlign::Right)
+    }
+    // …rows…
+}"##.to_string())
+            }
+        },
+        ui! {
             Section(title = "Plain variant".to_string()) {
                 P(content = "`variant = TableVariant::Plain` drops the card: no frame, no \
                     rounded corners, no header band and no fill of its own — it sits on the \
@@ -415,6 +460,21 @@ table::visit_row_cells(&row, |cell| {
                         desc: "Horizontal-scroll mode: columns at natural width inside a horizontal scroller. Required for pinned columns. Default false.",
                     },
                     Prop {
+                        name: "scroll_y",
+                        ty: "bool",
+                        desc: "Vertical-scroll mode: rows scroll inside the table's own height and the header row (the leading rows of header cells) pins to the top. With scroll_x the table owns one two-axis scroller, so the header and frozen columns pin together. Default false.",
+                    },
+                    Prop {
+                        name: "max_height",
+                        ty: "Option<f32>",
+                        desc: "The most a scroll_y table grows to, in px, before its rows scroll. Without it a scroll_y table fills the height its parent gives it. Ignored without scroll_y. Default None.",
+                    },
+                    Prop {
+                        name: "inset_x",
+                        ty: "TableInset",
+                        desc: "Outer padding of each row's first and last cell (and the frame slots): None (default), Xs–Xxl spacing tokens, or Px(f32). Dividers keep running the full width while text aligns to the page margin.",
+                    },
+                    Prop {
                         name: "variant",
                         ty: "TableVariant",
                         desc: "Framed (default: the card — frame, rounded corners, surface fill, header band) or Plain (no frame or fill of its own — it sits on the surface around it; row dividers only; a frozen column's edge shows only while columns are scrolled beneath it).",
@@ -568,6 +628,55 @@ fn wide_table(frame: TableVariant) -> Element {
                     TableCell(pinned = Some(ColumnPin::Right)) {
                         Tag(label = status.to_string(), tone = status_tone(status), variant = variant::Soft)
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Pinned-header demo: a two-axis table bounded at 240px, its header row
+/// pinned to the top and its first column frozen, so the corner cell pins
+/// both ways.
+fn pinned_header_table() -> Element {
+    let regions = ["eu-west-1", "us-east-1", "ap-south-1", "us-west-2", "sa-east-1", "af-south-1"];
+    ui! {
+        Table(scroll_x = true, scroll_y = true, max_height = Some(240.0)) {
+            TableRow {
+                TableCell(header = true, text = Some("Service".to_string()), pinned = Some(ColumnPin::Left))
+                TableCell(header = true, text = Some("Region".to_string()))
+                TableCell(header = true, text = Some("Version".to_string()))
+                TableCell(header = true, text = Some("Replicas".to_string()))
+                TableCell(header = true, text = Some("p99 latency".to_string()))
+                TableCell(header = true, text = Some("Error rate".to_string()))
+            }
+            for (i, region) in regions.into_iter().enumerate() {
+                TableRow {
+                    TableCell(text = Some(format!("service-{i}")), pinned = Some(ColumnPin::Left))
+                    TableCell(text = Some(region.to_string()))
+                    TableCell(text = Some(format!("v2.{i}.0")))
+                    TableCell(text = Some(format!("{}", i + 2)))
+                    TableCell(text = Some(format!("{}ms", 12 + i * 31)))
+                    TableCell(text = Some(format!("0.0{i}%")))
+                }
+            }
+        }
+    }
+}
+
+/// Edge-inset demo: a plain table whose first and last cells take the
+/// `xl` page margin while the dividers run edge to edge.
+fn inset_table() -> Element {
+    let crew = [("Ana Ruiz", "Day"), ("Bo Chen", "Night"), ("Cy Okafor", "Day")];
+    ui! {
+        Table(variant = TableVariant::Plain, inset_x = TableInset::Xl) {
+            TableRow {
+                TableCell(header = true, text = Some("Crew".to_string()))
+                TableCell(header = true, text = Some("Shift".to_string()), align = CellAlign::Right)
+            }
+            for (name, shift) in crew {
+                TableRow {
+                    TableCell(text = Some(name.to_string()))
+                    TableCell(text = Some(shift.to_string()), align = CellAlign::Right)
                 }
             }
         }

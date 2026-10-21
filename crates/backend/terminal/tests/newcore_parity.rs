@@ -513,3 +513,70 @@ fn unset_border_style_stays_solid_in_the_terminal_grid() {
     assert!(rows.contains('─') && rows.contains('│'), "solid edges painted:\n{rows}");
     assert!(!rows.contains('╌') && !rows.contains('┈'), "no pattern glyphs:\n{rows}");
 }
+
+// ===========================================================================
+// z_index through the real mount path
+// ===========================================================================
+
+/// A 6×2-cell absolute box at (2, 2) — two of these overlap exactly.
+fn stacked_rules(background: &str, z_index: Option<i32>) -> StyleRules {
+    let px = |v| Some(Tokenized::Literal(Length::Px(v)));
+    StyleRules {
+        width: px(6.0),
+        height: px(2.0),
+        position: Some(runtime_shared::Position::Absolute),
+        left: px(2.0),
+        top: px(2.0),
+        z_index,
+        ..test_rules(6.0, background)
+    }
+}
+
+/// Bug: a static `z_index` on the FIRST of two overlapping siblings was
+/// ignored by the terminal backend — the later sibling painted the cell
+/// and took the click. Mounted through the scene so the style reaches
+/// the backend via the real `apply_style` path; both the painted cell
+/// and the click must follow the raised sibling, and without the
+/// `z_index` both fall back to tree order.
+#[test]
+fn regression_terminal_static_z_index_wins_cell_and_click_via_scene() {
+    fn run(first_z: Option<i32>) -> (Option<runtime_shared::color::Rgba>, &'static str) {
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let h = hits.clone();
+        let backend = fresh_backend();
+        let app = backend_terminal::newcore::start(backend.clone(), |_| {}, move || {
+            use runtime_vocabulary::builders::{pressable, view};
+            let (h1, h2) = (h.clone(), h.clone());
+            view()
+                .style(StyleRules {
+                    width: Some(Tokenized::Literal(Length::Px(COLS as f32))),
+                    height: Some(Tokenized::Literal(Length::Px(ROWS as f32))),
+                    ..Default::default()
+                })
+                .child(
+                    pressable(move || h1.borrow_mut().push("first"))
+                        .style(stacked_rules("rgb(255, 0, 0)", first_z)),
+                )
+                .child(
+                    pressable(move || h2.borrow_mut().push("second"))
+                        .style(stacked_rules("rgb(0, 0, 255)", None)),
+                )
+                .build()
+        });
+        test_scheduler::drain();
+        let grid = backend.borrow_mut().render_to_grid();
+        let outcome = backend.borrow_mut().dispatch_click(4, 3);
+        let ClickOutcome::HandlerFired(f) = outcome else {
+            panic!("click must land on a pressable");
+        };
+        f();
+        test_scheduler::drain();
+        app.stop();
+        let who = hits.borrow().last().copied().expect("a handler fired");
+        (grid.cell(4, 3).and_then(|c| c.bg), who)
+    }
+    let red = runtime_shared::color::Rgba { r: 255, g: 0, b: 0, a: 255 };
+    let blue = runtime_shared::color::Rgba { r: 0, g: 0, b: 255, a: 255 };
+    assert_eq!(run(Some(1)), (Some(red), "first"));
+    assert_eq!(run(None), (Some(blue), "second"));
+}

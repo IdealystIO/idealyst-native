@@ -58,6 +58,11 @@ pub(crate) struct AnimatedTransformState {
     pub scale_y: Option<f32>,
     /// Rotation in degrees, converted to radians at composition.
     pub rotate_z: Option<f32>,
+    /// Last animated `AnimProp::ZIndex` (`layer.zPosition`). While set,
+    /// `apply_style` leaves `zPosition` alone, so a restyle can't cancel
+    /// the animated value with the static `stacking_z()` — the animated
+    /// value overrides the static `z_index`, as on web.
+    pub z_index: Option<f32>,
     pub background_color: Option<[f32; 4]>,
     pub foreground_color: Option<[f32; 4]>,
     /// `CAGradientLayer` reference stashed by `apply_style` (via `install_gradient`), plus
@@ -489,6 +494,7 @@ impl IosBackend {
                 }
             }
             AnimProp::ZIndex => {
+                state.z_index = Some(value);
                 // `layer.zPosition` reorders sibling CALayers within
                 // their superlayer — Core Animation's analog of
                 // `style.zIndex` on web and `View.setTranslationZ`
@@ -501,6 +507,21 @@ impl IosBackend {
                 if !layer.is_null() {
                     let _: () =
                         unsafe { msg_send![layer, setZPosition: value as CGFloat] };
+                    backend_apple_core::shadow_layer::sync_sibling_z(unsafe { &*layer });
+                }
+                // A virtualized item's row stacks by this z too.
+                super::virtualizer::sync_cell_z_for_item(view);
+                // A portal container lives in the UIWindow, which hit-tests
+                // by index — keep its portals in paint order (see
+                // `callbacks::order_portals_in_window`).
+                let is_portal: bool = unsafe {
+                    msg_send![&*view, isKindOfClass: super::callbacks::OverlayPassthroughView::class()]
+                };
+                if is_portal {
+                    let host: *mut UIView = unsafe { msg_send![&*view, superview] };
+                    if !host.is_null() {
+                        super::callbacks::order_portals_in_window(unsafe { &*host });
+                    }
                 }
             }
             AnimProp::MaxHeight => {

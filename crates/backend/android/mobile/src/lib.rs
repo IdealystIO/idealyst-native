@@ -149,6 +149,20 @@ mod app_pointer_policy;
 /// lives in `imp/hosted_root.rs`.
 mod hosted_root_policy;
 
+/// Which Android view backs each `ScrollAxis` (`ScrollView`,
+/// `HorizontalScrollView`, `RustTwoAxisScrollView`), the set the sticky walk
+/// recognises, and the inner content container's layout rules. Un-gated like
+/// `sticky_compute` so the tests run on the host; the JNI half lives in
+/// `imp/primitives/scroll_view.rs`.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod scroll_axis_policy;
+
+/// `z_index` / sticky raise → `View.setTranslationZ` mapping shared by
+/// the static style apply and animated `AnimProp::ZIndex`. Un-gated like
+/// `sticky_compute` so the tests run on the host; the JNI half lives in
+/// `imp/style.rs` + `imp/mod.rs`.
+mod z_index_policy;
+
 #[cfg(not(target_os = "android"))]
 mod stub;
 

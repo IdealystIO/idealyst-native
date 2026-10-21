@@ -213,11 +213,11 @@ mod reentrant_host {
     impl caps::ScrollOps for ReentrantHost {
         fn create_scroll_view(
             &mut self,
-            horizontal: bool,
+            axis: runtime_shared::ScrollAxis,
             on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
             a11y: &runtime_shared::accessibility::AccessibilityProps,
         ) -> Self::Node {
-            caps::ScrollOps::create_scroll_view(&mut self.0, horizontal, on_scroll, a11y)
+            caps::ScrollOps::create_scroll_view(&mut self.0, axis, on_scroll, a11y)
         }
 
         /// The one override that matters: a REAL handle, so the robot's

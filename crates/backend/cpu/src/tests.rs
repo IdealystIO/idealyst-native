@@ -451,6 +451,115 @@ fn z_index_reorders_paint_order() {
     assert_eq!(surface.get_pixel(10, 10), [255, 0, 0, 255]);
 }
 
+/// Two overlapping 20x20 absolute pressables in a 20x20 root: `red`
+/// first in tree order, `blue` second. Each records its clicks in the
+/// returned log. `red_z` is red's static `z_index`.
+fn overlapping_pressables(
+    red_z: Option<i32>,
+) -> (CpuBackend, crate::CpuNode, crate::CpuNode, Rc<std::cell::RefCell<Vec<&'static str>>>) {
+    let mut backend = CpuBackend::new(20, 20);
+    let a11y = AccessibilityProps::default();
+    let log = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut root = backend.create_view(&a11y);
+    backend.apply_style(
+        &root,
+        &style_with(|s| {
+            s.width = Some(Tokenized::Literal(Length::Px(20.0)));
+            s.height = Some(Tokenized::Literal(Length::Px(20.0)));
+            s.position = Some(runtime_shared::Position::Relative);
+        }),
+    );
+    let l = log.clone();
+    let red = backend.create_pressable(Rc::new(move || l.borrow_mut().push("red")), &a11y);
+    backend.apply_style(&red, &overlap_style("rgb(255, 0, 0)", red_z));
+    let l = log.clone();
+    let blue = backend.create_pressable(Rc::new(move || l.borrow_mut().push("blue")), &a11y);
+    backend.apply_style(&blue, &overlap_style("rgb(0, 0, 255)", None));
+    backend.insert(&mut root, red);
+    backend.insert(&mut root, blue);
+    backend.finish(root);
+    (backend, red, blue, log)
+}
+
+fn overlap_style(bg: &str, z: Option<i32>) -> Rc<StyleRules> {
+    style_with(|s| {
+        s.background = Some(Tokenized::Literal(bg.into()));
+        s.width = Some(Tokenized::Literal(Length::Px(20.0)));
+        s.height = Some(Tokenized::Literal(Length::Px(20.0)));
+        s.position = Some(runtime_shared::Position::Absolute);
+        s.top = Some(Tokenized::Literal(Length::Px(0.0)));
+        s.left = Some(Tokenized::Literal(Length::Px(0.0)));
+        s.z_index = z;
+    })
+}
+
+/// Renders, then returns the pixel at the overlap and which sibling a
+/// click there fires.
+fn top_pixel_and_click(
+    backend: &mut CpuBackend,
+    log: &Rc<std::cell::RefCell<Vec<&'static str>>>,
+) -> ([u8; 4], &'static str) {
+    let mut surface = MemSurface::new(20, 20);
+    backend.render(&mut surface);
+    match backend.dispatch_click(10, 10) {
+        ClickOutcome::HandlerFired(h) => h(),
+        other => panic!("expected HandlerFired, got {:?}", other),
+    }
+    let who = log.borrow_mut().pop().expect("a handler recorded its click");
+    (surface.get_pixel(10, 10), who)
+}
+
+const RED: [u8; 4] = [255, 0, 0, 255];
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+/// Regression: the CPU backend only sorted by the animated `ZIndex`, so
+/// a static `StyleRules::z_index` on the earlier of two overlapping
+/// siblings was ignored — the later sibling still painted on top and
+/// took the click.
+#[test]
+fn regression_cpu_static_z_index_raises_earlier_sibling_paint_and_hit() {
+    let (mut backend, red, _blue, log) = overlapping_pressables(Some(1));
+    assert_eq!(top_pixel_and_click(&mut backend, &log), (RED, "red"));
+
+    // Re-applying the style without `z_index` restores tree order.
+    backend.apply_style(&red, &overlap_style("rgb(255, 0, 0)", None));
+    assert_eq!(top_pixel_and_click(&mut backend, &log), (BLUE, "blue"));
+}
+
+/// A static `z_index` and an animated `ZIndex` share units: animated
+/// `2.0` against a static `2` is a tie (tree order wins), `3.0` beats
+/// it; and a style re-apply doesn't clobber the animated value.
+#[test]
+fn static_and_animated_z_index_order_identically() {
+    let (mut backend, red, blue, log) = overlapping_pressables(None);
+    backend.apply_style(&blue, &overlap_style("rgb(0, 0, 255)", Some(2)));
+    backend.set_animated_f32(&red, AnimProp::ZIndex, 2.0);
+    assert_eq!(top_pixel_and_click(&mut backend, &log), (BLUE, "blue"));
+
+    backend.set_animated_f32(&red, AnimProp::ZIndex, 3.0);
+    assert_eq!(top_pixel_and_click(&mut backend, &log), (RED, "red"));
+
+    backend.apply_style(&red, &overlap_style("rgb(255, 0, 0)", None));
+    assert_eq!(top_pixel_and_click(&mut backend, &log), (RED, "red"));
+}
+
+/// `position: Sticky` with no `z_index` stacks at `STICKY_Z` (1), the
+/// same effective z every backend derives from `stacking_z()`.
+#[test]
+fn sticky_without_z_index_stacks_above_plain_sibling() {
+    let (mut backend, red, _blue, log) = overlapping_pressables(None);
+    let mut st = (*overlap_style("rgb(255, 0, 0)", None)).clone();
+    st.position = Some(runtime_shared::Position::Sticky);
+    backend.apply_style(&red, &Rc::new(st));
+    let mut surface = MemSurface::new(20, 20);
+    backend.render(&mut surface);
+    match backend.dispatch_click(10, 10) {
+        ClickOutcome::HandlerFired(h) => h(),
+        other => panic!("expected HandlerFired, got {:?}", other),
+    }
+    assert_eq!(log.borrow().as_slice(), ["red"]);
+}
+
 #[test]
 fn linear_gradient_interpolates_across_axis() {
     let mut backend = CpuBackend::new(100, 10);

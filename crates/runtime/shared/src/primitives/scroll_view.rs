@@ -1,13 +1,65 @@
 //! ScrollView primitive.
 //!
-//! Backed by a `<div style="overflow: scroll">` on web, `UIScrollView`
-//! on iOS, `ScrollView` / `HorizontalScrollView` on Android. Default
-//! orientation is vertical; pass `.horizontal()` for left-right
-//! scrolling. Two-axis scrolling is not supported in v1 — pick one
-//! direction.
+//! Backed by a `<div style="overflow: auto">` on web, `UIScrollView`
+//! on iOS, `NSScrollView` on macOS, `ScrollView` /
+//! `HorizontalScrollView` / a two-axis scroller on Android. Which axes
+//! scroll is a [`ScrollAxis`]: vertical by default, `.horizontal(true)`
+//! for left-right, `.axis(ScrollAxis::Both)` for content that overflows
+//! in both directions (a wide, tall table). On a two-axis scroller
+//! `on_scroll` reports both offsets and `Position::Sticky` children pin
+//! on both axes at once — a `top: 0` + `left: 0` corner cell stays put
+//! whichever way the reader scrolls.
 
 use std::any::Any;
 use std::rc::Rc;
+
+/// Which axes a `scroll_view` scrolls.
+///
+/// The layout treats every scrolling axis as unbounded for the content
+/// (`overflow: scroll` on that axis in Taffy, and the content exempt
+/// from the default `max-width: 100%` clamp when X scrolls); an axis
+/// that does not scroll clips its content to the viewport.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ScrollAxis {
+    /// Top-to-bottom scrolling. The default.
+    #[default]
+    Vertical,
+    /// Left-to-right scrolling.
+    Horizontal,
+    /// Both at once: the content may overflow the viewport in either
+    /// direction and the reader pans freely.
+    Both,
+}
+
+impl ScrollAxis {
+    /// `Horizontal` for `true`, `Vertical` for `false` — the meaning of
+    /// the `.horizontal(bool)` builder setter.
+    pub fn from_horizontal(horizontal: bool) -> Self {
+        if horizontal {
+            Self::Horizontal
+        } else {
+            Self::Vertical
+        }
+    }
+
+    /// Whether the X axis scrolls (`Horizontal` or `Both`).
+    pub fn scrolls_x(self) -> bool {
+        matches!(self, Self::Horizontal | Self::Both)
+    }
+
+    /// Whether the Y axis scrolls (`Vertical` or `Both`).
+    pub fn scrolls_y(self) -> bool {
+        matches!(self, Self::Vertical | Self::Both)
+    }
+
+    /// The axis `on_end_reached` watches: X for a horizontal scroller,
+    /// Y otherwise. A two-axis scroller's "end" is its bottom — paging a
+    /// wide table grows it downward, not sideways.
+    pub fn end_axis_is_horizontal(self) -> bool {
+        self == Self::Horizontal
+    }
+}
 
 #[derive(Clone)]
 pub struct ScrollViewHandle {
@@ -21,8 +73,8 @@ impl ScrollViewHandle {
     }
 
     /// Scroll to absolute coordinates within the view's content box.
-    /// `x` is meaningful for horizontal scrollers; vertical scrollers
-    /// ignore it.
+    /// Each coordinate is meaningful on an axis that scrolls (both on a
+    /// [`ScrollAxis::Both`] scroller); a fixed axis ignores its own.
     pub fn scroll_to(&self, x: f32, y: f32) {
         self.ops.scroll_to(&*self.node, x, y);
     }
@@ -107,6 +159,34 @@ impl EndReach {
             self.armed = true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod axis_tests {
+    use super::ScrollAxis;
+
+    #[test]
+    fn each_axis_reports_what_it_scrolls() {
+        assert!(ScrollAxis::Vertical.scrolls_y() && !ScrollAxis::Vertical.scrolls_x());
+        assert!(ScrollAxis::Horizontal.scrolls_x() && !ScrollAxis::Horizontal.scrolls_y());
+        assert!(ScrollAxis::Both.scrolls_x() && ScrollAxis::Both.scrolls_y());
+        assert_eq!(ScrollAxis::default(), ScrollAxis::Vertical);
+    }
+
+    #[test]
+    fn horizontal_bool_maps_to_the_single_axes() {
+        assert_eq!(ScrollAxis::from_horizontal(true), ScrollAxis::Horizontal);
+        assert_eq!(ScrollAxis::from_horizontal(false), ScrollAxis::Vertical);
+    }
+
+    /// A two-axis scroller pages downward: its `on_end_reached` watches
+    /// Y, like a vertical one.
+    #[test]
+    fn a_two_axis_scroller_reaches_its_end_at_the_bottom() {
+        assert!(!ScrollAxis::Both.end_axis_is_horizontal());
+        assert!(!ScrollAxis::Vertical.end_axis_is_horizontal());
+        assert!(ScrollAxis::Horizontal.end_axis_is_horizontal());
     }
 }
 

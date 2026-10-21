@@ -51,7 +51,7 @@ pub(crate) fn create(b: &mut WebBackend, on_click: Rc<dyn Fn()>) -> Node {
     }
 
     let on_click_for_mouse = on_click.clone();
-    crate::glue_dom::set_onclick(&el, move || (on_click_for_mouse)());
+    crate::glue_dom::set_press_onclick(&el, move || (on_click_for_mouse)());
 
     // Keyboard activation. Enter and Space both trigger the press
     // when the element has focus — matching what a real `<button>`

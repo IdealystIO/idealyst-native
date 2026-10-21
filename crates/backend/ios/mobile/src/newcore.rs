@@ -1201,7 +1201,7 @@ mod ios_impl {
     impl caps::ScrollOps for IosBackend {
         fn create_scroll_view(
             &mut self,
-            horizontal: bool,
+            axis: runtime_shared::ScrollAxis,
             on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
@@ -1217,7 +1217,7 @@ mod ios_impl {
                     schedule_flush();
                 })
             });
-            IosBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
+            IosBackend::create_scroll_view_impl(self, axis, on_scroll, a11y)
         }
 
         fn observe_scroll_end(

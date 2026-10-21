@@ -86,7 +86,8 @@ pub(crate) fn create(
     callbacks: GridCallbacks<IosNode>,
     _overscan: f32,
 ) -> Retained<UIView> {
-    let scroll = unsafe { UIScrollView::new(mtm) };
+    // `IdealystScrollView`: hit-testing follows sibling `z_index` paint order.
+    let scroll = super::touch::IdealystScrollView::new(mtm);
     // Both axes bounce, so the grid feels alive even when the content
     // happens to fit one direction — matching `create_scroll_view`'s
     // reasoning, applied to both axes because both scroll here.

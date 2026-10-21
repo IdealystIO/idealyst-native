@@ -1,8 +1,9 @@
 //! The `scroll_view` primitive — a `<div>` with `overflow: auto` on the
-//! requested axis.
+//! requested axis (or both, for a [`ScrollAxis::Both`] scroller). Sticky
+//! descendants pin natively against it on every axis that scrolls.
 
 use crate::WebBackend;
-use runtime_shared::primitives::scroll_view::{EndReach, ScrollViewHandle, ScrollViewOps};
+use runtime_shared::primitives::scroll_view::{EndReach, ScrollAxis, ScrollViewHandle, ScrollViewOps};
 use std::any::Any;
 use std::rc::Rc;
 use web_glue::JsCast;
@@ -10,7 +11,7 @@ use web_glue::dom::Node;
 
 pub(crate) fn create(
     b: &mut WebBackend,
-    horizontal: bool,
+    axis: ScrollAxis,
     on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
 ) -> Node {
     // HYDRATION: adopt the SSR scroll `<div>` (tag match) so its children
@@ -37,12 +38,7 @@ pub(crate) fn create(
     // system) so it's always present regardless of user-supplied
     // styling. The inline rules win over class rules for the overflow
     // properties; the class still governs flex direction etc.
-    let overflow = if horizontal {
-        "overflow-x: auto; overflow-y: hidden"
-    } else {
-        "overflow-y: auto; overflow-x: hidden"
-    };
-    let _ = div.set_attribute("style", overflow);
+    let _ = div.set_attribute("style", overflow_declaration(axis));
     // NOTE for `apply_scroll_view_bounces`: this writes the whole style
     // ATTRIBUTE, so anything that lands here later must go through
     // `style().set_property(...)` rather than a second `set_attribute`,
@@ -119,6 +115,17 @@ pub(crate) fn observe_end(
     });
 }
 
+/// The inline overflow a scroller of `axis` mounts with: `auto` on every
+/// axis that scrolls, `hidden` on one that does not (so a one-axis
+/// scroller clips rather than spilling its cross axis).
+pub(crate) fn overflow_declaration(axis: ScrollAxis) -> &'static str {
+    match axis {
+        ScrollAxis::Vertical => "overflow-y: auto; overflow-x: hidden",
+        ScrollAxis::Horizontal => "overflow-x: auto; overflow-y: hidden",
+        ScrollAxis::Both => "overflow-x: auto; overflow-y: auto",
+    }
+}
+
 pub(crate) fn make_handle(node: &Node) -> ScrollViewHandle {
     let el: web_glue::dom::HtmlElement = node
         .clone()
@@ -147,8 +154,9 @@ impl ScrollViewOps for WebScrollViewOps {
 /// the page behind it. For a bounded pane inside a page, which is the
 /// case this exists for, both are wanted.
 ///
-/// Written on the scroller's OWN axis only, as the two longhands rather
-/// than the shorthand. `overscroll-behavior` sets both axes, and a
+/// Written on the scroller's OWN axes only, as the two longhands rather
+/// than the shorthand (a two-axis scroller owns both, so both carry the
+/// verdict). `overscroll-behavior` sets both axes, and a
 /// one-axis scroller is still a scroll container on its cross axis
 /// (`create` writes `overflow-y: hidden` on a horizontal one), so a
 /// `none` landing there swallowed every cross-axis gesture that
@@ -166,17 +174,23 @@ pub(crate) fn apply_bounces(el: &web_glue::dom::Element, bounces: bool) {
     };
     let style = html.style();
     let overflow_x = style.get_property_value("overflow-x").unwrap_or_default();
-    for (property, value) in overscroll_declarations(scrolls_horizontally(&overflow_x), bounces) {
+    let overflow_y = style.get_property_value("overflow-y").unwrap_or_default();
+    for (property, value) in overscroll_declarations(scroll_axis(&overflow_x, &overflow_y), bounces) {
         let _ = style.set_property(property, value);
     }
 }
 
 /// The scroller's axis, read back from the inline overflow `create`
-/// wrote. The mount is the only writer of `overflow-x` on this node,
-/// and `auto` there is exactly what "horizontal" meant at creation;
-/// anything else (`hidden`, or nothing at all) is the vertical default.
-pub(crate) fn scrolls_horizontally(inline_overflow_x: &str) -> bool {
-    inline_overflow_x.trim() == "auto"
+/// wrote ([`overflow_declaration`]). The mount is the only writer of
+/// `overflow-x` / `overflow-y` on this node, so `auto` on both is a
+/// two-axis scroller, `auto` on X alone a horizontal one, and anything
+/// else (`hidden`, or nothing at all) the vertical default.
+pub(crate) fn scroll_axis(inline_overflow_x: &str, inline_overflow_y: &str) -> ScrollAxis {
+    match (inline_overflow_x.trim() == "auto", inline_overflow_y.trim() == "auto") {
+        (true, true) => ScrollAxis::Both,
+        (true, false) => ScrollAxis::Horizontal,
+        _ => ScrollAxis::Vertical,
+    }
 }
 
 /// Which `overscroll-behavior-*` longhands `apply_bounces` writes, and
@@ -187,14 +201,14 @@ pub(crate) fn scrolls_horizontally(inline_overflow_x: &str) -> bool {
 /// axis is `auto` unconditionally, because a `none` there is the bug
 /// this exists to prevent (see [`apply_bounces`]).
 pub(crate) fn overscroll_declarations(
-    horizontal: bool,
+    axis: ScrollAxis,
     bounces: bool,
 ) -> [(&'static str, &'static str); 2] {
     let own = if bounces { "auto" } else { "none" };
-    if horizontal {
-        [("overscroll-behavior-x", own), ("overscroll-behavior-y", "auto")]
-    } else {
-        [("overscroll-behavior-y", own), ("overscroll-behavior-x", "auto")]
+    match axis {
+        ScrollAxis::Horizontal => [("overscroll-behavior-x", own), ("overscroll-behavior-y", "auto")],
+        ScrollAxis::Vertical => [("overscroll-behavior-y", own), ("overscroll-behavior-x", "auto")],
+        ScrollAxis::Both => [("overscroll-behavior-x", own), ("overscroll-behavior-y", own)],
     }
 }
 
@@ -207,7 +221,7 @@ mod tests {
     /// table pins the page.
     #[test]
     fn horizontal_no_bounce_contains_x_only() {
-        let decls = overscroll_declarations(true, false);
+        let decls = overscroll_declarations(ScrollAxis::Horizontal, false);
         assert_eq!(decls, [("overscroll-behavior-x", "none"), ("overscroll-behavior-y", "auto")]);
         assert!(
             decls.iter().all(|(p, _)| *p != "overscroll-behavior"),
@@ -218,27 +232,60 @@ mod tests {
     #[test]
     fn vertical_no_bounce_contains_y_only() {
         assert_eq!(
-            overscroll_declarations(false, false),
+            overscroll_declarations(ScrollAxis::Vertical, false),
             [("overscroll-behavior-y", "none"), ("overscroll-behavior-x", "auto")]
+        );
+    }
+
+    /// A two-axis scroller owns both axes, so `bounces(false)` contains
+    /// both.
+    #[test]
+    fn two_axis_no_bounce_contains_both() {
+        assert_eq!(
+            overscroll_declarations(ScrollAxis::Both, false),
+            [("overscroll-behavior-x", "none"), ("overscroll-behavior-y", "none")]
         );
     }
 
     #[test]
     fn bounces_leaves_both_axes_auto() {
-        for horizontal in [true, false] {
-            assert!(overscroll_declarations(horizontal, true)
+        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical, ScrollAxis::Both] {
+            assert!(overscroll_declarations(axis, true)
                 .iter()
                 .all(|(_, v)| *v == "auto"));
         }
     }
 
-    /// Reads back what `create` writes: `overflow-x: auto` is the
-    /// horizontal mount, `hidden` (or an unset property) the vertical one.
+    /// Reads back what `create` writes: `auto` on both is the two-axis
+    /// mount, `auto` on X alone the horizontal one, and `hidden` (or an
+    /// unset property) the vertical default.
+    /// `create` mounts `overflow: auto` on exactly the axes that scroll,
+    /// `hidden` on the rest — a two-axis scroller is `auto` on both.
     #[test]
-    fn axis_is_read_from_the_inline_overflow_x() {
-        assert!(scrolls_horizontally("auto"));
-        assert!(scrolls_horizontally(" auto "));
-        assert!(!scrolls_horizontally("hidden"));
-        assert!(!scrolls_horizontally(""));
+    fn each_axis_mounts_its_own_overflow() {
+        assert_eq!(overflow_declaration(ScrollAxis::Vertical), "overflow-y: auto; overflow-x: hidden");
+        assert_eq!(overflow_declaration(ScrollAxis::Horizontal), "overflow-x: auto; overflow-y: hidden");
+        assert_eq!(overflow_declaration(ScrollAxis::Both), "overflow-x: auto; overflow-y: auto");
+    }
+
+    #[test]
+    fn axis_is_read_from_the_inline_overflow() {
+        assert_eq!(scroll_axis("auto", "hidden"), ScrollAxis::Horizontal);
+        assert_eq!(scroll_axis(" auto ", ""), ScrollAxis::Horizontal);
+        assert_eq!(scroll_axis("auto", "auto"), ScrollAxis::Both);
+        assert_eq!(scroll_axis("hidden", "auto"), ScrollAxis::Vertical);
+        assert_eq!(scroll_axis("", ""), ScrollAxis::Vertical);
+        // Round trip: what `create` writes reads back as the same axis.
+        for axis in [ScrollAxis::Vertical, ScrollAxis::Horizontal, ScrollAxis::Both] {
+            let decl = overflow_declaration(axis);
+            let get = |prop: &str| {
+                decl.split(';')
+                    .filter_map(|d| d.split_once(':'))
+                    .find(|(p, _)| p.trim() == prop)
+                    .map(|(_, v)| v.trim().to_string())
+                    .unwrap_or_default()
+            };
+            assert_eq!(scroll_axis(&get("overflow-x"), &get("overflow-y")), axis);
+        }
     }
 }

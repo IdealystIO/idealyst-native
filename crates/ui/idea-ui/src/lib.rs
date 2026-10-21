@@ -227,7 +227,8 @@ pub use components::popover::{Popover, PopoverProps};
 pub use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
 pub use components::progress::{Progress, ProgressCap, ProgressMode, ProgressProps};
 pub use components::segmented_control::{
-    SegmentOption, SegmentedControl, SegmentedControlProps,
+    install_segmented_control_style, SegmentOption, SegmentedControl, SegmentedControlProps,
+    SegmentedControlStyle,
 };
 pub use components::select::{Select, SelectProps};
 // Data/style types shared with Autocomplete.
@@ -244,7 +245,7 @@ pub use components::switch::{Switch, SwitchProps};
 #[cfg(feature = "table")]
 pub use components::table::{
     CellAlign, ColSpan, ColumnPin, RowTone, Table, TableCell, TableCellProps, TableDensity,
-    TableFooter, TableFooterProps, TableProps, TableRow, TableRowProps, TableVariant,
+    TableFooter, TableFooterProps, TableInset, TableProps, TableRow, TableRowProps, TableVariant,
 };
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
 pub use components::tag::{Tag, TagProps};

@@ -205,7 +205,17 @@
             // pushing it over its neighbour. The grid owns cell
             // geometry; the author owns what's drawn in it.
             node.style.boxSizing = 'border-box';
-            this.spacer.appendChild(node);
+            // Row-major DOM order — before the next mounted cell in
+            // (row, col) order, else last — so equal-z cells stack and
+            // hit-test by position, not by the order they scrolled in.
+            let next = null;
+            for (const e of this.mounted.values()) {
+                const after = e.row > row || (e.row === row && e.col > col);
+                const closer = next === null || e.row < next.row || (e.row === next.row && e.col < next.col);
+                if (after && closer) next = e;
+            }
+            if (next) this.spacer.insertBefore(node, next.node);
+            else this.spacer.appendChild(node);
             this.mounted.set(slot, {
                 node,
                 scopeId,

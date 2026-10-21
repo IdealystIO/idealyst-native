@@ -4,7 +4,8 @@
 //!
 //! Architecture:
 //!
-//! - The collection view is plain `UICollectionView` (UIKit), built
+//! - The collection view is a `UICollectionView` (`IdealystCollectionView`,
+//!   whose only override is the z-ordered `hitTest:`), built
 //!   with a `UICollectionViewFlowLayout` instance. Scroll direction
 //!   is set from the `horizontal` flag handed to
 //!   `VirtualizerOps::create_virtualizer`.
@@ -122,6 +123,99 @@ fn retire_mount(mount: &CellMount, release: Option<&Rc<dyn Fn(u64)>>) {
     unsafe { mount.child.removeFromSuperview() };
     if let Some(release) = release {
         (release)(mount.scope_id);
+    }
+}
+
+// =========================================================================
+// Row stacking — `z_index` on a virtualized item.
+//
+// On web a virtualized list's rows are plain siblings in one container,
+// so a `z_index` on an item's root orders that ROW against its
+// neighbours, for paint and for the pointer. Here every row sits inside
+// its own `UICollectionViewCell`, and the cells are the siblings: the
+// item root's `zPosition` (written by `apply_style` /
+// `AnimProp::ZIndex`) only orders it inside its own cell. So the CELL
+// carries its hosted item root's z — written when the item mounts in
+// `cellForItemAt` (after the dequeue has applied the flow layout's
+// attributes) and when the item's z changes later
+// (`sync_cell_z_for_item`). Not via the layout attributes' `zIndex`: the
+// z belongs to the mounted item's style, which the layout computes
+// attributes for BEFORE `cellForItemAt` mounts it, so feeding it through
+// the layout would need a relayout after every mount. Relayouts (bounds
+// change, invalidation, scrolling) leave a cell's `zPosition` alone —
+// the regression test re-checks it after one. A recycled cell re-reads
+// its NEW item's z, so a raised row never leaks its z into the row that
+// reuses its cell.
+//
+// Paint then follows Core Animation's sibling sort; touches follow it
+// because the collection view is an `IdealystCollectionView`, whose
+// `hitTest:` walks the cells in paint order (`touch::z_ordered_hit_test`)
+// where UIKit's stock walk goes by subview index.
+// =========================================================================
+
+declare_class!(
+    /// The virtualizer's collection view: its `hitTest:` walks the cells
+    /// in `z_index` paint order. See "Row stacking".
+    pub(crate) struct IdealystCollectionView;
+
+    unsafe impl ClassType for IdealystCollectionView {
+        type Super = objc2_ui_kit::UICollectionView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystCollectionView";
+    }
+
+    impl DeclaredClass for IdealystCollectionView {}
+
+    unsafe impl IdealystCollectionView {
+        #[method_id(hitTest:withEvent:)]
+        fn hit_test(
+            &self,
+            point: CGPoint,
+            event: Option<&objc2_ui_kit::UIEvent>,
+        ) -> Option<Retained<UIView>> {
+            match crate::imp::touch::z_ordered_hit_test(self, point, event) {
+                Some(resolved) => resolved,
+                None => unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] },
+            }
+        }
+    }
+);
+
+fn layer_z(view: &UIView) -> CGFloat {
+    let layer: *mut NSObject = unsafe { msg_send![view, layer] };
+    if layer.is_null() {
+        0.0
+    } else {
+        unsafe { msg_send![layer, zPosition] }
+    }
+}
+
+/// Give `cell` its hosted item root's `zPosition` (0 when it hosts
+/// nothing). See "Row stacking".
+fn sync_cell_z(cell: &UIView) {
+    let content: Option<Retained<UIView>> = unsafe { msg_send_id![cell, contentView] };
+    let z = content
+        .and_then(|c| c.subviews().to_vec().first().map(|child| layer_z(child)))
+        .unwrap_or(0.0);
+    let layer: *mut NSObject = unsafe { msg_send![cell, layer] };
+    if !layer.is_null() {
+        let _: () = unsafe { msg_send![layer, setZPosition: z] };
+    }
+}
+
+/// After `view`'s own `zPosition` changed: when `view` is a virtualized
+/// item's root (hosted in a `UICollectionViewCell`'s `contentView`; the
+/// virtualizer is the only producer of those), carry the new z to the
+/// cell. No-op for every other view.
+pub(crate) fn sync_cell_z_for_item(view: &UIView) {
+    let content: Option<Retained<UIView>> = unsafe { msg_send_id![view, superview] };
+    let Some(content) = content else { return };
+    let cell: Option<Retained<UIView>> = unsafe { msg_send_id![&content, superview] };
+    let Some(cell) = cell else { return };
+    let is_cell: bool =
+        unsafe { msg_send![&cell, isKindOfClass: objc2::class!(UICollectionViewCell)] };
+    if is_cell {
+        sync_cell_z(&cell);
     }
 }
 
@@ -530,7 +624,10 @@ impl VirtualizerDataSource {
         let mask: UIViewAutoresizing = UIViewAutoresizing::from_bits_truncate(0x12);
         let _: () = unsafe { msg_send![child_view, setAutoresizingMask: mask] };
         unsafe { content_view.addSubview(child_view) };
-
+        // The row stacks by its item root's z (see "Row stacking"); a
+        // reused cell drops the previous item's.
+        let cell_view: &UIView = unsafe { &*(&*cell as *const NSObject as *const UIView) };
+        sync_cell_z(cell_view);
 
         // Retain the child so the cell-mount map owns it even after
         // the caller's IosNode (which is itself a Retained) is dropped.
@@ -593,11 +690,10 @@ impl VirtualizerDataSource {
 }
 
 // Cells are stock `UICollectionViewCell`s (registered in `create`). We host
-// the user's view inside the dequeued cell's `contentView` and override no
-// cell behavior, so no custom subclass is needed. (A prior `NSObject`-super
-// subclass tripped `registerClass:forCellWithReuseIdentifier:`'s assertion
-// that the class be a `UICollectionViewCell` subclass — a hard crash that
-// meant `flat_list` never actually ran on iOS.)
+// the user's view inside the dequeued cell's `contentView`; the cell's only
+// extra state is its `zPosition` (see "Row stacking"), which needs no
+// subclass. `registerClass:forCellWithReuseIdentifier:` asserts the class is
+// a `UICollectionViewCell` subclass — an `NSObject`-super class crashes there.
 
 // =========================================================================
 // Public entry points (called from imp::mod's Backend impl).
@@ -673,7 +769,7 @@ pub(crate) fn create(
     // 2) Build the collection view. `initWithFrame:collectionViewLayout:`
     //    needs a CGRect frame and the flow layout we just built; Taffy
     //    rewrites the frame on the next layout pass.
-    let cv_cls = objc2::class!(UICollectionView);
+    let cv_cls = IdealystCollectionView::class();
     let frame = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
     let cv: Retained<UIView> = unsafe {
         msg_send_id![
@@ -694,10 +790,9 @@ pub(crate) fn create(
     // 3) Register the stock `UICollectionViewCell` class against a stable
     //    reuse identifier. We host the user's view inside the dequeued cell's
     //    `contentView` (see `cell_for_item_impl`) and need no custom cell
-    //    behavior, so the built-in class is exactly right — and crucially,
-    //    `registerClass:forCellWithReuseIdentifier:` ASSERTS the class is a
-    //    `UICollectionViewCell` subclass, so registering an `NSObject`
-    //    subclass crashes at register time (UICollectionView.m assertion).
+    //    behavior — and `registerClass:forCellWithReuseIdentifier:` ASSERTS
+    //    the class is a `UICollectionViewCell` subclass, so registering an
+    //    `NSObject` subclass crashes at register time.
     let cell_cls: &objc2::runtime::AnyClass = objc2::class!(UICollectionViewCell);
     let reuse_id = cell_reuse_identifier();
     let _: () = unsafe {

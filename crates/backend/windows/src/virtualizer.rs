@@ -6,7 +6,10 @@
 //! The list is a painted view with [`ScrollInfo`](crate::ScrollInfo) — the
 //! same node a `scroll_view` is, so painting, hit testing, wheel scrolling,
 //! clipping and native-child positioning need nothing new. Its scene
-//! children are the MOUNTED rows only; they are not Taffy children. Each
+//! children are the MOUNTED rows only, kept in row order, so a row stacks
+//! against its neighbours by its item root's z (`z_index`, animated
+//! `ZIndex`) with ties in row order, like any siblings
+//! (`scene::child_paint_order`); they are not Taffy children. Each
 //! row (`VirtualizerCallbacks::mount_item` builds it in a fresh per-row
 //! scope) is a detached Taffy root: the layout pass lays it out at the
 //! list's cross size by its item size ([`WindowsBackend::layout_virtual_rows`]),
@@ -216,10 +219,7 @@ pub(crate) fn resync(weak: &Weak<RefCell<WindowsBackend>>, id: u64) {
         }
         let (node, scope) = (callbacks.mount_item)(idx);
         let Ok(mut b) = rc.try_borrow_mut() else { continue };
-        b.children.entry(id).or_default().push(node.id);
-        if let Some(st) = b.virtualizers.get_mut(&id) {
-            st.mounted.insert(idx, Row { id: node.id, scope });
-        }
+        insert_row(&mut b, id, idx, Row { id: node.id, scope });
     }
 
     // Record the geometry, then lay out and repaint.
@@ -237,6 +237,22 @@ pub(crate) fn resync(weak: &Weak<RefCell<WindowsBackend>>, id: u64) {
     }
     b.layout_pass();
     b.invalidate();
+}
+
+/// Record row `idx` of list `id` and add its root to the list's scene
+/// children in ROW order: before the next mounted row, else last. Rows
+/// are plain siblings, so `scene::child_paint_order` stacks them by the
+/// item root's z (style `z_index`, animated `ZIndex`) with ties in this
+/// child order — appending would tie-break by mount order instead, and a
+/// row that scrolls in above the window would stack over (and take the
+/// pointer from) the row below it wherever the two overlap.
+fn insert_row(b: &mut WindowsBackend, id: u64, idx: usize, row: Row) {
+    let Some(st) = b.virtualizers.get_mut(&id) else { return };
+    let next = st.mounted.range(idx + 1..).next().map(|(_, r)| r.id);
+    st.mounted.insert(idx, row);
+    let kids = b.children.entry(id).or_default();
+    let at = next.and_then(|n| kids.iter().position(|k| *k == n)).unwrap_or(kids.len());
+    kids.insert(at, row.id);
 }
 
 /// Free a list's rows when it is released. The vocabulary drains the row
@@ -332,5 +348,111 @@ mod tests {
         assert_eq!(visible_range(&offs, &sizes, 400.0, 200.0, 1.0), (5, 20));
         assert_eq!(visible_range(&[], &[], 0.0, 200.0, 0.0), (0, 0));
         assert_eq!(visible_range(&offs, &sizes, 0.0, 0.0, 0.0), (0, 0), "no viewport yet");
+    }
+
+    /// Rows are plain siblings of the list node, so a `z_index` on an item
+    /// root orders that row against its neighbours for paint and hit
+    /// testing (as on web), and equal-z rows stack in ROW order. Fails if
+    /// rows are appended in mount order: row 9, scrolled in above the
+    /// window, then stacks over row 10 and takes the pointer where the
+    /// two overlap.
+    #[test]
+    fn regression_virtual_rows_stack_by_item_z_then_row_order() {
+        use crate::scene::{child_paint_order, hit_chain};
+        use runtime_shared::StyleRules;
+        use runtime_vocabulary::caps::{StyleOps, VirtualizerOps};
+        use runtime_shared::accessibility::AccessibilityProps;
+        use windows::Win32::Foundation::HWND;
+
+        let cell = Rc::new(RefCell::new(WindowsBackend::new(HWND(std::ptr::null_mut()))));
+        cell.borrow_mut().set_self_ref(Rc::downgrade(&cell));
+        let count = Rc::new(std::cell::Cell::new(100usize));
+        let weak = Rc::downgrade(&cell);
+        let c = count.clone();
+        let callbacks = VirtualizerCallbacks {
+            item_count: Rc::new(move || c.get()),
+            item_key: Rc::new(|i| i as u64),
+            item_size: Rc::new(|_| 40.0),
+            measure_sizes: false,
+            mount_item: Rc::new(move |i| {
+                let node = weak.upgrade().unwrap().borrow_mut().create_view(&AccessibilityProps::default());
+                (node, 1000 + i as u64)
+            }),
+            release_item: Rc::new(|_| {}),
+            set_measured_size: Rc::new(|_, _| {}),
+            on_scroll: None,
+            item_changed: None,
+        };
+        let layout = VirtualLayout {
+            axis: runtime_shared::primitives::virtualizer::Axis::Vertical,
+            lanes: runtime_shared::primitives::virtualizer::Lanes::Fixed(1),
+            main_spacing: 0.0,
+            cross_spacing: 0.0,
+        };
+        let list = VirtualizerOps::create_virtualizer(&mut *cell.borrow_mut(), callbacks, 0.0, layout, &AccessibilityProps::default());
+        let weak = Rc::downgrade(&cell);
+        {
+            let mut b = cell.borrow_mut();
+            b.root_id = Some(list.id);
+            b.nodes.get_mut(&list.id).unwrap().frame = (0.0, 0.0, 300.0, 200.0);
+        }
+        // The first resync gives the list its scroll extent (a scroll
+        // offset clamps to it). Then window rows 10..15 and scroll up one
+        // row: 9 enters, 14 leaves.
+        resync(&weak, list.id);
+        cell.borrow_mut().set_node_scroll(&list, 0.0, 400.0);
+        resync(&weak, list.id);
+        cell.borrow_mut().set_node_scroll(&list, 0.0, 360.0);
+        resync(&weak, list.id);
+        let row = |i: usize| cell.borrow().virtualizers[&list.id].mounted[&i].id;
+        let rows: Vec<u64> = (9..14).map(row).collect();
+        // Rows overlap their successor by 20px (60px rows on a 40px
+        // pitch), so stacking decides who is on top in the overlap. The
+        // sizes are set by hand: this test runs no real Taffy pass over
+        // the detached rows.
+        let overlap_rows = |b: &mut WindowsBackend| {
+            b.place_virtual_rows();
+            for &id in &rows {
+                let frame = &mut b.nodes.get_mut(&id).unwrap().frame;
+                (frame.2, frame.3) = (300.0, 60.0);
+            }
+        };
+        overlap_rows(&mut cell.borrow_mut());
+        // Content y 410 is in row 9 [360, 420) and row 10 [400, 460);
+        // window y = 410 - scroll 360.
+        let top_at_overlap = |b: &WindowsBackend| hit_chain(b, 10.0, 50.0)[0].id;
+
+        assert_eq!(child_paint_order(&cell.borrow(), list.id), rows, "equal z: row order, not mount order");
+        assert_eq!(top_at_overlap(&cell.borrow()), row(10), "the later row is on top");
+
+        // A static z_index on row 9's item root raises it over row 10.
+        let raise = |z: Option<i32>| {
+            let node = crate::WindowsNode { id: row(9), hwnd: HWND(std::ptr::null_mut()) };
+            StyleOps::apply_style(&mut *cell.borrow_mut(), &node, &Rc::new(StyleRules { z_index: z, ..StyleRules::default() }));
+        };
+        raise(Some(1));
+        let mut raised: Vec<u64> = rows[1..].to_vec();
+        raised.push(row(9));
+        assert_eq!(child_paint_order(&cell.borrow(), list.id), raised);
+        assert_eq!(top_at_overlap(&cell.borrow()), row(9), "the raised row takes the pointer");
+
+        // A restyle without z_index restores row order.
+        raise(None);
+        assert_eq!(child_paint_order(&cell.borrow(), list.id), rows);
+        assert_eq!(top_at_overlap(&cell.borrow()), row(10));
+
+        // Animated ZIndex writes the same slot.
+        let node9 = crate::WindowsNode { id: row(9), hwnd: HWND(std::ptr::null_mut()) };
+        cell.borrow_mut().set_animated_f32(&node9, crate::AnimProp::ZIndex, 3.0);
+        assert_eq!(top_at_overlap(&cell.borrow()), row(9));
+
+        // Recycled rows (data change) mount fresh at z 0, in row order.
+        VirtualizerOps::virtualizer_data_changed(&mut *cell.borrow_mut(), &list);
+        resync(&weak, list.id);
+        let rows: Vec<u64> = (9..14).map(row).collect();
+        assert!(rows.iter().all(|id| cell.borrow().nodes[id].z == 0.0), "a recycled row does not keep the old z");
+        assert_eq!(child_paint_order(&cell.borrow(), list.id), rows);
+        assert_eq!(cell.borrow().children[&list.id], rows);
+        VirtualizerOps::release_virtualizer(&mut *cell.borrow_mut(), &list);
     }
 }

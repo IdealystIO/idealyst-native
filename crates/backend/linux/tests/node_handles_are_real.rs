@@ -117,7 +117,7 @@ fn regression_text_handle_is_not_the_noop_default() {
 // otherwise reasonably assume the scroll case was simply forgotten.
 fn regression_scroll_view_handle_builds_without_panicking() {
     let mut b = backend();
-    let node = ScrollOps::create_scroll_view(&mut b, false, None, &AccessibilityProps::default());
+    let node = ScrollOps::create_scroll_view(&mut b, runtime_shared::ScrollAxis::Vertical, None, &AccessibilityProps::default());
 
     // Weak by design (see the note above): this only proves the override is
     // wired and reachable, NOT that scrolling reaches the adjustment.

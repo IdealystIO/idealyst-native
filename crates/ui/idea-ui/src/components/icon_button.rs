@@ -23,11 +23,12 @@
 use std::rc::Rc;
 
 use runtime_core::{
-    component, icon, resolve_style, text, AlignSelf, Color, Element, IconData, IdealystSchema,
+    component, icon, resolve_style, text, ui, AlignSelf, Color, Element, IconData, IdealystSchema,
     IntoElement, Length, PressableHandle, Reactive, Ref, StyleApplication, StyleRules, StyleSheet,
     Tokenized, VariantEnum,
 };
 
+use crate::components::tooltip::Tooltip;
 use idea_theme::extensible::{installed_icon_button_sheet, tone, variant, ToneRef, VariantRef};
 
 pub use crate::stylesheets::IconButtonSize;
@@ -145,6 +146,19 @@ pub struct IconButtonProps {
     /// once; IconButton always snapshots its child structure at build, so the
     /// bind is unconditional (no `switch` rebuild that could re-fill it).
     pub bind_to: Option<Ref<PressableHandle>>,
+    /// Accessible name: what a screen reader announces and what a robot /
+    /// e2e test finds the button by (`find_element(label = …)`). A glyph or
+    /// icon has no text to derive one from, so every IconButton should get
+    /// a `label` or a `tooltip`. Default `None` falls back to `tooltip`.
+    #[prop(static)]
+    pub label: Option<String>,
+    /// Hint shown in a [`Tooltip`](crate::components::tooltip::Tooltip)
+    /// around the button (hover on desktop, long-press on touch), and the
+    /// accessible name when `label` is `None`. A Tooltip wrapped around an
+    /// IconButton from outside can't name it: the button is built before
+    /// the Tooltip runs. Default `None` (no tooltip).
+    #[prop(static)]
+    pub tooltip: Option<String>,
 }
 
 impl Default for IconButtonProps {
@@ -162,6 +176,8 @@ impl Default for IconButtonProps {
             radius: Reactive::Static(None),
             color: Reactive::Static(None),
             bind_to: None,
+            label: None,
+            tooltip: None,
         }
     }
 }
@@ -355,7 +371,18 @@ pub fn IconButton(props: &IconButtonProps) -> Element {
     if let Some(r) = props.bind_to {
         bound = bound.bind(r);
     }
-    bound.into_element()
+    if let Some(name) = props.label.clone().or_else(|| props.tooltip.clone()) {
+        bound = bound.a11y_label(name);
+    }
+    let button = bound.into_element();
+    match props.tooltip.clone() {
+        Some(text) => ui! {
+            Tooltip(text = text) {
+                button
+            }
+        },
+        None => button,
+    }
 }
 
 #[cfg(test)]
@@ -385,6 +412,64 @@ mod tests {
             }
             _ => panic!("IconButton renders a Pressable"),
         }
+    }
+
+    fn pressable_name(el: Element) -> Option<String> {
+        match classify(el) {
+            P::Pressable { accessibility, .. } => accessibility.label,
+            _ => panic!("expected the IconButton pressable"),
+        }
+    }
+
+    /// An IconButton has no text to derive a name from, so screen readers
+    /// and robot/e2e lookups by name found nothing. `label` names it.
+    #[test]
+    fn regression_icon_button_label_is_the_accessible_name() {
+        with_test_world(|| {
+            theme();
+            let props = IconButtonProps {
+                icon: Reactive::Static(Some(TRASH)),
+                label: Some("Delete row".into()),
+                ..Default::default()
+            };
+            assert_eq!(pressable_name(IconButton(&props)).as_deref(), Some("Delete row"));
+            let bare = IconButtonProps { icon: Reactive::Static(Some(TRASH)), ..Default::default() };
+            assert_eq!(pressable_name(IconButton(&bare)), None, "no label, no tooltip → unnamed");
+        });
+    }
+
+    /// `tooltip` wraps the button in a Tooltip AND names it with the same
+    /// text — a Tooltip wrapped around it from outside can't, since the
+    /// button is built first. An explicit `label` wins over the tooltip.
+    #[test]
+    fn tooltip_wraps_the_button_and_names_it() {
+        with_test_world(|| {
+            theme();
+            let built = |label: Option<&str>| {
+                IconButton(&IconButtonProps {
+                    icon: Reactive::Static(Some(TRASH)),
+                    tooltip: Some("Delete".into()),
+                    label: label.map(Into::into),
+                    ..Default::default()
+                })
+            };
+            let button_in = |el: Element| -> Element {
+                let P::Fragment { mut children } = classify(el) else {
+                    panic!("a tooltip IconButton is the Tooltip's [anchor, bubble] fragment");
+                };
+                let P::View { mut children, on_hover, .. } = classify(children.remove(0)) else {
+                    panic!("the Tooltip anchor view");
+                };
+                assert!(on_hover, "the anchor shows the bubble on hover");
+                children.remove(0)
+            };
+            assert_eq!(pressable_name(button_in(built(None))).as_deref(), Some("Delete"));
+            assert_eq!(
+                pressable_name(button_in(built(Some("Remove item")))).as_deref(),
+                Some("Remove item"),
+                "an explicit label wins over the tooltip text"
+            );
+        });
     }
 
     // D5: passing `icon` (IconData) renders a vector icon instead of the

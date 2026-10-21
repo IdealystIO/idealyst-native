@@ -671,9 +671,10 @@ pub enum Position {
     ///
     /// **Per-backend coverage**:
     /// - **Web** — emits CSS `position: sticky` plus the inset
-    ///   properties and `z-index: 1` (the same raise the native
-    ///   backends apply, so the pinned box stays above positioned
-    ///   siblings too); the browser owns the pinning. Full support, all
+    ///   properties and `z-index: 1` (the sticky raise every backend
+    ///   applies through [`StyleRules::stacking_z`], so the pinned box
+    ///   stays above positioned siblings too); the browser owns the
+    ///   pinning. Full support, all
     ///   four edges. Note the usual CSS caveat: sticky pins to the
     ///   NEAREST ancestor scroll container, so an intermediate
     ///   `overflow: hidden` silently becomes that container.
@@ -714,22 +715,25 @@ pub enum Position {
     ///   independent setters, each axis is epsilon-gated separately.
     ///   All four edges (trailing pins measure against the scroll
     ///   view's `getWidth()`/`getHeight()` in dp).
-    ///   Walks up to the enclosing `ScrollView`/`HorizontalScrollView`
-    ///   at `apply_style` time; deferred to `insert` for first-mount
+    ///   Walks up to the enclosing `ScrollView`/`HorizontalScrollView`/
+    ///   `RustTwoAxisScrollView` at `apply_style` time; deferred to `insert` for first-mount
     ///   children whose parent chain isn't yet wired up. Falls back to
     ///   `Relative` when no enclosing scroll-view ancestor exists.
-    /// - **Linux (GTK)** — vertical leading (`top`) only. The one
-    ///   backend without horizontal or trailing-edge pinning; `left`,
-    ///   `right` and `bottom` insets fall back to relative on their
-    ///   axis, so frozen columns and pinned footers do not work here.
-    ///   Deliberately unextended until it can be verified against a
-    ///   real GTK toolchain (see the scope note in
-    ///   `backend-linux/src/sticky.rs`).
-    /// - **Terminal / Roku / CPU** — treated as `Relative`. Scrolling
-    ///   on these targets is either inapplicable (terminal) or driven
-    ///   by a different model (Roku SceneGraph, ESP32 displays). They
-    ///   emit a one-time `[unsupported]` warning in debug builds
-    ///   rather than degrading silently.
+    /// - **Linux (GTK)** — all four edges on both axes through
+    ///   [`crate::sticky`], re-pinned on both adjustments'
+    ///   `value-changed` and after each layout pass; the pin rides the
+    ///   node's child transform.
+    /// - **Windows** — all four edges on both axes: a painted pin
+    ///   (`NodeMeta::sticky_offset`, read through `placed_frame()` by
+    ///   paint, hit-test and native-child placement), recomputed after
+    ///   layout and on every scroll-offset change.
+    /// - **Terminal** — all four edges on both axes, in cells: the
+    ///   paint and hit-test walks shift a pinned node by the
+    ///   [`crate::sticky`] translate against its enclosing scroller.
+    /// - **Roku / CPU** — treated as `Relative`. Scrolling there is
+    ///   driven by a different model (Roku SceneGraph) or not
+    ///   dispatched at all (CPU). They emit a one-time `[unsupported]`
+    ///   warning in debug builds rather than degrading silently.
     Sticky,
 }
 
@@ -986,6 +990,10 @@ pub enum Overflow {
 ///   stretch). `Contain` leaves the edge effect but is otherwise the
 ///   default for a plain `ScrollView`, which doesn't participate in
 ///   nested scrolling.
+/// - **Windows** — not read. A wheel tick goes to the nearest scroller
+///   that scrolls its axis and stops there, at a limit too (no
+///   chaining), so `Contain` is already its behavior; there is no edge
+///   effect for `None` to remove.
 /// - **Terminal / Roku / CPU** — no gesture model; ignored.
 ///
 /// Because `Contain` and `Auto` coincide on every native backend, the
@@ -1553,6 +1561,46 @@ pub struct StyleRules {
     pub right: Option<Tokenized<Length>>,
     pub bottom: Option<Tokenized<Length>>,
     pub left: Option<Tokenized<Length>>,
+    /// Stacking order among SIBLINGS. Siblings paint in ascending
+    /// order of their effective z ([`Self::stacking_z`]: this value,
+    /// else `1` for `position: Sticky`, else `0`), ties in tree order —
+    /// so a later sibling still covers an earlier one at equal z.
+    ///
+    /// - **No positioning needed.** It applies whatever `position` is;
+    ///   a plain flex item raises like an absolute one (CSS honours
+    ///   `z-index` on every flex/grid item, which every framework node
+    ///   is on web).
+    /// - **Contains its subtree.** A node with a `z_index` paints its
+    ///   descendants with it: a descendant's own `z_index` orders it
+    ///   among ITS siblings only and never lifts it past its
+    ///   ancestor's siblings (a CSS stacking context; native views
+    ///   always contain their subviews).
+    /// - **Hit-testing follows paint.** Where siblings overlap, the one
+    ///   painted on top receives the pointer, on every backend.
+    /// - **Non-negative.** A negative value is treated as `0` (with a
+    ///   debug warning): CSS would paint it behind its own parent's
+    ///   background, which no native view can do. Raise the sibling
+    ///   that should be on top instead.
+    ///
+    /// Mechanism per backend: CSS `z-index` (web, SSR); `layer.zPosition`
+    /// plus a z-ordered `hitTest:` (iOS, macOS); `View.setTranslationZ`,
+    /// whose Z ordering `ViewGroup` uses for drawing AND touch dispatch
+    /// (Android; a virtualizer row's holder container mirrors its item
+    /// root's Z, since the containers are what RecyclerView orders); the
+    /// widget sibling list restacked into paint order, which GTK picks
+    /// from last to first (GTK; a virtualizer's rows, siblings in its
+    /// `GtkFixed` document, restack the same way); a stable z-sort of
+    /// the paint and hit-test walks (Win32, CPU, terminal, GPU engine).
+    ///
+    /// Virtualized rows are siblings: a `z_index` on an item's root
+    /// orders that row against its neighbouring rows, equal-z rows
+    /// stacking in row-index order (not the order they scrolled in). On
+    /// iOS and macOS the row's cell / item view carries its item's z and
+    /// the collection view hit-tests in that order. Animated
+    /// [`AnimProp::ZIndex`](crate::animation::AnimProp::ZIndex) drives
+    /// the same channel in the same units, so a static `z_index: 2` and
+    /// an animated `2.0` order identically.
+    pub z_index: Option<i32>,
 
     // --- Typography (text-only on native; cascade on web) ---
     pub font_family: Option<FontFamily>,
@@ -1750,6 +1798,7 @@ impl Clone for StyleRules {
             right: self.right.clone(),
             bottom: self.bottom.clone(),
             left: self.left.clone(),
+            z_index: self.z_index,
             font_family: self.font_family.clone(),
             font_weight: self.font_weight.clone(),
             font_style: self.font_style.clone(),
@@ -1835,7 +1884,7 @@ macro_rules! with_style_rule_fields {
                 border_top_width, border_right_width, border_bottom_width, border_left_width,
                 border_top_color, border_right_color, border_bottom_color, border_left_color,
                 border_style,
-                position, top, right, bottom, left,
+                position, top, right, bottom, left, z_index,
                 font_family, font_weight, font_style, line_height, letter_spacing,
                 text_align, underline, strikethrough, text_transform, max_lines,
                 opacity, overflow, overscroll_behavior, scrollbar, object_fit, shadow, text_shadow,
@@ -1879,7 +1928,58 @@ macro_rules! assert_every_style_rule_field_listed {
 }
 with_style_rule_fields!(assert_every_style_rule_field_listed);
 
+/// The effective z a `position: Sticky` node gets when it sets no
+/// `z_index`: a pinned element paints above the siblings scrolling
+/// beneath it (see [`crate::sticky`]'s "Paint order").
+pub const STICKY_Z: i32 = 1;
+
+/// Paint order of a run of siblings given each one's z: indices sorted by
+/// ascending z, ties kept in tree order (a stable sort). Draw in this
+/// order; hit-test in its REVERSE, so the sibling painted on top is the
+/// one that receives the pointer. The one ordering rule every backend
+/// that sorts its own children (GTK, Win32, CPU, terminal, GPU engine,
+/// the Apple `hitTest:` overrides) shares, so none of them can drift on
+/// ties. NaN sorts as `0`.
+pub fn z_paint_order(zs: &[f32]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..zs.len()).collect();
+    if zs.iter().all(|z| *z == 0.0 || z.is_nan()) {
+        return order;
+    }
+    let key = |i: usize| if zs[i].is_nan() { 0.0 } else { zs[i] };
+    order.sort_by(|&a, &b| key(a).total_cmp(&key(b)));
+    order
+}
+
 impl StyleRules {
+    /// This style's effective sibling stacking value (see
+    /// [`Self::z_index`]): the `z_index`, clamped to `0` when negative;
+    /// else [`STICKY_Z`] for `position: Sticky`; else `0`. Every backend
+    /// writes THIS — never the raw field — on each style application,
+    /// so removing a `z_index` restores the default and sticky's raise
+    /// and an explicit `z_index` can't disagree between backends.
+    pub fn stacking_z(&self) -> i32 {
+        match self.z_index {
+            Some(z) if z < 0 => {
+                #[cfg(debug_assertions)]
+                {
+                    static WARNED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!(
+                            "[runtime-core] z_index {z} is negative; z_index orders siblings \
+                             and never paints a node behind its parent, so it is treated as 0 \
+                             — raise the sibling that should be on top instead"
+                        );
+                    }
+                }
+                0
+            }
+            Some(z) => z,
+            None if self.position == Some(Position::Sticky) => STICKY_Z,
+            None => 0,
+        }
+    }
+
     /// Layer `other` on top of `self`: properties set in `other` override
     /// the corresponding fields in `self`.
     pub fn merge(mut self, other: &StyleRules) -> Self {
@@ -2036,6 +2136,11 @@ impl StyleRules {
         write_tokenized_length(&mut s, "right", &self.right);
         write_tokenized_length(&mut s, "bot", &self.bottom);
         write_tokenized_length(&mut s, "left", &self.left);
+        if let Some(z) = self.z_index {
+            s.push_str("z=");
+            push_u32_hex(&mut s, z as u32);
+            s.push(';');
+        }
 
         // Typography
         let ff_buf: Option<String> = self.font_family.as_ref().map(|ff| match ff {

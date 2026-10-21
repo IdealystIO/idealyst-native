@@ -398,6 +398,9 @@ pub(crate) fn mount_in_window(host_view: &UIView, container: &UIView) {
     // flexibleWidth (2) | flexibleHeight (16).
     let _: () = unsafe { msg_send![container, setAutoresizingMask: 0x12u64] };
     unsafe { window.addSubview(container) };
+    // Appended = topmost by index; a portal mounted earlier with a higher
+    // `z_index` must stay above it for touches too.
+    crate::imp::callbacks::order_portals_in_window(&window);
 }
 
 /// Dispatch a Rust closure on the main queue's next runloop turn.

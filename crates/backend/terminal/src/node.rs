@@ -35,8 +35,9 @@ pub enum NodeKind {
     TextInput,
     /// A scrolling container. Children lay out at their natural
     /// sizes; the renderer paints them with a `(scroll_x, scroll_y)`
-    /// offset and clips to the scroll view's frame. The
-    /// `NodeData.horizontal` flag selects the scroll axis.
+    /// offset and clips to the scroll view's frame.
+    /// `NodeData.scroll_axis` selects which offsets move (`Both`
+    /// moves each independently) and which scrollbars paint.
     /// `NodeData.scroll_x` / `scroll_y` carry the current offset in
     /// cells, mutated by [`crate::TerminalBackend::dispatch_scroll`]
     /// when the user wheels.
@@ -119,20 +120,26 @@ pub(crate) struct NodeData {
     /// loop to look itself up. The trait's required `Self::Node` is
     /// `Copy`, so we route per-instance state through this id.
     pub anim_phase: f32,
-    /// Sibling-relative z-order. Higher values paint later (in
-    /// front). Driven by `set_animated_f32(AnimProp::ZIndex, …)`
-    /// — welcome's planets sweep through positive and negative
-    /// values per orbit to pass in front of and behind the
-    /// headline. Default 0.0.
-    pub z_index: f32,
+    /// Static sibling stacking value: `StyleRules::stacking_z()` of the
+    /// last applied style (`z_index`, else `1` for sticky, else `0`).
+    /// Rewritten on every `apply_style`, so dropping `z_index` from the
+    /// style restores `0`. Read through [`Self::effective_z`].
+    pub static_z: f32,
+    /// Animation-driven stacking value from
+    /// `set_animated_f32(AnimProp::ZIndex, …)`. When `Some`, wins over
+    /// `static_z` — same separation as `animated_opacity`, so a style
+    /// re-apply can't clobber an in-flight z animation. May be
+    /// negative: welcome's planets sweep through positive and negative
+    /// values per orbit to pass in front of and behind the headline.
+    pub animated_z: Option<f32>,
     /// Per-instance state for `NodeKind::TextInput`. None for other
     /// kinds. Held boxed so `NodeData` stays slim for the common
     /// (non-input) case.
     pub input: Option<Box<InputState>>,
-    /// `true` when this `NodeKind::ScrollView` scrolls horizontally;
-    /// `false` (the default) is vertical. Ignored for non-ScrollView
-    /// kinds.
-    pub horizontal: bool,
+    /// Which axes this `NodeKind::ScrollView` scrolls (default
+    /// `Vertical`). A non-scrolling axis's offset stays 0. Ignored for
+    /// non-ScrollView kinds.
+    pub scroll_axis: runtime_shared::ScrollAxis,
     /// Current horizontal scroll offset in cells. Subtracted from
     /// child paint coordinates and clamped to
     /// `[0, content_width - viewport_width]`. Only meaningful for
@@ -147,6 +154,14 @@ pub(crate) struct NodeData {
     /// space" semantic (web pixels, iOS points, Android dp). Only
     /// meaningful on `NodeKind::ScrollView`.
     pub on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
+}
+
+impl NodeData {
+    /// The z this node sorts by among its siblings: the animated value
+    /// while one has been written, else the static style value.
+    pub fn effective_z(&self) -> f32 {
+        self.animated_z.unwrap_or(self.static_z)
+    }
 }
 
 /// Backend-flavoured gradient: stops resolved to `Rgba` so the

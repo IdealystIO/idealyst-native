@@ -201,7 +201,9 @@ Every `stylesheet!` rule body sets fields of `runtime_core::StyleRules`. All fie
 
 **Position**: `position` (`Position::{Relative, Absolute, Sticky}`), `top`, `right`, `bottom`, `left`.
 
-`Position::Sticky` pins per axis: `top` pins vertically, `left` pins horizontally, and they are independent — a frozen table column is `position: Sticky, left: Px(0.0)` and still scrolls vertically with its row. Sticky pins to the *nearest* enclosing scroll container, so an intervening `overflow: Hidden` becomes that container. Trailing edges (`bottom` / `right`) work on web only; native backends log a one-time `[unsupported]` warning in debug builds instead of failing silently.
+`z_index` (`i32`) orders a node among its siblings: higher paints on top and takes the pointer where they overlap; ties keep tree order (the later sibling on top). It needs no `position`, and a node with one contains its subtree — a descendant's `z_index` never lifts it past its ancestor's siblings. Negative values count as `0`. `position: Sticky` without a `z_index` stacks at `1`.
+
+`Position::Sticky` pins per axis, on all four edges: `top` / `bottom` pin vertically, `left` / `right` horizontally, and the axes are independent — a frozen table column is `position: Sticky, left: Px(0.0)` and still scrolls vertically with its row, and a `top` + `left` cell (a table's corner) pins both ways inside a two-axis `scroll_view(axis = ScrollAxis::Both)`. Sticky pins to the *nearest* enclosing `scroll_view` — so a header can only stick while its table scrolls sideways if one scroller owns both axes. On web an `overflow: Hidden` between the element and its scroller also counts (CSS makes it a scroll container), so keep clipping ancestors outside the scroller.
 
 **Typography**: `font_family` (`FontFamily::System(String)` or a registered `Typeface`; `"system-ui, sans-serif"` coerces), `font_weight`, `font_style`, `line_height`, `letter_spacing`, `text_align`, `underline` (bool), `strikethrough` (bool), `text_transform`.
 

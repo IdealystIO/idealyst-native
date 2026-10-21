@@ -1,5 +1,5 @@
 //! The `button` primitive — a `<button>` element plus a click closure
-//! the element owns (`glue_dom::set_onclick`).
+//! the element owns (`glue_dom::set_press_onclick`).
 
 use crate::WebBackend;
 use runtime_shared::{ButtonHandle, ButtonOps};
@@ -25,7 +25,7 @@ pub(crate) fn create(
     // the cursor treats it as one node — we skip the content-build branch.
     if let Some(adopted) = b.hydrate_next("button") {
         let button: web_glue::dom::HtmlElement = adopted.unchecked_into();
-        crate::glue_dom::set_onclick(&button, move || on_click());
+        crate::glue_dom::set_press_onclick(&button, move || on_click());
         // See the fresh-create path below.
         super::touch::swallow_ancestor_touch(button.as_ref());
         return button.unchecked_into::<Node>();
@@ -56,7 +56,7 @@ pub(crate) fn create(
         button.set_text_content(Some(label));
     }
 
-    crate::glue_dom::set_onclick(&button, move || on_click());
+    crate::glue_dom::set_press_onclick(&button, move || on_click());
     // Consume the press from ancestor `on_touch` recognizers so a button
     // inside a clickable row / tappable card doesn't ALSO trigger the
     // ancestor — matching native's single-view touch delivery. See

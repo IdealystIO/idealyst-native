@@ -680,6 +680,10 @@ impl Host for MacosBackend {
         MacosBackend::clear_children_impl(self, node)
     }
 
+    fn release_subtree(&mut self, node: &Self::Node) {
+        MacosBackend::release_subtree_impl(self, node)
+    }
+
     fn create_anchor(&mut self) -> Self::Node {
         // A layout- and hit-transparent view over a `display: contents`
         // layout node — this backend's `display: contents`. A plain view
@@ -1089,7 +1093,7 @@ impl caps::ActivityIndicatorOps for MacosBackend {
 impl caps::ScrollOps for MacosBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1105,7 +1109,7 @@ impl caps::ScrollOps for MacosBackend {
                 schedule_flush();
             })
         });
-        MacosBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
+        MacosBackend::create_scroll_view_impl(self, axis, on_scroll, a11y)
     }
 
     fn observe_scroll_end(

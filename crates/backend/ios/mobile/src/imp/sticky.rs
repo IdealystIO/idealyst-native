@@ -219,14 +219,12 @@ pub(crate) fn register(
     // its first pin.
     entry.last_applied = None;
 
-    // Raise the pinned view above its static siblings, matching how
-    // CSS paints positioned elements above non-positioned ones — a
-    // frozen column must draw over the cells that slide beneath it.
-    // `layer.zPosition` orders sibling layers without touching the
-    // subview order UIKit's index-based insert bookkeeping relies on;
-    // hit-testing still follows subview order, which is acceptable
-    // (the overlap region is content the pin visually covers).
-    raise_z(view, 1.0);
+    // No paint-order write here: the pinned view's raise above the
+    // siblings sliding beneath it is `StyleRules::stacking_z()`
+    // (`STICKY_Z` unless an explicit `z_index`), which `apply_style`
+    // writes to `layer.zPosition` on every apply. Writing it here too
+    // would clobber an explicit `z_index` when `insert` promotes a
+    // pending registration after `apply_style` ran.
 
     // First child for this scroll view triggers the display-link
     // start. Subsequent children attach to the existing link.
@@ -330,17 +328,6 @@ impl CGAffineTransform {
 /// Reset `view.transform` to the identity.
 fn reset_view_transform(view: &UIView) {
     let _: () = unsafe { msg_send![view, setTransform: CGAffineTransform::IDENTITY] };
-    raise_z(view, 0.0);
-}
-
-/// Set the sticky raise on the view's layer. `1.0` on register (paint
-/// above static siblings, CSS positioned-element order), `0.0` on
-/// deregister so a Sticky → Relative flip restores document order.
-fn raise_z(view: &UIView, z: f64) {
-    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
-    if let Some(layer) = layer {
-        let _: () = unsafe { msg_send![&layer, setZPosition: z] };
-    }
 }
 
 /// Apply `(translate_x, translate_y)` translation to `view.transform`.

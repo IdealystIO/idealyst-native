@@ -784,3 +784,63 @@ fn explicit_solid_border_style_paints_the_default_border() {
     let solid = patterned_border_frame(Some(runtime_shared::BorderStyle::Solid));
     assert_pixels_identical("explicit_solid_border", &default, &solid);
 }
+
+// ===========================================================================
+// z_index through the real mount path
+// ===========================================================================
+
+/// A 30×30 absolute box at (10, 10) — two of these overlap exactly.
+fn stacked_rules(background: &str, z_index: Option<i32>) -> StyleRules {
+    rules(|s| {
+        *s = sized(30.0, 30.0, background);
+        s.position = Some(runtime_shared::Position::Absolute);
+        s.left = Some(Tokenized::Literal(Length::Px(10.0)));
+        s.top = Some(Tokenized::Literal(Length::Px(10.0)));
+        s.z_index = z_index;
+    })
+}
+
+/// Bug: a static `z_index` on the FIRST of two overlapping siblings was
+/// ignored by the CPU backend — the later sibling painted on top and
+/// took the click. Mounted through the scene so the style reaches the
+/// backend via the real `apply_style` path; both the pixel and the
+/// click must follow the raised sibling, and without the `z_index` both
+/// fall back to tree order.
+#[test]
+fn regression_cpu_static_z_index_wins_pixel_and_click_via_scene() {
+    fn run(first_z: Option<i32>) -> ([u8; 4], &'static str) {
+        let hits: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let h = hits.clone();
+        let backend = fresh_backend();
+        let app = backend_cpu::newcore::start(backend.clone(), |_| {}, move || {
+            use runtime_vocabulary::builders::{pressable, view};
+            let (h1, h2) = (h.clone(), h.clone());
+            view()
+                .style(sized(W as f32, H as f32, "#000000"))
+                .child(
+                    pressable(move || h1.borrow_mut().push("first"))
+                        .style(stacked_rules("rgb(255, 0, 0)", first_z)),
+                )
+                .child(
+                    pressable(move || h2.borrow_mut().push("second"))
+                        .style(stacked_rules("rgb(0, 0, 255)", None)),
+                )
+                .build()
+        });
+        test_scheduler::drain();
+        let pixels = render(&backend);
+        let outcome = backend.borrow_mut().dispatch_click(25, 25);
+        let ClickOutcome::HandlerFired(f) = outcome else {
+            panic!("click must land on a pressable, got {outcome:?}");
+        };
+        f();
+        test_scheduler::drain();
+        app.stop();
+        let i = ((25 * W + 25) * 4) as usize;
+        let px = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+        let who = hits.borrow().last().copied().expect("a handler fired");
+        (px, who)
+    }
+    assert_eq!(run(Some(1)), ([255, 0, 0, 255], "first"));
+    assert_eq!(run(None), ([0, 0, 255, 255], "second"));
+}

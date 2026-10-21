@@ -40,6 +40,23 @@
 //! have columns scrolled out of view ([`ScrollEdges`]) — what a frozen
 //! column needs to draw its edge only while content slides beneath it.
 //!
+//! # Scroll-y mode & a pinned header
+//!
+//! `TableProps::scroll_y` makes the table own its VERTICAL scrolling too:
+//! the rows scroll inside the table's own height, which the author bounds
+//! on the table's style (`max_height`, `height`, or a flex fill — the
+//! scroller shrinks to whatever the styled surface leaves it). With
+//! `scroll_x` as well, ONE two-axis scroller
+//! ([`ScrollAxis::Both`](runtime_shared::ScrollAxis)) owns both
+//! directions, so a header row styled `position: Sticky` + `top: 0` pins
+//! to the top while frozen columns keep pinning left/right, and a corner
+//! cell styled with both insets pins on both axes. (A horizontal
+//! scroller nested in the page's vertical one cannot do this: a sticky
+//! cell pins against its NEAREST scroll container, which is the
+//! horizontal one, so the header could never stick to the page.) As with
+//! frozen columns, the SDK has no pin API of its own — idea-ui's
+//! `Table(scroll_y = true)` styles its header cells sticky.
+//!
 //! # Grid columns
 //!
 //! A cell can size its column ([`TableCellProps::column`], a
@@ -204,6 +221,16 @@ pub struct TableProps {
     /// registry, which also raises pinned cells above the content
     /// sliding beneath them.
     pub scroll_x: bool,
+    /// Vertical-scroll mode. When `true` the rows scroll inside the
+    /// table's own height instead of growing it: bound the table with
+    /// `max_height` / `height` (or a flex fill) on its style, and the
+    /// scroller takes whatever the styled surface leaves after the
+    /// slots. Combined with [`scroll_x`](Self::scroll_x) the table owns
+    /// ONE two-axis scroller, so a header row styled `position: Sticky` +
+    /// `top: 0` pins while frozen columns pin sideways (see the module
+    /// docs). Uses the separate border model on web, as `scroll_x` does,
+    /// so a pinned cell's hairlines travel with it.
+    pub scroll_y: bool,
     /// Content drawn INSIDE the table's frame, above the rows and
     /// OUTSIDE the horizontal scroller — a caption, a strip of notices,
     /// a toolbar. It keeps still while a `scroll_x` table's columns
@@ -416,6 +443,11 @@ pub struct TablePrim {
     /// scroller wrapper itself is added by [`table`] at the element
     /// level, outside this payload.
     pub scroll_x: bool,
+    /// Vertical-scroll mode — the rows scroll inside the table's own
+    /// height, so a sticky header pins. Switches the border model to
+    /// `separate` (as `scroll_x` does) and leaves the width strategy to
+    /// `scroll_x`.
+    pub scroll_y: bool,
     /// Grid-column mode (a column sets `flex` / `max_width` — see
     /// [`ColumnTrack`]): the `<table>` is a CSS grid whose tracks ride in
     /// `style`, with an explicit `role="table"` because its rows and
@@ -564,6 +596,7 @@ pub struct TableBound {
     children: Vec<Element>,
     style: Option<StyleProp>,
     scroll_x: bool,
+    scroll_y: bool,
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
@@ -590,6 +623,7 @@ impl IntoElement for TableBound {
             rows: self.children,
             style: self.style,
             scroll_x: self.scroll_x,
+            scroll_y: self.scroll_y,
             header_slot: self.header_slot,
             footer_slot: self.footer_slot,
             on_edges: self.on_edges,
@@ -638,6 +672,7 @@ pub fn table(mut props: TableProps) -> TableBound {
         children: std::mem::take(&mut props.children),
         style: None,
         scroll_x: props.scroll_x,
+        scroll_y: props.scroll_y,
         header_slot: props.header_slot.take(),
         footer_slot: props.footer_slot.take(),
         on_edges: None,
@@ -680,6 +715,7 @@ struct TableParts {
     rows: Vec<Element>,
     style: Option<StyleProp>,
     scroll_x: bool,
+    scroll_y: bool,
     header_slot: Option<Element>,
     footer_slot: Option<Element>,
     on_edges: Option<Rc<dyn Fn(ScrollEdges)>>,
@@ -687,10 +723,22 @@ struct TableParts {
 
 impl TableParts {
     /// Whether the author style lands on a surface WRAPPER around the
-    /// table (scroll-x, or a slot to draw inside the frame) rather than
+    /// table (a scroller, or a slot to draw inside the frame) rather than
     /// on the table node itself.
     fn wrapped(&self) -> bool {
-        self.scroll_x || self.header_slot.is_some() || self.footer_slot.is_some()
+        self.scroll_x || self.scroll_y || self.header_slot.is_some() || self.footer_slot.is_some()
+    }
+}
+
+/// The axes a table's scroller scrolls: both when the table owns both
+/// directions (so a sticky header and frozen columns pin against the
+/// same scroller), else the one it owns.
+fn scroller_axis(scroll_x: bool, scroll_y: bool) -> runtime_shared::ScrollAxis {
+    use runtime_shared::ScrollAxis;
+    match (scroll_x, scroll_y) {
+        (true, true) => ScrollAxis::Both,
+        (true, false) => ScrollAxis::Horizontal,
+        _ => ScrollAxis::Vertical,
     }
 }
 
@@ -833,23 +881,25 @@ impl EdgeWatch {
     }
 }
 
-/// The horizontal scroller around a scroll-x table's `content`, plus —
-/// when `watch` is set — the scroll and viewport measurements for
+/// The scroller around a scrolling table's `content` (horizontal,
+/// vertical, or both — [`scroller_axis`]), plus — when `watch` is set —
+/// the scroll and viewport measurements for
 /// [`TableBound::on_scroll_edges`]. The viewport is measured on a
 /// holder view rather than the scroller itself (a scroll view hands out
 /// no layout handle); unstyled, it is exactly the scroller's width. A
 /// table that does not watch keeps the bare scroller.
 fn edge_watched_scroller(
     scroller: glue::primitives::scroll_view::GlueScrollView,
+    axis: runtime_shared::ScrollAxis,
     watch: Option<Rc<EdgeWatch>>,
 ) -> Element {
-    // `bounces(false)`: a table's column scroller is a bounded pane
-    // INSIDE a page, and an overscroll spring there has no end to
-    // signal — the thing that springs is not the thing the gesture
-    // appears to grab, so it reads as a glitch rather than as a
-    // boundary. On web this also stops the swipe chaining into the
-    // page behind the table once the columns run out.
-    let scroller = scroller.horizontal(true).bounces(false);
+    // `bounces(false)`: a table's scroller is a bounded pane INSIDE a
+    // page, and an overscroll spring there has no end to signal — the
+    // thing that springs is not the thing the gesture appears to grab,
+    // so it reads as a glitch rather than as a boundary. On web this
+    // also stops the swipe chaining into the page behind the table once
+    // the columns (or a scroll-y table's rows) run out.
+    let scroller = scroller.axis(axis).bounces(false);
     let Some(watch) = watch else {
         return scroller.into_element();
     };
@@ -1142,7 +1192,21 @@ pub mod item_lowering {
     /// `<table>` item. The caller resolves cell spans first
     /// ([`table`] does, through `resolve_spans`).
     pub fn table_item(children: Vec<Element>, style: Option<StyleProp>, scroll_x: bool) -> Element {
-        item(PrimCell::new(TablePrim { style, scroll_x, grid: false, ref_fill: None }), children)
+        scrolling_table_item(children, style, scroll_x, false)
+    }
+
+    /// `<table>` item for a table that may also own vertical scrolling
+    /// ([`TableProps::scroll_y`]).
+    pub fn scrolling_table_item(
+        children: Vec<Element>,
+        style: Option<StyleProp>,
+        scroll_x: bool,
+        scroll_y: bool,
+    ) -> Element {
+        item(
+            PrimCell::new(TablePrim { style, scroll_x, scroll_y, grid: false, ref_fill: None }),
+            children,
+        )
     }
 
     /// The whole web table element — span resolution, the `<table>`
@@ -1157,7 +1221,34 @@ pub mod item_lowering {
         header_slot: Option<Element>,
         footer_slot: Option<Element>,
     ) -> Element {
-        web_table_from(TableParts { rows, style, scroll_x, header_slot, footer_slot, on_edges: None })
+        web_table_from(TableParts {
+            rows,
+            style,
+            scroll_x,
+            scroll_y: false,
+            header_slot,
+            footer_slot,
+            on_edges: None,
+        })
+    }
+
+    /// [`web_table`] for a table that may also own vertical scrolling
+    /// ([`TableProps::scroll_y`]).
+    pub fn web_scrolling_table(
+        rows: Vec<Element>,
+        style: Option<StyleProp>,
+        scroll_x: bool,
+        scroll_y: bool,
+    ) -> Element {
+        web_table_from(TableParts {
+            rows,
+            style,
+            scroll_x,
+            scroll_y,
+            header_slot: None,
+            footer_slot: None,
+            on_edges: None,
+        })
     }
 
     /// [`web_table`] from gathered parts — what [`table`] builds on
@@ -1167,7 +1258,7 @@ pub mod item_lowering {
         let specs = column_specs(&parts.rows, columns);
         let grid = needs_grid(&specs);
         let wrapped = parts.wrapped();
-        let TableParts { rows, style, scroll_x, header_slot, footer_slot, on_edges } = parts;
+        let TableParts { rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges } = parts;
         let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
         // The `<table>` is the scrolled content, so its width is the
         // content width the edges are measured against.
@@ -1187,19 +1278,23 @@ pub mod item_lowering {
                 PrimCell::new(TablePrim {
                     style: Some(grid_columns_style(specs)),
                     scroll_x,
+                    scroll_y,
                     grid: true,
                     ref_fill,
                 }),
                 into_grid_rows(rows),
             )
         } else {
-            item(PrimCell::new(TablePrim { style: None, scroll_x, grid: false, ref_fill }), rows)
+            item(
+                PrimCell::new(TablePrim { style: None, scroll_x, scroll_y, grid: false, ref_fill }),
+                rows,
+            )
         };
         if !wrapped && style.is_none() {
             return table;
         }
         // Structure: styled SURFACE > [header slot, content, footer slot],
-        // where content is the horizontal scroller > `<table>` in scroll-x
+        // where content is the scroller > `<table>` in scroll-x / scroll-y
         // mode and the bare `<table>` otherwise (slots, or just a style). The author style
         // (border/radius/background — idea-ui's themed surface) sits
         // OUTSIDE the scroller so the frame stays put while the columns
@@ -1207,8 +1302,15 @@ pub mod item_lowering {
         // the content and clipped its own border at the viewport edge.
         // Sticky-pinned cells still pin against the scroller (their NEAREST
         // scroll ancestor — the surface's own overflow clip is further out).
-        let content = if scroll_x {
-            edge_watched_scroller(glue::scroll_view(vec![table]), watch)
+        // The scroller is a flex item of the surface with the browser's
+        // default `flex-shrink: 1`, and a scroll container's automatic
+        // minimum height is 0, so a `max_height` on the surface bounds it.
+        let content = if scroll_x || scroll_y {
+            edge_watched_scroller(
+                glue::scroll_view(vec![table]),
+                scroller_axis(scroll_x, scroll_y),
+                watch,
+            )
         } else {
             table
         };
@@ -1300,7 +1402,7 @@ fn build_cell(
 #[cfg(not(target_arch = "wasm32"))]
 fn build_table(parts: TableParts) -> Element {
     let wrapped = parts.wrapped();
-    let TableParts { rows, style, scroll_x, header_slot, footer_slot, on_edges } = parts;
+    let TableParts { rows, style, scroll_x, scroll_y, header_slot, footer_slot, on_edges } = parts;
     let watch = on_edges.filter(|_| scroll_x).map(EdgeWatch::new);
     let columns_from_spans = resolve_spans(&rows);
     // Read before the rows are flattened: the specs ride the cells.
@@ -1365,26 +1467,31 @@ fn build_table(parts: TableParts) -> Element {
     } else {
         grid.with_style(native_styles::grid_sheet(columns)).into_element()
     };
-    let mut el = if scroll_x {
-        // Structure: styled SURFACE > [header slot, horizontal
-        // scroll_view > content (width-floored) > grid, footer slot] —
-        // the web lowering's mirror. The author-style surface stays
-        // OUTSIDE the scroller so its border/radius don't ride along
-        // with the scrolled columns; the content node carries the "at
-        // least the scroller's width" floor so a narrow table still
-        // fills while a wide one overflows and scrolls. Sticky-pinned
-        // cells register against this scroll view.
+    let mut el = if scroll_x || scroll_y {
+        // Structure: styled SURFACE > [header slot, scroll_view >
+        // content > grid, footer slot] — the web lowering's mirror. The
+        // author-style surface stays OUTSIDE the scroller so its
+        // border/radius don't ride along with the scrolled columns or
+        // rows. With `scroll_x` the content node carries the "at least
+        // the scroller's width" floor so a narrow table still fills while
+        // a wide one overflows and scrolls. Sticky cells (frozen columns,
+        // a pinned header) register against this scroll view. The
+        // scroller is content-sized but shrinkable (a scroll node's
+        // automatic minimum size is 0), so a `max_height` on the surface
+        // bounds it and the rows scroll — see `scroll_wrapper_rules`.
         // The content node is what scrolls, so its width is the content
         // width the edges are measured against.
         let mut content = runtime_vocabulary::builders::view()
             .children(vec![inner])
-            .style(StyleProp::Static(Rc::new(native_styles::scroll_floor_rules())));
+            .style(StyleProp::Static(Rc::new(native_styles::scroll_content_rules(scroll_x))));
         if let Some(watch) = watch.clone() {
             content = content.on_handle(move |h| watch.measure(h, |w| &w.content));
         }
         let scroller = edge_watched_scroller(
-            glue::scroll_view(vec![content.build()])
-                .with_style(StyleProp::Static(Rc::new(native_styles::scroll_wrapper_rules()))),
+            glue::scroll_view(vec![content.build()]).with_style(StyleProp::Static(Rc::new(
+                native_styles::scroll_wrapper_rules(scroll_x),
+            ))),
+            scroller_axis(scroll_x, scroll_y),
             watch,
         );
         surface_with_slots(scroller, style, header_slot, footer_slot)
@@ -1680,8 +1787,8 @@ mod native_styles {
         })
     }
 
-    /// Width floor for the scroll-x outer surface: at least the
-    /// scroller's width (percent resolves against the enclosing scroll
+    /// The scroll content node's rules. With `scroll_x`, a width floor:
+    /// at least the scroller's width (percent resolves against the enclosing scroll
     /// view), free to grow past it — the native mirror of the web
     /// `min-width: 100%; width: max-content` strategy. `flex_shrink: 0`
     /// is load-bearing: without it the scroller's flex line squeezes
@@ -1690,16 +1797,24 @@ mod native_styles {
     /// shrink trap). Pinned by
     /// `regression_scroll_x_table_floors_at_scroller_width_and_overflows_past_it`
     /// in `runtime-layout`.
-    pub(super) fn scroll_floor_rules() -> StyleRules {
+    ///
+    /// A scroll-y-only table (`scroll_x == false`) takes no floor: its
+    /// content is a cross-axis child of a column scroller and stretches
+    /// to the scroller's width, so the columns fill and wrap as in a
+    /// plain table. `flex_shrink: 0` still holds the rows at their full
+    /// height on the scroll axis — without it they would squeeze into
+    /// the bounded scroller and nothing would scroll.
+    pub(super) fn scroll_content_rules(scroll_x: bool) -> StyleRules {
         StyleRules {
-            min_width: Some(glue::Tokenized::Literal(glue::Length::Percent(100.0))),
+            min_width: scroll_x
+                .then(|| glue::Tokenized::Literal(glue::Length::Percent(100.0))),
             flex_shrink: Some(glue::Tokenized::Literal(0.0)),
             ..Default::default()
         }
     }
 
-    /// Style for the scroll-x wrapper itself: content on the X MAIN
-    /// axis, and CONTENT height. With the default Column direction the
+    /// Style for the scroller itself. With `scroll_x`: content on the X
+    /// MAIN axis, and CONTENT height. With the default Column direction the
     /// table content would be a CROSS-axis child — stretch-clamped to
     /// the scroller's width, never able to overflow it, so there would
     /// be nothing to scroll. `flex_grow: 0` + `flex_basis: auto`
@@ -1708,9 +1823,22 @@ mod native_styles {
     /// table surface that seed collapses the scroller to zero height —
     /// the same trap the idea-ui Modal hit
     /// (`regression_modal_scroller_content_sized_then_capped`).
-    pub(super) fn scroll_wrapper_rules() -> StyleRules {
+    ///
+    /// A `scroll_x` scroller also aligns its content to the START of the
+    /// cross (Y) axis: a two-axis (`scroll_y`) scroller bounded by the
+    /// surface is shorter than its content, and a stretched content node
+    /// would be clamped to that height with the rows spilling out of it.
+    /// A scroll-y-only scroller keeps the default Column direction, where
+    /// Y is the main axis and the content's `flex_shrink: 0` holds it.
+    /// Either way the scroller stays shrinkable (Taffy's default
+    /// `flex_shrink: 1`, and a scroll node's automatic minimum is 0), so a
+    /// bounded surface caps it. Pinned by
+    /// `two_axis_table_scroller_hugs_short_content_and_caps_tall_content`
+    /// in `runtime-layout`.
+    pub(super) fn scroll_wrapper_rules(scroll_x: bool) -> StyleRules {
         StyleRules {
-            flex_direction: Some(glue::FlexDirection::Row),
+            flex_direction: scroll_x.then_some(glue::FlexDirection::Row),
+            align_items: scroll_x.then_some(glue::AlignItems::FlexStart),
             flex_grow: Some(glue::Tokenized::Literal(0.0)),
             flex_basis: Some(glue::Tokenized::Literal(glue::Length::Auto)),
             ..Default::default()
@@ -2092,18 +2220,23 @@ where
         // declarations (not a class), so `attach_style` below still
         // wins where the author sets the same property.
         let b = backend.borrow();
-        if data.scroll_x {
-            // Scroll-x border model: `separate` (spacing 0), NOT
+        if data.scroll_x || data.scroll_y {
+            // Scrolling border model: `separate` (spacing 0), NOT
             // `collapse`. Collapsed borders belong to the table's own
-            // paint layer — the layer that scrolls — so a sticky
-            // (frozen) cell's dividers stayed behind while its opaque
-            // background rode the pin over them: hairlines vanished
-            // into white-on-white. `separate` makes every cell paint
-            // its own borders, which then travel with the pinned cell.
-            // The idea-ui cells draw only their bottom (+ pin-edge)
-            // hairlines, so nothing doubles up without collapsing.
+            // paint layer — the layer that scrolls — so a sticky cell
+            // (a frozen column, a pinned header) kept its dividers
+            // behind while its opaque background rode the pin over them:
+            // hairlines vanished into white-on-white. `separate` makes
+            // every cell paint its own borders, which then travel with
+            // the pinned cell. The idea-ui cells draw only their bottom
+            // (+ pin-edge) hairlines, so nothing doubles up without
+            // collapsing.
             b.attach_html_style(&node, "border-collapse", "separate");
             b.attach_html_style(&node, "border-spacing", "0");
+        } else {
+            b.attach_html_style(&node, "border-collapse", "collapse");
+        }
+        if data.scroll_x {
             // Width strategy: natural column widths (a table at
             // `width: max-content` never wraps its cells), floored
             // at the scroller's width so a narrow table still fills.
@@ -2112,7 +2245,6 @@ where
             b.attach_html_style(&node, "min-width", "100%");
             b.attach_html_style(&node, "width", "max-content");
         } else {
-            b.attach_html_style(&node, "border-collapse", "collapse");
             b.attach_html_style(&node, "width", "100%");
         }
         b.attach_html_style(&node, "table-layout", "auto");

@@ -491,7 +491,10 @@ pub(crate) struct GradientPaint {
 
 /// Per-scroll-view state (offset in device px + author callback).
 pub(crate) struct ScrollInfo {
-    pub horizontal: bool,
+    /// Which axes pan. A fixed axis's offset stays 0: the wheel
+    /// (`scene::scroll_at`) only moves the axes that scroll, and
+    /// `set_node_scroll` clamps a fixed axis to its (zero) range.
+    pub axis: runtime_shared::ScrollAxis,
     pub offset_x: f32,
     pub offset_y: f32,
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
@@ -506,6 +509,10 @@ pub(crate) struct ScrollInfo {
 /// An `on_end_reached` watcher: fires once each time the offset comes
 /// within `threshold` px of the end, re-arming when it moves back out.
 pub(crate) struct ScrollEnd {
+    /// The axis watched — the `horizontal` the framework passed
+    /// (`ScrollAxis::end_axis_is_horizontal`: a `Both` scroller's end is
+    /// its bottom).
+    pub horizontal: bool,
     pub threshold: f32,
     pub on_end: Rc<dyn Fn()>,
     pub armed: bool,
@@ -628,7 +635,10 @@ pub(crate) struct NodeMeta {
     pub author_transform: Vec<Transform>,
     /// Animated transform slots.
     pub anim: AnimTransform,
-    /// Sibling z-order (`AnimProp::ZIndex`); ties keep insertion order.
+    /// Sibling stacking value: written from `StyleRules::stacking_z()` on
+    /// every style application and by animated `AnimProp::ZIndex`, in the
+    /// same units. Paint and hit-test walk siblings in
+    /// `scene::child_paint_order` (ascending z, ties in tree order).
     pub z: f32,
     /// `overflow: hidden` → children clipped to the node's (rounded) box.
     pub overflow_hidden: bool,
@@ -661,6 +671,15 @@ pub(crate) struct NodeMeta {
     pub default_cursor: Option<runtime_shared::Cursor>,
     /// A reactive anchor (`create_anchor`): layout- and hit-transparent.
     pub contents: bool,
+    /// `position: sticky` pin thresholds, resolved at `apply_style` by the
+    /// shared `StickyInsets::from_style`; `None` when the node isn't
+    /// sticky. See [`WindowsBackend::update_sticky`].
+    pub sticky: Option<runtime_shared::sticky::StickyInsets>,
+    /// The current sticky pin `(dx, dy)` on top of `frame`'s origin —
+    /// scroll-derived, so kept apart from `frame` (layout writes that)
+    /// and from the transforms (author / animation own those). Every
+    /// walk that places the node reads [`NodeMeta::placed_frame`].
+    pub sticky_offset: (f32, f32),
 }
 
 impl NodeMeta {
@@ -682,7 +701,19 @@ impl NodeMeta {
             cursor: None,
             default_cursor: None,
             contents: false,
+            sticky: None,
+            sticky_offset: (0.0, 0.0),
         }
+    }
+
+    /// `frame` with the sticky pin applied to its origin: where the
+    /// painters, hit test, introspection and native-child placement put
+    /// the node. Content extent and the sticky walk itself read the
+    /// natural `frame` — a pin must never grow the scroll range or feed
+    /// back into its own natural position.
+    pub(crate) fn placed_frame(&self) -> (f32, f32, f32, f32) {
+        let (x, y, w, h) = self.frame;
+        (x + self.sticky_offset.0, y + self.sticky_offset.1, w, h)
     }
 
     pub(crate) fn effective_opacity(&self) -> f32 {
@@ -1258,13 +1289,29 @@ impl WindowsBackend {
         scene::pressable_at(self, x, y)
     }
 
-    /// Route a wheel tick (`delta_px` > 0 scrolls content down/right, in
-    /// LOGICAL pixels) to the scroll view under the client-area point
-    /// `(x, y)` (DEVICE pixels, as the message carries it). Returns true
-    /// when consumed.
+    /// Route a VERTICAL wheel tick (`WM_MOUSEWHEEL`; `delta_px` > 0
+    /// scrolls content down, in LOGICAL pixels) to the nearest scroll
+    /// view under the client-area point `(x, y)` (DEVICE pixels, as the
+    /// message carries it) that scrolls Y. With Shift held the tick pans
+    /// sideways instead (the browser convention); a lone horizontal-only
+    /// scroller pans on a plain tick too — see `scene::wheel_target`.
+    /// Returns true when consumed.
     pub fn wheel_scroll(&mut self, x: f32, y: f32, delta_px: f32) -> bool {
+        let shift = view_input::current_modifiers().shift;
+        self.wheel_scroll_on(x, y, delta_px, shift)
+    }
+
+    /// Route a SIDEWAYS wheel tick (`WM_MOUSEHWHEEL`, tilt wheel or
+    /// touchpad pan; `delta_px` > 0 scrolls content right) — the X twin
+    /// of [`Self::wheel_scroll`]: it goes to the nearest scroller whose X
+    /// axis scrolls (`ScrollAxis::Horizontal` / `Both`).
+    pub fn wheel_scroll_horizontal(&mut self, x: f32, y: f32, delta_px: f32) -> bool {
+        self.wheel_scroll_on(x, y, delta_px, true)
+    }
+
+    fn wheel_scroll_on(&mut self, x: f32, y: f32, delta_px: f32, horizontal_wheel: bool) -> bool {
         let (x, y) = self.dpi.point_to_logical(x, y);
-        let handled = scene::scroll_at(self, x, y, delta_px);
+        let handled = scene::scroll_at(self, x, y, delta_px, horizontal_wheel);
         if handled {
             // Native children (composition visuals, control HWNDs)
             // don't ride the painter's scroll translate — reposition
@@ -1746,6 +1793,9 @@ impl WindowsBackend {
         // placement follows on the next turn — `portal::queue_placement`).
         self.apply_anchor_placements();
         self.place_virtual_rows();
+        // Reflow moved natural positions: re-pin before anything reads
+        // placed frames.
+        self.update_sticky(None);
         self.position_native_children();
 
         // Graphics surfaces: decide which nodes owe an `on_ready` /
@@ -1876,7 +1926,7 @@ impl WindowsBackend {
             // needs the aggregate flag to blank its clip + visibility
             // vote (see `dcomp::visual_placement`).
             let hidden = hidden_above || meta.hidden;
-            let (fx, fy, w, h) = meta.frame;
+            let (fx, fy, w, h) = meta.placed_frame();
             let (ax, ay) = (ox + fx, oy + fy);
             meta.abs = (ax, ay);
             if is_gfx {
@@ -3124,13 +3174,13 @@ impl WindowsBackend {
 
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> WindowsNode {
         let node = self.add_node(NodeKind::View(ViewVisual {
             scroll: Some(ScrollInfo {
-                horizontal,
+                axis,
                 offset_x: 0.0,
                 offset_y: 0.0,
                 on_scroll,
@@ -3144,10 +3194,10 @@ impl WindowsBackend {
         // viewport node sizes to its content — the website's page
         // scroll node laid out 2376px tall in an 860px window, leaving
         // `content − viewport = 0` to scroll. See
-        // `LayoutTree::set_overflow_scroll`'s docs; iOS/Android/macOS
-        // make the same call for the same reason.
+        // `LayoutTree::set_overflow_scroll_axis`'s docs; every native
+        // backend makes the same call for the same reason.
         if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
-            self.layout.set_overflow_scroll(layout, horizontal);
+            self.layout.set_overflow_scroll_axis(layout, axis);
         }
         node
     }
@@ -3230,7 +3280,7 @@ impl WindowsBackend {
     ) -> WindowsNode {
         let horizontal = layout.axis.is_horizontal();
         let on_scroll = callbacks.on_scroll.clone();
-        let node = self.create_scroll_view(horizontal, on_scroll, _a11y);
+        let node = self.create_scroll_view(runtime_shared::ScrollAxis::from_horizontal(horizontal), on_scroll, _a11y);
         self.virtualizers.insert(node.id, virtualizer::VirtState::new(callbacks, overscan, layout));
         virtualizer::schedule(self, node.id);
         node
@@ -3251,10 +3301,12 @@ impl WindowsBackend {
     }
 
     /// After any change to scroll view `id`'s offset (wheel, robot, code):
-    /// re-window a virtualized list, and queue `on_end_reached` if the
-    /// offset arrived at the end. The handler runs on a fresh turn — the
-    /// offset changes inside a backend borrow.
+    /// re-pin its sticky descendants, re-window a virtualized list, and
+    /// queue `on_end_reached` if the offset arrived at the end. The
+    /// handler runs on a fresh turn — the offset changes inside a backend
+    /// borrow.
     pub(crate) fn scroll_changed(&mut self, id: u64) {
+        self.update_sticky(Some(id));
         if self.virtualizers.contains_key(&id) {
             virtualizer::schedule(self, id);
         }
@@ -3262,7 +3314,8 @@ impl WindowsBackend {
         let mut fire: Option<Rc<dyn Fn()>> = None;
         if let Some(meta) = self.nodes.get_mut(&id) {
             if let NodeKind::View(ViewVisual { scroll: Some(s), .. }) = &mut meta.kind {
-                let (offset, max) = if s.horizontal { (s.offset_x, max_x) } else { (s.offset_y, max_y) };
+                let watches_x = s.end.as_ref().is_some_and(|e| e.horizontal);
+                let (offset, max) = if watches_x { (s.offset_x, max_x) } else { (s.offset_y, max_y) };
                 if let Some(end) = &mut s.end {
                     let (fires, armed) = scroll_end_step(end.armed, max - offset, end.threshold, max > 0.0);
                     end.armed = armed;
@@ -3277,11 +3330,81 @@ impl WindowsBackend {
         }
     }
 
-    /// `ScrollOps::observe_scroll_end`.
-    pub(crate) fn observe_scroll_end(&mut self, node: &WindowsNode, threshold: f32, on_end: Rc<dyn Fn()>) {
+    /// `ScrollOps::observe_scroll_end`: watch the end of the axis the
+    /// framework names (`horizontal`).
+    pub(crate) fn observe_scroll_end(
+        &mut self,
+        node: &WindowsNode,
+        horizontal: bool,
+        threshold: f32,
+        on_end: Rc<dyn Fn()>,
+    ) {
         if let Some(meta) = self.nodes.get_mut(&node.id) {
             if let NodeKind::View(ViewVisual { scroll: Some(s), .. }) = &mut meta.kind {
-                s.end = Some(ScrollEnd { threshold: threshold.max(0.0), on_end, armed: true });
+                s.end = Some(ScrollEnd { horizontal, threshold: threshold.max(0.0), on_end, armed: true });
+            }
+        }
+    }
+
+    /// Recompute `position: sticky` pins inside scroll view `only` (or
+    /// every scroll view), writing each sticky node's
+    /// [`NodeMeta::sticky_offset`].
+    ///
+    /// The pin is `runtime_shared::sticky::translate` — the one formula
+    /// every native backend uses — so all four edges pin, on both axes:
+    /// a sticky node's natural origin is its Taffy frames summed down
+    /// from the scroll view (content space; never the placed frames, which
+    /// the pin itself moves), the scrollport is the scroll view's own
+    /// frame, and the offsets are its live `ScrollInfo`. Each scroll view
+    /// owns the sticky nodes down to (not into) a nested scroll view,
+    /// which pins its own. A sticky node outside every scroll view is
+    /// never pinned — CSS falls back to `relative` the same way.
+    ///
+    /// Called from the layout pass (reflow moves natural positions) and
+    /// from [`Self::scroll_changed`], which every offset change — wheel,
+    /// `set_node_scroll`, handles — goes through. Paint order needs
+    /// nothing here: a sticky node's `z` is `StyleRules::stacking_z()`
+    /// (`STICKY_Z` by default), so it paints and hit-tests above the
+    /// content scrolling beneath it.
+    pub(crate) fn update_sticky(&mut self, only: Option<u64>) {
+        let is_scroller = |m: &NodeMeta| matches!(m.kind, NodeKind::View(ViewVisual { scroll: Some(_), .. }));
+        let scrollers: Vec<u64> = match only {
+            Some(id) => vec![id],
+            None => {
+                // A full pass starts from "nothing pinned", so a sticky node
+                // that left its scroll view doesn't keep a stale pin.
+                for m in self.nodes.values_mut() {
+                    m.sticky_offset = (0.0, 0.0);
+                }
+                self.nodes.iter().filter(|(_, m)| is_scroller(m)).map(|(id, _)| *id).collect()
+            }
+        };
+        let mut pins: Vec<(u64, (f32, f32))> = Vec::new();
+        for sid in scrollers {
+            let Some(meta) = self.nodes.get(&sid) else { continue };
+            let NodeKind::View(ViewVisual { scroll: Some(s), .. }) = &meta.kind else { continue };
+            let offset = (s.offset_x, s.offset_y);
+            let viewport = (meta.frame.2, meta.frame.3);
+            let mut stack: Vec<(u64, f32, f32)> =
+                self.children.get(&sid).into_iter().flatten().map(|k| (*k, 0.0, 0.0)).collect();
+            while let Some((id, ox, oy)) = stack.pop() {
+                let Some(m) = self.nodes.get(&id) else { continue };
+                let (fx, fy, w, h) = m.frame;
+                let natural = (ox + fx, oy + fy);
+                if let Some(insets) = m.sticky {
+                    pins.push((id, runtime_shared::sticky::translate(insets, natural, (w, h), offset, viewport)));
+                }
+                if is_scroller(m) {
+                    continue;
+                }
+                if let Some(kids) = self.children.get(&id) {
+                    stack.extend(kids.iter().map(|k| (*k, natural.0, natural.1)));
+                }
+            }
+        }
+        for (id, pin) in pins {
+            if let Some(m) = self.nodes.get_mut(&id) {
+                m.sticky_offset = pin;
             }
         }
     }
@@ -3548,6 +3671,18 @@ impl WindowsBackend {
             meta.overflow_hidden = matches!(style.overflow, Some(Overflow::Hidden));
             meta.pointer_events = style.pointer_events;
             meta.cursor = style.cursor;
+            // `position: sticky`: record the per-edge thresholds; the pin
+            // itself is computed by `update_sticky` after layout and on
+            // every scroll. Ceasing to be sticky drops the pin at once.
+            meta.sticky = matches!(style.position, Some(runtime_shared::Position::Sticky))
+                .then(|| runtime_shared::sticky::StickyInsets::from_style(style));
+            if meta.sticky.is_none() {
+                meta.sticky_offset = (0.0, 0.0);
+            }
+            // Written on every application so a style without `z_index`
+            // restores the default; `invalidate` below repaints, and the
+            // hit walk reads the same slot.
+            meta.z = style.stacking_z() as f32;
             meta.content_inset = match &meta.kind {
                 NodeKind::Text(_) | NodeKind::Code(_) | NodeKind::Icon(_) | NodeKind::Image(_) => [
                     resolve_padding(&style.padding_top),
@@ -3814,7 +3949,7 @@ mod tests {
         let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
         let a11y = AccessibilityProps::default();
         let mut root = b.create_view(&a11y);
-        let mut sv = b.create_scroll_view(false, None, &a11y);
+        let mut sv = b.create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y);
         let sv_id = sv.id;
         let content = b.create_view(&a11y);
         let mut tall = StyleRules::default();
@@ -3848,7 +3983,7 @@ mod tests {
             scroll: Some(ScrollInfo {
                 offset_x: 0.0,
                 offset_y: 0.0,
-                horizontal: false,
+                axis: runtime_shared::ScrollAxis::Vertical,
                 on_scroll: None,
                 extent: None,
                 end: None,
@@ -4606,7 +4741,7 @@ mod robot_visibility_tests {
         assert_eq!(b.is_shown(&child), Some(true));
 
         // A 100px viewport over 500px of content: 400px to scroll.
-        let mut scroller = b.create_scroll_view(false, None, &a11y);
+        let mut scroller = b.create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y);
         let content = b.create_view(&a11y);
         b.insert(&mut scroller, content.clone());
         b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 100.0, 100.0);
@@ -4864,19 +4999,166 @@ mod capability_tests {
 
         let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
         let a11y = AccessibilityProps::default();
-        let mut scroller = b.create_scroll_view(false, None, &a11y);
+        let mut scroller = b.create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y);
         let content = b.create_view(&a11y);
         b.insert(&mut scroller, content.clone());
         b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 100.0, 100.0);
         b.nodes.get_mut(&content.id).unwrap().frame = (0.0, 0.0, 100.0, 500.0);
         let fired = Rc::new(Cell::new(0));
         let f = fired.clone();
-        b.observe_scroll_end(&scroller, 20.0, Rc::new(move || f.set(f.get() + 1)));
+        b.observe_scroll_end(&scroller, false, 20.0, Rc::new(move || f.set(f.get() + 1)));
         b.set_node_scroll(&scroller, 0.0, 10_000.0);
         // Delivered on a fresh turn (the offset changes under a borrow);
         // with no scheduler installed the detached task runs inline.
         runtime_shared::drain_buffered_microtasks();
         assert!(fired.get() >= 1, "reaching the end fires on_end_reached");
+    }
+
+    fn sticky_style(top: Option<f32>, left: Option<f32>, right: Option<f32>) -> Rc<runtime_shared::StyleRules> {
+        let px = |v: Option<f32>| v.map(|v| runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(v)));
+        Rc::new(runtime_shared::StyleRules {
+            position: Some(runtime_shared::Position::Sticky),
+            top: px(top),
+            left: px(left),
+            right: px(right),
+            ..Default::default()
+        })
+    }
+
+    fn offsets(b: &WindowsBackend, n: &WindowsNode) -> (f32, f32) {
+        b.node_scroll(n)
+    }
+
+    /// The painted scroller panned one axis only (`ScrollInfo.horizontal`
+    /// picked X or Y), so a `ScrollAxis::Both` table could not reach its
+    /// right-hand columns. A Both scroller takes the vertical wheel on Y and
+    /// the sideways wheel on X, clamps each to its own content extent, and
+    /// reports both offsets; `on_end_reached` on it watches the bottom.
+    #[test]
+    fn regression_both_axis_scroller_pans_and_reports_both_axes() {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = AccessibilityProps::default();
+        let seen = Rc::new(Cell::new((-1.0_f32, -1.0_f32)));
+        let s = seen.clone();
+        let mut scroller = b.create_scroll_view(
+            runtime_shared::ScrollAxis::Both,
+            Some(Rc::new(move |x, y| s.set((x, y)))),
+            &a11y,
+        );
+        let content = b.create_view(&a11y);
+        b.insert(&mut scroller, content.clone());
+        b.root_id = Some(scroller.id);
+        b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 200.0, 200.0);
+        b.nodes.get_mut(&content.id).unwrap().frame = (0.0, 0.0, 1000.0, 700.0);
+        let ends = Rc::new(Cell::new(0));
+        let e = ends.clone();
+        b.observe_scroll_end(
+            &scroller,
+            runtime_shared::ScrollAxis::Both.end_axis_is_horizontal(),
+            20.0,
+            Rc::new(move || e.set(e.get() + 1)),
+        );
+
+        assert!(scene::scroll_at(&mut b, 50.0, 50.0, 120.0, false));
+        assert_eq!(offsets(&b, &scroller), (0.0, 120.0), "the vertical wheel moves Y");
+        assert!(scene::scroll_at(&mut b, 50.0, 50.0, 80.0, true));
+        assert_eq!(offsets(&b, &scroller), (80.0, 120.0), "the sideways wheel moves X");
+        assert_eq!(seen.get(), (80.0, 120.0), "on_scroll reports both offsets");
+
+        // Each axis clamps to its own range: 1000 - 200, 700 - 200.
+        scene::scroll_at(&mut b, 50.0, 50.0, 5000.0, true);
+        runtime_shared::drain_buffered_microtasks();
+        assert_eq!(offsets(&b, &scroller), (800.0, 120.0));
+        assert_eq!(ends.get(), 0, "the right edge is not the end a Both scroller reports");
+        scene::scroll_at(&mut b, 50.0, 50.0, 5000.0, false);
+        runtime_shared::drain_buffered_microtasks();
+        assert_eq!(offsets(&b, &scroller), (800.0, 500.0));
+        assert_eq!(ends.get(), 1, "the bottom is");
+
+        // The wheel mapping per axis: a fixed axis never moves.
+        use runtime_shared::ScrollAxis::{Both, Horizontal, Vertical};
+        assert_eq!(scene::wheel_delta(Horizontal, 40.0, false), (40.0, 0.0), "a plain wheel pans a carousel");
+        assert_eq!(scene::wheel_delta(Vertical, 40.0, true), (0.0, 0.0), "no X on a vertical scroller");
+        assert_eq!(scene::wheel_delta(Both, 40.0, false), (0.0, 40.0));
+        assert_eq!(scene::wheel_delta(Both, 40.0, true), (40.0, 0.0));
+    }
+
+    /// `position: Sticky` did nothing on Win32 — no backend code read it,
+    /// so a frozen header row or column scrolled away with the content. A
+    /// `top`+`left` sticky cell inside a Both scroller pins on both axes,
+    /// paints over (and takes the pointer from) the later sibling sliding
+    /// beneath it, and un-pins on scroll back.
+    #[test]
+    fn regression_sticky_pins_top_and_left_inside_a_both_scroller() {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = AccessibilityProps::default();
+        let mut scroller = b.create_scroll_view(runtime_shared::ScrollAxis::Both, None, &a11y);
+        let mut grid = b.create_view(&a11y);
+        let cell = b.create_view(&a11y);
+        let body = b.create_view(&a11y);
+        b.insert(&mut scroller, grid.clone());
+        b.insert(&mut grid, cell.clone());
+        b.insert(&mut grid, body.clone());
+        b.root_id = Some(scroller.id);
+        StyleOps::apply_style(&mut b, &cell, &sticky_style(Some(8.0), Some(4.0), None));
+        b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 600.0, 800.0);
+        b.nodes.get_mut(&grid.id).unwrap().frame = (0.0, 0.0, 2000.0, 3000.0);
+        b.nodes.get_mut(&cell.id).unwrap().frame = (50.0, 60.0, 100.0, 40.0);
+        b.nodes.get_mut(&body.id).unwrap().frame = (0.0, 0.0, 2000.0, 3000.0);
+        b.update_sticky(None);
+        assert_eq!(b.nodes[&cell.id].sticky_offset, (0.0, 0.0), "unscrolled: rides the content");
+
+        b.set_node_scroll(&scroller, 300.0, 500.0);
+        // Natural (50, 60) pinned at (300 + 4, 500 + 8): window (4, 8).
+        assert_eq!(b.nodes[&cell.id].sticky_offset, (254.0, 448.0), "pins on both axes");
+        assert_eq!(b.nodes[&cell.id].abs, (4.0, 8.0), "native-child placement follows the pin");
+        assert_eq!(
+            scene::hit_chain(&b, 10.0, 12.0)[0].id,
+            cell.id,
+            "the pinned cell is on top of the later sibling scrolling beneath it",
+        );
+
+        b.set_node_scroll(&scroller, 0.0, 0.0);
+        assert_eq!(b.nodes[&cell.id].sticky_offset, (0.0, 0.0), "scrolling back un-pins");
+
+        // Ceasing to be sticky drops the pin.
+        b.set_node_scroll(&scroller, 300.0, 500.0);
+        StyleOps::apply_style(&mut b, &cell, &Rc::new(runtime_shared::StyleRules::default()));
+        assert_eq!(b.nodes[&cell.id].sticky_offset, (0.0, 0.0));
+    }
+
+    /// A frozen column in a horizontal scroller: `left` pins (and the
+    /// vertical axis stays free — no `top` default once an edge is set),
+    /// `right` parks at the scrollport's far edge until the content
+    /// scrolls it into natural view. Driven by the plain wheel, which pans
+    /// a horizontal scroller.
+    #[test]
+    fn regression_sticky_left_and_right_pin_in_a_horizontal_scroller() {
+        let mut b = WindowsBackend::new(HWND(std::ptr::null_mut()));
+        let a11y = AccessibilityProps::default();
+        let mut scroller = b.create_scroll_view(runtime_shared::ScrollAxis::Horizontal, None, &a11y);
+        let mut row = b.create_view(&a11y);
+        let lead = b.create_view(&a11y);
+        let trail = b.create_view(&a11y);
+        b.insert(&mut scroller, row.clone());
+        b.insert(&mut row, lead.clone());
+        b.insert(&mut row, trail.clone());
+        b.root_id = Some(scroller.id);
+        StyleOps::apply_style(&mut b, &lead, &sticky_style(None, Some(0.0), None));
+        StyleOps::apply_style(&mut b, &trail, &sticky_style(None, None, Some(0.0)));
+        b.nodes.get_mut(&scroller.id).unwrap().frame = (0.0, 0.0, 600.0, 200.0);
+        b.nodes.get_mut(&row.id).unwrap().frame = (0.0, 0.0, 2000.0, 200.0);
+        b.nodes.get_mut(&lead.id).unwrap().frame = (120.0, 0.0, 80.0, 200.0);
+        b.nodes.get_mut(&trail.id).unwrap().frame = (900.0, 0.0, 100.0, 200.0);
+        b.update_sticky(None);
+        assert_eq!(b.nodes[&lead.id].sticky_offset, (0.0, 0.0));
+        // Far edge 1000 vs visible 600: parked at x = 600 - 100 = 500.
+        assert_eq!(b.nodes[&trail.id].sticky_offset, (-400.0, 0.0));
+
+        assert!(scene::scroll_at(&mut b, 10.0, 10.0, 400.0, false));
+        assert_eq!(offsets(&b, &scroller), (400.0, 0.0));
+        assert_eq!(b.nodes[&lead.id].sticky_offset, (280.0, 0.0), "left pins at the scrollport's left edge");
+        assert_eq!(b.nodes[&trail.id].sticky_offset, (0.0, 0.0), "naturally visible: rides the content");
     }
 
     /// `flat_list` rendered a placeholder. Rows mount for the window only,

@@ -359,3 +359,261 @@ fn png_data_uri_renders() {
         "a red PNG data: URI must paint red, got ({r},{g},{b},{a})"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Two-axis scroll + sticky
+// ---------------------------------------------------------------------------
+
+/// A full-bleed black `scroll_view(axis = Both)` whose 300×300 content
+/// holds a 20×20 red `Position::Sticky` box (`top: 0`, `left: 0`) laid
+/// out at (40, 40).
+fn two_axis_scroller_with_sticky_corner() -> Element {
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    let pct = |v: f32| Some(Tokenized::Literal(Length::Percent(v)));
+    let black = || Some(Tokenized::Literal(Color("#000000".to_string())));
+    runtime_vocabulary::scroll_view()
+        .axis(runtime_shared::ScrollAxis::Both)
+        .style(StyleRules { width: pct(100.0), height: pct(100.0), background: black(), ..Default::default() })
+        .child(
+            runtime_vocabulary::view()
+                .style(StyleRules { width: px(300.0), height: px(300.0), background: black(), ..Default::default() })
+                .child(
+                    runtime_vocabulary::view()
+                        .style(StyleRules {
+                            position: Some(runtime_shared::Position::Sticky),
+                            top: px(0.0),
+                            left: px(0.0),
+                            margin_top: px(40.0),
+                            margin_left: px(40.0),
+                            width: px(20.0),
+                            height: px(20.0),
+                            background: Some(Tokenized::Literal(Color("#ff0000".to_string()))),
+                            ..Default::default()
+                        })
+                        .build(),
+                )
+                .build(),
+        )
+        .build()
+}
+
+fn pixel(rgba: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * w + x) * 4) as usize;
+    [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+}
+
+fn is_red([r, g, b, _]: [u8; 4]) -> bool {
+    r > 200 && g < 60 && b < 60
+}
+
+/// `Position::Sticky` with `top` + `left` inside a two-axis scroller
+/// pins on BOTH axes: scrolled past it on X and Y, the box parks at the
+/// scrollport's top-left corner; scrolled past it on X only, it parks
+/// at the left edge and keeps its laid-out row. Drives the real render
+/// walk (the scroll offsets the sticky hook reads, the clip, the draw
+/// origin) rather than the pin arithmetic alone.
+#[test]
+fn headless_sticky_top_left_pins_on_both_axes_of_a_two_axis_scroller() {
+    use render_wgpu::NodeKind;
+    let (w, h) = (100u32, 100u32);
+    let Some(mut shot) = try_screenshotter(w, h) else {
+        return;
+    };
+    let app = render_wgpu::newcore::start(shot.backend(), |_| {}, two_axis_scroller_with_sticky_corner);
+    let sv = {
+        let mut nodes = app.with_realized(|r| r.collect_nodes());
+        assert_eq!(nodes.len(), 1, "single-root contract");
+        nodes.pop().expect("len checked")
+    };
+    assert!(matches!(sv.borrow().kind, NodeKind::ScrollView { .. }), "root is the scroller");
+    let scroll_to = |x: f32, y: f32| {
+        if let NodeKind::ScrollView { offset_x, offset_y, .. } = &mut sv.borrow_mut().kind {
+            *offset_x = x;
+            *offset_y = y;
+        }
+    };
+
+    // Unscrolled: the box sits at its laid-out (40, 40).
+    let rgba = shot.capture_rgba();
+    assert!(is_red(pixel(&rgba, w, 50, 50)), "laid-out box at (40,40)");
+    assert!(!is_red(pixel(&rgba, w, 10, 10)), "nothing at the corner yet");
+
+    // Scrolled 100 past it on both axes: pinned to the corner.
+    scroll_to(100.0, 100.0);
+    let rgba = shot.capture_rgba();
+    assert!(
+        is_red(pixel(&rgba, w, 10, 10)),
+        "top+left sticky must pin at the scrollport's top-left on both axes, got {:?}",
+        pixel(&rgba, w, 10, 10),
+    );
+
+    // Scrolled on X only: pinned to the left edge, still at row 40.
+    scroll_to(100.0, 0.0);
+    let rgba = shot.capture_rgba();
+    assert!(is_red(pixel(&rgba, w, 10, 50)), "left pin keeps the laid-out row");
+    assert!(!is_red(pixel(&rgba, w, 10, 10)), "no vertical pin without vertical scroll");
+}
+
+// ---------------------------------------------------------------------------
+// z_index paint order
+// ---------------------------------------------------------------------------
+
+/// A 40×40 absolute box at (20, 12) filled `hex` — two overlap exactly.
+fn stacked_box(hex: &'static str, z_index: Option<i32>) -> Element {
+    let px = |v| Some(Tokenized::Literal(Length::Px(v)));
+    runtime_vocabulary::view()
+        .style(StyleRules {
+            width: px(40.0),
+            height: px(40.0),
+            position: Some(runtime_shared::Position::Absolute),
+            left: px(20.0),
+            top: px(12.0),
+            z_index,
+            background: Some(Tokenized::Literal(Color(hex.to_string()))),
+            ..Default::default()
+        })
+        .build()
+}
+
+/// The overlap's center pixel for a red-then-blue pair where red (the
+/// FIRST sibling) carries `red_z`.
+fn overlap_pixel(red_z: Option<i32>) -> Option<[u8; 4]> {
+    let (w, h) = (96u32, 64u32);
+    let mut shot = try_screenshotter(w, h)?;
+    let _app = render_wgpu::newcore::start(shot.backend(), |_| {}, move || {
+        runtime_vocabulary::view()
+            .style(StyleRules {
+                width: Some(Tokenized::Literal(Length::Percent(100.0))),
+                height: Some(Tokenized::Literal(Length::Percent(100.0))),
+                ..Default::default()
+            })
+            .child(stacked_box("#ff0000", red_z))
+            .child(stacked_box("#0000ff", None))
+            .build()
+    });
+    let rgba = shot.capture_rgba();
+    let i = ((32 * w + 40) * 4) as usize;
+    Some([rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]])
+}
+
+/// Regression: the renderer sorted siblings by the animated `ZIndex`
+/// (and sticky) only, so a static `z_index` on the FIRST of two
+/// overlapping siblings left the later one painted on top. Without the
+/// `z_index`, tree order paints the later sibling on top.
+#[test]
+fn regression_gpu_static_z_index_paints_earlier_sibling_on_top() {
+    let Some([r, _, b, _]) = overlap_pixel(Some(1)) else { return };
+    assert!(r > 200 && b < 50, "raised first sibling (red) must win, got r={r} b={b}");
+    let Some([r, _, b, _]) = overlap_pixel(None) else { return };
+    assert!(b > 200 && r < 50, "tree order: later sibling (blue) wins, got r={r} b={b}");
+}
+
+// ---------------------------------------------------------------------------
+// z_index across a virtualizer's rows
+// ---------------------------------------------------------------------------
+
+const ROW_COLORS: [&str; 3] = ["#ff0000", "#00ff00", "#0000ff"];
+
+/// Which of the red/green/blue rows covers the overlap's center pixel.
+fn top_row(shot: &mut Screenshotter) -> &'static str {
+    let w = shot.size().0;
+    let rgba = shot.capture_rgba();
+    let i = ((32 * w + 40) * 4) as usize;
+    match [rgba[i], rgba[i + 1], rgba[i + 2]] {
+        [r, g, b] if r > 200 && g < 50 && b < 50 => "red",
+        [r, g, b] if g > 200 && r < 50 && b < 50 => "green",
+        [r, g, b] if b > 200 && r < 50 && g < 50 => "blue",
+        px => panic!("overlap pixel is no row's color: {px:?}"),
+    }
+}
+
+/// The virtualizer's mounted row roots, in row order.
+fn virtualizer_rows(shot: &Screenshotter) -> Vec<render_wgpu::WgpuNode> {
+    fn find(n: &render_wgpu::WgpuNode) -> Option<render_wgpu::WgpuNode> {
+        if matches!(n.borrow().kind, render_wgpu::NodeKind::Virtualizer { .. }) {
+            return Some(n.clone());
+        }
+        let children = n.borrow().children.clone();
+        children.iter().find_map(find)
+    }
+    let root = shot.backend().borrow().root().expect("mounted");
+    let virt = find(&root).expect("a virtualizer node");
+    let rows = virt.borrow().children.clone();
+    rows
+}
+
+/// `z_index` on a virtualizer item's root orders that ROW against the
+/// neighbouring rows, as on web where rows are plain siblings in one
+/// container: rows mounted through the vocabulary's virtualizer handler
+/// paint by the item root's effective z, ties in row order; a reactive
+/// restyle and an animated `ZIndex` re-order them; a data refill's fresh
+/// rows take the new items' z.
+#[test]
+fn virtualizer_row_z_index_paints_row_over_neighbouring_rows() {
+    let (w, h) = (96u32, 64u32);
+    let Some(mut shot) = try_screenshotter(w, h) else { return };
+    type Signals = (runtime_world::Signal<Vec<Option<i32>>>, runtime_world::Signal<Option<i32>>);
+    let slot: std::rc::Rc<std::cell::Cell<Option<Signals>>> = Default::default();
+    let out = slot.clone();
+    let app = render_wgpu::newcore::start(shot.backend(), |_| {}, move || {
+        let zs = runtime_world::signal(vec![Some(1), None, None]);
+        let lift = runtime_world::signal(None::<i32>);
+        out.set(Some((zs, lift)));
+        let px = |v| Some(Tokenized::Literal(Length::Px(v)));
+        let row_rules = move |i: usize, z_index: Option<i32>| {
+            std::rc::Rc::new(StyleRules {
+                width: px(40.0),
+                height: px(40.0),
+                position: Some(runtime_shared::Position::Absolute),
+                left: px(20.0),
+                top: px(12.0),
+                z_index,
+                background: Some(Tokenized::Literal(Color(ROW_COLORS[i].to_string()))),
+                ..Default::default()
+            })
+        };
+        runtime_vocabulary::builders::virtualizer(
+            move || zs.get().len(),
+            |i| i as u64,
+            runtime_shared::primitives::virtualizer::ItemSize::Known(std::rc::Rc::new(|_| 40.0)),
+            move |i| {
+                let z = zs.get()[i];
+                if i == 1 {
+                    // The middle row's z follows `lift` reactively.
+                    runtime_vocabulary::view().style(move || row_rules(1, lift.get().or(z))).build()
+                } else {
+                    runtime_vocabulary::view().style(row_rules(i, z)).build()
+                }
+            },
+        )
+        .style(StyleRules {
+            width: Some(Tokenized::Literal(Length::Percent(100.0))),
+            height: Some(Tokenized::Literal(Length::Percent(100.0))),
+            ..Default::default()
+        })
+        .build()
+    });
+    let (zs, lift) = slot.get().expect("build ran");
+    let settle = || {
+        app.world().flush();
+        runtime_shared::scheduling::drain_buffered_microtasks();
+    };
+    assert_eq!(virtualizer_rows(&shot).len(), 3, "rows mounted");
+    assert_eq!(top_row(&mut shot), "red", "the raised first row paints over later rows");
+
+    lift.set(Some(2));
+    settle();
+    assert_eq!(top_row(&mut shot), "green", "restyled middle row rises");
+    lift.set(None);
+    settle();
+    assert_eq!(top_row(&mut shot), "red", "dropping the raise restores the order");
+
+    zs.set(vec![None, None, None]);
+    settle();
+    assert_eq!(top_row(&mut shot), "blue", "refilled rows carry no stale z: row order");
+
+    let rows = virtualizer_rows(&shot);
+    render_wgpu::set_animated_f32(&rows[0], runtime_shared::animation::AnimProp::ZIndex, 1.0);
+    assert_eq!(top_row(&mut shot), "red", "animated ZIndex raises the first row");
+    drop(app);
+}

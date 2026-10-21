@@ -215,6 +215,14 @@ pub(crate) struct NodeAnim {
     /// See `crate::text_truncation_policy`.
     pub(crate) last_max_lines: Option<u32>,
     pub(crate) last_alpha: Option<f32>,
+    /// `translationZ` (device px) the last style apply wrote for the
+    /// node's stacking value; `None` = never written (still `0`). See
+    /// `crate::z_index_policy`.
+    pub(crate) last_translation_z: Option<f32>,
+    /// `true` once the view's outline shadow colors were cleared so its
+    /// stacking Z casts no elevation shadow (API 28+). Set by
+    /// `style::suppress_z_shadow`.
+    pub(crate) z_shadow_suppressed: bool,
     pub(crate) last_padding: [Option<i32>; 4], // L, T, R, B
     pub(crate) last_radii: [Option<f32>; 4],   // tl, tr, br, bl (px)
     pub(crate) last_stroke_w: Option<i32>,
@@ -380,7 +388,7 @@ pub struct AndroidBackend {
     /// drive `TextView.setTypeface`.
     pub(crate) font_registry: font::FontRegistry,
     /// `Position::Sticky` bookkeeping. Keyed by the enclosing
-    /// `ScrollView`/`HorizontalScrollView`'s JObject pointer; the
+    /// scroller's JObject pointer (any axis); the
     /// entry holds a Kotlin `RustStickyScrollListener` that
     /// dispatches per-scroll-event recompute back into
     /// [`sticky::on_scroll_event`]. See [`sticky`] for the rationale
@@ -1963,8 +1971,9 @@ impl runtime_shared::primitives::scroll_view::ScrollViewOps for AndroidScrollVie
     /// Programmatic scroll for the author `scroll_view().bind(r)` →
     /// `scroll_to` path and the robot `set_scroll` action. Framework
     /// units are dp; `View.scrollTo` takes px, so convert through the
-    /// view's own display density. `ScrollView`/`HorizontalScrollView`
-    /// clamp the target to the content extent, matching UIScrollView
+    /// view's own display density. Every scroller shape (`ScrollView`,
+    /// `HorizontalScrollView`, `RustTwoAxisScrollView`) clamps the target
+    /// to the content extent, matching UIScrollView
     /// and the web `scrollTo` behavior.
     fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
         let Some(n) = node.downcast_ref::<GlobalRef>() else {
@@ -2269,8 +2278,7 @@ fn walk_and_deregister_sticky(
     scroll_listeners: &mut HashMap<usize, GlobalRef>,
     scroll_observers: &mut HashMap<usize, Rc<dyn Fn(f32, f32)>>,
     pending: &mut HashMap<usize, runtime_shared::sticky::StickyInsets>,
-    sv_class: Option<&jni::objects::JClass>,
-    hsv_class: Option<&jni::objects::JClass>,
+    scroll_classes: &[jni::objects::JClass],
 ) {
     // Wrap into a temporary GlobalRef so we can reuse the
     // GlobalRef-based deregister helpers. Dropping the ref at end
@@ -2285,12 +2293,7 @@ fn walk_and_deregister_sticky(
 
     // If this view itself is a scroll view, deregister the whole
     // scroll-host entry so descendants under it are cleaned up.
-    let is_scroll = if let (Some(sv), Some(hsv)) = (sv_class, hsv_class) {
-        env.is_instance_of(view, sv).unwrap_or(false)
-            || env.is_instance_of(view, hsv).unwrap_or(false)
-    } else {
-        false
-    };
+    let is_scroll = primitives::scroll_view::is_scroll_container(env, view, scroll_classes);
     if is_scroll {
         // Drop any user-supplied on_scroll callback for this scroll
         // view BEFORE we ask `deregister_scroll_view` to release the
@@ -2334,8 +2337,7 @@ fn walk_and_deregister_sticky(
             scroll_listeners,
             scroll_observers,
             pending,
-            sv_class,
-            hsv_class,
+            scroll_classes,
         );
     }
 }
@@ -3171,20 +3173,22 @@ impl AndroidBackend {
 
     pub(crate) fn create_scroll_view_impl(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
-        let node = primitives::scroll_view::create(self, horizontal);
+        let node = primitives::scroll_view::create(self, axis);
 
         // Wire `on_scroll` via the shared Kotlin listener. The
         // `setOnScrollChangeListener` slot is also used by
         // `Position::Sticky` children; both subsystems install via
         // [`sticky::ensure_scroll_listener`] which is idempotent.
         // Scroll positions reported here are converted from device
-        // pixels (Android's native unit on `View.getScrollY()`) to
+        // pixels (Android's native unit on `View.getScrollX/Y()`) to
         // dp via the scroll view's display density, so author code
-        // sees the same coordinate space across every backend.
+        // sees the same coordinate space across every backend. The
+        // listener reports both offsets for every axis; a two-axis
+        // scroller is the shape where both move.
         if let Some(cb) = on_scroll {
             let scroll_key = Self::node_key(&node);
             // Density read up front \u{2014} reading per-event would
@@ -3419,8 +3423,8 @@ impl AndroidBackend {
         // seed both axes or it is 0dp in a flex column. See
         // `create_virtualizer_impl`.
         let taffy = self.layout_for_view(&node);
-        self.layout.set_overflow_scroll(taffy, false);
-        self.layout.set_overflow_scroll(taffy, true);
+        self.layout
+            .set_overflow_scroll_axis(taffy, runtime_shared::ScrollAxis::Both);
         // Report the grid's content size so an author can FIT it
         // (`flex_grow: 0` + `flex_basis: auto`) instead of pinning a
         // parent to `rows × row_height`. Gutter 0: Android scrollbars
@@ -3476,8 +3480,7 @@ impl AndroidBackend {
         // sticky bookkeeping is cleaned up too. Mirrors iOS's
         // `walk_and_deregister`.
         with_env(|env| {
-            let sv_class = env.find_class("android/widget/ScrollView").ok();
-            let hsv_class = env.find_class("android/widget/HorizontalScrollView").ok();
+            let scroll_classes = primitives::scroll_view::scroll_container_classes(env);
             walk_and_deregister_sticky(
                 env,
                 &node.as_obj(),
@@ -3485,8 +3488,7 @@ impl AndroidBackend {
                 &mut self.scroll_listeners,
                 &mut self.scroll_observers,
                 &mut self.pending_sticky,
-                sv_class.as_ref(),
-                hsv_class.as_ref(),
+                &scroll_classes,
             );
         });
         primitives::view::clear_children(self, node)
@@ -3754,11 +3756,18 @@ impl AndroidBackend {
             P::Scale | P::ScaleX => ("setScaleX", "(F)V"),
             P::ScaleY => ("setScaleY", "(F)V"),
             P::RotateZ => ("setRotation", "(F)V"),
-            // `setTranslationZ` lifts the view above its siblings in
-            // the parent's draw order — same role as `style.zIndex`
-            // on web / `layer.zPosition` on iOS. Takes device pixels;
-            // the dp-to-px conversion below handles the unit.
-            P::ZIndex => ("setTranslationZ", "(F)V"),
+            // `setTranslationZ` orders the view among its siblings for
+            // drawing and touch dispatch — same channel and mapping as
+            // the static `z_index` (`style::set_translation_z`), so an
+            // animated `2.0` and a static `2` order identically. Not
+            // dp → px: Z is also the elevation-shadow depth, so it maps
+            // through `z_index_policy`'s tiny fixed step instead.
+            P::ZIndex => {
+                let z_px = crate::z_index_policy::translation_z_px(value);
+                let state = self.anim_state.entry(Self::node_key(node)).or_default();
+                with_env(|env| style::set_translation_z(env, &node.as_obj(), state, z_px));
+                return;
+            }
             // `MaxHeight` would need the LayoutParams height path +
             // a ValueAnimator to drive layout-affecting properties
             // smoothly. For now, snap-stub (no-op) — matches the
@@ -3779,13 +3788,10 @@ impl AndroidBackend {
             // dp on-screen regardless of display density. Mirrors
             // the dp→px conversion `sync_transform_translate_percent`
             // already does for static percent translates.
-            let out_value = if matches!(prop, P::TranslateX | P::TranslateY | P::ZIndex) {
+            let out_value = if matches!(prop, P::TranslateX | P::TranslateY) {
                 // Translates land in device px (so the visual offset
                 // matches what `style.transform: translate(<dp>px)`
-                // would have produced on web). `setTranslationZ`
-                // takes device pixels too — same conversion keeps
-                // the relative ordering scale-stable across
-                // densities.
+                // would have produced on web).
                 backend_android_core::helpers::dp_to_px(env, node.as_obj(), value)
                     as f32
             } else {

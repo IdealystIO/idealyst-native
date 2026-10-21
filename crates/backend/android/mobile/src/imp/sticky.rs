@@ -1,5 +1,6 @@
 //! `Position::Sticky` on Android — pins views to their enclosing
-//! `ScrollView` / `HorizontalScrollView` as the user scrolls. Mirror
+//! scroller (`ScrollView` / `HorizontalScrollView` /
+//! `RustTwoAxisScrollView`) as the user scrolls. Mirror
 //! of `backend/ios/mobile/src/imp/sticky.rs`; see that file for the
 //! shared design rationale (side registry, natural-position caching,
 //! axis coverage). Differences below are Android-specific.
@@ -10,16 +11,12 @@
 //! because UIKit has multiple scroll-view shapes (`UIScrollView`,
 //! `UICollectionView`, third-party subclasses) and forcing them all
 //! into a sticky-aware subclass is invasive. Android has the same
-//! shape problem (`ScrollView`, `HorizontalScrollView`,
-//! `NestedScrollView`, `RecyclerView`) and an additional reason: the
-//! framework's existing scroll-view primitive already returns a
-//! plain `android.widget.ScrollView`, and replacing it with a
-//! sticky-aware Kotlin subclass would require shipping the new
-//! class through `RUNTIME_KOTLIN_FILES` AND retroactively updating
-//! every author who wrote `let s = backend.create_scroll_view(...)`
-//! to expect that subclass back. Keep the scroll view plain; drive
-//! the per-scroll-event recompute from a `View.OnScrollChangeListener`
-//! installed on demand.
+//! shape problem (`ScrollView`, `HorizontalScrollView`, the two-axis
+//! `RustTwoAxisScrollView`, `NestedScrollView`, `RecyclerView`), so
+//! the scrollers stay sticky-agnostic and the per-scroll-event
+//! recompute is driven from a `View.OnScrollChangeListener` installed
+//! on demand. Every shape fires that listener from
+//! `View.onScrollChanged` with both offsets.
 //!
 //! ## Per-event vs per-vsync
 //!
@@ -52,8 +49,9 @@
 //!
 //! ## Axis coverage
 //!
-//! All four edges. Leading — `top` off `getScrollY()`, `left` off
-//! `getScrollX()`. Trailing — `bottom` / `right` pin the child's far
+//! All four edges, on both axes at once. Leading — `top` off
+//! `getScrollY()`, `left` off `getScrollX()`; a two-axis scroller moves
+//! both, so a `top` + `left` corner cell pins on both. Trailing — `bottom` / `right` pin the child's far
 //! edge inside the scrollport's trailing edge; the recompute reads the
 //! scroll view's `getWidth()`/`getHeight()` (px → dp) for the
 //! scrollport extent and the cached Taffy frame size for the child
@@ -71,13 +69,6 @@ use jni::JNIEnv;
 /// `setTranslationX/Y` churn when the scroll position isn't actually
 /// changing the translation. Matches iOS's `STICKY_EPSILON`.
 const STICKY_EPSILON: f32 = 0.5;
-
-/// The paint-order raise applied to registered sticky views, in
-/// device px. Any positive value reorders (ViewGroup's Z comparison
-/// is strict); this small it keeps the Z-derived material shadow
-/// imperceptible. Mirrors `layer.zPosition = 1` on iOS/macOS and the
-/// implicit sticky z on wgpu.
-const STICKY_RAISE_Z_PX: f32 = 0.01;
 
 /// One sticky child registered against a scroll view.
 pub(crate) struct StickyChild {
@@ -114,7 +105,7 @@ pub(crate) struct StickyChild {
 /// `setOnScrollChangeListener` slot, so both subsystems coordinate
 /// install/detach through that shared registry.
 pub(crate) struct StickyScrollEntry {
-    /// Global ref to the outer ScrollView/HorizontalScrollView.
+    /// Global ref to the outer scroller (any axis).
     /// Retained so the listener-driven path can read its current
     /// scroll position via `getScrollY()` without holding the
     /// `view_to_layout` reference.
@@ -137,35 +128,32 @@ pub(crate) type StickyRegistry = HashMap<usize, StickyScrollEntry>;
 // converted back at each write site — never the inputs.
 use runtime_shared::sticky::{translate, StickyInsets};
 
-/// Walk `view`'s parent chain looking for a `ScrollView` or
-/// `HorizontalScrollView` ancestor. Returns the matching parent's
+/// Walk `view`'s parent chain looking for a scroller ancestor (any
+/// [`crate::scroll_axis_policy::SCROLL_CONTAINER_CLASSES`] shape). Returns the matching parent's
 /// `GlobalRef` (a fresh one we own) or `None` if no scroll-view
 /// ancestor exists. The caller can treat `None` as the
 /// fall-back-to-relative path — sticky-in-non-scrolling-parent is
 /// equivalent to relative per CSS.
 ///
-/// We accept both Android scroll-view shapes (`ScrollView` and
-/// `HorizontalScrollView`) because the framework's
-/// `create_scroll_view(horizontal)` chooses based on direction;
-/// both are recognised as "you're inside a scroll container". Which
-/// axis actually pins is decided by the child's insets, not by the
+/// Every scroller shape `create_scroll_view(axis)` can create is
+/// recognised as "you're inside a scroll container". Which axis
+/// actually pins is decided by the child's insets, not by the
 /// ancestor's shape: a `HorizontalScrollView` reports movement on
-/// `getScrollX()`, so a `left`-inset child pins there while a
+/// `getScrollX()` only, so a `left`-inset child pins there while a
 /// `top`-inset child inside it simply never moves (its axis never
-/// scrolls) — the same outcome CSS gives.
+/// scrolls) — the same outcome CSS gives. A `RustTwoAxisScrollView`
+/// moves both, so both insets pin.
 pub(crate) fn find_enclosing_scroll_view(
     env: &mut JNIEnv,
     view: &JObject,
 ) -> Option<GlobalRef> {
-    // Class lookups for the two scroll-view shapes we recognise.
-    // Resolving them once per call is cheap (the JNI class cache
-    // hands back the same `jclass` across calls).
-    let sv_class = env.find_class("android/widget/ScrollView").ok()?;
-    let hsv_class = env.find_class("android/widget/HorizontalScrollView").ok()?;
+    // Class lookups for the scroller shapes we recognise. Resolving
+    // them once per call is cheap (the JNI class cache hands back the
+    // same `jclass` across calls).
+    let classes = super::primitives::scroll_view::scroll_container_classes(env);
 
     // Step up via `view.getParent()` — returns a `ViewParent`, which
-    // is an interface. `ScrollView`/`HorizontalScrollView` both
-    // implement it (because they extend `ViewGroup`, which extends
+    // is an interface. Every scroller shape implements it (because they extend `ViewGroup`, which extends
     // `View`, which implements ViewParent indirectly via casts).
     // `isInstanceOf` on the returned object handles the casts for us.
     let mut current = env
@@ -177,9 +165,7 @@ pub(crate) fn find_enclosing_scroll_view(
     // parent loop) would otherwise hang the JNI thread.
     let mut steps = 0;
     while !current.is_null() {
-        if env.is_instance_of(&current, &sv_class).unwrap_or(false)
-            || env.is_instance_of(&current, &hsv_class).unwrap_or(false)
-        {
+        if super::primitives::scroll_view::is_scroll_container(env, &current, &classes) {
             return env.new_global_ref(&current).ok();
         }
         let next = env
@@ -256,20 +242,11 @@ pub(crate) fn register(
 
     ensure_scroll_listener(env, scroll_listeners, &scroll_view, scroll_key);
 
-    // Raise the pinned view above its static siblings, matching how
-    // CSS paints positioned elements above non-positioned ones — a
-    // frozen column must draw over the cells that slide beneath it.
-    // ViewGroup orders sibling drawing (and touch dispatch) by
-    // `getZ()` with a strict comparison, so any positive value wins;
-    // 0.01 px keeps the Z-derived material shadow imperceptible while
-    // still reordering. Cleared by `reset_translation` on deregister.
-    let _ = env.call_method(
-        view.as_obj(),
-        "setTranslationZ",
-        "(F)V",
-        &[JValue::Float(STICKY_RAISE_Z_PX)],
-    );
-
+    // No paint-order raise here: the pinned view's draw-over-siblings
+    // Z comes from the style apply (`StyleRules::stacking_z` →
+    // `style::set_translation_z`), which also honors an explicit
+    // `z_index`. Writing Z from this registry would clobber that
+    // value on the deferred (post-insert) registration.
     true
 }
 
@@ -349,10 +326,12 @@ pub(crate) fn deregister_scroll_view(
     );
 }
 
-/// Clear all three translation axes on a view leaving the sticky
-/// registry — X/Y undo the pin, Z undoes the paint-order raise.
+/// Clear both pin axes on a view leaving the sticky registry. Not
+/// `translationZ`: that is the style's stacking value, which the next
+/// style apply rewrites (to `0` once the node is no longer sticky,
+/// or to its explicit `z_index`).
 fn reset_translation(env: &mut JNIEnv, view: &GlobalRef) {
-    for setter in ["setTranslationX", "setTranslationY", "setTranslationZ"] {
+    for setter in ["setTranslationX", "setTranslationY"] {
         let _ = env.call_method(view.as_obj(), setter, "(F)V", &[JValue::Float(0.0)]);
     }
 }

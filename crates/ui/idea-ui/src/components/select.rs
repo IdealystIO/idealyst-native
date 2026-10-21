@@ -301,6 +301,12 @@ pub struct SelectProps {
     /// `Signal<bool>`/`rx!` and it enables and disables in place.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub disabled: bool,
+    /// Caps the dropdown's width, in pixels. Longer option labels and
+    /// descriptions wrap onto further lines inside the cap. `None` (the
+    /// default) sizes the menu to its longest row.
+    #[prop(static)]
+    #[schema(constraint = "pixels, > 0")]
+    pub max_width: Option<f32>,
 }
 
 impl Default for SelectProps {
@@ -313,6 +319,7 @@ impl Default for SelectProps {
             placeholder: Reactive::Static(None),
             icon: Reactive::Static(None),
             disabled: Reactive::Static(false),
+            max_width: None,
         }
     }
 }
@@ -325,6 +332,7 @@ impl Default for SelectProps {
 pub fn Select(props: SelectProps) -> Element {
     let value = props.value;
     let on_change = props.on_change.clone();
+    let max_width = props.max_width;
     let size = props.size.clone();
     let placeholder = props.placeholder.clone();
     let options = live_options(props.options.clone());
@@ -419,6 +427,7 @@ pub fn Select(props: SelectProps) -> Element {
                         menu_on_change.clone(),
                         menu_close.clone(),
                         trigger_ref,
+                        max_width,
                     )
                 }
             }
@@ -464,6 +473,7 @@ fn menu_build(
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
     trigger_ref: Ref<PressableHandle>,
+    max_width: Option<f32>,
 ) -> Element {
     // Keyed by option id so a list that changes while the menu is open
     // (rows loaded after mount) adds and drops rows in place instead of
@@ -515,7 +525,7 @@ fn menu_build(
     // closes via this `on_dismiss`.
     // Cap + scroll the option list so a long list (e.g. every category in a
     // filter) scrolls within a bounded panel instead of running off-screen.
-    let panel = crate::components::menu_panel::scrolling_menu_panel(vec![rows]);
+    let panel = crate::components::menu_panel::scrolling_menu_panel(vec![rows], max_width);
 
     let anchored = runtime_core::anchored_overlay(
         AnchorTarget::from(trigger_ref),
@@ -559,6 +569,7 @@ mod tests {
                 Rc::new(|_| {}),
                 Rc::new(|| {}),
                 trigger,
+                None,
             );
             let kids = match classify(el) {
                 P::View { children, .. } => children,

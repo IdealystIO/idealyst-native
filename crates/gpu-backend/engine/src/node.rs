@@ -245,12 +245,11 @@ pub struct AnimatedOverrides {
     /// crash and the data is available the moment the gradient
     /// pipeline lands.
     pub gradient_stops: Vec<(u8, [f32; 4])>,
-    /// Animated z-index. Same "store but don't yet render" posture
-    /// as `gradient_stops`: the wgpu compositor currently paints in
-    /// document order, so authors animating `ZIndex` get the value
-    /// recorded for any future depth-sort pass and the welcome
-    /// page's raf-driver doesn't panic on the matching `AnimProp`
-    /// arm.
+    /// Animated sibling stacking value (`AnimProp::ZIndex`). When
+    /// `Some`, wins over the style's static `stacking_z()` — see
+    /// [`NodeData::effective_z`]. May be negative (welcome's planets
+    /// sweep through negative values to pass behind the headline);
+    /// only the static value is clamped.
     pub z_index: Option<f32>,
 }
 
@@ -348,14 +347,16 @@ pub enum NodeKind {
         step: Option<f32>,
         on_change: Rc<dyn Fn(f32)>,
     },
-    /// Scrolling container. `horizontal=false` scrolls vertically;
-    /// `true` scrolls horizontally. The current scroll position
-    /// lives here and is mutated by the host's `scroll` event
-    /// dispatch. Children are laid out by Taffy at their natural
-    /// sizes (no main-axis constraint from this node) and the
-    /// renderer translates them by `-offset` when painting.
+    /// Scrolling container. `axis` selects which offsets move:
+    /// `Vertical` → `offset_y`, `Horizontal` → `offset_x`, `Both` →
+    /// each independently. The current scroll position lives here
+    /// and is mutated by the host's scroll / pan / momentum
+    /// dispatch, each offset clamped to `[0, content - viewport]` on
+    /// its own axis. Children are laid out by Taffy at their natural
+    /// sizes on every scrolling axis and the renderer translates
+    /// them by `-offset` when painting.
     ScrollView {
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         offset_x: f32,
         offset_y: f32,
         /// Optional user-supplied `Element::ScrollView::on_scroll`
@@ -653,15 +654,12 @@ impl std::fmt::Debug for NodeKind {
                 write!(f, "Slider({value} in {min}..={max})")
             }
             NodeKind::ScrollView {
-                horizontal,
+                axis,
                 offset_x,
                 offset_y,
                 ..
             } => {
-                write!(
-                    f,
-                    "ScrollView(horizontal={horizontal}, offset={offset_x},{offset_y})"
-                )
+                write!(f, "ScrollView(axis={axis:?}, offset={offset_x},{offset_y})")
             }
             NodeKind::ReactiveAnchor => f.write_str("ReactiveAnchor"),
             NodeKind::ActivityIndicator { size, .. } => {
@@ -819,6 +817,41 @@ pub struct NodeData {
     /// `update_accessibility` calls only replace `accessibility`,
     /// not `inferred_role`.
     pub inferred_role: Option<Role>,
+}
+
+impl NodeData {
+    /// The z this node sorts by among its siblings: an animated
+    /// `ZIndex` while one has been written, else the last applied
+    /// style's `stacking_z()` (`z_index`, else `1` for sticky, else
+    /// `0`). Read from the stored style rather than cached, so a
+    /// re-apply that drops `z_index` restores `0` with nothing to
+    /// keep in sync, and sticky's raise can't disagree with an
+    /// explicit `z_index`.
+    pub fn effective_z(&self) -> f32 {
+        if let Some(z) = self.animated.as_ref().and_then(|a| a.z_index) {
+            return z;
+        }
+        self.style.as_ref().map_or(0.0, |s| s.stacking_z() as f32)
+    }
+}
+
+/// Reorder `items` — siblings in tree order — into paint order:
+/// ascending [`NodeData::effective_z`], ties in tree order (the shared
+/// [`runtime_shared::style::z_paint_order`] rule). The renderer paints
+/// in this order and every pointer hit-walk (`host.rs`) iterates it in
+/// REVERSE, so where siblings overlap the one painted on top receives
+/// the pointer. `node` projects an item to its node.
+pub(crate) fn sort_into_paint_order<T>(items: &mut Vec<T>, node: impl Fn(&T) -> &WgpuNode) {
+    if items.len() < 2 {
+        return;
+    }
+    let zs: Vec<f32> = items.iter().map(|t| node(t).borrow().effective_z()).collect();
+    let order = runtime_shared::style::z_paint_order(&zs);
+    if order.iter().enumerate().all(|(pos, &i)| pos == i) {
+        return;
+    }
+    let mut slots: Vec<Option<T>> = items.drain(..).map(Some).collect();
+    items.extend(order.into_iter().map(|i| slots[i].take().expect("z_paint_order is a permutation")));
 }
 
 pub fn new_node(kind: NodeKind, layout: LayoutNode) -> WgpuNode {

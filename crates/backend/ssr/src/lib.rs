@@ -172,7 +172,10 @@ pub struct HtmlNode {
     /// `true` for `ScrollView` nodes — emits `overflow: auto` ahead of
     /// any author style. Scrolling is the ScrollView primitive's job, not
     /// an `overflow` style (which the framework keeps clip-only), so this
-    /// lives on the node, not in `StyleRules`.
+    /// lives on the node, not in `StyleRules`. `overflow: auto` covers
+    /// every [`ScrollAxis`](runtime_shared::ScrollAxis): a two-axis
+    /// scroller scrolls both from first paint, and a one-axis one takes its
+    /// cross-axis `hidden` when the web backend adopts the node.
     scroll: bool,
     /// `true` for the text primitive (`create_text`). A `shadow` on a text
     /// node lowers to `text-shadow` (hugging the glyphs) instead of
@@ -1581,7 +1584,7 @@ mod tests {
         let nodes = [
             ("view", b.create_view(&a11y)),
             ("pressable", b.create_pressable(Rc::new(|| {}), &a11y)),
-            ("scroll_view", b.create_scroll_view(false, None, &a11y)),
+            ("scroll_view", b.create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y)),
             ("link", b.create_link(link, &a11y)),
         ];
         for (kind, node) in &nodes {

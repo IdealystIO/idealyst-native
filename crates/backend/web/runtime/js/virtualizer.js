@@ -295,6 +295,9 @@
                 entry.idx = newIdx;
                 this.mountedByIdx.set(newIdx, entry);
             }
+            for (const { entry } of moved) {
+                this._placeInRowOrder(entry);
+            }
             this.lastStart = -1;
             this.lastEnd = -1;
             this.update();
@@ -357,14 +360,33 @@
             }
         }
 
+        /** Put `entry.node` among the spacer's children in ROW order:
+         *  before the mounted entry with the next higher index, else
+         *  last. Rows are absolutely-positioned siblings, so DOM order
+         *  is their stacking order at equal `z-index` (and the hit
+         *  order where they overlap); appending in mount order stacked
+         *  a row scrolled in above over the row below it. Every
+         *  backend breaks equal-z ties between rows by row index. */
+        _placeInRowOrder(entry) {
+            let next = null;
+            for (const [idx, other] of this.mountedByIdx) {
+                if (idx > entry.idx && (next === null || idx < next.idx)) next = other;
+            }
+            if (next) {
+                if (entry.node.nextSibling !== next.node) this.spacer.insertBefore(entry.node, next.node);
+            } else if (this.spacer.lastChild !== entry.node) {
+                this.spacer.appendChild(entry.node);
+            }
+        }
+
         _mountIndex(idx) {
             const [node, scopeId] = this.cb.mountItem(idx);
             const key = this.cb.itemKey(idx);
             const size = this.cb.itemSize(idx);
             node.style.position = 'absolute';
-            this.spacer.appendChild(node);
             const entry = { node, scopeId, idx, key, size };
             this.mountedByIdx.set(idx, entry);
+            this._placeInRowOrder(entry);
             this.keyToIdx.set(key, idx);
             this._positionEntry(idx, entry);
 

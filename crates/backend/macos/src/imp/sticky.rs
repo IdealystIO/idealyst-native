@@ -134,15 +134,12 @@ pub(crate) fn register(
         },
     );
 
-    // Raise the pinned view above its static siblings, matching how
-    // CSS paints positioned elements above non-positioned ones — a
-    // frozen column must draw over the cells that slide beneath it.
-    // Views are layer-backed at creation (`setWantsLayer:` in
-    // `create_view`), so `zPosition` orders sibling layers; it does
-    // NOT change AppKit hit-test order (subview order), which is
-    // acceptable: the overlap region is content the pin visually
-    // covers, and interactive children keep working outside it.
-    raise_z(view, 1.0);
+    // No paint-order write here: the pinned view's raise above the
+    // siblings sliding beneath it is `StyleRules::stacking_z()`
+    // (`STICKY_Z` unless an explicit `z_index`), which `apply_style`
+    // writes to `layer.zPosition` on every apply. Writing it here too
+    // would clobber an explicit `z_index` when `insert` retries a
+    // pending registration after `apply_style` ran.
 
     // First child for this scroll view installs the bounds-change
     // observer (the same clipView notification channel `on_scroll`
@@ -225,22 +222,11 @@ fn remove_observer(observer: Option<Retained<NSObject>>) {
     }
 }
 
-/// Set the sticky raise on a view's backing layer. `1.0` on register
-/// (paint above static siblings, CSS positioned-element order), `0.0`
-/// on deregister so a Sticky → Relative flip restores document order.
-fn raise_z(view: &NSView, z: f64) {
-    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
-    if let Some(layer) = layer {
-        let _: () = unsafe { msg_send![&layer, setZPosition: z] };
-    }
-}
-
 /// Shift a deregistering child's frame back by whatever pin offset it
 /// carries, so a Sticky → Relative transition doesn't strand the view
 /// below its natural position. No layout access needed — the offset is
 /// tracked per child.
 fn remove_pin_offset(child: &StickyChild) {
-    raise_z(&child.view, 0.0);
     let (dx, dy) = child.last_translate;
     if dx == 0.0 && dy == 0.0 {
         return;

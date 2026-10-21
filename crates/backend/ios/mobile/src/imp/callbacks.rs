@@ -802,9 +802,7 @@ declare_class!(
     }
 
     impl DeclaredClass for OverlayPassthroughView {
-        // The portal's own `StyleRules::pointer_events`, written by
-        // `apply_style`. See `OverlayPassthroughView::set_pointer_events`.
-        type Ivars = std::cell::Cell<Option<runtime_shared::PointerEvents>>;
+        type Ivars = OverlayPassthroughIvars;
     }
 
     unsafe impl OverlayPassthroughView {
@@ -847,8 +845,9 @@ declare_class!(
         // it. Apply the same nearest-explicit-wins walk as
         // `IdealystTouchView`, with this container as the `none` root, so
         // only descendants that opt back in with `Auto` (the toast cards)
-        // keep their hits. Single tail expression: `declare_class!` wraps
-        // `#[method_id]` bodies.
+        // keep their hits. The subview walk follows sibling `z_index`
+        // paint order (`touch::z_ordered_hit_test`). Single tail
+        // expression: `declare_class!` wraps `#[method_id]` bodies.
         #[method_id(hitTest:withEvent:)]
         fn hit_test(
             &self,
@@ -856,8 +855,16 @@ declare_class!(
             event: Option<&objc2_ui_kit::UIEvent>,
         ) -> Option<Retained<UIView>> {
             let result: Option<Retained<UIView>> =
-                unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] };
-            if matches!(self.ivars().get(), Some(runtime_shared::PointerEvents::None)) {
+                match crate::imp::touch::z_ordered_hit_test(self, point, event) {
+                    Some(resolved) => resolved,
+                    None => unsafe {
+                        msg_send_id![super(self), hitTest: point, withEvent: event]
+                    },
+                };
+            if matches!(
+                self.ivars().pointer_events.get(),
+                Some(runtime_shared::PointerEvents::None)
+            ) {
                 result.and_then(|r| crate::imp::touch::resolve_in_none_root(self, r))
             } else {
                 result
@@ -868,9 +875,28 @@ declare_class!(
 
 impl OverlayPassthroughView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        thread_local! {
+            static NEXT_MOUNT_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        }
+        let mount_seq = NEXT_MOUNT_SEQ.with(|n| {
+            let seq = n.get();
+            n.set(seq + 1);
+            seq
+        });
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(std::cell::Cell::new(None));
+        let this = this.set_ivars(OverlayPassthroughIvars {
+            pointer_events: std::cell::Cell::new(None),
+            mount_seq,
+        });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Creation order of portal containers — the order they mount into
+    /// the window (each mounts on the runloop turn after its creation, in
+    /// sequence), which is the "tree order" ties fall back to when
+    /// `order_portals_in_window` sorts them by `z_index`.
+    pub(crate) fn mount_seq(&self) -> u64 {
+        self.ivars().mount_seq
     }
 
     /// Record the portal's explicit `pointer_events` (`None` = unset,
@@ -879,7 +905,67 @@ impl OverlayPassthroughView {
     /// is applied HERE rather than to an `IdealystTouchView`; without
     /// this slot a click-through overlay's `none` was dropped.
     pub(crate) fn set_pointer_events(&self, v: Option<runtime_shared::PointerEvents>) {
-        self.ivars().set(v);
+        self.ivars().pointer_events.set(v);
+    }
+}
+
+pub(crate) struct OverlayPassthroughIvars {
+    /// The portal's own `StyleRules::pointer_events`, written by
+    /// `apply_style`. See `OverlayPassthroughView::set_pointer_events`.
+    pointer_events: std::cell::Cell<Option<runtime_shared::PointerEvents>>,
+    /// See `OverlayPassthroughView::mount_seq`.
+    mount_seq: u64,
+}
+
+/// Put the portal containers mounted in `host` (the `UIWindow` they mount
+/// into) into `z_index` paint order within its `subviews`. The window's
+/// class is UIKit's, so its `hitTest:` walks by index and ignores
+/// `zPosition`: two portals whose z disagrees with their mount order
+/// would paint one way and take touches the other. Reordering the array
+/// makes index order paint order (`backend_apple_core::z_order::
+/// host_subview_order`); a no-op when it already is. `exchangeSubview`
+/// swaps in place, so no view leaves the window (no `didMoveToWindow`).
+pub(crate) fn order_portals_in_window(host: &UIView) {
+    let subviews = host.subviews();
+    let mut views: Vec<Retained<UIView>> = subviews
+        .iter()
+        .filter_map(|v| unsafe { Retained::retain(v as *const UIView as *mut UIView) })
+        .collect();
+    let portal_cls = OverlayPassthroughView::class();
+    let mount_seq: Vec<Option<u64>> = views
+        .iter()
+        .map(|v| {
+            let is_portal: bool = unsafe { msg_send![&**v, isKindOfClass: portal_cls] };
+            is_portal.then(|| {
+                let p = unsafe { &*(&**v as *const UIView as *const OverlayPassthroughView) };
+                p.mount_seq()
+            })
+        })
+        .collect();
+    let zs: Vec<f64> = views
+        .iter()
+        .map(|v| {
+            let layer: *mut NSObject = unsafe { msg_send![&**v, layer] };
+            if layer.is_null() {
+                0.0
+            } else {
+                let z: objc2_foundation::CGFloat = unsafe { msg_send![layer, zPosition] };
+                z as f64
+            }
+        })
+        .collect();
+    let order = backend_apple_core::z_order::host_subview_order(&zs, &mount_seq);
+    let desired: Vec<Retained<UIView>> = order.iter().map(|&i| views[i].clone()).collect();
+    for i in 0..desired.len() {
+        if !std::ptr::eq(&*views[i], &*desired[i]) {
+            let j = (i + 1..views.len())
+                .find(|&j| std::ptr::eq(&*views[j], &*desired[i]))
+                .expect("desired order is a permutation of the subviews");
+            let _: () = unsafe {
+                msg_send![host, exchangeSubviewAtIndex: i as isize, withSubviewAtIndex: j as isize]
+            };
+            views.swap(i, j);
+        }
     }
 }
 

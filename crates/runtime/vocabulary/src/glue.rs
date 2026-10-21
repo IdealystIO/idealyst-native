@@ -79,6 +79,7 @@ pub use runtime_shared::Easing;
 // preludes reference it).
 pub use runtime_shared::Color;
 pub use runtime_shared::{FileDropHandler, IntoAction, SafeAreaSides, TouchHandler, WheelHandler};
+pub use runtime_shared::ScrollAxis;
 // The EVENT PAYLOADS those handler aliases carry. Exporting only the
 // `*Handler` type aliases left SDKs unable to name their own handler's
 // argument — `Rc<dyn Fn(&FileDropEvent) -> bool>` is unspellable without
@@ -2040,8 +2041,18 @@ pub mod primitives {
         }
 
         impl GlueScrollView {
+            /// `true` scrolls left-right, `false` top-to-bottom (the
+            /// default). Shorthand for `.axis(ScrollAxis::Horizontal)` /
+            /// `.axis(ScrollAxis::Vertical)`.
             pub fn horizontal(mut self, horizontal: bool) -> Self {
                 self.b = self.b.horizontal(horizontal);
+                self
+            }
+
+            /// Which axes scroll — `ScrollAxis::Both` for content that
+            /// overflows in both directions. See [`ScrollAxis`].
+            pub fn axis(mut self, axis: ScrollAxis) -> Self {
+                self.b = self.b.axis(axis);
                 self
             }
 
@@ -3818,6 +3829,12 @@ impl GluePressable {
 
     pub fn preserves_focus(mut self, preserve: bool) -> Self {
         self.b = self.b.preserves_focus(preserve);
+        self
+    }
+
+    /// Pointer-enter/leave notifications (`true` on enter), as on a view.
+    pub fn on_hover(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.b = self.b.on_hover(handler);
         self
     }
 

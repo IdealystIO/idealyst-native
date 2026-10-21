@@ -799,7 +799,7 @@ impl caps::ActivityIndicatorOps for RokuBackend {
 impl caps::ScrollOps for RokuBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -814,6 +814,9 @@ impl caps::ScrollOps for RokuBackend {
         });
         let _on_scroll = on_scroll;
         let id = self.mint_node();
+        // Roku's LayoutGroup scrolls one axis; a two-axis scroller lowers to
+        // its vertical one.
+        let horizontal = axis == runtime_shared::ScrollAxis::Horizontal;
         self.push(RokuCommand::CreateScrollView { id, horizontal });
         id
     }

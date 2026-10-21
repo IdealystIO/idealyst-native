@@ -39,6 +39,19 @@
 //! Apple backends documented. `set_measured_size` is therefore not
 //! called; a measured list lays out from the estimate. Refining this
 //! needs a framework-core change to measure orphaned subtrees.
+//!
+//! ## Row stacking
+//!
+//! Rows are siblings in the `Fixed`, which paints its children in sibling
+//! order and picks them last-sibling-first. On web a virtualized list's
+//! rows are plain siblings in one container, so a `z_index` on a row's
+//! root orders it against the neighbouring rows. The same holds here: the
+//! `Fixed`'s sibling list is kept in `runtime_shared::style::z_paint_order`
+//! of the row roots' stacking z, ties in ROW order (not mount order —
+//! scrolling back up mounts earlier rows after later ones). The backend
+//! reports a row root's z changes through [`cell_z_changed`]; a row root
+//! has no `parent_of` entry (it is a detached Taffy root), so the
+//! backend's own `reorder_siblings` never sees it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -58,6 +71,10 @@ use crate::{IdealystView, LinuxBackend, LinuxNode};
 struct MountedCell {
     node: LinuxNode,
     scope_id: u64,
+    /// The row root's stacking z (`StyleRules::stacking_z()` / animated
+    /// `ZIndex`), mirrored from the backend so a restack needs no backend
+    /// borrow. Read at mount, then updated by [`cell_z_changed`].
+    z: f32,
 }
 
 struct State {
@@ -302,6 +319,59 @@ pub(crate) fn release(node_id: u64) -> Vec<u64> {
     recycle_all(&state)
 }
 
+/// A node's stacking z changed and it has no tracked parent: if it is a
+/// mounted row root of some virtualizer, record the new z and restack that
+/// virtualizer's rows. Returns whether the node was a mounted row.
+///
+/// Called from `apply_style` / `set_animated_f32` with the backend
+/// borrowed, so this touches only GTK widgets and virtualizer state.
+/// No `State` borrow is ever held across a framework call (every borrow
+/// in this module is statement- or block-scoped around plain reads), so
+/// the `borrow_mut` here cannot collide.
+pub(crate) fn cell_z_changed(node_id: u64, z: f32) -> bool {
+    let states: Vec<Rc<RefCell<State>>> =
+        STATES.with(|m| m.borrow().values().cloned().collect());
+    for state in states {
+        let found = {
+            let mut s = state.borrow_mut();
+            match s.mounted.values_mut().find(|c| c.node.id == node_id) {
+                Some(cell) => {
+                    cell.z = z;
+                    true
+                }
+                None => false,
+            }
+        };
+        if found {
+            restack(&state);
+            return true;
+        }
+    }
+    false
+}
+
+/// Put the `Fixed`'s row widgets in `z_paint_order` of their z, ties in
+/// row-index order — paint order AND pick order, since `GtkFixed` does
+/// both by sibling order.
+fn restack(state: &Rc<RefCell<State>>) {
+    let (fixed, order) = {
+        let s = state.borrow();
+        let mut rows: Vec<(usize, f32, gtk4::Widget)> = s
+            .mounted
+            .iter()
+            .map(|(idx, c)| (*idx, c.z, c.node.widget.clone()))
+            .collect();
+        rows.sort_by_key(|r| r.0);
+        let zs: Vec<f32> = rows.iter().map(|r| r.1).collect();
+        let order: Vec<gtk4::Widget> = runtime_shared::style::z_paint_order(&zs)
+            .into_iter()
+            .map(|i| rows[i].2.clone())
+            .collect();
+        (s.fixed.clone(), order)
+    };
+    crate::view::restack_widgets(fixed.upcast_ref(), &order);
+}
+
 /// How many virtualizers hold live state — the per-node-state test seam
 /// (`LinuxBackend::per_node_state_counts_for_test`).
 pub(crate) fn live_count() -> usize {
@@ -425,6 +495,7 @@ fn resync(state: &Rc<RefCell<State>>) {
     }
 
     // ---- Mount cells that entered the window ----
+    let mut mounted_any = false;
     for idx in first..last {
         let already = state.borrow().mounted.contains_key(&idx);
         if already {
@@ -436,16 +507,29 @@ fn resync(state: &Rc<RefCell<State>>) {
         // hold no State/backend borrow across it.
         let mount_item = state.borrow().callbacks.mount_item.clone();
         let (node, scope_id) = (mount_item)(idx);
+        // The row was styled during `mount_item`'s realize, before it was
+        // a mounted cell, so `cell_z_changed` could not record its z.
+        // Read it now: `mount_item` just borrowed the backend mutably and
+        // returned, so nothing up the stack holds it.
+        let z = state
+            .borrow()
+            .backend
+            .upgrade()
+            .map_or(0.0, |b| b.borrow().node_z(node.id));
 
         // Parent into the document + lay the cell subtree out.
         let (x, y, w, h) = cell_box(state, idx, &offsets, &sizes, cross);
         fixed.put(&node.widget, x as f64, y as f64);
-        size_and_layout(state, &node, w, h);
+        size_and_layout(state, &node, (x, y, w, h));
 
         state
             .borrow_mut()
             .mounted
-            .insert(idx, MountedCell { node, scope_id });
+            .insert(idx, MountedCell { node, scope_id, z });
+        mounted_any = true;
+    }
+    if mounted_any {
+        restack(state);
     }
 }
 
@@ -486,13 +570,23 @@ fn reposition(
     state.borrow().fixed.move_(&widget, x as f64, y as f64);
     let node = state.borrow().mounted.get(&idx).map(|c| c.node.clone());
     if let Some(node) = node {
-        size_and_layout(state, &node, w, h);
+        size_and_layout(state, &node, (x, y, w, h));
     }
 }
 
-/// Pin a cell's box size and run the detached layout pass over its
-/// subtree so its descendants get framed.
-fn size_and_layout(state: &Rc<RefCell<State>>, node: &LinuxNode, w: f32, h: f32) {
+/// Pin a cell's box size, run the detached layout pass over its subtree so
+/// its descendants get framed, then record the cell's slot `(x, y)` as the
+/// row root's frame origin.
+///
+/// The slot must go through the backend, not just `Fixed::put`/`move_`:
+/// the layout pass frames the row root at `(0, 0)` (it is its own Taffy
+/// root) and writes that frame as the root's `GtkFixed` child transform,
+/// which REPLACES the position `put`/`move_` set — every row would land
+/// on the first row's slot. `place_detached_root` records the slot as the
+/// root's `detached_origin`, so this pass and every later main layout pass
+/// (which re-frames detached roots too) compose it with the row root's own
+/// transform.
+fn size_and_layout(state: &Rc<RefCell<State>>, node: &LinuxNode, (x, y, w, h): (f32, f32, f32, f32)) {
     let (wi, hi) = (w.round().max(0.0) as i32, h.round().max(0.0) as i32);
     if let Some(v) = node.widget.downcast_ref::<IdealystView>() {
         v.set_layout_size(wi, hi);
@@ -503,6 +597,7 @@ fn size_and_layout(state: &Rc<RefCell<State>>, node: &LinuxNode, w: f32, h: f32)
     if let Some(b) = backend.upgrade() {
         if let Ok(mut b) = b.try_borrow_mut() {
             b.layout_detached_root(node.id, w, h, None);
+            b.place_detached_root(node.id, x, y);
         }
     }
 }

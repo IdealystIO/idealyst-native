@@ -31,8 +31,8 @@
 //! Four components mirror the SDK's shape:
 //! - [`Table`] wraps the SDK's `<table>` with the themed surface
 //!   (rounded corners, hairline border, theme background), and owns the
-//!   table-wide settings: `variant`, `scroll_x`, `density`, and the
-//!   frame slots.
+//!   table-wide settings: `variant`, `scroll_x`, `scroll_y`,
+//!   `max_height`, `inset_x`, `density`, and the frame slots.
 //! - [`TableRow`] is a `<tr>`: `on_row_click` for a clickable row,
 //!   `tone` for a whole-row tint, `bind_to` for the row's handle.
 //! - [`TableCell`] wraps `<td>` (or `<th>` when `header = true`) with
@@ -128,6 +128,34 @@
 //! columns before it (a select column 48 wide, then the name column at
 //! `pin_offset = Some(48.0)`). Without the offset they all stick at the edge
 //! and overlap.
+//!
+//! # Vertical scrolling & a pinned header
+//!
+//! `Table(scroll_y = true)` makes the table own its vertical scroll: the
+//! rows scroll inside the table's own height and the header row stays
+//! pinned to the top. Bound it with `max_height = Some(px)`, or let it
+//! fill a bounded parent (without `max_height` a `scroll_y` table takes
+//! the height its parent column gives it, and is as tall as its rows in
+//! an unbounded one). With `scroll_x` too the table owns ONE two-axis
+//! scroller, so the header pins to the top while frozen columns keep
+//! pinning to the sides, and a frozen header cell — the corner — pins on
+//! both axes, painted above the header row, which is painted above the
+//! body. That is the only way to freeze both: a sticky cell pins against
+//! its nearest scroll container, so in a `scroll_x` table that scrolls
+//! with the page the header can never stick to the page.
+//!
+//! The header rows are the LEADING rows whose cells are all head cells
+//! (`TableCell(header = true)`).
+//!
+//! # Edge inset
+//!
+//! `Table(inset_x = TableInset::Xl)` sets the outer padding of every row's
+//! first and last cell (and of the frame slots), leaving the cells in
+//! between alone — so the row dividers run the table's full width while
+//! the text lines up with the page margin. The token sizes follow the
+//! theme's spacing scale; `TableInset::Px(28.0)` takes an exact margin
+//! that is not on it. Typically paired with `variant = TableVariant::Plain`
+//! for an edge-to-edge list.
 //!
 //! # Plain tables
 //!
@@ -356,6 +384,81 @@ impl VariantEnum for TableVariant {
     }
 }
 
+/// The outer padding of a [`Table`]'s edge cells — see the module docs'
+/// "Edge inset". The token sizes are the theme's spacing scale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, IdealystSchema)]
+pub enum TableInset {
+    /// The cells' own padding at the edges too. The default.
+    #[default]
+    None,
+    /// `spacing.xs`.
+    Xs,
+    /// `spacing.sm`.
+    Sm,
+    /// `spacing.md`.
+    Md,
+    /// `spacing.lg` — the same as the cells' own horizontal padding.
+    Lg,
+    /// `spacing.xl`.
+    Xl,
+    /// `spacing.xxl`.
+    Xxl,
+    /// An exact length in px, for a page margin that is not on the
+    /// spacing scale.
+    Px(f32),
+}
+
+impl TableInset {
+    /// The sheets' `inset_left` / `inset_right` arm a token inset
+    /// selects; `None` for [`TableInset::None`] and [`TableInset::Px`].
+    fn arm(self) -> Option<&'static str> {
+        match self {
+            TableInset::None | TableInset::Px(_) => None,
+            TableInset::Xs => Some("xs"),
+            TableInset::Sm => Some("sm"),
+            TableInset::Md => Some("md"),
+            TableInset::Lg => Some("lg"),
+            TableInset::Xl => Some("xl"),
+            TableInset::Xxl => Some("xxl"),
+        }
+    }
+
+    /// Apply this inset to one side of a cell or slot application:
+    /// a token selects the sheet arm (preminted), an exact length rides
+    /// an override.
+    fn apply(self, app: StyleApplication, side: InsetSide) -> StyleApplication {
+        if let Some(arm) = self.arm() {
+            return app.with(side.axis(), arm);
+        }
+        match self {
+            TableInset::Px(v) => {
+                let len = Some(Tokenized::Literal(Length::Px(v)));
+                app.with_overrides(match side {
+                    InsetSide::Left => StyleRules { padding_left: len, ..Default::default() },
+                    InsetSide::Right => StyleRules { padding_right: len, ..Default::default() },
+                })
+            }
+            _ => app,
+        }
+    }
+}
+
+/// Which edge of a row [`TableInset::apply`] pads.
+#[derive(Clone, Copy)]
+enum InsetSide {
+    Left,
+    Right,
+}
+
+impl InsetSide {
+    fn axis(self) -> &'static str {
+        match self {
+            InsetSide::Left => "inset_left",
+            InsetSide::Right => "inset_right",
+        }
+    }
+}
+
 // =============================================================================
 // Table
 // =============================================================================
@@ -378,6 +481,25 @@ pub struct TableProps {
     // STRUCTURAL — selects the SDK's scroller wrapper at build time.
     #[prop(static)]
     pub scroll_x: bool,
+    /// Vertical-scroll mode: the rows scroll inside the table's own
+    /// height and the header row stays pinned to the top. Bound it with
+    /// `max_height`, or let it fill a bounded parent. With `scroll_x` the
+    /// table owns one two-axis scroller, so frozen columns and the header
+    /// pin together — see the module docs.
+    // STRUCTURAL — selects the SDK's scroller and the header pin at build.
+    #[prop(static)]
+    pub scroll_y: bool,
+    /// The most the table grows to, in px, before its rows scroll.
+    /// Ignored without `scroll_y`.
+    // STATIC — an override on the surface style at build.
+    #[prop(static)]
+    pub max_height: Option<f32>,
+    /// The outer padding of every row's first and last cell (and of the
+    /// frame slots), so the row dividers run the table's full width while
+    /// the text keeps a page margin — see [`TableInset`].
+    // STATIC — selected onto the edge cells when the table is built.
+    #[prop(static)]
+    pub inset_x: TableInset,
     /// Row padding for every cell — `Compact`, `Standard` or
     /// `Comfortable`.
     // STATIC — selected onto every built cell's sheet when the table is
@@ -416,7 +538,17 @@ pub fn Table(props: TableProps) -> Element {
     // ignore `border-radius` on a collapsed-border table. The sheet's
     // clip keeps the corner cells inside the rounded frame.
     let frame = props.variant.as_variant_str();
-    let style = TableStyle().into_style_application().with("frame", frame);
+    let style = TableStyle()
+        .into_style_application()
+        .with("frame", frame)
+        .with("scroll", if props.scroll_y { "fill" } else { "off" });
+    let style = match props.max_height.filter(|_| props.scroll_y) {
+        Some(h) => style.with_overrides(StyleRules {
+            max_height: Some(Tokenized::Literal(Length::Px(h))),
+            ..Default::default()
+        }),
+        None => style,
+    };
     let mut children: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut children);
@@ -448,6 +580,49 @@ pub fn Table(props: TableProps) -> Element {
             });
         });
     }
+    // A scroll-y table pins its header rows: the leading rows whose cells
+    // are all head cells. Static selection, so the cells stay preminted.
+    if props.scroll_y {
+        let mut head = true;
+        for child in &children {
+            table::visit_rows(child, |row| {
+                head = head && row_is_head(row);
+                if head {
+                    table::visit_row_cells(row, |cell| {
+                        table::map_cell_application(
+                            cell,
+                            Rc::new(|app| app.with("sticky_header", "on")),
+                        );
+                    });
+                }
+            });
+        }
+    }
+    // Edge inset: the first and last cell of every row — a single-cell
+    // row (a `ColSpan::Rest` blank row) takes both sides.
+    let inset = props.inset_x;
+    if inset != TableInset::None {
+        for child in &children {
+            table::visit_rows(child, |row| {
+                let mut count = 0usize;
+                table::visit_row_cells(row, |_| count += 1);
+                let mut i = 0usize;
+                table::visit_row_cells(row, |cell| {
+                    let (first, last) = (i == 0, i + 1 == count);
+                    i += 1;
+                    if first || last {
+                        table::map_cell_application(
+                            cell,
+                            Rc::new(move |app| {
+                                let app = if first { inset.apply(app, InsetSide::Left) } else { app };
+                                if last { inset.apply(app, InsetSide::Right) } else { app }
+                            }),
+                        );
+                    }
+                });
+            });
+        }
+    }
     let plain = props.variant == TableVariant::Plain;
     if plain {
         for child in &children {
@@ -478,12 +653,16 @@ pub fn Table(props: TableProps) -> Element {
         }
         edges
     });
+    let slot_style = move |edge: &'static str| {
+        let app = TableSlot().into_style_application().with("edge", edge);
+        inset.apply(inset.apply(app, InsetSide::Left), InsetSide::Right)
+    };
     let header_slot = props.header_slot.map(|slot| {
-        let style = TableSlot().into_style_application().with("edge", "top");
+        let style = slot_style("top");
         ui! { view(style = style) { slot } }
     });
     let footer_slot = props.footer_slot.map(|slot| {
-        let style = TableSlot().into_style_application().with("edge", "bottom");
+        let style = slot_style("bottom");
         ui! { view(style = style) { slot } }
     });
     // SDK's `table()` returns a `Bound<TableHandle>`; chain
@@ -492,6 +671,7 @@ pub fn Table(props: TableProps) -> Element {
     let table = sdk_table(SdkTableProps {
         children,
         scroll_x: props.scroll_x,
+        scroll_y: props.scroll_y,
         header_slot,
         footer_slot,
     })
@@ -500,6 +680,21 @@ pub fn Table(props: TableProps) -> Element {
         Some(edges) => table.on_scroll_edges(move |e| edges.set(e)).into_element(),
         None => table.into_element(),
     }
+}
+
+/// Whether every cell of `row` is a head cell — `TableCell(header = true)`
+/// selects the head sheet's `sticky_header` axis, which a body cell's
+/// sheet does not have. An empty row is not a head row.
+fn row_is_head(row: &Element) -> bool {
+    let mut cells = 0usize;
+    let mut head = 0usize;
+    table::visit_row_cells(row, |cell| {
+        cells += 1;
+        if table::cell_application(cell).is_some_and(|app| app.variants.0.contains_key("sticky_header")) {
+            head += 1;
+        }
+    });
+    cells > 0 && cells == head
 }
 
 /// Select the `pin_edge` arm for a frozen cell: its inner-edge hairline
@@ -954,7 +1149,9 @@ pub fn TableCell(props: TableCellProps) -> Element {
         ColumnPin::Right => "right",
     });
     let app = if header {
-        let app = TableHeadCell().into_style_application();
+        // `sticky_header: off` stated outright: the key marks a head cell
+        // for `Table`, which pins the leading head rows of a scroll-y table.
+        let app = TableHeadCell().into_style_application().with("sticky_header", "off");
         select_cell_axes(app, pin_arm, align, truncate)
     } else {
         let app = TableBodyCell().into_style_application();
@@ -1530,7 +1727,7 @@ mod tests {
                         data.downcast_ref::<runtime_vocabulary::prims::PrimCell<
                             runtime_vocabulary::prims::ScrollViewPrim,
                         >>()
-                        .is_some_and(|c| c.take().horizontal),
+                        .is_some_and(|c| c.take().axis == runtime_core::ScrollAxis::Horizontal),
                         "surface must wrap a HORIZONTAL scroll_view"
                     );
                 }
@@ -2349,6 +2546,257 @@ mod tests {
             assert!(app.preminted_class_list().is_some(), "a framed frozen cell stays static");
             let rules = runtime_core::resolve_style(&app);
             assert!(!is_transparent(&rules.border_right_color), "and draws its edge at rest");
+        });
+    }
+
+    // =========================================================================
+    // Scroll-y (pinned header) and edge inset.
+    // =========================================================================
+
+    /// The surface and scroller of a scrolling table: (surface rules,
+    /// scroller axis, rendered cells).
+    fn scrolling_parts(t: Element) -> (Rc<StyleRules>, runtime_core::ScrollAxis, Vec<Element>) {
+        use runtime_vocabulary::prims::{PrimCell, ScrollViewPrim, ViewPrim};
+        let (surface_rules, mut kids) = match peel_owned_keepalive(t) {
+            Element::Item { data, children, .. } => {
+                let vp = data.downcast_ref::<PrimCell<ViewPrim>>().expect("surface view").take();
+                (surface_rules_of(vp.style), children)
+            }
+            _ => panic!("a scrolling table lowers to its surface view"),
+        };
+        let scroller = kids.pop().expect("surface wraps the scroller");
+        let (axis, mut inner) = match peel_owned_keepalive(scroller) {
+            Element::Item { data, children, .. } => (
+                data.downcast_ref::<PrimCell<ScrollViewPrim>>().expect("scroll_view").take().axis,
+                children,
+            ),
+            _ => panic!("the surface's content is the scroller"),
+        };
+        (surface_rules, axis, grid_cells(inner.pop().expect("the scroller wraps the table")))
+    }
+
+    fn surface_rules_of(style: Option<runtime_vocabulary::StyleProp>) -> Rc<StyleRules> {
+        match style.expect("surface carries the Table sheet") {
+            runtime_vocabulary::StyleProp::Sheet(app) => runtime_core::resolve_style(&app),
+            _ => panic!("the Table sheet is a static application"),
+        }
+    }
+
+    fn z_of(rules: &StyleRules) -> Option<i32> {
+        rules.z_index
+    }
+
+    /// CrewForge: a header row could not stay put while the rows scroll.
+    /// `scroll_y` pins the leading head row to the top of the table's own
+    /// scroller, and with `scroll_x` the corner (a frozen head cell) pins
+    /// on both axes, stacked above the header row, which is stacked above
+    /// the frozen body column. Body cells take no top pin.
+    #[test]
+    fn regression_scroll_y_pins_the_header_row_and_stacks_the_corner_on_top() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![
+                    row_of(vec![pinned_head("Name", ColumnPin::Left), head_cell("Hours")]),
+                    row_of(vec![pinned_body("Ana", ColumnPin::Left), body_cell("8")]),
+                ],
+                scroll_x: true,
+                scroll_y: true,
+                ..Default::default()
+            });
+            let (_, axis, cells) = scrolling_parts(t);
+            assert_eq!(axis, runtime_core::ScrollAxis::Both, "one two-axis scroller");
+            let rules: Vec<_> = cells
+                .into_iter()
+                .map(|c| {
+                    let app = cell_app(c);
+                    assert!(app.preminted_class_list().is_some(), "the header pin premints");
+                    runtime_core::resolve_style(&app)
+                })
+                .collect();
+            let (corner, head, frozen, body) = (&rules[0], &rules[1], &rules[2], &rules[3]);
+
+            assert_eq!(corner.position, Some(runtime_core::Position::Sticky));
+            assert_eq!(px_of(&corner.top), Some(0.0), "the corner pins to the top");
+            assert_eq!(px_of(&corner.left), Some(0.0), "…and to the left");
+            assert_eq!(head.position, Some(runtime_core::Position::Sticky));
+            assert_eq!(px_of(&head.top), Some(0.0), "the header pins to the top");
+            assert!(head.left.is_none(), "an unfrozen header cell scrolls sideways");
+            assert!(frozen.top.is_none(), "a body cell never pins to the top");
+            assert_eq!(px_of(&frozen.left), Some(0.0), "the frozen column keeps pinning left");
+            assert_eq!(body.position, None, "a plain body cell stays in flow");
+
+            let z = |r: &StyleRules| r.stacking_z();
+            assert!(z(frozen) < z(head), "rows slide under the header row");
+            assert!(z(head) < z(corner), "the header row slides under the corner");
+            assert!(z(body) < z(frozen), "body cells slide under the frozen column");
+            assert_eq!(z_of(corner), Some(3));
+        });
+    }
+
+    /// Without `scroll_y` nothing pins to the top — the header scrolls
+    /// with the page, as before — and a scroll-y table without `scroll_x`
+    /// owns a vertical scroller.
+    #[test]
+    fn header_pins_only_in_a_scroll_y_table() {
+        with_test_world(|| {
+            let still = Table(TableProps {
+                children: vec![row_of(vec![head_cell("Name")]), row_of(vec![body_cell("Ana")])],
+                ..Default::default()
+            });
+            let head = rules_of(grid_cells(still).into_iter().next().unwrap());
+            assert!(head.top.is_none() && head.position.is_none(), "{head:?}");
+
+            let t = Table(TableProps {
+                children: vec![row_of(vec![head_cell("Name")]), row_of(vec![body_cell("Ana")])],
+                scroll_y: true,
+                ..Default::default()
+            });
+            let (_, axis, cells) = scrolling_parts(t);
+            assert_eq!(axis, runtime_core::ScrollAxis::Vertical);
+            let head = rules_of(cells.into_iter().next().unwrap());
+            assert_eq!(px_of(&head.top), Some(0.0));
+        });
+    }
+
+    /// Only the LEADING head rows pin: a row of head cells after the body
+    /// (a totals row built from head cells) scrolls with the rows.
+    #[test]
+    fn only_the_leading_head_rows_pin() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![
+                    row_of(vec![head_cell("Name")]),
+                    row_of(vec![head_cell("Group")]),
+                    row_of(vec![body_cell("Ana")]),
+                    row_of(vec![head_cell("Total")]),
+                ],
+                scroll_y: true,
+                ..Default::default()
+            });
+            let (_, _, cells) = scrolling_parts(t);
+            let tops: Vec<_> = cells.into_iter().map(|c| px_of(&rules_of(c).top)).collect();
+            assert_eq!(tops, vec![Some(0.0), Some(0.0), None, None]);
+        });
+    }
+
+    /// `scroll_y` makes the surface take its parent's height (grow, and
+    /// shrink below its rows) and `max_height` caps it; `max_height`
+    /// without `scroll_y` does nothing.
+    #[test]
+    fn scroll_y_surface_fills_and_max_height_caps_it() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![body_cell("Ana")])],
+                scroll_y: true,
+                max_height: Some(320.0),
+                ..Default::default()
+            });
+            let (surface, _, _) = scrolling_parts(t);
+            assert_eq!(surface.flex_grow.as_ref().map(|g| g.resolve()), Some(1.0));
+            assert_eq!(px_of(&surface.min_height), Some(0.0), "may shrink below its rows");
+            assert_eq!(px_of(&surface.max_height), Some(320.0));
+
+            let unscrolled = Table(TableProps {
+                children: vec![row_of(vec![body_cell("Ana")])],
+                max_height: Some(320.0),
+                footer_slot: Some(runtime_core::text("x".to_string()).into_element()),
+                ..Default::default()
+            });
+            let surface = match peel_owned_keepalive(unscrolled) {
+                Element::Item { data, .. } => data
+                    .downcast_ref::<runtime_vocabulary::prims::PrimCell<runtime_vocabulary::prims::ViewPrim>>()
+                    .unwrap()
+                    .take(),
+                _ => panic!("surface"),
+            };
+            let rules = surface_rules_of(surface.style);
+            assert!(rules.max_height.is_none(), "max_height is a scroll-y setting");
+            assert!(rules.flex_grow.is_none());
+        });
+    }
+
+    /// CrewForge: cell padding was fixed, so the row dividers could not run
+    /// the full width while the text kept a page margin. `inset_x` pads
+    /// the outer side of each row's FIRST and LAST cell only — the cells
+    /// between keep the base padding — and a single-cell row takes both.
+    #[test]
+    fn regression_inset_x_pads_only_the_edge_cells() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![
+                    row_of(vec![head_cell("A"), head_cell("B"), head_cell("C")]),
+                    row_of(vec![body_cell("1"), body_cell("2"), body_cell("3")]),
+                    row_of(vec![TableCell(TableCellProps {
+                        span: ColSpan::Rest,
+                        text: Reactive::Static(Some("Nobody yet".into())),
+                        ..Default::default()
+                    })]),
+                ],
+                inset_x: TableInset::Xl,
+                ..Default::default()
+            });
+            let lg = px_of(&rules_of(body_cell("x")).padding_left).expect("base cell padding");
+            let mut pads = Vec::new();
+            // (No premint assertion here: the spanning row switches the grid
+            // to explicit placement, which rides an override on every cell.)
+            for c in grid_cells(t) {
+                let app = cell_app(c);
+                let r = runtime_core::resolve_style(&app);
+                pads.push((px_of(&r.padding_left).unwrap(), px_of(&r.padding_right).unwrap()));
+            }
+            let xl = pads[0].0;
+            assert!(xl > lg, "the xl inset is wider than the base padding ({xl} vs {lg})");
+            assert_eq!(
+                pads,
+                vec![(xl, lg), (lg, lg), (lg, xl), (xl, lg), (lg, lg), (lg, xl), (xl, xl)],
+                "first cell: left inset; last cell: right inset; middle: neither"
+            );
+        });
+    }
+
+    /// An exact inset rides an override on the edge cells (and the frame
+    /// slots take the same inset on both sides, so slot content lines up
+    /// with the first column's text).
+    #[test]
+    fn inset_x_px_is_exact_and_reaches_the_slots() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![body_cell("1"), body_cell("2")])],
+                inset_x: TableInset::Px(28.0),
+                header_slot: Some(runtime_core::text("note".to_string()).into_element()),
+                ..Default::default()
+            });
+            let mut surface = match peel_owned_keepalive(t) {
+                Element::Item { children, .. } => children,
+                _ => panic!("surface"),
+            };
+            let holder = surface.pop().expect("grid holder");
+            let slot = surface.pop().expect("header slot");
+            let cells = grid_cells(holder);
+            let r0 = rules_of(cells.into_iter().next().unwrap());
+            assert_eq!(px_of(&r0.padding_left), Some(28.0));
+            let slot_rules = match classify(slot) {
+                P::View { style, .. } => runtime_core::resolve_style(&style.unwrap().application()),
+                _ => panic!("slot is a view"),
+            };
+            assert_eq!(px_of(&slot_rules.padding_left), Some(28.0));
+            assert_eq!(px_of(&slot_rules.padding_right), Some(28.0));
+        });
+    }
+
+    /// A token inset is an axis selection, so the edge cells stay
+    /// preminted (build-time CSS per arm).
+    #[test]
+    fn token_inset_keeps_edge_cells_preminted() {
+        with_test_world(|| {
+            let t = Table(TableProps {
+                children: vec![row_of(vec![head_cell("A"), head_cell("B")]), row_of(vec![body_cell("1"), body_cell("2")])],
+                inset_x: TableInset::Xxl,
+                ..Default::default()
+            });
+            for c in grid_cells(t) {
+                assert!(cell_app(c).preminted_class_list().is_some());
+            }
         });
     }
 }

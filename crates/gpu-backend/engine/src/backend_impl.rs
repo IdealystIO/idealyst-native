@@ -123,6 +123,11 @@ pub struct WgpuBackend {
     /// registry per-node to decide whether to apply a pin
     /// translate. See `crate::sticky` for the full design.
     pub(crate) sticky_registry: crate::sticky::StickyRegistry,
+    /// Layout ids of every live `ScrollView` node, so a sticky child
+    /// finds its scroll ancestor by a Taffy-parent walk (see
+    /// [`crate::sticky::ScrollViewLayouts`]). Added in
+    /// `create_scroll_view_impl`, removed in `drop_subtree`.
+    pub(crate) scroll_view_layouts: crate::sticky::ScrollViewLayouts,
     /// Image-asset bytes (`embed_asset!` / `BundledEmbedded`) keyed by
     /// `AssetId`. Populated by `register_asset` for `AssetTag::Image`;
     /// an `image()` whose src is `asset://{id}` decodes them
@@ -230,6 +235,7 @@ impl WgpuBackend {
             pending_announcements: Vec::new(),
             presence_tweens: std::collections::HashMap::new(),
             sticky_registry: crate::sticky::StickyRegistry::new(),
+            scroll_view_layouts: crate::sticky::ScrollViewLayouts::new(),
             image_asset_bytes: std::collections::HashMap::new(),
             images: Default::default(),
             pending_font_urls: Vec::new(),
@@ -846,28 +852,26 @@ impl WgpuBackend {
 
     pub(crate) fn create_scroll_view_impl(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> WgpuNode {
         let layout = self.layout.new_node();
-        // Pin the scrollview's main-axis `min-size` to 0 so the
-        // parent's flex layout can shrink it below its children's
-        // content height (CSS flex-item-`min: auto` gotcha — the
-        // Taffy default would otherwise lock the scrollview to
-        // its content's intrinsic size, defeating overflow). The
-        // scrollview's children get `flex_shrink: 0` in `insert`
-        // so they stay at natural sizes and overflow the now
-        // smaller scrollview frame. `-1.0` on the other axis
-        // means "leave that axis untouched".
-        if horizontal {
-            self.layout.set_intrinsic_size(layout, 0.0, -1.0);
-        } else {
-            self.layout.set_intrinsic_size(layout, -1.0, 0.0);
-        }
+        // `overflow: scroll` on every scrolling axis (the same Taffy
+        // contract iOS / Android / macOS / terminal use): a scroll
+        // container's automatic min-size is 0 on those axes, so a
+        // `flex_grow` viewport is bounded by its parent instead of
+        // growing to its content's size (the CSS flex-item `min: auto`
+        // trap), and when X scrolls the children are exempt from the
+        // default `max-width: 100%` clamp so content can be wider than
+        // the viewport. `Both` gets both. The children also get
+        // `flex_shrink: 0` in `insert` so they keep their natural sizes
+        // and overflow the viewport frame.
+        self.layout.set_overflow_scroll_axis(layout, axis);
+        self.scroll_view_layouts.insert(layout);
         let node = new_node(
             NodeKind::ScrollView {
-                horizontal,
+                axis,
                 offset_x: 0.0,
                 offset_y: 0.0,
                 on_scroll,
@@ -1216,6 +1220,13 @@ impl WgpuBackend {
         parent.borrow_mut().children.push(child.clone());
         // The child is no longer orphaned — drop it from `roots`.
         self.roots.retain(|n| !Rc::ptr_eq(n, &child));
+        // A sticky node styled before this subtree was attached under
+        // its scroll view gains that ancestor now.
+        crate::sticky::resolve_pending(
+            &mut self.sticky_registry,
+            &self.layout,
+            &self.scroll_view_layouts,
+        );
 
         if child_is_portal {
             // `position: absolute` removes the node from flex
@@ -1289,6 +1300,7 @@ impl WgpuBackend {
                 &mut self.animator,
                 &mut self.active_spinner_count,
                 &mut self.sticky_registry,
+                &mut self.scroll_view_layouts,
                 child,
             );
         }
@@ -1938,25 +1950,23 @@ impl WgpuBackend {
         // BEFORE the parent's `insert(parent, child)` call, so on
         // a first mount the ancestor walk won't yet find a
         // scrolling parent — the registry entry's
-        // `scroll_layout` is `None`, the render walker no-ops,
-        // and once the tree settles a subsequent style re-apply
-        // (state overlay, theme swap, hot patch) re-registers
-        // with a populated `scroll_layout`. The fall-back-to-
-        // relative behaviour matches CSS in the meantime.
+        // `scroll_layout` is `None` until `insert_impl`'s
+        // `resolve_pending` finds it once the subtree is attached
+        // under the scroll view.
         match style.position {
             Some(runtime_shared::Position::Sticky) => {
                 let insets = runtime_shared::sticky::StickyInsets::from_style(style);
                 // Split-borrow the registry against `layout` and
-                // `roots` — `register` walks Taffy parents to
+                // `scroll_view_layouts` — `register` walks Taffy parents to
                 // resolve the enclosing scroll view, which would
                 // otherwise alias `&mut self`.
                 let WgpuBackend {
                     sticky_registry,
                     layout,
-                    roots,
+                    scroll_view_layouts,
                     ..
                 } = self;
-                crate::sticky::register(sticky_registry, layout, roots, node, insets);
+                crate::sticky::register(sticky_registry, layout, scroll_view_layouts, node, insets);
             }
             _ => {
                 crate::sticky::deregister(&mut self.sticky_registry, node);
@@ -2208,6 +2218,7 @@ fn refill_virtualizer(rc: &Rc<RefCell<WgpuBackend>>, node: &WgpuNode) {
                 &mut b.animator,
                 &mut b.active_spinner_count,
                 &mut b.sticky_registry,
+                &mut b.scroll_view_layouts,
                 child,
             );
         }
@@ -2395,6 +2406,7 @@ fn drop_subtree(
     animator: &mut Animator,
     spinner_count: &mut u32,
     sticky_registry: &mut crate::sticky::StickyRegistry,
+    scroll_view_layouts: &mut crate::sticky::ScrollViewLayouts,
     node: &WgpuNode,
 ) {
     let children: Vec<WgpuNode> = node.borrow().children.clone();
@@ -2405,10 +2417,14 @@ fn drop_subtree(
             animator,
             spinner_count,
             sticky_registry,
+            scroll_view_layouts,
             child,
         );
     }
     let id = node.borrow().layout;
+    // Taffy recycles freed ids — a stale entry would make a later node
+    // at the same slot read as a scroll ancestor.
+    scroll_view_layouts.remove(&id);
     if matches!(node.borrow().kind, NodeKind::ActivityIndicator { .. }) {
         *spinner_count = spinner_count.saturating_sub(1);
     }
@@ -3278,5 +3294,208 @@ mod a11y_tests {
         let tree = b.dump_accessibility_tree_impl().expect("tree");
         assert_eq!(tree.root.role, Role::Button);
         assert_eq!(tree.root.props.label.as_deref(), Some("Submit"));
+    }
+}
+
+#[cfg(test)]
+mod virtualizer_z_order_tests {
+    //! `StyleRules::z_index` on a virtualizer's ROWS. On web the rows are
+    //! plain siblings in one container, so a `z_index` on an item's root
+    //! orders that row against its neighbours. The engine must match:
+    //! each mounted row's root is a direct child of the `Virtualizer`
+    //! node (no per-row wrapper), so the renderer's sibling paint sort and
+    //! the host's reverse-paint-order hit-walks both see the row roots'
+    //! effective z.
+    //!
+    //! The rows are mounted by [`super::refill_virtualizer`] — the real
+    //! fill body the deferred `schedule_virtualizer_fill` microtask runs.
+    //! The node is built directly rather than through
+    //! `create_virtualizer_impl` because lib unit tests run on the
+    //! no-scheduler synchronous fallback, where the create-time fill
+    //! would run inside the backend borrow (the integration suite in
+    //! `tests/newcore.rs` covers that deferral with a buffering
+    //! scheduler; `tests/headless_screenshot.rs` covers row paint order
+    //! through the vocabulary's mount path).
+    use super::*;
+    use runtime_shared::animation::AnimProp;
+    use runtime_shared::{Length, Platform, Position};
+
+    /// A 40×40 absolute box at (30, 30): every row overlaps exactly.
+    fn row_style(z_index: Option<i32>) -> Rc<StyleRules> {
+        let px = |v| Some(Tokenized::Literal(Length::Px(v)));
+        Rc::new(StyleRules {
+            width: px(40.0),
+            height: px(40.0),
+            position: Some(Position::Absolute),
+            left: px(30.0),
+            top: px(30.0),
+            z_index,
+            ..Default::default()
+        })
+    }
+
+    fn fill_style() -> Rc<StyleRules> {
+        Rc::new(StyleRules {
+            width: Some(Tokenized::Literal(Length::Px(100.0))),
+            height: Some(Tokenized::Literal(Length::Px(100.0))),
+            ..Default::default()
+        })
+    }
+
+    struct Fixture {
+        host: crate::Host,
+        root: WgpuNode,
+        virt: WgpuNode,
+        /// Each row's `z_index`, read by `mount_item` — the item data.
+        zs: Rc<RefCell<Vec<Option<i32>>>>,
+        released: Rc<RefCell<Vec<u64>>>,
+    }
+
+    /// Root 100×100 holding a virtualizer whose three rows are
+    /// overlapping pressables, row `i` styled with `zs[i]`.
+    fn fixture(zs: Vec<Option<i32>>) -> Fixture {
+        let host = crate::Host::new(
+            Rc::new(crate::native_skin::NativeSkin::new(Platform::MacOs)),
+            ColorScheme::Light,
+        );
+        let rc = host.backend().clone();
+        let zs = Rc::new(RefCell::new(zs));
+        let released: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let next_id = Rc::new(std::cell::Cell::new(0u64));
+        let mount_item: Rc<dyn Fn(usize) -> (WgpuNode, u64)> = {
+            let rc = rc.clone();
+            let zs = zs.clone();
+            Rc::new(move |i| {
+                let mut b = rc.borrow_mut();
+                let row = b.create_pressable_impl(Rc::new(|| {}), &Default::default());
+                b.apply_style_impl(&row, &row_style(zs.borrow()[i]));
+                let id = next_id.get();
+                next_id.set(id + 1);
+                (row, id)
+            })
+        };
+        let release_item: Rc<dyn Fn(u64)> = {
+            let released = released.clone();
+            Rc::new(move |id| released.borrow_mut().push(id))
+        };
+        let count = {
+            let zs = zs.clone();
+            Rc::new(move || zs.borrow().len()) as Rc<dyn Fn() -> usize>
+        };
+        let (root, virt) = {
+            let mut b = rc.borrow_mut();
+            let mut root = b.create_view_impl(&Default::default());
+            b.apply_style_impl(&root, &fill_style());
+            let virt = new_node(
+                NodeKind::Virtualizer {
+                    horizontal: false,
+                    mount_item,
+                    release_item,
+                    item_count: count,
+                    scope_ids: RefCell::new(Vec::new()),
+                    fill_queued: std::cell::Cell::new(false),
+                },
+                b.layout.new_node(),
+            );
+            b.apply_style_impl(&virt, &fill_style());
+            b.insert_impl(&mut root, virt.clone());
+            b.finish_impl(root.clone());
+            (root, virt)
+        };
+        super::refill_virtualizer(&rc, &virt);
+        let f = Fixture { host, root, virt, zs, released };
+        f.relayout();
+        f
+    }
+
+    impl Fixture {
+        fn relayout(&self) {
+            let mut b = self.host.backend().borrow_mut();
+            let root_layout = self.root.borrow().layout;
+            b.layout.compute(root_layout, 100.0, 100.0);
+        }
+
+        fn row(&self, i: usize) -> WgpuNode {
+            self.virt.borrow().children[i].clone()
+        }
+
+        /// Index of the row the pointer resolves to at the overlap.
+        fn hit_row(&self) -> usize {
+            let b = self.host.backend().borrow();
+            let hit = crate::host::hit_test_node(&b, &self.root, 0.0, 0.0, (50.0, 50.0))
+                .expect("the overlap is interactive")
+                .0;
+            let rows = self.virt.borrow().children.clone();
+            rows.iter().position(|r| Rc::ptr_eq(r, &hit)).expect("hit a row root")
+        }
+
+        /// Row indices in the order the renderer paints them.
+        fn paint_order(&self) -> Vec<usize> {
+            let rows = self.virt.borrow().children.clone();
+            let mut sorted = rows.clone();
+            crate::node::sort_into_paint_order(&mut sorted, |n| n);
+            sorted
+                .iter()
+                .map(|s| rows.iter().position(|r| Rc::ptr_eq(r, s)).expect("row"))
+                .collect()
+        }
+    }
+
+    /// A mounted row whose root carries `z_index` stacks over the
+    /// neighbouring rows for paint AND pointer, like web; without one,
+    /// rows keep row order (the last row on top).
+    #[test]
+    fn virtualizer_row_z_index_orders_row_against_neighbouring_rows() {
+        let f = fixture(vec![Some(1), None, None]);
+        assert_eq!(f.virt.borrow().children.len(), 3, "rows are the virtualizer's direct children");
+        assert_eq!(f.paint_order(), [1, 2, 0]);
+        assert_eq!(f.hit_row(), 0, "the raised first row takes the pointer");
+
+        let f = fixture(vec![None, None, None]);
+        assert_eq!(f.paint_order(), [0, 1, 2]);
+        assert_eq!(f.hit_row(), 2, "ties keep row order: the last row is on top");
+
+        let f = fixture(vec![None, Some(2), Some(2)]);
+        assert_eq!(f.hit_row(), 2, "equal z ties in row order");
+    }
+
+    /// Restyling a mounted row's root, and an animated `ZIndex` on it,
+    /// re-order the rows on the next walk.
+    #[test]
+    fn virtualizer_row_z_follows_restyle_and_animated_z_index() {
+        let f = fixture(vec![Some(1), None, None]);
+        assert_eq!(f.hit_row(), 0);
+
+        let row0 = f.row(0);
+        f.host.backend().borrow_mut().apply_style_impl(&row0, &row_style(None));
+        f.relayout();
+        assert_eq!(f.hit_row(), 2, "dropping z_index restores row order");
+
+        let row1 = f.row(1);
+        f.host.backend().borrow_mut().set_animated_f32_impl(&row1, AnimProp::ZIndex, 3.0);
+        assert_eq!(f.hit_row(), 1, "animated ZIndex raises the middle row");
+        assert_eq!(f.paint_order(), [0, 2, 1]);
+    }
+
+    /// A data refill releases every row and mounts fresh ones: the new
+    /// rows stack by the NEW items' z, never a released row's.
+    #[test]
+    fn virtualizer_refilled_rows_take_the_new_items_z() {
+        let f = fixture(vec![Some(1), None, None]);
+        let row1 = f.row(1);
+        f.host.backend().borrow_mut().set_animated_f32_impl(&row1, AnimProp::ZIndex, 5.0);
+        assert_eq!(f.hit_row(), 1);
+
+        *f.zs.borrow_mut() = vec![None, None, Some(1)];
+        super::refill_virtualizer(f.host.backend(), &f.virt);
+        f.relayout();
+        assert_eq!(f.released.borrow().len(), 3, "every old row released");
+        assert_eq!(f.hit_row(), 2);
+        assert_eq!(f.paint_order(), [0, 1, 2]);
+
+        *f.zs.borrow_mut() = vec![Some(4), None, None];
+        super::refill_virtualizer(f.host.backend(), &f.virt);
+        f.relayout();
+        assert_eq!(f.hit_row(), 0);
     }
 }

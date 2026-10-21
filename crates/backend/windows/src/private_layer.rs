@@ -626,14 +626,17 @@ unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
             if routed(root, || view_input::wheel(&cell, x, y, units, horizontal, mods)) {
                 return LRESULT(0);
             }
-            if !horizontal {
-                let scroll_px = -units * view_input::WHEEL_PX_PER_UNIT;
-                routed(root, || {
-                    if let Ok(mut b) = cell.try_borrow_mut() {
-                        b.wheel_scroll(x, y, scroll_px);
+            // Vertical: delta > 0 is wheel-up (content up), so negate.
+            // Horizontal: delta > 0 is tilt-right (content right).
+            routed(root, || {
+                if let Ok(mut b) = cell.try_borrow_mut() {
+                    if horizontal {
+                        b.wheel_scroll_horizontal(x, y, units * view_input::WHEEL_PX_PER_UNIT);
+                    } else {
+                        b.wheel_scroll(x, y, -units * view_input::WHEEL_PX_PER_UNIT);
                     }
-                });
-            }
+                }
+            });
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),

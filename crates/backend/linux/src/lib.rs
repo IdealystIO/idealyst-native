@@ -276,13 +276,24 @@ struct NodeState {
     kind: NodeKind,
     /// Taffy frame `(x, y, w, h)` in parent-local px, filled by `finish`.
     frame: (f32, f32, f32, f32),
+    /// Offset added to this node's Taffy origin whenever `frame` is written.
+    /// Non-zero only on a detached subtree root that a container places
+    /// itself (a virtualizer row's slot, see [`LinuxBackend::place_detached_root`]):
+    /// Taffy frames such a root at `(0, 0)`, and since a `GtkFixed` parent
+    /// takes its child's position from the child transform `frame` feeds,
+    /// every layout pass would otherwise move the row back to the origin.
+    detached_origin: (f32, f32),
     transform: NodeTransform,
     static_opacity: f32,
     anim_opacity: Option<f32>,
-    /// Sibling stacking scalar (animated `ZIndex`). Higher paints later.
+    /// Sibling stacking value: `StyleRules::stacking_z()` on every style
+    /// application, animated `ZIndex` in the same units. Siblings stack in
+    /// `z_paint_order` — see [`LinuxBackend::reorder_siblings`].
     z: f32,
-    /// Sibling insertion order — tiebreak for equal `z`.
-    order: u64,
+    /// The highest `z` among this node's children as of the last restack
+    /// or append (an upper bound once a child leaves): a child appended at
+    /// or above it already belongs last, so `insert` restacks only below it.
+    child_z_max: f32,
     /// Resolved text style (text nodes only).
     text: text::TextPaint,
     /// The inheritable properties this node DECLARES — the cascade source for
@@ -655,9 +666,10 @@ struct StickyEntry {
     /// parent=None`). Resolved on the first
     /// [`LinuxBackend::update_sticky`] after the tree is assembled.
     scroll: Option<u64>,
-    /// `top` threshold in px — how far below the container's top edge it
-    /// parks once engaged.
-    top: f32,
+    /// Per-edge pin thresholds in px (`top` / `left` / `bottom` /
+    /// `right`); an unset edge doesn't pin. Resolved once per restyle
+    /// by the shared `StickyInsets::from_style`.
+    insets: runtime_shared::sticky::StickyInsets,
 }
 
 pub struct LinuxBackend {
@@ -666,10 +678,10 @@ pub struct LinuxBackend {
     /// re-point it. See [`install_canvas_background`] / `set_app_background`.
     canvas_provider: Option<gtk4::CssProvider>,
     next_id: u64,
-    next_order: u64,
     pub(crate) layout: LayoutTree,
     nodes: HashMap<u64, NodeState>,
-    /// parent id → child ids in insertion order (for z-index reorder).
+    /// parent id → child ids in tree (append) order — the tie order for
+    /// z restacking.
     children: HashMap<u64, Vec<u64>>,
     /// child id → parent id (for locating siblings on z change).
     parent_of: HashMap<u64, u64>,
@@ -802,7 +814,6 @@ impl LinuxBackend {
             host_window,
             canvas_provider: None,
             next_id: 1,
-            next_order: 0,
             layout: LayoutTree::new(),
             nodes: HashMap::new(),
             children: HashMap::new(),
@@ -945,6 +956,12 @@ impl LinuxBackend {
             .iter()
             .find(|(_, st)| st.widget.as_ptr() == widget.as_ptr())
             .map(|(id, _)| *id)
+    }
+
+    /// A node's sibling stacking value (`NodeState::z`); `0` for an
+    /// unknown node. The virtualizer reads a freshly mounted row's z here.
+    pub(crate) fn node_z(&self, id: u64) -> f32 {
+        self.nodes.get(&id).map_or(0.0, |s| s.z)
     }
 
     /// A node's current Taffy frame `(x, y, w, h)`, for handle `frame()`
@@ -1301,7 +1318,8 @@ impl LinuxBackend {
                 (self.layout.frame_of(st.layout), st.widget.clone())
             };
             if let Some(st) = self.nodes.get_mut(id) {
-                st.frame = (frame.x, frame.y, frame.width, frame.height);
+                let (ox, oy) = st.detached_origin;
+                st.frame = (frame.x + ox, frame.y + oy, frame.width, frame.height);
             }
             // Clamp at 0: Taffy can hand back a negative box when padding
             // or borders exceed a definite size, and GTK rejects negative
@@ -1342,6 +1360,23 @@ impl LinuxBackend {
         // stale — recompute them against the new geometry. Quiet: the
         // allocation this pass is part of consumes the transforms.
         self.update_sticky(None, true);
+    }
+
+    /// Place a detached subtree root at `(x, y)` in its parent's space and
+    /// rewrite its child transform (position composed with the node's own
+    /// transform). Taffy frames a detached root at `(0, 0)`, its own
+    /// origin; for a `GtkFixed` parent (a virtualizer's document) the child
+    /// transform IS the position, so the slot is recorded as the node's
+    /// `detached_origin`, which every later frame write — this backend's
+    /// `run_layout` walks all nodes, detached ones included — adds back.
+    pub(crate) fn place_detached_root(&mut self, id: u64, x: f32, y: f32) {
+        if let Some(st) = self.nodes.get_mut(&id) {
+            let (ox, oy) = st.detached_origin;
+            st.detached_origin = (x, y);
+            st.frame.0 += x - ox;
+            st.frame.1 += y - oy;
+        }
+        self.rebuild_transform(id, false);
     }
 
     /// Lay out a DETACHED subtree rooted at `id` against `width` ×
@@ -1416,7 +1451,8 @@ impl LinuxBackend {
                 _ => (frame.x, frame.y),
             };
             if let Some(st) = self.nodes.get_mut(nid) {
-                st.frame = (fx, fy, frame.width, frame.height);
+                let (ox, oy) = st.detached_origin;
+                st.frame = (fx + ox, fy + oy, frame.width, frame.height);
             }
             let (w, h) = (
                 (frame.width.round() as i32).max(0),
@@ -1559,13 +1595,14 @@ impl LinuxBackend {
                 layout,
                 kind,
                 frame: (0.0, 0.0, 0.0, 0.0),
+                detached_origin: (0.0, 0.0),
                 transform: NodeTransform::default(),
                 static_opacity: 1.0,
                 anim_opacity: None,
                 text_box: view::PaintModel::default(),
                 own_text: OwnText::default(),
                 z: 0.0,
-                order: 0,
+                child_z_max: 0.0,
                 text: text::TextPaint::default(),
             },
         );
@@ -1596,20 +1633,22 @@ impl LinuxBackend {
         }
     }
 
-    /// A node's Y in its scroll container's *content* coordinate space —
-    /// the sum of the Taffy frame offsets from the node up to (but not
-    /// including) `scroll`. This is the position the pin is measured
+    /// A node's `(x, y)` in its scroll container's *content* coordinate
+    /// space — the sum of the Taffy frame offsets from the node up to (but
+    /// not including) `scroll`. This is the position the pin is measured
     /// against, and it's why the pin has to be recomputed after every
-    /// layout pass as well as on scroll: reflow moves it.
-    fn content_y_within(&self, id: u64, scroll: u64) -> Option<f32> {
-        let mut y = 0.0;
+    /// layout pass as well as on scroll: reflow moves it. Taffy frames,
+    /// never the live transforms: the pin itself moves those.
+    fn content_pos_within(&self, id: u64, scroll: u64) -> Option<(f32, f32)> {
+        let (mut x, mut y) = (0.0, 0.0);
         let mut cur = id;
         loop {
             let st = self.nodes.get(&cur)?;
+            x += st.frame.0;
             y += st.frame.1;
             cur = *self.parent_of.get(&cur)?;
             if cur == scroll {
-                return Some(y);
+                return Some((x, y));
             }
         }
     }
@@ -1640,29 +1679,36 @@ impl LinuxBackend {
             }
         }
 
-        let entries: Vec<(u64, u64, f32)> = self
+        let entries: Vec<(u64, u64, runtime_shared::sticky::StickyInsets)> = self
             .sticky_nodes
             .iter()
-            .filter_map(|(id, e)| e.scroll.map(|s| (*id, s, e.top)))
+            .filter_map(|(id, e)| e.scroll.map(|s| (*id, s, e.insets)))
             .filter(|(_, scroll, _)| only.is_none_or(|want| *scroll == want))
             .collect();
 
-        for (id, scroll, top) in entries {
-            let Some(offset) = self
-                .nodes
-                .get(&scroll)
-                .and_then(|s| s.widget.downcast_ref::<gtk4::ScrolledWindow>())
-                .map(|sw| sw.vadjustment().value() as f32)
-            else {
+        for (id, scroll, insets) in entries {
+            // The scrollport is the scroll node's own Taffy box (what
+            // trailing pins measure against); the offsets are the live
+            // adjustment values on both axes.
+            let Some((offset, viewport)) = self.nodes.get(&scroll).and_then(|s| {
+                let sw = s.widget.downcast_ref::<gtk4::ScrolledWindow>()?;
+                Some((
+                    (sw.hadjustment().value() as f32, sw.vadjustment().value() as f32),
+                    (s.frame.2, s.frame.3),
+                ))
+            }) else {
                 continue;
             };
-            let Some(content_y) = self.content_y_within(id, scroll) else {
+            let Some(natural) = self.content_pos_within(id, scroll) else {
                 continue;
             };
-            let dy = sticky::pin_offset(content_y, offset, top);
+            let Some(size) = self.nodes.get(&id).map(|st| (st.frame.2, st.frame.3)) else {
+                continue;
+            };
+            let pin = runtime_shared::sticky::translate(insets, natural, size, offset, viewport);
             let changed = match self.nodes.get_mut(&id) {
-                Some(st) if st.transform.sticky_dy != dy => {
-                    st.transform.sticky_dy = dy;
+                Some(st) if st.transform.sticky != pin => {
+                    st.transform.sticky = pin;
                     true
                 }
                 _ => false,
@@ -2201,29 +2247,35 @@ impl LinuxBackend {
         }
     }
 
-    /// Re-link a parent's children in `(z, insertion-order)` order so
-    /// GTK paints them in the animated z-index order (planet fly-over).
-    fn reorder_siblings(&self, parent_id: u64) {
+    /// Restack a parent's children in `runtime_shared::style::z_paint_order`
+    /// (ascending `z`, ties in tree order): the GTK sibling list AND, for an
+    /// `IdealystView`, its paint Vec. Moving the widgets themselves is what
+    /// keeps hit-testing on paint order — GTK picks children
+    /// last-sibling-first, so reordering only the paint Vec would draw a
+    /// raised sibling on top while the later sibling under it still took
+    /// the click. A scroll view's children live in its `GtkFixed`
+    /// document, which paints and picks in sibling order.
+    fn reorder_siblings(&mut self, parent_id: u64) {
         let Some(ids) = self.children.get(&parent_id) else {
             return;
         };
-        let mut ordered: Vec<u64> = ids.clone();
-        ordered.sort_by(|a, b| {
-            let (za, oa) = self.nodes.get(a).map(|s| (s.z, s.order)).unwrap_or((0.0, 0));
-            let (zb, ob) = self.nodes.get(b).map(|s| (s.z, s.order)).unwrap_or((0.0, 0));
-            za.partial_cmp(&zb)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(oa.cmp(&ob))
-        });
-        let Some(parent_w) = self.nodes.get(&parent_id).map(|s| s.widget.clone()) else {
+        let zs: Vec<f32> = ids.iter().map(|id| self.nodes.get(id).map_or(0.0, |s| s.z)).collect();
+        let max = zs.iter().copied().filter(|z| !z.is_nan()).fold(0.0, f32::max);
+        let order: Vec<gtk4::Widget> = runtime_shared::style::z_paint_order(&zs)
+            .into_iter()
+            .filter_map(|i| self.nodes.get(&ids[i]).map(|s| s.widget.clone()))
+            .collect();
+        let Some(parent) = self.nodes.get_mut(&parent_id) else {
             return;
         };
+        parent.child_z_max = max;
+        let parent_w = parent.widget.clone();
         if let Some(iv) = parent_w.downcast_ref::<IdealystView>() {
-            let order: Vec<gtk4::Widget> = ordered
-                .iter()
-                .filter_map(|id| self.nodes.get(id).map(|s| s.widget.clone()))
-                .collect();
             iv.reorder_children(&order);
+        } else if let Some(scrolled) = parent_w.downcast_ref::<gtk4::ScrolledWindow>() {
+            if let Some(inner) = scroll_document(scrolled) {
+                view::restack_widgets(inner.upcast_ref(), &order);
+            }
         }
     }
 
@@ -2384,12 +2436,7 @@ impl LinuxBackend {
         };
         self.layout.add_child(parent_layout, child_layout);
 
-        // Track sibling order + parent linkage for z-index reordering.
-        let order = self.next_order;
-        self.next_order += 1;
-        if let Some(cs) = self.nodes.get_mut(&child.id) {
-            cs.order = order;
-        }
+        // Track tree order + parent linkage for z restacking.
         self.children.entry(parent.id).or_default().push(child.id);
         self.parent_of.insert(child.id, parent.id);
         // A native control styled before it had ancestors resolved its
@@ -2425,9 +2472,29 @@ impl LinuxBackend {
                 );
             }
         }
+
+        // Appended last = stacked last, which is right unless an earlier
+        // sibling's z is above this child's (`z_paint_order` puts a later
+        // sibling on top only at equal or higher z). `apply_style` usually
+        // runs before `insert`, so a raised child's z is already set here.
+        let child_z = self.nodes.get(&child.id).map_or(0.0, |s| s.z);
+        let mut restack = false;
+        if let Some(ps) = self.nodes.get_mut(&parent.id) {
+            if child_z < ps.child_z_max {
+                restack = true;
+            } else {
+                ps.child_z_max = child_z;
+            }
+        }
+        if restack {
+            self.reorder_siblings(parent.id);
+        }
     }
 
     fn clear_children(&mut self, node: &LinuxNode) {
+        if let Some(st) = self.nodes.get_mut(&node.id) {
+            st.child_z_max = 0.0;
+        }
         if let Some(iv) = node.widget.downcast_ref::<IdealystView>() {
             iv.remove_all_children();
         } else if let Some(scrolled) = node.widget.downcast_ref::<gtk4::ScrolledWindow>() {
@@ -2558,9 +2625,30 @@ impl LinuxBackend {
                 id,
                 StickyEntry {
                     scroll: None,
-                    top: len_px(&style.top),
+                    insets: runtime_shared::sticky::StickyInsets::from_style(style),
                 },
             );
+        }
+
+        // 1c. Sibling stacking. Written on every application so a style
+        // without `z_index` restores the default; sticky's raise comes from
+        // the same `stacking_z()`. A node not inserted yet is placed by
+        // `insert`. A virtualizer row root has no tracked parent; its rows
+        // restack inside the virtualizer (see `virtualizer.rs`).
+        let z = style.stacking_z() as f32;
+        let mut restack = None;
+        let mut z_changed = false;
+        if let Some(st) = self.nodes.get_mut(&id) {
+            if st.z != z {
+                st.z = z;
+                z_changed = true;
+                restack = self.parent_of.get(&id).copied();
+            }
+        }
+        if let Some(pid) = restack {
+            self.reorder_siblings(pid);
+        } else if z_changed {
+            virtualizer::cell_z_changed(id, z);
         }
 
         // 2. Opacity (all kinds) + static transform (all kinds).
@@ -2755,6 +2843,7 @@ impl LinuxBackend {
     fn set_animated_f32(&mut self, node: &LinuxNode, prop: AnimProp, value: f32) {
         let id = node.id;
         let mut reorder_parent: Option<u64> = None;
+        let mut row_z: Option<f32> = None;
         if let Some(st) = self.nodes.get_mut(&id) {
             match prop {
                 AnimProp::Opacity => {
@@ -2772,6 +2861,11 @@ impl LinuxBackend {
                     if st.z != value {
                         st.z = value;
                         reorder_parent = self.parent_of.get(&id).copied();
+                        // A virtualizer row root has no tracked parent; its
+                        // rows restack inside the virtualizer.
+                        if reorder_parent.is_none() {
+                            row_z = Some(value);
+                        }
                     }
                 }
                 // MaxHeight would drive a Taffy reflow; welcome doesn't
@@ -2779,7 +2873,9 @@ impl LinuxBackend {
                 _ => return,
             }
         }
-        if let Some(pid) = reorder_parent {
+        if let Some(z) = row_z {
+            virtualizer::cell_z_changed(id, z);
+        } else if let Some(pid) = reorder_parent {
             self.reorder_siblings(pid);
         } else {
             self.rebuild_transform(id, false);
@@ -3519,16 +3615,21 @@ impl LinuxBackend {
 
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> LinuxNode {
         let scrolled = gtk4::ScrolledWindow::new();
-        if horizontal {
-            scrolled.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Never);
-        } else {
-            scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-        }
+        // `Automatic` on each axis that scrolls (a scrollbar only once the
+        // content overflows), `Never` on a fixed one — `Both` pans freely.
+        let policy = |scrolls: bool| {
+            if scrolls {
+                gtk4::PolicyType::Automatic
+            } else {
+                gtk4::PolicyType::Never
+            }
+        };
+        scrolled.set_policy(policy(axis.scrolls_x()), policy(axis.scrolls_y()));
         let inner = gtk4::Fixed::new();
         scrolled.set_child(Some(&inner));
 
@@ -3572,16 +3673,17 @@ impl LinuxBackend {
         let node = self.wrap(scrolled.clone().upcast::<gtk4::Widget>(), NodeKind::Other);
 
         // Drive `position: sticky` from this container's own scroll
-        // offset. Separate from the `on_scroll` prop wiring above because
-        // sticky must work whether or not the author asked for scroll
-        // callbacks. `value-changed` fires only when the offset actually
-        // moves, so this costs nothing while the view is still — the same
-        // event-driven model as the macOS/Android backends (no vsync
-        // polling).
-        {
+        // offsets — BOTH adjustments, since a sticky child pins on either
+        // axis (a frozen column rides `hadjustment`). Separate from the
+        // `on_scroll` prop wiring above because sticky must work whether
+        // or not the author asked for scroll callbacks. `value-changed`
+        // fires only when the offset actually moves, so this costs nothing
+        // while the view is still — the same event-driven model as the
+        // macOS/Android backends (no vsync polling).
+        for adj in [scrolled.hadjustment(), scrolled.vadjustment()] {
             let me = self.self_ref();
             let sticky_id = node.id;
-            scrolled.vadjustment().connect_value_changed(move |_| {
+            adj.connect_value_changed(move |_| {
                 if let Some(b) = me.upgrade() {
                     if let Ok(mut b) = b.try_borrow_mut() {
                         b.update_sticky(Some(sticky_id), false);
@@ -3596,14 +3698,48 @@ impl LinuxBackend {
         // without this the scroll view grows to its full content height
         // and has nothing left to scroll. The website's page was a
         // 3437px-tall `GtkScrolledWindow` inside a 712px slot: clipped,
-        // and completely unscrollable. iOS/Android/macOS/terminal all
-        // call this (see `LayoutTree::set_overflow_scroll`); GTK was the
-        // odd one out. `set_style` clones the existing Taffy style and
-        // never touches `overflow`, so later restyles preserve it.
+        // and completely unscrollable. Every native backend makes this
+        // call (see `LayoutTree::set_overflow_scroll_axis`). `set_style`
+        // clones the existing Taffy style and never touches `overflow`,
+        // so later restyles preserve it.
         if let Some(l) = self.nodes.get(&node.id).map(|s| s.layout) {
-            self.layout.set_overflow_scroll(l, horizontal);
+            self.layout.set_overflow_scroll_axis(l, axis);
         }
         node
+    }
+
+    /// `ScrollOps::observe_scroll_end`: fire `on_end` once each time the
+    /// scroller arrives within `threshold` px of the end of the axis it is
+    /// told to watch (`horizontal` — the framework passes
+    /// `ScrollAxis::end_axis_is_horizontal`, so a `Both` scroller's end is
+    /// its bottom). The arm / re-arm rule is the shared `EndReach`.
+    ///
+    /// Sampled on `value-changed` (the reader scrolled) AND `changed` (the
+    /// range moved: a page appended grows `upper`, which is what re-arms
+    /// the watcher for the next arrival). The callback is deferred to an
+    /// idle for the same reason `on_scroll` is: GTK emits both signals from
+    /// inside allocation, and an author handler that writes a signal there
+    /// re-enters the reactive runtime mid-update.
+    fn observe_scroll_end(&mut self, node: &LinuxNode, horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
+        let Some(sw) = node.widget.downcast_ref::<gtk4::ScrolledWindow>() else {
+            return;
+        };
+        let adj = if horizontal { sw.hadjustment() } else { sw.vadjustment() };
+        let reach = Rc::new(std::cell::RefCell::new(runtime_shared::primitives::scroll_view::EndReach::new(threshold)));
+        let sample = move |adj: &gtk4::Adjustment| {
+            let arrived = reach.borrow_mut().update(
+                (adj.value() - adj.lower()) as f32,
+                adj.page_size() as f32,
+                (adj.upper() - adj.lower()) as f32,
+            );
+            if arrived {
+                let f = on_end.clone();
+                gtk4::glib::source::idle_add_local_once(move || f());
+            }
+        };
+        let on_changed = sample.clone();
+        adj.connect_value_changed(sample);
+        adj.connect_changed(on_changed);
     }
 
     fn create_link(
@@ -4166,7 +4302,7 @@ mod layout_tests {
         // and register a pin. Nothing in the GTK backend handled
         // `Position` at all, so a sticky table-of-contents just scrolled
         // away with the content.
-        let mut scroll = backend.create_scroll_view(false, None, &a11y);
+        let mut scroll = backend.create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y);
         let mut row = backend.create_view(&a11y);
         let toc = backend.create_view(&a11y);
         backend.insert(&mut scroll, row.clone());
@@ -4183,7 +4319,7 @@ mod layout_tests {
             .get(&toc.id)
             .copied()
             .expect("a sticky node must register");
-        assert_eq!(entry.top, 16.0, "must carry the `top` threshold");
+        assert_eq!(entry.insets.top, Some(16.0), "must carry the `top` threshold");
         // Resolution is deliberately deferred: the vocabulary styles a node
         // BEFORE inserting it, so at apply_style time it has no ancestry
         // (this is why the TOC never pinned — it registered against
@@ -4227,8 +4363,8 @@ mod layout_tests {
         adj.set_value(0.0);
         backend.update_sticky(None, true);
         assert_eq!(
-            backend.nodes.get(&toc.id).unwrap().transform.sticky_dy,
-            0.0,
+            backend.nodes.get(&toc.id).unwrap().transform.sticky,
+            (0.0, 0.0),
             "unscrolled: the node must ride the content",
         );
 
@@ -4237,10 +4373,145 @@ mod layout_tests {
         adj.set_value(400.0);
         backend.update_sticky(None, true);
         assert_eq!(
-            backend.nodes.get(&toc.id).unwrap().transform.sticky_dy,
-            266.0,
+            backend.nodes.get(&toc.id).unwrap().transform.sticky,
+            (0.0, 266.0),
             "scrolled past: the node must pin, not scroll away",
         );
+
+        // --- 6c. Two-axis scrolling and four-edge sticky. A `Both`
+        // scroller must pan on both axes and report both offsets; a
+        // `top`+`left` sticky child pins on BOTH axes inside it; a `left`
+        // sticky pins in a horizontal scroller and a `right` one parks at
+        // the scrollport's far edge. The pin used to read `top` alone and
+        // listen to the vadjustment alone, so a frozen table column
+        // scrolled away with the content. Driven through
+        // `ScrollOps::set_node_scroll`, which must re-pin itself: its
+        // `value-changed` hook can't re-borrow the backend the caller holds.
+        {
+            use runtime_vocabulary::caps::ScrollOps;
+            let px = |v: f32| Some(runtime_shared::Tokenized::Literal(runtime_shared::Length::Px(v)));
+            let sw_of = |b: &crate::LinuxBackend, id: u64| {
+                b.nodes.get(&id).unwrap().widget.downcast_ref::<gtk4::ScrolledWindow>().unwrap().clone()
+            };
+            let pump = || while gtk4::glib::MainContext::default().iteration(false) {};
+
+            let seen = std::rc::Rc::new(std::cell::Cell::new((-1.0_f32, -1.0_f32)));
+            let seen_w = seen.clone();
+            let mut both = backend.create_scroll_view(
+                runtime_shared::ScrollAxis::Both,
+                Some(std::rc::Rc::new(move |x, y| seen_w.set((x, y)))),
+                &a11y,
+            );
+            let sw = sw_of(&backend, both.id);
+            assert_eq!(
+                sw.policy(),
+                (gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic),
+                "a Both scroller must scroll on both axes",
+            );
+            let mut grid = backend.create_view(&a11y);
+            let cell = backend.create_view(&a11y);
+            backend.insert(&mut both, grid.clone());
+            backend.insert(&mut grid, cell.clone());
+            backend.apply_style(
+                &cell,
+                &std::rc::Rc::new(StyleRules {
+                    position: Some(runtime_shared::Position::Sticky),
+                    top: px(8.0),
+                    left: px(4.0),
+                    ..StyleRules::default()
+                }),
+            );
+            backend.nodes.get_mut(&both.id).unwrap().frame = (0.0, 0.0, 600.0, 800.0);
+            backend.nodes.get_mut(&grid.id).unwrap().frame = (0.0, 0.0, 2000.0, 3000.0);
+            backend.nodes.get_mut(&cell.id).unwrap().frame = (50.0, 60.0, 100.0, 40.0);
+            for adj in [sw.hadjustment(), sw.vadjustment()] {
+                adj.set_upper(5000.0);
+            }
+            backend.update_sticky(None, true);
+            assert_eq!(backend.nodes.get(&cell.id).unwrap().transform.sticky, (0.0, 0.0));
+
+            ScrollOps::set_node_scroll(&mut backend, &both, 300.0, 500.0);
+            assert_eq!(ScrollOps::node_scroll(&backend, &both), (300.0, 500.0), "both offsets must move");
+            // Natural (50, 60) pinned at (300 + 4, 500 + 8).
+            assert_eq!(
+                backend.nodes.get(&cell.id).unwrap().transform.sticky,
+                (254.0, 448.0),
+                "a top+left sticky must pin on both axes inside a Both scroller",
+            );
+            pump();
+            assert_eq!(seen.get(), (300.0, 500.0), "on_scroll must report both offsets");
+
+            ScrollOps::set_node_scroll(&mut backend, &both, 0.0, 0.0);
+            assert_eq!(
+                backend.nodes.get(&cell.id).unwrap().transform.sticky,
+                (0.0, 0.0),
+                "scrolling back un-pins on both axes",
+            );
+
+            // `on_end_reached` on a Both scroller watches the axis it is
+            // told (the bottom): reaching the right edge must not fire it.
+            let ends = std::rc::Rc::new(std::cell::Cell::new(0));
+            let ends_w = ends.clone();
+            backend.observe_scroll_end(
+                &both,
+                runtime_shared::ScrollAxis::Both.end_axis_is_horizontal(),
+                20.0,
+                std::rc::Rc::new(move || ends_w.set(ends_w.get() + 1)),
+            );
+            sw.hadjustment().set_page_size(600.0);
+            sw.vadjustment().set_page_size(800.0);
+            ScrollOps::set_node_scroll(&mut backend, &both, 4400.0, 0.0);
+            pump();
+            assert_eq!(ends.get(), 0, "the X end is not the end a Both scroller reports");
+            ScrollOps::set_node_scroll(&mut backend, &both, 4400.0, 4190.0);
+            pump();
+            assert_eq!(ends.get(), 1, "arriving within the threshold of the bottom fires once");
+
+            // A frozen column in a horizontal scroller: `left` pins, the
+            // vertical axis stays free (no `top` default once an edge is
+            // set), and a `right` column parks at the scrollport's far edge
+            // until the content scrolls it into natural view.
+            let mut h = backend.create_scroll_view(runtime_shared::ScrollAxis::Horizontal, None, &a11y);
+            let hsw = sw_of(&backend, h.id);
+            assert_eq!(hsw.policy(), (gtk4::PolicyType::Automatic, gtk4::PolicyType::Never));
+            let mut row = backend.create_view(&a11y);
+            let lead = backend.create_view(&a11y);
+            let trail = backend.create_view(&a11y);
+            backend.insert(&mut h, row.clone());
+            backend.insert(&mut row, lead.clone());
+            backend.insert(&mut row, trail.clone());
+            let sticky_on = |left, right| {
+                std::rc::Rc::new(StyleRules {
+                    position: Some(runtime_shared::Position::Sticky),
+                    left,
+                    right,
+                    ..StyleRules::default()
+                })
+            };
+            backend.apply_style(&lead, &sticky_on(px(0.0), None));
+            backend.apply_style(&trail, &sticky_on(None, px(0.0)));
+            backend.nodes.get_mut(&h.id).unwrap().frame = (0.0, 0.0, 600.0, 200.0);
+            backend.nodes.get_mut(&row.id).unwrap().frame = (0.0, 0.0, 2000.0, 200.0);
+            backend.nodes.get_mut(&lead.id).unwrap().frame = (120.0, 0.0, 80.0, 200.0);
+            backend.nodes.get_mut(&trail.id).unwrap().frame = (900.0, 0.0, 100.0, 200.0);
+            hsw.hadjustment().set_upper(5000.0);
+            backend.update_sticky(None, true);
+            assert_eq!(backend.nodes.get(&lead.id).unwrap().transform.sticky, (0.0, 0.0));
+            // Far edge 1000 vs visible 600: parked at x = 600 - 100 = 500.
+            assert_eq!(backend.nodes.get(&trail.id).unwrap().transform.sticky, (-400.0, 0.0));
+
+            ScrollOps::set_node_scroll(&mut backend, &h, 400.0, 0.0);
+            assert_eq!(
+                backend.nodes.get(&lead.id).unwrap().transform.sticky,
+                (280.0, 0.0),
+                "a left sticky must pin at the scrollport's left edge",
+            );
+            assert_eq!(
+                backend.nodes.get(&trail.id).unwrap().transform.sticky,
+                (0.0, 0.0),
+                "once naturally visible the right column rides the content",
+            );
+        }
 
         // --- 6b. Padding on a LEAF must inset its content. Taffy puts
         // padding in the node's box, but a GtkLabel paints across its

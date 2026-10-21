@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
-use runtime_shared::primitives::scroll_view::ScrollViewHandle;
+use runtime_shared::primitives::scroll_view::{ScrollAxis, ScrollViewHandle};
 use runtime_shared::{
     FileDropHandler, HoverHandler, PressableHandle, SafeAreaSides, TouchHandler, ViewHandle,
     WheelHandler,
@@ -47,6 +47,9 @@ pub struct PressablePrim {
     /// `robot`-feature registration in the mount handler.
     pub test_id: Option<&'static str>,
     pub on_press: Rc<dyn Fn()>,
+    /// Pointer-enter/leave notifications (`true` on enter), installed
+    /// through the same `InputOps::install_hover_handler` as a view's.
+    pub on_hover: Option<HoverHandler>,
     pub disabled: Option<Value<bool>>,
     pub preserves_focus: bool,
     pub style: Option<StyleProp>,
@@ -63,10 +66,14 @@ pub struct ScrollViewPrim {
     /// builder setter compiles in every build; read only by the
     /// `robot`-feature registration in the mount handler.
     pub test_id: Option<&'static str>,
-    pub horizontal: bool,
+    /// Which axes scroll. `on_scroll` reports both offsets on every
+    /// axis; a fixed axis's offset stays 0.
+    pub axis: ScrollAxis,
     pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// Called when the reader arrives within `end_reached_threshold` of
-    /// the end of the scroll axis — once per arrival, not per event.
+    /// the end of the scroll axis — once per arrival, not per event. A
+    /// [`ScrollAxis::Both`] scroller's end is its bottom
+    /// ([`ScrollAxis::end_axis_is_horizontal`]).
     ///
     /// This exists because `on_scroll` cannot answer it. An offset says
     /// where the reader is, and "how much is left" needs the viewport

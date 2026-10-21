@@ -48,7 +48,7 @@ fn is_shown_and_scroll_follow_gtk() {
     backend.borrow_mut().apply_style(&child, &sized(40.0, 40.0));
     backend.borrow_mut().insert(&mut parent, child.clone());
     backend.borrow_mut().insert(&mut root, parent.clone());
-    let mut scroller = backend.borrow_mut().create_scroll_view(false, None, &a11y);
+    let mut scroller = backend.borrow_mut().create_scroll_view(runtime_shared::ScrollAxis::Vertical, None, &a11y);
     backend.borrow_mut().apply_style(&scroller, &sized(200.0, 100.0));
     let tall = backend.borrow_mut().create_view(&a11y);
     backend.borrow_mut().apply_style(&tall, &sized(200.0, 1000.0));

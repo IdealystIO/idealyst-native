@@ -64,7 +64,11 @@ Four primitives, each its own scene payload type on web:
 
 - [`Table`] — the outer container (`<table>` on web). Body rows are
   direct children of the table (the browser treats them as one implicit
-  body). `scroll_x` wraps it in a horizontal scroller; `header_slot` /
+  body). `scroll_x` wraps it in a horizontal scroller; `scroll_y` makes
+  the rows scroll inside the table's own height (bound it with
+  `max_height` / `height` on the table's style), and with both the table
+  owns ONE two-axis scroller, so a header styled `position: Sticky` +
+  `top: 0` pins while frozen columns pin sideways. `header_slot` /
   `footer_slot` draw content inside the styled surface, above and below
   the rows and OUTSIDE that scroller.
 - [`TableRow`] — `<tr>` on web; on native a marker the table dissolves
@@ -102,7 +106,7 @@ Put borders on the **cell**, not on an inner wrapper view —
 into one continuous boundary.
 
 A style on the table itself goes on a surface view wrapped around the
-`<table>` (around the scroller in `scroll_x` mode), never on the
+`<table>` (around the scroller in `scroll_x` / `scroll_y` mode), never on the
 `<table>` node. Browsers ignore `border-radius` on a table with collapsed
 borders, so a rounded frame on the `<table>` drew square corners. Native
 styles an outer view around its grid, so the frame lands on the same node

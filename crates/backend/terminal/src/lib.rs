@@ -28,6 +28,7 @@ mod handles;
 mod node;
 mod pointer;
 mod render;
+mod scroll;
 
 // Post-dispatch hook slot (the fire sites live in host-terminal's
 // scheduler); a no-op single Cell read unless `newcore::start`
@@ -350,9 +351,10 @@ impl TerminalBackend {
                 toggle_value: false,
                 disabled: false,
                 anim_phase: 0.0,
-                z_index: 0.0,
+                static_z: 0.0,
+                animated_z: None,
                 input: None,
-                horizontal: false,
+                scroll_axis: runtime_shared::ScrollAxis::Vertical,
                 scroll_x: 0.0,
                 scroll_y: 0.0,
                 on_scroll: None,
@@ -396,7 +398,7 @@ impl TerminalBackend {
     pub fn dispatch_click(&mut self, col: u16, row: u16) -> ClickOutcome {
         let Some(root) = self.find_root() else { return ClickOutcome::Unhandled };
         let mut hit: Option<HitTarget> = None;
-        self.hit_test_walk(root, 0.0, 0.0, col as f32, row as f32, &mut hit);
+        self.hit_test_walk(root, 0.0, 0.0, None, col as f32, row as f32, &mut hit);
         match hit {
             Some(HitTarget::Handler(h)) => {
                 // Clicking a button blurs any focused input — same
@@ -446,11 +448,13 @@ impl TerminalBackend {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn hit_test_walk(
         &self,
         id: u32,
         parent_x: f32,
         parent_y: f32,
+        scroll: Option<scroll::EnclosingScroll>,
         col: f32,
         row: f32,
         out: &mut Option<HitTarget>,
@@ -472,9 +476,11 @@ impl TerminalBackend {
             .map(|l| render::resolve_length_against(l, frame.height))
             .unwrap_or(0.0);
         // Convert frame from layout px to cell space (parent_x/y are
-        // already in cells, click coords are in cells).
-        let x = parent_x + (frame.x + data.translate_x + static_tx) / cw;
-        let y = parent_y + (frame.y + data.translate_y + static_ty) / ch;
+        // already in cells, click coords are in cells). A sticky node's
+        // pin shifts it exactly as the paint walk does.
+        let (pin_x, pin_y) = self.sticky_shift(data, scroll);
+        let x = parent_x + (frame.x + data.translate_x + static_tx) / cw + pin_x;
+        let y = parent_y + (frame.y + data.translate_y + static_ty) / ch + pin_y;
         let w = frame.width / cw;
         let h = frame.height / ch;
         // Snap to whole-cell coverage that EXACTLY mirrors the paint
@@ -520,6 +526,7 @@ impl TerminalBackend {
         };
         let next_parent_x = (x - child_off_x).floor();
         let next_parent_y = (y - child_off_y).floor();
+        let child_scroll = self.child_scroll_context(data, scroll);
         // Children paint on top of the parent; visually-topmost wins
         // the hit. Walk siblings highest-z first so a planet-in-front
         // captures the click instead of a button behind it.
@@ -530,6 +537,7 @@ impl TerminalBackend {
                 child,
                 next_parent_x,
                 next_parent_y,
+                child_scroll,
                 col,
                 row,
                 out,
@@ -554,9 +562,10 @@ impl TerminalBackend {
     /// cells (positive = scroll content up = reveal content below);
     /// `delta_x` is the horizontal counterpart. Walks the rendered
     /// tree deepest-first and adjusts the innermost
-    /// [`NodeKind::ScrollView`] whose frame contains the point,
-    /// clamping its `scroll_x` / `scroll_y` against the laid-out
-    /// content size.
+    /// [`NodeKind::ScrollView`] whose frame contains the point: each
+    /// delta moves the offset of the axis it names when the scroller
+    /// scrolls that axis (`ScrollAxis::Both` takes both), clamped
+    /// against the laid-out content size.
     ///
     /// Returns `true` if a scroll view consumed the event. The host
     /// can use that to suppress fallback behavior (page-wide scroll
@@ -573,7 +582,7 @@ impl TerminalBackend {
     ) -> bool {
         let Some(root) = self.find_root() else { return false };
         let mut target: Option<u32> = None;
-        self.scroll_hit_walk(root, 0.0, 0.0, col as f32, row as f32, &mut target);
+        self.scroll_hit_walk(root, 0.0, 0.0, None, col as f32, row as f32, &mut target);
         let Some(id) = target else { return false };
         self.apply_scroll_delta(id, delta_x, delta_y);
         true
@@ -585,11 +594,13 @@ impl TerminalBackend {
     /// nested ones (e.g. a horizontal carousel inside a vertical
     /// page-scroll) resolve to the deepest match. Visually-topmost
     /// (highest z) wins, same posture as click hit-testing.
+    #[allow(clippy::too_many_arguments)]
     fn scroll_hit_walk(
         &self,
         id: u32,
         parent_x: f32,
         parent_y: f32,
+        scroll: Option<scroll::EnclosingScroll>,
         col: f32,
         row: f32,
         out: &mut Option<u32>,
@@ -607,8 +618,9 @@ impl TerminalBackend {
             .as_ref()
             .map(|l| render::resolve_length_against(l, frame.height))
             .unwrap_or(0.0);
-        let x = parent_x + (frame.x + data.translate_x + static_tx) / cw;
-        let y = parent_y + (frame.y + data.translate_y + static_ty) / ch;
+        let (pin_x, pin_y) = self.sticky_shift(data, scroll);
+        let x = parent_x + (frame.x + data.translate_x + static_tx) / cw + pin_x;
+        let y = parent_y + (frame.y + data.translate_y + static_ty) / ch + pin_y;
         let w = frame.width / cw;
         let h = frame.height / ch;
         let inside = col >= x && col < x + w && row >= y && row < y + h;
@@ -624,6 +636,7 @@ impl TerminalBackend {
         } else {
             (0.0, 0.0)
         };
+        let child_scroll = self.child_scroll_context(data, scroll);
         let mut ordered = self.children_in_z_order(&data.children);
         ordered.reverse();
         for child in ordered {
@@ -631,6 +644,7 @@ impl TerminalBackend {
                 child,
                 x - child_off_x,
                 y - child_off_y,
+                child_scroll,
                 col,
                 row,
                 out,
@@ -647,12 +661,12 @@ impl TerminalBackend {
         }
     }
 
-    /// Mutate the ScrollView's scroll offset, clamped against the
-    /// content bounds. Content size is the bounding extent of every
-    /// child's laid-out frame (Taffy sized them independent of the
-    /// scroll view's own bounded height); we subtract the viewport
-    /// to derive the maximum scroll. Negative clamping floors at 0
-    /// (can't scroll past the start).
+    /// Mutate the ScrollView's scroll offset on each axis it scrolls
+    /// (`delta_x` → `scroll_x`, `delta_y` → `scroll_y`; `Both` takes
+    /// both), each clamped to `[0, content - viewport]` on its own axis.
+    /// A non-scrolling axis stays at 0. Content size is
+    /// [`Self::scroll_content_cells`]. Fires `on_scroll` with both
+    /// offsets after the change.
     fn apply_scroll_delta(&mut self, id: u32, delta_x: f32, delta_y: f32) {
         let Some(data) = self.nodes.get(&id) else { return };
         if !matches!(data.kind, NodeKind::ScrollView) {
@@ -660,29 +674,17 @@ impl TerminalBackend {
         }
         let (cw, ch) = self.cell_size;
         let frame = self.layout.frame_of(data.layout);
-        let viewport_w = frame.width / cw;
-        let viewport_h = frame.height / ch;
-        // Sum child extents in cell space. Children's `frame.x/y` are
-        // relative to this scroll view, so the bottom-right corner of
-        // the union is just `max(child.x + child.w, child.y + child.h)`.
-        let mut content_w = 0.0f32;
-        let mut content_h = 0.0f32;
-        for cid in &data.children {
-            if let Some(c) = self.nodes.get(cid) {
-                let f = self.layout.frame_of(c.layout);
-                content_w = content_w.max((f.x + f.width) / cw);
-                content_h = content_h.max((f.y + f.height) / ch);
-            }
-        }
-        let max_x = (content_w - viewport_w).max(0.0);
-        let max_y = (content_h - viewport_h).max(0.0);
+        let (content_w, content_h) = self.scroll_content_cells(data);
+        let max_x = (content_w - frame.width / cw).max(0.0);
+        let max_y = (content_h - frame.height / ch).max(0.0);
         // Apply the clamped offset; capture the resulting values +
         // a clone of the callback so we can release the `&mut self`
         // borrow before invoking the user callback (which may
         // re-enter the backend through a Signal write).
         let (new_x, new_y, cb) = if let Some(d) = self.nodes.get_mut(&id) {
-            d.scroll_x = (d.scroll_x + delta_x).clamp(0.0, max_x);
-            d.scroll_y = (d.scroll_y + delta_y).clamp(0.0, max_y);
+            let axis = d.scroll_axis;
+            d.scroll_x = scroll::step_offset(axis.scrolls_x(), d.scroll_x, delta_x, max_x);
+            d.scroll_y = scroll::step_offset(axis.scrolls_y(), d.scroll_y, delta_y, max_y);
             (d.scroll_x, d.scroll_y, d.on_scroll.clone())
         } else {
             return;
@@ -2013,5 +2015,105 @@ mod user_activity_tests {
         let down = TerminalPointer::new(TerminalPointerKind::Down(MouseButton::Primary), 1, 1);
         assert!(TerminalBackend::dispatch_pointer_in(&backend, &down), "the listener's claim stands");
         assert_eq!(user_activity::count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod z_index_tests {
+    use super::*;
+    use runtime_shared::color::Rgba;
+    use runtime_scene::Host;
+    use runtime_shared::animation::AnimProp;
+    use runtime_shared::{accessibility::AccessibilityProps, Length, StyleRules, Tokenized};
+    use runtime_vocabulary::caps::{AnimationOps, LifecycleOps, PressableOps, StyleOps, ViewOps};
+    use std::cell::RefCell;
+
+    type Log = Rc<RefCell<Vec<&'static str>>>;
+    const RED: Rgba = Rgba { r: 255, g: 0, b: 0, a: 255 };
+    const BLUE: Rgba = Rgba { r: 0, g: 0, b: 255, a: 255 };
+
+    /// A 4×2-cell absolute box at the origin — two of these overlap.
+    fn boxed(bg: &str, z_index: Option<i32>) -> Rc<StyleRules> {
+        let px = |v| Some(Tokenized::Literal(Length::Px(v)));
+        Rc::new(StyleRules {
+            background: Some(Tokenized::Literal(bg.into())),
+            width: px(4.0),
+            height: px(2.0),
+            position: Some(runtime_shared::Position::Absolute),
+            top: px(0.0),
+            left: px(0.0),
+            z_index,
+            ..Default::default()
+        })
+    }
+
+    /// `red` first in tree order, `blue` second, overlapping exactly.
+    fn overlapping(red_z: Option<i32>) -> (TerminalBackend, TermNode, TermNode, Log) {
+        let mut be = TerminalBackend::new();
+        be.set_viewport(8, 4);
+        let a11y = AccessibilityProps::default();
+        let log: Log = Rc::new(RefCell::new(Vec::new()));
+        let mut root = be.create_view(&a11y);
+        be.apply_style(
+            &root,
+            &Rc::new(StyleRules {
+                width: Some(Tokenized::Literal(Length::Px(8.0))),
+                height: Some(Tokenized::Literal(Length::Px(4.0))),
+                ..Default::default()
+            }),
+        );
+        let l = log.clone();
+        let red = be.create_pressable(Rc::new(move || l.borrow_mut().push("red")), &a11y);
+        be.apply_style(&red, &boxed("rgb(255, 0, 0)", red_z));
+        let l = log.clone();
+        let blue = be.create_pressable(Rc::new(move || l.borrow_mut().push("blue")), &a11y);
+        be.apply_style(&blue, &boxed("rgb(0, 0, 255)", None));
+        be.insert(&mut root, red);
+        be.insert(&mut root, blue);
+        be.finish(root);
+        (be, red, blue, log)
+    }
+
+    /// Paints, then returns the overlap cell's background and which
+    /// sibling a click there fires.
+    fn top_cell_and_click(be: &mut TerminalBackend, log: &Log) -> (Option<Rgba>, &'static str) {
+        let grid = be.render_to_grid();
+        match be.dispatch_click(1, 1) {
+            ClickOutcome::HandlerFired(h) => h(),
+            _ => panic!("the click must land on a pressable"),
+        }
+        let who = log.borrow_mut().pop().expect("a handler recorded its click");
+        (grid.cell(1, 1).expect("cell in grid").bg, who)
+    }
+
+    /// Regression: the terminal backend only sorted by the animated
+    /// `ZIndex`, so a static `StyleRules::z_index` on the earlier of two
+    /// overlapping siblings was ignored — the later sibling painted the
+    /// cell and took the click.
+    #[test]
+    fn regression_terminal_static_z_index_raises_earlier_sibling_paint_and_hit() {
+        let (mut be, red, _blue, log) = overlapping(Some(1));
+        assert_eq!(top_cell_and_click(&mut be, &log), (Some(RED), "red"));
+
+        // Re-applying the style without `z_index` restores tree order.
+        be.apply_style(&red, &boxed("rgb(255, 0, 0)", None));
+        assert_eq!(top_cell_and_click(&mut be, &log), (Some(BLUE), "blue"));
+    }
+
+    /// Static `z_index` and animated `ZIndex` share units: animated
+    /// `2.0` against a static `2` is a tie (tree order wins), `3.0`
+    /// beats it, and a style re-apply doesn't clobber the animated z.
+    #[test]
+    fn terminal_static_and_animated_z_index_order_identically() {
+        let (mut be, red, blue, log) = overlapping(None);
+        be.apply_style(&blue, &boxed("rgb(0, 0, 255)", Some(2)));
+        be.set_animated_f32(&red, AnimProp::ZIndex, 2.0);
+        assert_eq!(top_cell_and_click(&mut be, &log), (Some(BLUE), "blue"));
+
+        be.set_animated_f32(&red, AnimProp::ZIndex, 3.0);
+        assert_eq!(top_cell_and_click(&mut be, &log), (Some(RED), "red"));
+
+        be.apply_style(&red, &boxed("rgb(255, 0, 0)", None));
+        assert_eq!(top_cell_and_click(&mut be, &log), (Some(RED), "red"));
     }
 }

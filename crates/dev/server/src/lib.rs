@@ -1748,7 +1748,7 @@ impl WireRecordingBackend {
 
     pub fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         _on_scroll: Option<std::rc::Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> NodeId {
@@ -1766,7 +1766,8 @@ impl WireRecordingBackend {
         let wire_a11y = state.wire_a11y(a11y);
         state.emit(Command::CreateScrollView {
             id,
-            horizontal,
+            horizontal: axis == runtime_shared::ScrollAxis::Horizontal,
+            both_axes: axis == runtime_shared::ScrollAxis::Both,
             a11y: wire_a11y,
         });
         id

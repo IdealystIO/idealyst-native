@@ -1309,6 +1309,45 @@ mod text_keyboard {
     }
 }
 
+/// `pressable` takes `on_hover` like a view (CODEC_VERSION 6 carries it
+/// across the wire): the handler reaches `install_hover_handler` on the
+/// pressable's own node, and pointer enter/leave reach the author, so a
+/// hoverable row is one pressable, not a pressable wrapped in a view.
+mod pressable_hover {
+    use super::*;
+
+    fn script(remote: bool) -> Vec<String> {
+        let h = Harness::new();
+        let (tree, seen) = h.world.enter(|| {
+            let seen = signal(Vec::<bool>::new());
+            let tree = pressable(|| {})
+                .on_hover(move |entering| seen.update(|v| { let mut v = v.clone(); v.push(entering); v }))
+                .child(text().content("row"))
+                .build();
+            (tree, seen)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let handlers = h.shared.hover_handlers.borrow().clone();
+        assert_eq!(handlers.len(), 1, "one hover handler, on the pressable");
+        let pressable_node: Vec<_> = h.shared.press_by_node.borrow().keys().copied().collect();
+        assert_eq!(pressable_node, vec![handlers[0].0], "installed on the pressable's node");
+        (handlers[0].1)(true);
+        (handlers[0].1)(false);
+        h.flush();
+        let got = h.world.enter(|| seen.get());
+        drop(realized);
+        got.iter().map(|b| format!("hover {b}")).collect()
+    }
+
+    #[test]
+    fn pressable_on_hover_reaches_the_backend_natively_and_crossed() {
+        assert_eq!(script(false), vec!["hover true", "hover false"]);
+        assert_eq!(script(true), script(false), "the crossed pressable hovers like the native one");
+    }
+}
+
 /// `toggle` / `slider` `disabled` crosses too (CODEC_VERSION 4): a crossed
 /// control goes inert exactly like the native one.
 mod control_disabled {

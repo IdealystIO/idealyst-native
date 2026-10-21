@@ -455,6 +455,17 @@ pub(crate) fn apply_rules(
         }
     }
 
+    // --- Sibling stacking (`z_index`, and `position: Sticky`'s implicit
+    //     raise) → `View.setTranslationZ`, which ViewGroup uses to order
+    //     both drawing and touch dispatch. Every apply computes the
+    //     effective value, so a removed `z_index` writes `0` back. The
+    //     mapping and skip decision live in `crate::z_index_policy`.
+    let want_z = crate::z_index_policy::static_translation_z_px(rules);
+    if let Some(z) = crate::z_index_policy::translation_z_update(state.last_translation_z, want_z) {
+        state.last_translation_z = Some(z);
+        set_translation_z(env, &view, state, z);
+    }
+
     // --- Background + border + radius. If any border or radius is
     //     present we route through a persistent `GradientDrawable`
     //     so we can mutate corners/stroke/fill on each animator
@@ -1540,16 +1551,17 @@ pub(crate) fn color_to_srgb(c: &runtime_shared::Color) -> [f32; 4] {
     runtime_shared::color::parse_or(&c.0, runtime_shared::color::Rgba::TRANSPARENT).to_srgb_f32()
 }
 
-/// Cached `Build.VERSION.SDK_INT` — read once from the JVM on the
-/// first gradient apply and reused thereafter. Wrapped in
+/// Cached `Build.VERSION.SDK_INT` — read once from the JVM on first
+/// use and reused thereafter. Wrapped in
 /// `AtomicI32` rather than `OnceLock<i32>` so it can be read
 /// without holding a lock on the hot per-frame writer path.
 /// `-1` is the sentinel for "not yet probed".
 static ANDROID_SDK_INT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-/// Read `android.os.Build.VERSION.SDK_INT` once and cache it. Used
-/// to gate the API-29+ `GradientDrawable.setColors(int[], float[])`
-/// path that honors non-uniform stop offsets.
+/// Read `android.os.Build.VERSION.SDK_INT` once and cache it. Gates
+/// the API-29+ `GradientDrawable.setColors(int[], float[])` path that
+/// honors non-uniform stop offsets, and the API-28+ outline shadow
+/// color setters in [`suppress_z_shadow`].
 fn android_sdk_int(env: &mut JNIEnv) -> i32 {
     let cached = ANDROID_SDK_INT.load(std::sync::atomic::Ordering::Relaxed);
     if cached >= 0 {
@@ -1562,6 +1574,71 @@ fn android_sdk_int(env: &mut JNIEnv) -> i32 {
         .unwrap_or(0);
     ANDROID_SDK_INT.store(v, std::sync::atomic::Ordering::Relaxed);
     v
+}
+
+/// `io.idealyst.runtime.RustRowContainer`, resolved once: every stacking
+/// Z write goes through its static `setStackingZ`, including each frame
+/// of an animated `ZIndex`, so the classloader probe must not repeat.
+static ROW_CONTAINER_CLASS: std::sync::OnceLock<GlobalRef> = std::sync::OnceLock::new();
+
+fn row_container_class(env: &mut JNIEnv) -> Option<GlobalRef> {
+    if let Some(class) = ROW_CONTAINER_CLASS.get() {
+        return Some(class.clone());
+    }
+    let Ok(class) = env.find_class(crate::z_index_policy::ROW_CONTAINER_CLASS) else {
+        let _ = env.exception_clear();
+        return None;
+    };
+    let class = env.new_global_ref(&class).ok()?;
+    Some(ROW_CONTAINER_CLASS.get_or_init(|| class).clone())
+}
+
+/// Write a stacking `translationZ` (device px, already mapped through
+/// `crate::z_index_policy`). Shared by the static style apply and the
+/// animated `AnimProp::ZIndex` path so both raise identically.
+///
+/// Goes through `RustRowContainer.setStackingZ`, which also raises the
+/// virtualizer row container when `view` is a mounted row's item root:
+/// the container, not the item root, is the sibling RecyclerView orders
+/// the rows by (see `crate::z_index_policy`, "Virtualizer rows").
+pub(crate) fn set_translation_z(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim, z_px: f32) {
+    use crate::z_index_policy::{SET_STACKING_Z, SET_STACKING_Z_SIG};
+    let wrote = row_container_class(env).is_some_and(|class| {
+        env.call_static_method(&class, SET_STACKING_Z, SET_STACKING_Z_SIG, &[
+            JValue::Object(view),
+            JValue::Float(z_px),
+        ])
+        .is_ok()
+    });
+    if !wrote {
+        // A runtime staged without the class still orders the view
+        // among its own siblings.
+        let _ = env.exception_clear();
+        let _ = env.call_method(view, "setTranslationZ", "(F)V", &[JValue::Float(z_px)]);
+    }
+    if z_px > 0.0 {
+        suppress_z_shadow(env, view, state);
+    }
+}
+
+/// Clear the view's outline shadow colors (API 28+) so a stacking Z
+/// never draws a material elevation shadow: Z on Android is both the
+/// sibling order AND the shadow depth, and the framework's `z_index`
+/// is only the former. Safe because nothing else in this backend uses
+/// elevation shadows. Once per view — the colors persist. On API
+/// 21–27 there is no setter; `z_index_policy`'s tiny step keeps the
+/// shadow imperceptible for ordinary values there.
+fn suppress_z_shadow(env: &mut JNIEnv, view: &JObject, state: &mut NodeAnim) {
+    if state.z_shadow_suppressed {
+        return;
+    }
+    state.z_shadow_suppressed = true;
+    if android_sdk_int(env) < 28 {
+        return;
+    }
+    for setter in ["setOutlineAmbientShadowColor", "setOutlineSpotShadowColor"] {
+        let _ = env.call_method(view, setter, "(I)V", &[JValue::Int(0)]);
+    }
 }
 
 /// Push a gradient's color stops to an existing `GradientDrawable`,

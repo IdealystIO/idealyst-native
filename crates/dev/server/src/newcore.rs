@@ -663,11 +663,11 @@ impl caps::ActivityIndicatorOps for WireRecordingBackend {
 impl caps::ScrollOps for WireRecordingBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
-        WireRecordingBackend::create_scroll_view(self, horizontal, on_scroll, a11y)
+        WireRecordingBackend::create_scroll_view(self, axis, on_scroll, a11y)
     }
 
 

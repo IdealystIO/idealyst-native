@@ -1202,7 +1202,7 @@ mod native {
     impl caps::ScrollOps for AndroidBackend {
         fn create_scroll_view(
             &mut self,
-            horizontal: bool,
+            axis: runtime_shared::ScrollAxis,
             on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
             a11y: &AccessibilityProps,
         ) -> Self::Node {
@@ -1214,7 +1214,7 @@ mod native {
                     schedule_flush();
                 })
             });
-            AndroidBackend::create_scroll_view_impl(self, horizontal, on_scroll, a11y)
+            AndroidBackend::create_scroll_view_impl(self, axis, on_scroll, a11y)
         }
 
         fn make_scroll_view_handle(

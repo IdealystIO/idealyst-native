@@ -530,8 +530,14 @@ inventory::submit! {
             PropFieldSpec {
                 name: "horizontal",
                 type_str: "bool",
-                doc: "Scroll on the x axis instead of the y axis. Children of a horizontal scroller are exempt from the default `max-width: 100%` clamp so the content can exceed the viewport.",
+                doc: "Scroll on the x axis instead of the y axis. Children of a horizontal scroller are exempt from the default `max-width: 100%` clamp so the content can exceed the viewport. Shorthand for `axis = ScrollAxis::Horizontal`.",
                 constraint: "",
+            },
+            PropFieldSpec {
+                name: "axis",
+                type_str: "ScrollAxis",
+                doc: "Which axes scroll: `ScrollAxis::Vertical` (default), `Horizontal`, or `Both` — content that overflows in both directions (a wide, tall table) pans freely, `on_scroll` reports both offsets, and `Position::Sticky` children pin on both axes (a `top: 0` + `left: 0` corner stays put either way). Content is laid out unconstrained on every scrolling axis. A `Both` scroller's `on_end_reached` watches the bottom. Every backend implements it.",
+                constraint: "inline prop or builder method `.axis(..)`",
             },
             PropFieldSpec {
                 name: "on_scroll",

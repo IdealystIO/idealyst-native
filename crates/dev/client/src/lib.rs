@@ -748,7 +748,7 @@ where
                 let node = self.backend.borrow_mut().create_slider(initial_value, min, max, step, cb, &a11y);
                 self.nodes.insert(id, node);
             }
-            Command::CreateScrollView { id, horizontal, a11y } => {
+            Command::CreateScrollView { id, horizontal, both_axes, a11y } => {
                 if self.nodes.contains_key(&id) { return Ok(()); }
                 let a11y = self.a11y_props(a11y);
                 // `on_scroll` is `None`: the wire protocol doesn't yet
@@ -757,7 +757,12 @@ where
                 // back to the server). The client-side backend's own
                 // scroll affordance (Position::Sticky, scrollbars,
                 // etc.) still works because those are handled locally.
-                let node = self.backend.borrow_mut().create_scroll_view(horizontal, None, &a11y);
+                let axis = if both_axes {
+                    runtime_shared::ScrollAxis::Both
+                } else {
+                    runtime_shared::ScrollAxis::from_horizontal(horizontal)
+                };
+                let node = self.backend.borrow_mut().create_scroll_view(axis, None, &a11y);
                 self.nodes.insert(id, node);
             }
             Command::CreateActivityIndicator { id, size, color, a11y } => {

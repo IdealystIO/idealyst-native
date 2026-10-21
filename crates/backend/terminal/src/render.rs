@@ -123,10 +123,11 @@ impl TerminalBackend {
         // land back in cells.
         self.layout.compute(root_layout, cols as f32 * cw, rows as f32 * ch);
 
-        self.paint_node(root_id, 0.0, 0.0, 1.0, None, &mut grid);
+        self.paint_node(root_id, 0.0, 0.0, 1.0, None, None, &mut grid);
         grid
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_node(
         &self,
         id: u32,
@@ -134,6 +135,7 @@ impl TerminalBackend {
         parent_y: f32,
         parent_opacity: f32,
         clip: Option<ClipRect>,
+        scroll: Option<crate::scroll::EnclosingScroll>,
         grid: &mut Grid,
     ) {
         let Some(data) = self.nodes.get(&id) else { return };
@@ -166,9 +168,12 @@ impl TerminalBackend {
         let total_ty = data.translate_y + static_ty;
         // Convert frame + translate from layout px to cell space.
         // `parent_x` / `parent_y` are already in cells (paint recurses
-        // through `paint_node` with cell-space coords).
-        let x = parent_x + (frame.x + total_tx) / cw;
-        let y = parent_y + (frame.y + total_ty) / ch;
+        // through `paint_node` with cell-space coords). A sticky node
+        // adds its pin against the enclosing scroll view (the subtree
+        // moves with it, as in CSS); the hit walks add the same shift.
+        let (pin_x, pin_y) = self.sticky_shift(data, scroll);
+        let x = parent_x + (frame.x + total_tx) / cw + pin_x;
+        let y = parent_y + (frame.y + total_ty) / ch + pin_y;
         let w = frame.width / cw;
         let h = frame.height / ch;
         // Inline `cell_size` into a local alias the rest of the
@@ -359,60 +364,51 @@ impl TerminalBackend {
         // siblings with lower. Tree-insertion order is the
         // tiebreaker (matches every other backend's "siblings later
         // in the tree win when z-index is equal" posture).
+        let child_scroll = self.child_scroll_context(data, scroll);
         for cid in self.children_in_z_order(&data.children) {
-            self.paint_node(cid, child_x, child_y, effective_opacity, child_clip, grid);
+            self.paint_node(cid, child_x, child_y, effective_opacity, child_clip, child_scroll, grid);
         }
 
-        // 6. ScrollView overlay: paint a thin scrollbar at the trailing
-        // edge if content overflows. We sum each child's bottom/right
-        // extent in cell space (same shape as `apply_scroll_delta` uses
-        // for clamping) so the scrollbar matches the actual scrollable
-        // range. Painted OVER children and using the OUTER clip so the
-        // bar stays visible at the scroll view's edge regardless of
-        // child clipping/offset.
+        // 6. ScrollView overlay: a 1-cell scrollbar per scrolling axis
+        // whose content overflows (vertical in the trailing column,
+        // horizontal in the bottom row — `Both` can paint both). The
+        // content extent is the same one `apply_scroll_delta` clamps
+        // against, so the thumb matches the actual scrollable range.
+        // Painted OVER children and using the OUTER clip so the bar
+        // stays visible at the scroll view's edge regardless of child
+        // clipping/offset.
         if matches!(data.kind, NodeKind::ScrollView) {
-            let mut content_w = 0.0f32;
-            let mut content_h = 0.0f32;
-            for cid in &data.children {
-                if let Some(c) = self.nodes.get(cid) {
-                    let f = self.layout.frame_of(c.layout);
-                    content_w = content_w.max((f.x + f.width) / cw);
-                    content_h = content_h.max((f.y + f.height) / ch);
-                }
+            let (content_w, content_h) = self.scroll_content_cells(data);
+            let bar_y = data.scroll_axis.scrolls_y() && content_h > h;
+            let bar_x = data.scroll_axis.scrolls_x() && content_w > w;
+            // Two bars meet at the bottom-right cell; each track stops
+            // short of it so neither overwrites the other's end.
+            let corner = bar_x && bar_y;
+            if bar_y {
+                paint_scrollbar(grid, x, y, w, h, false, data.scroll_y, content_h, corner, combined_clip);
             }
-            paint_scrollbar(
-                grid,
-                x,
-                y,
-                w,
-                h,
-                data.horizontal,
-                if data.horizontal { data.scroll_x } else { data.scroll_y },
-                if data.horizontal { content_w } else { content_h },
-                combined_clip,
-            );
+            if bar_x {
+                paint_scrollbar(grid, x, y, w, h, true, data.scroll_x, content_w, corner, combined_clip);
+            }
         }
     }
 }
 
 impl TerminalBackend {
-    /// Order a list of child ids by `(z_index ASC, original_index ASC)`.
-    /// Stable sort over `original_index` keeps siblings with equal
-    /// z in their tree order. Used by both the paint walker and the
-    /// hit-tester — clicks should land on whatever paints visually
-    /// on top.
+    /// `children` in paint order: ascending effective z
+    /// ([`NodeData::effective_z`]), ties in tree order — the shared
+    /// [`runtime_shared::style::z_paint_order`] rule. The paint walker
+    /// draws in this order; the click and scroll hit-walkers take its
+    /// REVERSE, so the sibling painted on top receives the pointer.
     pub(crate) fn children_in_z_order(&self, children: &[u32]) -> Vec<u32> {
-        let mut paired: Vec<(usize, u32, f32)> = children
+        let zs: Vec<f32> = children
             .iter()
-            .enumerate()
-            .map(|(idx, &id)| {
-                let z = self.nodes.get(&id).map(|d| d.z_index).unwrap_or(0.0);
-                (idx, id, z)
-            })
+            .map(|id| self.nodes.get(id).map(|d| d.effective_z()).unwrap_or(0.0))
             .collect();
-        // Sort by z ascending — lowest paints first (back).
-        paired.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
-        paired.into_iter().map(|(_, id, _)| id).collect()
+        runtime_shared::style::z_paint_order(&zs)
+            .into_iter()
+            .map(|i| children[i])
+            .collect()
     }
 }
 
@@ -758,10 +754,12 @@ fn paint_border(
     put(grid, x1, y1, '╯');
 }
 
-/// Paint a 1-cell scrollbar on the trailing edge of a ScrollView.
-/// Vertical (`horizontal = false`) paints in the rightmost column of
-/// the frame; horizontal in the bottom row. No-op when content fits
-/// the viewport (nothing to scroll).
+/// Paint one axis's 1-cell scrollbar on the trailing edge of a
+/// ScrollView. Vertical (`horizontal = false`) paints in the rightmost
+/// column of the frame; horizontal in the bottom row. No-op when
+/// content fits the viewport on that axis (nothing to scroll).
+/// `reserve_corner` ends the track one cell early, leaving the
+/// bottom-right cell to neither bar when both axes paint one.
 ///
 /// Visual: dim track + bright thumb using box-drawing glyphs. The
 /// thumb's size and position track the visible fraction of content —
@@ -776,8 +774,10 @@ fn paint_scrollbar(
     horizontal: bool,
     scroll: f32,
     content_extent: f32,
+    reserve_corner: bool,
     clip: ClipRect,
 ) {
+    let corner = i32::from(reserve_corner);
     let viewport = if horizontal { w } else { h };
     if viewport < 2.0 || content_extent <= viewport {
         return;
@@ -788,7 +788,7 @@ fn paint_scrollbar(
     if horizontal {
         let track_y = (y + h).floor() as i32 - 1;
         let track_x0 = x.floor() as i32;
-        let track_x1 = (x + w).floor() as i32;
+        let track_x1 = (x + w).floor() as i32 - corner;
         let track_len = (track_x1 - track_x0).max(1) as f32;
         let thumb_len = ((viewport / content_extent) * track_len).max(1.0).round() as i32;
         let max_scroll = content_extent - viewport;
@@ -808,7 +808,7 @@ fn paint_scrollbar(
     } else {
         let track_x = (x + w).floor() as i32 - 1;
         let track_y0 = y.floor() as i32;
-        let track_y1 = (y + h).floor() as i32;
+        let track_y1 = (y + h).floor() as i32 - corner;
         let track_len = (track_y1 - track_y0).max(1) as f32;
         let thumb_len = ((viewport / content_extent) * track_len).max(1.0).round() as i32;
         let max_scroll = content_extent - viewport;

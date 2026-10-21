@@ -20,11 +20,12 @@ import androidx.recyclerview.widget.SimpleItemAnimator
  * item key, narrowed). `setHasStableIds(true)` is required so
  * RecyclerView can match positions to keys across data changes.
  *
- * Recycling: every holder owns a stable `FrameLayout` container. On
- * bind, the previous child (if any) is released back to Rust and
- * removed; the new child returned by `nativeMountItem` is added.
- * RecyclerView doesn't see Rust scope ids — it only sees the
- * holder's container view.
+ * Recycling: every holder owns a stable [RustRowContainer]. On bind,
+ * the previous child (if any) is released back to Rust and removed;
+ * the new child returned by `nativeMountItem` is added. RecyclerView
+ * doesn't see Rust scope ids — it only sees the holder's container
+ * view, which therefore also carries the row's stacking Z (see
+ * [RustRowContainer]).
  */
 class RustListAdapter(private val nativePtr: Long) :
     RecyclerView.Adapter<RustListAdapter.RustViewHolder>() {
@@ -60,7 +61,7 @@ class RustListAdapter(private val nativePtr: Long) :
     override fun getItemId(position: Int): Long = nativeItemKey(nativePtr, position)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RustViewHolder {
-        val container = FrameLayout(parent.context)
+        val container = RustRowContainer(parent.context)
         // RecyclerView wraps with its own LayoutParams; the container
         // itself just needs MATCH_PARENT in the cross-axis so child
         // views can fill the row/column.
@@ -76,6 +77,11 @@ class RustListAdapter(private val nativePtr: Long) :
         val mount = nativeMountItem(nativePtr, position)
         holder.scopeId = mount.scopeId
         holder.container.addView(mount.view)
+        // The item root's Z was written while it was realized, before
+        // it had this parent; copy it up so the row orders against its
+        // neighbours from the first frame. Unconditional, so a holder
+        // last bound to a raised item drops back to 0 for a flat one.
+        holder.container.translationZ = mount.view.translationZ
         // Hook a layout listener that pushes the rendered size back to
         // Rust on every layout pass. The framework's measured-size
         // cache only updates if the size actually changed, so the
@@ -109,6 +115,9 @@ class RustListAdapter(private val nativePtr: Long) :
         holder.layoutListener?.let { holder.container.removeOnLayoutChangeListener(it) }
         holder.layoutListener = null
         holder.container.removeAllViews()
+        // An empty holder (parked in the recycled pool) carries no row,
+        // so it must not keep the released item's raise.
+        holder.container.translationZ = 0f
     }
 
     /**
@@ -144,7 +153,7 @@ class RustListAdapter(private val nativePtr: Long) :
         diff.dispatchUpdatesTo(this)
     }
 
-    class RustViewHolder(val container: FrameLayout) : RecyclerView.ViewHolder(container) {
+    class RustViewHolder(val container: RustRowContainer) : RecyclerView.ViewHolder(container) {
         var scopeId: Long = 0
         var layoutListener: View.OnLayoutChangeListener? = null
     }
@@ -164,6 +173,50 @@ class RustListAdapter(private val nativePtr: Long) :
     /** Result of `nativeMountItem`. Bundles the freshly-built native
      *  View with the scope id Rust allocated for it. */
     class MountResult(val view: View, val scopeId: Long)
+}
+
+/**
+ * The ViewHolder item view a virtualizer row's item root is mounted
+ * into — the view RecyclerView actually lays out, draws and dispatches
+ * touches over as a sibling of the other rows.
+ *
+ * Stacking: `StyleRules::z_index` orders an item root against the
+ * neighbouring ROWS (on web the item roots are plain siblings in one
+ * container). ViewGroup orders drawing and touch dispatch by each
+ * child's Z, and a child's Z only orders it among ITS parent's
+ * children, so the item root's `translationZ` alone would order it
+ * inside this one-child container and nowhere else. The container
+ * therefore carries the same Z as its item root: copied at bind,
+ * reset on release, and kept in sync by [setStackingZ], through which
+ * the Rust backend writes every stacking Z (static style apply and
+ * animated `ZIndex`). No background, so the raised container has no
+ * outline and casts no elevation shadow.
+ *
+ * Overflow: `clipChildren = false` stops the container clipping its own
+ * row, so rows whose SLOTS overlap (a negative gap) paint by Z. A row
+ * moved past its slot by a transform is still clipped by RecyclerView
+ * itself (`clipChildren = true` there), and touches in that overflow go
+ * to the neighbour whose container bounds hold the point — unlike web,
+ * where rows are unclipped absolutely-positioned siblings.
+ */
+class RustRowContainer(context: Context) : FrameLayout(context) {
+    init {
+        clipChildren = false
+    }
+
+    companion object {
+        /**
+         * Write a stacking `translationZ` (device px) on [view]; when
+         * [view] is a mounted row's item root, raise its row container
+         * to match. Any other view's parent is never a
+         * [RustRowContainer], and a released item root has no parent.
+         */
+        @JvmStatic
+        fun setStackingZ(view: View, z: Float) {
+            view.translationZ = z
+            (view.parent as? RustRowContainer)?.translationZ = z
+        }
+    }
 }
 
 /**

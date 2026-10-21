@@ -322,7 +322,7 @@ pub use primitives::text_input::{TextInputHandle, TextInputOps};
 pub use primitives::text_area::{TextAreaHandle, TextAreaOps};
 pub use primitives::toggle::{ToggleHandle, ToggleOps};
 pub use primitives::overlay::BackdropMode;
-pub use primitives::scroll_view::{ScrollViewHandle, ScrollViewOps};
+pub use primitives::scroll_view::{ScrollAxis, ScrollViewHandle, ScrollViewOps};
 pub use primitives::virtualizer::{
     Axis, ItemKey, ItemSize, Lanes, VirtualLayout, VirtualizerHandle,
 };

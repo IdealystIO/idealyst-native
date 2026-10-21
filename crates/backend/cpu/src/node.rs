@@ -101,12 +101,18 @@ pub(crate) struct NodeData {
     /// `set_animated_f32(TranslateX/Y, …)`.
     pub animated_translate_x: f32,
     pub animated_translate_y: f32,
-    /// Sibling-relative z-order. Higher values paint later (in
-    /// front). Driven by `set_animated_f32(ZIndex, …)`. Default 0.
-    /// Within a parent, paint order is `sort_by(z_index)` so a
-    /// single view can change its stacking position per frame
-    /// without re-mounting the tree.
-    pub z_index: f32,
+    /// Static sibling stacking value: `StyleRules::stacking_z()` of the
+    /// last applied style (`z_index`, else `1` for sticky, else `0`).
+    /// Rewritten on every `apply_style`, so dropping `z_index` from the
+    /// style restores `0`. Read through [`Self::effective_z`].
+    pub static_z: f32,
+    /// Animation-driven stacking value from
+    /// `set_animated_f32(ZIndex, …)`. When `Some`, wins over
+    /// `static_z` — same separation as `animated_opacity`, so a style
+    /// re-apply (state overlay, theme refresh) can't clobber an
+    /// in-flight z animation. May be negative (orders below a `0`
+    /// sibling); only the static value is clamped.
+    pub animated_z: Option<f32>,
     /// `scroll_x` for `ScrollView` nodes — current horizontal scroll
     /// offset in pixels, subtracted from child paint coords. Always
     /// 0 for non-scroll kinds.
@@ -178,7 +184,8 @@ impl NodeData {
             animated_opacity: None,
             animated_translate_x: 0.0,
             animated_translate_y: 0.0,
-            z_index: 0.0,
+            static_z: 0.0,
+            animated_z: None,
             scroll_x: 0.0,
             scroll_y: 0.0,
             border_widths: [0.0; 4],
@@ -190,5 +197,11 @@ impl NodeData {
             static_translate_y: None,
             gradient: None,
         }
+    }
+
+    /// The z this node sorts by among its siblings: the animated value
+    /// while one has been written, else the static style value.
+    pub fn effective_z(&self) -> f32 {
+        self.animated_z.unwrap_or(self.static_z)
     }
 }

@@ -1175,6 +1175,7 @@ const SLIDER_BUILDER_ONLY: &[(&str, &str)] =
 /// setter of the same name.
 const SCROLL_VIEW_BUILDER_PROPS: &[&str] = &[
     "horizontal",
+    "axis",
     "on_scroll",
     "on_end_reached",
     "end_reached_threshold",
@@ -1450,7 +1451,7 @@ pub(crate) fn check_primitive_props(
     errors
 }
 
-/// `scroll_view(horizontal = bool, on_scroll = …, on_end_reached = …,
+/// `scroll_view(horizontal = bool, axis = ScrollAxis::Both, on_scroll = …, on_end_reached = …,
 /// end_reached_threshold = px, bounces = bool, safe_area = …) { children }`.
 /// Children list works just like `view`.
 fn emit_scroll_view(props: &[Prop], children: Option<&[UiNode]>) -> TokenStream2 {
@@ -3277,6 +3278,7 @@ mod tests {
         let out = parse_and_emit(quote::quote! {
             scroll_view(
                 horizontal = false,
+                axis = ScrollAxis::Both,
                 on_scroll = |x, y| {},
                 on_end_reached = || {},
                 end_reached_threshold = 400.0,
@@ -3289,6 +3291,7 @@ mod tests {
         });
         for call in [
             ". horizontal (",
+            ". axis (",
             ". on_scroll (",
             ". on_end_reached (",
             ". end_reached_threshold (",

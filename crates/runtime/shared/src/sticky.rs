@@ -37,19 +37,16 @@
 //!
 //! # Paint order
 //!
-//! CSS paints positioned elements above static siblings, so a pinned
-//! element (frozen table column, pinned header) draws over the content
-//! that slides beneath it. The native backends reproduce this by
-//! raising a view at sticky-registration time — `layer.zPosition` on
-//! iOS/macOS, `setTranslationZ` on Android, an implicit sibling-sort z
-//! in the wgpu render walk — and restoring it on deregister. Web lowers
-//! sticky with `z-index: 1` (`css::rules_to_css`): CSS on its own puts
-//! a sticky box above STATIC siblings only, and at `z-index: auto` a
-//! later positioned sibling (a `Relative` cell, a translated row) would
-//! still paint over it on DOM order. This raise changes paint order
-//! only, not hit-test order on native; the overlap
-//! region is content the pin visually covers, which is the acceptable
-//! divergence documented in each backend's sticky module.
+//! A pinned element paints above the siblings scrolling beneath it (a
+//! frozen table column draws over the cells that slide under it). That
+//! is not sticky machinery: [`StyleRules::stacking_z`] gives a sticky
+//! node with no `z_index` the effective z [`crate::style::STICKY_Z`], and
+//! every backend stacks siblings by that value — CSS `z-index` on web
+//! (needed there because a sticky box at `z-index: auto` ties with any
+//! POSITIONED sibling and loses to it on DOM order), the same z channel
+//! as `StyleRules::z_index` on native. Hit-testing follows that order
+//! too, so the pin also takes the pointer over the content it covers.
+//! An explicit `z_index` on the sticky node replaces the raise.
 
 use crate::{Length, StyleRules};
 

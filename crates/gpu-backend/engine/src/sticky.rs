@@ -22,7 +22,9 @@
 //!    maps a sticky node's pointer → `StickyChild` carrying the
 //!    pin thresholds + the cached natural position (in the
 //!    enclosing scroll view's content space). `apply_style`
-//!    registers and `drop_subtree` deregisters. Per frame, after
+//!    registers, `insert` resolves the enclosing scroll view of any
+//!    entry registered before its node was attached under one, and
+//!    `drop_subtree` deregisters. Per frame, after
 //!    Taffy re-computes the layout, [`refresh_layout_positions`]
 //!    walks Taffy parents from each sticky child up to its enclosing
 //!    `ScrollView`, summing frame origins.
@@ -60,7 +62,13 @@ use std::collections::HashMap;
 use runtime_layout::{LayoutNode, LayoutTree};
 use runtime_shared::{Length, StyleRules, Tokenized};
 
-use crate::node::{NodeKind, WgpuNode};
+use crate::node::WgpuNode;
+
+/// Layout ids of every live `ScrollView` node — the backend's
+/// `scroll_view_layouts`. A scroll ancestor is identified by
+/// membership here, so finding one is a Taffy-parent walk with an
+/// O(1) check per step rather than a node-tree sweep per ancestor.
+pub(crate) type ScrollViewLayouts = std::collections::HashSet<LayoutNode>;
 
 /// One sticky child registered against a scroll view.
 #[derive(Clone, Debug)]
@@ -112,33 +120,25 @@ use runtime_shared::sticky::{translate, StickyInsets};
 ///
 /// Idempotent: re-registering replaces the existing entry, so
 /// threshold updates from a stylesheet re-apply (e.g. a state
-/// overlay flipping `top`) pick up cleanly. The enclosing scroll
-/// view is looked up at register time by walking Taffy parents
-/// from the child up; if there isn't one yet, the entry still
-/// goes into the registry with `scroll_layout: None` so a future
-/// `apply_style` → `Sticky → Relative` flip can find and clear
-/// it through the normal [`deregister`] path. The render walker
-/// no-ops on entries with no scroll ancestor (matches CSS fall-
-/// back-to-relative).
+/// overlay flipping `top`) pick up cleanly. Realize styles a node
+/// BEFORE inserting it, so on a first mount there is usually no
+/// scroll ancestor yet: the entry goes in with `scroll_layout: None`
+/// and [`resolve_pending`] (called from `insert`) fills it in once
+/// the node is attached under a scroll view. An entry that never
+/// gains one stays `None` and the render walker applies no pin
+/// (CSS's sticky-without-a-scroller acts as relative).
 ///
-/// `layout` and `roots` are taken as references rather than the
-/// whole `WgpuBackend` so the caller can hold a `&mut` on the
-/// backend's `sticky_registry` field while passing the rest
-/// non-mutably (rustc's split-borrow won't see through the
-/// registry field on its own without disjoint-field syntax).
-///
-/// Returns `true` when a scroll ancestor was found (the more
-/// interesting case for callers / tests); `false` otherwise.
+/// Returns `true` when a scroll ancestor was found.
 pub(crate) fn register(
     registry: &mut StickyRegistry,
     layout: &LayoutTree,
-    roots: &[WgpuNode],
+    scroll_views: &ScrollViewLayouts,
     node: &WgpuNode,
     insets: StickyInsets,
 ) -> bool {
     let node_key = std::rc::Rc::as_ptr(node) as usize;
     let child_layout = node.borrow().layout;
-    let scroll_layout = find_enclosing_scroll_view(layout, roots, child_layout);
+    let scroll_layout = find_enclosing_scroll_view(layout, scroll_views, child_layout);
     registry.insert(
         node_key,
         StickyChild {
@@ -150,6 +150,22 @@ pub(crate) fn register(
         },
     );
     scroll_layout.is_some()
+}
+
+/// Resolve the enclosing scroll view of every entry still lacking
+/// one. Called after each `insert`: attaching a subtree is the only
+/// way a registered node gains a scroll ancestor. Without it a sticky
+/// child mounted together with its scroller (the common case — realize
+/// styles a node before inserting it) would never pin.
+/// O(unresolved entries × depth); free when every entry is resolved.
+pub(crate) fn resolve_pending(
+    registry: &mut StickyRegistry,
+    layout: &LayoutTree,
+    scroll_views: &ScrollViewLayouts,
+) {
+    for child in registry.values_mut().filter(|c| c.scroll_layout.is_none()) {
+        child.scroll_layout = find_enclosing_scroll_view(layout, scroll_views, child.child_layout);
+    }
 }
 
 /// Remove `node`'s entry from the registry. Safe to call even if
@@ -168,29 +184,18 @@ pub(crate) fn deregister_by_ptr(registry: &mut StickyRegistry, key: usize) {
     registry.remove(&key);
 }
 
-/// Walk Taffy parents from `start` up looking for an ancestor
-/// whose `NodeKind` is `ScrollView`. Returns its `LayoutNode` or
-/// `None` if there's no scroll ancestor. We walk Taffy parents
-/// and resolve each one to its `WgpuNode` via a sweep of the
-/// backend's roots — the wgpu engine doesn't keep a layout-id →
-/// node side map today.
-///
-/// O(depth * tree-size) in the worst case. Called once per
-/// sticky registration (rare — `apply_style` only, not per
-/// frame), so the constant factor isn't on the hot path. Adding
-/// a side map is a follow-up if the sweep shows up in a profile.
+/// Walk Taffy parents from `start` up to the nearest one in
+/// `scroll_views`. `None` if there's no scroll ancestor.
 fn find_enclosing_scroll_view(
     layout: &LayoutTree,
-    roots: &[WgpuNode],
+    scroll_views: &ScrollViewLayouts,
     start: LayoutNode,
 ) -> Option<LayoutNode> {
     let mut cursor = start;
     let mut steps = 0;
     while let Some(parent) = layout.parent_of(cursor) {
-        if let Some(parent_node) = find_node_by_layout(roots, parent) {
-            if matches!(parent_node.borrow().kind, NodeKind::ScrollView { .. }) {
-                return Some(parent);
-            }
+        if scroll_views.contains(&parent) {
+            return Some(parent);
         }
         cursor = parent;
         steps += 1;
@@ -198,31 +203,6 @@ fn find_enclosing_scroll_view(
             // Defensive depth cap. Shouldn't trip; the layout
             // tree is finite and Taffy doesn't construct cycles.
             return None;
-        }
-    }
-    None
-}
-
-/// Find a `WgpuNode` whose Taffy layout id matches `target`.
-/// Linear sweep over the node tree starting from the backend's
-/// roots. Used by [`find_enclosing_scroll_view`].
-fn find_node_by_layout(roots: &[WgpuNode], target: LayoutNode) -> Option<WgpuNode> {
-    for root in roots {
-        if let Some(found) = find_node_by_layout_recursive(root, target) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_node_by_layout_recursive(node: &WgpuNode, target: LayoutNode) -> Option<WgpuNode> {
-    if node.borrow().layout == target {
-        return Some(node.clone());
-    }
-    let children: Vec<WgpuNode> = node.borrow().children.clone();
-    for child in &children {
-        if let Some(found) = find_node_by_layout_recursive(child, target) {
-            return Some(found);
         }
     }
     None
@@ -333,12 +313,11 @@ mod tests {
     //! scroll ancestor → no translate" branch is the same property
     //! exercised by `translate` returning 0 at scroll_y=0.
     //!
-    //! Full end-to-end coverage (walk through walk(), produce
-    //! rects with the pinning translate, verify against a golden)
-    //! requires a wgpu Device + Queue + a Painter — those live in
-    //! `host-winit` integration tests and are skipped here.
-    //! Document any future bugs in those layers with a host-shell
-    //! regression test there.
+    //! Full end-to-end coverage (mount through `newcore::start`,
+    //! scroll, render, read pixels back) needs a wgpu Device and
+    //! lives in `tests/headless_screenshot.rs`
+    //! (`headless_sticky_top_left_pins_on_both_axes_of_a_two_axis_scroller`,
+    //! `--features headless`).
     use super::*;
 
     /// Which DRAW-ORIGIN component the render hook shifts. The pin
@@ -420,8 +399,8 @@ mod tests {
     /// pulls in glyphon + wgpu Device dependencies. Constructing
     /// that for a unit test would be ~50 lines of setup. The
     /// HashMap behaviour IS the regression we care about; the
-    /// "walks parents to find scroll" path is covered by the
-    /// integration in `host-winit`.
+    /// "walks parents to find scroll" path is covered by
+    /// `regression_sticky_registered_before_insert_resolves_its_scroller`.
     #[test]
     fn regression_sticky_registry_unregisters_on_node_removal() {
         let mut registry: StickyRegistry = HashMap::new();
@@ -547,5 +526,42 @@ mod tests {
             (0.0, 0.0),
             "zero scroll implies no pin on either axis, regardless of threshold",
         );
+    }
+
+    /// Realize styles a node before inserting it, so a sticky child
+    /// mounted together with its scroll view registers with no scroll
+    /// ancestor. It must pick one up once the subtree is attached
+    /// under the scroller — before `resolve_pending`, the entry stayed
+    /// `scroll_layout: None` and the child never pinned on first
+    /// mount. A sticky whose subtree never reaches a scroller stays
+    /// unresolved (relative).
+    #[test]
+    fn regression_sticky_registered_before_insert_resolves_its_scroller() {
+        let mut layout = LayoutTree::new();
+        let scroll = layout.new_node();
+        let content = layout.new_node();
+        let sticky = layout.new_node();
+        let outside = layout.new_node();
+        let scroll_views: ScrollViewLayouts = [scroll].into_iter().collect();
+        let entry = |child_layout| StickyChild {
+            insets: StickyInsets { top: Some(0.0), left: Some(0.0), ..Default::default() },
+            child_layout,
+            scroll_layout: None,
+            natural: (0.0, 0.0),
+            size: (0.0, 0.0),
+        };
+        let mut registry: StickyRegistry = HashMap::new();
+        registry.insert(1, entry(sticky));
+        registry.insert(2, entry(outside));
+
+        // Bottom-up, the order realize inserts in.
+        layout.add_child(content, sticky);
+        resolve_pending(&mut registry, &layout, &scroll_views);
+        assert_eq!(registry[&1].scroll_layout, None, "not under the scroller yet");
+
+        layout.add_child(scroll, content);
+        resolve_pending(&mut registry, &layout, &scroll_views);
+        assert_eq!(registry[&1].scroll_layout, Some(scroll), "attached under the scroller");
+        assert_eq!(registry[&2].scroll_layout, None, "no scroll ancestor → stays relative");
     }
 }

@@ -54,6 +54,11 @@ pub(crate) struct AnimatedState {
     pub(crate) anim_scale_x: f32,
     pub(crate) anim_scale_y: f32,
     pub(crate) anim_rotate_z: f32,
+    /// Last animated `AnimProp::ZIndex` (`layer.zPosition`). While set,
+    /// `apply_style` leaves `zPosition` alone, so a restyle can't cancel
+    /// the animated value with the static `stacking_z()` — the animated
+    /// value overrides the static `z_index`, as on web.
+    pub(crate) anim_z_index: Option<f32>,
     /// Pending percent translateX in 0..=100 units. `None` if no
     /// percent translate is set; the layout pass resolves it
     /// against the view's width on each frame.
@@ -80,6 +85,7 @@ impl AnimatedState {
             anim_scale_x: 1.0,
             anim_scale_y: 1.0,
             anim_rotate_z: 0.0,
+            anim_z_index: None,
             static_translate_pct_x: None,
             static_translate_pct_y: None,
             static_transform_seen: false,
@@ -430,13 +436,16 @@ pub(crate) fn set_animated_f32(
             rebuild_transform(view, &state.borrow());
         }
         AnimProp::ZIndex => {
+            state.borrow_mut().anim_z_index = Some(value);
             // CALayer's `zPosition` is the closest equivalent. AppKit
             // sibling ordering normally goes by subview index; setting
-            // zPosition reorders at draw time.
+            // zPosition reorders at draw time, and `FlippedView.hitTest:`
+            // walks subviews in the same order.
             let layer: Option<Retained<NSObject>> =
                 unsafe { msg_send_id![view, layer] };
             if let Some(layer) = layer {
                 let _: () = unsafe { msg_send![&layer, setZPosition: value as f64] };
+                backend_apple_core::shadow_layer::sync_sibling_z(&layer);
             }
         }
         // Other props are no-ops on macOS for v1. Width/height/padding

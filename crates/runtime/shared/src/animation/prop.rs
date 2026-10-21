@@ -65,13 +65,15 @@ pub enum AnimProp {
     /// e.g. orbiting planets that pass in front of and behind a
     /// foreground element.
     ///
-    /// Units: backend-defined ordering scalar. Within one backend
-    /// the comparison is just `<`, so the absolute value doesn't
-    /// matter — only the relative ordering. Web rounds to integer
-    /// for `style.zIndex`; iOS writes a CGFloat to
-    /// `layer.zPosition`; Android writes a float to
-    /// `View.setTranslationZ` (in dp, converted to device px). All
-    /// three are sibling-relative.
+    /// Units: the same scale as static
+    /// [`StyleRules::z_index`](crate::StyleRules::z_index) — every
+    /// backend writes both to one channel, so an animated `2.0` and a
+    /// static `z_index: 2` order identically against each other. Web
+    /// rounds to integer for `style.zIndex`; iOS/macOS write
+    /// `layer.zPosition`; Android writes `View.setTranslationZ` at
+    /// `z × 0.01` device px (Z is also Android's elevation-shadow
+    /// depth, so it is not density-scaled). All are sibling-relative,
+    /// and hit-testing follows the resulting order.
     ZIndex,
     /// Layout-affecting maximum height in DIPs. Animating this
     /// triggers reflow of the node's siblings on every frame — the

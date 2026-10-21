@@ -467,13 +467,20 @@ impl FullRecorder {
 
     fn create_scroll_view_impl(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> PNode {
         let n = self.rec.mint();
+        // `horizontal=` for the one-axis scrollers (the recorded shape
+        // every existing golden carries); a two-axis one says so.
+        let axis = match axis {
+            runtime_shared::ScrollAxis::Vertical => "horizontal=false",
+            runtime_shared::ScrollAxis::Horizontal => "horizontal=true",
+            runtime_shared::ScrollAxis::Both => "axis=both",
+        };
         self.rec.push(format!(
-            "create {n} scroll_view horizontal={horizontal} on_scroll={}{}",
+            "create {n} scroll_view {axis} on_scroll={}{}",
             if on_scroll.is_some() { "<fn>" } else { "none" },
             a11y_suffix(a11y)
         ));
@@ -1382,11 +1389,11 @@ impl caps::ActivityIndicatorOps for FullRecorder {
 impl caps::ScrollOps for FullRecorder {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> PNode {
-        self.create_scroll_view_impl(horizontal, on_scroll, a11y)
+        self.create_scroll_view_impl(axis, on_scroll, a11y)
     }
 }
 

@@ -748,7 +748,7 @@ impl caps::ActivityIndicatorOps for CpuBackend {
 impl caps::ScrollOps for CpuBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -765,12 +765,11 @@ impl caps::ScrollOps for CpuBackend {
         let _on_scroll = on_scroll;
         let node = self.alloc_node(NodeKind::ScrollView, String::new());
         if let Some(data) = self.nodes.get_mut(&node.id) {
-            // `horizontal` flag lives on the existing
-            // `scroll_x` / `scroll_y` pair: we just remember which
-            // axis to honor in dispatch. For the MVP we honor both
-            // simultaneously regardless of the flag; surface a real
-            // axis lock once we add wheel/touch scroll.
-            let _ = horizontal;
+            // The axis has nothing to select here: this backend has no
+            // wheel/touch scroll dispatch and keeps the trait's no-op
+            // `set_node_scroll`, so `scroll_x` / `scroll_y` stay 0 and
+            // the scroll view only clips its content.
+            let _ = axis;
             // Pin children inside our box.
             data.scroll_x = 0.0;
             data.scroll_y = 0.0;
@@ -1105,6 +1104,10 @@ impl caps::StyleOps for CpuBackend {
             data.font_size_px = font_size_px;
             data.static_translate_x = static_tx;
             data.static_translate_y = static_ty;
+            // Written on every application so removing `z_index`
+            // restores the default; an animated z still wins (see
+            // `NodeData::animated_z`).
+            data.static_z = style.stacking_z() as f32;
             // Preserve animated stops across stylesheet re-apply when
             // the gradient's shape (stop count) matches — re-applying
             // a stylesheet (state overlay, theme refresh, hot patch)
@@ -1160,7 +1163,7 @@ impl caps::AnimationOps for CpuBackend {
                 data.animated_translate_y = value;
             }
             AnimProp::ZIndex => {
-                data.z_index = value;
+                data.animated_z = Some(value);
             }
             // Scale / ScaleX / ScaleY / RotateZ — not supported by
             // the axis-aligned rasterizer. Silently drop; documented

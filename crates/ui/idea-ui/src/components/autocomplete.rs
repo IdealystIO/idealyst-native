@@ -273,6 +273,12 @@ pub struct AutocompleteProps {
     /// right-padding reserve. Default `false`.
     #[prop(static)]
     pub clearable: bool,
+    /// Caps the dropdown's width, in pixels. Longer option labels and
+    /// descriptions wrap onto further lines inside the cap. `None` (the
+    /// default) sizes the menu to its longest row.
+    #[prop(static)]
+    #[schema(constraint = "pixels, > 0")]
+    pub max_width: Option<f32>,
 }
 
 impl Default for AutocompleteProps {
@@ -290,6 +296,7 @@ impl Default for AutocompleteProps {
             on_selection_change: None,
             autofocus: false,
             clearable: false,
+            max_width: None,
         }
     }
 }
@@ -794,6 +801,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
     let menu_revert = revert.clone();
     let header_slot = props.header.clone();
+    let max_width = props.max_width;
     let footer_slot = props.footer.clone();
     let build_panel = move || {
         let snapshot_commit = menu_commit.clone();
@@ -838,6 +846,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             AnchorTarget::from(wrapper_ref),
             header,
             footer,
+            max_width,
         );
         let dismiss_revert = menu_revert.clone();
         runtime_core::anchored_overlay(AnchorTarget::from(wrapper_ref), vec![menu])

@@ -87,6 +87,54 @@ fn max_lines_merges_and_keys() {
 }
 
 #[test]
+fn z_index_merges_and_keys() {
+    let base = StyleRules { z_index: Some(2), ..Default::default() };
+    let hover = StyleRules { color: Some(Tokenized::Literal(Color("#fff".into()))), ..Default::default() };
+    assert_eq!(base.clone().merge(&hover).z_index, Some(2), "an overlay without it keeps it");
+    let five = StyleRules { z_index: Some(5), ..Default::default() };
+    assert_eq!(base.clone().merge(&five).z_index, Some(5));
+    // Distinct values mint distinct classes on web — a shared class would
+    // stack one of them wrong.
+    assert_ne!(base.content_key(), five.content_key());
+    assert_ne!(base.content_key(), StyleRules::default().content_key());
+    let zero = StyleRules { z_index: Some(0), ..Default::default() };
+    assert_ne!(zero.content_key(), StyleRules::default().content_key(), "explicit 0 is not unset");
+}
+
+#[test]
+fn stacking_z_resolves_z_index_then_sticky_then_zero() {
+    assert_eq!(StyleRules::default().stacking_z(), 0);
+    let sticky = StyleRules { position: Some(Position::Sticky), ..Default::default() };
+    assert_eq!(sticky.stacking_z(), STICKY_Z, "sticky raises without a z_index");
+    let sticky_z = StyleRules { z_index: Some(7), ..sticky.clone() };
+    assert_eq!(sticky_z.stacking_z(), 7, "an explicit z_index beats the sticky raise");
+    let sticky_zero = StyleRules { z_index: Some(0), ..sticky };
+    assert_eq!(sticky_zero.stacking_z(), 0, "an explicit 0 drops the sticky raise");
+    let abs = StyleRules { position: Some(Position::Absolute), ..Default::default() };
+    assert_eq!(abs.stacking_z(), 0, "positioning alone does not raise");
+    assert_eq!(StyleRules { z_index: Some(3), ..Default::default() }.stacking_z(), 3);
+}
+
+/// A negative z would paint behind the parent's background in CSS, which
+/// no native view can do — every backend sees 0 instead.
+#[test]
+fn stacking_z_clamps_negative_to_zero() {
+    let neg = StyleRules { z_index: Some(-4), ..Default::default() };
+    assert_eq!(neg.stacking_z(), 0);
+}
+
+#[test]
+fn z_paint_order_is_ascending_and_stable() {
+    assert_eq!(z_paint_order(&[]), Vec::<usize>::new());
+    assert_eq!(z_paint_order(&[0.0, 0.0, 0.0]), vec![0, 1, 2], "all default: tree order");
+    // The first sibling raised paints LAST; the tie between 1 and 2 keeps
+    // tree order.
+    assert_eq!(z_paint_order(&[2.0, 0.0, 0.0]), vec![1, 2, 0]);
+    assert_eq!(z_paint_order(&[1.0, 3.0, 1.0, 0.0]), vec![3, 0, 2, 1]);
+    assert_eq!(z_paint_order(&[f32::NAN, -1.0, 0.0]), vec![1, 0, 2], "NaN sorts as 0");
+}
+
+#[test]
 fn content_key_distinguishes_border_style() {
     let solid = StyleRules { border_style: Some(BorderStyle::Solid), ..Default::default() };
     let dashed = StyleRules { border_style: Some(BorderStyle::Dashed), ..Default::default() };
@@ -1734,6 +1782,7 @@ fn clone_round_trips_a_fully_populated_struct() {
         user_select: Some(UserSelect::Text),
         pointer_events: Some(PointerEvents::None),
         border_style: Some(BorderStyle::Dotted),
+        z_index: Some(9),
     };
     assert_eq!(rules.clone(), rules);
 }

@@ -237,6 +237,12 @@ pub struct MacosBackend {
     /// pointer-events-only style would otherwise wipe a `Bottom` placement and
     /// pull the content to the top of the window.
     pub(crate) portal_roots: HashMap<usize, StyleRules>,
+    /// Mount sequence of each portal container (same key as
+    /// `portal_roots`): the "tree order" `view::order_portals_in_host`
+    /// falls back to on a `z_index` tie — the order web appends portal
+    /// roots. `next_portal_seq` hands them out.
+    pub(crate) portal_mount_seq: HashMap<usize, u64>,
+    pub(crate) next_portal_seq: u64,
     /// Per-ANCHORED-portal state, keyed by the container view pointer (the
     /// same key as in `portal_roots`). Only anchored portals (tooltip /
     /// popover / dropdown) get an entry — it carries the anchor descriptor
@@ -639,6 +645,8 @@ impl MacosBackend {
             virtualizer_instances: HashMap::new(),
             detached_window_roots: HashMap::new(),
             portal_roots: HashMap::new(),
+            portal_mount_seq: HashMap::new(),
+            next_portal_seq: 0,
             portal_instances: HashMap::new(),
             root_layout: None,
         };
@@ -4157,7 +4165,7 @@ impl MacosBackend {
 
     pub(crate) fn create_scroll_view_impl(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> MacosNode {
@@ -4202,15 +4210,18 @@ impl MacosBackend {
         };
 
         // Configure scrollers per axis. Vertical-default matches
-        // iOS's default ScrollView. NSScrollView's API:
+        // iOS's default ScrollView; a two-axis scroller gets both. The
+        // documentView is sized to the content's bounding box on both axes
+        // (`sync_scroll_document_views`), so a `Both` scroller pans in two
+        // dimensions with no further setup. NSScrollView's API:
         //  - setHasVerticalScroller: / setHasHorizontalScroller:
         //  - setAutohidesScrollers: true so the scrollers fade
         //    when not actively scrolling (modern macOS feel).
         let _: () = unsafe {
-            msg_send![&scroll_view, setHasVerticalScroller: !horizontal]
+            msg_send![&scroll_view, setHasVerticalScroller: axis.scrolls_y()]
         };
         let _: () = unsafe {
-            msg_send![&scroll_view, setHasHorizontalScroller: horizontal]
+            msg_send![&scroll_view, setHasHorizontalScroller: axis.scrolls_x()]
         };
         let _: () = unsafe { msg_send![&scroll_view, setAutohidesScrollers: true] };
         // Force OVERLAY scrollers (NSScrollerStyleOverlay = 1) regardless of the
@@ -4290,7 +4301,7 @@ impl MacosBackend {
         // then reads as the documentView's scrollable content size). `set_style`
         // (called later by `apply_style`) is a partial merge that never writes
         // `overflow`, so this survives the author's `ScreenScroll` style.
-        self.layout.set_overflow_scroll(scroll_layout, horizontal);
+        self.layout.set_overflow_scroll_axis(scroll_layout, axis);
 
         // Wire `on_scroll` via NSViewBoundsDidChangeNotification on
         // the scroll view's contentView (the NSClipView). We flip
@@ -4759,6 +4770,42 @@ impl MacosBackend {
         }
     }
 
+    /// `Host::release_subtree`: the scene discarded `node`'s subtree (a
+    /// dropped screen, a branch swapped out, a keyed row removed). Drop the
+    /// per-view animation state of every view in it — the animated
+    /// transform / `ZIndex` slots and gradient caches. Keyed by view
+    /// pointer, an entry would otherwise outlive its view, and a later view
+    /// the allocator puts at the same address would inherit it: a stale
+    /// `anim_z_index` makes `apply_style` skip that view's static `z_index`,
+    /// a stale `anim_translate_*` offsets its transform. NOT on
+    /// `remove_child` / `clear_children`, which also run for moves and
+    /// retired-but-animating nodes whose state must survive.
+    ///
+    /// Called while the subtree is still assembled — it walks `subviews`.
+    pub(crate) fn release_subtree_impl(&mut self, node: &MacosNode) {
+        fn collect(view: &NSView, out: &mut Vec<usize>) {
+            out.push(view as *const NSView as usize);
+            let subviews: Retained<objc2_foundation::NSArray<NSView>> =
+                unsafe { msg_send_id![view, subviews] };
+            for sub in subviews.iter() {
+                collect(sub, out);
+            }
+        }
+        let mut keys = Vec::new();
+        collect(node.as_view(), &mut keys);
+        for k in keys {
+            self.animated_states.remove(&k);
+            self.gradient_states.remove(&k);
+        }
+    }
+
+    /// How many views carry per-view animation state. Introspection for
+    /// the `release_subtree` regression test (`tests/z_index_stacking.rs`).
+    #[doc(hidden)]
+    pub fn animated_state_count(&self) -> usize {
+        self.animated_states.len()
+    }
+
     pub(crate) fn clear_children_impl(&mut self, node: &MacosNode) {
         let view = node.as_view();
         // A scroll view hosts its content inside the documentView (see
@@ -4914,6 +4961,33 @@ impl MacosBackend {
                     self.pending_sticky.remove(&sticky_key);
                 }
             }
+        }
+
+        // Sibling stacking: `stacking_z()` (the `z_index`, else
+        // `STICKY_Z` for Sticky, else 0) → `layer.zPosition`, the channel
+        // `AnimProp::ZIndex` drives in the same units. Written on every
+        // apply so dropping a `z_index` (or leaving Sticky) restores 0;
+        // the sticky registry never touches it, so a registration retried
+        // from `insert` can't clobber an explicit `z_index`. Skipped once
+        // an animation has written `ZIndex` on this view: the animated
+        // value overrides the static one. The view is layer-backed by
+        // `apply_style_to_view` above. Core Animation paints by it;
+        // `FlippedView`'s `hitTest:` makes clicks follow it
+        // (`view::z_ordered_hit_test`).
+        let z_animated = self
+            .animated_states
+            .get(&(view as *const NSView as usize))
+            .is_some_and(|s| s.borrow().anim_z_index.is_some());
+        if !z_animated {
+            let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+            if let Some(layer) = layer {
+                let z = style.stacking_z() as f64;
+                let _: () = unsafe { msg_send![&layer, setZPosition: z] };
+                backend_apple_core::shadow_layer::sync_sibling_z(&layer);
+            }
+            self.order_portal_after_z_change(view);
+            // A virtualized item's row stacks by this z too.
+            virtualizer::sync_item_z_for_child(view);
         }
 
         // Static `transform: [...]` from the style. Px translates,
@@ -5353,6 +5427,23 @@ impl MacosBackend {
             return;
         }
         animated::set_animated_f32(node, prop, value, &mut self.animated_states);
+        if let runtime_shared::animation::AnimProp::ZIndex = prop {
+            self.order_portal_after_z_change(node.as_view());
+            virtualizer::sync_item_z_for_child(node.as_view());
+        }
+    }
+
+    /// A portal container sits in the host content view, whose stock
+    /// `hitTest:` walks by index: after its z changes, re-sort the mounted
+    /// portals so clicks follow paint (`view::order_portals_in_host`).
+    fn order_portal_after_z_change(&self, view: &NSView) {
+        if !self.portal_mount_seq.contains_key(&(view as *const NSView as usize)) {
+            return;
+        }
+        let host: Option<Retained<NSView>> = unsafe { msg_send_id![view, superview] };
+        if let Some(host) = host {
+            view::order_portals_in_host(&host, &self.portal_mount_seq);
+        }
     }
 
     pub(crate) fn set_animated_color_impl(
@@ -5772,8 +5863,14 @@ impl MacosBackend {
         // the layout pass / `set_host_root` will attach the parent
         // chain later. Here we still return the orphan content view
         // so the framework can `insert` children into it.
+        let portal_key = &*content as *const NSView as usize;
+        self.portal_mount_seq.insert(portal_key, self.next_portal_seq);
+        self.next_portal_seq += 1;
         if let Some(host) = self.host_root.as_ref() {
             unsafe { host.addSubview(&content) };
+            // Appended = topmost by index; a portal mounted earlier with a
+            // higher `z_index` must stay above it for clicks too.
+            view::order_portals_in_host(host, &self.portal_mount_seq);
         }
 
         // Register the container as its own Taffy root, sized via the placement
@@ -5783,7 +5880,6 @@ impl MacosBackend {
         // placement's justify/align positions the content child inside it.
         let layout_node = self.layout_for_view(&content);
         self.layout.set_style(layout_node, &container_rules);
-        let portal_key = &*content as *const NSView as usize;
         self.portal_roots.insert(portal_key, container_rules);
 
         // Anchored portals carry their descriptor + (later) tracker so `insert`
@@ -5804,6 +5900,7 @@ impl MacosBackend {
     pub(crate) fn release_portal_impl(&mut self, node: &MacosNode) {
         let key = node.view_key();
         self.portal_roots.remove(&key);
+        self.portal_mount_seq.remove(&key);
         // Drop the anchored-portal entry FIRST so its `raf_loop` tracker stops
         // before the view leaves the hierarchy — a tracker firing into a
         // detached popover would keep reading a stale frame and re-pinning a

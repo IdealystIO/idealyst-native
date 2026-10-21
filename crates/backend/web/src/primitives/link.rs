@@ -65,13 +65,23 @@ pub(crate) fn create(b: &mut WebBackend, config: LinkConfig) -> Node {
     // row). See `touch::swallow_ancestor_touch`.
     super::touch::swallow_ancestor_touch(anchor.as_ref());
 
-    // External links navigate natively — no JS click interception.
+    // External links navigate natively — no JS click interception, but the
+    // click is still claimed so an enclosing pressable doesn't also fire
+    // (see `glue_dom::set_press_onclick`).
     if config.external {
+        crate::glue_dom::listen_for_element_lifetime(&anchor, "click", Default::default(), |evt| {
+            crate::glue_dom::claim_press(&evt);
+        });
         return anchor.unchecked_into::<Node>();
     }
 
     let on_activate = config.on_activate.clone();
     crate::glue_dom::listen_for_element_lifetime(&anchor, "click", Default::default(), move |evt| {
+        // Claimed even for a modified click the browser handles (a new
+        // tab): the enclosing row must not also activate.
+        if !crate::glue_dom::claim_press(&evt) {
+            return;
+        }
         let evt: web_glue::dom::MouseEvent = web_glue::JsCast::unchecked_into(evt);
         // Modified clicks fall through to the browser. Plain
         // left-click is what we intercept for SPA navigation.

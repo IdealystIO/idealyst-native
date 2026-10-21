@@ -179,6 +179,11 @@ where
         )
     };
     cx.realize_children_into(&mut node, children);
+    if let Some(h) = prim.on_hover {
+        // Guarded like a view's input handlers: the toolkit owns the
+        // hover tracker's lifetime and can fire it after the scope dies.
+        backend.borrow_mut().install_hover_handler(&node, alive.wrap_hover(h));
+    }
     let state_setter = prim
         .style
         .map(|style| {
@@ -235,14 +240,19 @@ where
     let on_scroll = alive.wrap2_opt(prim.on_scroll);
     let mut node = backend
         .borrow_mut()
-        .create_scroll_view(prim.horizontal, on_scroll, &prim.a11y);
+        .create_scroll_view(prim.axis, on_scroll, &prim.a11y);
     // Same teardown guard as `on_scroll`, and for the same reason: this
     // one is delivered from a backend observer that outlives nothing in
     // particular, so a route change can land it on a dead scope.
     if let Some(on_end) = alive.wrap0_opt(prim.on_end_reached) {
         backend
             .borrow_mut()
-            .observe_scroll_end(&node, prim.horizontal, prim.end_reached_threshold, on_end);
+            .observe_scroll_end(
+                &node,
+                prim.axis.end_axis_is_horizontal(),
+                prim.end_reached_threshold,
+                on_end,
+            );
     }
     // Robot `set_scroll` routes through the scroll HANDLE (whose ops
     // take no backend borrow), NOT `set_node_scroll` under a live

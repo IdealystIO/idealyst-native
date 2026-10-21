@@ -700,6 +700,22 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 }
             }
+            // A tilt wheel / touchpad pan scrolls the X axis of the scroll
+            // view under the pointer (a horizontal or two-axis scroller).
+            // Unlike `WM_MOUSEWHEEL`, a positive delta is a tilt RIGHT, so
+            // it is already a content-scroll direction — no negation.
+            let mut handled = false;
+            if let Some(state) = host_state(hwnd) {
+                handled = state
+                    .backend
+                    .borrow_mut()
+                    .wheel_scroll_horizontal(x, y, units * view_input::WHEEL_PX_PER_UNIT);
+            }
+            if handled {
+                // Same post-borrow catch-up paint as `WM_MOUSEWHEEL`.
+                let _ = unsafe { UpdateWindow(hwnd) };
+                return LRESULT(0);
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_MOUSEWHEEL => {

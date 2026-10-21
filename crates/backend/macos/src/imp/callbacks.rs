@@ -837,17 +837,24 @@ impl PrivateLayerPassthroughView {
 // =========================================================================
 
 /// Deepest subview of `view` whose frame contains `point` (given in `view`'s
-/// flipped, top-left local coordinates), searched front-to-back (last subview
-/// = topmost). Descends through zero-area wrappers even though the point lies
+/// flipped, top-left local coordinates), searched front-to-back (topmost
+/// painted first: sibling `z_index`, then last subview). Descends through zero-area wrappers even though the point lies
 /// outside their collapsed frame, so an absolutely-positioned leaf nested under
 /// a 1024×0 `on_tap` wrapper is still reachable. Returns `None` if nothing under
 /// the point — the placeholder then declines the click (passthrough). Assumes
 /// plain Taffy frames (no transform / `bounds` offset), matching
 /// `private_layer_hit_nodes`.
 fn presence_deep_hit(view: &NSView, point: CGPoint) -> Option<Retained<NSView>> {
-    let subviews: Retained<NSArray<NSView>> = unsafe { msg_send_id![view, subviews] };
-    let subs: Vec<_> = subviews.iter().collect();
-    for sub in subs.iter().rev() {
+    // Topmost-PAINTED first: sibling `z_index` (`layer.zPosition`) orders
+    // the walk, ties in tree order — see `backend_apple_core::z_order` —
+    // with reactive anchors folded in (`hit_candidates`). An anchor's
+    // frame is this view's box at the origin, so its children's frames
+    // are already in this view's space.
+    let candidates = crate::imp::view::hit_candidates(view);
+    let subs: Vec<&NSView> = candidates.iter().map(|v| &**v).collect();
+    let zs = crate::imp::view::subview_zs(&subs);
+    for i in backend_apple_core::z_order::hit_test_order(&zs) {
+        let sub = &subs[i];
         let hidden: bool = unsafe { msg_send![&**sub, isHidden] };
         if hidden {
             continue;

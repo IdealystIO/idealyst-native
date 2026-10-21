@@ -105,6 +105,20 @@ pub(crate) fn root_pass(cell_box: Option<(f32, f32)>, viewport: (f32, f32)) -> R
     }
 }
 
+/// Does a virtualizer need the `RustGridSpacingDecoration` that applies its
+/// main/cross gaps?
+///
+/// Any non-zero gap does, negative included: a negative `gap` overlaps
+/// successive rows (each row starts `|gap|` before the previous one ends),
+/// which is what the web and iOS virtualizers render, and the stacking of the
+/// overlap is then `z_index`'s job. Only an all-zero layout skips it, so a
+/// plain list pays nothing. Not `> 0.0`: that dropped negative gaps on
+/// Android, so overlapping rows laid out flush.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn needs_spacing_decoration(layout: runtime_shared::VirtualLayout) -> bool {
+    layout.main_spacing != 0.0 || layout.cross_spacing != 0.0
+}
+
 #[cfg(test)]
 mod root_pass_tests {
     use super::*;
@@ -187,5 +201,29 @@ mod tests {
     fn portal_parent_always_schedules() {
         assert!(insert_needs_layout_pass(true, false));
         assert!(insert_needs_layout_pass(true, true));
+    }
+}
+
+#[cfg(test)]
+mod spacing_decoration_tests {
+    use super::needs_spacing_decoration;
+    use runtime_shared::VirtualLayout;
+
+    /// Regression: a `flat_list(gap = -40.0)` laid its rows out flush on
+    /// Android because the decoration was only installed for positive gaps,
+    /// so rows never overlapped and `z_index` had nothing to order.
+    #[test]
+    fn regression_android_negative_virtualizer_gap_overlaps_rows() {
+        let overlap = VirtualLayout { main_spacing: -40.0, ..VirtualLayout::default() };
+        assert!(needs_spacing_decoration(overlap));
+        let lanes = VirtualLayout { cross_spacing: -8.0, ..VirtualLayout::default() };
+        assert!(needs_spacing_decoration(lanes));
+    }
+
+    #[test]
+    fn plain_and_positive_gap_layouts() {
+        assert!(!needs_spacing_decoration(VirtualLayout::default()));
+        let gap = VirtualLayout { main_spacing: 8.0, ..VirtualLayout::default() };
+        assert!(needs_spacing_decoration(gap));
     }
 }

@@ -151,3 +151,14 @@ objc2-ui-kit = { version = "0.2", features = [
     "UIAccessibilityConstants",
 ] }
 raw-window-handle = "0.6"
+
+# Real-UIKit test of sibling `z_index`: `apply_style` writes
+# `StyleRules::stacking_z()` to `layer.zPosition` (sticky's raise included;
+# an animated `ZIndex` overrides it)
+# and the framework views' `hitTest:withEvent:` hands the touch to the
+# sibling painted on top. `harness = false`: UIKit is main-thread only and
+# libtest runs cases on worker threads. iOS targets only — run the binary on
+# a booted simulator (see the file header).
+[[test]]
+name = "z_index_stacking"
+harness = false

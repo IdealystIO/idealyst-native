@@ -47,6 +47,14 @@ harness = false
 name = "sublayers_calayer"
 harness = false
 
+# Live-CALayer coverage for `layer_paint_order` (snapshots that paint like the
+# screen) and for the Core Animation semantics `z_index` relies on, checked
+# against `CARenderer` — the compositor itself. `harness = false` for the same
+# main-thread reason as above.
+[[test]]
+name = "layer_paint_order_calayer"
+harness = false
+
 [dependencies]
 # `embed-font-bytes`: CoreText registers fonts from their raw bytes
 # (`CTFontManagerRegisterGraphicsFont`), so iOS/macOS builds need the

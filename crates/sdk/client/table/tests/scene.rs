@@ -620,7 +620,11 @@ fn scroll_x_lowers_to_surface_wrapping_horizontal_scroller() {
                 .downcast_ref::<PrimCell<ScrollViewPrim>>()
                 .expect("surface wraps the scroll_view")
                 .take();
-            assert!(prim.horizontal, "the scroller must be horizontal");
+            assert_eq!(
+                prim.axis,
+                runtime_shared::ScrollAxis::Horizontal,
+                "the scroller must be horizontal"
+            );
             let rules = match prim.style {
                 Some(StyleProp::Static(r)) => r,
                 _ => panic!("scroller carries the static wrapper rules"),
@@ -995,6 +999,7 @@ fn regression_slots_sit_inside_the_surface_outside_the_scroller() {
         scroll_x: true,
         header_slot: Some(glue::text("holiday").into_element()),
         footer_slot: Some(glue::text("add").into_element()),
+        ..Default::default()
     })
     .into_element();
     let kids = item_children(t);
@@ -1400,4 +1405,127 @@ fn web_grid_table_bound_row_gets_a_backdrop() {
     let open_end = after_tr.find('>').expect("row tag closes");
     assert!(after_tr[open_end + 1..].starts_with("<div"), "the backdrop leads the row: {html}");
     assert!(page.head_css.contains("grid-row"), "cells and backdrop are placed explicitly: {}", page.head_css);
+}
+
+// ===========================================================================
+// Scroll-y mode
+// ===========================================================================
+
+/// Peel a scrolling table down to (scroller prim, scroller rules,
+/// content rules) — the native shape is surface > scroller > content.
+fn native_scroller_parts(
+    t: Element,
+) -> (runtime_vocabulary::prims::ScrollViewPrim, glue::StyleRules, glue::StyleRules) {
+    use runtime_vocabulary::prims::ScrollViewPrim;
+    let mut surface_children = item_children(t);
+    assert_eq!(surface_children.len(), 1, "surface holds just the scroller");
+    let (prim, mut scroller_children) = match surface_children.pop().expect("len checked") {
+        Element::Item { data, children } => (
+            data.downcast_ref::<PrimCell<ScrollViewPrim>>()
+                .expect("surface wraps the scroll_view")
+                .take(),
+            children,
+        ),
+        _ => panic!("surface must wrap a scroll_view item"),
+    };
+    let scroller_rules = match prim.style.as_ref() {
+        Some(StyleProp::Static(r)) => (**r).clone(),
+        _ => panic!("scroller carries static wrapper rules"),
+    };
+    let content = take_view_prim(&scroller_children.pop().expect("scroll content"));
+    let content_rules = match content.style {
+        Some(StyleProp::Static(r)) => (*r).clone(),
+        _ => panic!("scroll content carries static rules"),
+    };
+    (prim, scroller_rules, content_rules)
+}
+
+/// `scroll_y` alone: the table owns a VERTICAL scroller (so a sticky
+/// header pins against it), content-sized and shrinkable inside the
+/// surface, and the content keeps its full height (`flex_shrink: 0`) but
+/// takes no width floor — columns fill and wrap as in a plain table,
+/// with no sideways overflow the scroller could not scroll.
+#[test]
+fn scroll_y_lowers_to_a_vertical_scroller_whose_content_keeps_its_height() {
+    let t = table(TableProps { children: vec![row(2)], scroll_y: true, ..Default::default() })
+        .into_element();
+    let (prim, scroller, content) = native_scroller_parts(t);
+    assert_eq!(prim.axis, runtime_shared::ScrollAxis::Vertical);
+    assert_eq!(prim.bounces, Some(false), "a bounded pane inside a page does not spring");
+    assert!(scroller.flex_direction.is_none(), "column scroller: rows run on its main axis");
+    assert!(
+        matches!(scroller.flex_grow.as_ref().map(|t| t.resolve()), Some(g) if g == 0.0),
+        "content-sized, so a short table hugs its rows"
+    );
+    assert!(content.min_width.is_none(), "no width floor without scroll_x");
+    assert!(
+        matches!(content.flex_shrink.as_ref().map(|t| t.resolve()), Some(s) if s == 0.0),
+        "rows keep their height inside the bounded scroller"
+    );
+}
+
+/// Regression (CrewForge): with `scroll_x` the table's horizontal
+/// scroller was the header cells' NEAREST scroll container, so a header
+/// could never stick to the page's vertical scroll. `scroll_x` +
+/// `scroll_y` must build ONE two-axis scroller — header (top) and
+/// frozen columns (left/right) pin against the same container.
+#[test]
+fn regression_scroll_x_and_y_share_one_two_axis_scroller() {
+    let t = table(TableProps {
+        children: vec![row(2)],
+        scroll_x: true,
+        scroll_y: true,
+        ..Default::default()
+    })
+    .into_element();
+    let (prim, scroller, content) = native_scroller_parts(t);
+    assert_eq!(prim.axis, runtime_shared::ScrollAxis::Both);
+    assert_eq!(scroller.flex_direction, Some(glue::FlexDirection::Row));
+    assert_eq!(
+        scroller.align_items,
+        Some(glue::AlignItems::FlexStart),
+        "content keeps its own height on the cross axis instead of stretching to the bounded scroller"
+    );
+    assert!(
+        matches!(
+            content.min_width.as_ref().map(|t| t.resolve()),
+            Some(glue::Length::Percent(p)) if (p - 100.0).abs() < f32::EPSILON
+        ),
+        "the scroll-x width floor still applies"
+    );
+}
+
+/// Web: `scroll_y` wraps the `<table>` in the scroller and switches to
+/// the separate border model (a pinned header's hairlines travel with
+/// it), but keeps the fill-and-wrap width — only `scroll_x` lays the
+/// columns out at natural width.
+#[test]
+fn scroll_y_web_border_model_and_scroller() {
+    let page = backend_ssr::newcore::render_path_with("/", table::register, || {
+        item_lowering::web_scrolling_table(
+            vec![item_lowering::row_item(
+                vec![item_lowering::cell_item(
+                    true,
+                    ColSpan::default(),
+                    vec![glue::text("head").into_element()],
+                    None,
+                )],
+                None,
+            )],
+            None,
+            false,
+            true,
+        )
+    });
+    // Inline declarations serialize without the space after the colon.
+    let html: String = page.html.replace(": ", ":");
+    let html = &html;
+    assert!(html.contains("overflow:auto"), "the table sits in a scroller: {html}");
+    assert!(
+        html.contains("border-collapse:separate"),
+        "scroll-y table must use the separate border model: {html}"
+    );
+    assert!(!html.contains("border-collapse:collapse"), "{html}");
+    assert!(html.contains("width:100%"), "fill-and-wrap width kept: {html}");
+    assert!(!html.contains("max-content"), "natural widths are scroll_x's: {html}");
 }

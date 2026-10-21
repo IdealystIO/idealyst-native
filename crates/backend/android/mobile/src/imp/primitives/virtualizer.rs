@@ -112,9 +112,9 @@ pub(crate) fn create(
         // Inter-item gaps. A single ItemDecoration distributes the
         // main-axis (inter-row) and cross-axis (inter-lane) spacing;
         // it reads the live span count from the layout manager so the
-        // AutoFit case works too. Skip it entirely when both gaps are
-        // zero so plain lists pay nothing.
-        if layout.main_spacing > 0.0 || layout.cross_spacing > 0.0 {
+        // AutoFit case works too. Negative gaps go through it too
+        // (rows overlap); see `needs_spacing_decoration`.
+        if crate::layout_policy::needs_spacing_decoration(layout) {
             let dec_class = env
                 .find_class("io/idealyst/runtime/RustGridSpacingDecoration")
                 .unwrap();

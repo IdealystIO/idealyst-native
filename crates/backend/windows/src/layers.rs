@@ -109,11 +109,12 @@ impl<G: Fn(u64) -> bool> Walk<'_, G> {
                 }
             }
         }
-        let Some(children) = b.children.get(&id).filter(|c| !c.is_empty()) else { return };
+        if b.children.get(&id).is_none_or(|c| c.is_empty()) {
+            return;
+        }
         let child_clip = if meta.clips_children() { rect } else { clip };
         let (cx, cy) = scene::content_origin(meta, nx, ny);
-        let pairs: Vec<(u64, f32)> = children.iter().filter_map(|c| b.nodes.get(c).map(|m| (*c, m.z))).collect();
-        for c in scene::z_sorted(&pairs) {
+        for c in scene::child_paint_order(b, id) {
             self.visit(c, cx, cy, child_clip);
         }
     }

@@ -43,6 +43,22 @@ pub(crate) fn create(b: &AndroidBackend, label: &str, on_click: Rc<dyn Fn()>) ->
         )
         .unwrap();
 
+        // Drop the Material button's elevation (2dp at rest) and its
+        // press `StateListAnimator`, which animates `translationZ` on
+        // press/release. Z is the sibling stacking channel
+        // (`StyleRules::z_index` → `style::set_translation_z`): the
+        // resting elevation would paint every button above later
+        // siblings at equal z, and the animator would overwrite the
+        // style's `translationZ` on every press.
+        let null = jni::objects::JObject::null();
+        let _ = env.call_method(
+            &local,
+            "setStateListAnimator",
+            "(Landroid/animation/StateListAnimator;)V",
+            &[JValue::Object(&null)],
+        );
+        let _ = env.call_method(&local, "setElevation", "(F)V", &[JValue::Float(0.0)]);
+
         apply_default_layout_params(env, &local);
         env.new_global_ref(local).unwrap()
     })

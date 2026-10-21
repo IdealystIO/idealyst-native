@@ -2520,6 +2520,22 @@ stylesheet! {
                 border_bottom_right_radius: 0.0,
             }
         }
+        // `Table(scroll_y = true)`: the table owns its vertical scroll, so
+        // it takes the height its parent gives it — growing into a bounded
+        // column, shrinking below its rows (`min_height: 0`; the framework
+        // `overflow` is a clip, not a Taffy scroll container, so the
+        // automatic minimum would otherwise hold it at its content) — and
+        // its scroller takes what is left. In an unbounded parent it is as
+        // tall as its rows. `max_height` caps it on top (an override).
+        variant scroll {
+            #[default]
+            off(_t) {}
+            fill(_t) {
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                min_height: 0.0,
+            }
+        }
         transitions {
             background: 250ms EaseInOut,
             border_top_color: 250ms EaseInOut,
@@ -2624,6 +2640,56 @@ stylesheet! {
                 border_left_width: 1.0,
                 border_left_color: t.color.border(),
             }
+        }
+        // Pinned header row (`Table(scroll_y = true)`): the head cells stick
+        // to the top of the table's own scroller. `TableCell(header = true)`
+        // selects `off` explicitly — that key is how `Table` tells a head
+        // cell from a body cell — and `Table` selects `on` for the leading
+        // head rows. Stacking among the cells (all siblings of one grid on
+        // native, one table on web): a body cell pinned to a side paints at
+        // the sticky default (`STICKY_Z`, 1), the header row above it (2) so
+        // rows slide UNDER the header, and a corner cell — pinned to the
+        // top AND a side — above both (3), so columns slide under it
+        // sideways and rows slide under it vertically.
+        variant sticky_header {
+            #[default]
+            off(_t) {}
+            on(_t) {
+                position: Position::Sticky,
+                top: 0,
+                z_index: 2,
+            }
+        }
+        compound (sticky_header: on, pinned: left)(_t) {
+            z_index: 3,
+        }
+        compound (sticky_header: on, pinned: right)(_t) {
+            z_index: 3,
+        }
+        // Table edge inset (`Table(inset_x = …)`): the outer padding of
+        // a row's FIRST cell (`inset_left`) and LAST cell (`inset_right`),
+        // so the row dividers run the table's full width while the text
+        // lines up with the page margin. Selected per edge cell by
+        // `Table`; the `none` default leaves the base padding.
+        variant inset_left {
+            #[default]
+            none(_t) {}
+            xs(t) { padding_left: t.spacing.xs() }
+            sm(t) { padding_left: t.spacing.sm() }
+            md(t) { padding_left: t.spacing.md() }
+            lg(t) { padding_left: t.spacing.lg() }
+            xl(t) { padding_left: t.spacing.xl() }
+            xxl(t) { padding_left: t.spacing.xxl() }
+        }
+        variant inset_right {
+            #[default]
+            none(_t) {}
+            xs(t) { padding_right: t.spacing.xs() }
+            sm(t) { padding_right: t.spacing.sm() }
+            md(t) { padding_right: t.spacing.md() }
+            lg(t) { padding_right: t.spacing.lg() }
+            xl(t) { padding_right: t.spacing.xl() }
+            xxl(t) { padding_right: t.spacing.xxl() }
         }
         // Drag-and-drop feedback VOCABULARY for author-wired row drag
         // (idea-ui ships no dnd behavior — see the Table component
@@ -2787,6 +2853,31 @@ stylesheet! {
                 border_left_width: 1.0,
                 border_left_color: t.color.border(),
             }
+        }
+        // Table edge inset (`Table(inset_x = …)`): the outer padding of
+        // a row's FIRST cell (`inset_left`) and LAST cell (`inset_right`),
+        // so the row dividers run the table's full width while the text
+        // lines up with the page margin. Selected per edge cell by
+        // `Table`; the `none` default leaves the base padding.
+        variant inset_left {
+            #[default]
+            none(_t) {}
+            xs(t) { padding_left: t.spacing.xs() }
+            sm(t) { padding_left: t.spacing.sm() }
+            md(t) { padding_left: t.spacing.md() }
+            lg(t) { padding_left: t.spacing.lg() }
+            xl(t) { padding_left: t.spacing.xl() }
+            xxl(t) { padding_left: t.spacing.xxl() }
+        }
+        variant inset_right {
+            #[default]
+            none(_t) {}
+            xs(t) { padding_right: t.spacing.xs() }
+            sm(t) { padding_right: t.spacing.sm() }
+            md(t) { padding_right: t.spacing.md() }
+            lg(t) { padding_right: t.spacing.lg() }
+            xl(t) { padding_right: t.spacing.xl() }
+            xxl(t) { padding_right: t.spacing.xxl() }
         }
         // A frozen column's opacity is NOT decided by the `pinned` arms
         // above. Axis overlays merge in ALPHABETICAL axis order
@@ -3028,6 +3119,30 @@ stylesheet! {
             padding_vertical: t.spacing.md(),
             padding_horizontal: t.spacing.lg(),
         }
+        // The table's edge inset (`Table(inset_x = …)`) on both sides, so
+        // slot content lines up with the first column's text — see the
+        // cell sheets' `inset_left` / `inset_right`.
+        variant inset_left {
+            #[default]
+            none(_t) {}
+            xs(t) { padding_left: t.spacing.xs() }
+            sm(t) { padding_left: t.spacing.sm() }
+            md(t) { padding_left: t.spacing.md() }
+            lg(t) { padding_left: t.spacing.lg() }
+            xl(t) { padding_left: t.spacing.xl() }
+            xxl(t) { padding_left: t.spacing.xxl() }
+        }
+        variant inset_right {
+            #[default]
+            none(_t) {}
+            xs(t) { padding_right: t.spacing.xs() }
+            sm(t) { padding_right: t.spacing.sm() }
+            md(t) { padding_right: t.spacing.md() }
+            lg(t) { padding_right: t.spacing.lg() }
+            xl(t) { padding_right: t.spacing.xl() }
+            xxl(t) { padding_right: t.spacing.xxl() }
+        }
+
         variant edge {
             #[default]
             top(t) {

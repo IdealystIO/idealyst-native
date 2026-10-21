@@ -40,7 +40,8 @@ pub(crate) fn capture(capture: bool) -> ListenerOptions {
 }
 
 web_glue::import! {
-    fn js_set_onclick(el: u32, f: u32) = "(e, f) => { G.get(e).onclick = G.get(f); }";
+    fn js_set_press_onclick(el: u32, f: u32) = "(e, f) => { const h = G.get(f); G.get(e).onclick = (ev) => { if (ev.__iyPress) return; ev.__iyPress = true; h(ev); }; }";
+    fn js_claim_press(ev: u32) -> u32 = "(ev) => { const e = G.get(ev); if (e.__iyPress) return 0; e.__iyPress = true; return 1; }";
     fn js_raf_once(f: u32) = "(f) => { requestAnimationFrame(G.get(f)); }";
     fn js_timeout_once(f: u32, ms: i32) = "(f, ms) => { setTimeout(G.get(f), ms); }";
 }
@@ -61,15 +62,30 @@ pub(crate) fn next_frame(f: impl FnOnce() + 'static) {
     unsafe { js_raf_once(func.raw()) }
 }
 
-/// `el.onclick = f` — the property handler (one per element; replacing it
-/// replaces the old one, unlike `addEventListener`). The element owns the
-/// function; the Rust closure is released when JS collects it (see
-/// [`listen_for_element_lifetime`]).
-pub(crate) fn set_onclick(el: &impl AsRef<web_glue::JsValue>, f: impl FnMut() + 'static) {
+/// `el.onclick = f` for a press target (pressable, button) — the property
+/// handler (one per element; replacing it replaces the old one, unlike
+/// `addEventListener`). The element owns the function; the Rust closure is
+/// released when JS collects it (see [`listen_for_element_lifetime`]).
+///
+/// Only the innermost press target runs for one click. `click` bubbles, so
+/// a pressable inside a pressable (a button in a clickable row) would
+/// otherwise fire inner then outer, where native toolkits deliver the tap
+/// to the innermost view alone. The first press handler to see the event
+/// claims it with an expando flag and ancestors skip a claimed event. Not
+/// `stopPropagation`: document-level click listeners (outside-click
+/// dismissal) must still see the click. See [`claim_press`] for links.
+pub(crate) fn set_press_onclick(el: &impl AsRef<web_glue::JsValue>, f: impl FnMut() + 'static) {
     let mut f = f;
     let func = web_glue::Closure::new(move |_| f()).into_js_value();
     let el = target(el);
-    unsafe { js_set_onclick(el.as_js().raw(), func.raw()) }
+    unsafe { js_set_press_onclick(el.as_js().raw(), func.raw()) }
+}
+
+/// Claim `ev` as handled by an inner press target (a link), so ancestor
+/// [`set_press_onclick`] handlers skip it. Returns `false` when a deeper
+/// target already claimed it.
+pub(crate) fn claim_press(ev: &Event) -> bool {
+    unsafe { js_claim_press(ev.as_js().raw()) == 1 }
 }
 
 /// [`listen_for_element_lifetime`] for a handler that may be re-entered (a

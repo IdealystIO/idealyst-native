@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use runtime_shared::accessibility::AccessibilityProps;
 use runtime_shared::primitives;
-use runtime_shared::{SafeAreaSides, VirtualizerCallbacks};
+use runtime_shared::{SafeAreaSides, ScrollAxis, VirtualizerCallbacks};
 use runtime_scene::Host;
 
 use super::noop;
@@ -15,12 +15,16 @@ use super::ExternalOps;
 /// offset, so `node_scroll`/`set_node_scroll` live here with the
 /// scrolling capability rather than on the navigator).
 pub trait ScrollOps: Host {
-    /// Create a scrolling container (`horizontal` selects the axis;
-    /// `on_scroll` fires per offset change in CSS px / native points).
+    /// Create a scrolling container. `axis` selects which axes scroll —
+    /// a [`ScrollAxis::Both`] scroller pans freely in two dimensions,
+    /// lays its content out unbounded on both (call
+    /// `LayoutTree::set_overflow_scroll_axis`), and pins `Position::Sticky`
+    /// descendants on both axes. `on_scroll` fires per offset change with
+    /// `(x, y)` in CSS px / native points.
     #[allow(unused_variables)]
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -29,7 +33,9 @@ pub trait ScrollOps: Host {
 
     /// Watch `node` for the reader arriving within `threshold` logical
     /// px of the end of its scroll axis, and call `on_end` when they
-    /// do.
+    /// do. `horizontal` names the watched axis — the handler passes
+    /// [`ScrollAxis::end_axis_is_horizontal`], so a two-axis scroller is
+    /// watched at its bottom.
     ///
     /// Separate from `create_scroll_view` rather than another argument
     /// to it: this is additive, and a backend that cannot answer it

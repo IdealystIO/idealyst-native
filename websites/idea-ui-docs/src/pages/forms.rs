@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use icons_lucide::{CHECK, EYE, EYE_OFF, HEART, LAYOUT_GRID, LIST, MAP, SEARCH, STAR};
-use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, Signal};
+use runtime_core::{pressable, rx, signal, ui, Element, IntoElement, Signal, StyleRules, StyleSheet};
 use idea_ui::{
     date::{format_date, format_datetime, format_time},
     tone, Adornment, Autocomplete, Button, Calendar, Checkbox, CivilDate, CivilDateTime, CivilTime,
@@ -880,6 +880,25 @@ pub fn segmented_control() -> Element {
     let theme = signal("light".to_string());
     let on_theme: Rc<dyn Fn(String)> = Rc::new(move |v| theme.set(v));
 
+    // A restyled control: an ink track, and a primary-filled selected
+    // segment whose `color` also reaches its label.
+    let roster = signal("day".to_string());
+    let on_roster: Rc<dyn Fn(String)> = Rc::new(move |v| roster.set(v));
+    let t = idea_ui::tokens();
+    let ink_track = Rc::new(StyleSheet::r#static(StyleRules {
+        background: Some(t.color.text()),
+        ..Default::default()
+    }));
+    let light_segment = Rc::new(StyleSheet::r#static(StyleRules {
+        color: Some(t.color.surface()),
+        ..Default::default()
+    }));
+    let primary_selected = Rc::new(StyleSheet::r#static(StyleRules {
+        background: Some(t.intent.primary.solid_bg()),
+        color: Some(t.intent.primary.solid_text()),
+        ..Default::default()
+    }));
+
     let current = ui! {
         Typography(
             content = rx!(format!("Showing: {}", view.get())),
@@ -992,6 +1011,58 @@ ui! {
             }
         }
     }, ui! {
+        Section(title = "Restyling".to_string()) {
+            P(content = "Three slot overrides restyle the control: `style` for the track, \
+                `segment_style` for every unselected segment and `selected_segment_style` for \
+                the selected one. Each is a plain `StyleSheet` layered on top of the theme \
+                style, so only the fields it sets change. A segment slot's `color` also \
+                reaches the label on every backend, so a dark selected fill can carry light \
+                text. To restyle every SegmentedControl in an app, pass the same three sheets \
+                to `install_segmented_control_style` once at startup; a prop on one control \
+                still wins over the installed slot.".to_string())
+            DemoSurface {
+                SegmentedControl(
+                    value = roster,
+                    on_change = on_roster,
+                    options = vec![
+                        SegmentOption::new("day", "Day"),
+                        SegmentOption::new("night", "Night"),
+                        SegmentOption::new("off", "Off"),
+                    ],
+                    style = Some(ink_track),
+                    segment_style = Some(light_segment),
+                    selected_segment_style = Some(primary_selected),
+                )
+            }
+            CodePanel(src = r##"let t = idea_ui::tokens();
+let ink_track = Rc::new(StyleSheet::r#static(StyleRules {
+    background: Some(t.color.text()),
+    ..Default::default()
+}));
+let primary_selected = Rc::new(StyleSheet::r#static(StyleRules {
+    background: Some(t.intent.primary.solid_bg()),
+    color: Some(t.intent.primary.solid_text()),
+    ..Default::default()
+}));
+
+ui! {
+    SegmentedControl(
+        value = roster,
+        on_change = on_change,
+        options = vec![SegmentOption::new("day", "Day"), SegmentOption::new("night", "Night")],
+        style = Some(ink_track),
+        selected_segment_style = Some(primary_selected),
+    )
+}
+
+// Or for every SegmentedControl in the app, once at startup:
+install_segmented_control_style(SegmentedControlStyle {
+    track: Some(ink_track),
+    selected_segment: Some(primary_selected),
+    ..Default::default()
+});"##.to_string())
+        }
+    }, ui! {
         Section(title = "Appearance".to_string()) {
             P(content = "The control is one bordered, tinted track (the `SegmentedGroup` sheet) \
                 holding a `SegmentButton` per option. The selected segment is filled with the \
@@ -1014,6 +1085,9 @@ ui! {
                 Prop { name: "size",      ty: "Reactive<ControlSize>", desc: "Sm, Md (default) or Lg — the height and font of a Select / Field / outlined Button of the same size." },
                 Prop { name: "block",     ty: "bool",               desc: "Fill the container's width, segments sharing it evenly. Default: false (hugs its options)." },
                 Prop { name: "options",   ty: "Vec<SegmentOption>", desc: "Segments, left-to-right. SegmentOption::new(id, label), plus .leading(Adornment) / .trailing(Adornment) beside the label (Icon recolors with selection; Element is any component)." },
+                Prop { name: "style",     ty: "Option<Rc<StyleSheet>>", desc: "Override layered on the track (fill, border, radius, padding). Wins over the installed app-wide style." },
+                Prop { name: "segment_style", ty: "Option<Rc<StyleSheet>>", desc: "Override layered on every unselected segment; its color/font reach the label." },
+                Prop { name: "selected_segment_style", ty: "Option<Rc<StyleSheet>>", desc: "Override layered on the selected segment; its color/font reach the label." },
             ])
         }
     }])

@@ -188,3 +188,19 @@ harness = false
 [[test]]
 name = "robot_visibility"
 harness = false
+
+# Real-AppKit test of sibling `z_index`: `apply_style` writes
+# `StyleRules::stacking_z()` to `layer.zPosition` (sticky's raise included;
+# an animated `ZIndex` overrides it)
+# and `FlippedView.hitTest:` gives the click to the sibling painted on top.
+# Main-thread only, for the same reason as `focus_attach`.
+[[test]]
+name = "z_index_stacking"
+harness = false
+
+# Real-AppKit test of a two-axis `scroll_view`: both scrollers, a
+# documentView spanning the content on both axes, and a top+left sticky
+# corner pinned on both. Main-thread only, as `focus_attach`.
+[[test]]
+name = "two_axis_scroll"
+harness = false

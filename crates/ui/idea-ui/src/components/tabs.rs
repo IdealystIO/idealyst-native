@@ -548,7 +548,7 @@ mod tests {
                     data.downcast_ref::<runtime_vocabulary::prims::PrimCell<
                         runtime_vocabulary::prims::ScrollViewPrim,
                     >>()
-                    .is_some_and(|c| c.take().horizontal),
+                    .is_some_and(|c| c.take().axis == runtime_core::ScrollAxis::Horizontal),
                     "the strip must sit in a HORIZONTAL scroll_view"
                 ),
                 _ => panic!("the host's child must be the scroll_view item"),

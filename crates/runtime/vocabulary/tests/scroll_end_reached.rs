@@ -201,3 +201,38 @@ fn regression_flat_list_safe_area_spelled_inline_reaches_the_backend() {
     let hit = log.iter().find(|l| l.starts_with("virtualizer_safe_area "));
     assert!(hit.is_some(), "safe_area never reached the backend; log:\n{log:?}");
 }
+
+/// `axis = ScrollAxis::Both` reaches the backend's `create_scroll_view`
+/// as `Both` — the inline spelling, the glue setter, the prim field and
+/// the handler all carry it — and its end-of-scroll observer watches Y
+/// (a two-axis scroller pages downward). `horizontal = true` still
+/// arrives as `Horizontal`.
+#[test]
+fn a_two_axis_scroll_view_reaches_the_backend_as_both_and_pages_downward() {
+    use runtime_vocabulary::glue::ScrollAxis;
+    let h = harness();
+    let tree: Element = h.world.enter(|| {
+        ui! {
+            view() {
+                scroll_view(axis = ScrollAxis::Both, on_end_reached = || {}) {
+                    text("cell")
+                }
+                scroll_view(horizontal = true) {
+                    text("cell")
+                }
+                scroll_view() {
+                    text("cell")
+                }
+            }
+        }
+    });
+    let _realized = h.mount(tree);
+    h.flush();
+    let mut axes: Vec<_> = h.shared.scroll_axes.borrow().iter().map(|(n, a)| (*n, *a)).collect();
+    axes.sort_by_key(|(n, _)| *n);
+    let axes: Vec<_> = axes.into_iter().map(|(_, a)| a).collect();
+    assert_eq!(axes, vec![ScrollAxis::Both, ScrollAxis::Horizontal, ScrollAxis::Vertical]);
+    let lines = observe_lines(&h);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("horizontal=false"), "{}", lines[0]);
+}

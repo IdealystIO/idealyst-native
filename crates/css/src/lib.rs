@@ -1630,19 +1630,25 @@ fn rules_to_css_impl(rules: &StyleRules, pin_flex_direction: bool, promote_flex:
         ("right", V::Len(&rules.right)),
         ("bottom", V::Len(&rules.bottom)),
         ("left", V::Len(&rules.left)),
-        // Sticky raise. The framework's sticky contract is that a pinned
-        // element paints above the siblings scrolling beneath it — the
-        // native backends raise it to z 1 at sticky registration (see
-        // `runtime_shared::sticky`). CSS alone only gets half of that: a
-        // sticky box at `z-index: auto` beats static siblings but ties
-        // with any POSITIONED one (a `Relative` cell anchoring a resize
-        // handle, a translated drag row) and loses to it on DOM order,
-        // so a frozen table column drew under the later cells. `1`
-        // matches the native raise; an inline animated `ZIndex` still
-        // overrides this class-level value.
+        // `StyleRules::stacking_z` — the one value every backend writes —
+        // emitted whenever the style sets a `z_index` or is sticky, and
+        // left at `auto` otherwise so ordinary stacking is untouched.
+        // CSS honours `z-index` on every flex/grid item, which every
+        // framework node is, so no `position` is forced alongside it.
+        // Sticky's implicit `1` is the framework's sticky contract (a
+        // pinned element paints above the siblings scrolling beneath
+        // it): at `z-index: auto` a sticky box beats static siblings but
+        // ties with any POSITIONED one (a `Relative` cell anchoring a
+        // resize handle, a translated drag row) and loses to it on DOM
+        // order. An inline animated `ZIndex` still overrides this
+        // class-level value.
         (
             "z-index",
-            V::Kw((rules.position == Some(runtime_shared::Position::Sticky)).then_some("1")),
+            V::Owned(
+                (rules.z_index.is_some()
+                    || rules.position == Some(runtime_shared::Position::Sticky))
+                .then(|| rules.stacking_z().to_string()),
+            ),
         ),
         ("font-family", V::Owned(rules.font_family.as_ref().map(font_family_css_value))),
         ("font-weight", V::Kw(rules.font_weight.map(font_weight_css))),
@@ -2447,6 +2453,32 @@ mod tests {
             assert!(!css.contains("z-index"), "{pos:?} must not be raised; got: {css}");
         }
         assert!(!rules_to_css(&StyleRules::default()).contains("z-index"));
+    }
+
+    #[test]
+    fn z_index_lowers_to_css_z_index() {
+        use runtime_shared::{Position, StyleRules};
+        let css = rules_to_css(&StyleRules { z_index: Some(3), ..Default::default() });
+        assert!(css.contains("z-index: 3"), "got: {css}");
+        assert!(!css.contains("position"), "z_index must not force a position; got: {css}");
+        // An explicit 0 still emits: it is what makes the node contain its
+        // subtree (a stacking context), same as a native view.
+        let zero = rules_to_css(&StyleRules { z_index: Some(0), ..Default::default() });
+        assert!(zero.contains("z-index: 0"), "got: {zero}");
+        // Negative clamps to 0 — CSS would otherwise paint it behind its
+        // parent's background, which no native backend can.
+        let neg = rules_to_css(&StyleRules { z_index: Some(-2), ..Default::default() });
+        assert!(neg.contains("z-index: 0") && !neg.contains("-2"), "got: {neg}");
+        // An explicit z_index beats the sticky raise.
+        let sticky = rules_to_css(&StyleRules {
+            z_index: Some(4),
+            position: Some(Position::Sticky),
+            ..Default::default()
+        });
+        assert!(sticky.contains("z-index: 4") && !sticky.contains("z-index: 1"), "got: {sticky}");
+        // Overlays (state/variant arms) lower through the same table.
+        let delta = rules_to_css_delta(&StyleRules { z_index: Some(2), ..Default::default() });
+        assert!(delta.contains("z-index: 2"), "got: {delta}");
     }
 
     // The hyphenated CSS keywords must match the spec spelling (snake_case

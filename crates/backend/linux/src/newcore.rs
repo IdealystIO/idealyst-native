@@ -1123,11 +1123,22 @@ impl caps::ScrollOps for LinuxBackend {
         for (adj, v) in [(sw.hadjustment(), x), (sw.vadjustment(), y)] {
             adj.set_value((v as f64).clamp(adj.lower(), (adj.upper() - adj.page_size()).max(adj.lower())));
         }
+        // The scroller's own `value-changed` sticky hook can't run here:
+        // it re-borrows the backend, which the caller holds as `&mut self`.
+        // Re-pin directly so a programmatic scroll (the navigator's scroll
+        // restore) moves sticky children like a user scroll does.
+        self.update_sticky(Some(node.id), false);
+    }
+
+    /// Watches the axis the framework names (`horizontal` =
+    /// `ScrollAxis::end_axis_is_horizontal`); `on_end` is a dispatch site.
+    fn observe_scroll_end(&mut self, node: &Self::Node, horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
+        LinuxBackend::observe_scroll_end(self, node, horizontal, threshold, flushing0(on_end))
     }
 
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -1146,7 +1157,7 @@ impl caps::ScrollOps for LinuxBackend {
                 schedule_flush();
             })
         });
-        LinuxBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
+        LinuxBackend::create_scroll_view(self, axis, on_scroll, _a11y)
     }
 
     /// Real scroll handle — same trap as `make_view_handle`: the trait

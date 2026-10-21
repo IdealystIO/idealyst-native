@@ -971,7 +971,7 @@ impl caps::ActivityIndicatorOps for WindowsBackend {
 impl caps::ScrollOps for WindowsBackend {
     fn create_scroll_view(
         &mut self,
-        horizontal: bool,
+        axis: runtime_shared::ScrollAxis,
         on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
@@ -985,11 +985,11 @@ impl caps::ScrollOps for WindowsBackend {
         });
         // Delegates to the inherent painted body: a scroll view is a painted
         // View carrying `ScrollInfo`, and the body also marks the Taffy node
-        // `overflow: scroll` on the axis — without that the viewport sizes to
+        // `overflow: scroll` on each scrolling axis — without that the viewport sizes to
         // its content and there is nothing to scroll. The painted model
         // scrolls by offsetting the painter and `position_native_children`,
         // so no per-scroller window class is needed.
-        WindowsBackend::create_scroll_view(self, horizontal, on_scroll, _a11y)
+        WindowsBackend::create_scroll_view(self, axis, on_scroll, _a11y)
     }
 
     fn node_scroll(&self, node: &Self::Node) -> (f32, f32) {
@@ -1000,9 +1000,10 @@ impl caps::ScrollOps for WindowsBackend {
         WindowsBackend::set_node_scroll(self, node, x, y)
     }
 
-    fn observe_scroll_end(&mut self, node: &Self::Node, _horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
-        // The axis is the scroll view's own; `on_end` is a dispatch site.
-        WindowsBackend::observe_scroll_end(self, node, threshold, flushing0(on_end))
+    fn observe_scroll_end(&mut self, node: &Self::Node, horizontal: bool, threshold: f32, on_end: Rc<dyn Fn()>) {
+        // Watches the axis the framework names (`ScrollAxis::
+        // end_axis_is_horizontal`); `on_end` is a dispatch site.
+        WindowsBackend::observe_scroll_end(self, node, horizontal, threshold, flushing0(on_end))
     }
 
     fn make_scroll_view_handle(&self, node: &Self::Node) -> primitives::scroll_view::ScrollViewHandle {

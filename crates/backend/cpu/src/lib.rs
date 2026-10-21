@@ -405,9 +405,7 @@ impl CpuBackend {
         } else {
             (clip, 0.0, 0.0)
         };
-        // Sort children by z-index — higher z paints later (in
-        // front). Stable sort preserves insertion order between
-        // ties, matching the natural "later sibling on top" default.
+        // Higher z paints later (in front); ties keep tree order.
         let ordered = self.children_in_z_order(&data.children);
         for child_id in ordered {
             self.paint_node(
@@ -421,28 +419,21 @@ impl CpuBackend {
         }
     }
 
-    /// Sort `children` by their `z_index`, stably (insertion order
-    /// breaks ties). Higher z paints last (on top). Returns a fresh
-    /// `Vec` rather than mutating the caller's children list so the
+    /// `children` in paint order: ascending effective z
+    /// ([`NodeData::effective_z`]), ties in tree order — the shared
+    /// [`runtime_shared::style::z_paint_order`] rule. Higher z paints
+    /// last (on top); `hit_test` walks the REVERSE so the sibling
+    /// painted on top takes the click. Returns a fresh `Vec` so the
     /// per-frame sort doesn't reorder the framework-visible tree.
     fn children_in_z_order(&self, children: &[u32]) -> Vec<u32> {
-        let mut indexed: Vec<(u32, f32, usize)> = children
+        let zs: Vec<f32> = children
             .iter()
-            .enumerate()
-            .map(|(idx, id)| {
-                let z = self.nodes.get(id).map(|d| d.z_index).unwrap_or(0.0);
-                (*id, z, idx)
-            })
+            .map(|id| self.nodes.get(id).map(|d| d.effective_z()).unwrap_or(0.0))
             .collect();
-        // Sort primarily by z (ascending), secondarily by original
-        // index — gives a stable "later sibling on top, with z as
-        // the override" ordering.
-        indexed.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.2.cmp(&b.2))
-        });
-        indexed.into_iter().map(|(id, _, _)| id).collect()
+        runtime_shared::style::z_paint_order(&zs)
+            .into_iter()
+            .map(|i| children[i])
+            .collect()
     }
 
     /// Dispatch a click at surface pixel coordinates `(x, y)`. Walks

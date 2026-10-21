@@ -500,7 +500,7 @@ impl caps::ActivityIndicatorOps for EmailBackend {
 impl caps::ScrollOps for EmailBackend {
     fn create_scroll_view(
         &mut self,
-        _horizontal: bool,
+        _axis: runtime_shared::ScrollAxis,
         _on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
         _a11y: &AccessibilityProps,
     ) -> Self::Node {
