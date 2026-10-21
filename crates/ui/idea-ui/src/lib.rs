@@ -175,12 +175,12 @@ pub use breakpoint::{
 // and the `*Props` struct + any companion enums. `ui! { Foo(...) }` resolves
 // `Foo` via the type alias, while direct fn-call sites resolve to the fn —
 // they coexist in different namespaces.
-pub use components::alert::{Alert, AlertClose, AlertProps};
+pub use components::alert::{Alert, AlertClose, AlertProps, AlertRestyle, AlertSlotStyles, AlertStyles, AlertVariant};
 pub use components::autocomplete::{
     Autocomplete, AutocompleteProps, AutocompleteSlot, AutocompleteSlotCx,
 };
 pub use components::avatar::{Avatar, AvatarProps, AvatarSize};
-pub use components::badge::{Badge, BadgeProps};
+pub use components::badge::{Badge, BadgeProps, BadgeRestyle, BadgeSlotStyles, BadgeStyles, BadgeVariant};
 pub use components::button::{
     Button, ButtonBlock, ButtonDimmed, ButtonLayout, ButtonProps, ButtonRestyle, ButtonShape, ButtonSize,
     ButtonSlotStyles, ButtonStyles, ButtonVariant,
@@ -253,7 +253,7 @@ pub use components::table::{
     TableFooter, TableFooterProps, TableInset, TableProps, TableRow, TableRowProps, TableVariant,
 };
 pub use components::tabs::{Tab, TabIndicator, Tabs, TabsProps};
-pub use components::tag::{Tag, TagProps};
+pub use components::tag::{Tag, TagProps, TagRestyle, TagSlotStyles, TagStyles, TagVariant};
 pub use components::textarea::{Textarea, TextareaProps};
 pub use components::toast::{
     dismiss_toast, push_standard_toast, push_toast, push_toast_node, push_toast_with, Toast, ToastCard, ToastCardProps,

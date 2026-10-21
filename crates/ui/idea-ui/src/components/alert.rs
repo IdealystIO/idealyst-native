@@ -22,36 +22,125 @@
 //! }
 //! ```
 //!
-//! Same Tone + Variant axes as [`badge`](super::badge::badge). Alert
-//! has its own padding/font/radius in the base stylesheet, so no
-//! Size/Shape axis — adding one would imply a continuous range of
-//! banner densities which we don't have a use for yet.
+//! Same tone × variant axes as [`Badge`](super::badge::Badge). Styling is
+//! [`AlertStyles`]: `root` (the banner), `content` (the title/body
+//! column), `title`, `body`, `close` (the built-in close button) and
+//! `glyph` (its `×`). The text slots carry the fill's foreground on their
+//! own nodes — native text inherits no color from its container.
 //!
 //! Layout is a row: a flex-growing title/body column, then the optional
 //! `action`, then the optional `close`. The action and close slots take
 //! caller-supplied elements verbatim (they carry their own styling and
-//! handlers); only the built-in `×` close and the title/body get Alert's
-//! native text-color stamping.
+//! handlers).
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Element, IdealystSchema, IntoElement, Reactive, StyleApplication, StyleSheet,
+    component, component_styles, ui, AlignItems, Color, Cursor, Element, FlexDirection, FontWeight,
+    IdealystSchema, IntoElement, JustifyContent, Length, Reactive, SlotRestyle, TextAlign,
 };
 
-use idea_theme::extensible::{
-    installed_alert_sheet, installed_alert_text_sheets, tone, variant, ToneRef, VariantRef,
-};
+use idea_theme::extensible::{semantic_tones, tone, ToneRef};
 
-use crate::stylesheets::{AlertContent, TagClose};
+use crate::components::tone_slots::{foreground_arms, surface_arms, with_tone};
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
 
-// Native needs the title/body/`×` color on the text node itself (no
-// parent-color inheritance off web). The text sheets carry their own
-// enumerated `appearance` axis (`installed_alert_text_sheets`, built by
-// `AlertSheetBuilder` alongside the fill), so the component applies the
-// same key it gives the container. Composing the color per instance at
-// the call site would be invisible to the premint dump and pull the live
-// style engine into `--premint` builds.
+component_styles! {
+    /// The styled sections of [`Alert`].
+    pub Alert<IdeaThemeRef> {
+        /// The surface treatment — a tone-aware recipe per value.
+        axis variant { filled, #[default] soft, outlined, ghost }
+
+        /// The banner.
+        slot root {
+            extend(root_surfaces)
+            base(t) {
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                gap: t.spacing.md(),
+                padding_vertical: t.spacing.md(),
+                padding_horizontal: t.spacing.lg(),
+                border_radius: t.radius.md(),
+            }
+        }
+
+        /// The title/body column. `flex_grow: 1` + `min_width: 0` lets it
+        /// take the available width and shrink (wrapping text), so the
+        /// trailing `action` and `close` align to the banner's far edge.
+        slot content {
+            base(_t) {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.0,
+                min_width: 0.0,
+                // Below the theme's smallest spacing step (`xs` = 4px).
+                gap: Length::Px(2.0),
+            }
+        }
+
+        /// The title, in the fill's foreground.
+        slot title {
+            extend(text_foregrounds)
+            base(t) {
+                font_size: t.typography.body_size(),
+                font_weight: FontWeight::SemiBold,
+                line_height: 20.0,
+            }
+        }
+
+        /// The body line, in the fill's foreground.
+        slot body {
+            extend(text_foregrounds)
+            base(t) {
+                font_size: t.typography.body_sm_size(),
+                line_height: 18.0,
+            }
+        }
+
+        /// The built-in close button: a 16×16 hit box with no fill.
+        slot close {
+            base(t) {
+                background: Color("transparent".into()),
+                padding: 0.0,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                cursor: Cursor::Pointer,
+                font_size: t.typography.body_size(),
+                font_weight: FontWeight::Bold,
+                text_align: TextAlign::Center,
+                line_height: 14.0,
+                width: 16.0,
+                height: 16.0,
+                border_radius: t.radius.pill(),
+            }
+            transitions {
+                background: 150ms EaseOut,
+                opacity: 150ms EaseOut,
+            }
+        }
+
+        /// The close button's `×`, in the fill's foreground.
+        slot glyph {
+            extend(text_foregrounds)
+            base(_t) {}
+        }
+    }
+}
+
+fn root_surfaces(s: &mut SlotRestyle<'_, AlertStyles>) {
+    surface_arms(s, &semantic_tones());
+}
+
+fn text_foregrounds(s: &mut SlotRestyle<'_, AlertStyles>) {
+    foreground_arms(s, &semantic_tones());
+}
+
+marker_into_axis!(AlertVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
 
 /// The close affordance shown at an [`Alert`]'s trailing edge.
 ///
@@ -79,7 +168,7 @@ impl Default for AlertClose {
 // → `Reactive<…>`; `title`/`body` are already `Reactive`. `action` (an
 // `Option<Element>`) is skipped (Element isn't wrapped), and `close`
 // (`AlertClose`, a custom element-builder enum) is `#[prop(static)]`.
-#[runtime_core::props]
+#[runtime_core::props(styles = AlertStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct AlertProps {
@@ -93,8 +182,9 @@ pub struct AlertProps {
     /// Semantic color palette (Info, Danger, Warning, Success, …).
     /// Default Info.
     pub tone: ToneRef,
-    /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
-    pub variant: VariantRef,
+    /// Surface treatment (Soft, Filled, Outlined, Ghost, or an app value).
+    /// Default Soft.
+    pub variant: AlertVariant,
     /// Optional trailing action slot — e.g. an "Undo"/"Retry" `Button`,
     /// or any element. Rendered after the text column, before `close`.
     /// Taken verbatim (carries its own styling and handlers).
@@ -113,11 +203,10 @@ impl Default for AlertProps {
             // Info/Soft = the common informational alert. Use Danger/Filled
             // for breaking news, Warning/Soft for cautionary, etc.
             tone: tone::Info.into(),
-            variant: variant::Soft.into(),
+            variant: Reactive::Static(AlertVariant::default()),
             action: None,
             close: AlertClose::None,
-            // (tone/variant: marker `.into()` → `Reactive<…>`; title/body
-            // already `Reactive::Static`; action/close unwrapped.)
+            styles: Default::default(),
         }
     }
 }
@@ -127,64 +216,16 @@ impl Default for AlertProps {
 /// tone × variant axes.
 #[component]
 pub fn Alert(props: AlertProps) -> Element {
-    let tone = props.tone.clone();
-    let variant = props.variant.clone();
-
-    // The container appearance is REACTIVE when tone/variant is live; else the
-    // build-time fast path (no first-paint flicker). The closure reads each
-    // prop's `.get()` INSIDE so the apply-style Effect subscribes to whichever
-    // are dynamic.
-    let style_is_reactive = !tone.is_static() || !variant.is_static();
-    let make_container_style = {
-        let tone = tone.clone();
-        let variant = variant.clone();
-        move || {
-            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-            StyleApplication::new(installed_alert_sheet()).with("appearance", appearance_key)
-        }
-    };
-
-    // The title/body/`×` text nodes apply the SAME appearance key as the
-    // container, on their own text sheets (an enumerated color-only axis —
-    // see the module comment above). When tone/variant are live the key is
-    // rebuilt inside a reactive style closure; the static fast path applies
-    // the snapshot key with no per-node Effect. Either way there is no
-    // per-instance sheet and no override, so both paths premint.
-    let texts = installed_alert_text_sheets();
-    let make_text_app = {
-        let tone = tone.clone();
-        let variant = variant.clone();
-        move |sheet: Rc<StyleSheet>| -> StyleApplication {
-            let key = format!("{}_{}", tone.get().key(), variant.get().key());
-            StyleApplication::new(sheet).with("appearance", key)
-        }
-    };
+    let styles = props.styles.clone();
+    let values = with_tone(AlertStyles::values().set(props.variant.clone()), &props.tone);
 
     let title = props.title.clone();
-    let title_node: Element = if style_is_reactive {
-        let make_text_app = make_text_app.clone();
-        let sheet = texts.title.clone();
-        runtime_core::text(title)
-            .with_style(move || make_text_app(sheet.clone()))
-            .into_element()
-    } else {
-        let title_style = make_text_app(texts.title.clone());
-        ui! { text(style = title_style) { title } }
-    };
-
-    let body_node: Option<Element> = if style_is_reactive {
-        let make_text_app = make_text_app.clone();
-        let sheet = texts.body.clone();
-        crate::components::optional_reactive_text(
-            props.body.clone(),
-            move || make_text_app(sheet.clone()),
-        )
-    } else {
-        crate::components::optional_reactive_text(
-            props.body.clone(),
-            make_text_app(texts.body.clone()),
-        )
-    };
+    let title_style = AlertStyles::title().values(&values).overridden(styles.title.as_ref());
+    let title_node: Element = ui! { text(style = title_style) { title } };
+    let body_node: Option<Element> = crate::components::optional_reactive_text(
+        props.body.clone(),
+        AlertStyles::body().values(&values).overridden(styles.body.as_ref()),
+    );
 
     // Trailing slots. The action element is used verbatim; the close
     // affordance is built from `AlertClose`.
@@ -192,30 +233,19 @@ pub fn Alert(props: AlertProps) -> Element {
     let close_node: Option<Element> = match props.close {
         AlertClose::None => None,
         AlertClose::Button(on_press) => {
-            // Bare `×` text node — color it directly so it shows on native.
-            // Reactive when tone/variant are live; static snapshot otherwise.
-            let close_text = if style_is_reactive {
-                let make_text_app = make_text_app.clone();
-                let sheet = texts.glyph.clone();
-                runtime_core::text("×".to_string())
-                    .with_style(move || make_text_app(sheet.clone()))
-                    .into_element()
-            } else {
-                runtime_core::text("×".to_string())
-                    .with_style(make_text_app(texts.glyph.clone()))
-                    .into_element()
-            };
+            let glyph = runtime_core::text("×".to_string())
+                .with_style(AlertStyles::glyph().values(&values).overridden(styles.glyph.as_ref()))
+                .into_element();
             Some(
-                runtime_core::pressable(vec![close_text], move || (on_press)())
-                    .with_style(TagClose())
+                runtime_core::pressable(vec![glyph], move || (on_press)())
+                    .with_style(AlertStyles::close().values(&values).overridden(styles.close.as_ref()))
                     .into_element(),
             )
         }
         AlertClose::Custom(el) => Some(el),
     };
 
-    // Content column: title + optional body.
-    let content_style = AlertContent();
+    let content_style = AlertStyles::content().values(&values).overridden(styles.content.as_ref());
     let content_col: Element = ui! {
         view(style = content_style) {
             title_node
@@ -224,9 +254,6 @@ pub fn Alert(props: AlertProps) -> Element {
     };
 
     // Outer row: content column, then optional action, then optional close.
-    // The container style is reactive (closure) when tone/variant are live,
-    // else the static snapshot — matching the Tag/Button gate so the static
-    // fast path stays a `StyleSource::Static` (no flicker, what the tests read).
     let mut children: Vec<Element> = Vec::with_capacity(3);
     children.push(content_col);
     if let Some(action) = action_node {
@@ -235,12 +262,9 @@ pub fn Alert(props: AlertProps) -> Element {
     if let Some(close) = close_node {
         children.push(close);
     }
-    let node = runtime_core::view(children);
-    if style_is_reactive {
-        node.with_style(make_container_style).into_element()
-    } else {
-        node.with_style(make_container_style()).into_element()
-    }
+    runtime_core::view(children)
+        .with_style(AlertStyles::root().values(&values).overridden(styles.root.as_ref()))
+        .into_element()
 }
 
 #[cfg(test)]
@@ -254,13 +278,10 @@ mod tests {
     /// every appearance the container itself premints.
     #[test]
     fn regression_alert_text_slots_premint() {
-        use idea_theme::extensible::installed_alert_text_sheets;
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let texts = installed_alert_text_sheets();
-            for sheet in [&texts.title, &texts.body, &texts.glyph] {
-                let app = StyleApplication::new(sheet.clone())
-                    .with("appearance", "danger_filled".to_string());
+            for slot in [AlertStyles::title(), AlertStyles::body(), AlertStyles::glyph()] {
+                let app = slot.raw("tone", "danger").set(AlertVariant::Filled).into_style_application();
                 assert!(
                     app.preminted_class_list().is_some(),
                     "alert text sheet must premint (was call-site composition)"
@@ -300,8 +321,7 @@ mod tests {
     }
 
     fn container_fg() -> runtime_core::Color {
-        let app = StyleApplication::new(installed_alert_sheet())
-            .with("appearance", "primary_filled".to_string());
+        let app = AlertStyles::root().raw("tone", "primary").set(AlertVariant::Filled).into_style_application();
         resolve_style(&app)
             .color
             .clone()

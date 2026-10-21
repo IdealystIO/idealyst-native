@@ -33,7 +33,7 @@
 //!
 //! A standard toast renders an [`Alert`](crate::Alert) surface, so toasts
 //! carry the same `tone` × `variant` styling and theme tokens as Alert
-//! (override globally via `install_alert_sheet(...)`), inherit Alert's
+//! (an `AlertStyles` restyle reaches them), inherit Alert's
 //! native text-color fix — a `Filled` toast's text would otherwise vanish
 //! on iOS/Android, which don't cascade color from the container fill — and
 //! get a × close affordance (on by default) wired to [`dismiss_toast`].
@@ -49,18 +49,68 @@ use idea_theme::compat::SignalModify as _;
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::ViewportPlacement;
 use runtime_core::{
-    after_ms_detached, component, presence, ui, unscope, AlignItems, Easing, FlexDirection,
-    IdealystSchema, IntoElement, JustifyContent, Length, PointerEvents, PresenceAnim,
-    PresenceState, Element, Reactive, Signal, StyleRules, StyleSheet, Tokenized
+    after_ms_detached, component, component_styles, presence, ui, unscope, AlignItems, Easing, Element,
+    FlexDirection, IdealystSchema, IntoElement, JustifyContent, Length, PointerEvents, PresenceAnim, PresenceState,
+    Reactive, Signal, StyleRules, Tokenized,
 };
 
-use idea_theme::extensible::{ToneRef, VariantRef};
+use idea_theme::extensible::ToneRef;
 
 // A standard toast renders an `Alert` (see module docs). `ui!` references
 // the `Alert` type alias `#[component]` generates; `AlertClose` configures
 // its close affordance.
-use crate::components::alert::{Alert, AlertClose};
-use crate::stylesheets::ToastStack;
+use crate::components::alert::{Alert, AlertClose, AlertVariant};
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`ToastHost`] (a standard toast's surface is
+    /// an [`Alert`](crate::Alert) — restyle that through `AlertStyles`).
+    pub Toast<IdeaThemeRef> {
+        /// The positioner filling the portal strip: it pushes the stack into
+        /// the requested region. Top/bottom strips are full-width, so it is
+        /// a row whose `justify_content` picks the horizontal band; the
+        /// middle side strips are full-height, so it is a column, centered
+        /// vertically, `align_items` picking the side. The edge gap rides
+        /// the inline layer.
+        slot positioner {
+            base(_t) {}
+            variant position {
+                top_left(_t) { flex_direction: FlexDirection::Row, justify_content: JustifyContent::FlexStart, width: Length::Percent(100.0) }
+                top_center(_t) { flex_direction: FlexDirection::Row, justify_content: JustifyContent::Center, width: Length::Percent(100.0) }
+                top_right(_t) { flex_direction: FlexDirection::Row, justify_content: JustifyContent::FlexEnd, width: Length::Percent(100.0) }
+                middle_left(_t) { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::FlexStart, height: Length::Percent(100.0) }
+                middle_center(_t) {}
+                middle_right(_t) { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::FlexEnd, height: Length::Percent(100.0) }
+                #[default]
+                bottom_left(_t) { flex_direction: FlexDirection::Row, justify_content: JustifyContent::FlexStart, width: Length::Percent(100.0) }
+                bottom_center(_t) { flex_direction: FlexDirection::Row, justify_content: JustifyContent::Center, width: Length::Percent(100.0) }
+                bottom_right(_t) { flex_direction: FlexDirection::Row, justify_content: JustifyContent::FlexEnd, width: Length::Percent(100.0) }
+            }
+        }
+
+        /// The column of floating toasts. Capped width so a long message
+        /// wraps rather than spanning the viewport.
+        slot stack {
+            base(t) {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Stretch,
+                gap: t.spacing.sm(),
+                padding: t.spacing.md(),
+                width: 360.0,
+                max_width: Length::pct(100.0),
+            }
+        }
+
+        /// One card. Re-enables hit-testing under the click-through host —
+        /// otherwise the close × and any action inside a toast would be
+        /// dead.
+        slot card {
+            base(_t) {
+                pointer_events: PointerEvents::Auto,
+            }
+        }
+    }
+}
 
 /// How long a toast stays fully visible before it begins exiting.
 pub const TOAST_SHOW_MS: i32 = 3200;
@@ -221,7 +271,7 @@ pub struct Toast {
     message: String,
     body: Option<String>,
     tone: ToneRef,
-    variant: VariantRef,
+    variant: AlertVariant,
     action: Option<Rc<dyn Fn() -> Element>>,
     close: ToastClose,
 }
@@ -234,7 +284,7 @@ impl Toast {
             message: message.into(),
             body: None,
             tone: ToneRef::default(),
-            variant: VariantRef::default(),
+            variant: AlertVariant::default(),
             action: None,
             close: ToastClose::Auto,
         }
@@ -246,8 +296,9 @@ impl Toast {
         self
     }
 
-    /// Surface treatment (Filled/Soft/Outline/…).
-    pub fn variant(mut self, variant: impl Into<VariantRef>) -> Self {
+    /// Surface treatment (Filled/Soft/Outlined/Ghost, or an app value of
+    /// Alert's variant axis).
+    pub fn variant(mut self, variant: impl Into<AlertVariant>) -> Self {
         self.variant = variant.into();
         self
     }
@@ -324,14 +375,14 @@ impl Toast {
 /// From remote code it pushes onto the APP's queue (see
 /// [`push_standard_toast`]), where the app's `ToastHost` shows it.
 pub fn push_toast(message: impl Into<String>, tone: impl Into<ToneRef>) -> u64 {
-    push_standard_toast(message.into(), tone.into(), VariantRef::default())
+    push_standard_toast(message.into(), tone.into(), AlertVariant::default())
 }
 
 /// Push a standard toast with an explicit variant.
 pub fn push_toast_with(
     message: impl Into<String>,
     tone: impl Into<ToneRef>,
-    variant: impl Into<VariantRef>,
+    variant: impl Into<AlertVariant>,
 ) -> u64 {
     push_standard_toast(message.into(), tone.into(), variant.into())
 }
@@ -342,7 +393,7 @@ pub fn push_toast_with(
 /// variant cross by key. Toasts built from closures — a [`Toast`] with an
 /// `action`, [`push_toast_node`] — stay in whichever side builds them.
 #[runtime_core::host_fn]
-pub fn push_standard_toast(message: String, tone: ToneRef, variant: VariantRef) -> u64 {
+pub fn push_standard_toast(message: String, tone: ToneRef, variant: AlertVariant) -> u64 {
     Toast::new(message).tone(tone).variant(variant).push()
 }
 
@@ -421,7 +472,7 @@ fn remove_toast(id: u64) {
 // element-builder + flag struct, NOT scalar data) — `#[prop(static)]` so the
 // macro leaves it as-is. The entry's `leaving` flag is read reactively out of
 // the global queue inside `ToastCard`, not via prop reactivity.
-#[runtime_core::props]
+#[runtime_core::props(styles = ToastStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastCardProps {
@@ -434,7 +485,7 @@ pub struct ToastCardProps {
 
 impl Default for ToastCardProps {
     fn default() -> Self {
-        Self { entry: ToastEntry::default() }
+        Self { entry: ToastEntry::default(), styles: Default::default() }
     }
 }
 
@@ -478,27 +529,12 @@ pub fn ToastCard(props: &ToastCardProps) -> Element {
     // any action button inside a toast would be dead. Wrap each card in a
     // view that re-enables pointer events for the card's box only (the gaps
     // between cards stay transparent). No-op on native backends.
+    // Every slot is composed for the premint dump whether or not a toast
+    // showed during its crawl, so the card's class has CSS even though a
+    // card first builds at push time.
     runtime_core::view(vec![card.into_element()])
-        .with_style(interactive_card_sheet())
+        .with_style(ToastStyles::card().overridden(props.styles.card.as_ref()))
         .into_element()
-}
-
-/// A card-local stylesheet whose sole job is to re-enable pointer events
-/// under the click-through toast host. See [`ToastCard`].
-fn interactive_card_sheet() -> Rc<StyleSheet> {
-    ToastCardHitSheet::sheet()
-}
-
-// `stylesheet!` (LINK-time), not `r#static`: a toast card first
-// constructs at PUSH time, after the premint dump's crawl, so a
-// construction-registered sheet (auto-preminted statics included) gets
-// no build-time CSS and the first push panics under `--premint-only`.
-runtime_core::stylesheet! {
-    ToastCardHitSheet<()> {
-        base(_t) {
-            pointer_events: PointerEvents::Auto,
-        }
-    }
 }
 
 // =============================================================================
@@ -549,72 +585,40 @@ impl ToastPlacement {
         }
     }
 
-    /// Style for the positioner view that fills the portal strip and pushes
-    /// the (fixed-width) toast stack into the requested corner, leaving
-    /// `gap` px of breathing room from the hugged edge(s).
-    ///
-    /// Top/Bottom strips are full-width, so the positioner is a `Row` and
-    /// `justify_content` picks the horizontal band. Middle (Left/Right)
-    /// strips are full-height, so the positioner is a `Column` whose
-    /// `justify_content: Center` vertically centers the stack while
-    /// `align_items` picks the side. Uniform `padding: gap` yields the
-    /// edge gap on every hugged side (far-side padding is harmless — the
-    /// stack is already pushed away from it).
-    fn positioner_rules(self, gap: f32) -> StyleRules {
+    /// The positioner slot's `position` arm for this placement.
+    fn position(self) -> ToastPosition {
         use ToastPlacement::*;
-        let full = || Some(Tokenized::Literal(Length::pct(100.0)));
-        let mut rules = match self {
-            // Full-width top/bottom strips: a Row, horizontal band via justify.
-            TopLeft | BottomLeft => StyleRules {
-                flex_direction: Some(FlexDirection::Row),
-                justify_content: Some(JustifyContent::FlexStart),
-                width: full(),
-                ..Default::default()
-            },
-            TopCenter | BottomCenter => StyleRules {
-                flex_direction: Some(FlexDirection::Row),
-                justify_content: Some(JustifyContent::Center),
-                width: full(),
-                ..Default::default()
-            },
-            TopRight | BottomRight => StyleRules {
-                flex_direction: Some(FlexDirection::Row),
-                justify_content: Some(JustifyContent::FlexEnd),
-                width: full(),
-                ..Default::default()
-            },
-            // Full-height side strips: a Column, vertically centered, side via align.
-            MiddleLeft => StyleRules {
-                flex_direction: Some(FlexDirection::Column),
-                justify_content: Some(JustifyContent::Center),
-                align_items: Some(AlignItems::FlexStart),
-                height: full(),
-                ..Default::default()
-            },
-            MiddleRight => StyleRules {
-                flex_direction: Some(FlexDirection::Column),
-                justify_content: Some(JustifyContent::Center),
-                align_items: Some(AlignItems::FlexEnd),
-                height: full(),
-                ..Default::default()
-            },
-            // Center: the portal already centers the (content-sized) stack.
-            MiddleCenter => StyleRules::default(),
-        };
-        // Uniform edge gap on all sides — the stack is pushed into a corner,
-        // so the far-side padding is harmless and the hugged edges get `gap`.
-        let pad = Some(Tokenized::Literal(Length::Px(gap)));
-        rules.padding_top = pad.clone();
-        rules.padding_right = pad.clone();
-        rules.padding_bottom = pad.clone();
-        rules.padding_left = pad;
-        rules
+        match self {
+            TopLeft => ToastPosition::TopLeft,
+            TopCenter => ToastPosition::TopCenter,
+            TopRight => ToastPosition::TopRight,
+            MiddleLeft => ToastPosition::MiddleLeft,
+            MiddleCenter => ToastPosition::MiddleCenter,
+            MiddleRight => ToastPosition::MiddleRight,
+            BottomLeft => ToastPosition::BottomLeft,
+            BottomCenter => ToastPosition::BottomCenter,
+            BottomRight => ToastPosition::BottomRight,
+        }
+    }
+}
+
+/// Uniform `gap` padding for the positioner: the stack is pushed into a
+/// corner, so the far-side padding is harmless and the hugged edges get
+/// `gap`.
+fn edge_gap_rules(gap: f32) -> StyleRules {
+    let pad = Some(Tokenized::Literal(Length::Px(gap)));
+    StyleRules {
+        padding_top: pad.clone(),
+        padding_right: pad.clone(),
+        padding_bottom: pad.clone(),
+        padding_left: pad,
+        ..Default::default()
     }
 }
 
 // Reactive-by-default: `#[props]` wraps the scalar data props (`placement`
 // enum, `edge_gap`) → `Reactive<…>`.
-#[runtime_core::props]
+#[runtime_core::props(styles = ToastStyles)]
 #[derive(IdealystSchema)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 pub struct ToastHostProps {
@@ -631,6 +635,7 @@ impl Default for ToastHostProps {
         Self {
             placement: Reactive::Static(ToastPlacement::default()),
             edge_gap: Reactive::Static(TOAST_EDGE_GAP),
+            styles: Default::default(),
         }
     }
 }
@@ -652,24 +657,25 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
     let placement = props.placement.get();
     let gap = props.edge_gap.get();
 
+    let styles = props.styles.clone();
     // The fixed-width stack of cards.
+    let stack_style = ToastStyles::stack().overridden(styles.stack.as_ref());
     let stack = ui! {
-        view(style = ToastStack()) {
+        view(style = stack_style) {
             for entry in q, key = entry.id {
-                ToastCard(entry = entry)
+                ToastCard(entry = entry, styles = styles.clone())
             }
         }
     };
 
-    // A positioner fills the portal strip and pushes the stack into the
-    // requested corner with `gap` px from the hugged edge(s). Built once —
-    // placement/gap are static props, so no reactive style closure needed.
-    // `r#static` so the positioner auto-premints by content (one class
-    // per distinct placement/gap the app actually mounts) — a closure
-    // sheet here was a live-engine fall-through on the docs corpus.
-    let positioner_sheet: Rc<StyleSheet> =
-        Rc::new(StyleSheet::r#static(placement.positioner_rules(gap)));
-    let positioner = runtime_core::view(vec![stack]).with_style(positioner_sheet).into_element();
+    // The positioner pushes the stack into the requested region (the
+    // `position` arm) with `gap` px from the hugged edge(s) (inline — a
+    // continuous value).
+    let positioner_style = ToastStyles::positioner()
+        .set(placement.position())
+        .inline(edge_gap_rules(gap))
+        .overridden(props.styles.positioner.as_ref());
+    let positioner = runtime_core::view(vec![stack]).with_style(positioner_style).into_element();
 
     runtime_core::overlay(vec![positioner])
         .placement(placement.viewport())
@@ -687,10 +693,12 @@ pub fn ToastHost(props: &ToastHostProps) -> Element {
 mod tests {
     use super::*;
     use crate::test_support::{classify, P, TStyle};
-    use idea_theme::extensible::{installed_alert_sheet, tone, variant};
+    use crate::components::alert::AlertStyles;
+    use crate::variant;
+    use idea_theme::extensible::tone;
     use idea_theme::testing::with_test_world;
     use idea_theme::theme::{install_idea_theme, light_theme};
-    use runtime_core::{resolve_style, Color, StyleApplication};
+    use runtime_core::{resolve_style, Color};
 
     /// User-reported (docs toast page, web): the FIRST `push_toast` from
     /// a click handler panicked with the kernel's "signal()/effect()
@@ -746,7 +754,10 @@ mod tests {
     #[test]
     fn regression_toast_card_opts_into_pointer_events() {
         with_test_world(|| {
-            let card = ToastCard(&ToastCardProps { entry: ToastEntry { id: 1, ..Default::default() } });
+            let card = ToastCard(&ToastCardProps {
+                entry: ToastEntry { id: 1, ..Default::default() },
+                ..Default::default()
+            });
             let pe = match classify(card) {
                 P::View { style: Some(TStyle::App(app)), .. } => {
                     resolve_style(&app).pointer_events
@@ -801,8 +812,7 @@ mod tests {
             install_idea_theme(light_theme());
 
             let expected = resolve_style(
-                &StyleApplication::new(installed_alert_sheet())
-                    .with("appearance", "primary_filled".to_string()),
+                &AlertStyles::root().raw("tone", "primary").set(AlertVariant::Filled).into_style_application(),
             )
             .color
             .clone()

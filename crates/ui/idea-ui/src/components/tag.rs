@@ -15,43 +15,114 @@
 //! }
 //! ```
 //!
-//! Same Tone + Variant axes as [`Badge`](super::badge::Badge) — the
-//! only difference is the optional close affordance. The container
-//! applies the installed theme's tag sheet (`installed_tag_sheet()`),
-//! the label and `×` the matching text sheets
-//! (`installed_tag_text_sheets()`), plus
-//! [`TagClose`](crate::stylesheets::TagClose) for the close button.
+//! Same tone × variant axes as [`Badge`](super::badge::Badge) — the only
+//! difference is the optional close affordance. Styling is [`TagStyles`]:
+//! `root` (the pill), `label`, `close` (the close button) and `glyph` (its
+//! `×`). The label and the `×` carry the fill's foreground on their own
+//! nodes: native text inherits no color from its container.
 
 use std::rc::Rc;
 
 use runtime_core::{
-    component, ui, Element, IdealystSchema, IntoElement, Reactive, StyleApplication, StyleSheet,
+    component, component_styles, ui, AlignItems, AlignSelf, Color, Cursor, Element, FlexDirection, FontWeight,
+    IdealystSchema, IntoElement, JustifyContent, Reactive, SlotRestyle, TextAlign,
 };
 
-use idea_theme::extensible::{
-    installed_tag_sheet, installed_tag_text_sheets, tone, variant, ToneRef, VariantRef,
-};
+use idea_theme::extensible::{categorization_tones, tone, ToneRef};
 
-use crate::stylesheets::TagClose;
+use crate::components::tone_slots::{foreground_arms, surface_arms, with_tone};
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
 
-// Text color lives on the label/`×` text nodes, not just the container:
-// native `UILabel`/`TextView` do NOT inherit text color from a parent
-// (only web's CSS cascade does), so a label colored solely via its
-// wrapping container renders invisible on the colored fill on
-// iOS/Android — the same pattern `Typography` uses. The text sheets
-// carry their own enumerated `appearance` axis (`installed_tag_text_sheets`,
-// built by `TagSheetBuilder` alongside the fill), so the component
-// applies the same key it gives the container. Composing the color per
-// instance at the call site would be invisible to the premint dump and
-// pull the live style engine into `--premint` builds.
+component_styles! {
+    /// The styled sections of [`Tag`].
+    pub Tag<IdeaThemeRef> {
+        /// The surface treatment — a tone-aware recipe per value.
+        axis variant { filled, #[default] soft, outlined, ghost }
+
+        /// The pill.
+        slot root {
+            extend(root_surfaces)
+            base(t) {
+                // Hug: sized to content, not stretched to a flex parent's
+                // cross axis.
+                align_self: AlignSelf::Center,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                gap: t.spacing.xs(),
+                padding_vertical: 2.0,
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.pill(),
+                font_size: t.typography.caption_size(),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.4,
+                text_align: TextAlign::Center,
+            }
+        }
+
+        /// The label text, in the fill's foreground.
+        slot label {
+            extend(text_foregrounds)
+            base(t) {
+                font_size: t.typography.body_sm_size(),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.3,
+            }
+        }
+
+        /// The close button: a 16×16 hit box with no fill of its own.
+        slot close {
+            base(t) {
+                background: Color("transparent".into()),
+                padding: 0.0,
+                // The `×` is a child text node, so flex-center it within the
+                // box — `text_align` alone only centers glyphs inside a text
+                // node, not the node within this container.
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                cursor: Cursor::Pointer,
+                font_size: t.typography.body_size(),
+                font_weight: FontWeight::Bold,
+                text_align: TextAlign::Center,
+                line_height: 14.0,
+                width: 16.0,
+                height: 16.0,
+                border_radius: t.radius.pill(),
+            }
+            transitions {
+                background: 150ms EaseOut,
+                opacity: 150ms EaseOut,
+            }
+        }
+
+        /// The close button's `×`, in the fill's foreground.
+        slot glyph {
+            extend(text_foregrounds)
+            base(_t) {}
+        }
+    }
+}
+
+fn root_surfaces(s: &mut SlotRestyle<'_, TagStyles>) {
+    surface_arms(s, &categorization_tones());
+}
+
+fn text_foregrounds(s: &mut SlotRestyle<'_, TagStyles>) {
+    foreground_arms(s, &categorization_tones());
+}
+
+marker_into_axis!(TagVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
 
 // Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
 // `label` is already reactive and `on_remove` (an `Rc<dyn Fn()>` handler) is
-// auto-skipped. Bare markers (`tone = tone::Primary`) coerce to
-// `Reactive<ToneRef>` via the marker's generated `From`. The style-driving
-// props route into the container-style sink, read `.get()` INSIDE so the
-// apply-style Effect subscribes to whichever are live.
-#[runtime_core::props]
+// auto-skipped. Bare markers (`tone = tone::Primary`, `variant =
+// variant::Soft`) coerce.
+#[runtime_core::props(styles = TagStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct TagProps {
@@ -59,8 +130,9 @@ pub struct TagProps {
     pub label: Reactive<String>,
     /// Semantic color palette. Default Neutral.
     pub tone: ToneRef,
-    /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
-    pub variant: VariantRef,
+    /// Surface treatment (Soft, Filled, Outlined, Ghost, or an app value).
+    /// Default Soft.
+    pub variant: TagVariant,
     /// When `Some`, a close button renders to the right of the label.
     pub on_remove: Option<Rc<dyn Fn()>>,
 }
@@ -70,8 +142,9 @@ impl Default for TagProps {
         Self {
             label: Reactive::Static(String::new()),
             tone: tone::Neutral.into(),
-            variant: variant::Soft.into(),
+            variant: Reactive::Static(TagVariant::default()),
             on_remove: None,
+            styles: Default::default(),
         }
     }
 }
@@ -81,101 +154,40 @@ impl Default for TagProps {
 #[component]
 pub fn Tag(props: &TagProps) -> Element {
     let label = props.label.clone();
-    let tone = props.tone.clone();
-    let variant = props.variant.clone();
+    let styles = props.styles.clone();
+    let values = with_tone(TagStyles::values().set(props.variant.clone()), &props.tone);
 
-    // The container style is REACTIVE when tone/variant is live; else the
-    // build-time fast path (no flicker — see Button). The closure reads each
-    // prop's `.get()` INSIDE so the apply-style Effect subscribes to whichever
-    // are dynamic. The `hug` layer keeps the tag sized to content instead of
-    // stretching to a flex parent's row height (see `components::hug_self`).
-    let style_is_reactive = !tone.is_static() || !variant.is_static();
-    let make_container_style = {
-        let tone = tone.clone();
-        let variant = variant.clone();
-        move || {
-            let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-            StyleApplication::new(installed_tag_sheet())
-                .with("appearance", appearance_key)
-        }
-    };
-
-    // The label + close glyph apply the SAME appearance key as the
-    // container, on their own text sheets (enumerated color-only axis —
-    // native doesn't inherit text color, and per-instance composition
-    // blocked preminting; see the module comment above). Reactive
-    // closure when tone/variant are live, snapshot key otherwise.
-    let texts = installed_tag_text_sheets();
-    let make_text_app = {
-        let tone = tone.clone();
-        let variant = variant.clone();
-        move |sheet: Rc<StyleSheet>| -> StyleApplication {
-            let key = format!("{}_{}", tone.get().key(), variant.get().key());
-            StyleApplication::new(sheet).with("appearance", key)
-        }
-    };
-
-    let container_style = make_container_style();
-
-    let label_el: Element = if style_is_reactive {
-        let make_text_app = make_text_app.clone();
-        let sheet = texts.label.clone();
-        runtime_core::text(label)
-            .with_style(move || make_text_app(sheet.clone()))
-            .into_element()
-    } else {
-        let label_style = make_text_app(texts.label.clone());
-        ui! { text(style = label_style) { label } }
-    };
-    let close_style = TagClose();
+    let label_style = TagStyles::label().values(&values).overridden(styles.label.as_ref());
+    let label_el: Element = ui! { text(style = label_style) { label } };
 
     let mut children: Vec<Element> = Vec::with_capacity(2);
     children.push(label_el);
     if let Some(on_remove) = props.on_remove.clone() {
-        // The `×` is a bare text node inside the pressable; color it on
-        // its own node so it's visible on native (TagClose only sizes
-        // the affordance and "inherits" foreground — which native won't).
-        // Reactive when tone/variant are live (re-resolves the fg in place),
-        // else the static snapshot color.
-        let close_text = if style_is_reactive {
-            let make_text_app = make_text_app.clone();
-            let sheet = texts.glyph.clone();
-            runtime_core::text("×".to_string())
-                .with_style(move || make_text_app(sheet.clone()))
-                .into_element()
-        } else {
-            runtime_core::text("×".to_string())
-                .with_style(make_text_app(texts.glyph.clone()))
-                .into_element()
-        };
-        let close = runtime_core::pressable(vec![close_text], move || (on_remove)())
-            .with_style(close_style)
+        let glyph = runtime_core::text("×".to_string())
+            .with_style(TagStyles::glyph().values(&values).overridden(styles.glyph.as_ref()))
+            .into_element();
+        let close = runtime_core::pressable(vec![glyph], move || (on_remove)())
+            .with_style(TagStyles::close().values(&values).overridden(styles.close.as_ref()))
             .into_element();
         children.push(close);
     }
 
-    let node = runtime_core::view(children);
-    if style_is_reactive {
-        node.with_style(make_container_style).into_element()
-    } else {
-        node.with_style(container_style).into_element()
-    }
+    runtime_core::view(children)
+        .with_style(TagStyles::root().values(&values).overridden(styles.root.as_ref()))
+        .into_element()
 }
 
 #[cfg(test)]
 mod tests {
 
-    /// Mirror of the Alert regression: the label/glyph sheets must
+    /// Mirror of the Alert regression: the label/glyph slots must
     /// premint — the point of replacing the call-site composition.
     #[test]
     fn regression_tag_text_slots_premint() {
-        use idea_theme::extensible::installed_tag_text_sheets;
         with_test_world(|| {
             install_idea_theme(light_theme());
-            let texts = installed_tag_text_sheets();
-            for sheet in [&texts.label, &texts.glyph] {
-                let app = StyleApplication::new(sheet.clone())
-                    .with("appearance", "success_soft".to_string());
+            for slot in [TagStyles::label(), TagStyles::glyph()] {
+                let app = slot.raw("tone", "success").set(TagVariant::Soft).into_style_application();
                 assert!(
                     app.preminted_class_list().is_some(),
                     "tag text sheet must premint (was call-site composition)"
@@ -217,8 +229,7 @@ mod tests {
     /// The intent foreground the filled container resolves to — the color
     /// the label MUST carry on its own node (native won't inherit it).
     fn container_fg() -> runtime_core::Color {
-        let app = StyleApplication::new(installed_tag_sheet())
-            .with("appearance", "primary_filled".to_string());
+        let app = TagStyles::root().raw("tone", "primary").set(TagVariant::Filled).into_style_application();
         resolve_style(&app)
             .color
             .clone()
@@ -259,6 +270,7 @@ mod tests {
                 tone: tone::Primary.into(),
                 variant: variant::Filled.into(),
                 on_remove: Some(std::rc::Rc::new(|| {})),
+                ..Default::default()
             };
             let mut children = view_children(Tag(&props));
             // [label, close-pressable]; the close glyph is the pressable's child.

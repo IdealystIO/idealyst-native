@@ -10,32 +10,77 @@
 //! }
 //! ```
 //!
-//! Styling comes from the installed Badge stylesheet. Apps with
-//! custom tones/variants install an extended sheet via
-//! `install_badge_sheet(BadgeSheetBuilder::new().add_tone(...).build())`
-//! before mounting. The default sheet is installed by
-//! `install_idea_theme`.
+//! Styling is [`BadgeStyles`]: one `root` slot (the pill — a single text
+//! node) drawing one compound per `(tone, variant)` over every
+//! categorization tone (the semantic tones plus the palette hues, plus any
+//! registered app tone). Restyle it or add variants at boot like any
+//! component style.
 
-use runtime_core::{component, text, IdealystSchema, IntoElement, Element, Reactive, StyleApplication};
+use runtime_core::{
+    component, component_styles, text, AlignSelf, Element, FontWeight, IdealystSchema, IntoElement, Reactive,
+    SlotRestyle, TextAlign, TextTransform,
+};
 
-use idea_theme::extensible::{installed_badge_sheet, tone, variant, ToneRef, VariantRef};
+use idea_theme::extensible::{categorization_tones, tone, ToneRef};
+
+use crate::components::tone_slots::{surface_arms, with_tone};
+use crate::modifiers::{marker_into_axis, variant};
+use crate::theme::IdeaThemeRef;
+
+component_styles! {
+    /// The styled sections of [`Badge`].
+    pub Badge<IdeaThemeRef> {
+        /// The surface treatment — a tone-aware recipe per value.
+        axis variant { filled, #[default] soft, outlined, ghost }
+
+        /// The pill.
+        slot root {
+            extend(root_surfaces)
+            base(t) {
+                // Hug: keep the pill sized to content instead of stretching
+                // to a flex parent's cross axis (which would grow it to the
+                // row height and float its label to the top).
+                align_self: AlignSelf::Center,
+                padding_vertical: 2.0,
+                padding_horizontal: t.spacing.sm(),
+                border_radius: t.radius.pill(),
+                font_size: t.typography.caption_size(),
+                font_weight: FontWeight::SemiBold,
+                letter_spacing: 0.4,
+                text_transform: TextTransform::Uppercase,
+                text_align: TextAlign::Center,
+            }
+        }
+    }
+}
+
+fn root_surfaces(s: &mut SlotRestyle<'_, BadgeStyles>) {
+    surface_arms(s, &categorization_tones());
+}
+
+marker_into_axis!(BadgeVariant {
+    variant::Filled => Filled,
+    variant::Soft => Soft,
+    variant::Outlined => Outlined,
+    variant::Ghost => Ghost,
+});
 
 // Reactive-by-default: `#[props]` wraps `tone`/`variant` → `Reactive<…>`;
-// `label` is already reactive. Bare markers (`tone = tone::Success`) coerce
-// to `Reactive<ToneRef>` via the marker's generated `From` (see
-// idea-theme `builtin_tone!`).
-#[runtime_core::props]
+// `label` is already reactive. Bare markers (`tone = tone::Success`,
+// `variant = variant::Soft`) coerce.
+#[runtime_core::props(styles = BadgeStyles)]
 #[cfg_attr(feature = "docs", derive(idea_ui::doc_controls::DocControls))]
 #[derive(IdealystSchema)]
 pub struct BadgeProps {
     /// Badge text. `Reactive<String>` — static or live (signal/`rx!`).
     #[schema(constraint = "reactive: static String or Signal/rx!")]
     pub label: Reactive<String>,
-    /// Semantic color palette (Neutral, Success, Danger, Warning, …).
-    /// Default Neutral.
+    /// Semantic color palette (Neutral, Success, Danger, Warning, …, a
+    /// palette hue, or a registered app tone). Default Neutral.
     pub tone: ToneRef,
-    /// Surface treatment (Soft, Filled, Outline, …). Default Soft.
-    pub variant: VariantRef,
+    /// Surface treatment (Soft, Filled, Outlined, Ghost, or an app value).
+    /// Default Soft.
+    pub variant: BadgeVariant,
 }
 
 impl Default for BadgeProps {
@@ -43,35 +88,19 @@ impl Default for BadgeProps {
         Self {
             label: Reactive::Static(String::new()),
             tone: tone::Neutral.into(),
-            variant: variant::Soft.into(),
+            variant: Reactive::Static(BadgeVariant::default()),
+            styles: Default::default(),
         }
     }
 }
 
 /// Renders a small pill-shaped status indicator: a single styled text
-/// node whose tone × variant appearance is resolved from the installed
-/// Badge stylesheet.
+/// node drawn by [`BadgeStyles::root`].
 #[component]
 pub fn Badge(props: &BadgeProps) -> Element {
-    let label = props.label.clone();
-    let tone = props.tone.clone();
-    let variant = props.variant.clone();
-
-    // Reactive when tone/variant is live; else the build-time fast path (no
-    // first-paint flicker). The closure reads them live so the apply-style
-    // Effect subscribes to whichever are dynamic.
-    let style_is_reactive = !tone.is_static() || !variant.is_static();
-    let make_style = move || {
-        let appearance_key = format!("{}_{}", tone.get().key(), variant.get().key());
-        StyleApplication::new(installed_badge_sheet())
-            .with("appearance", appearance_key)
-    };
-
-    if style_is_reactive {
-        text(label).with_style(make_style).into_element()
-    } else {
-        text(label).with_style(make_style()).into_element()
-    }
+    let values = with_tone(BadgeStyles::values().set(props.variant.clone()), &props.tone);
+    let style = BadgeStyles::root().values(&values).overridden(props.styles.root.as_ref());
+    text(props.label.clone()).with_style(style).into_element()
 }
 
 #[cfg(test)]

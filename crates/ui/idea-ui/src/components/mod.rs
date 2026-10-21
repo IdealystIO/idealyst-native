@@ -247,6 +247,7 @@ runtime_core::doc_scope!(
     docs = "idea-ui's component library — buttons, inputs, layout, overlays, feedback, and data-display widgets, all cross-platform."
 );
 
+pub(crate) mod tone_slots;
 pub mod alert;
 pub mod autocomplete;
 pub mod avatar;
