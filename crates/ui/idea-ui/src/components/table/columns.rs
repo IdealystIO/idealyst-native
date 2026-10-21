@@ -515,8 +515,8 @@ pub(super) struct ColumnModel {
     lead_pin: f32,
 }
 
-/// The overrides a column puts on each of its cells, and whether they
-/// move (a live width, or an inset that sums one).
+/// The inline geometry a column puts on each of its cells, and whether it
+/// moves (a live width, or an inset that sums one).
 struct Geometry {
     live: bool,
     rules: Rc<dyn Fn() -> runtime_core::StyleRules>,
@@ -578,7 +578,7 @@ impl ColumnModel {
         }
     }
 
-    /// The overrides column `i` puts on its cells, if any.
+    /// The inline geometry column `i` puts on its cells, if any.
     fn geometry(&self, i: usize) -> Option<Geometry> {
         use runtime_core::{Length, StyleRules, Tokenized};
         let col = &self.cols[i];
@@ -680,10 +680,10 @@ impl ColumnModel {
         if let Some(g) = self.geometry(i) {
             let rules = g.rules.clone();
             if g.live {
-                table::map_cell_style(cell, Rc::new(move |app| app.with_overrides(rules())));
+                table::map_cell_style(cell, Rc::new(move |app| app.with_inline_merged(rules())));
             } else {
                 let fixed = rules();
-                table::map_cell_application(cell, Rc::new(move |app| app.with_overrides(fixed.clone())));
+                table::map_cell_application(cell, Rc::new(move |app| app.with_inline_merged(fixed.clone())));
             }
         }
         let is_head = table::cell_application(cell)

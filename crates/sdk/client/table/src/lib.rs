@@ -1110,10 +1110,24 @@ fn needs_grid(specs: &[Option<ColumnSpec>]) -> bool {
 /// track per column, re-read live so a column width bound to a signal
 /// moves its track. A column no cell sized is content-sized, like an
 /// unsized [`ColumnTrack`].
+///
+/// `display: grid` is a constant sheet that premints; the track list is
+/// continuous per table, so it rides the inline layer. A raw rules
+/// closure would need the runtime style engine, which a `--premint-only`
+/// web bundle does not ship.
 fn grid_columns_style(specs: Vec<Option<ColumnSpec>>) -> StyleProp {
-    StyleProp::Dynamic(Box::new(move || {
-        Rc::new(StyleRules {
-            display: Some(DisplayKind::Grid),
+    fn grid_sheet() -> Rc<runtime_shared::StyleSheet> {
+        static KEY: u8 = 0;
+        runtime_shared::cached_stylesheet(&KEY as *const u8 as usize, || {
+            runtime_shared::StyleSheet::r#static(StyleRules {
+                display: Some(DisplayKind::Grid),
+                ..Default::default()
+            })
+            .premint_as("table.v1.grid")
+        })
+    }
+    StyleProp::SheetDynamic(Box::new(move || {
+        runtime_shared::StyleApplication::new(grid_sheet()).with_inline(StyleRules {
             grid_template_columns: Some(
                 specs
                     .iter()
@@ -1757,12 +1771,12 @@ fn compose_rules(prop: Option<StyleProp>, overlay: StyleRules) -> StyleProp {
             }))
         }
         Some(StyleProp::Sheet(app)) => {
-            StyleProp::Sheet(Box::new(app.with_overrides(overlay)))
+            StyleProp::Sheet(Box::new(app.with_inline_merged(overlay)))
         }
         Some(StyleProp::SheetDynamic(f)) => {
             let overlay_cell = std::cell::RefCell::new(overlay);
             StyleProp::SheetDynamic(Box::new(move || {
-                f().with_overrides(overlay_cell.borrow().clone())
+                f().with_inline_merged(overlay_cell.borrow().clone())
             }))
         }
         Some(other) => {

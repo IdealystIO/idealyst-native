@@ -1734,6 +1734,78 @@ fn regression_column_model_one_spec_sizes_header_and_body() {
     });
 }
 
+/// A `--premint-only` bundle ships no runtime style engine: a node renders
+/// only through its preminted classes plus an inline style. A table's
+/// continuous geometry — a column width (fixed or following a resize), a
+/// frozen column's offset, a pixel edge inset, a grid track placement —
+/// rode the override layer, which takes an application off the premint
+/// path, so every sized or frozen cell panicked in such a bundle. That
+/// geometry is per-instance and belongs on the inline layer: every cell
+/// keeps its preminted classes AND resolves to the same rules.
+#[test]
+fn regression_table_geometry_keeps_cells_premintable() {
+    with_test_world(|| {
+        let widths = signal(ColumnWidths::new());
+        let t = Table(TableProps {
+            columns: vec![
+                TableColumn::new("name").width(200.0).pinned(ColumnPin::Left).resizable(),
+                TableColumn::new("hours").width(120.0).pinned(ColumnPin::Left),
+                TableColumn::new("notes").fill(),
+            ],
+            column_widths: Some(widths),
+            on_column_resize: Some(Rc::new(|_, _| {})),
+            selection: Some(signal(BTreeSet::new())),
+            inset_x: Reactive::Static(TableInset::Px(28.0)),
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("Hours"), head_cell("Notes")]),
+                TableRow(TableRowProps {
+                    id: Some("a".into()),
+                    children: vec![body_cell("Ana"), body_cell("8"), body_cell("x")],
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        });
+        let cells = grid_cells(t);
+        assert!(!cells.is_empty());
+        let mut saw_offset = false;
+        for (i, cell) in cells.into_iter().enumerate() {
+            let app = cell_app(cell);
+            assert!(
+                app.preminted_class_list().is_some(),
+                "cell {i} must stay on the premint path (overrides: {:?})",
+                app.overrides
+            );
+            let r = runtime_core::resolve_style(&app);
+            if px_of(&r.left).is_some_and(|l| l > 0.0) {
+                saw_offset = true;
+            }
+        }
+        assert!(saw_offset, "the second frozen column still resolves its offset");
+
+        // The scroll-y surface's `max_height` cap rides the same layer.
+        use runtime_vocabulary::prims::{PrimCell, ViewPrim};
+        let t = Table(TableProps {
+            children: vec![row_of(vec![head_cell("Name")]), row_of(vec![body_cell("Ana")])],
+            scroll_y: true,
+            max_height: Some(300.0),
+            ..Default::default()
+        });
+        let surface = match peel_owned_keepalive(t) {
+            Element::Item { data, .. } => data.downcast_ref::<PrimCell<ViewPrim>>().expect("surface view").take(),
+            _ => panic!("a scrolling table lowers to its surface view"),
+        };
+        match surface.style.expect("surface carries the Table sheet") {
+            runtime_vocabulary::StyleProp::Sheet(app) => {
+                assert!(app.preminted_class_list().is_some(), "the capped surface stays premintable");
+                assert_eq!(px_of(&runtime_core::resolve_style(&app).max_height), Some(300.0));
+            }
+            _ => panic!("the Table sheet is a static application"),
+        }
+    });
+}
+
+
 /// A `fill` column takes the width the others leave: the table lays out
 /// as grid tracks, the fixed column exact and the fill column `1fr`.
 #[test]

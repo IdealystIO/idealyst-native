@@ -1259,6 +1259,7 @@ fn grid_rules(prop: Option<StyleProp>) -> runtime_vocabulary::glue::StyleRules {
     match prop {
         Some(StyleProp::Dynamic(f)) => (*f()).clone(),
         Some(StyleProp::Sheet(app)) => (*resolve_style(&app)).clone(),
+        Some(StyleProp::SheetDynamic(f)) => (*resolve_style(&f())).clone(),
         _ => panic!("grid style is a rules closure or a sheet"),
     }
 }
@@ -1338,12 +1339,33 @@ fn live_column_spec_is_re_read_by_the_grid_style() {
     ])];
     let t = table(TableProps { children: rows, ..Default::default() }).into_element();
     let inner = item_children(t).pop().expect("outer wraps the grid");
-    let Some(StyleProp::Dynamic(f)) = take_view_prim(&inner).style else {
-        panic!("a grid-column table's style is a live rules closure");
+    let Some(StyleProp::SheetDynamic(f)) = take_view_prim(&inner).style else {
+        panic!("a grid-column table's style is a live sheet application");
     };
-    assert_eq!(f().grid_template_columns.as_ref().unwrap()[0], TrackSize::Px(100.0));
+    let tracks = |f: &dyn Fn() -> glue::StyleApplication| resolve_style(&f()).grid_template_columns.clone().unwrap();
+    assert_eq!(tracks(&*f)[0], TrackSize::Px(100.0));
     width.set(180.0);
-    assert_eq!(f().grid_template_columns.as_ref().unwrap()[0], TrackSize::Px(180.0));
+    assert_eq!(tracks(&*f)[0], TrackSize::Px(180.0));
+}
+
+/// A `--premint-only` web bundle has no runtime style engine, and a
+/// grid-column table's node styled itself with a raw rules closure — the
+/// one shape that always needs the engine — so every table with a `fill`
+/// column panicked at mount. The grid is a premintable sheet now; only
+/// the live track list rides the inline layer.
+#[test]
+fn regression_grid_column_table_style_is_premintable() {
+    let t = table(TableProps { children: name_type_page_rows(), ..Default::default() }).into_element();
+    let inner = item_children(t).pop().expect("outer wraps the grid");
+    let app = match take_view_prim(&inner).style {
+        Some(StyleProp::SheetDynamic(f)) => f(),
+        Some(StyleProp::Sheet(app)) => *app,
+        _ => panic!("the grid style must be a sheet application, not a raw rules closure"),
+    };
+    assert!(app.preminted_class_list().is_some(), "the grid node keeps a preminted class");
+    let rules = resolve_style(&app);
+    assert_eq!(rules.display, Some(DisplayKind::Grid));
+    assert_eq!(rules.grid_template_columns.as_ref().map(Vec::len), Some(3));
 }
 
 fn web_cell(header: bool, label: &str, track: Option<ColumnTrack>) -> Element {

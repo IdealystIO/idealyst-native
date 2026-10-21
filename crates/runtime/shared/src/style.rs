@@ -3962,6 +3962,19 @@ impl StyleApplication {
         self
     }
 
+    /// Merge `rules` over the existing inline layer — fields `rules` sets
+    /// win, every other inline field stays. For a component that layers
+    /// several continuous values onto one node at different points (a
+    /// table cell's column width, then its frozen offset, then a pixel edge
+    /// inset): [`Self::with_inline`] would keep only the last.
+    pub fn with_inline_merged(mut self, rules: StyleRules) -> Self {
+        self.inline = Some(Rc::new(match self.inline.take() {
+            Some(prev) => (*prev).clone().merge(&rules),
+            None => rules,
+        }));
+        self
+    }
+
     /// The inline layer, if any. Backends that stamp preminted classes
     /// apply this separately; the live engine folds it in during `resolve`.
     pub fn inline(&self) -> Option<&Rc<StyleRules>> {

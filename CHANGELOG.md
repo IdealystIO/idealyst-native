@@ -1963,6 +1963,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   the trigger spilled under the page numbers; the pager now sets the
   trigger's floor through its slot override.
 
+- **Tables render in a `--premint-only` bundle** (`table`, `idea-ui`,
+  `runtime-shared`). A column width (fixed or following a resize), a
+  frozen column's offset, a pixel `inset_x`, a `scroll_y` table's
+  `max_height` and grid placement rode the override layer, and a
+  grid-column table's node styled itself with a raw rules closure, so
+  every sized, frozen or `fill`-column table panicked at mount without the
+  runtime style engine. That geometry now rides the inline layer over
+  preminted classes, and the grid node is a premintable sheet. New
+  `StyleApplication::with_inline_merged` layers rules onto the inline
+  layer instead of replacing it. The table's geometry wins over a cell
+  `styles` slot override for the fields it sets.
 - **A header row with reactive cell styles pins in a `scroll_y` table**
   (`table`, `idea-ui`). `table::cell_application` returned `None` for a
   cell styled with `StyleProp::SheetDynamic`, so idea-ui never counted

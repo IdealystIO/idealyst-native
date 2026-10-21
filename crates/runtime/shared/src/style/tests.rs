@@ -2232,6 +2232,25 @@ fn inline_layer_does_not_disqualify_preminting() {
     assert!(with_computed.preminted_class_list().is_none());
 }
 
+/// `with_inline_merged` layers onto the inline layer instead of replacing
+/// it: a later field wins, an untouched one survives, and the application
+/// stays premintable.
+#[test]
+fn inline_merged_layers_over_the_existing_inline_rules() {
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    let app = StyleApplication::new(inline_sheet())
+        .with_inline(StyleRules { width: px(100.0), left: px(10.0), ..Default::default() })
+        .with_inline_merged(StyleRules { left: px(54.0), ..Default::default() })
+        .with_inline_merged(StyleRules { padding_left: px(28.0), ..Default::default() });
+    let inline = app.inline().expect("an inline layer");
+    assert_eq!(inline.width, px(100.0), "an untouched field survives");
+    assert_eq!(inline.left, px(54.0), "a later field wins");
+    assert_eq!(inline.padding_left, px(28.0));
+    let first = StyleApplication::new(inline_sheet())
+        .with_inline_merged(StyleRules { width: px(5.0), ..Default::default() });
+    assert_eq!(first.inline().map(|r| r.width.clone()), Some(px(5.0)), "merging onto none sets it");
+}
+
 /// A `r#static` sheet auto-premints: its class derives from the rules'
 /// CONTENT KEY, so the dump binary and the shipped bundle agree on the
 /// name with no hand-written `premint_as` identity ("extract the CSS

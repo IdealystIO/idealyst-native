@@ -538,7 +538,8 @@ impl TableInset {
 
     /// Apply this inset to one side of a cell or slot application:
     /// a token selects the sheet arm (preminted), an exact length rides
-    /// an override.
+    /// the inline layer (still preminted: the classes ship, the length is
+    /// an inline style).
     fn apply(self, app: StyleApplication, side: InsetSide) -> StyleApplication {
         if let Some(arm) = self.arm() {
             return app.with(side.axis(), arm);
@@ -546,7 +547,7 @@ impl TableInset {
         match self {
             TableInset::Px(v) => {
                 let len = Some(Tokenized::Literal(Length::Px(v)));
-                app.with_overrides(match side {
+                app.with_inline_merged(match side {
                     InsetSide::Left => StyleRules { padding_left: len, ..Default::default() },
                     InsetSide::Right => StyleRules { padding_right: len, ..Default::default() },
                 })
@@ -761,7 +762,7 @@ pub fn Table(props: TableProps) -> Element {
         .with("variant", frame)
         .with("scroll", if props.scroll_y { "fill" } else { "off" });
     let style = match props.max_height.filter(|_| props.scroll_y) {
-        Some(h) => style.with_overrides(StyleRules {
+        Some(h) => style.with_inline_merged(StyleRules {
             max_height: Some(Tokenized::Literal(Length::Px(h))),
             ..Default::default()
         }),
@@ -1170,11 +1171,11 @@ fn shift_left_pin(app: StyleApplication, by: f32) -> StyleApplication {
     if app.variants.0.get("pinned").map(String::as_str) != Some("left") {
         return app;
     }
-    let own = match app.overrides.left.as_ref().map(|l| l.resolve()) {
+    let own = match app.inline().and_then(|r| r.left.as_ref()).map(|l| l.resolve()) {
         Some(Length::Px(v)) => v,
         _ => 0.0,
     };
-    app.with_overrides(StyleRules {
+    app.with_inline_merged(StyleRules {
         left: Some(Tokenized::Literal(Length::Px(own + by))),
         ..Default::default()
     })
@@ -1204,7 +1205,7 @@ fn pin_builtin(cell: Element, offset: f32) -> Element {
             if offset == 0.0 {
                 app
             } else {
-                app.with_overrides(StyleRules {
+                app.with_inline_merged(StyleRules {
                     left: Some(Tokenized::Literal(Length::Px(offset))),
                     ..Default::default()
                 })
@@ -1554,6 +1555,11 @@ pub fn TableFooter(props: TableFooterProps) -> Element {
 /// using the header/body typography token. To compose richer content
 /// (links, badges, multiple inline pieces) pass `text = None` and
 /// use the `children` block instead.
+///
+/// The geometry the table computes for a cell (its column width and
+/// floor, a frozen column's offset, a pixel edge inset, its grid
+/// placement) is applied after a `styles` slot override and wins over it
+/// for those fields; size a column with `width` / `Table(columns = …)`.
 // Reactive-by-default: `text`, `width` and `min_width` are reactive and
 // `children` is a LIST (auto-skipped). The `#[prop(static)]` fields are
 // STRUCTURAL — each picks an SDK element, a grid placement, or a style
@@ -1810,9 +1816,11 @@ pub fn TableCell(props: TableCellProps) -> Element {
     };
 
     // Geometry the sheet cannot enumerate — a column width, a pin inset —
-    // rides `with_overrides` on top of the selected arms. Overrides take
-    // a cell off the premint path, so a cell that sets none keeps the
-    // pure axis selection (and the `Sheet` hand-off above).
+    // rides the inline layer on top of the selected arms: the cell keeps
+    // its preminted classes, so a `--premint-only` bundle (no runtime
+    // style engine) still renders it. Not `with_overrides`, which takes an
+    // application off the premint path. Table geometry is merged last, so
+    // it wins over a cell slot override for the fields it sets.
     let pinned = props.pinned;
     let pin_offset = props.pin_offset;
     let geometry = move |width: Option<f32>, min_width: Option<f32>| -> Option<StyleRules> {
@@ -1837,7 +1845,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
     let cell = match (props.width, props.min_width) {
         (Reactive::Static(width), Reactive::Static(min_width)) => {
             let app = match geometry(width, min_width) {
-                Some(rules) => app.with_overrides(rules),
+                Some(rules) => app.with_inline_merged(rules),
                 None => app,
             };
             bound.with_style(StyleProp::Sheet(Box::new(app))).into_element()
@@ -1849,7 +1857,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
             let min_width = Rc::new(min_width);
             let style = move || -> StyleApplication {
                 match geometry(width.get(), min_width.get()) {
-                    Some(rules) => app.clone().with_overrides(rules),
+                    Some(rules) => app.clone().with_inline_merged(rules),
                     None => app.clone(),
                 }
             };
