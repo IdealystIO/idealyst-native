@@ -5,7 +5,7 @@
 //! ```ignore
 //! use std::rc::Rc;
 //! use idea_ui::{Alert, AlertClose};
-//! use idea_theme::extensible::{tone, variant};
+//! use idea_ui::{tone, variant};
 //!
 //! ui! {
 //!     Alert(

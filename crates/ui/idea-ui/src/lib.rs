@@ -227,7 +227,10 @@ pub use components::field::{
     Adornment, Field, FieldAdorned, FieldAppearance, FieldDimmed, FieldPlacement, FieldProps, FieldRestyle,
     FieldRing, FieldSize, FieldSlotStyles, FieldStyles, FieldTone,
 };
-pub use components::icon_button::{IconButton, IconButtonProps, IconButtonSize};
+pub use components::icon_button::{
+    IconButton, IconButtonProps, IconButtonRestyle, IconButtonSelected, IconButtonSize, IconButtonSlotStyles,
+    IconButtonStyles, IconButtonVariant,
+};
 pub use components::modal::{Modal, ModalContent, ModalPresentation, ModalProps};
 pub use components::popover::{Popover, PopoverProps};
 // The anchoring vocabulary of Popover / Menu / SubMenu / Tooltip props

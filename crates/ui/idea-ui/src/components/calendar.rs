@@ -36,7 +36,8 @@ use runtime_core::{
     IdealystSchema, IntoElement, Signal, StyleApplication,
 };
 
-use idea_theme::extensible::{tone, variant};
+use crate::variant;
+use idea_theme::extensible::tone;
 
 use crate::components::icon_button::{IconButton, IconButtonSize};
 use crate::date::{CivilDate, DateLabels, Weekday};
