@@ -1196,6 +1196,30 @@ fn plain_table_drops_the_header_band_but_frozen_heads_stay_opaque() {
     });
 }
 
+/// CrewForge (want_58b4a2a5): the pinned header row of a `Plain`
+/// `scroll_y` table was transparent — `(variant: plain, row_hovered:
+/// off)` cleared the band and nothing restated a fill for the pinned
+/// row, so header text overprinted whatever passed behind it. The
+/// pinned header paints the surface; an unpinned plain header stays
+/// transparent, and a hovered (sortable) one keeps its hover tint.
+#[test]
+fn regression_plain_pinned_header_is_opaque() {
+    with_test_world(|| {
+        let head = |sticky: &'static str, hovered: &'static str| {
+            runtime_core::resolve_style(
+                &TableStyles::head_cell()
+                    .into_style_application()
+                    .with("variant", "plain")
+                    .with("sticky_header", sticky)
+                    .with("row_hovered", hovered),
+            )
+        };
+        assert_eq!(bg_token(&head("on", "off")).as_deref(), Some("color-surface"), "pinned: opaque");
+        assert!(is_transparent(&head("off", "off").background), "unpinned plain head has no band");
+        assert_eq!(bg_token(&head("on", "on")).as_deref(), Some("color-surface-alt"), "hover still tints");
+    });
+}
+
 /// The whole feature at the component layer: in a plain scroll-x
 /// table, ONLY the frozen cells go reactive, and they start with their
 /// inner edge hidden (nothing is measured as scrolled beneath them

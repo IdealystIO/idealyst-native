@@ -303,6 +303,13 @@ component_styles! {
             compound (variant: plain, pinned: right, row_hovered: off)(t) {
                 background: t.color.surface(),
             }
+            // The pinned header row of a plain `scroll_y` table is opaque
+            // too: a pinned header cell left transparent shows whatever
+            // passes behind it — the rows, if they ever reach it, or a
+            // column scrolled sideways under a frozen one.
+            compound (variant: plain, sticky_header: on, row_hovered: off)(t) {
+                background: t.color.surface(),
+            }
             // A frozen column's inner-edge hairline, for a `plain` table:
             // `Table` selects `hidden` while nothing is scrolled beneath that
             // edge, so the line appears only once content slides under the

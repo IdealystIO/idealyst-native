@@ -1954,6 +1954,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A plain table's pinned header is opaque** (`idea-ui`). In
+  `Table(variant = Plain, scroll_y = true)` the header cells kept the
+  plain variant's transparent fill, so header text overprinted whatever
+  passed behind it; `TableStyles` now states `background: surface` for
+  `(variant: plain, sticky_header: on)`.
 - **A focused text input removed by navigation no longer aborts the app**
   (`runtime-vocabulary`). Its `on_focus` handler is scope-guarded like the
   input's other callbacks; the blur fired during teardown wrote a freed
