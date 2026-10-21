@@ -214,6 +214,14 @@ rejects a non-class-safe key at compile time), `FieldRestyle`, and
 `FieldSlotStyles` (per-instance overrides, added to a props struct by
 `#[props(styles = FieldStyles)]`).
 
+**App values.** `axis_values! { impl FieldAppearance { Pill } }` (in the
+axis type's crate) or `axis_values! { pub trait AppAppearances for
+FieldAppearance { Pill } }` (from any other crate) adds named values whose
+keys derive from the names (`Pill` → `"pill"`, `PillShape` →
+`"pill_shape"`): each is `FieldAppearance::define(key)`, so it reads like
+a built-in at call sites, in restyle arms and in `match` patterns (an open
+axis needs a `_` arm). See the design-systems guide.
+
 **Composition.** `FieldStyles::input()` returns a `SlotStyle` over the
 slot's *composed* sheet, cached per component in a thread-local registry
 keyed by the styles type's `TypeId` (two libraries can both ship a

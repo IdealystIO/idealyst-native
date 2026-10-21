@@ -247,16 +247,17 @@ marker_into_axis!(ButtonVariant {
 marker_into_axis!(ButtonSize { size::Sm => Sm, size::Md => Md, size::Lg => Lg });
 marker_into_axis!(ButtonShape { shape::Sm => Sm, shape::Md => Md, shape::Lg => Lg, shape::Pill => Pill });
 
-#[allow(non_upper_case_globals)]
-impl ButtonVariant {
-    /// The opt-in accent-gradient variant ([`variant::Gradient`]). Draws
-    /// once an app adds its arms at boot — see the recipe's docs.
-    pub const Gradient: Self = Self::define("gradient");
+runtime_core::axis_values! {
+    impl ButtonVariant {
+        /// The opt-in accent-gradient variant ([`variant::Gradient`]). Draws
+        /// once an app adds its arms at boot — see the recipe's docs.
+        Gradient,
+    }
 }
 
 /// Props for [`Button`]. `variant`, `size` and `shape` are Button's own
 /// axes — a built-in marker (`variant::Ghost`, `size::Sm`, `shape::Pill`)
-/// converts, as does an app value (`ButtonVariant::define("raised")`).
+/// converts, as does an app value (`axis_values!`, or `ButtonVariant::define`).
 /// `tone` is the shared palette.
 // Reactive-by-default: `#[props]` wraps each data field. Style axes
 // (tone/variant/size/shape) route to the style sink; structural props

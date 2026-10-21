@@ -173,6 +173,24 @@ pub fn component_styles(input: TokenStream) -> TokenStream {
     expand::component_styles(input.into()).into()
 }
 
+/// `axis_values! { … }` — app-defined values of a `component_styles!` axis,
+/// named like its built-ins. The key is derived from the name (`Glow` →
+/// `"glow"`, `PillShape` → `"pill_shape"`), never written by hand.
+///
+/// ```ignore
+/// // The axis type's own crate: inherent consts — `ChipLook::Glow`.
+/// axis_values! { impl ChipLook { Glow, Dashed } }
+/// // Any other crate: a trait (bring it into scope) — `ButtonVariant::Raised`.
+/// axis_values! { pub trait BrandVariants for ButtonVariant { Raised, Tinted } }
+/// ```
+///
+/// Each value is `<Type>::define("<key>")`: usable in `ui!` props, restyle
+/// arms and `match` patterns (with a `_` arm — an axis is open).
+#[proc_macro]
+pub fn axis_values(input: TokenStream) -> TokenStream {
+    expand::axis_values(input.into()).into()
+}
+
 /// `#[host_fn]` — an app function remote code can call: the function in the
 /// app, a stub asking the app to run it in a remote bundle. Arguments and
 /// result cross as `RemoteValue`s. It may be generic over `Key`, `Opaque`

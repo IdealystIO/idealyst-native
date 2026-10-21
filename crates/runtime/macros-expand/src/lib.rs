@@ -86,6 +86,7 @@ mod external_emit;
 mod hot_split;
 #[cfg(feature = "catalog")]
 mod mcp_emit;
+mod axis_values;
 mod component_styles;
 #[cfg(feature = "catalog")]
 mod schema_emit;
@@ -310,6 +311,14 @@ pub fn component_styles(input: TokenStream) -> TokenStream {
     let content_hash = stylesheet::content_hash(&input.to_string());
     let parsed = parse_or_return!(input => component_styles::ComponentStylesDecl);
     finish(component_styles::emit(parsed, content_hash))
+}
+
+/// `axis_values! { … }`. See `axis_values`: app-defined values of a
+/// `component_styles!` axis, named like the built-ins, keys derived from
+/// the names.
+pub fn axis_values(input: TokenStream) -> TokenStream {
+    let parsed = parse_or_return!(input => axis_values::AxisValuesDecl);
+    finish(axis_values::emit(parsed))
 }
 
 /// `#[host_fn]`. See `host_fn`.

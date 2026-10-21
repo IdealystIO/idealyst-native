@@ -14,7 +14,8 @@ use idea_ui::{
     StackAxis, StackGap, tone, variant, size,
 };
 
-use crate::restyles::RAISED;
+use crate::restyles::DocsButtonVariants;
+use idea_ui::ButtonVariant;
 
 use crate::pages::body;
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, H3, P};
@@ -55,8 +56,8 @@ pub fn button() -> Element {
         },
         ui! {
             Section(title = "Your own variant".to_string()) {
-                P(content = "Button's variant axis is open. `ButtonVariant::define(\"raised\")` is a \
-                    new value, and one restyle at boot gives it a look — here a tone-aware recipe, \
+                P(content = "Button's variant axis is open. `axis_values!` names a new value — \
+                    `ButtonVariant::Raised`, its key derived from the name — and one restyle at boot gives it a look — here a tone-aware recipe, \
                     rendered over every tone the way the built-ins are, so `tone = …` still picks \
                     the fill. The restyle composes into Button's sheets, so the new arms premint \
                     like the built-in ones.".to_string())
@@ -145,12 +146,14 @@ const GRADIENT_OPT_IN: &str = "ButtonStyles::restyle(|s| {
     s.tone_variant(ButtonVariant::Gradient, &variant::Gradient)
 });";
 
-const CUSTOM_VARIANT: &str = r##"pub const RAISED: ButtonVariant = ButtonVariant::define("raised");
+const CUSTOM_VARIANT: &str = r##"// A new value, named like the built-ins (key: "raised"). From the app crate
+// it arrives as a trait on idea-ui's type: import the trait to use it.
+axis_values! { pub trait AppButtonVariants for ButtonVariant { Raised } }
 
 /// The tone's fill and foreground, lifted by a shadow.
 pub struct Raised;
 impl Variant for Raised {
-    fn key(&self) -> &'static str { "raised" }
+    fn key(&self) -> &'static str { ButtonVariant::Raised.key() }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
         let mut s = no_border();
         s.background = Some(ctx.tone.fill_bg(ctx.theme));
@@ -161,10 +164,10 @@ impl Variant for Raised {
 }
 
 // At boot, before the first render:
-ButtonStyles::restyle(|s| s.tone_variant(RAISED, &Raised));
+ButtonStyles::restyle(|s| s.tone_variant(ButtonVariant::Raised, &Raised));
 
 // Anywhere:
-Button(label = "Raised".into(), on_click = go, tone = tone::Success, variant = RAISED)"##;
+Button(label = "Raised".into(), on_click = go, tone = tone::Success, variant = ButtonVariant::Raised)"##;
 
 const RESTYLE: &str = r##"// Every Button in the app, once at boot:
 ButtonStyles::restyle(|s| {
@@ -186,9 +189,9 @@ fn button_custom_row() -> Element {
     let on_click: Rc<dyn Fn()> = Rc::new(|| {});
     ui! {
         Stack(axis = StackAxis::Row, wrap = true, gap = StackGap::Md) {
-            Button(label = "Raised".to_string(),  on_click = on_click.clone(), tone = tone::Primary, variant = RAISED)
-            Button(label = "Success".to_string(), on_click = on_click.clone(), tone = tone::Success, variant = RAISED)
-            Button(label = "Danger".to_string(),  on_click = on_click,         tone = tone::Danger,  variant = RAISED)
+            Button(label = "Raised".to_string(),  on_click = on_click.clone(), tone = tone::Primary, variant = ButtonVariant::Raised)
+            Button(label = "Success".to_string(), on_click = on_click.clone(), tone = tone::Success, variant = ButtonVariant::Raised)
+            Button(label = "Danger".to_string(),  on_click = on_click,         tone = tone::Danger,  variant = ButtonVariant::Raised)
         }
     }
 }

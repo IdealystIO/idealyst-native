@@ -6,32 +6,52 @@
 //!
 //! - The accent-gradient Button variant, which idea-ui ships as an opt-in
 //!   recipe rather than a built-in arm.
-//! - An app-defined Button variant ([`RAISED`]) with a tone-aware recipe.
-//! - An app-defined Card variant ([`TINTED`]) and Field appearance
-//!   ([`PILL`]), each one restyle arm.
+//! - An app-defined Button variant (`ButtonVariant::Raised`) with a
+//!   tone-aware recipe.
+//! - An app-defined Card variant (`CardVariant::Tinted`) and Field
+//!   appearance (`FieldAppearance::Pill`), each one restyle arm.
+//!
+//! The values are named with `axis_values!`, which derives each key from
+//! its name. They sit on idea-ui's types, so they arrive through traits —
+//! a page imports `crate::restyles::*` to write `ButtonVariant::Raised`.
 
 use idea_theme::extensible::{ResolutionCtx, Variant};
 use idea_theme::extensible::variant::no_border;
 use idea_ui::{ButtonStyles, ButtonVariant, CardStyles, CardVariant, FieldAppearance, FieldStyles};
-use runtime_core::{Shadow, StyleRules};
+use runtime_core::{axis_values, Shadow, StyleRules};
 
-/// An app Button variant: a filled surface lifted by a soft shadow.
-pub const RAISED: ButtonVariant = ButtonVariant::define("raised");
+axis_values! {
+    /// The docs site's Button variants.
+    pub trait DocsButtonVariants for ButtonVariant {
+        /// A filled surface lifted by a soft shadow.
+        Raised,
+    }
+}
 
-/// An app Card variant: the primary tint, with a primary edge.
-pub const TINTED: CardVariant = CardVariant::define("tinted");
+axis_values! {
+    /// The docs site's Card variants.
+    pub trait DocsCardVariants for CardVariant {
+        /// The primary tint, with a primary edge.
+        Tinted,
+    }
+}
 
-/// An app Field appearance: a fully rounded, filled input.
-pub const PILL: FieldAppearance = FieldAppearance::define("pill");
+axis_values! {
+    /// The docs site's Field appearances.
+    pub trait DocsFieldAppearances for FieldAppearance {
+        /// A fully rounded, filled input.
+        Pill,
+    }
+}
 
-/// The `RAISED` recipe — the tone's fill and foreground, plus a drop
+/// The `ButtonVariant::Raised` recipe — the tone's fill and foreground, plus a drop
 /// shadow. Rendered over every registered tone, so `tone = …` picks the
 /// fill as it does for the built-ins.
 pub struct Raised;
 
 impl Variant for Raised {
     fn key(&self) -> &'static str {
-        "raised"
+        ButtonVariant::Raised.key()
     }
     fn render(&self, ctx: &ResolutionCtx) -> StyleRules {
         let mut s = no_border();
@@ -47,10 +67,10 @@ impl Variant for Raised {
 pub fn register() {
     ButtonStyles::restyle(|s| {
         s.tone_variant(ButtonVariant::Gradient, &idea_ui::variant::Gradient);
-        s.tone_variant(RAISED, &Raised);
+        s.tone_variant(ButtonVariant::Raised, &Raised);
     });
     CardStyles::restyle(|s| {
-        s.root().arm(TINTED, |t| {
+        s.root().arm(CardVariant::Tinted, |t| {
             let edge = Some(t.intent.primary.solid_bg());
             StyleRules {
                 background: Some(t.intent.primary.soft_bg()),
@@ -63,7 +83,7 @@ pub fn register() {
         });
     });
     FieldStyles::restyle(|s| {
-        s.input().arm(PILL, |t| {
+        s.input().arm(FieldAppearance::Pill, |t| {
             let pill = Some(t.radius.pill());
             StyleRules {
                 background: Some(t.color.surface_alt()),

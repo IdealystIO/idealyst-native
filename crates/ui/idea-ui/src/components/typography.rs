@@ -8,7 +8,7 @@
 //! line height, tracking), `tone` (`default` / `muted` / a tone's
 //! foreground), `weight` and `align` arms. Every combination ships as
 //! build-time CSS, so applying a style is a class lookup. An app adds a
-//! kind with `TypographyKind::define("lead")` plus a restyle arm.
+//! kind with `axis_values!` (`TypographyKind::Lead`) plus a restyle arm.
 //!
 //! Color precedence: `tone: Some(...)` wins, then `muted: true`, then
 //! the theme's default text color.

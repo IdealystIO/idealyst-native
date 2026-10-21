@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use runtime_macros::component_styles;
+use runtime_macros::{axis_values, component_styles};
 use runtime_vocabulary::glue::{
     component_styles as cs, Color, IntoStyleProp, StateBits, StyleProp, StyleRules, StyleSheet, Tokenized, VariantEnum,
 };
@@ -115,6 +115,38 @@ fn a_custom_variant_value_is_typed_per_component_and_styled_by_a_restyle() {
     let app = app_of(SegStyles::track().set(HUSHED).into_style_prop());
     assert_eq!(pad(&app.sheet.resolve(&app.variants)), 0.0);
     assert_eq!(HUSHED.key(), "hushed");
+}
+
+// `axis_values!` names app values like the built-ins and derives each key
+// from the name. The inherent form needs the axis type's own crate (this
+// one); the trait form is how any other crate adds `ButtonVariant::Raised`.
+axis_values! { impl SegDensity { Hushed, ExtraRoomy } }
+axis_values! { pub trait AppPillTones for PillTone { Alarm } }
+
+#[test]
+fn axis_values_are_named_like_builtins_with_keys_from_their_names() {
+    reset();
+    assert_eq!(SegDensity::Hushed, SegDensity::define("hushed"));
+    assert_eq!(SegDensity::ExtraRoomy.key(), "extra_roomy");
+    assert_eq!(PillTone::Alarm.key(), "alarm");
+
+    // A restyle arm keyed by the named value styles it.
+    SegStyles::restyle(|s| {
+        s.track().arm(SegDensity::Hushed, |_| StyleRules { padding_top: Some(0.0.into()), ..Default::default() });
+    });
+    let app = app_of(SegStyles::track().set(SegDensity::Hushed).into_style_prop());
+    assert_eq!(pad(&app.sheet.resolve(&app.variants)), 0.0);
+
+    // Usable as patterns beside the built-ins — trait-provided ones too.
+    let name = |d: SegDensity| match d {
+        SegDensity::Compact => "compact",
+        SegDensity::Hushed => "hushed",
+        _ => "other",
+    };
+    assert_eq!(name(SegDensity::Hushed), "hushed");
+    assert_eq!(name(SegDensity::Comfy), "other");
+    let alarm = |t: PillTone| matches!(t, PillTone::Alarm);
+    assert!(alarm(PillTone::define("alarm")) && !alarm(PillTone::Loud));
 }
 
 #[test]

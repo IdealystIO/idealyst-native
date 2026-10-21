@@ -17,7 +17,8 @@ use idea_ui::{
 
 use crate::shell::{Callout, CodePanel, DemoSurface, Prop, PropsTable, Section, P};
 use idea_ui::components::card::variant as card_variant;
-use crate::restyles::TINTED;
+use crate::restyles::DocsCardVariants;
+use idea_ui::CardVariant;
 
 // =============================================================================
 // Card
@@ -95,21 +96,21 @@ Card(variant = card::variant::Outline, style = Some(dashed)) { … }"##.to_strin
         },
         ui! {
             Section(title = "Your own variant".to_string()) {
-                P(content = "Card's variant axis is open: `CardVariant::define(\"tinted\")` is a new value \
-                    and one restyle arm at boot gives it a look. The built-in variants stay; an arm \
+                P(content = "Card's variant axis is open: `axis_values!` names a new value, \
+                    `CardVariant::Tinted` (its key derived from the name), and one restyle arm at boot gives it a look. The built-in variants stay; an arm \
                     keyed `regular` (or another built-in's key) changes just that one. A Card variant \
                     is Card's own type, so it does not fit a Button.".to_string())
                 DemoSurface {
-                    Card(variant = TINTED) {
+                    Card(variant = CardVariant::Tinted) {
                         Typography(content = "Tinted".to_string(), kind = typography_kind::H3)
                         Typography(content = "An app-defined variant.".to_string(), muted = true)
                     }
                 }
-                CodePanel(src = r##"pub const TINTED: CardVariant = CardVariant::define("tinted");
+                CodePanel(src = r##"axis_values! { pub trait AppCardVariants for CardVariant { Tinted } }
 
 // At boot, before the first render:
 CardStyles::restyle(|s| {
-    s.root().arm(TINTED, |t| StyleRules {
+    s.root().arm(CardVariant::Tinted, |t| StyleRules {
         background: Some(t.intent.primary.soft_bg()),
         border_top_color: Some(t.intent.primary.solid_bg()),
         // …the other three edges…
@@ -118,7 +119,7 @@ CardStyles::restyle(|s| {
 });
 
 // Anywhere:
-Card(variant = TINTED) { … }"##.to_string())
+Card(variant = CardVariant::Tinted) { … }"##.to_string())
             }
         },
     ])

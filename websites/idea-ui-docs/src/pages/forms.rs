@@ -20,7 +20,7 @@ use idea_ui::{
     SegmentedControlSelected, SegmentedControlSlotStyles, Select, SelectOption, Slider, Stack, StackGap, Switch, Textarea, TimeInput,
     Typography, Weekday,
 };
-use crate::restyles::PILL;
+use crate::restyles::DocsFieldAppearances;
 use crate::pages::body;
 use crate::shell::{Callout, CodePanel, Demo, DemoSurface, Prop, PropsTable, Section, H3, P};
 
@@ -561,17 +561,17 @@ ui! {
         }
     }, ui! {
         Section(title = "Your own appearance".to_string()) {
-            P(content = "The appearance axis is open: `FieldAppearance::define(\"pill\")` is a new \
-                value, and one restyle arm on the `input` slot at boot gives it a look. Every \
+            P(content = "The appearance axis is open: `axis_values!` names a new value, \
+                `FieldAppearance::Pill` (its key derived from the name), and one restyle arm on the `input` slot at boot gives it a look. Every \
                 other axis (size, tone, the focus ring) still composes with it.".to_string())
             DemoSurface {
-                Field(label = Some("Search".to_string()), value = pill_text, on_change = on_pill_text, placeholder = Some("A pill field".to_string()), variant = PILL)
+                Field(label = Some("Search".to_string()), value = pill_text, on_change = on_pill_text, placeholder = Some("A pill field".to_string()), variant = FieldAppearance::Pill)
             }
-            CodePanel(src = r##"pub const PILL: FieldAppearance = FieldAppearance::define("pill");
+            CodePanel(src = r##"axis_values! { pub trait AppFieldAppearances for FieldAppearance { Pill } }
 
 // At boot, before the first render:
 FieldStyles::restyle(|s| {
-    s.input().arm(PILL, |t| StyleRules {
+    s.input().arm(FieldAppearance::Pill, |t| StyleRules {
         background: Some(t.color.surface_alt()),
         border_top_left_radius: Some(t.radius.pill()),
         // …the other corners, and the horizontal padding…
@@ -580,7 +580,7 @@ FieldStyles::restyle(|s| {
 });
 
 // Anywhere:
-Field(value = v, on_change = on_v, variant = PILL)"##.to_string())
+Field(value = v, on_change = on_v, variant = FieldAppearance::Pill)"##.to_string())
         }
     }, ui! {
         Section(title = "Restyling".to_string()) {

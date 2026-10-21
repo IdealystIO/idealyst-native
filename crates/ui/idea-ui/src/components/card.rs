@@ -22,10 +22,10 @@
 //! adds one, at boot:
 //!
 //! ```ignore
-//! const GLASS: CardVariant = CardVariant::define("glass");
+//! axis_values! { pub trait AppCardVariants for CardVariant { Glass } }
 //! CardStyles::restyle(|s| {
 //!     s.root().arm(CardVariant::Regular, |t| StyleRules { shadow: …, ..Default::default() });
-//!     s.root().arm(GLASS, |t| StyleRules { background: Some(t.color.surface_alt()), … });
+//!     s.root().arm(CardVariant::Glass, |t| StyleRules { background: Some(t.color.surface_alt()), … });
 //! });
 //! ```
 //!

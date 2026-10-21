@@ -19,7 +19,7 @@ The model has three parts:
 - An app **restyles** any slot app-wide at boot. The restyle is *composed into*
   the slot's sheet — it is not a runtime override — so restyled components
   still premint to static CSS.
-- Variant **axes are open**: an app adds its own value (`ButtonVariant::define("raised")`)
+- Variant **axes are open**: an app adds its own value (`axis_values!` names it `ButtonVariant::Raised`)
   and gives it a look with one restyle arm. Each component's axis is its own
   type, so a Card variant never compiles on a Button.
 
@@ -73,7 +73,7 @@ That generates:
 | Item | What it is |
 | --- | --- |
 | `BannerStyles` | The registry key. `BannerStyles::root()` / `::message()` return each slot's style; `::restyle(…)`, `::set_default(…)`, `::values()`. |
-| `BannerEmphasis` | The axis key type, with `BannerEmphasis::Quiet` / `::Loud`, `BannerEmphasis::define("…")` for app values, `Default`, and (for an on/off axis) `From<bool>`. |
+| `BannerEmphasis` | The axis key type, with `BannerEmphasis::Quiet` / `::Loud`, `axis_values!` / `BannerEmphasis::define("…")` for app values, `Default`, and (for an on/off axis) `From<bool>`. |
 | `BannerRestyle` | What a restyle closure receives: `s.root()`, `s.message()`. |
 | `BannerSlotStyles` | The per-instance overrides: one optional override per slot, with same-named setters. |
 
@@ -144,22 +144,57 @@ Installing or swapping a theme does not disturb restyles.
 
 ## Adding a variant value
 
+Name the value with `axis_values!`; its key is derived from the name
+(`Urgent` → `"urgent"`, `PillShape` → `"pill_shape"`), so it reads like a
+built-in and there is no string to keep in step:
+
 ```rust
-pub const URGENT: BannerEmphasis = BannerEmphasis::define("urgent");
+// In the crate that declares the axis type (your component library):
+axis_values! { impl BannerEmphasis { Urgent } }
 
-BannerStyles::restyle(|s| {
-    s.root().arm(URGENT, |t| StyleRules { background: Some(t.intent.danger.solid_bg()), ..Default::default() });
-    s.message().arm(URGENT, |t| StyleRules { color: Some(t.intent.danger.solid_text()), ..Default::default() });
-});
-
-ui! { Banner(message = "Disk full".into(), emphasis = URGENT) }
+// From any other crate — an app adding to a library's axis. Rust allows no
+// inherent impl on a foreign type, so the values arrive on a trait; import
+// it wherever you write `BannerEmphasis::Urgent`.
+axis_values! { pub trait AppEmphasis for BannerEmphasis { Urgent } }
 ```
 
-`define` checks at compile time that the key is a class-safe name
-(`[a-z0-9_]`). A value with no arm anywhere renders like the base, and debug
+Then give it a look and use it:
+
+```rust
+BannerStyles::restyle(|s| {
+    s.root().arm(BannerEmphasis::Urgent, |t| StyleRules { background: Some(t.intent.danger.solid_bg()), ..Default::default() });
+    s.message().arm(BannerEmphasis::Urgent, |t| StyleRules { color: Some(t.intent.danger.solid_text()), ..Default::default() });
+});
+
+ui! { Banner(message = "Disk full".into(), emphasis = BannerEmphasis::Urgent) }
+```
+
+A name must be PascalCase ASCII (a compile error says so otherwise). Each
+value is `BannerEmphasis::define("urgent")` underneath — `define` is the
+raw form, for a key computed at runtime — so two crates naming the same
+value get the same value. A trait constant does not shadow a built-in:
+naming an app value after one (`Loud`) leaves `BannerEmphasis::Loud` the
+built-in.
+
+Axis values are patterns, built-in or app-defined, so a component can
+`match` on them; the `_` arm is required, because an axis is open:
+
+```rust
+let icon = match emphasis {
+    BannerEmphasis::Loud => ALERT,
+    BannerEmphasis::Urgent => STOP,
+    _ => INFO,
+};
+```
+
+Keep such matches to behavior the style arms cannot express, and give
+values the match does not know a sensible default — another crate may
+add one.
+
+A value with no arm anywhere renders like the base, and debug
 builds warn once naming the component, axis and value.
 
-`BannerStyles::set_default(URGENT)` (or any value) changes the axis default
+`BannerStyles::set_default(BannerEmphasis::Urgent)` (or any value) changes the axis default
 for every instance that doesn't pass one — `BannerEmphasis::default()` returns
 it too.
 

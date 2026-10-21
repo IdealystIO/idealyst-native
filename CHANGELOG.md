@@ -730,6 +730,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`axis_values!` names app-defined axis values** (`runtime-macros`,
+  `runtime-core`). `axis_values! { impl ChipLook { Glow } }` (in the axis
+  type's crate) or `axis_values! { pub trait AppLooks for ButtonVariant
+  { Raised } }` (from any crate) adds values named like the built-ins —
+  `ChipLook::Glow`, `ButtonVariant::Raised` — with each key derived from
+  its name (`PillShape` → `"pill_shape"`), so no key string is written by
+  hand. They work in props, restyle arms and `match` patterns. idea-ui's
+  `ButtonVariant::Gradient`, the docs site's values and the Ink brand use
+  it.
 - **`component_styles!`** (`runtime-macros`, `runtime-shared`,
   `runtime-vocabulary`): declare a component's styled sections once as
   named slots with component-level open axes; generates the registry key

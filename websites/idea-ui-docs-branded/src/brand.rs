@@ -1,8 +1,8 @@
 //! "Ink" — an alternate design language for idea-ui, installed entirely
 //! through component restyles. This module is the canonical example of
 //! branding idea-ui: every change below is a `restyle`, an app-defined axis
-//! value (`define`), or an axis default (`set_default`), registered once at
-//! boot. Nothing is forked or wrapped.
+//! value (`axis_values!`), or an axis default (`set_default`), registered
+//! once at boot. Nothing is forked or wrapped.
 //!
 //! The language: ink (the theme's text color) as the accent surface,
 //! filled fields with soft corners, pill-shaped buttons, borderless paper
@@ -10,26 +10,38 @@
 //! it follows the light/dark/cyber theme switch like the stock look does —
 //! "ink" is light on a dark theme.
 //!
-//! Two of its values are app-defined: [`PAPER`] (the default Card variant)
-//! and [`INK`] (the default Badge variant), so every Card and Badge on the
-//! docs pages shows them. It also restyles the docs site's own app values
-//! (`TINTED`, `RAISED`) — a later restyle composes over an earlier one.
+//! Two of its values are app-defined: `CardVariant::Paper` (the default
+//! Card variant, from [`InkCardVariants`]) and `BadgeVariant::Ink` (the
+//! default Badge variant, from [`InkBadgeVariants`]), so every Card and
+//! Badge on the docs pages shows them. It also restyles the docs site's own
+//! app values (`CardVariant::Tinted`, `ButtonVariant::Raised`) — a later
+//! restyle composes over an earlier one.
 
 use idea_ui::components::table::{TablePinned, TableRowHovered, TableStyles, TableVariant};
 use idea_ui::{
-    BadgeStyles, BadgeVariant, ButtonShape, ButtonStyles, CardStyles, CardVariant, FieldAppearance, FieldRing,
+    BadgeStyles, BadgeVariant, ButtonShape, ButtonStyles, ButtonVariant, CardStyles, CardVariant, FieldAppearance, FieldRing,
     FieldStyles, SegmentedControlSelected, SegmentedControlStyles,
 };
-use idea_ui_docs::restyles::{RAISED, TINTED};
-use runtime_core::{Color, FontWeight, Length, Shadow, StateBits, StyleRules, Tokenized};
+use idea_ui_docs::restyles::{DocsButtonVariants, DocsCardVariants};
+use runtime_core::{axis_values, Color, FontWeight, Length, Shadow, StateBits, StyleRules, Tokenized};
 
-/// The Card variant every Card takes by default under Ink: a borderless
-/// paper surface lifted by a soft shadow.
-pub const PAPER: CardVariant = CardVariant::define("paper");
+axis_values! {
+    /// Ink's Card variants.
+    pub trait InkCardVariants for CardVariant {
+        /// The variant every Card takes by default under Ink: a borderless
+        /// paper surface lifted by a soft shadow.
+        Paper,
+    }
+}
 
-/// The Badge variant every Badge takes by default under Ink: ink fill,
-/// paper text.
-pub const INK: BadgeVariant = BadgeVariant::define("ink");
+axis_values! {
+    /// Ink's Badge variants.
+    pub trait InkBadgeVariants for BadgeVariant {
+        /// The variant every Badge takes by default under Ink: ink fill,
+        /// paper text.
+        Ink,
+    }
+}
 
 type Px = Option<Tokenized<f32>>;
 type Len = Option<Tokenized<Length>>;
@@ -107,28 +119,28 @@ pub fn install() {
     });
 
     // Buttons: pill-shaped by default, with a heavier label. The docs
-    // site's RAISED value trades its shadow for an ink underline.
+    // site's `Raised` value trades its shadow for an ink underline.
     ButtonStyles::set_default(ButtonShape::Pill);
     ButtonStyles::restyle(|s| {
         s.label().base(|_| StyleRules { font_weight: Some(FontWeight::SemiBold), ..Default::default() });
-        s.root().arm(RAISED, |t| StyleRules {
+        s.root().arm(ButtonVariant::Raised, |t| StyleRules {
             shadow: Some(Shadow { x: 0.0, y: 3.0, blur: 0.0, color: t.color.text() }),
             ..Default::default()
         });
     });
 
-    // Cards: borderless paper by default; the docs site's TINTED value
+    // Cards: borderless paper by default; the docs site's `Tinted` value
     // becomes a primary wash with an ink spine.
-    CardStyles::set_default(PAPER);
+    CardStyles::set_default(CardVariant::Paper);
     CardStyles::restyle(|s| {
         s.root()
             .base(|t| corners(Some(t.radius.lg())))
-            .arm(PAPER, |t| StyleRules {
+            .arm(CardVariant::Paper, |t| StyleRules {
                 background: Some(t.color.surface()),
                 shadow: Some(Shadow { x: 0.0, y: 6.0, blur: 18.0, color: t.effect.shadow() }),
                 ..edge_width(none())
             })
-            .arm(TINTED, |t| StyleRules {
+            .arm(CardVariant::Tinted, |t| StyleRules {
                 background: Some(t.intent.primary.soft_bg()),
                 border_left_width: Some(Tokenized::Literal(4.0)),
                 border_left_color: Some(t.color.text()),
@@ -137,9 +149,9 @@ pub fn install() {
     });
 
     // Badges: ink by default.
-    BadgeStyles::set_default(INK);
+    BadgeStyles::set_default(BadgeVariant::Ink);
     BadgeStyles::restyle(|s| {
-        s.root().arm(INK, |t| StyleRules {
+        s.root().arm(BadgeVariant::Ink, |t| StyleRules {
             background: Some(t.color.text()),
             color: Some(t.color.surface()),
             ..edge_width(none())

@@ -1,0 +1,5 @@
+error: `glow`: an axis value is named in PascalCase ASCII (`Glow`, `PillShape`) — its key is derived from the name (`glow`, `pill_shape`)
+  --> tests/component_styles_ui/axis_values_need_pascal_case_names.rs:15:32
+   |
+15 | axis_values! { impl ChipLook { glow } }
+   |                                ^^^^
