@@ -1411,6 +1411,50 @@ fn regression_flex_column_lays_the_web_table_out_as_a_grid() {
     assert!(html.contains("<td style=\"display:flex"), "cells are flex boxes: {html}");
 }
 
+/// Regression (CrewForge, 2026-10-21): a scroll-x grid table with a fill
+/// column was `width: max-content`, and a `1fr` track's max-content
+/// contribution is its content — the fill column sized to its whole
+/// one-line text and pushed the table past its scroller. With a fill
+/// column the `<table>` is the scroller's width, floored at its
+/// min-content width (the fill column's floor plus every other column).
+/// A grid table without one keeps the natural-width strategy. The
+/// geometry is measured in a browser by `backend-web`'s
+/// `table_layout_tests`.
+#[test]
+fn regression_scroll_x_grid_table_with_a_fill_column_fits_its_scroller() {
+    let render = |track: ColumnTrack| {
+        backend_ssr::newcore::render_path_with("/", table::register, move || {
+            item_lowering::web_table(
+                vec![
+                    item_lowering::row_item(
+                        vec![web_cell(true, "Name", Some(track)), web_cell(true, "Type", None)],
+                        None,
+                    ),
+                    item_lowering::row_item(
+                        vec![web_cell(false, "A very long field name", None), web_cell(false, "Text", None)],
+                        None,
+                    ),
+                ],
+                None,
+                true,
+                None,
+                None,
+            )
+        })
+        .html
+    };
+    let fill = render(FLEX);
+    assert!(fill.contains("width:100%") || fill.contains("width: 100%"), "{fill}");
+    assert!(fill.contains("min-width:min-content") || fill.contains("min-width: min-content"), "{fill}");
+    assert!(!fill.contains("max-content;") && !fill.contains("width:max-content"), "{fill}");
+
+    let capped = render(ColumnTrack { max_width: Some(200.0), ..Default::default() });
+    assert!(
+        capped.contains("width:max-content") || capped.contains("width: max-content"),
+        "no fill column: natural widths, as before: {capped}"
+    );
+}
+
 /// Regression: prerendered `<table><tr>…` is re-parsed by the browser,
 /// whose parser inserts a `<tbody>` — an ordinary row-group box that
 /// became the grid's only item, every cell stacked in column one

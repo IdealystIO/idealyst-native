@@ -1624,6 +1624,7 @@ dependencies = [
  "runtime-world",
  "serde_json",
  "subsecond-types",
+ "table",
  "wasm-bindgen-test",
  "web-glue",
  "wire",

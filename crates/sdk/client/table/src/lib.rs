@@ -27,8 +27,12 @@
 //! widths, floored at the scroller's width" (web: `min-width: 100%;
 //! width: max-content` plus `border-collapse: separate` so cell
 //! borders travel with sticky cells; native: a `min_width: 100%`
-//! floor on the scroll content). Frozen columns are pure STYLING on
-//! top:
+//! floor on the scroll content). A grid-column table with a `flex`
+//! column is the exception on web: `width: 100%; min-width:
+//! min-content`, so the flex column takes what the scroller leaves and
+//! the table overflows only past its min-content width (an `fr` track's
+//! max-content contribution is its whole content). Frozen columns are
+//! pure STYLING on top:
 //! a cell with `position: Sticky` + `left: 0` / `right: 0` pins inside
 //! that scroller on every backend — the browser natively, native
 //! through `runtime_shared::sticky` (which also raises pinned cells
@@ -477,6 +481,13 @@ pub struct TablePrim {
     /// `style`, with an explicit `role="table"` because its rows and
     /// sections are `display: contents`. Set by [`table`].
     pub grid: bool,
+    /// Grid-column mode with a `flex` column (see [`ColumnTrack`]): in a
+    /// `scroll_x` table the `<table>` is the scroller's width, floored at
+    /// its min-content width, instead of `max-content` — an `fr` track's
+    /// max-content contribution is its content, so a fill column would
+    /// size to its whole one-line text and never truncate. Set by
+    /// [`table`].
+    pub fills: bool,
     /// Filled with the `<table>`'s handle at mount — how
     /// [`TableBound::on_scroll_edges`] measures the scrolled content's
     /// width. Set by [`table`].
@@ -1106,6 +1117,12 @@ fn needs_grid(specs: &[Option<ColumnSpec>]) -> bool {
     glue::untrack(|| specs.iter().flatten().any(|s| s.get().needs_grid()))
 }
 
+/// Whether a grid-column table has a `flex` column — one that takes the
+/// width the others leave. Read untracked, like [`needs_grid`].
+fn has_flex_column(specs: &[Option<ColumnSpec>]) -> bool {
+    glue::untrack(|| specs.iter().flatten().any(|s| s.get().flex.is_some()))
+}
+
 /// The table node's style in grid-column mode: `display: grid` and one
 /// track per column, re-read live so a column width bound to a signal
 /// moves its track. A column no cell sized is content-sized, like an
@@ -1285,7 +1302,7 @@ pub mod item_lowering {
         scroll_y: bool,
     ) -> Element {
         item(
-            PrimCell::new(TablePrim { style, scroll_x, scroll_y, grid: false, ref_fill: None }),
+            PrimCell::new(TablePrim { style, scroll_x, scroll_y, grid: false, fills: false, ref_fill: None }),
             children,
         )
     }
@@ -1358,19 +1375,21 @@ pub mod item_lowering {
         // applies, and the structure matches the native lowering, whose
         // author style always lands on an outer view around the grid.
         let table = if grid {
+            let fills = has_flex_column(&specs);
             item(
                 PrimCell::new(TablePrim {
                     style: Some(grid_columns_style(specs)),
                     scroll_x,
                     scroll_y,
                     grid: true,
+                    fills,
                     ref_fill,
                 }),
                 into_grid_rows(rows),
             )
         } else {
             item(
-                PrimCell::new(TablePrim { style: None, scroll_x, scroll_y, grid: false, ref_fill }),
+                PrimCell::new(TablePrim { style: None, scroll_x, scroll_y, grid: false, fills: false, ref_fill }),
                 rows,
             )
         };
@@ -2485,7 +2504,17 @@ where
         } else {
             b.attach_html_style(&node, "border-collapse", "collapse");
         }
-        if data.scroll_x {
+        if data.scroll_x && data.fills {
+            // A grid with a fill column: the scroller's width, so the
+            // `fr` track takes what the other columns leave and its
+            // content truncates — floored at the grid's min-content
+            // width, where the fill column is its `min_width` and every
+            // other column its full size, so the table overflows (and
+            // scrolls) only once those no longer fit. `max-content`
+            // here sized the fill column to its whole one-line content.
+            b.attach_html_style(&node, "width", "100%");
+            b.attach_html_style(&node, "min-width", "min-content");
+        } else if data.scroll_x {
             // Width strategy: natural column widths (a table at
             // `width: max-content` never wraps its cells), floored
             // at the scroller's width so a narrow table still fills.

@@ -171,6 +171,9 @@ pub struct TableColumn {
     pub max_width: Option<f32>,
     /// Take the width the other columns leave (a `flex` share of 1). A
     /// fill column may shrink to its `min_width`; pair it with `truncate`.
+    /// In a `scroll_x` table it fills the scroller the same way, and the
+    /// table overflows only once its `min_width` and the other columns no
+    /// longer fit.
     /// Lays the table out as grid columns.
     pub fill: bool,
     /// Draw a drag handle on the header cell's trailing edge, revealed

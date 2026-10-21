@@ -61,6 +61,8 @@ mod newcore_url_sync;
 mod premint_guard;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod table_layout_tests;
 #[cfg(feature = "async-driver")]
 pub mod async_executor;
 mod assets;

@@ -1959,6 +1959,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   plain variant's transparent fill, so header text overprinted whatever
   passed behind it; `TableStyles` now states `background: surface` for
   `(variant: plain, sticky_header: on)`.
+- **A fill column in a `scroll_x` table takes the rest and truncates**
+  (`table`). On web the scrolled `<table>` was `width: max-content`, and
+  a `1fr` track's max-content contribution is its content, so one long
+  name widened the table past its scroller and `truncate` never applied.
+  A grid table with a `flex` column is now the scroller's width, floored
+  at its min-content width — the fill column's `min_width` plus every
+  other column — so it scrolls only once those no longer fit. The
+  `TablePrim` payload gained `fills`.
 - **A focused text input removed by navigation no longer aborts the app**
   (`runtime-vocabulary`). Its `on_focus` handler is scope-guarded like the
   input's other callbacks; the blur fired during teardown wrote a freed
