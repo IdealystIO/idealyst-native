@@ -72,6 +72,7 @@ pub mod breakpoint;
 pub mod by_identity;
 pub mod container_query;
 pub mod collections;
+pub mod component_styles;
 pub mod color;
 pub mod host;
 pub mod introspect;

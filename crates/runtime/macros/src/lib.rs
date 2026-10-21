@@ -163,6 +163,16 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
     expand::stylesheet(input.into()).into()
 }
 
+/// `component_styles! { … }` — a component's styled sections declared once
+/// as named slots, each a `stylesheet!` body: restylable app-wide by type
+/// (`FieldStyles::restyle`), extensible on open per-component variant axes
+/// (`FieldAppearance::define`), overridable per instance (`FieldSlotStyles`).
+/// See `runtime_core::component_styles` and the theming guide.
+#[proc_macro]
+pub fn component_styles(input: TokenStream) -> TokenStream {
+    expand::component_styles(input.into()).into()
+}
+
 /// `#[host_fn]` — an app function remote code can call: the function in the
 /// app, a stub asking the app to run it in a remote bundle. Arguments and
 /// result cross as `RemoteValue`s. It may be generic over `Key`, `Opaque`

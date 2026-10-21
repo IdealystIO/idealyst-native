@@ -1462,3 +1462,67 @@ mod assembled_sheet_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod component_styles_tests {
+    //! `component_styles!` declarations premint: the dump composes every
+    //! linked component after the app ran (the `PREMINT_COMPONENT_STYLES`
+    //! slice), so a slot restyled at boot, an app-defined axis value given a
+    //! look by that restyle, and a component nothing rendered all ship
+    //! build-time CSS under the very classes the runtime stamps.
+
+    use super::*;
+    use runtime_core::{component_styles, Color, StyleRules, Tokenized};
+
+    component_styles! {
+        pub DumpField<()> {
+            slot input {
+                base(_t) { color: Color("#101010".into()) }
+                variant appearance { #[default] contained(_t) {} outlined(_t) { color: Color("#202020".into()) } }
+                state focused(_t) { color: Color("#303030".into()) }
+            }
+            slot label { base(_t) { color: Color("#404040".into()) } }
+        }
+    }
+
+    component_styles! {
+        pub NeverRendered<()> {
+            slot root { base(_t) { color: Color("#505050".into()) } }
+        }
+    }
+
+    fn has_rule(css: &str, class: &str) -> bool {
+        css.contains(&format!(".{class} {{")) || css.contains(&format!(".{class}:where(")) || css.contains(&format!(".{class}."))
+    }
+
+    #[test]
+    fn restyled_slots_and_custom_values_premint_under_the_stamped_classes() {
+        const PILL: DumpFieldAppearance = DumpFieldAppearance::define("pill");
+        // Boot: the app restyles, then builds (here: nothing is rendered
+        // before the dump runs — the link-time hook composes anyway).
+        DumpFieldStyles::restyle(|s| {
+            s.input()
+                .base(|_| StyleRules { background: Some(Tokenized::Literal(Color("#abcdef".into()))), ..Default::default() })
+                .arm(PILL, |_| StyleRules { color: Some(Tokenized::Literal(Color("#fedcba".into()))), ..Default::default() });
+        });
+        let css = dump_all_css();
+        assert!(css.contains("#abcdef"), "the restyled base is in the CSS:\n{css}");
+        assert!(css.contains("#fedcba"), "the custom value's arm is in the CSS:\n{css}");
+        assert!(css.contains("#505050"), "a component nothing rendered still ships its CSS");
+
+        for app in [
+            DumpFieldStyles::input().into_style_application(),
+            DumpFieldStyles::input().set(PILL).into_style_application(),
+            DumpFieldStyles::input().set(DumpFieldAppearance::Outlined).into_style_application(),
+            DumpFieldStyles::label().into_style_application(),
+        ] {
+            let list = app.preminted_class_list().expect("every slot premints");
+            for class in list.split_whitespace() {
+                assert!(has_rule(&css, class), "runtime class {class} has no rule in the dump:\n{css}");
+            }
+        }
+        let restyled = DumpFieldStyles::input().sheet();
+        let pill = DumpFieldStyles::input().set(PILL).into_style_application();
+        assert!(pill.preminted_class_list().unwrap().contains(&format!("{}-appearance-pill", restyled.premint_class().unwrap())));
+    }
+}

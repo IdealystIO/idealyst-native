@@ -166,6 +166,24 @@ pub use runtime_shared::{
     TokenValue, TokenVocabulary, Tokenized, Transition, VariantEnum, VariantSet,
 };
 
+// Component styles: a component's styled slots declared once
+// (`component_styles!`), restyled app-wide by type, extended on open
+// variant axes, overridden per instance. The registry and composition live
+// in runtime-shared beside the sheet model; `SlotStyle` (the style-prop
+// side) lives here beside `IntoStyleProp`.
+pub use runtime_shared::component_styles;
+pub use runtime_shared::component_styles::{
+    AxisDef, AxisKey, ComponentStyles, CompoundKey, CompoundLeg, Restyle, SlotDef, SlotOverride, SlotRestyle,
+};
+pub use crate::slot_style::{AxisValues, SlotStyle};
+
+// The active-theme stash: a component library's typed theme object,
+// installed / swapped / read back generically (see `active_theme`).
+pub use crate::active_theme::{
+    active_theme, active_theme_untracked, apply_host_surface_tokens, install_theme, install_themes, set_theme,
+    stash_active_theme, theme_installed, ThemeTokens,
+};
+
 // Anchor plumbing for `anchored_overlay(target = …)`: `AnchorTarget`
 // (a runtime-shared type the vocabulary's `PortalPrim` reuses) is
 // constructed from a `Ref<ViewHandle>`-style handle slot, which the mount

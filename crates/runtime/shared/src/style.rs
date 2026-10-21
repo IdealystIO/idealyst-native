@@ -3351,6 +3351,84 @@ impl StyleSheet {
         sheet
     }
 
+    /// Merge `rules` over this sheet's base layer: every property `rules`
+    /// sets wins, everything else keeps the base's value. The composition
+    /// primitive behind component restyles
+    /// ([`crate::component_styles`]) — a restyle is data merged INTO the
+    /// slot sheet before it is finished with a premint identity, so the
+    /// restyled sheet still ships as build-time CSS (an
+    /// `override`/`computed` layer would push every application of it
+    /// onto the live engine).
+    pub fn layer_base(mut self, rules: StyleRules) -> Self {
+        self.retract_auto_premint();
+        // `--premint-only` keeps no rule bodies (see
+        // `premint_only_stripped_rules`); the base stays the stripped
+        // closure and the data is dropped with it.
+        #[cfg(idealyst_premint_only)]
+        drop(rules);
+        #[cfg(not(idealyst_premint_only))]
+        {
+            let prev = std::mem::replace(&mut self.base, Box::new(|_: &VariantSet| StyleRules::default()));
+            self.base = Box::new(move |vs: &VariantSet| prev(vs).merge(&rules));
+        }
+        self
+    }
+
+    /// Merge `rules` over the `(axis, value)` arm, creating the arm (and
+    /// the axis) when the sheet does not declare it. Like
+    /// [`Self::layer_base`] this is how a restyle extends a slot: an
+    /// existing arm keeps every property `rules` leaves unset, and a new
+    /// arm is an ordinary variant arm, so it premints like a declared one.
+    /// State overlays are arms on the reserved `__state_*` axes (value
+    /// `"on"`), breakpoints on `__bp_*`.
+    pub fn layer_variant(
+        mut self,
+        axis: impl Into<VariantAxis>,
+        value: impl Into<VariantValue>,
+        rules: StyleRules,
+    ) -> Self {
+        let axis = axis.into();
+        let value = value.into();
+        let existing = self.variants.get_mut(&axis).and_then(|def| def.values.remove(&value));
+        match existing {
+            None => self.variant(axis, value, move |_vs: &VariantSet| rules.clone()),
+            Some(prev) => {
+                self.retract_auto_premint();
+                #[cfg(idealyst_premint_only)]
+                let merged: RulesFn = {
+                    drop(rules);
+                    prev
+                };
+                #[cfg(not(idealyst_premint_only))]
+                let merged: RulesFn = Box::new(move |vs: &VariantSet| prev(vs).merge(&rules));
+                self.variants
+                    .get_mut(&axis)
+                    .expect("the arm was just removed from this axis")
+                    .values
+                    .insert(value, merged);
+                self
+            }
+        }
+    }
+
+    /// Set (or replace) the default value of an axis the sheet already
+    /// declares; a no-op for an axis it does not. Restyles change a
+    /// component axis's default across every slot, and only the slots
+    /// that style that axis should carry it — a default on an axis with
+    /// no arms would stamp a class nothing rules.
+    pub fn layer_default(self, axis: &str, value: &str) -> Self {
+        if self.declares_axis(axis) {
+            self.variant_default(axis.to_string(), value.to_string())
+        } else {
+            self
+        }
+    }
+
+    /// Whether this sheet declares `axis` (an arm or a default on it).
+    pub fn declares_axis(&self, axis: &str) -> bool {
+        self.variants.contains_key(axis)
+    }
+
     /// Adds a compound variant: an overlay applied only when every
     /// `(axis, value)` pair in `when` is active at apply time.
     pub fn compound<F>(
@@ -3874,6 +3952,14 @@ impl StyleApplication {
     /// from a continuum.
     pub fn with_inline(mut self, rules: StyleRules) -> Self {
         self.inline = Some(Rc::new(rules));
+        self
+    }
+
+    /// [`Self::with_inline`] with rules already behind an `Rc` — shared
+    /// across every evaluation of a reactive style closure rather than
+    /// cloned per run (component slot overrides).
+    pub fn with_inline_shared(mut self, rules: Rc<StyleRules>) -> Self {
+        self.inline = Some(rules);
         self
     }
 

@@ -54,6 +54,72 @@ const SKIP: &[&str] = &[
     "PhantomData",
 ];
 
+/// `#[props]` with its arguments. The one argument is `styles = FieldStyles`
+/// (a `component_styles!` type): the struct gains a `styles:
+/// FieldSlotStyles` field — the per-instance override for every slot the
+/// component declares, so no component hand-writes one `*_style` prop per
+/// section. Never wrapped in `Reactive` (an override set is build-time).
+pub(crate) fn emit_with(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
+    if attr.is_empty() {
+        return emit(item);
+    }
+    let styles: syn::Path = match parse_styles_arg(attr) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error(),
+    };
+    let mut input: DeriveInput = match parse2(item) {
+        Ok(i) => i,
+        Err(e) => return e.to_compile_error(),
+    };
+    let last = styles.segments.last().expect("a path has a segment");
+    let Some(stem) = last.ident.to_string().strip_suffix("Styles").map(str::to_string) else {
+        return syn::Error::new_spanned(
+            &styles,
+            "`styles = …` names a `component_styles!` type (`FieldStyles`)",
+        )
+        .to_compile_error();
+    };
+    let mut overrides = styles.clone();
+    overrides.segments.last_mut().expect("a path has a segment").ident =
+        syn::Ident::new(&format!("{stem}SlotStyles"), last.ident.span());
+    let doc = format!(
+        "Per-instance slot overrides — one optional override per slot of [`{}`], layered over that \
+         slot's style on this element (after the theme, every restyle and every state).",
+        last.ident
+    );
+    let Data::Struct(data) = &mut input.data else {
+        return syn::Error::new_spanned(&input.ident, "#[props] only applies to structs").to_compile_error();
+    };
+    let Fields::Named(fields) = &mut data.fields else {
+        return syn::Error::new_spanned(&input.ident, "`#[props(styles = …)]` needs a struct with named fields")
+            .to_compile_error();
+    };
+    fields.named.push(syn::parse_quote! {
+        #[doc = #doc]
+        #[prop(static)]
+        pub styles: #overrides
+    });
+    emit(quote! { #input })
+}
+
+fn parse_styles_arg(attr: TokenStream2) -> syn::Result<syn::Path> {
+    syn::parse::Parser::parse2(
+        |input: syn::parse::ParseStream| -> syn::Result<syn::Path> {
+            let key: syn::Ident = input.parse()?;
+            if key != "styles" {
+                return Err(syn::Error::new(key.span(), "expected `styles = <ComponentStyles type>`"));
+            }
+            let _: syn::Token![=] = input.parse()?;
+            let p: syn::Path = input.parse()?;
+            if !input.is_empty() {
+                return Err(input.error("unexpected tokens after the styles type"));
+            }
+            Ok(p)
+        },
+        attr,
+    )
+}
+
 pub(crate) fn emit(item: TokenStream2) -> TokenStream2 {
     let mut input: DeriveInput = match parse2(item) {
         Ok(i) => i,

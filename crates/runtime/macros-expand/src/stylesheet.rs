@@ -103,26 +103,26 @@ pub struct StyleSheetDecl {
     /// `///` doc comments written on the sheet. They land on the
     /// generated builder struct and its same-named entry fn — the two
     /// items an author's `Card` resolves to.
-    docs: Vec<Attribute>,
+    pub(crate) docs: Vec<Attribute>,
     /// `#[cfg]` / `#[cfg_attr]` / lint-level attributes (`allow`,
     /// `expect`, `warn`, `deny`, `forbid`) written on the sheet. They
     /// land on EVERY generated item: a `cfg` that stripped the struct but
     /// not its `impl` would not compile, and a lint level meant for "this
     /// sheet" means all of what the sheet expands to.
-    item_attrs: Vec<Attribute>,
-    vis: Visibility,
-    name: Ident,
+    pub(crate) item_attrs: Vec<Attribute>,
+    pub(crate) vis: Visibility,
+    pub(crate) name: Ident,
     /// The token vocabulary this sheet references (`pub Card<IdeaThemeRef>`).
     /// Resolved through `runtime_core::TokenVocabulary` at emission: each
     /// block's binding is bound to `<theme_ty as TokenVocabulary>::Tokens`,
     /// so `base(t) { padding: t.spacing.md() }` type-checks the token name
     /// instead of trusting a string literal. `<()>` yields the empty
     /// `NoTokens`, so a sheet that declares no vocabulary can't read one.
-    theme_ty: Type,
-    base: BaseBlock,
-    variants: Vec<VariantAxisDecl>,
-    overrides: Vec<OverrideDecl>,
-    transitions: Vec<TransitionDecl>,
+    pub(crate) theme_ty: Type,
+    pub(crate) base: BaseBlock,
+    pub(crate) variants: Vec<VariantAxisDecl>,
+    pub(crate) overrides: Vec<OverrideDecl>,
+    pub(crate) transitions: Vec<TransitionDecl>,
     /// Interaction states (`hovered`, `pressed`, `focused`,
     /// `disabled`). Stored as overlays under the reserved
     /// `__state` axis — same machinery as variants, so resolution
@@ -130,14 +130,14 @@ pub struct StyleSheetDecl {
     /// relevant native event and flips the corresponding bit on
     /// the node's active-state set; unsupported states (e.g.
     /// `hovered` on mobile) are silent no-ops.
-    states: Vec<StateArm>,
+    pub(crate) states: Vec<StateArm>,
     /// Responsive breakpoint overlays (`breakpoint md { … }`). Stored
     /// as overlays under reserved `__bp_*` axes — same machinery as
     /// states/variants. Web realizes them as `@media (min-width: …)`
     /// CSS (so SSR's first paint is responsive without JS); native
     /// backends merge the active bucket reactively. `Xs` is the
     /// mobile-first base and is therefore not a valid block name.
-    breakpoints: Vec<BreakpointArm>,
+    pub(crate) breakpoints: Vec<BreakpointArm>,
     /// Container-query overlays (`container (min_width: N) { … }`).
     /// Stored as overlays under reserved `__cq_minw_*` axes (one per
     /// distinct threshold) — same machinery as breakpoints, but keyed on
@@ -145,7 +145,7 @@ pub struct StyleSheetDecl {
     /// them as `@container (min-width: N) { … }` CSS against the nearest
     /// `container-type` ancestor; native merges the active overlays
     /// reactively against the nearest container's resolved inline-size.
-    containers: Vec<ContainerArm>,
+    pub(crate) containers: Vec<ContainerArm>,
     /// Compound overlays (`compound (axis: value, axis: value)(t) { … }`)
     /// — rules that apply only when EVERY named axis holds its named
     /// value. `resolve` layers these AFTER every per-axis overlay, which
@@ -153,89 +153,89 @@ pub struct StyleSheetDecl {
     /// resolve by ALPHABETICAL axis name (`StyleSheet::variants` is a
     /// `BTreeMap`), so the axis that wins is decided by spelling. A
     /// compound states the combination outright instead.
-    compounds: Vec<CompoundArm>,
+    pub(crate) compounds: Vec<CompoundArm>,
 }
 
 /// One `compound (axis: value, …)(theme) { ... }` block. The condition
 /// is validated against the sheet's own declared axes at macro time: a
 /// compound naming an axis or arm that does not exist could never fire,
 /// and would do so silently.
-struct CompoundArm {
+pub(crate) struct CompoundArm {
     /// The `(axis, value)` pairs that must all hold.
-    when: Vec<(Ident, Ident)>,
-    theme_binding: Ident,
-    rules: RulesBlock,
+    pub(crate) when: Vec<(Ident, Ident)>,
+    pub(crate) theme_binding: Ident,
+    pub(crate) rules: RulesBlock,
 }
 
 /// One `state name(theme) { ... }` block. The name must be one of
 /// the four well-known interaction states; arbitrary names are
 /// rejected so the cross-platform contract is enforced at compile
 /// time.
-struct StateArm {
-    name: Ident,
-    theme_binding: Ident,
-    rules: RulesBlock,
+pub(crate) struct StateArm {
+    pub(crate) name: Ident,
+    pub(crate) theme_binding: Ident,
+    pub(crate) rules: RulesBlock,
 }
 
 /// One `breakpoint name(theme) { ... }` block. The name must be one of
 /// the overlay breakpoints (`sm`, `md`, `lg`, `xl`); `xs` is the
 /// mobile-first base and is rejected so authors don't accidentally
 /// write a base-shadowing overlay.
-struct BreakpointArm {
-    name: Ident,
-    theme_binding: Ident,
-    rules: RulesBlock,
+pub(crate) struct BreakpointArm {
+    pub(crate) name: Ident,
+    pub(crate) theme_binding: Ident,
+    pub(crate) rules: RulesBlock,
 }
 
 /// One `container (min_width: N)(theme) { ... }` block. `min_width` is
 /// the only comparison supported in v1 (mobile-first cascade);
 /// `threshold` is the px length parsed from the literal. Stored under a
 /// `__cq_minw_<bits>` axis whose name encodes the threshold losslessly.
-struct ContainerArm {
+pub(crate) struct ContainerArm {
     /// The `min_width` threshold in px.
-    threshold: f32,
-    theme_binding: Ident,
-    rules: RulesBlock,
+    pub(crate) threshold: f32,
+    pub(crate) theme_binding: Ident,
+    pub(crate) rules: RulesBlock,
 }
 
 /// One line inside a `transitions { ... }` block. The `property` name
 /// may be a shorthand (`padding`, `margin`, `border_radius`, etc.) that
 /// fans out to multiple per-property transition fields during emit.
-struct TransitionDecl {
-    property: Ident,
-    duration_ms: u32,
-    easing: Ident,
+pub(crate) struct TransitionDecl {
+    pub(crate) property: Ident,
+    pub(crate) duration_ms: u32,
+    pub(crate) easing: Ident,
     /// Optional explicit `cubic-bezier(a, b, c, d)` form. When set,
     /// `easing` is "CubicBezier" and `cubic_bezier` holds the four
     /// control points.
-    cubic_bezier: Option<(Expr, Expr, Expr, Expr)>,
+    pub(crate) cubic_bezier: Option<(Expr, Expr, Expr, Expr)>,
 }
 
-struct BaseBlock {
-    theme_binding: Ident,
-    rules: RulesBlock,
+pub(crate) struct BaseBlock {
+    pub(crate) theme_binding: Ident,
+    pub(crate) rules: RulesBlock,
 }
 
-struct VariantAxisDecl {
-    axis: Ident,
-    arms: Vec<VariantArm>,
+pub(crate) struct VariantAxisDecl {
+    pub(crate) axis: Ident,
+    pub(crate) arms: Vec<VariantArm>,
 }
 
-struct VariantArm {
-    name: Ident,
-    is_default: bool,
-    theme_binding: Ident,
-    rules: RulesBlock,
+pub(crate) struct VariantArm {
+    pub(crate) name: Ident,
+    pub(crate) is_default: bool,
+    pub(crate) theme_binding: Ident,
+    pub(crate) rules: RulesBlock,
 }
 
-struct OverrideDecl {
-    name: Ident,
-    ty: Type,
+pub(crate) struct OverrideDecl {
+    pub(crate) name: Ident,
+    pub(crate) ty: Type,
 }
 
 /// A `{ field: expr, ... }` block — the contents of a base or variant arm.
-struct RulesBlock {
-    fields: Vec<(Ident, Expr)>,
+pub(crate) struct RulesBlock {
+    pub(crate) fields: Vec<(Ident, Expr)>,
 }
 
 // =============================================================================
@@ -279,7 +279,24 @@ impl Parse for StyleSheetDecl {
 
         let body;
         braced!(body in input);
+        parse_sheet_body(docs, item_attrs, vis, name, theme_ty, &body)
+    }
+}
 
+/// Parse a sheet's braced body — `base(t) { … }` then any number of
+/// `variant` / `override` / `transitions` / `state` / `breakpoint` /
+/// `container` / `compound` sections — into a declaration with the given
+/// header. Shared with `component_styles!`, whose every `slot` body is
+/// this grammar.
+pub(crate) fn parse_sheet_body(
+    docs: Vec<Attribute>,
+    item_attrs: Vec<Attribute>,
+    vis: Visibility,
+    name: Ident,
+    theme_ty: Type,
+    body: ParseStream,
+) -> syn::Result<StyleSheetDecl> {
+    {
         // First section must be `base(...) { ... }`.
         let base_kw: Ident = body.parse()?;
         if base_kw != "base" {
@@ -288,7 +305,7 @@ impl Parse for StyleSheetDecl {
         let theme_args;
         parenthesized!(theme_args in body);
         let theme_binding: Ident = theme_args.parse()?;
-        let rules = parse_rules_block(&body)?;
+        let rules = parse_rules_block(body)?;
         let base = BaseBlock { theme_binding, rules };
 
         // Then any number of `variant axis { ... }`, `override field: Type`,
@@ -352,7 +369,7 @@ impl Parse for StyleSheetDecl {
                     let theme_args;
                     parenthesized!(theme_args in body);
                     let theme_binding: Ident = theme_args.parse()?;
-                    let rules = parse_rules_block(&body)?;
+                    let rules = parse_rules_block(body)?;
                     states.push(StateArm { name, theme_binding, rules });
                 }
                 "breakpoint" => {
@@ -375,7 +392,7 @@ impl Parse for StyleSheetDecl {
                     let theme_args;
                     parenthesized!(theme_args in body);
                     let theme_binding: Ident = theme_args.parse()?;
-                    let rules = parse_rules_block(&body)?;
+                    let rules = parse_rules_block(body)?;
                     breakpoints.push(BreakpointArm { name, theme_binding, rules });
                 }
                 "compound" => {
@@ -418,7 +435,7 @@ impl Parse for StyleSheetDecl {
                     let theme_args;
                     parenthesized!(theme_args in body);
                     let theme_binding: Ident = theme_args.parse()?;
-                    let rules = parse_rules_block(&body)?;
+                    let rules = parse_rules_block(body)?;
                     compounds.push(CompoundArm { when, theme_binding, rules });
                 }
                 "container" => {
@@ -445,7 +462,7 @@ impl Parse for StyleSheetDecl {
                     let theme_args;
                     parenthesized!(theme_args in body);
                     let theme_binding: Ident = theme_args.parse()?;
-                    let rules = parse_rules_block(&body)?;
+                    let rules = parse_rules_block(body)?;
                     containers.push(ContainerArm { threshold, theme_binding, rules });
                 }
                 other => {
@@ -745,7 +762,7 @@ fn attach_outer_attrs(decl: &StyleSheetDecl, items: TokenStream2) -> TokenStream
 /// Everything else (a call like `active_font_family()`, a method
 /// chain, a conditional) can vary at runtime, so the sheet stays on
 /// the live-minting path.
-fn sheet_has_dynamic_font(decl: &StyleSheetDecl) -> bool {
+pub(crate) fn sheet_has_dynamic_font(decl: &StyleSheetDecl) -> bool {
     fn constant_font_expr(expr: &Expr) -> bool {
         match expr {
             Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(_), .. }) => true,
@@ -843,7 +860,7 @@ fn block_uses_binding(rules: &RulesBlock, binding: &Ident) -> bool {
     false
 }
 
-fn snake_case(ident: &Ident) -> Ident {
+pub(crate) fn snake_case(ident: &Ident) -> Ident {
     let s = ident.to_string();
     let mut out = String::with_capacity(s.len() + 4);
     for (i, c) in s.chars().enumerate() {
@@ -872,7 +889,56 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
     let fn_name = format_ident!("{}_style", snake_case(&decl.name));
     let vis = &decl.vis;
     let theme_ty = &decl.theme_ty;
+    let sheet_expr = emit_sheet_expr(decl);
 
+    let finish_sheet = match premint_class {
+        Some(class) => quote! { #sheet_expr.premint_with_class(#class) },
+        None => quote! { ::std::rc::Rc::new(#sheet_expr) },
+    };
+
+    let fn_doc = format!("The cached `StyleSheet` behind [`{}`].", decl.name);
+    quote! {
+        #[doc = #fn_doc]
+        #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
+            // Name the declared vocabulary type unconditionally. The
+            // per-block bindings above are emitted only for blocks that
+            // READ them, so a sheet whose blocks all write `_t` expanded
+            // to nothing that mentioned `#theme_ty` — and the `use` that
+            // imported it was reported unused, failing any crate under
+            // `deny(unused_imports)` (#3). A `PhantomData` value is
+            // zero-sized and needs no bound on the type.
+            let _ = ::core::marker::PhantomData::<#theme_ty>;
+            // Process-unique key for this stylesheet: the address of a
+            // function-local `static`. We deliberately DO NOT emit a
+            // per-sheet `::std::thread_local!` here — on Android, std's
+            // TLS is pthread-key-backed and bionic caps total keys at
+            // PTHREAD_KEYS_MAX (128). idea-ui declares 70+ stylesheets, so
+            // a key apiece exhausted the table and aborted in
+            // `LazyKey::lazy_init` at mount. Instead every sheet routes
+            // through runtime-core's single shared thread-local registry,
+            // keyed by this address — one TLS key for all stylesheets.
+            //
+            // Immutable on purpose: a hot patch binds the WRITABLE statics
+            // it defines to the running program's, but an immutable one
+            // gets a fresh address in every patch — so a patched sheet
+            // misses this cache and is built from its new rules. A
+            // `Cell`/atomic key here would be bound and serve the old sheet.
+            static __SHEET_KEY: u8 = 0;
+            ::runtime_core::cached_stylesheet(
+                &__SHEET_KEY as *const u8 as usize,
+                || #finish_sheet,
+            )
+        }
+    }
+}
+
+/// The unfinished `StyleSheet` expression a declaration describes — base,
+/// every arm, state, breakpoint, container and compound — with each
+/// block's binding bound to the vocabulary's token namespace. Shared with
+/// `component_styles!`, which finishes each slot's sheet at composition
+/// time instead of at the declaration.
+pub(crate) fn emit_sheet_expr(decl: &StyleSheetDecl) -> TokenStream2 {
+    let theme_ty = &decl.theme_ty;
     // Every block header names a binding (`base(t)`, `md(t)`, …). Bind it
     // to the declared vocabulary's token namespace so the block can spell
     // a token as `t.spacing.md()` instead of a string literal. The
@@ -1037,45 +1103,7 @@ fn emit_stylesheet_fn(decl: &StyleSheetDecl, premint_class: Option<&str>) -> Tok
             #(#container_chain)*
             #(#compound_chain)*
     };
-    let finish_sheet = match premint_class {
-        Some(class) => quote! { #sheet_expr.premint_with_class(#class) },
-        None => quote! { ::std::rc::Rc::new(#sheet_expr) },
-    };
-
-    let fn_doc = format!("The cached `StyleSheet` behind [`{}`].", decl.name);
-    quote! {
-        #[doc = #fn_doc]
-        #vis fn #fn_name() -> ::std::rc::Rc<::runtime_core::StyleSheet> {
-            // Name the declared vocabulary type unconditionally. The
-            // per-block bindings above are emitted only for blocks that
-            // READ them, so a sheet whose blocks all write `_t` expanded
-            // to nothing that mentioned `#theme_ty` — and the `use` that
-            // imported it was reported unused, failing any crate under
-            // `deny(unused_imports)` (#3). A `PhantomData` value is
-            // zero-sized and needs no bound on the type.
-            let _ = ::core::marker::PhantomData::<#theme_ty>;
-            // Process-unique key for this stylesheet: the address of a
-            // function-local `static`. We deliberately DO NOT emit a
-            // per-sheet `::std::thread_local!` here — on Android, std's
-            // TLS is pthread-key-backed and bionic caps total keys at
-            // PTHREAD_KEYS_MAX (128). idea-ui declares 70+ stylesheets, so
-            // a key apiece exhausted the table and aborted in
-            // `LazyKey::lazy_init` at mount. Instead every sheet routes
-            // through runtime-core's single shared thread-local registry,
-            // keyed by this address — one TLS key for all stylesheets.
-            //
-            // Immutable on purpose: a hot patch binds the WRITABLE statics
-            // it defines to the running program's, but an immutable one
-            // gets a fresh address in every patch — so a patched sheet
-            // misses this cache and is built from its new rules. A
-            // `Cell`/atomic key here would be bound and serve the old sheet.
-            static __SHEET_KEY: u8 = 0;
-            ::runtime_core::cached_stylesheet(
-                &__SHEET_KEY as *const u8 as usize,
-                || #finish_sheet,
-            )
-        }
-    }
+    sheet_expr
 }
 
 /// Emits `StyleRules { field: value, ..Default::default() }`.
@@ -1346,7 +1374,7 @@ fn emit_variant_enum(decl: &StyleSheetDecl, axis: &VariantAxisDecl) -> TokenStre
 }
 
 /// snake → Pascal. `border_radius` → `BorderRadius`.
-fn pascal(ident: &Ident) -> Ident {
+pub(crate) fn pascal(ident: &Ident) -> Ident {
     let s = ident.to_string();
     let mut out = String::with_capacity(s.len());
     let mut next_upper = true;

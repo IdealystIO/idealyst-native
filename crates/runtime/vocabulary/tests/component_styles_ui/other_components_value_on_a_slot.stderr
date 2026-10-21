@@ -1,0 +1,19 @@
+error[E0271]: type mismatch resolving `<CardVariant as AxisKey>::Styles == ButtonStyles`
+  --> tests/component_styles_ui/other_components_value_on_a_slot.rs:12:34
+   |
+12 |     let _ = ButtonStyles::root().set(CardVariant::Flat);
+   |                                  ^^^ type mismatch resolving `<CardVariant as AxisKey>::Styles == ButtonStyles`
+   |
+note: expected this to be `ButtonStyles`
+  --> tests/component_styles_ui/other_components_value_on_a_slot.rs:8:9
+   |
+ 8 |     pub Card<()> { slot root { base(_t) {} variant variant { #[default] regular(_t) {} flat(_t) {} } } }
+   |         ^^^^
+note: required by a bound in `SlotStyle::<S>::set`
+  --> src/slot_style.rs
+   |
+   |     pub fn set<A, V>(mut self, value: V) -> Self
+   |            --- required by a bound in this associated function
+   |     where
+   |         A: AxisKey<Styles = S>,
+   |                    ^^^^^^^^^^ required by this bound in `SlotStyle::<S>::set`

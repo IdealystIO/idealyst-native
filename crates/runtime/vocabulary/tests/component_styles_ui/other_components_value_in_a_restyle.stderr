@@ -1,0 +1,18 @@
+error[E0271]: type mismatch resolving `<CardVariant as AxisKey>::Styles == ButtonStyles`
+  --> tests/component_styles_ui/other_components_value_in_a_restyle.rs:14:22
+   |
+14 |         s.root().arm(CardVariant::Flat, |_| StyleRules::default());
+   |                  --- ^^^^^^^^^^^^^^^^^ type mismatch resolving `<CardVariant as AxisKey>::Styles == ButtonStyles`
+   |                  |
+   |                  required by a bound introduced by this call
+   |
+note: expected this to be `ButtonStyles`
+  --> tests/component_styles_ui/other_components_value_in_a_restyle.rs:9:9
+   |
+ 9 |     pub Card<()> { slot root { base(_t) {} variant variant { #[default] regular(_t) {} flat(_t) {} } } }
+   |         ^^^^
+note: required by a bound in `SlotRestyle::<'a, S>::arm`
+  --> $WORKSPACE/crates/runtime/shared/src/component_styles.rs
+   |
+   |     pub fn arm<A: AxisKey<Styles = S>>(&mut self, value: A, f: impl FnOnce(&S::Tokens) -> StyleRules) -> &mut Self {
+   |                           ^^^^^^^^^^ required by this bound in `SlotRestyle::<'a, S>::arm`

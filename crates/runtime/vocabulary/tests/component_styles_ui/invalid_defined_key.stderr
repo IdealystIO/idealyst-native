@@ -1,0 +1,13 @@
+error[E0080]: evaluation panicked: an axis value key is lowercase ASCII letters, digits and `_`
+ --> tests/component_styles_ui/invalid_defined_key.rs:9:29
+  |
+9 | const PILL: ButtonVariant = ButtonVariant::define("Pill Shape");
+  |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `PILL` failed inside this call
+  |
+note: inside `ButtonVariant::define`
+ --> tests/component_styles_ui/invalid_defined_key.rs:5:1
+  |
+5 | / component_styles! {
+6 | |     pub Button<()> { slot root { base(_t) {} variant variant { #[default] filled(_t) {} } } }
+7 | | }
+  | |_^ the failure occurred here

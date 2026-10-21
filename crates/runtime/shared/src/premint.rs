@@ -95,9 +95,26 @@ pub fn register_assembled_sheet(sheet: &Rc<StyleSheet>) {
 
 /// Every runtime-assembled sheet registered so far, in registration
 /// order. The dump calls this after building the app tree.
+///
+/// Composes every linked component's slots first ([`PREMINT_COMPONENT_STYLES`]),
+/// so a component whose slots no crawled screen used still contributes
+/// its composed sheets — the declaration plus every restyle the app
+/// registered while it ran.
 pub fn assembled_sheets() -> Vec<Rc<StyleSheet>> {
+    for compose in PREMINT_COMPONENT_STYLES {
+        compose();
+    }
     ASSEMBLED.with(|s| s.borrow().clone())
 }
+
+/// One entry per `component_styles!` declaration in the binary (dump
+/// builds only): composes that component's slots, which registers each
+/// composed sheet here as [`StyleSheet::premint_as`] /
+/// [`crate::component_styles`] finish it. Link-time, like
+/// [`PREMINT_SHEETS`], because a component nothing rendered during the
+/// crawl must still ship its CSS — and composition only happens on use.
+#[linkme::distributed_slice]
+pub static PREMINT_COMPONENT_STYLES: [fn()] = [..];
 
 // ---------------------------------------------------------------------------
 // Auto-preminted STATIC sheets

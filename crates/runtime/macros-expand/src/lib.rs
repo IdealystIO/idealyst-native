@@ -86,6 +86,7 @@ mod external_emit;
 mod hot_split;
 #[cfg(feature = "catalog")]
 mod mcp_emit;
+mod component_styles;
 #[cfg(feature = "catalog")]
 mod schema_emit;
 #[cfg(feature = "catalog")]
@@ -302,6 +303,15 @@ pub fn stylesheet(input: TokenStream) -> TokenStream {
     finish(stylesheet::emit(parsed, content_hash))
 }
 
+/// `component_styles! { … }`. See `component_styles`. Hashes the raw input
+/// before parsing, like `stylesheet!`: every slot's premint class derives
+/// from it, so an edit to the declaration moves every class it mints.
+pub fn component_styles(input: TokenStream) -> TokenStream {
+    let content_hash = stylesheet::content_hash(&input.to_string());
+    let parsed = parse_or_return!(input => component_styles::ComponentStylesDecl);
+    finish(component_styles::emit(parsed, content_hash))
+}
+
 /// `#[host_fn]`. See `host_fn`.
 pub fn host_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -324,8 +334,8 @@ pub fn robot_fn(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// `#[props]`. See [`props_attr`].
-pub fn props(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    finish(props_attr::emit(item))
+pub fn props(attr: TokenStream, item: TokenStream) -> TokenStream {
+    finish(props_attr::emit_with(attr, item))
 }
 
 /// `#[component]`. See [`emit_component_tokens`].

@@ -86,6 +86,8 @@
 // `resource()` / `mutation()` (feature `async-driver`).
 #[cfg(feature = "async-driver")]
 pub mod async_reactive;
+// The generic active-theme stash (`install_theme` / `active_theme`).
+pub mod active_theme;
 pub mod backend;
 pub mod builders;
 pub mod callback_guard;
@@ -284,6 +286,7 @@ pub mod robot_watch;
 #[cfg(feature = "async-driver")]
 pub mod scoped_spawn;
 pub mod scoped_scheduling;
+pub mod slot_style;
 pub mod slots;
 // The dev-time overlay (`ui-overlay`): the per-node origin tag a patch
 // addresses nodes by, and the split-pass version marker. No descriptor
