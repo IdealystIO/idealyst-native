@@ -1954,6 +1954,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **An adorned Field's text sits 2px from its adornment at every size**
+  (`idea-ui`). The input inside the adorned shell took the `size` axis's
+  horizontal padding (12px at `md`) over the shell's 2px inset, because
+  `size` arms merge after `placement` arms. `(placement: shell, size)`
+  compounds restate the inset for `sm`, `md` and `lg`; an app-defined
+  `FieldSize` whose arm sets horizontal padding adds its own compound.
 - **A focused text input removed by navigation no longer aborts the app**
   (`runtime-vocabulary`). Its `on_focus` handler is scope-guarded like the
   input's other callbacks; the blur fired during teardown wrote a freed

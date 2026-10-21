@@ -321,6 +321,12 @@ component_styles! {
                     // field's height, so adornments center within it. The
                     // horizontal padding moves to the shell; a 2px inset
                     // stays so the glyph's bearing doesn't clip the edge.
+                    // `placement` < `size` alphabetically, so the size arm's
+                    // horizontal padding merges over this one: the
+                    // (placement: shell, size) compounds below restate it
+                    // for every built-in size. This copy covers an
+                    // app-defined size whose arm sets no horizontal padding
+                    // (one that does adds its own shell compound).
                     padding_horizontal: FIELD_BARE_H_PAD,
                     flex_shrink: 1.0,
                     min_width: Length::Px(0.0),
@@ -367,6 +373,12 @@ component_styles! {
             compound (adorned: on, size: sm)(_t) { gap: 8.0 - FIELD_BARE_H_PAD, padding_vertical: Length::Px(0.0) }
             compound (adorned: on, size: md)(_t) { gap: 12.0 - FIELD_BARE_H_PAD, padding_vertical: Length::Px(0.0) }
             compound (adorned: on, size: lg)(_t) { gap: 16.0 - FIELD_BARE_H_PAD, padding_vertical: Length::Px(0.0) }
+            // The input inside the shell keeps the 2px inset at every size:
+            // the `size` arm's horizontal padding would otherwise win over
+            // the `placement: shell` arm (see that arm).
+            compound (placement: shell, size: sm)(_t) { padding_horizontal: FIELD_BARE_H_PAD }
+            compound (placement: shell, size: md)(_t) { padding_horizontal: FIELD_BARE_H_PAD }
+            compound (placement: shell, size: lg)(_t) { padding_horizontal: FIELD_BARE_H_PAD }
             state focused(t) { border_color: t.color.focus_ring() }
             state disabled(_t) { opacity: FIELD_DISABLED_OPACITY }
             transitions {
@@ -1320,6 +1332,46 @@ mod tests {
                     Some(Tokenized::Literal(Length::Px(0.0))),
                     "adorned {size:?} shell must drop the size axis's bottom padding"
                 );
+            }
+        });
+    }
+
+    /// The resolved style of the `text_input` anywhere in a built Field
+    /// (the adorned layout nests it inside the row shell).
+    fn nested_input_rules(el: Element) -> Option<runtime_core::StyleRules> {
+        match classify(el) {
+            P::TextInput { style, .. } => {
+                Some((*style.expect("Field's text_input always has a style").resolve()).clone())
+            }
+            P::View { children, .. } => children.into_iter().find_map(nested_input_rules),
+            _ => None,
+        }
+    }
+
+    // Regression (CrewForge want_f5f5e732): a leading-adorned Field's input
+    // got the size axis's horizontal padding (12px at `md`) instead of the
+    // 2px shell inset, so the text sat far from the icon. `placement` <
+    // `size` alphabetically, so the `size` arm's padding merged OVER the
+    // `placement: shell` arm's. The (placement: shell, size) compounds
+    // restate the inset; compounds outrank every arm.
+    #[test]
+    fn regression_adorned_input_keeps_shell_inset_at_every_size() {
+        with_test_world(|| {
+            theme();
+            let inset = Some(Tokenized::Literal(Length::Px(FIELD_BARE_H_PAD)));
+            for size in [FieldSize::Sm, FieldSize::Md, FieldSize::Lg] {
+                let props = FieldProps {
+                    size: Reactive::Static(size),
+                    leading: Adornment::Icon(GLYPH_A),
+                    ..Default::default()
+                };
+                let rules = nested_input_rules(Field(&props)).expect("adorned Field has an input");
+                assert_eq!(rules.padding_left, inset, "adorned {size:?} input left padding");
+                assert_eq!(rules.padding_right, inset, "adorned {size:?} input right padding");
+                // The size-derived vertical padding stays: it sets the
+                // field's height.
+                let plain = resolve_style(&FieldStyles::input().set(size).into_style_application());
+                assert_eq!(rules.padding_top, plain.padding_top, "adorned {size:?} keeps vertical padding");
             }
         });
     }
